@@ -144,6 +144,29 @@ class AcceptanceTests(unittest.TestCase):
                 result = self.check("rejected")
                 self.assertIn("listener-invalid-trigger-ids", result["errors"])
 
+    def test_an_unsettled_receipt_is_terminal_and_never_pending(self):
+        self.args["receipt"]["status"] = "unknown"
+        result = self.check("rejected")
+        self.assertEqual(result["checks"]["router"], "unsettled")
+        self.assertIn("router-unsettled", result["errors"])
+
+    def test_a_large_valid_snapshot_document_is_not_refused_by_the_node_bound(self):
+        # A session registry with more than a thousand values in it is a valid snapshot:  only
+        # the depth bound applies to a whole document.
+        document = {"sessions": [{"id": str(i)} for i in range(WA.MAX_NODES + 10)]}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "receipt.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(WA.json_file(str(path)), document)
+
+    def test_a_jsonl_row_is_still_held_to_the_node_bound(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "listener.jsonl"
+            row = {"values": list(range(WA.MAX_NODES + 10))}
+            path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                WA.json_lines(str(path))
+
     def test_jsonl_tail_keeps_original_session_header(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "rollout.jsonl"

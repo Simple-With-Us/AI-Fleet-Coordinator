@@ -88,27 +88,34 @@ not have.
 
 ## The pinned owner
 
-The authority to enqueue a prompt into a Codex thread is granted only when the target's owner
-is the owner the deployment pins, and that is a user-id comparison.  The registry's session row
-carries no owner column and the Codex store carries no account id, so the owner's id comes from
-the fleet's own identity source:  the installed `listener.toml`, where `daemon init` pins the
-realm's one human owner as `daemon.owner_user_id`.  The deployment pins the same id for this
-seat in the Mac's own local settings file, `~/.local/state/codex-wake/config.json`:
+The authority to enqueue a prompt into a Codex thread is granted only when the target's own
+creator is the account the deployment pins.  The Codex store carries the authenticated account
+of every thread in its `creator_user_id` column, so the target's owner is read from the
+thread's own row, and the deployment pins that account for this seat in the one local file
+the service reads, `~/.local/state/wake-router/config.json`:
 
-    { "pinned_profile": "/Users/jay/.codex", "pinned_owner_user_id": 1211974 }
+    { "pinned_profile": "<the Codex profile this seat may read>", "pinned_owner_account": "<the account this seat may wake for>" }
 
-A user id is private inventory, so none is committed:  the host writes the pin and the runtime
-reads it.  The delivery compares the two ids before anything is enqueued, and refuses:
+An account id is private inventory, so none is committed:  the host writes the pin and the
+runtime reads it.  The delivery compares the thread's own creator with the pinned account
+before anything is enqueued, and refuses:
 
-- `no-pinned-owner` when the deployment pins no owner id at all,
-- `owner-unreadable` when the installed config cannot be read or carries no owner id,
-- `owner-mismatch` when the pinned id and the fleet's owner id differ.
+- `no-pinned-owner` when the deployment pins no owner account at all,
+- `owner-unreadable` when the pin file cannot be read, or when the thread's own creator cannot
+  be read,
+- `owner-mismatch` when the thread's creator and the pinned account differ.
 
-The profile check still runs, and it is its own code:  the owner's id says whose chats may be
+The profile check still runs, and it is its own code:  the account says whose chats may be
 woken, and the profile says which store this seat may read them from.  A thread in another
-profile is refused (`profile-mismatch`), and a delivery with no profile pin is refused
-(`no-pinned-owner`).  Every one of these refusals happens before the enqueue, so each one is a
-`NEVER_RAN` code and its receipt says `delivered: false`.
+profile is refused (`profile-mismatch`), a delivery with no profile pin is refused
+(`profile-unpinned`), and a store that cannot be read is refused (`profile-unreadable`).
+Every one of these refusals happens before the enqueue, so each one is a `NEVER_RAN` code and
+its receipt says `delivered: false`.
+
+The two pins are host facts, so they live in the shared local file with the other host
+facts, and the delivery reads them from there:  one file, one place the deployment writes
+them, and the same file the service reads.  The file is read once per change of that file,
+so a delivery attempt never costs a parse of the deployment's configuration.
 
 ## The cutover, and what is not switched yet
 
@@ -119,8 +126,8 @@ real wake.
 
 The cutover, when it is done, is these four steps, in this order.
 
-1.  Write the pinned profile and the pinned owner user id into the Mac's local settings
-    file, as above.
+1.  Write the pinned profile and the pinned owner account into the local settings file, as
+    above.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.

@@ -171,6 +171,7 @@ class Thread:
     source: str = ""
     originator: str = ""
     thread_source: str = ""
+    creator_user_id: str = ""
     title: str = ""
     name: str = ""
     first_message: str = ""
@@ -208,8 +209,8 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
     try:
         try:
             row = conn.execute(
-                "SELECT source, originator, thread_source, title, name, first_user_message, agent_nickname,"
-                " agent_path FROM threads WHERE id = ?",
+                "SELECT source, originator, thread_source, creator_user_id, title, name,"
+                " first_user_message, agent_nickname, agent_path FROM threads WHERE id = ?",
                 (sid,),
             ).fetchone()
         except sqlite3.OperationalError as exc:
@@ -237,6 +238,7 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
         source=source,
         originator=_s(data.get("originator")),
         thread_source=_s(data.get("thread_source")),
+        creator_user_id=_s(data.get("creator_user_id")),
         title=_s(data.get("title")),
         name=PL.one_line(data.get("name")),
         first_message=_s(data.get("first_user_message")),

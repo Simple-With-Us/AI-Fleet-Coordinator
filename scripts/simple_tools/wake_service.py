@@ -179,8 +179,25 @@ def _log(text: str) -> None:
 
 
 def state_root(env: Mapping[str, str]) -> Path:
-    home = str(env.get("HOME") or os.path.expanduser("~"))
-    return Path(home) / ".local" / "state" / "wake-router"
+    """The one folder the service's own state lives in (the settings module owns the path)."""
+    return WS.state_root(env)
+
+
+def file_defaults() -> dict[str, Any]:
+    """Every name the shared local file may carry:  the union of the platform table's defaults.
+
+    The file is shared by every seat, so a seat's own facts are in it too:  the union is what
+    the reader is checked against, so one seat's key never refuses the file for the others."""
+    values: dict[str, Any] = {}
+    for seat, entry in sorted(BUILDERS.items()):
+        try:
+            module = importlib.import_module(entry.module)
+        except ImportError:
+            continue
+        defaults = getattr(module, "DEFAULTS", None)
+        if isinstance(defaults, Mapping):
+            values.update(defaults)
+    return values
 
 
 def default_state(env: Mapping[str, str], seat: str) -> Path:
@@ -300,15 +317,15 @@ def build(
             else:
                 absent.append(seat)
             _log("seat %s not served (%s)" % (seat, exc.reason))
-    file_defaults: dict[str, Any] = {}
+    shared_defaults: dict[str, Any] = {}
     for seat_ready in ready:
-        file_defaults.update(seat_ready.defaults)
+        shared_defaults.update(seat_ready.defaults)
     local_path = state_root(env) / "config.json"
     routers: list[WR.Router] = []
     members: list[WS.WakeSettings] = []
     for seat_ready in ready:
         try:
-            router, settings = build_seat(seat_ready, env, local_path, file_defaults)
+            router, settings = build_seat(seat_ready, env, local_path, shared_defaults)
         except SeatDown as exc:
             down[seat_ready.seat] = exc.reason
             _log("seat %s not served (%s)" % (seat_ready.seat, exc.reason))

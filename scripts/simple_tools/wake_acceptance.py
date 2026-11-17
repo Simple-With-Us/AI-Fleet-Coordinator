@@ -21,12 +21,20 @@ MAX_BYTES = 8 * 1024 * 1024
 #: does not bound the work the parser and the walker do.
 MAX_DEPTH = 16
 MAX_NODES = 1000
+#: The node bound of a whole document.  A session registry with more than a thousand values in
+#: it is a valid snapshot, not an attack, so only the depth bound applies to the aggregate
+#: file:  the byte cap already bounds the work the aggregate costs.
+MAX_AGGREGATE_NODES = 10**9
 WAKE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
-def _bounded(value: object) -> object:
-    """One parsed snapshot value, refused when it is too deep or carries too many nodes."""
-    if not WR.bounded_json(value, MAX_DEPTH, MAX_NODES):
+def _bounded(value: object, *, aggregate: bool = False) -> object:
+    """One parsed snapshot value, refused when it is too deep or carries too many nodes.
+
+    A JSONL row is one value, so it is held to the node bound as well as the depth bound.  A
+    whole document is the aggregate of many values, so only the depth bound applies there."""
+    nodes = MAX_AGGREGATE_NODES if aggregate else MAX_NODES
+    if not WR.bounded_json(value, MAX_DEPTH, nodes):
         raise ValueError("snapshot exceeds the depth or the node bound")
     return value
 
@@ -151,6 +159,11 @@ def assess(
     elif receipt.get("status") in ("dead", "failed", "refused"):
         checks["router"] = "failed"
         errors.append("router-terminal-failure")
+    elif receipt.get("status") == "unknown":
+        # An unsettled receipt is terminal:  the router does not retry it, and the wake is
+        # never proven delivered, so it cannot pass as pending either.
+        checks["router"] = "unsettled"
+        errors.append("router-unsettled")
     elif (
         receipt.get("status") == "delivered"
         and "delivered" in receipt
@@ -197,7 +210,7 @@ def json_file(path: str) -> Mapping[str, Any]:
         raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise ValueError("snapshot exceeds size limit")
-    value = _bounded(json.loads(raw))
+    value = _bounded(json.loads(raw), aggregate=True)
     if not isinstance(value, dict):
         raise TypeError("expected an object snapshot")
     return value

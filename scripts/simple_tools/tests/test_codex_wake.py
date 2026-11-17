@@ -14,10 +14,11 @@ from simple_tools import platform_letter_codex as PLC
 from simple_tools import wake_router as WR
 
 SID = "11111111-1111-4111-8111-111111111111"
-#: The fleet's owner user id, as the installed listener.toml pins it.
-OWNER_ID = 1211974
-#: Another id, so a pin that is not the fleet's owner is one the fixture can name.
-OTHER_OWNER_ID = 1212000
+#: The account that owns the chat the fixture delivers into.  It is synthetic:  a production
+#: account id is private inventory, so none is committed.
+OWNER_ACCOUNT = "user-fixture-owner-000000000000"
+#: Another account, so a chat that belongs to someone else is one the fixture can name.
+OTHER_OWNER_ACCOUNT = "user-fixture-other-000000000000"
 
 
 def private_dir(path: str) -> str:
@@ -113,18 +114,16 @@ class CodexWakeTests(unittest.TestCase):
         store_patch = patch.object(PLC, "store_file", return_value=self.store)
         store_patch.start()
         self.addCleanup(store_patch.stop)
-        # The Mac's own local settings file:  the profile and the owner this seat may wake.
-        local = CW.state_dir({"HOME": self.tmp.name}) / "config.json"
+        # The one local file the service reads:  the profile this seat may read and the owner
+        # account it may wake for.
+        from simple_tools import wake_settings as WS
+
+        local = WS.local_config_path({"HOME": self.tmp.name})
         private_dir(str(local.parent))
         local.write_text(
-            json.dumps({"pinned_profile": self.profile, "pinned_owner_user_id": OWNER_ID}),
+            json.dumps({"pinned_profile": self.profile, "pinned_owner_account": OWNER_ACCOUNT}),
             encoding="utf-8",
         )
-        # The installed listener.toml, where the fleet pins its own owner id.
-        installed = os.path.join(self.tmp.name, ".simple-tools")
-        os.mkdir(installed, mode=0o700)
-        with open(os.path.join(installed, "listener.toml"), "w", encoding="utf-8") as fh:
-            fh.write("[daemon]\nowner_user_id = %d\n" % OWNER_ID)
         self.meta = {
             "id": SID,
             "cwd": os.path.join(self.tmp.name, "workspace"),
@@ -159,8 +158,7 @@ class CodexWakeTests(unittest.TestCase):
             local_host="mac",
             hostname=lambda: "example.test",
             registry_lookup=registry,
-            pinned_profile=self.profile,
-            pinned_owner_user_id=OWNER_ID,
+            pins=lambda env: ("ok", self.profile, OWNER_ACCOUNT),
         )
         self.target = TargetWithGeneration(
             SID, letter="BC", host="mac", title="untrusted title", thread_link="ignored", generation=7
@@ -180,8 +178,20 @@ class CodexWakeTests(unittest.TestCase):
             link_note=WR.LINK_NOTES["most-recent"],
         )
 
-    def with_chat(self, originator="Codex Desktop", source="desktop", thread_source="user"):
-        row = PLC.Thread(SID, source=source, originator=originator, thread_source=thread_source)
+    def with_chat(
+        self,
+        originator="Codex Desktop",
+        source="desktop",
+        thread_source="user",
+        creator_user_id=OWNER_ACCOUNT,
+    ):
+        row = PLC.Thread(
+            SID,
+            source=source,
+            originator=originator,
+            thread_source=thread_source,
+            creator_user_id=creator_user_id,
+        )
         return patch.object(PLC, "thread_row", return_value=row)
 
     def deliver(self):
@@ -515,11 +525,7 @@ class CodexWakeTests(unittest.TestCase):
     def test_factory_declares_codex_platform_and_canonical_target_pattern(self):
         platform = CW.make_platform(
             {"HOME": self.tmp.name},
-            {
-                "local_host": "mac",
-                "pinned_profile": self.profile,
-                "pinned_owner_user_id": OWNER_ID,
-            },
+            {"local_host": "mac"},
             transport=self.transport,
             metadata_lookup=lambda env, sid: self.meta,
             hostname=lambda: "example.test",
@@ -534,50 +540,41 @@ class CodexWakeTests(unittest.TestCase):
             CW.CodexDelivery(self.transport, {"HOME": self.tmp.name}).local_host, "server"
         )
 
-    def test_a_delivery_without_a_pinned_owner_is_refused(self):
-        adapter = CW.CodexDelivery(
+    def _adapter(self, pins):
+        return CW.CodexDelivery(
             self.transport,
             {"HOME": self.tmp.name},
             lambda env, sid: self.meta,
             local_host="mac",
             hostname=lambda: "example.test",
             registry_lookup=lambda env, letter: self.registry_result,
+            pins=pins,
         )
+
+    def test_a_delivery_without_a_pinned_owner_is_refused(self):
+        adapter = self._adapter(lambda env: ("ok", self.profile, ""))
         with self.with_chat():
             result = adapter(self.target, self.wake)
         self.assertEqual((result.outcome, result.code), ("refused", "no-pinned-owner"))
         self.assertEqual(self.transport.calls, [])
 
-    def test_a_delivery_whose_owner_is_not_the_fleet_owner_is_refused(self):
-        adapter = CW.CodexDelivery(
-            self.transport,
-            {"HOME": self.tmp.name},
-            lambda env, sid: self.meta,
-            local_host="mac",
-            hostname=lambda: "example.test",
-            registry_lookup=lambda env, letter: self.registry_result,
-            pinned_profile=self.profile,
-            pinned_owner_user_id=OTHER_OWNER_ID,
-        )
+    def test_a_delivery_into_a_chat_of_another_owner_is_refused(self):
+        adapter = self._adapter(lambda env: ("ok", self.profile, OTHER_OWNER_ACCOUNT))
         with self.with_chat():
             result = adapter(self.target, self.wake)
         self.assertEqual((result.outcome, result.code), ("refused", "owner-mismatch"))
         self.assertEqual(self.transport.calls, [])
 
-    def test_a_delivery_when_the_owner_cannot_be_read_is_refused(self):
-        elsewhere = tempfile.TemporaryDirectory()
-        self.addCleanup(elsewhere.cleanup)
-        adapter = CW.CodexDelivery(
-            self.transport,
-            {"HOME": elsewhere.name},
-            lambda env, sid: self.meta,
-            local_host="mac",
-            hostname=lambda: "example.test",
-            registry_lookup=lambda env, letter: self.registry_result,
-            pinned_profile=self.profile,
-            pinned_owner_user_id=OWNER_ID,
-        )
+    def test_a_delivery_when_the_pin_file_cannot_be_read_is_refused(self):
+        adapter = self._adapter(lambda env: ("unreadable", "", ""))
         with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "owner-unreadable"))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_a_delivery_when_the_chat_names_no_owner_is_refused(self):
+        adapter = self._adapter(lambda env: ("ok", self.profile, OWNER_ACCOUNT))
+        with self.with_chat(creator_user_id=""):
             result = adapter(self.target, self.wake)
         self.assertEqual((result.outcome, result.code), ("refused", "owner-unreadable"))
         self.assertEqual(self.transport.calls, [])
@@ -585,19 +582,17 @@ class CodexWakeTests(unittest.TestCase):
     def test_a_delivery_into_another_profile_is_refused(self):
         other = os.path.join(self.tmp.name, "other-codex")
         os.mkdir(other, mode=0o700)
-        adapter = CW.CodexDelivery(
-            self.transport,
-            {"HOME": self.tmp.name},
-            lambda env, sid: self.meta,
-            local_host="mac",
-            hostname=lambda: "example.test",
-            registry_lookup=lambda env, letter: self.registry_result,
-            pinned_profile=other,
-            pinned_owner_user_id=OWNER_ID,
-        )
+        adapter = self._adapter(lambda env: ("ok", other, OWNER_ACCOUNT))
         with self.with_chat():
             result = adapter(self.target, self.wake)
         self.assertEqual((result.outcome, result.code), ("refused", "profile-mismatch"))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_a_delivery_without_a_pinned_profile_is_refused(self):
+        adapter = self._adapter(lambda env: ("ok", "", OWNER_ACCOUNT))
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "profile-unpinned"))
         self.assertEqual(self.transport.calls, [])
 
     def test_the_server_sends_a_mac_chat_over_ssh(self):

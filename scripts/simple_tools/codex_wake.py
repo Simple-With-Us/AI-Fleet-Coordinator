@@ -30,11 +30,11 @@ DEFAULTS: Mapping[str, Any] = {
     "local_host": "server",
     "mac_ssh": "",
     "resume_timeout_seconds": 900,
-    # The Codex profile this seat may wake, and the owner it may wake for.  A profile is not an
-    # owner, so the owner is a user id:  the deployment pins it here, and the delivery compares
-    # it with the fleet's own owner id before it grants any authority.
+    # The Codex profile this seat may read, and the owner account it may wake for.  A profile
+    # is not an owner:  the owner is the account the target thread's own store row names as its
+    # creator, and the deployment pins that account here.
     "pinned_profile": "",
-    "pinned_owner_user_id": 0,
+    "pinned_owner_account": "",
 }
 
 #: The refusals this platform can return before anything ran, so a receipt says `delivered:
@@ -54,6 +54,8 @@ NEVER_RAN = frozenset(
         "owner-mismatch",
         "owner-unreadable",
         "profile-mismatch",
+        "profile-unpinned",
+        "profile-unreadable",
         "unknown-host",
     }
 )
@@ -173,9 +175,7 @@ class CodexDelivery:
         local_host: str = "server",
         hostname: Callable[[], str] = socket.gethostname,
         registry_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None,
-        pinned_profile: str = "",
-        pinned_owner_user_id: int = 0,
-        owner_lookup: Callable[[Mapping[str, str]], int] | None = None,
+        pins: Callable[[Mapping[str, str]], tuple[str, str, str]] | None = None,
     ):
         self.transport = transport
         self.env = env
@@ -183,9 +183,10 @@ class CodexDelivery:
         self.local_host = local_host
         self.hostname = hostname
         self.registry_lookup = registry_lookup or resolve_registry_target
-        self.pinned_profile = pinned_profile
-        self.pinned_owner_user_id = pinned_owner_user_id
-        self.owner_lookup = owner_lookup or authoritative_owner_user_id
+        # The pins the deployment wrote for this seat, read when the delivery happens:  the
+        # status of that file, the profile this seat may read, and the owner account it may
+        # wake for.
+        self.pins = pins or local_pins
 
     def __call__(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if self.local_host != "mac" or target.host != self.local_host:
@@ -209,24 +210,23 @@ class CodexDelivery:
         generation = getattr(target, "generation", 0)
         if type(generation) is not int or generation <= 0:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-generation")
-        owner = self._owner_problem()
-        if owner:
+        try:
+            thread = PLC.thread_row(self.env, sid)
+        except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
+            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+        if thread is None:
+            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+        try:
+            classification = PLC.classify(thread)
+        except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
+            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+        if thread.id != sid or classification != "chat":
+            return WR.Delivery("refused", route="codex-desktop", code="not-interactive-chat")
+        problem = self._owner_problem(thread)
+        if problem:
             # The authority to enqueue is not granted to a target whose owner does not match,
             # and it is not granted at all while no owner is pinned.
-            return WR.Delivery("refused", route="codex-desktop", code=owner)
-
-        try:
-            owner = PLC.thread_row(self.env, sid)
-        except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
-        if owner is None:
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
-        try:
-            classification = PLC.classify(owner)
-        except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
-        if owner.id != sid or classification != "chat":
-            return WR.Delivery("refused", route="codex-desktop", code="not-interactive-chat")
+            return WR.Delivery("refused", route="codex-desktop", code=problem)
         try:
             meta = self.metadata_lookup(self.env, sid)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
@@ -313,48 +313,47 @@ class CodexDelivery:
         # Unknown acknowledgments are final: the native add may have succeeded.
         return WR.Delivery("refused", route="codex-desktop", code="delivery-unknown")
 
-    def _owner_problem(self) -> str:
-        """The code that refuses the delivery because the owner does not match, or "".
+    def _owner_problem(self, thread: Any) -> str:
+        """The code that refuses the delivery because the target's owner is not the pinned one.
 
-        Rule 26:  the authority to enqueue a prompt into a Codex thread is granted only when
-        the target's owner is the pinned owner, and that is a user-id comparison.  A profile
-        is not an owner, so the deployment pins the owner user id and the delivery compares
-        it with the fleet's own owner id, the one the installed listener.toml pins;  a pin
-        that is absent, or an owner that cannot be read, or an id that differs, refuses the
-        delivery before anything is enqueued.
+        The authority to enqueue a prompt into a Codex chat is granted only when the chat's own
+        creator is the account the deployment pins:  the store's `creator_user_id` is the
+        authenticated account the thread belongs to, so a chat that belongs to anyone else is
+        never woken.  A pin that is absent refuses with `no-pinned-owner`, a pin file or a
+        creator that cannot be read refuses with `owner-unreadable`, and a creator that differs
+        refuses with `owner-mismatch`.  Nothing is enqueued before that comparison.
 
-        The profile check still runs and is its own code:  the owner's id says whose chats
-        may be woken, and the profile says which store this seat may read them from."""
-        pin = self.pinned_owner_user_id
-        if type(pin) is not int or pin <= 0:
+        The profile check still runs and is its own code:  the account says whose chats may be
+        woken, and the profile says which store this seat may read them from."""
+        status, profile, account = self.pins(self.env)
+        if status == "unreadable":
+            return "owner-unreadable"
+        if not account:
             return "no-pinned-owner"
-        try:
-            owner = self.owner_lookup(self.env)
-        except Exception:  # noqa: BLE001 - an unreadable owner is not an owner
+        creator = str(getattr(thread, "creator_user_id", "") or "").strip()
+        if not creator:
             return "owner-unreadable"
-        if type(owner) is not int or owner <= 0:
-            return "owner-unreadable"
-        if owner != pin:
+        if creator != account:
             return "owner-mismatch"
-        return self._profile_problem()
+        return self._profile_problem(profile)
 
-    def _profile_problem(self) -> str:
+    def _profile_problem(self, pin: str) -> str:
         """The code that refuses the delivery because the thread is in another profile, or "".
 
         The thread is read from the store this host has, so the store's own profile has to be
         the one the deployment pinned:  a thread in another profile is not this seat's chat,
-        whatever the owner id says."""
-        pin = str(self.pinned_profile or "").strip()
+        whatever the owner account says.  A profile that is not pinned and a store that cannot
+        be read are their own codes, so a receipt names which configuration failed."""
         if not pin:
-            return "no-pinned-owner"
+            return "profile-unpinned"
         store = PLC.store_file(self.env)
         if not store:
-            return "no-pinned-owner"
+            return "profile-unreadable"
         try:
             root = os.path.realpath(pin)
             profile = os.path.realpath(os.path.dirname(str(store)))
         except OSError:
-            return "owner-unreadable"
+            return "profile-unreadable"
         if profile == root or profile.startswith(root + os.sep):
             return ""
         return "profile-mismatch"
@@ -409,24 +408,26 @@ def make_platform(
     hostname: Callable[[], str] = socket.gethostname,
 ) -> WR.Platform:
     """This platform for a host that runs the Codex Desktop app itself (the Mac)."""
-    config = _config(settings)
     native = transport or CT.CodexChatTransport(home=env.get("HOME") or None)
-    local_host = str(config.get("local_host") or "server")
-    delivery = CodexDelivery(
-        native,
-        env,
-        metadata_lookup,
-        local_host=local_host,
-        hostname=hostname,
-        pinned_profile=str(config.get("pinned_profile") or ""),
-        pinned_owner_user_id=_owner_id(config.get("pinned_owner_user_id")),
-    )
+
+    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        # The settings are read when the delivery happens:  the router keeps them current, and
+        # a refresh takes effect without a restart.
+        config = _config(settings)
+        return CodexDelivery(
+            native,
+            env,
+            metadata_lookup,
+            local_host=str(config.get("local_host") or "server"),
+            hostname=hostname,
+        )(target, wake)
+
     return WR.Platform(
         seat=SEAT,
         platform=PLATFORM,
         mention=MENTION,
         target_re=SESSION_RE,
-        deliver=delivery,
+        deliver=deliver,
         exclude=exclude_non_interactive(env),
     )
 
@@ -450,10 +451,12 @@ def router_platform(
     refusal is terminal, so the receipt settles instead of retrying a delivery that can
     never succeed.  Any other host is refused."""
     here = dict(env)
-    config = _config(settings)
-    local_host = str(config.get("local_host") or "server")
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        # The settings are read when the delivery happens:  the router keeps them current, and
+        # a refresh takes effect without a restart.
+        config = _config(settings)
+        local_host = str(config.get("local_host") or "server")
         if target.host == "mac" and local_host != "mac":
             from . import claude_wake as CW
 
@@ -471,8 +474,6 @@ def router_platform(
             metadata_lookup,
             local_host=local_host,
             hostname=hostname,
-            pinned_profile=str(config.get("pinned_profile") or ""),
-            pinned_owner_user_id=_owner_id(config.get("pinned_owner_user_id")),
         )(target, wake)
 
     return WR.Platform(
@@ -660,72 +661,53 @@ def _request_objects(request: object) -> tuple[WR.Target | None, WR.Wake | None,
     return target, wake, ""
 
 
-def _local_settings(env: Mapping[str, str]) -> Mapping[str, Any]:
-    """The Mac's own local settings file for this seat, read for its host facts.
+#: The last read of this seat's own local settings file:  the path, its stamp and the facts.
+_LOCAL_FACTS: dict[str, tuple[int, Mapping[str, str]]] = {}
 
-    The file is read for these facts:  they are facts about this host, not settings the
-    Infisical knobs carry, and a delivery with no pin is refused anyway."""
+
+def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
+    """(`ok`|`missing`|`unreadable`, the profile this seat may read, the owner account).
+
+    The pins are host facts, so they live in the one local file the service reads,
+    `<state root>/config.json`, and this is the file the deployment writes them in.  The file
+    is read with the union of every seat's defaults, so another seat's key in it never
+    refuses it, and only this seat's two facts are taken from it.
+
+    A file that is not there is no pin (`missing`), and a file that cannot be read, or that
+    carries a value of the wrong type, is `unreadable`, so a receipt says which one it was.
+
+    The file is read once per change of that file:  a delivery attempt must not cost a parse
+    of the deployment's configuration every time."""
+    from . import wake_service as SVC
+    from . import wake_settings as WS
+
+    path = WS.local_config_path(env)
     try:
-        from . import wake_settings as WS
-
-        local = WS.read_local(state_dir(env) / "config.json", DEFAULTS)
-    except Exception:  # noqa: BLE001 - no pin means no delivery, which the caller refuses
-        return {}
-    return local if isinstance(local, Mapping) else {}
-
-
-def _pinned_profile(env: Mapping[str, str]) -> str:
-    """The profile this seat may wake, as the Mac's own local settings file names it."""
-    value = _local_settings(env).get("pinned_profile")
-    return str(value or "")
-
-
-def _pinned_owner_user_id(env: Mapping[str, str]) -> int:
-    """The owner user id this seat may wake for, as the Mac's own local settings file names it.
-
-    A production user id is private inventory, so none is committed:  the host pins it and
-    the runtime reads it."""
-    value = _local_settings(env).get("pinned_owner_user_id")
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return 0
-    return value
-
-
-def _owner_id(value: object) -> int:
-    """A user id from a setting, or 0 when the setting is not one.
-
-    A setting that is not a positive integer is no pin at all, so the delivery is refused
-    rather than granted to an id nobody can check."""
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return 0
-    return value
-
-
-def authoritative_owner_user_id(env: Mapping[str, str]) -> int:
-    """The fleet's owner user id, as the installed listener.toml pins it, or 0.
-
-    The owner is a person, not a seat:  `daemon init` pins the realm's one human owner in
-    the installed listener.toml, and every owner check in the fleet reads that pin.  The
-    registry's session row carries no owner column, so the installed config is the identity
-    source here.  0 means the owner is not pinned or cannot be read, and the caller refuses
-    the delivery rather than grant authority it cannot prove."""
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        _LOCAL_FACTS.pop(str(path), None)
+        return "missing", "", ""
+    except OSError:
+        return "unreadable", "", ""
+    cached = _LOCAL_FACTS.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return "ok", cached[1]["profile"], cached[1]["owner_account"]
     try:
-        from . import config as C
-        from . import live as L
-    except Exception:  # noqa: BLE001 - no config module, no owner, no delivery
-        return 0
-    try:
-        root = str(
-            env.get(L.ENV_STATE_DIR)
-            or os.path.join(str(env.get("HOME") or os.path.expanduser("~")), ".simple-tools")
-        )
-        cfg = C.load(root, L.config_path(root, env))
-    except Exception:  # noqa: BLE001 - an unreadable owner is not an owner
-        return 0
-    owner = getattr(cfg, "owner_user_id", 0)
-    if isinstance(owner, bool) or not isinstance(owner, int) or owner <= 0:
-        return 0
-    return owner
+        local = WS.read_local(path, SVC.file_defaults())
+    except FileNotFoundError:
+        return "missing", "", ""
+    except (Exception, SystemExit):
+        # A broken file is a configuration failure, not a missing pin:  the receipt says so.
+        return "unreadable", "", ""
+    if not isinstance(local, Mapping):
+        return "unreadable", "", ""
+    profile = local.get("pinned_profile", "")
+    account = local.get("pinned_owner_account", "")
+    if not isinstance(profile, str) or not isinstance(account, str):
+        return "unreadable", "", ""
+    facts = {"profile": profile.strip(), "owner_account": account.strip()}
+    _LOCAL_FACTS[str(path)] = (stamp, facts)
+    return "ok", facts["profile"], facts["owner_account"]
 
 
 def deliver_request(
@@ -758,8 +740,6 @@ def deliver_request(
                 local_host="mac",
                 hostname=hostname,
                 registry_lookup=registry_lookup,
-                pinned_profile=_pinned_profile(env),
-                pinned_owner_user_id=_pinned_owner_user_id(env),
             )(target, wake)
     return {**correlation, "delivery": asdict(delivery)}
 
