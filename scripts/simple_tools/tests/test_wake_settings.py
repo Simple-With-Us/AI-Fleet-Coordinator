@@ -756,7 +756,9 @@ class Wiring(Settings):
         must not cause settings-refused for the seats that are ready on this host."""
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY})
         config_dir = self.home / ".local" / "state" / "wake-router"
-        config_dir.mkdir(parents=True, exist_ok=True)
+        if config_dir.is_symlink():
+            raise ValueError(f"refusing symlink: {config_dir}")
+        config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         (config_dir / "config.json").write_text(
             json.dumps({"zcode_bin": "/usr/local/bin/zcode", "muse_bin": "/usr/local/bin/muse"}),
             encoding="utf-8",
