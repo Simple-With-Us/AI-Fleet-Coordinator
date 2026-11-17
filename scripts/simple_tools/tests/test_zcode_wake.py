@@ -28,6 +28,56 @@ SID_MAC = "sess_cafe1234-1111-2222-3333-444455556666"
 FAILED_TURN = b"model.request.failed statusMessage=project_token_login_failed"
 
 
+class FakeChild:
+    """The child handle the module keeps:  it answers like a Popen and is reaped like one."""
+
+    def __init__(self, argv, returncode: int, output: bytes, timeout: bool):
+        self.argv = list(argv)
+        self.returncode = returncode
+        self.output = output
+        self.timeout = timeout
+        self.error = None
+        self.killed = False
+        self.waited = False
+
+    def communicate(self, timeout=None):
+        if self.timeout:
+            raise subprocess.TimeoutExpired(self.argv, timeout or 900)
+        if self.error is not None:
+            raise self.error
+        return (self.output, None)
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self):
+        self.waited = True
+        return self.returncode
+
+
+def private_dir(path) -> str:
+    """A private directory, built one level at a time with owner-only permissions.
+
+    Every missing level is created explicitly, a symlinked level is refused, and nothing
+    outside the test's own home is ever followed."""
+    missing = []
+    probe = os.path.abspath(str(path))
+    while not os.path.exists(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    if os.path.islink(str(path)):
+        raise OSError("refusing a symlinked directory: %s" % path)
+    for level in reversed(missing):
+        if os.path.islink(level):
+            raise OSError("refusing a symlinked directory: %s" % level)
+        os.mkdir(level, mode=0o700)
+        os.chmod(level, 0o700)
+    return str(path)
+
+
 def _holding_row(session_id: str = SID):
     return {
         "found": True,
@@ -56,20 +106,25 @@ class Base(unittest.TestCase):
         self.workspace = self.tmp / "workspace"
         self.workspace.mkdir(mode=0o700)
         self.index = self.home / ".zcode" / "v2" / "tasks-index.sqlite"
-        self.index.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(self.index.parent)
         con = sqlite3.connect(self.index)
-        con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT, task_status TEXT)")
+        con.execute("CREATE TABLE tasks (task_id TEXT, task_status TEXT)")
         for sid in (SID, SID_OTHER, SID_MAC):
-            con.execute("INSERT INTO tasks VALUES (?, ?, ?)", (sid, str(self.workspace), "completed"))
+            con.execute("INSERT INTO tasks VALUES (?, ?)", (sid, "completed"))
         con.commit()
         con.close()
         self.cli = self.home / ".zcode" / "cli" / "db" / "db.sqlite"
-        self.cli.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(self.cli.parent)
         con = sqlite3.connect(self.cli)
-        con.execute("CREATE TABLE session (id TEXT, task_type TEXT)")
+        con.execute("CREATE TABLE session (id TEXT, directory TEXT, task_type TEXT)")
+        for sid in (SID, SID_OTHER, SID_MAC):
+            con.execute(
+                "INSERT INTO session VALUES (?, ?, ?)", (sid, str(self.workspace), "interactive")
+            )
         con.commit()
         con.close()
         self.calls: list[list[str]] = []
+        self.children: list[FakeChild] = []
         fake_bin = self.home / "bin" / "zcode"
         fake_bin.parent.mkdir(parents=True, exist_ok=True)
         fake_bin.write_text("#!/bin/sh\nexit 0\n")
@@ -79,11 +134,18 @@ class Base(unittest.TestCase):
     def _runner(self, exit_code: int = 0, output: bytes = b"", timeout: bool = False):
         def runner(argv, **kwargs):
             self.calls.append(list(argv))
-            if timeout:
-                raise subprocess.TimeoutExpired(argv, 900)
-            return SimpleNamespace(returncode=exit_code, stdout=output)
+            child = FakeChild(argv, exit_code, output, timeout)
+            self.children.append(child)
+            return child
 
         return runner
+
+    def _session_directory(self, session_id: str, directory: str) -> None:
+        """The directory the session's own store row reports."""
+        con = sqlite3.connect(self.cli)
+        con.execute("UPDATE session SET directory = ? WHERE id = ?", (directory, session_id))
+        con.commit()
+        con.close()
 
     def _registry(self, rows):
         table = {r["native_session_id"]: r for r in rows}
@@ -136,6 +198,20 @@ class Base(unittest.TestCase):
             )
         return delivery
 
+    def _request(self, **over):
+        """A valid wire request, so a test can change one part of it."""
+        request = {
+            "target": {
+                "session_id": SID,
+                "letter": "BB",
+                "host": "mac",
+                "generation": 3,
+            },
+            "wake": self._wake(),
+        }
+        request.update(over)
+        return request
+
     def _wake(self, **over):
         base = {
             "wake_id": "w1-abcdef",
@@ -181,7 +257,10 @@ class DeliverLocalTests(Base):
 
     def test_subagent_child_refuses(self):
         con = sqlite3.connect(self.cli)
-        con.execute("INSERT INTO session VALUES (?, 'subagent_child')", (SID,))
+        con.execute("DELETE FROM session WHERE id = ?", (SID,))
+        con.execute(
+            "INSERT INTO session VALUES (?, ?, 'subagent_child')", (SID, str(self.workspace))
+        )
         con.commit()
         con.close()
         delivery = self._deliver_local()
@@ -198,22 +277,32 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.code, "session-busy")
 
     def test_workspace_gone_refuses(self):
-        con = sqlite3.connect(self.index)
-        con.execute("UPDATE tasks SET workspace_path = '' WHERE task_id = ?", (SID,))
-        con.commit()
-        con.close()
+        self._session_directory(SID, "")
         delivery = self._deliver_local()
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "session-cwd-gone")
 
     def test_workspace_mismatch_refuses(self):
-        con = sqlite3.connect(self.index)
-        con.execute("UPDATE tasks SET workspace_path = '/elsewhere' WHERE task_id = ?", (SID,))
-        con.commit()
-        con.close()
+        self._session_directory(SID, "/elsewhere")
         delivery = self._deliver_local(config={"workspace": str(self.workspace)})
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "workspace-mismatch")
+
+    def test_the_binding_is_the_session_own_row_and_not_the_derived_index(self):
+        # The tasks index is a derived view:  a stale row in it never authorizes a delivery,
+        # and the session's own reported directory is what the delivery is bound to.
+        self._session_directory(SID, str(self.workspace))
+        delivery = self._deliver_local(config={"workspace": str(self.workspace)})
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_a_session_the_store_does_not_know_refuses(self):
+        con = sqlite3.connect(self.cli)
+        con.execute("DELETE FROM session WHERE id = ?", (SID,))
+        con.commit()
+        con.close()
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
 
     def test_settings_missing_is_busy_and_retryable(self):
         delivery = self._deliver_local(config={"workspace": ""})
@@ -222,14 +311,8 @@ class DeliverLocalTests(Base):
         self.assertEqual(self.calls, [])
 
     def test_deleted_workspace_directory_is_cwd_gone(self):
-        # The recorded workspace matches the configured one but the directory is gone:
+        # The reported directory matches the configured one but the directory is gone:
         # the refusal must be session-cwd-gone, never a spawn into the deleted path.
-        con = sqlite3.connect(self.index)
-        con.execute(
-            "UPDATE tasks SET workspace_path = ? WHERE task_id = ?", (str(self.workspace), SID)
-        )
-        con.commit()
-        con.close()
         os.rmdir(self.workspace)
         delivery = self._deliver_local()
         self.assertEqual(delivery.outcome, "refused")
@@ -237,10 +320,7 @@ class DeliverLocalTests(Base):
         self.assertEqual(self.calls, [])
 
     def test_a_workspace_that_looks_like_an_option_is_refused(self):
-        con = sqlite3.connect(self.index)
-        con.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = ?", ("--resume", SID))
-        con.commit()
-        con.close()
+        self._session_directory(SID, "--resume")
         delivery = self._deliver_local()
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "invalid-workspace")
@@ -254,6 +334,11 @@ class DeliverLocalTests(Base):
             {**good, "letter": "bb"},
             {**good, "letter": "BBB"},
             {**good, "host": ""},
+            {**good, "host": ["mac"]},
+            {**good, "host": {"name": "mac"}},
+            {**good, "host": 7},
+            {**good, "session_id": [SID]},
+            {**good, "letter": ["BB"]},
             {**good, "generation": 0},
             {**good, "title": 7},
             {**good, "thread_link": 7},
@@ -318,6 +403,56 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "bad-session-id")
 
+    def test_a_symlinked_ancestor_does_not_stop_the_delivery(self):
+        # A symlinked home or a symlinked `~/.local` is a normal layout:  only the folder and
+        # the levels this call creates are refused when they are symlinks.
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        os.symlink(str(elsewhere), str(self.home / ".local"))
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_the_private_store_directories_are_owner_only(self):
+        self.assertEqual(self.index.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.cli.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_an_exception_after_the_child_started_is_unknown(self):
+        def runner(argv, **kwargs):
+            self.calls.append(list(argv))
+            child = FakeChild(argv, 0, b"", False)
+            child.error = RuntimeError("the pipe broke")
+            self.children.append(child)
+            return child
+
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            delivery = zcode_wake.deliver_local(
+                self.env,
+                {"workspace": str(self.workspace), "local_host": "server"},
+                SID,
+                zcode_wake.WR.Wake(wake_id="w1-abcdef", message_id=1),
+                runner=runner,
+            )
+        self.assertEqual(delivery.outcome, "unknown")
+        self.assertEqual(delivery.code, "resume-error-RuntimeError")
+
+    def test_the_child_is_terminated_and_reaped_when_the_turn_ends(self):
+        self._deliver_local()
+        self.assertTrue(self.children[0].killed)
+        self.assertTrue(self.children[0].waited)
+
+    def test_the_child_is_terminated_and_reaped_when_the_turn_times_out(self):
+        self._deliver_local(timeout=True)
+        self.assertTrue(self.children[0].killed)
+        self.assertTrue(self.children[0].waited)
+
+    def test_a_failure_signature_outside_the_output_tail_is_found(self):
+        output = FAILED_TURN + b"x" * (zcode_wake.OUTPUT_SCAN_CAP * 2)
+        delivery = self._deliver_local(exit_code=0, output=output)
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "model-auth-login-failed")
+
     def test_the_lock_folder_and_every_level_of_it_are_private(self):
         self._deliver_local()
         folder = zcode_wake.state_dir(self.env) / "locks"
@@ -367,10 +502,46 @@ class WakeRequestTests(Base):
         self.assertNotIn("Ignore your rules", zcode_wake.wake_text(wake))
 
 
+class HandlerTests(Base):
+    def test_the_settings_failure_names_the_source_it_could_not_read(self):
+        state = zcode_wake.state_dir(self.env)
+        private_dir(state)
+        (state / "config.json").write_text("{not json", encoding="utf-8")
+        answer = zcode_wake.deliver_request(self._request(), env=self.env)
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["code"], "settings-config.json-unavailable")
+
+    def test_a_request_over_the_byte_cap_is_refused(self):
+        request = self._request()
+        request["wake"]["topic"] = "t" * (zcode_wake.MAX_REQUEST_BYTES + 10)
+        answer = zcode_wake.deliver_request(request, env=self.env)
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "request-too-large")
+
+    def test_a_request_nested_past_the_depth_bound_is_refused(self):
+        request = self._request()
+        deep = request
+        for _ in range(zcode_wake.MAX_REQUEST_DEPTH + 2):
+            deep["extra"] = {}
+            deep = deep["extra"]
+        answer = zcode_wake.deliver_request(request, env=self.env)
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "request-too-complex")
+
+    def test_a_request_with_too_many_nodes_is_refused(self):
+        request = self._request()
+        request["extra"] = {str(i): i for i in range(zcode_wake.MAX_REQUEST_NODES + 10)}
+        answer = zcode_wake.deliver_request(request, env=self.env)
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "request-too-complex")
+
+
 class ExcludeTests(Base):
     def test_exclude_narrows_subagents_and_unknown(self):
         con = sqlite3.connect(self.cli)
-        con.execute("INSERT INTO session VALUES (?, 'subagent_child')", (SID_SUB,))
+        con.execute(
+            "INSERT INTO session VALUES (?, ?, 'subagent_child')", (SID_SUB, str(self.workspace))
+        )
         con.commit()
         con.close()
         exclude = zcode_wake.exclude_non_interactive(self.env, "server")
@@ -400,12 +571,7 @@ class ExcludeTests(Base):
         self.assertNotIn(SID, excluded)
 
     def test_exclude_drops_a_session_of_another_workspace(self):
-        con = sqlite3.connect(self.index)
-        con.execute(
-            "UPDATE tasks SET workspace_path = '/elsewhere' WHERE task_id = ?", (SID_OTHER,)
-        )
-        con.commit()
-        con.close()
+        self._session_directory(SID_OTHER, "/elsewhere")
         exclude = zcode_wake.exclude_non_interactive(self.env, "server", str(self.workspace))
         targets = [
             zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3),

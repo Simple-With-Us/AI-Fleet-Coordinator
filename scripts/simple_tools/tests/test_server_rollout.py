@@ -858,19 +858,50 @@ class SampleRoutingTests(unittest.TestCase):
         return seat in self.served
 
     def test_a_seat_routed_at_the_router_uses_the_router_binding(self) -> None:
-        """Every seat the sample routes at the router is bound to the router's own key.
+        """Every seat the sample routes at the router is bound to the router's own key and front.
 
         A seat that has a platform module is not required to be routed at the router yet:  a
         seat moves to the router only after its own path is deployed and verified live, and
         until then it keeps the binding it has (its own bridge, or its inbox).  So the sample
-        is checked for the shape of a routed seat, not for the whole table:  what it must
-        never show is a seat that posts to the router with anything but the router's key."""
+        is checked for the shape of a routed seat, not for the whole table.
+
+        The sample names variables and not URLs, so a seat is recognised as being at the
+        router by the bearer its routine names.  The whole binding is checked and not the
+        wake kind alone:  a seat at the router that names another seat's front, or a key, a
+        header or a method the router does not check, is a seat whose wake the router
+        refuses, so the sample must never show one."""
         for seat, seat_cfg in sorted(self.cfg.seats.items()):
             routine = getattr(seat_cfg, "routine", None)
             if routine is None or routine.key_env != "WAKE_ROUTER_KEY":
                 continue
             self.assertEqual(seat_cfg.wake, "http", seat)
-            self.assertIsNotNone(routine, seat)
+            self.assertEqual(routine.auth, "bearer", seat)
+            self.assertEqual(routine.header, "Authorization", seat)
+            self.assertEqual(routine.method, "POST", seat)
+            self.assertEqual(routine.url_env, "%s_ROUTINE_URL" % seat, seat)
+            self.assertTrue(self._installed(seat), "%s is routed at the router with no module" % seat)
+
+    def test_the_router_s_bearer_is_named_in_no_other_role(self) -> None:
+        """The router's bearer is one name, and it is only ever a routine's key.
+
+        The seat the sample routes at the router is recognised by the bearer it names, so a
+        seat that posts at the router's front with anything but the router's bearer is a seat
+        the router refuses.  The bearer may be named as a routine key with bearer auth and in
+        no other role, and a seat that puts it anywhere else sends the one shared credential
+        off to somewhere it does not belong."""
+        for seat, seat_cfg in sorted(self.cfg.seats.items()):
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is None:
+                continue
+            for name in (
+                getattr(seat_cfg, "email_env", ""),
+                getattr(seat_cfg, "key_env", ""),
+                getattr(seat_cfg, "site_env", ""),
+                routine.url_env,
+            ):
+                self.assertNotEqual(name, "WAKE_ROUTER_KEY", seat)
+            if routine.key_env == "WAKE_ROUTER_KEY":
+                self.assertEqual(routine.auth, "bearer", seat)
 
     def test_no_seat_without_a_module_is_routed_at_the_router(self) -> None:
         for seat, seat_cfg in sorted(self.cfg.seats.items()):

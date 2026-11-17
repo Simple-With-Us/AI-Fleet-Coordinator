@@ -2,9 +2,9 @@
 
 Owner request, Sat, Nov 7, 2026 (OPS-1048):  the Operator should find the moments ZCode needs
 waking (a message tagged the seat), and reach the specific ZCode thread that belongs to it, on
-the Mac and on the server.  The session letters half of that request is PR #1454
+the Mac and on the server.  The session letters half of that request is PR #1454
 (`docs/protocols/` has no lettering text here;  `scripts/simple_tools/README.md`, Platform
-Session Letters, does).  This document is the wake half:  what exists, what is wired, and the
+Session Letters, does).  This document is the wake half:  what exists, what is wired, and the
 one decision still open.
 
 ## The chain, end to end
@@ -21,9 +21,9 @@ one decision still open.
                     zcode --resume <session> -p "<[ZC·wake] ... thread link ...>"
 
 The delivered prompt carries metadata only (channel, topic, the Zulip link, the wake id):  a
-message body is never quoted into a prompt, the same rule the wake alerter holds.  The woken
+message body is never quoted into a prompt, the same rule the wake alerter holds.  The woken
 agent reads its own inbox with `simple-chat inbox` and answers in the thread, which is the
-seat's normal wake routine.  Wakes the seat's budget holds back, and messages that arrive while
+seat's normal wake routine.  Wakes the seat's budget holds back, and messages that arrive while
 no delivery ran, stay in the inbox;  nothing is lost by a bridge that is down, and a wake id is
 marked seen only after the POST is answered.
 
@@ -43,16 +43,22 @@ before the replacement has answered a real wake.
 
 The cutover, when it is done, is these four steps, in this order.
 
-1.  Mint `ZC_WAKE_ROUTER_URL` in AFC prod `/zulip`:  the router's front URL for this seat,
-    `https://<server tailnet host>:8795/wake/ZC`.  It is a new name on purpose:  `ZC_ROUTINE_URL`
-    still names the legacy bridge, and one name cannot be the router's front and the bridge at
-    the same time.
+1.  Free the seat's own convention for the router.  A seat's `routine.url_env` is always
+    `<SEAT>_ROUTINE_URL`, and the sample's partition check holds every seat that is routed at
+    the router to that name, so the router's front for this seat is `ZC_ROUTINE_URL` and the
+    legacy bridge moves to `ZC_BRIDGE_ROUTINE_URL`.  The bridge's URL value does not change,
+    only the name it is read under:  mint `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` with the
+    bridge's URL, point the live `[seat.ZC]` block at it while the bridge is still the seat's
+    path, and mint `ZC_ROUTINE_URL` with the router's front URL,
+    `https://<server tailnet host>:8795/wake/ZC`.  One name never serves the router's front and
+    the bridge at the same time, and the seat keeps the one convention every other seat
+    follows.
 2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/ZC` answers `healthy`
     with `delivery` on, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
 3.  Change the live listener's `[seat.ZC]` block to
     `wake = "http"` with
-    `routine = { url_env = "ZC_WAKE_ROUTER_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
+    `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
     The bearer is now the router's own key, so the key the bridge used is no longer accepted by
     the router, and the URL names the front.
 4.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt
@@ -62,17 +68,20 @@ The cutover, when it is done, is these four steps, in this order.
 Only after step 4 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
-receipts.  Until then it stays as it is, with `ZC_ROUTINE_URL` and `ZC_ROUTINE_KEY` in Fleet-OPS
-`/zulip`.
+receipts.  Until then it stays as it is, with `ZC_BRIDGE_ROUTINE_URL` and `ZC_ROUTINE_KEY` in
+Fleet-OPS `/zulip`.
 
 ## What the module guarantees
 
 The delivery contract is the one the sibling platforms use, with the parts that are ZCode's own
 made explicit.
 
-- The workspace is the binding.  A session whose recorded workspace is not the workspace the
-  deployment names is never picked, and a delivery into another project's directory is refused
-  (`workspace-mismatch`).
+- The session's own store row is the binding.  The row carries the exact session id and the
+  directory that session reports about itself, and both are compared with the requested
+  session and the workspace the deployment names before anything runs.  The tasks index is a
+  derived view over the same sessions, so it never authorizes a delivery:  a session whose
+  reported directory is not the workspace the deployment names is never picked, and a
+  delivery into another project's directory is refused (`workspace-mismatch`).
 - The externally authored fields are checked before they reach a prompt:  a field of the wrong
   type is refused, a field that carries credential material is refused by name
   (`secret-field`, and the value is never echoed), and the note in front of the data is only the
@@ -85,15 +94,21 @@ made explicit.
   `project_token_login_failed`) is `failed` even when the process exits 0, so it is never
   recorded as a delivery.  An exit 0 with nothing to show is `sent` with an unconfirmed
   acknowledgement, and the receipt never claims a confirmed delivery for it.
+- The turn never outlives its delivery.  The module keeps the child handle and stops and
+  reaps it on every path, including a timeout and an interruption, so a turn can never keep
+  running behind a session lock the delivery already holds.
+- The request is bounded before it is read.  The raw bytes on the wire, how deep the value may
+  nest and how many nodes it may carry are all capped, and a request over any of them is
+  refused before a field is used.
 
 ## What is built and tested (PR: OPS-1048)
 
 - `scripts/zc-wake-bridge`  the receiver, the dedupe, the target resolution and the delivery
-  executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only
+  executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only
   secret), `config.json` (the delivery switch and command template), `seen.json`,
-  `delivery.jsonl`.  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
+  `delivery.jsonl`.  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
   hand, the same code the POST path runs.
-- `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
+- `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
   registry env file (`~/.local/bin/operator-registry-env`) itself (the letter hooks no longer read it:  they get the same
   settings from the host's `~/.local/bin/platform-letter` wrapper, which sources an env script in shell), binds the
   address `/etc/zc-wake-bridge.env` names (the tailnet IP;  loopback without one), and runs the
@@ -106,13 +121,13 @@ made explicit.
 
 ## The one open decision:  the headless provider
 
-Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  On this server the
+Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  On this server the
 headless run takes its model from the desktop's provider order (`~/.zcode/v2/provider_config.json`),
 whose first entry (MiniMax) holds a dead key:  every headless run answers 401 invalid api key
 today, verified live on Nov 7.  The config therefore ships with `delivery_enabled` false, and
 every accepted wake is logged undelivered (`reason: delivery-disabled`) until the owner names
 the provider the seat's headless runs should use  the Z.AI account the seat already runs on, or
-a working key for the MiniMax entry.  Flipping it is one config file:
+a working key for the MiniMax entry.  Flipping it is one config file:
 
     ~/.local/state/zc-wake/config.json   { "delivery_enabled": true, ... }
 
@@ -120,10 +135,10 @@ a working key for the MiniMax entry.  Flipping it is one config file:
 
 1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
     `fleet-secrets` writes it;  never through chat text, never printed.
-2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
+2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  `[seat.ZC]` gains `wake = "http"` and the routine line reading
-    `url_env = "ZC_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
+    `url_env = "ZC_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
     Fleet-OPS `/zulip` (its secondary read, `LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC
     `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a `daemon reload` does not.
     `ZC_ROUTINE_URL` is the bridge's tailnet URL, `http://<jay-server tailnet ip>:8791/wake/ZC`.4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),

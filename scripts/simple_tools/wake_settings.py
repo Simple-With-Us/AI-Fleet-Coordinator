@@ -130,6 +130,7 @@ HOST_FACTS = (
     "muse_bin",
     "zcode_bin",
     "pinned_profile",
+    "pinned_owner_user_id",
 )
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"

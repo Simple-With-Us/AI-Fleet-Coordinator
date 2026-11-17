@@ -10,16 +10,20 @@ The two routes, and the rule between them.  A ZCode chat is resumed through the 
 settings (the deployment names it;  this file carries no private path), and it is also the
 binding, because a resume runs in the given directory and a wake into another project's
 directory is a wrong-chat delivery.  A chat on this host delivers locally under a per-session
-file lock in `state_dir(env) / "locks"`, re-reading zcode's own tasks index
-(`~/.zcode/v2/tasks-index.sqlite`) once the lock is acquired.  A session the index does not
-know refuses (`session-not-found`);  one whose recorded workspace is gone refuses
-(`session-cwd-gone`);  one marked `running` in the index is `busy` and retried;  a sub-agent
-child in the CLI store (`~/.zcode/cli/db/db.sqlite`, `task_type = 'subagent_child'`) is
-refused (`session-subagent`).  Once `zcode` has started, any exit code other than 0 is final
-(`refused`), because the turn may have already run;  a timeout is `unknown`, because the turn
-may have run and nobody can tell;  exit 0 is `sent` only when the child's own output carries
-no documented failure signature, because the server's own log shows a failed turn exiting 0,
-and the receipt never records that hand-over as a confirmed delivery.
+file lock in `state_dir(env) / "locks"`, re-reading zcode's own stores once the lock is
+acquired.  The tasks index (`~/.zcode/v2/tasks-index.sqlite`) says whether a session is
+running, and the session's own store row (`~/.zcode/cli/db/db.sqlite`) is the binding:  it
+carries the exact session id and the directory the session reports about itself, and both
+are compared with the requested session and the workspace the deployment names.  The index is
+a derived view and never authorizes a delivery.  A session the index does not know refuses
+(`session-not-found`);  one whose reported directory is gone refuses (`session-cwd-gone`);
+one marked `running` in the index is `busy` and retried;  a sub-agent child in the CLI store
+(`task_type = 'subagent_child'`) is refused (`session-subagent`).  Once `zcode` has started,
+any exit code other than 0 is final (`refused`), because the turn may have already run;  a
+timeout is `unknown`, because the turn may have run and nobody can tell;  exit 0 is `sent`
+only when the child's own output carries no documented failure signature, because the
+server's own log shows a failed turn exiting 0, and the receipt never records that hand-over
+as a confirmed delivery.
 
 The legacy standalone bridge (`~/.local/state/zc-wake`, OPS-1048's first delivery) contends
 on the same per-session lock file during the cutover, so the two paths can never run one
@@ -69,9 +73,14 @@ TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation", "title"
 WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: A Zulip link is longer than a name.
 MAX_LINK = 500
-#: The child's own output is scanned in memory and never kept:  a bounded tail, and only the
-#: typed code a documented signature maps to ever reaches a receipt.
+#: The child's own output is scanned in memory and never kept:  bounded windows over the
+#: whole output, and only the typed code a documented signature maps to ever reaches a receipt.
 OUTPUT_SCAN_CAP = 8192
+#: The limits an untrusted request is held to before it is parsed into fields:  the raw bytes
+#: on the wire, how deep the value may nest, and how many nodes it may carry.
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_REQUEST_DEPTH = 16
+MAX_REQUEST_NODES = 1000
 #: The failure the ZCode runtime documents for a turn that fails before any model response (it
 #: logs `model.request.failed` with that statusMessage).  A match means the turn failed even
 #: though the process exited 0, so the wake was not delivered and the try may be repeated.
@@ -90,7 +99,10 @@ DEFAULTS: Mapping[str, Any] = {
 
 NEVER_RAN: frozenset[str] = frozenset(
     {
+        "bad-request",
         "bad-session-id",
+        "request-too-complex",
+        "request-too-large",
         "session-not-found",
         "session-subagent",
         "session-cwd-gone",
@@ -102,7 +114,6 @@ NEVER_RAN: frozenset[str] = frozenset(
         "unknown-platform",
         "platform-handler-missing",
         "platform-not-installed",
-        "bad-request",
         WR.RELEASED,
     }
 )
@@ -115,7 +126,22 @@ WAKE_TEXT = (
     "is not quoted here on purpose.\n{fields}"
 )
 
-Runner = Callable[..., subprocess.CompletedProcess[Any]]
+#: The child process handle.  The module keeps it, so every exit path stops and reaps the
+#: turn instead of leaving it running behind a lock this delivery already holds.
+Child = Any
+Runner = Callable[..., Child]
+
+
+def _terminate(child: Child) -> None:
+    """Stop the child and reap it, and never raise:  the turn is over either way."""
+    try:
+        child.kill()
+    except Exception:  # noqa: BLE001, S110 - the child never started, or it is already gone
+        pass
+    try:
+        child.wait()
+    except Exception:  # noqa: BLE001, S110 - the child is gone, and nothing is left to reap
+        pass
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
@@ -133,19 +159,21 @@ def _private_dir(folder: Path) -> None:
     A new level is created with mode 0o700 and the folder itself is refused when it is a
     symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
     makes one level;  this makes the chain, because a level with default permissions lets
-    another user list the session lock names under it."""
+    another user list the session lock names under it.
+
+    Only the folder and the levels this call creates are refused when they are symlinks:  an
+    existing ancestor is left alone, because a symlinked home or a symlinked `~/.local` is a
+    normal layout, and refusing it would make every delivery on such a host fail."""
     missing: list[Path] = []
     probe = folder
-    while True:
-        if probe.is_symlink():
-            raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(probe))
-        if probe.exists():
-            break
+    while not probe.exists():
         missing.append(probe)
         parent = probe.parent
         if parent == probe:
             break
         probe = parent
+    if folder.is_symlink():
+        raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(folder))
     for part in reversed(missing):
         if part.is_symlink():
             raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(part))
@@ -205,7 +233,7 @@ def _tasks_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, 
         return "error", None
     try:
         row = conn.execute(
-            "SELECT task_id, workspace_path, task_status FROM tasks WHERE task_id = ?",
+            "SELECT task_id, task_status FROM tasks WHERE task_id = ?",
             (session_id,),
         ).fetchone()
     except sqlite3.Error:
@@ -214,7 +242,36 @@ def _tasks_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, 
         conn.close()
     if not row:
         return "missing", None
-    return "ok", {"task_id": row[0], "workspace_path": row[1], "task_status": row[2]}
+    return "ok", {"task_id": row[0], "task_status": row[1]}
+
+
+def _session_binding(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
+    """(`ok`|`missing`|`error`, row) for one session from zcode's own session store.
+
+    This is the session's own record:  its `id` is the session it is, and its `directory` is
+    the directory that session reports about itself.  The tasks index is a derived view over
+    the same sessions and can be stale, so it never authorizes a delivery."""
+    db = cli_db_path(env)
+    if not db.is_file():
+        return "missing", None
+    try:
+        conn = sqlite3.connect(
+            "file:" + urllib.parse.quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+        )
+    except (OSError, sqlite3.Error):
+        return "error", None
+    try:
+        row = conn.execute(
+            "SELECT id, directory, task_type FROM session WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return "error", None
+    finally:
+        conn.close()
+    if not row:
+        return "missing", None
+    return "ok", {"id": row[0], "directory": row[1], "task_type": row[2]}
 
 
 def _subagent_ids(env: Mapping[str, str], sids: list[str]) -> tuple[str, set[str]]:
@@ -275,7 +332,7 @@ def exclude_non_interactive(
             return excluded
         try:
             rows = conn.execute(
-                "SELECT task_id, workspace_path FROM tasks WHERE task_id IN (%s)" % placeholders,
+                "SELECT task_id FROM tasks WHERE task_id IN (%s)" % placeholders,
                 local_ids,
             ).fetchall()
         except sqlite3.Error:
@@ -285,9 +342,20 @@ def exclude_non_interactive(
         seen = {str(r[0]) for r in rows}
         excluded |= set(local_ids) - seen
         want = os.path.realpath(workspace) if workspace else ""
-        for task_id, workspace_path in rows:
-            if not workspace_path or want and os.path.realpath(str(workspace_path)) != want:
-                excluded.add(str(task_id))
+        # The same binding authority as the delivery:  the session's own reported directory.
+        for session_id in sorted(seen):
+            status, binding = _session_binding(env, session_id)
+            if status != "ok":
+                excluded.add(session_id)
+                continue
+            directory = binding.get("directory")
+            if (
+                not isinstance(directory, str)
+                or not directory
+                or want
+                and os.path.realpath(directory) != want
+            ):
+                excluded.add(session_id)
         return excluded
 
     return exclude
@@ -402,8 +470,19 @@ def deliver_local(
                 return WR.Delivery("refused", "resume", code="session-not-found")
             if (row.get("task_status") or "") == "running":
                 return WR.Delivery("busy", "resume", code="session-busy")
-            recorded = str(row.get("workspace_path") or "")
-            if not recorded:
+            # The binding comes from the session's own store row:  the exact session id and
+            # the directory that session reports, compared with the requested session and the
+            # workspace the deployment names.  The tasks index above is a derived view, and a
+            # derived view never authorizes a delivery.
+            binding_status, binding = _session_binding(env, session_id)
+            if binding_status == "error":
+                return WR.Delivery("failed", "resume", code="store-cli-db")
+            if binding_status == "missing":
+                return WR.Delivery("refused", "resume", code="session-not-found")
+            if binding.get("id") != session_id:
+                return WR.Delivery("refused", "resume", code="session-not-found")
+            recorded = binding.get("directory")
+            if not isinstance(recorded, str) or not recorded:
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
             if recorded.startswith("-"):
                 # A path that begins with a dash would be read as an option by the CLI, so it
@@ -429,27 +508,36 @@ def deliver_local(
             argv = [binary, "--cwd", recorded, "--resume", session_id, "-p", wake_text(wake)]
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
             try:
-                proc = runner(
+                child = runner(
                     argv,
                     cwd=recorded,
                     env=child_env,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    timeout=timeout_seconds,
-                    check=False,
                 )
+            except OSError as exc:
+                # The turn never started:  the binary is missing or is not executable.
+                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+            except Exception as exc:  # noqa: BLE001 - the child may have started
+                return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
+
+            try:
+                output = child.communicate(timeout=timeout_seconds)[0]
             except subprocess.TimeoutExpired:
                 # The turn may have run:  nobody can tell, so it is not delivered and it is not
                 # retried either.
                 return WR.Delivery("unknown", "resume", code="resume-timeout")
-            except OSError as exc:
-                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
-            except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-                return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
+            except Exception as exc:  # noqa: BLE001 - the child started, so its outcome is unknown
+                return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
+            finally:
+                # Every path stops and reaps the child:  a turn that keeps running would hold
+                # the session lock this delivery already holds, and an interruption must not
+                # leave it behind.
+                _terminate(child)
 
-            if proc.returncode == 0:
-                failure = _failure_signature(getattr(proc, "stdout", None))
+            if getattr(child, "returncode", 0) == 0:
+                failure = _failure_signature(output)
                 if failure:
                     # The turn failed before any model response, so nothing ran and the try may
                     # be repeated.
@@ -457,7 +545,9 @@ def deliver_local(
                 # The prompt reached the session, and nothing proves it was acted on:  the
                 # receipt records the hand-over without claiming a confirmed delivery.
                 return WR.Delivery("sent", "resume", ack="unknown", note="zcode-exit-0")
-            return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+            return WR.Delivery(
+                "refused", "resume", code="resume-exit-%d" % getattr(child, "returncode", 0)
+            )
         finally:
             if legacy_lock is not None:
                 legacy_lock.close()
@@ -466,19 +556,25 @@ def deliver_local(
 def _failure_signature(output: object) -> str:
     """The typed code for a documented failure in the child's own output, or "".
 
-    The raw output never leaves this function:  a bounded tail is scanned in memory, because a
-    child's output can quote the prompt, the session or a token, and a receipt is a durable
-    record.  No signature match is no code:  the failure is never guessed."""
+    The raw output never leaves this function:  it is scanned in bounded, overlapping windows,
+    because a child's output can quote the prompt, the session or a token, and a receipt is a
+    durable record.  A signature anywhere in the output counts, not only one in its tail:  a
+    failure line that is followed by more output is still a failure.  No signature match is no
+    code:  the failure is never guessed."""
     if isinstance(output, bytes):
         text = output.decode("utf-8", "replace")
     elif isinstance(output, str):
         text = output
     else:
         return ""
-    window = text[-OUTPUT_SCAN_CAP:]
-    for needle, code in FAILURE_SIGNATURES:
-        if needle in window:
-            return code
+    overlap = max(len(needle) for needle, _ in FAILURE_SIGNATURES) - 1
+    tail = ""
+    for start in range(0, len(text), OUTPUT_SCAN_CAP):
+        window = tail + text[start : start + OUTPUT_SCAN_CAP]
+        for needle, code in FAILURE_SIGNATURES:
+            if needle in window:
+                return code
+        tail = window[-overlap:] if overlap else ""
     return ""
 
 
@@ -576,14 +672,14 @@ def _target_from(value: object) -> WR.Target:
         raise ValueError("target is not an object")
     if set(value) - TARGET_FIELDS:
         raise ValueError("unexpected target fields")
-    session_id = str(value.get("session_id") or "")
-    if not SESSION_RE.fullmatch(session_id):
+    session_id = value.get("session_id")
+    if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         raise ValueError("bad session id")
-    letter = str(value.get("letter") or "")
-    if not LETTER_RE.fullmatch(letter):
+    letter = value.get("letter")
+    if not isinstance(letter, str) or not LETTER_RE.fullmatch(letter):
         raise ValueError("bad letter")
-    host = str(value.get("host") or "")
-    if not host:
+    host = value.get("host")
+    if not isinstance(host, str) or not host:
         raise ValueError("bad host")
     generation = value.get("generation")
     if type(generation) is not int or generation < 1:
@@ -643,6 +739,18 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
     )
 
 
+def _request_too_large(request: object) -> bool:
+    """Whether the raw request is over the byte cap.
+
+    The byte cap is absolute, so a request that is enormous is refused before the parser and
+    the field checks ever see it."""
+    try:
+        raw = json.dumps(request, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return True
+    return len(raw.encode("utf-8")) > MAX_REQUEST_BYTES
+
+
 def _answer(request: Mapping[str, Any], delivery: WR.Delivery) -> dict[str, Any]:
     target = request.get("target") if isinstance(request.get("target"), Mapping) else {}
     wake = request.get("wake") if isinstance(request.get("wake"), Mapping) else {}
@@ -661,6 +769,10 @@ def deliver_request(
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     """Mac-side one-delivery handler invoked by `simple-chat wake-deliver`."""
+    if _request_too_large(request):
+        return _answer(request, WR.Delivery("refused", code="request-too-large"))
+    if not WR.bounded_json(request, MAX_REQUEST_DEPTH, MAX_REQUEST_NODES):
+        return _answer(request, WR.Delivery("refused", code="request-too-complex"))
     try:
         target = _target_from(request.get("target"))
         wake = _wake_from(request["wake"])
@@ -675,8 +787,10 @@ def deliver_request(
         from . import wake_settings as WS
 
         config = WS.read_once(SEAT, DEFAULTS, state_dir(env) / "config.json")
-    except (Exception, SystemExit) as exc:
-        return _answer(request, WR.Delivery("failed", code="settings-%s" % type(exc).__name__))
+    except (Exception, SystemExit):
+        # The code names the source that could not be read, so a receipt can say which
+        # configuration file is missing or unreadable.
+        return _answer(request, WR.Delivery("failed", code="settings-config.json-unavailable"))
 
     # The Mac-side handler requires target to belong to this execution host ("mac")
     if target.host != "mac":
