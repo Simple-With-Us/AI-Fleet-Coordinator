@@ -62,9 +62,9 @@ captured wakes and none of them was ever delivered, and the legacy bridge runs t
 command with the same credential, so it fails the same way.  The bridge stays up and keeps
 its own values, and it retires only after a real wake is delivered end to end.
 
-The cutover was done in these five steps, in this order.  The legacy bridge stays the
-seat's live path until the router's own front has answered a real wake, so a cutover that
-does not work never leaves the seat without a route.
+The cutover was done in these five steps, in this order.  The legacy bridge stays up as
+the seat's fallback until the router's own front has answered a real wake end to end, so a
+cutover that does not work never leaves the seat without a route.
 
 1.  Free the seat's own convention for the router.  A seat's `routine.url_env` is always
     `<SEAT>_ROUTINE_URL`, and the sample's partition check holds every seat that is routed at
