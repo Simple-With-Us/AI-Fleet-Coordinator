@@ -415,6 +415,9 @@ class PlatformSpec:
                                allows:  how long one registry call from that platform's hook may take, in
                                seconds (0 for the shared one), so the row's chain of calls fits inside its
                                own hook's timeout
+    parent_call_timeout        the deadline for one ancestor's best-effort registration (0 for the row's
+                               own):  an ancestor that cannot be registered does not stop the chat's own
+                               registration, so it must not eat the chat's budget
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -455,6 +458,7 @@ class PlatformSpec:
     title_sources: tuple[str, ...] = TITLE_SOURCES
     locations: tuple[str, ...] = LOCATIONS
     call_timeout: int = 0
+    parent_call_timeout: int = 0
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
@@ -780,12 +784,17 @@ _NOT_REGISTERED_MARK = "is not registered on"
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
 #: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
 #: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
-#: a healthy call to the listener answers in well under a second.  A platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An unsettled parent is
+#: a healthy call to the listener answers in well under a second.  Three seconds is the value that keeps a four-call chain (the parent, the chat, the reopen, the title)  inside the fifteen-second budgets the rows carry.  A platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An unsettled parent is
 #: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
-_API_TIMEOUT = 4
-#: The environment key that carries a platform's own deadline for one registry call.
-CALL_TIMEOUT_ENV = "SIMPLE_TOOLS_LETTER_CALL_TIMEOUT"
+_API_TIMEOUT = 3
+#: The calls one chat's own registration makes:  the register, the reopen that may follow it, and the
+#: title update that carries the lettered title.
+CHAT_CALLS = 3
+#: The calls one ancestor's best-effort registration makes:  its register.  A reopen follows only when the
+#: registry says that ancestor is closed, which is the path a call that failed already covers.  An ancestor
+#: that cannot be registered does not stop the chat's own registration.
+PARENT_CALLS = 1
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -840,20 +849,12 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     return merged
 
 
-def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+def _call_api(
+    env: Mapping[str, str], op: str, params: Mapping[str, Any], timeout: int = 0
+) -> dict[str, Any]:
     from . import registry_api
 
-    return registry_api.call(env, op, params, timeout=_call_timeout(env))
-
-
-def _call_timeout(env: Mapping[str, str]) -> int:
-    """How long one registry call from this hook may take:  the platform's own deadline when it declares
-    one, else the shared one.  A platform whose runtime stops its hook sooner than the shared budget allows
-    needs the shorter deadline, and no other platform's call is shortened by it."""
-    raw = str(env.get(CALL_TIMEOUT_ENV) or "").strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw)
-    return _API_TIMEOUT
+    return registry_api.call(env, op, params, timeout=timeout or _API_TIMEOUT)
 
 
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -890,7 +891,9 @@ def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
     return "all %d %s main-chat pairs (AA to ZZ) are live:  %s" % (limit, platform, REFUSED_TAIL)
 
 
-def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+def _register_api(
+    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0
+) -> dict[str, Any]:
     """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
 
     The registry's register answers for a fresh chat and for a resume (its resume stamps the session seen), a
@@ -916,7 +919,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
     }
     if parent:
         params["parent_session_id"] = parent
-    out = _call_api(env, "register", params)
+    out = _call_api(env, "register", params, timeout=timeout)
     if out.get("code") == "labels_exhausted":
         return {"error": refused_text(OR, args.platform), "code": "labels_exhausted", "swept": 0}
     error = _api_error(out)
@@ -931,7 +934,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         }
         if parent:
             reopen_params["parent_session_id"] = parent
-        reopened = _call_api(env, "reopen", reopen_params)
+        reopened = _call_api(env, "reopen", reopen_params, timeout=timeout)
         if reopened.get("code") == "labels_exhausted":
             return {
                 "error": refused_text(OR, args.platform),
@@ -956,7 +959,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             "title_display": OR.display_title(reopened["label"], title),
         }
     if title and out.get("outcome") in ("resumed", "reopened"):
-        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title})
+        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout)
         error = _api_error(updated)
         if error is not None:
             return error
@@ -969,7 +972,9 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
     return out
 
 
-def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+def _on_record_api(
+    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0
+) -> dict[str, Any]:
     """title, touch, close and show for one chat through the registry API.
 
     No record is NO_REGISTRATION and a closed one is retired, before any op writes.  The API's ops are addressed by
@@ -982,7 +987,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     if args.op == "show":
         # The API has no show op:  `held` answers the letter side of the record (its id and
         # the letters it has held), which is what a show is asked for.
-        held = _call_api(env, "held", identity)
+        held = _call_api(env, "held", identity, timeout=timeout)
         if "error" in held:
             if held.get("code") == "not_registered":
                 return {"error": NO_REGISTRATION}
@@ -996,13 +1001,15 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if shown["label"]:
             # The rest of the row (its seat and title) from the letter's own live holder, when that is this record:
             # a caller that closes only what is its own (the fx sync) reads the seat here.
-            row = _call_api(env, "resolve", {"platform": args.platform, "letter": shown["label"]})
+            row = _call_api(
+                env, "resolve", {"platform": args.platform, "letter": shown["label"]}, timeout=timeout
+            )
             if "error" not in row and row.get("record_id") == shown["record_id"]:
                 shown.update({k: row[k] for k in ("seat", "title", "generation") if k in row})
         return shown
     if args.op == "close":
         out = _call_api(
-            env, "close", {**identity, "reason": "session ended", "source": args.source}
+            env, "close", {**identity, "reason": "session ended", "source": args.source}, timeout=timeout
         )
         error = _api_error(out)
         if error is not None:
@@ -1011,8 +1018,8 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
     if args.op == "issues":
-        return record_issues_api(env, identity, args.issues)
-    probe = _call_api(env, "touch", identity)
+        return record_issues_api(env, identity, args.issues, timeout=timeout)
+    probe = _call_api(env, "touch", identity, timeout=timeout)
     error = _api_error(probe)
     if error is not None:
         return error
@@ -1021,7 +1028,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
         return _touch_answer(probe)
-    updated = _call_api(env, "update", {**identity, "title": title})
+    updated = _call_api(env, "update", {**identity, "title": title}, timeout=timeout)
     error = _api_error(updated)
     if error is not None:
         return error
@@ -1051,7 +1058,7 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
+def _report_gone_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
     """The `report-gone` op:  one call that names the chats of one platform and host that are gone for good, and
     has the assigner close their rows.
 
@@ -1156,7 +1163,12 @@ def _make_parser() -> Any:
 
 
 def registry_main(
-    argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
+    argv: list[str],
+    *,
+    env: Mapping[str, str],
+    stdout: TextIO,
+    now: float | None = None,
+    call_timeout: int = 0,
 ) -> int:
     """`registry OP --platform P --location L --session-id S [--seat SEAT] [--title T] [--source SRC]
     [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.  The
@@ -1185,13 +1197,13 @@ def registry_main(
         return _emit(stdout, {"error": "bad arguments"}, 2)
     try:
         if args.op == "report-gone":
-            out = _report_gone_api(env, args)
+            out = _report_gone_api(env, args, timeout=call_timeout)
         else:
             sid = SI.check(args.session_id, "the session id")
             if args.op == "register":
-                out = _register_api(OR, env, args, sid)
+                out = _register_api(OR, env, args, sid, timeout=call_timeout)
             else:
-                out = _on_record_api(OR, env, args, sid)
+                out = _on_record_api(OR, env, args, sid, timeout=call_timeout)
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
     except (KeyError, TypeError):
@@ -1376,30 +1388,42 @@ class Chat:
         return argv
 
     def registry(
-        self, op: str, title: str = "", parent: str = "", issues: str = ""
+        self,
+        op: str,
+        title: str = "",
+        parent: str = "",
+        issues: str = "",
+        timeout: int = 0,
     ) -> dict[str, Any]:
         """One call to the registry side, answered as its JSON.  Whatever goes wrong, on the way or in the registry
         side, is an error answer: a hook never blocks a chat, and never stops on a call that failed."""
         try:
-            return self._registry(op, title, parent, issues)
+            return self._registry(op, title, parent, issues, timeout)
         except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat
             return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
-    def _registry(self, op: str, title: str, parent: str, issues: str = "") -> dict[str, Any]:
+    def _registry(
+        self, op: str, title: str, parent: str, issues: str = "", timeout: int = 0
+    ) -> dict[str, Any]:
         if not self.location:
             return {"error": NO_LOCATION}
-        return _registry_side(self.argv(op, title, parent, issues), self.env, self.transport)
+        return _registry_side(
+            self.argv(op, title, parent, issues),
+            self.env,
+            self.transport,
+            timeout or self.spec.call_timeout,
+        )
 
 
 def _registry_side(
-    argv: list[str], env: Mapping[str, str], transport: Transport | None
+    argv: list[str], env: Mapping[str, str], transport: Transport | None, call_timeout: int = 0
 ) -> dict[str, Any]:
     """The registry side's answer to one command line:  through the test's transport when there is one, else in
     process, where it makes its one API call."""
     if transport is not None:
         return _answer(dict(transport(argv)))
     out = io.StringIO()
-    registry_main(argv, env=env, stdout=out)
+    registry_main(argv, env=env, stdout=out, call_timeout=call_timeout)
     return _answer(_last_json(out.getvalue()))
 
 
@@ -2347,10 +2371,10 @@ def _issues_value(text: str) -> Any:
 
 
 def record_issues_api(
-    env: Mapping[str, str], identity: Mapping[str, Any], text: str
+    env: Mapping[str, str], identity: Mapping[str, Any], text: str, timeout: int = 0
 ) -> dict[str, Any]:
     """The `issues` op through the registry API: its update, with the list it carries."""
-    out = _call_api(env, "update", {**identity, "issues": _issues_value(text)})
+    out = _call_api(env, "update", {**identity, "issues": _issues_value(text)}, timeout=timeout)
     error = _api_error(out)
     if error is not None:
         return error
@@ -2540,7 +2564,12 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
         mother.write(dict(note, failed_at=chat.now))
         done = _apply(
             mother,
-            mother.registry("register", title=str(note.get("title") or ""), parent=grand),
+            mother.registry(
+                "register",
+                title=str(note.get("title") or ""),
+                parent=grand,
+                timeout=spec.parent_call_timeout or spec.call_timeout,
+            ),
             dict(note, parent=grand),
         )
         if done["state"] == "open":
@@ -2893,11 +2922,6 @@ def _run_hook(
     transport: Transport | None,
     location_flag: str,
 ) -> int:
-    env = dict(env)
-    if spec.call_timeout:
-        # The platform's own deadline for one registry call, so the row's chain of calls fits inside its
-        # own hook's timeout without shortening anyone else's.
-        env[CALL_TIMEOUT_ENV] = str(spec.call_timeout)
     data = read_hook_input(stdin)
     event = canonical_event(spec, data)
     if not event or not in_scope(spec, env, data):

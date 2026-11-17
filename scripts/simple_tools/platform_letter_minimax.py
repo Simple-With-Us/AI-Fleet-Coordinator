@@ -56,10 +56,13 @@ HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
 #: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
-#: How long one registry call from this platform's hook may take, in seconds:  the runtime's ten-second
-#: ceiling divided by the three calls a register makes, so the chain fits inside the hook's own timeout.
-#: Every other platform keeps the shared deadline, which is longer.
-CALL_TIMEOUT = 3
+#: How long one registry call from this platform's hook may take, in seconds.  The runtime's ceiling is
+#: ten seconds and the chain that has to fit inside it is the chat's own calls plus one best-effort call
+#: for each of the three ancestor generations, so the chat's calls are given two seconds each and the
+#: ancestors' one:  three times two plus three times one is nine seconds, inside the ceiling.  Every other
+#: platform keeps the shared deadline, which is longer.
+CALL_TIMEOUT = 2
+PARENT_CALL_TIMEOUT = 1
 CLOSE_REASONS: tuple[str, ...] = ()
 # The retired client's letter cache (`minimax_retired_note`):  the most of one file that is read, and the most
 # project scopes looked through for it.
@@ -233,6 +236,7 @@ SPEC = PL.PlatformSpec(
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,
+    parent_call_timeout=PARENT_CALL_TIMEOUT,
 )
 
 INSTALL = PL.JsonHookInstaller(
