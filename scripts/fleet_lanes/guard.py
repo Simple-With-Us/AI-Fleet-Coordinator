@@ -534,10 +534,11 @@ class GuardContext:
         self.env = env
         self.registry = registry
         # The registry is what says which repositories are fleet repositories.  When it could not be
-        # read, the guard holds the extras alone, so it can still say what the owner set says and
-        # cannot say which apps the fleet has.  A question the registry answers is then unknown, and
-        # an unknown answer is not a clearance (AFC-811).
-        self.registry_fallback = registry.source == "fallback"
+        # read, or when it was read and holds no owner apps of its own, the guard holds the extras
+        # alone, so it can still say what the owner set says and cannot say which apps the fleet
+        # has.  A question the registry answers is then unknown, and an unknown answer is not a
+        # clearance (AFC-811).
+        self.registry_fallback = registry.source == "fallback" or not registry.registered_apps
         self.roots = roots
         self.tmpdir = tmpdir
         self.exceptions = exceptions
@@ -1031,15 +1032,37 @@ def _evaluate_isolation(payload: Mapping, ctx: GuardContext | None) -> Decision:
         app.integration_dir_name and ctx.fold(app.integration_dir_name) == ctx.fold(repo) for app in ctx.registry.apps
     ):
         if ctx.registry_fallback:
-            # The registry could not be read, so this host cannot tell whether the repo is one of
-            # the fleet's, and that is a question the guard must not answer with a clearance:  a
-            # worktree in the integration tree is for the human, whoever owns the repo.
-            reason = (
-                f"Blocked: this host could not read the fleet registry, so it cannot tell whether {repo} is a "
-                f"fleet repository, and a worktree in the integration tree {cwd} is for the human.  "
-                f"Read the registry file (FLEET_APPS_JSON) so the guard can name the repo, and work in a lane."
+            # The registry could not be read, or held no owner apps of its own, so this host cannot
+            # tell whether the repo is one of the fleet's, and that is a question the guard must not
+            # answer with a clearance:  a worktree in the integration tree is for the human, whoever
+            # owns the repo.  The mode decides what happens next:  block mode refuses it, and detect
+            # mode only names it.
+            #
+            # The extras still clear the membership test above, so a repo the fallback does know
+            # keeps its normal path.  The owner set is not a second membership oracle here:  it
+            # carries GitHub identities and is consulted where a clone or remote is classified
+            # (`_repo_src`), which keeps working on a host whose registry cannot be read.
+            if mode == P.MODE_BLOCK:
+                reason = (
+                    f"Blocked: this host could not read the fleet registry (fleet-apps.json, named by "
+                    f"FLEET_APPS_JSON), so it cannot tell whether {repo} is a fleet repository, and a "
+                    f"worktree in the integration tree {cwd} is for the human.  Read fleet-apps.json so "
+                    f"the guard can name the repo, and work in a lane."
+                )
+                return Decision(DENY, reason, RULE_ISOLATION, cwd, repo)
+            return Decision(
+                ALLOW,
+                "",
+                _OK_NOT_SHELL,
+                detected="isolation",
+                detected_detail={
+                    "class": "isolation",
+                    "rule": RULE_ISOLATION,
+                    "dest": cwd,
+                    "source": repo,
+                    "registry_fallback": True,
+                },
             )
-            return Decision(DENY, reason, RULE_ISOLATION, cwd, repo)
         return Decision(ALLOW, "", _OK_NOT_SHELL)
     if mode != P.MODE_BLOCK:
         return Decision(ALLOW, "", _OK_NOT_SHELL, detected="isolation",

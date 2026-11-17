@@ -48,6 +48,31 @@ def fallback_ctx(mode: str = "detect", *, env: dict | None = None, rows: tuple =
     return made
 
 
+def empty_registry_ctx(mode: str = "detect", *, env: dict | None = None, host: str = "mac") -> G.GuardContext:
+    """A context whose registry was read and holds no owner apps of its own (AFC-811).
+
+    The file is a real, readable fleet-apps.json with no apps in it, so the registry answers no
+    membership question either.  The guard must not read that as a clearance."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = f"{tmp}/fleet-apps.json"
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write('{"owner": "Simple-With-Us", "apps": []}')
+        full = {
+            "HOME": HOME,
+            "TMPDIR": "/tmp",
+            "AGENT_SEAT": "CLAUDE",
+            P.ENV_MODE_FILE: "/nonexistent",
+            L.ENV_APPS_JSON: target,
+            **(env or {}),
+        }
+        made = G.make_context(full, home=HOME, case_insensitive=True)
+    made.mode = P.parse_mode(mode)
+    made.host = host
+    return made
+
+
 def payload(command: str, cwd: str = f"{HOME}/Code/BotFleet", tool: str = "Bash") -> dict:
     return {"tool_name": tool, "tool_input": {"command": command}, "cwd": cwd}
 
@@ -257,6 +282,32 @@ class Isolation(unittest.TestCase):
         d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
         self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_ISOLATION))
         self.assertIn("FLEET_APPS_JSON", d.reason)
+
+    def test_detect_mode_only_names_the_fallback_instead_of_blocking_it(self) -> None:
+        # Detect mode reports, block mode refuses.  A host whose registry cannot be read is no
+        # different from any other host in detect:  the worktree is named, not refused.
+        c = fallback_ctx("isolation detect")
+        self.assertTrue(c.registry_fallback)
+        d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+        self.assertEqual((d.action, d.detected), (G.ALLOW, "isolation"))
+        self.assertNotEqual(d.rule_id, G.RULE_ISOLATION)
+
+    def test_a_registry_with_no_owner_apps_fails_the_membership_question_closed(self) -> None:
+        # A registry that was read and holds nothing but the extras answers no membership
+        # question, so the answer is unknown, and an unknown answer is not a clearance.
+        c = empty_registry_ctx("isolation block")
+        self.assertNotEqual(c.registry.source, "fallback")
+        self.assertTrue(c.registry_fallback)
+        d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+        self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_ISOLATION))
+
+    def test_the_refusal_names_the_registry_file(self) -> None:
+        # The refusal has to tell the agent what to read, and the file is fleet-apps.json.
+        for c in (fallback_ctx("isolation block"), empty_registry_ctx("isolation block")):
+            with self.subTest(registry=c.registry.source):
+                d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+                self.assertIn("fleet-apps.json", d.reason)
+                self.assertIn("FLEET_APPS_JSON", d.reason)
 
     def test_a_readable_registry_still_clears_a_repo_it_does_not_hold(self) -> None:
         # The refusal is narrow:  a registry that was read answers the question, and a repo it does
