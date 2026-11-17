@@ -14,6 +14,17 @@
 # Required env: APP_NAME APP_UUID RESOURCE_NAME INTERNAL_HEALTH_URL
 # Optional: HEALTH_URL CHECK_INTERVAL_SEC FAIL_THRESHOLD RESTART_COOLDOWN_SEC
 #           MAX_RESTARTS_PER_HOUR COOLIFY_BASE_URL COOLIFY_TOKEN NOTIFY_TITLE
+# Run guard (opt-in, per instance; unset RUN_GUARD_DB = old behaviour):
+#           RUN_GUARD_DB                 host path to the app's SQLite DB
+#           RUN_GUARD_MAX_DEFER_SEC      cap from the first deferral (default 900)
+#           RUN_GUARD_RUNNING_MAX_AGE_SEC ignore older status='running' rows (default 10800)
+#           RUN_GUARD_QUERY_TIMEOUT_SEC  hard limit on the sqlite3 read (default 10)
+#           RUN_GUARD_BUSY_MS            sqlite busy timeout (default 2000)
+#  When a restart is due and the DB shows a strategy run in progress (a
+#  strategy_runs row with status='running', or an unexpired
+#  settings.strategy_run_lock:* lease), the restart is deferred and logged,
+#  up to RUN_GUARD_MAX_DEFER_SEC from the first deferral; then it restarts as
+#  before.  An unreadable DB counts as "unknown" and also defers (same cap).
 
 set -euo pipefail
 
@@ -60,6 +71,77 @@ coolify_fallback_needed() {
   [[ "$docker_ok" -eq 0 ]]
 }
 
+# ── Run guard ────────────────────────────────────────────────────────────────
+# Read-only probe of the app DB: prints "running <detail>", "idle" or
+# "unknown <reason>".  Never writes; -readonly plus a short busy timeout, and
+# a hard `timeout` so a starved disk cannot wedge the watchdog loop.
+run_guard_state() {
+  local db="$1"
+  local max_age="${RUN_GUARD_RUNNING_MAX_AGE_SEC:-10800}"
+  local busy="${RUN_GUARD_BUSY_MS:-2000}"
+  local qto="${RUN_GUARD_QUERY_TIMEOUT_SEC:-10}"
+  [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=10800
+  [[ "$busy" =~ ^[0-9]+$ ]] || busy=2000
+  [[ "$qto" =~ ^[0-9]+$ ]] || qto=10
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "unknown sqlite3-missing"; return 0
+  fi
+  if [[ ! -f "$db" ]]; then
+    echo "unknown db-missing"; return 0
+  fi
+  local sql out
+  sql="SELECT
+  (SELECT count(*) FROM strategy_runs
+     WHERE status = 'running'
+       AND started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${max_age} seconds'))
+  || ' ' ||
+  (SELECT count(*) FROM settings
+     WHERE key >= 'strategy_run_lock:' AND key < 'strategy_run_lock;'
+       AND CASE WHEN json_valid(value)
+                THEN json_extract(value, '\$.expiresAt') > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ELSE 0 END);"
+  out=$(timeout "$qto" sqlite3 -readonly -batch -noheader \
+        -cmd ".timeout ${busy}" "$db" "$sql" 2>/dev/null) || {
+    echo "unknown query-failed"; return 0
+  }
+  local runs locks
+  read -r runs locks <<<"$out"
+  if ! [[ "${runs:-}" =~ ^[0-9]+$ && "${locks:-}" =~ ^[0-9]+$ ]]; then
+    echo "unknown bad-output"; return 0
+  fi
+  if [[ "$runs" -gt 0 || "$locks" -gt 0 ]]; then
+    echo "running runs=${runs} locks=${locks}"
+  else
+    echo "idle"
+  fi
+}
+
+# Decide whether to defer a due restart.  Uses/updates RUN_GUARD_DEFER_SINCE.
+# Returns 0 = defer now, 1 = proceed with the restart.
+#   run_guard_should_defer <state-line> <now-epoch>
+run_guard_should_defer() {
+  local state="$1" now_ts="$2"
+  local cap="${RUN_GUARD_MAX_DEFER_SEC:-900}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=900
+  case "$state" in
+    idle)
+      if [[ "$RUN_GUARD_DEFER_SINCE" -gt 0 ]]; then
+        log "remediate: run guard idle after $(( now_ts - RUN_GUARD_DEFER_SINCE ))s of deferral; restarting"
+      fi
+      return 1 ;;
+  esac
+  if [[ "$RUN_GUARD_DEFER_SINCE" -eq 0 ]]; then
+    RUN_GUARD_DEFER_SINCE="$now_ts"
+  fi
+  local waited=$(( now_ts - RUN_GUARD_DEFER_SINCE ))
+  if [[ "$waited" -lt "$cap" ]]; then
+    log "remediate: deferred (strategy run guard: ${state}; waited ${waited}s of ${cap}s)"
+    return 0
+  fi
+  log "remediate: run guard cap reached (${state}; waited ${waited}s >= ${cap}s); restarting anyway"
+  return 1
+}
+
 # Test hook: does not need app env or docker.
 #   bash fleet-health-recover.sh --check-body <file.json>
 #   bash fleet-health-recover.sh --coolify-fallback <0|1>   # 0 = docker failed
@@ -68,6 +150,19 @@ if [ "${1:-}" = "--check-body" ]; then
   file="${1:-}"
   [ -n "$file" ] && [ -f "$file" ] || exit 1
   health_body_ok < "$file"
+  exit $?
+fi
+#   bash fleet-health-recover.sh --run-guard-state <app.db>   # prints running|idle|unknown
+#   bash fleet-health-recover.sh --run-guard-defer <state> <since> <now>  # 0 = defer
+if [ "${1:-}" = "--run-guard-state" ]; then
+  log() { :; }
+  run_guard_state "${2:-}"
+  exit 0
+fi
+if [ "${1:-}" = "--run-guard-defer" ]; then
+  log() { printf '%s\n' "$*" >&2; }
+  RUN_GUARD_DEFER_SINCE="${3:-0}"
+  run_guard_should_defer "${2:-}" "${4:-0}"
   exit $?
 fi
 if [ "${1:-}" = "--coolify-fallback" ]; then
@@ -93,6 +188,8 @@ NOTIFY_TITLE="${NOTIFY_TITLE:-$APP_NAME}"
 
 mkdir -p "$STATE_DIR"
 FAILS=0
+RUN_GUARD_DB="${RUN_GUARD_DB:-}"
+RUN_GUARD_DEFER_SINCE=0
 STARTED_AT=$(date +%s)
 
 log() {
@@ -325,6 +422,15 @@ remediate() {
     return 0
   fi
 
+  if [[ -n "$RUN_GUARD_DB" ]]; then
+    local guard_state
+    guard_state=$(run_guard_state "$RUN_GUARD_DB")
+    if run_guard_should_defer "$guard_state" "$(now)"; then
+      return 0
+    fi
+  fi
+  RUN_GUARD_DEFER_SINCE=0
+
   local docker_ok=1 api_ok=0
   if restart_via_docker; then
     log "remediate: docker restart ok; Coolify API skipped (fallback only when the container is gone)"
@@ -362,7 +468,7 @@ if [ "${1:-}" = "--find-container" ]; then
   exit 0
 fi
 
-log "start app=$APP_NAME resource=$RESOURCE_NAME health=$INTERNAL_HEALTH_URL interval=${CHECK_INTERVAL_SEC}s"
+log "start app=$APP_NAME resource=$RESOURCE_NAME health=$INTERNAL_HEALTH_URL interval=${CHECK_INTERVAL_SEC}s run_guard=${RUN_GUARD_DB:-off}"
 
 while true; do
   if [[ $(( $(now) - STARTED_AT )) -lt $STARTUP_GRACE_SEC ]]; then
@@ -375,6 +481,7 @@ while true; do
       log "health ok (recovered after $FAILS fail(s))"
     fi
     FAILS=0
+    RUN_GUARD_DEFER_SINCE=0
   else
     FAILS=$((FAILS + 1))
     log "health FAIL count=$FAILS/$FAIL_THRESHOLD"
