@@ -1043,12 +1043,23 @@ def _evaluate_isolation(payload: Mapping, ctx: GuardContext | None) -> Decision:
             # carries GitHub identities and is consulted where a clone or remote is classified
             # (`_repo_src`), which keeps working on a host whose registry cannot be read.
             if mode == P.MODE_BLOCK:
-                reason = (
-                    f"Blocked: this host could not read the fleet registry (fleet-apps.json, named by "
-                    f"FLEET_APPS_JSON), so it cannot tell whether {repo} is a fleet repository, and a "
-                    f"worktree in the integration tree {cwd} is for the human.  Read fleet-apps.json so "
-                    f"the guard can name the repo, and work in a lane."
-                )
+                # Two different faults reach this branch, and the refusal has to say which one it
+                # is:  a file that could not be read is fixed by reading it, and a file that was
+                # read and holds no app rows is fixed by adding the repository to it.
+                if ctx.registry.source == "fallback":
+                    reason = (
+                        f"Blocked: this host could not read the fleet registry (fleet-apps.json, named by "
+                        f"FLEET_APPS_JSON), so it cannot tell whether {repo} is a fleet repository, and a "
+                        f"worktree in the integration tree {cwd} is for the human.  Read fleet-apps.json so "
+                        f"the guard can name the repo, and work in a lane."
+                    )
+                else:
+                    reason = (
+                        f"Blocked: the fleet registry (fleet-apps.json) was read and holds no app rows, so "
+                        f"it cannot say whether {repo} is a fleet repository, and a worktree in the "
+                        f"integration tree {cwd} is for the human.  Add {repo} to fleet-apps.json so the "
+                        f"guard can name the repo, and work in a lane."
+                    )
                 return Decision(DENY, reason, RULE_ISOLATION, cwd, repo)
             return Decision(
                 ALLOW,
@@ -1061,6 +1072,7 @@ def _evaluate_isolation(payload: Mapping, ctx: GuardContext | None) -> Decision:
                     "dest": cwd,
                     "source": repo,
                     "registry_fallback": True,
+                    "registry_read": ctx.registry.source != "fallback",
                 },
             )
         return Decision(ALLOW, "", _OK_NOT_SHELL)

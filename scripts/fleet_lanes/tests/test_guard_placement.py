@@ -302,12 +302,23 @@ class Isolation(unittest.TestCase):
         self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_ISOLATION))
 
     def test_the_refusal_names_the_registry_file(self) -> None:
-        # The refusal has to tell the agent what to read, and the file is fleet-apps.json.
-        for c in (fallback_ctx("isolation block"), empty_registry_ctx("isolation block")):
-            with self.subTest(registry=c.registry.source):
-                d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
-                self.assertIn("fleet-apps.json", d.reason)
-                self.assertIn("FLEET_APPS_JSON", d.reason)
+        # The refusal has to tell the agent what to read, and the file is fleet-apps.json.  The
+        # unreadable case and the read-but-empty case are different faults with different fixes,
+        # so the refusal says which one it is.
+        unreadable = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), fallback_ctx("isolation block")
+        )
+        self.assertIn("fleet-apps.json", unreadable.reason)
+        self.assertIn("FLEET_APPS_JSON", unreadable.reason)
+        self.assertIn("could not read", unreadable.reason)
+
+        empty = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), empty_registry_ctx("isolation block")
+        )
+        self.assertIn("fleet-apps.json", empty.reason)
+        self.assertIn("holds no app rows", empty.reason)
+        self.assertIn("Add BotFleet to fleet-apps.json", empty.reason)
+        self.assertNotIn("could not read", empty.reason)
 
     def test_a_readable_registry_still_clears_a_repo_it_does_not_hold(self) -> None:
         # The refusal is narrow:  a registry that was read answers the question, and a repo it does
