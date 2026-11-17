@@ -428,6 +428,61 @@ def clean(value: object, limit: int = NAME_CHARS) -> str:
     return secretscan.WITHHELD if secretscan.scan(text) else text
 
 
+#: The bounds an untrusted JSON value is held to:  how deep it may nest and how many nodes it
+#: may carry.  A byte cap alone does not bound the work the parser and the walker do.
+MAX_JSON_DEPTH = 16
+MAX_JSON_NODES = 1000
+
+
+def bounded_json(
+    value: object, max_depth: int = MAX_JSON_DEPTH, max_nodes: int = MAX_JSON_NODES
+) -> bool:
+    """Whether a parsed JSON value is within the depth and the node bounds.
+
+    The walk is iterative, so a deeply nested value cannot exhaust the interpreter's stack, and
+    a cycle is refused rather than followed.  A value that is not JSON at all (a set, an object
+    from a caller's own code) is refused too, so the helper is safe for a parsed value and for
+    one handed to it directly."""
+    pending: list[tuple[object, int, bool]] = [(value, 1, False)]
+    active: set[int] = set()
+    nodes = 0
+    while pending:
+        item, depth, leaving = pending.pop()
+        if leaving:
+            active.remove(id(item))
+            continue
+        nodes += 1
+        if nodes > max_nodes or depth > max_depth:
+            return False
+        if isinstance(item, dict):
+            identity = id(item)
+            if identity in active or any(not isinstance(key, str) for key in item):
+                return False
+            if nodes + len(item) > max_nodes or (item and depth >= max_depth):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item.values())
+        elif isinstance(item, list):
+            identity = id(item)
+            if identity in active:
+                return False
+            if nodes + len(item) > max_nodes or (item and depth >= max_depth):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item)
+        elif (
+            item is None
+            or type(item) in (str, bool, int)
+            or (type(item) is float and math.isfinite(item))
+        ):
+            continue
+        else:
+            return False
+    return True
+
+
 def letter_of(payload: Mapping[str, Any], mention: str) -> str:
     """The letter the sender addressed, or "".  A letter is exactly two capitals:  a main chat's
     doubled pair (AA) or a child thread's pair (DE).  An explicit field wins.  Otherwise the

@@ -14,8 +14,21 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from . import wake_router as WR
+
 MAX_BYTES = 8 * 1024 * 1024
+#: The bounds a snapshot value is held to, the ones the shared router uses:  a byte cap alone
+#: does not bound the work the parser and the walker do.
+MAX_DEPTH = 16
+MAX_NODES = 1000
 WAKE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def _bounded(value: object) -> object:
+    """One parsed snapshot value, refused when it is too deep or carries too many nodes."""
+    if not WR.bounded_json(value, MAX_DEPTH, MAX_NODES):
+        raise ValueError("snapshot exceeds the depth or the node bound")
+    return value
 
 
 def _object(value: object) -> Mapping[str, Any]:
@@ -184,7 +197,7 @@ def json_file(path: str) -> Mapping[str, Any]:
         raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise ValueError("snapshot exceeds size limit")
-    value = json.loads(raw)
+    value = _bounded(json.loads(raw))
     if not isinstance(value, dict):
         raise TypeError("expected an object snapshot")
     return value
@@ -208,7 +221,7 @@ def json_lines(path: str) -> list[Mapping[str, Any]]:
     for raw in lines:
         if not raw.strip():
             continue
-        value = json.loads(raw)
+        value = _bounded(json.loads(raw))
         if not isinstance(value, dict):
             raise TypeError("expected JSONL object")
         result.append(value)

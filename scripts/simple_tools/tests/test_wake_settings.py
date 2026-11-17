@@ -77,16 +77,24 @@ class Registered(Settings):
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
-        from simple_tools import antigravity_wake as AGW
-        from simple_tools import grok_wake as GW
-        from simple_tools import minimax_wake as MW
-        from simple_tools import zcode_wake as ZCW
+        import importlib
+
+        from simple_tools import wake_service as SVC
 
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
         defaults: set[str] = set()
-        for module in (CW, AGW, GW, MW, ZCW):
-            defaults |= set(module.DEFAULTS)
-        self.assertEqual(defaults, handled)
+        # The one platform table is the list of modules, so a platform's module lands with its
+        # own facts and this test never has to name a module.
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            defaults |= set(getattr(module, "DEFAULTS", {}))
+        self.assertLessEqual(defaults, handled)
+        # A host fact no module on this host carries is fine:  its platform's module lands with
+        # it.  A knob no module carries is not:  that is a tunable nothing can read.
+        self.assertLessEqual(handled - defaults, set(WS.HOST_FACTS))
 
     def test_a_platforms_own_facts_reach_the_delivery(self) -> None:
         from simple_tools import minimax_wake as MW
@@ -1207,7 +1215,7 @@ class OneService(Settings):
             {
                 "AG": ("antigravity", "simple_tools.antigravity_wake", "router_platform", "deliver_request", uuid),
                 "CLAUDE": ("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude", uuid),
-                "CODEX": ("codex", "simple_tools.codex_wake", "make_platform", "deliver_request", uuid),
+                "CODEX": ("codex", "simple_tools.codex_wake", "router_platform", "deliver_request", uuid),
                 "MC": ("muse", "simple_tools.muse_wake", "router_platform", "deliver_request", uuid),
                 "ZC": ("zcode", "simple_tools.zcode_wake", "router_platform", "deliver_request",
                        r"^sess_[A-Za-z0-9._-]{1,123}$"),
