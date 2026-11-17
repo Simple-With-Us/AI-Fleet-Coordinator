@@ -107,4 +107,39 @@ defer "unknown query-failed" 0 1000 || { echo "FAIL unknown should defer" >&2; e
 if defer "idle" 1000 1200; then echo "FAIL idle should restart" >&2; exit 1; fi
 if defer "idle" 0 1200; then echo "FAIL idle with no deferral should restart" >&2; exit 1; fi
 
+# Fail closed (ST-4635 Kody): a guard decision status other than 0 (defer)
+# or 1 (proceed) must defer, bounded by RUN_GUARD_MAX_DEFER_SEC.
+decide_rc() { RUN_GUARD_MAX_DEFER_SEC=900 bash "$RECOVER" --run-guard-decide-rc "$@" 2>/dev/null; }
+decide_rc 0 0 1000 || { echo "FAIL inner defer should defer" >&2; exit 1; }
+if decide_rc 1 0 1000; then echo "FAIL inner proceed should proceed" >&2; exit 1; fi
+for bad in 2 3 127 130; do
+  decide_rc "$bad" 0 1000 || { echo "FAIL unexpected rc=$bad should defer" >&2; exit 1; }
+  decide_rc "$bad" 1000 1899 || { echo "FAIL unexpected rc=$bad at 899s should defer" >&2; exit 1; }
+  if decide_rc "$bad" 1000 1900; then echo "FAIL unexpected rc=$bad past cap should restart" >&2; exit 1; fi
+done
+msg="$(RUN_GUARD_MAX_DEFER_SEC=900 bash "$RECOVER" --run-guard-decide-rc 2 0 1000 2>&1 >/dev/null || true)"
+[[ "$msg" == *"rc=2"*"failing closed"* ]] || { echo "FAIL unexpected rc not logged: '$msg'" >&2; exit 1; }
+
+# /api/live is process-only liveness: any 2xx is healthy, body not parsed.
+resp() { bash "$RECOVER" --check-response "$@"; }
+printf '%s\n' '{"ok":true,"probe":"live"}' >"${tmp}/live.json"
+printf '%s\n' '{"probe":"live"}' >"${tmp}/live-no-ok.json"
+printf '' >"${tmp}/empty.txt"
+for u in http://10.0.1.5:4000/api/live http://10.0.1.5:4000/api/live/ \
+         'http://10.0.1.5:4000/api/live?x=1' http://10.0.1.5:4000/live; do
+  resp "$u" 200 "${tmp}/live.json" || { echo "FAIL live body $u" >&2; exit 1; }
+  resp "$u" 200 "${tmp}/live-no-ok.json" || { echo "FAIL live 2xx without ok $u" >&2; exit 1; }
+  resp "$u" 204 "${tmp}/empty.txt" || { echo "FAIL live 204 empty $u" >&2; exit 1; }
+  if resp "$u" 503 "${tmp}/live.json"; then echo "FAIL live 503 $u" >&2; exit 1; fi
+  if resp "$u" 302 "${tmp}/live.json"; then echo "FAIL live 3xx $u" >&2; exit 1; fi
+done
+# Non-liveness URLs (usage-monitor /api/health) keep the body contract.
+um=http://10.0.1.6:3000/api/health
+resp "$um" 200 "${tmp}/um.json" || { echo "FAIL um health ok" >&2; exit 1; }
+if resp "$um" 200 "${tmp}/no-ok.json"; then echo "FAIL um health without ok must fail" >&2; exit 1; fi
+if resp "$um" 200 "${tmp}/top-false.json"; then echo "FAIL um health top false" >&2; exit 1; fi
+if resp "$um" 500 "${tmp}/um.json"; then echo "FAIL um 500" >&2; exit 1; fi
+if resp http://10.0.1.6:3000/api/liveness 200 "${tmp}/no-ok.json"; then echo "FAIL look-alike path must keep body check" >&2; exit 1; fi
+if resp http://10.0.1.6:3000/x/api/live 200 "${tmp}/no-ok.json"; then echo "FAIL nested look-alike path must keep body check" >&2; exit 1; fi
+
 echo "ok  health-body $(bash -n "$RECOVER" && echo 'bash -n clean')"

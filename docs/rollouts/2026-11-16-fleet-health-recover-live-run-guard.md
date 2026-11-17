@@ -54,3 +54,17 @@ bash fleet-health-recover.sh --run-guard-state <prod app.db>   # "idle" in 0.02s
 ## Zero-Code Findings
 
 - The Docker HEALTHCHECK on `/api/live` (5 retries) and the in-container liveness watchdog can still kill the app during a long freeze, independent of this unit.
+
+## Kody follow-up (fail closed, liveness contract)
+
+- `/api/live` (or `/live`) probes are judged by HTTP status only: any 2xx is
+  healthy and the body is not parsed.  ST's route returns
+  `{ok:true,probe:"live"}`, but a future shape change must not restart a
+  serving container.  3xx and non-2xx still count as a failure.  Every other
+  URL (usage-monitor `/api/health`) keeps the top-level-`ok` body check.
+- `run_guard_decide` wraps `run_guard_should_defer`.  Only status 1 proceeds.
+  Status 0 defers.  Any other status is logged as
+  `run guard decision failed rc=N, failing closed` and defers, bounded by the
+  same `RUN_GUARD_MAX_DEFER_SEC` cap from the first deferral.
+- Tests: `bash scripts/host/test-fleet-health-body.sh` covers both
+  (`--run-guard-decide-rc`, `--check-response` hooks).

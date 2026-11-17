@@ -25,6 +25,14 @@
 #  settings.strategy_run_lock:* lease), the restart is deferred and logged,
 #  up to RUN_GUARD_MAX_DEFER_SEC from the first deferral; then it restarts as
 #  before.  An unreadable DB counts as "unknown" and also defers (same cap).
+#  The guard fails closed: any decision status other than the documented
+#  defer (0) and proceed (1) is logged and also defers, under the same cap.
+#
+# Probe contract: a URL whose path is /api/live (or /live) is a process-only
+# liveness probe (ST app/api/live/route.ts returns {ok:true,probe:"live"}).
+# Any 2xx from it is healthy; the body is not parsed, so a future shape
+# change cannot restart a serving container.  Every other URL keeps the
+# top-level-ok body check below (usage-monitor /api/health unchanged).
 
 set -euo pipefail
 
@@ -62,6 +70,35 @@ if data.get("db") is False:
     raise SystemExit(1)
 raise SystemExit(0)
 '
+}
+
+# 0 when the URL's path is a process-only liveness endpoint (/api/live, /live).
+health_url_is_liveness() {
+  local url="$1" path
+  path="${url#*://}"
+  path="/${path#*/}"
+  [[ "$path" == "/${url#*://}" ]] && path="/"
+  path="${path%%\?*}"
+  path="${path%%#*}"
+  path="${path%/}"
+  [[ "$path" == "/api/live" || "$path" == "/live" ]]
+}
+
+# Judge one probe response.  0 = healthy.
+#   health_response_ok <url> <http-code> < body
+health_response_ok() {
+  local url="$1" code="$2"
+  if health_url_is_liveness "$url"; then
+    case "$code" in
+      2??) cat >/dev/null; return 0 ;;
+      *) cat >/dev/null; return 1 ;;
+    esac
+  fi
+  case "$code" in
+    2??|3??) ;;
+    *) cat >/dev/null; return 1 ;;
+  esac
+  health_body_ok
 }
 
 # Coolify GET/POST /applications/{uuid}/restart queues a deployment.
@@ -142,6 +179,35 @@ run_guard_should_defer() {
   return 1
 }
 
+# Fail-closed wrapper around run_guard_should_defer.  Returns 0 = defer,
+# 1 = proceed.  Only the documented proceed status (1) proceeds.  The
+# documented defer status (0) defers.  Any other status (a crash, a bad
+# arithmetic expansion, a signal) is logged and defers too, bounded by the
+# same RUN_GUARD_MAX_DEFER_SEC cap from the first deferral so a broken guard
+# cannot hold a down app forever.
+#   run_guard_decide <state-line> <now-epoch>
+run_guard_decide() {
+  local state="$1" now_ts="$2" rc=0
+  run_guard_should_defer "$state" "$now_ts" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  local cap="${RUN_GUARD_MAX_DEFER_SEC:-900}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=900
+  [[ "$RUN_GUARD_DEFER_SINCE" =~ ^[0-9]+$ ]] || RUN_GUARD_DEFER_SINCE=0
+  if [[ "$RUN_GUARD_DEFER_SINCE" -eq 0 ]]; then
+    RUN_GUARD_DEFER_SINCE="$now_ts"
+  fi
+  local waited=$(( now_ts - RUN_GUARD_DEFER_SINCE ))
+  if [[ "$waited" -lt "$cap" ]]; then
+    log "remediate: deferred (run guard decision failed rc=${rc}, failing closed; state=${state}; waited ${waited}s of ${cap}s)"
+    return 0
+  fi
+  log "remediate: run guard decision failed rc=${rc} and cap reached (waited ${waited}s >= ${cap}s); restarting anyway"
+  return 1
+}
+
 # Test hook: does not need app env or docker.
 #   bash fleet-health-recover.sh --check-body <file.json>
 #   bash fleet-health-recover.sh --coolify-fallback <0|1>   # 0 = docker failed
@@ -162,7 +228,25 @@ fi
 if [ "${1:-}" = "--run-guard-defer" ]; then
   log() { printf '%s\n' "$*" >&2; }
   RUN_GUARD_DEFER_SINCE="${3:-0}"
-  run_guard_should_defer "${2:-}" "${4:-0}"
+  rc=0
+  run_guard_decide "${2:-}" "${4:-0}" || rc=$?
+  exit "$rc"
+fi
+#   bash fleet-health-recover.sh --run-guard-decide-rc <inner-rc> <since> <now>
+#   Stubs run_guard_should_defer to exit <inner-rc>; tests the fail-closed path.
+if [ "${1:-}" = "--run-guard-decide-rc" ]; then
+  log() { printf '%s\n' "$*" >&2; }
+  inner_rc="${2:-0}"
+  run_guard_should_defer() { return "$inner_rc"; }
+  RUN_GUARD_DEFER_SINCE="${3:-0}"
+  rc=0
+  run_guard_decide "unknown stub" "${4:-0}" || rc=$?
+  exit "$rc"
+fi
+#   bash fleet-health-recover.sh --check-response <url> <http-code> <body-file>
+if [ "${1:-}" = "--check-response" ]; then
+  [ -f "${4:-}" ] || exit 1
+  health_response_ok "${2:-}" "${3:-}" < "$4"
   exit $?
 fi
 if [ "${1:-}" = "--coolify-fallback" ]; then
@@ -291,11 +375,7 @@ check_one() {
   body=$(curl -fsS -m 12 -w '\n%{http_code}' "$url" 2>/dev/null) || return 1
   code=$(printf '%s\n' "$body" | tail -n1)
   body=$(printf '%s\n' "$body" | sed '$d')
-  case "$code" in
-    2??|3??) ;;
-    *) return 1 ;;
-  esac
-  printf '%s' "$body" | health_body_ok
+  printf '%s' "$body" | health_response_ok "$url" "$code"
 }
 
 find_app_container() {
@@ -423,9 +503,11 @@ remediate() {
   fi
 
   if [[ -n "$RUN_GUARD_DB" ]]; then
-    local guard_state
-    guard_state=$(run_guard_state "$RUN_GUARD_DB")
-    if run_guard_should_defer "$guard_state" "$(now)"; then
+    local guard_state guard_rc=0
+    guard_state=$(run_guard_state "$RUN_GUARD_DB") || guard_state="unknown state-probe-failed"
+    [[ -n "$guard_state" ]] || guard_state="unknown empty-state"
+    run_guard_decide "$guard_state" "$(now)" || guard_rc=$?
+    if [[ "$guard_rc" -eq 0 ]]; then
       return 0
     fi
   fi
