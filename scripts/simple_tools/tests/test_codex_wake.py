@@ -576,6 +576,25 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual(status, "unreadable")
         self.assertEqual((profile, account), ("", ""))
 
+    def test_a_parse_failure_that_is_not_a_value_error_is_a_configuration_failure(self):
+        """A parser that fails with anything but a ValueError still settles as unreadable.
+
+        A document deep enough to exhaust the parser's stack raises a RecursionError, and
+        that must not abort the delivery:  the documented `owner-unreadable` refusal is
+        the settlement for every read or parse failure of the pin file.
+        """
+        with patch("json.loads", side_effect=RecursionError("too deep")):
+            status, profile, account = CW.local_pins({"HOME": self.tmp.name})
+        self.assertEqual(status, "unreadable")
+        self.assertEqual((profile, account), ("", ""))
+
+    def test_a_read_failure_that_is_not_an_os_error_is_a_configuration_failure(self):
+        """A read that fails with a memory error settles as unreadable too."""
+        with patch("pathlib.Path.read_bytes", side_effect=MemoryError("no room")):
+            status, profile, account = CW.local_pins({"HOME": self.tmp.name})
+        self.assertEqual(status, "unreadable")
+        self.assertEqual((profile, account), ("", ""))
+
     def test_a_rewritten_pin_file_is_read_again(self):
         from simple_tools import wake_settings as WS
 

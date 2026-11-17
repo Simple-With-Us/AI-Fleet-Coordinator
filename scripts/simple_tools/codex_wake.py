@@ -688,11 +688,14 @@ def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
     except FileNotFoundError:
         _LOCAL_FACTS.pop(str(path), None)
         return "missing", "", ""
-    except OSError:
+    except Exception:  # noqa: BLE001 - a read failure is a configuration failure, never a crash
         return "unreadable", "", ""
     # The stamp is the content, not the timestamp:  a file rewritten in place can keep its
     # modification time, and a stale pin would authorize the wrong owner.
-    stamp = hashlib.sha256(raw).hexdigest()
+    try:
+        stamp = hashlib.sha256(raw).hexdigest()
+    except Exception:  # noqa: BLE001 - a digest failure is a configuration failure, not a crash
+        return "unreadable", "", ""
     cached = _LOCAL_FACTS.get(str(path))
     if cached is not None and cached[0] == stamp:
         return "ok", cached[1]["profile"], cached[1]["owner_account"]
@@ -700,8 +703,11 @@ def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
     # describe the same content, even when the file is rewritten between two reads.
     try:
         document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except Exception:  # noqa: BLE001 - a broken file is a configuration failure, not a crash
         # A broken file is a configuration failure, not a missing pin:  the receipt says so.
+        # Every parse failure maps here, not only the ones that raise a ValueError:  a
+        # document deep enough to exhaust the parser's stack raises a RecursionError, and
+        # that must settle as `unreadable` too, never abort the delivery.
         return "unreadable", "", ""
     if not isinstance(document, Mapping):
         return "unreadable", "", ""
