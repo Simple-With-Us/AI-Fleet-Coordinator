@@ -1608,16 +1608,20 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            if seat in ROUTER_SEATS:
-                # The seats the one wake router serves (the platform table says which, and a seat
-                # with no module is not one of them) wake at the router's front, with the one
-                # bearer the router checks and the per-seat routine URL that names the front.
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is not None and routine.key_env == C.ROUTER_BEARER_ENV:
+                # A seat the sample routes at the router names the router's front and the one
+                # bearer the router checks.  A seat that has a platform module is not routed at
+                # the router yet, though:  it moves there only after its own path is deployed and
+                # verified live, and until then it keeps the binding it has.
+                self.assertIn(
+                    seat, ROUTER_SEATS, "%s is routed at the router with no module" % seat
+                )
                 self.assertEqual(
                     (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
                     ("http", "env", "server"),
                     "%s wakes at the one router" % seat,
                 )
-                routine = seat_cfg.routine
                 self.assertEqual(
                     (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
                     ("%s_ROUTINE_URL" % seat, C.ROUTER_BEARER_ENV, "bearer", "Authorization", "POST"),
