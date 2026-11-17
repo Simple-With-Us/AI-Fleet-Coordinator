@@ -151,6 +151,17 @@ class MiniMaxRow(Base):
         self.assertIs(PL.load_spec("minimax"), PM.SPEC)
         self.assertEqual((PM.SPEC.seat, PM.SPEC.output, PM.SPEC.events["Stop"]), ("MM", "text", "turn"))
 
+    def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
+        # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
+        # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
+        # note is written and no title is renamed.  The cap is the runtime's, so the timeouts stay under it.
+        self.assertEqual(PM.HOOK_TIMEOUT_CAP, 10)
+        for event, timeout in PM.HOOK_TIMEOUTS.items():
+            self.assertGreaterEqual(timeout, 1, event)
+            self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
+        self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
+        self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
+
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")
         self.add("m-0002", "", "conversation", "m-0001")

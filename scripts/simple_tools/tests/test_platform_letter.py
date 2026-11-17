@@ -4292,6 +4292,46 @@ class InstallTests(Base):
             json.dump(doc, fh)
         os.chmod(self.hooks_path(), mode)
 
+
+    def test_the_installer_refuses_a_timeout_the_runtime_would_reject(self) -> None:
+        # A runtime that refuses the timeout never runs the hook, so the installer writes nothing at all.
+        code, out = self.run_install(self.installer(events={"SessionStart": 20}, timeout_cap=10))
+        self.assertEqual(code, 1)
+        self.assertEqual(out["refused"], "timeout_over_cap")
+        self.assertEqual((out["cap"], out["timeouts"]), (10, {"SessionStart": 20}))
+        self.assertFalse(os.path.exists(self.hooks_path()))
+
+    def test_check_names_a_longer_installed_timeout_and_the_entry_is_not_current(self) -> None:
+        # The entry is installed and reads as right, and the runtime refuses its timeout:  it is not current, and the
+        # answer says which timeout the runtime would not take.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer, check=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(out["over_cap"], {"SessionStart": [20]})
+        self.assertFalse(out["current"]["SessionStart"])
+
+    def test_an_install_replaces_a_longer_installed_timeout(self) -> None:
+        # The entry the runtime refuses is replaced in place by one it runs.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer)
+        self.assertEqual((code, out["changed"]), (0, ["SessionStart"]))
+        self.assertEqual(self.run_install(installer, check=True)[0], 0)
+        for group in self.load()["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                self.assertEqual(hook["timeout"], 10)
+
     def test_install_is_idempotent_keeps_other_hooks_and_removes_cleanly(self) -> None:
         other = {"hooks": [{"type": "command", "command": "/x/guard.py", "timeout": 5}]}
         self.seed({"features": {"hooks": True}, "hooks": {"SessionStart": [other]}})

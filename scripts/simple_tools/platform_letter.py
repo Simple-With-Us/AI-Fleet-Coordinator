@@ -4277,6 +4277,21 @@ def _command_objects(node: Any, platform: str) -> list[dict[str, Any]]:
     return found
 
 
+def _entry_timeouts(node: Any, platform: str) -> list[int]:
+    """The timeouts, in seconds, of the hook entries that hold this platform's command."""
+    out: list[int] = []
+    for obj in _command_objects(node, platform):
+        value = obj.get("timeout")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = obj.get("timeoutMs")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            out.append(int(value // 1000))
+            continue
+        out.append(int(value))
+    return out
+
+
 def _strip(
     node: Any, platform: str, ours: Callable[[dict[str, Any], str], bool] | None = None
 ) -> Any:
@@ -4379,6 +4394,10 @@ class JsonHookInstaller:
     trust        what the platform needs after a hook is added (Codex trusts each new entry by hash, Muse needs
                  its plugin approved): reported in the install answer for the owner or the orchestrator to run;
                  the installer never runs it
+    timeout_cap  the largest timeout this platform's runtime accepts for one command hook, in seconds (0 when
+                 the limit is not known):  a runtime that refuses a longer timeout never runs that hook, so an
+                 entry over the cap is a hook that looks installed and does nothing.  The installer refuses to
+                 write one and `--check` reports a longer installed one as not current
     """
 
     path: str
@@ -4387,6 +4406,7 @@ class JsonHookInstaller:
     build: Callable[[str, int, str], Any] = command_entry
     whole_file: bool = False
     trust: str = ""
+    timeout_cap: int = 0
 
 
 @dataclass(frozen=True)
@@ -4488,6 +4508,12 @@ def install_json_hooks(
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (path, exc)}, 2)
     platform = opts.platform
+    cap = installer.timeout_cap
+    over = {ev: t for ev, t in installer.events.items() if cap and t > cap}
+    if over and not opts.remove:
+        # A runtime that refuses this timeout never runs the hook, so the installer writes nothing at all.
+        return _emit(stdout, {"platform": platform, "path": path, "refused": "timeout_over_cap",
+                               "cap": cap, "timeouts": over}, 1)
     already = [
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
@@ -4524,9 +4550,17 @@ def install_json_hooks(
         }
     if opts.check:
         current = {}
+        over_cap = {}
         for ev, timeout in installer.events.items():
             new, entries = _plan_event(installer, events, ev, timeout, command, platform, False)
             current[ev] = have[ev] and new == entries  # an install would change nothing
+            if cap:
+                longer = [t for t in _entry_timeouts(entries, platform) if t > cap]
+                if longer:
+                    # Installed, and a timeout this platform's runtime refuses:  the entry never runs, so the
+                    # hook is not current however close it is to the wanted one.
+                    current[ev] = False
+                    over_cap[ev] = longer
         from . import registry_api as RA
 
         # What a hook launched from this environment would find:  the registry settings, by name and never by value.
@@ -4537,6 +4571,7 @@ def install_json_hooks(
             "installed": have,
             "current": current,
             "registry": RA.configuration(env),
+            **({"over_cap": over_cap} if over_cap else {}),
             **key,
         }
         if stray or files:
