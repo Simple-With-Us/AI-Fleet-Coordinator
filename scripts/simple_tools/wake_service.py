@@ -197,6 +197,10 @@ def file_defaults() -> dict[str, Any]:
         defaults = getattr(module, "DEFAULTS", None)
         if isinstance(defaults, Mapping):
             values.update(defaults)
+    # A host fact whose platform is not on this host is still a name the shared file may
+    # carry, so it is known here:  one seat's key must never refuse the file for the others.
+    for name in WS.HOST_FACTS:
+        values.setdefault(name, "")
     return values
 
 

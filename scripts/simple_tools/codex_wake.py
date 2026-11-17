@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -661,8 +662,9 @@ def _request_objects(request: object) -> tuple[WR.Target | None, WR.Wake | None,
     return target, wake, ""
 
 
-#: The last read of this seat's own local settings file:  the path, its stamp and the facts.
-_LOCAL_FACTS: dict[str, tuple[int, Mapping[str, str]]] = {}
+#: The last read of the shared local settings file:  the path, the digest of its content and
+#: the facts it carried.
+_LOCAL_FACTS: dict[str, tuple[str, Mapping[str, str]]] = {}
 
 
 def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
@@ -683,12 +685,15 @@ def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
 
     path = WS.local_config_path(env)
     try:
-        stamp = path.stat().st_mtime_ns
+        raw = path.read_bytes()
     except FileNotFoundError:
         _LOCAL_FACTS.pop(str(path), None)
         return "missing", "", ""
     except OSError:
         return "unreadable", "", ""
+    # The stamp is the content, not the timestamp:  a file rewritten in place can keep its
+    # modification time, and a stale pin would authorize the wrong owner.
+    stamp = hashlib.sha256(raw).hexdigest()
     cached = _LOCAL_FACTS.get(str(path))
     if cached is not None and cached[0] == stamp:
         return "ok", cached[1]["profile"], cached[1]["owner_account"]

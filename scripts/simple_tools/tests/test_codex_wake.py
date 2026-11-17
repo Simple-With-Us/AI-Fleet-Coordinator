@@ -551,6 +551,63 @@ class CodexWakeTests(unittest.TestCase):
             pins=pins,
         )
 
+    def test_the_pins_are_read_from_the_shared_local_file(self):
+        from simple_tools import wake_settings as WS
+
+        status, profile, account = CW.local_pins({"HOME": self.tmp.name})
+        self.assertEqual(status, "ok")
+        self.assertEqual(profile, self.profile)
+        self.assertEqual(account, OWNER_ACCOUNT)
+        self.assertTrue(WS.local_config_path({"HOME": self.tmp.name}).is_file())
+
+    def test_no_local_file_means_no_pin(self):
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        status, profile, account = CW.local_pins({"HOME": elsewhere.name})
+        self.assertEqual(status, "missing")
+        self.assertEqual((profile, account), ("", ""))
+
+    def test_a_broken_local_file_is_a_configuration_failure(self):
+        from simple_tools import wake_settings as WS
+
+        local = WS.local_config_path({"HOME": self.tmp.name})
+        local.write_text("{not json", encoding="utf-8")
+        status, profile, account = CW.local_pins({"HOME": self.tmp.name})
+        self.assertEqual(status, "unreadable")
+        self.assertEqual((profile, account), ("", ""))
+
+    def test_a_rewritten_pin_file_is_read_again(self):
+        from simple_tools import wake_settings as WS
+
+        local = WS.local_config_path({"HOME": self.tmp.name})
+        self.assertEqual(CW.local_pins({"HOME": self.tmp.name})[2], OWNER_ACCOUNT)
+        local.write_text(
+            json.dumps(
+                {"pinned_profile": self.profile, "pinned_owner_account": OTHER_OWNER_ACCOUNT}
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(CW.local_pins({"HOME": self.tmp.name})[2], OTHER_OWNER_ACCOUNT)
+
+    def test_a_delivery_reads_the_pins_from_the_file_when_none_are_injected(self):
+        adapter = CW.CodexDelivery(
+            self.transport,
+            {"HOME": self.tmp.name},
+            lambda env, sid: self.meta,
+            local_host="mac",
+            hostname=lambda: "example.test",
+            registry_lookup=lambda env, letter: self.registry_result,
+        )
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual(result.outcome, "sent")
+
+    def test_an_account_id_is_read_as_text_whatever_the_store_column_holds(self):
+        self.assertEqual(PLC._text(42), "42")
+        self.assertEqual(PLC._text(" user-1 "), "user-1")
+        self.assertEqual(PLC._text(None), "")
+        self.assertEqual(PLC._text(True), "")
+
     def test_a_delivery_without_a_pinned_owner_is_refused(self):
         adapter = self._adapter(lambda env: ("ok", self.profile, ""))
         with self.with_chat():

@@ -21,10 +21,11 @@ MAX_BYTES = 8 * 1024 * 1024
 #: does not bound the work the parser and the walker do.
 MAX_DEPTH = 16
 MAX_NODES = 1000
-#: The node bound of a whole document.  A session registry with more than a thousand values in
-#: it is a valid snapshot, not an attack, so only the depth bound applies to the aggregate
-#: file:  the byte cap already bounds the work the aggregate costs.
-MAX_AGGREGATE_NODES = 10**9
+#: The node bound of a whole document.  A session registry holds thousands of values, so the
+#: node bound of one row is too small for the aggregate file, and the byte cap alone does not
+#: bound the work a document of small values costs:  this cap is the practical limit, well
+#: above a real registry and well below what the parser could be made to walk.
+MAX_AGGREGATE_NODES = 200_000
 WAKE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
