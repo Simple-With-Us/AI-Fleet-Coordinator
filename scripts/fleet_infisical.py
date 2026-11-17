@@ -980,7 +980,7 @@ def list_project_names(
             " ",
             HIDDEN_VALUE_MASK,
         )
-        if key in found or (value not in (None, "", " ") and not hidden_mask):
+        if key in found or (value not in (None, "") and not hidden_mask):
             raise SecretsError("unverified-source")
         found.add(key)
     return tuple(sorted(found))
