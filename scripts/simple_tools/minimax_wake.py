@@ -10,8 +10,10 @@ The two routes, and the rule between them.  A MiniMax chat is woken through the 
 CLI:  `mcode exec --session <session_id> --cwd <workspace> --model <provider/model> --input -`
 runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
 workspace, the binary and the model come from the local settings file, where the deployment
-names them (this file carries no private path literal), and the workspace is also the binding,
-because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
+names them (this file carries no private path literal).  The workspace is the seat's area and it
+is the binding:  a chat is delivered only when its own recorded workspace is that area or is
+under it, because a wake into another area is a wrong-chat delivery.  Containment, not
+equality, because one seat's chats live in several projects under that area.  A chat on this host
 delivers locally under a per-session file lock in `state_dir(env) / "locks"`, re-reading
 MiniMax Code's own session store once the lock is acquired.  A session the store does not know
 refuses (`session-not-found`);  one whose recorded workspace is gone refuses
@@ -136,8 +138,9 @@ DEFAULTS: Mapping[str, Any] = {
     "local_host": "server",
     "mac_ssh": "",
     "resume_timeout_seconds": 900,
-    # The deployment names the workspace;  there is no default, because a wrong default is
-    # the wrong-chat delivery this platform exists to refuse.
+    # The deployment names the seat's area;  there is no default, because a wrong default is
+    # the wrong-chat delivery this platform exists to refuse.  A chat is delivered only when
+    # its recorded workspace is that path or is under it.
     "workspace": "",
     "mcode_bin": "",
     # The model `mcode exec` runs on, named on the command line:  without it mcode inherits the
@@ -219,6 +222,23 @@ def _private_dir(folder: Path) -> None:
             raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(part))
         part.mkdir(mode=0o700, exist_ok=True)
     WR.private_dir(folder)
+
+
+def within(root: str, path: str) -> bool:
+    """True when `path` is `root` itself or is under it.
+
+    The deployment names the seat's area and every chat of that seat lives somewhere under it,
+    so the binding is containment and not equality:  a chat in a sibling project under the same
+    area is the seat's own, and a chat outside the area is refused as before.  The comparison is
+    on path components, so a text prefix would not let `/srv/code2` pass for `/srv/code`, and
+    the common path of a root of `/` is the root itself.
+    """
+    try:
+        root_real = os.path.realpath(root)
+        path_real = os.path.realpath(path)
+        return os.path.commonpath([root_real, path_real]) == root_real
+    except (OSError, ValueError):
+        return False
 
 
 def store_path(env: Mapping[str, str]) -> Path:
@@ -577,7 +597,7 @@ def deliver_local(
                 return WR.Delivery("refused", "wake", code="session-cwd-gone")
             if not os.path.isdir(recorded):
                 return WR.Delivery("refused", "wake", code="session-cwd-gone")
-            if os.path.realpath(recorded) != os.path.realpath(workspace):
+            if not within(workspace, recorded):
                 return WR.Delivery("refused", "wake", code="workspace-mismatch")
 
             child_env = _child_env(env)

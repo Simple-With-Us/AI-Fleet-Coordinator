@@ -1034,8 +1034,10 @@ class DaemonCheckTests(Case):
     def test_the_real_check_refuses_a_change_the_eavesdropper_would_not_take(self) -> None:
         # An http wake with no routine:  inside every allowlist range, and still a config the
         # Eavesdropper reports an error for.  Only its own check knows that.
+        # A seat the sample still routes through its inbox, so the http wake has no routine:
+        # the seats the one router serves carry a routine in the sample already.
         answer, status = M.run_request(
-            self.request("apply", {"seat.CLAUDE.wake": "http", "seat.CLAUDE.budget": {"usd_per_day": 0.5}}),
+            self.request("apply", {"seat.CODEX.wake": "http", "seat.CODEX.budget": {"usd_per_day": 0.5}}),
             path=self.live,
         )
         self.assertEqual((status, answer["errorCode"]), (2, "check_failed"), answer)
