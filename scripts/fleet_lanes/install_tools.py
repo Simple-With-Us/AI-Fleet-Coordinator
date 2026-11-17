@@ -5104,10 +5104,10 @@ def locate_zcode_files(doc: dict) -> list[Entry]:
     out: list[Entry] = []
     for gi, group in enumerate(groups):
         if not isinstance(group, dict):
-            raise ShapeError(f"'hooks.events.{plat.event}[{gi}]' is not an object")
+            continue
         inner = group.get("hooks")
         if not isinstance(inner, list):
-            raise ShapeError(f"'hooks.events.{plat.event}[{gi}].hooks' is not a list")
+            continue
         for hi, hook in enumerate(inner):
             if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
                 continue
@@ -5131,12 +5131,45 @@ def locate_zcode_files(doc: dict) -> list[Entry]:
     return out
 
 
+def zcode_unreadable_groups(doc: dict) -> list[str]:
+    """The paths of the Z Code hook groups the parser could not read.
+
+    A group that is not an object,  or one whose 'hooks' is not a list,  cannot show an entry,  so it is
+    skipped rather than refused:  a third-party group the fleet does not own must not block the fleet's
+    own hook update.  The paths are reported,  because a file guard hidden in such a group would be
+    invisible to the installer.
+    """
+    plat = PLATFORMS["zcode"]
+    hooks = doc.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        return []
+    groups = events.get(plat.event)
+    if not isinstance(groups, list):
+        return []
+    out: list[str] = []
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            out.append(f"hooks.events.{plat.event}[{gi}]")
+        elif not isinstance(group.get("hooks"), list):
+            out.append(f"hooks.events.{plat.event}[{gi}].hooks")
+    return out
+
+
 def merge_zcode_files(doc: dict, command: str) -> tuple[dict, str, list[str]]:
     """(new document, action, notes) for the Z Code file-guard group.  action is added, updated or unchanged.  It
     appends its own group (ZCODE_FILE_MATCHER) or corrects its own entry,  and never touches another hook."""
     new = copy.deepcopy(doc)
     entries = locate_zcode_files(new)
     notes: list[str] = []
+    unreadable = zcode_unreadable_groups(new)
+    if unreadable:
+        notes.append(
+            f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+            f"({', '.join(unreadable)}), so a file guard in one of them would be invisible here"
+        )
     if entries:
         first = entries[0]
         changed = False
@@ -5191,8 +5224,21 @@ def verify_zcode_files(
         entries = locate_zcode_files(doc)
     except Refused as exc:
         return [Check(t, "file-guard", "FAIL", str(exc))]
+    unreadable = zcode_unreadable_groups(doc)
+    if unreadable:
+        out_unreadable = [
+            Check(
+                t,
+                "unreadable groups",
+                "WARN",
+                f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+                f"({', '.join(unreadable)}), so a file guard in one of them would be invisible to this check",
+            )
+        ]
+    else:
+        out_unreadable = []
     if not entries:
-        return [
+        return out_unreadable + [
             Check(
                 t,
                 "file-guard",
@@ -5201,7 +5247,7 @@ def verify_zcode_files(
                 "MultiEdit, NotebookEdit and ApplyPatch are not guarded; run `apply zcode`",
             )
         ]
-    out: list[Check] = []
+    out: list[Check] = list(out_unreadable)
     want = zcode_file_hook_command(paths, PLATFORMS["zcode"].seat)
     for idx, entry in enumerate(entries):
         label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"

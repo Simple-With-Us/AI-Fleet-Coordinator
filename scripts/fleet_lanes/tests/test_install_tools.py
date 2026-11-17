@@ -7316,6 +7316,23 @@ class ZcodeSeatTests(World):
         write_json(self.config("zcode"), doc)
         self.assertFails(self.verify("zcode"), "Read/probe-placeholder/deny")
 
+    def test_a_malformed_third_party_group_is_skipped_and_reported(self) -> None:
+        """A group the fleet does not own must not block the fleet's own hook (Kody on #2279)."""
+        self.install(("zcode",))
+        doc = self.load("zcode")
+        groups = doc["hooks"]["events"]["PreToolUse"]
+        groups.insert(0, {"matcher": "Read", "hooks": "not-a-list"})
+        groups.append("not-an-object")
+        write_json(self.config("zcode"), doc)
+        plan = T.plan_platform(T.PLATFORMS["zcode"], self.paths)
+        self.assertNotEqual(plan.action, "refuse")
+        checks = self.verify("zcode")
+        self.assertIn("unreadable groups", {c.name for c in checks})
+        self.assertEqual(
+            T.zcode_unreadable_groups(doc),
+            ["hooks.events.PreToolUse[0].hooks", "hooks.events.PreToolUse[4]"],
+        )
+
     def test_the_seat_in_the_command_is_a_default_the_session_beats(self) -> None:
         """The prefix must not override a seat the session already declares (Kody on #2279)."""
         prefix = T.seat_prefix("ZC")
@@ -7328,11 +7345,15 @@ class ZcodeSeatTests(World):
         )
         for env, want in cases:
             with self.subTest(env=env):
+                child_env = os.environ.copy()
+                for key in ("AGENT_SEAT", "AGENT_TAG", "AGENT_LAUNCH_SEAT", "AGENT_LAUNCHER"):
+                    child_env.pop(key, None)
+                child_env.update(env)
                 out = subprocess.run(
                     ["/bin/sh", "-c", prefix + " sh -c 'printf %s \"$AGENT_SEAT\"'"],
                     capture_output=True,
                     text=True,
-                    env={**os.environ, **env},
+                    env=child_env,
                     timeout=30,
                 )
                 self.assertEqual(out.stdout, want)
