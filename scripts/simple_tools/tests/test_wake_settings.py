@@ -474,20 +474,23 @@ class LocalFile(Settings):
         """The shared file is one file, and one seat's key never refuses it for the others.
 
         A platform whose module cannot be imported here still owns the names the file may
-        carry, so the union holds them:  `confirm_seconds` is owned by the Claude and Muse
-        platforms alone, and the host facts of every platform are here too.
+        carry, so the union holds every name every platform owns:  the test makes every
+        platform's module fail to import and holds that each platform's own names are in the
+        union anyway.  A platform whose module is not on this host at all is covered by the
+        host facts, which are here for every platform.
         """
-        real = importlib.import_module
-
         def missing(name, *args, **kwargs):
-            if name == "simple_tools.claude_wake":
-                raise ImportError("not installed on this host")
-            return real(name, *args, **kwargs)
+            raise ImportError("not installed on this host")
 
         with mock.patch.object(SVC.importlib, "import_module", side_effect=missing):
             values = SVC.file_defaults()
-        self.assertIn("confirm_seconds", values)
-        self.assertIn("resume_timeout_seconds", values)
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            for name in getattr(module, "DEFAULTS", {}):
+                self.assertIn(name, values, "%s owns %s" % (seat, name))
         for name in WS.HOST_FACTS:
             self.assertIn(name, values)
 

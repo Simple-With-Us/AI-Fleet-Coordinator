@@ -136,13 +136,15 @@ HOST_FACTS = (
 #: one file, and a platform's module may not be installed on this host:  its keys are still in
 #: the file, so the names it owns are known here for every platform, and one seat's file is
 #: never refused for a platform this host does not serve.  A platform that owns a name of its
-#: own adds it here, beside the router's names.
+#: own adds it here, beside the router's names.  A governed setting takes its default from the
+#: knob registry, which is the one source of truth for it, so there is no second value here:
+#: a knob that is not registered stops this module from loading at all.
 PLATFORM_DEFAULTS: dict[str, Any] = {
     **WR.ROUTER_DEFAULTS,
     "local_host": "",
-    "mac_ssh": "",
-    "resume_timeout_seconds": 900,
-    "confirm_seconds": 20,
+    "mac_ssh": BY_NAME[MAC_SSH].default,
+    "resume_timeout_seconds": BY_NAME[INT_KNOBS["resume_timeout_seconds"]].default,
+    "confirm_seconds": BY_NAME[INT_KNOBS["confirm_seconds"]].default,
 }
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"

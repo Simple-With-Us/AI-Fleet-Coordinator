@@ -199,7 +199,8 @@ def file_defaults() -> dict[str, Any]:
         except Exception:
             # A module that is not there, or that fails to import for any reason, still owns
             # names the shared file may carry:  the shared names above and the host facts below
-            # are here for it, so its keys are never refused for the seats that are ready.
+            # are here for it, so its keys are never refused for the seats that are ready, and
+            # the union is whole without it.
             continue
         defaults = getattr(module, "DEFAULTS", None)
         if isinstance(defaults, Mapping):
