@@ -1339,6 +1339,10 @@ class MacUpdaterTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("missing", "FAIL"))
 
 
+# The real PATH, taken before a case empties it:  the copy comparison reads a real repository.
+GIT_PATH = os.environ.get("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
+
+
 def git_repo(root: Path, commits):
     """A real repository:  `commits` is a list of {path: text} applied in order;  returns their shas."""
 
@@ -1835,6 +1839,59 @@ class ReportAndRunTests(HomeCase):
         runtime = {r["check"]: r for r in json.loads(text)["checks"]}["runtime"]
         self.assertEqual(runtime["installed"], TIP)  # the managed runtime's HEAD, not the release's
         self.assertNotIn("release", runtime["detail"])
+
+
+class MacCopyRowsTests(ReportAndRunTests):
+    """AFC-1052:  the Mac's installed copies are judged on every Mac, whichever runtime layout it has.
+
+    The copy rows used to ride check_mac_tools, which only runs when the doctor judges the host
+    mac-style.  A Mac that also carries a fleet-cli release checkout (it publishes the server's
+    bundle from it) was judged server-style and lost every one of those rows, so a stale
+    ~/apps/fleet-rag went unnoticed and `recall contribute` failed for every seat on the Mac.
+    """
+
+    def test_a_mac_with_a_release_checkout_still_reports_its_installed_copies(self):
+        (self.home / ".local/share/fleet-cli/repo/.git").mkdir(parents=True)
+        stub = {
+            "status": "OK",
+            "detail": "the copy equals main",
+            "state": "current",
+            "category": "fleet-tool",
+            "tool": "recall",
+        }
+        with mock.patch.object(doctor, "compare_copy", return_value=stub):
+            text, _ = self.run_doctor(["--json", "--no-network"], host="mac")
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        self.assertIn("tool:recall", rows)
+        self.assertIn("tool:fleet-mode", rows)
+        self.assertEqual(rows["tool:recall"]["status"], "OK")
+
+    def test_a_stale_installed_copy_is_reported_with_the_fix(self):
+        # This case keeps a real git:  the comparison reads the blobs of a real repository.
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            repo = Path(self.tmp.name) / "runtime"
+            shas = git_repo(repo, [{"scripts/recall": "r1", "scripts/fleet_rag/core.py": "v1"}])
+            tip = shas[-1]
+            self.touch("apps/fleet-rag/recall", "r1")
+            self.touch("apps/fleet-rag/fleet_rag/core.py", "v1")
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                report = doctor.Report()
+                doctor.check_mac_copies(report, {"tip": tip, "head": tip})
+            rows = {r["check"]: r for r in report.rows}
+            self.assertEqual(
+                (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("current", "OK")
+            )
+
+            # An older copy of one file is stale, and the row names the command that fixes it.
+            self.touch("apps/fleet-rag/fleet_rag/core.py", "v0")
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                report = doctor.Report()
+                doctor.check_mac_copies(report, {"tip": tip, "head": tip})
+            rows = {r["check"]: r for r in report.rows}
+            self.assertEqual(
+                (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("stale", "FAIL")
+            )
+            self.assertIn("install-fleet-rag.sh", rows["tool:recall"]["detail"])
 
 
 class ServerStatusTests(HomeCase):
