@@ -138,31 +138,33 @@ The three gates, and what each of them answered on the day of the cutover.
 
 The legacy binding that the sample's change removed was the seat's inbox capture on the
 server, and it had delivered nothing:  the server's CODEX inbox holds no wake at all, so
-nothing that worked was removed with it.
+nothing that worked was removed with it.  The live block is moved to the sample's
+block only after those three gates hold, and it stays on the binding it has otherwise.
 
 The steps, in this order.
 
 1.  Write the pinned profile and the pinned owner account into the local settings file, as
     above.  Before the live listener's block is changed, mint `CODEX_ROUTINE_URL` in
     AFC prod `/zulip` with the value `https://<server tailnet host>:8795/wake/CODEX`, the
-    router's front for this seat, and restart the listener container so it reads the name:
-    the environment is read once at the container's start, so a reload alone would leave
-    the routine without its URL and every wake routine-unready.
+    router's front for this seat.  The container is restarted after step 3 has changed
+    the block, so the new name and the new binding are in force together:  the environment
+    is read once at the container's start, so a reload alone would leave the routine
+    without its URL and every wake routine-unready.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
 3.  Change the live listener's `[seat.CODEX]` block to `wake = "http"` with
-    `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
+    `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    and restart the listener container:  the restart carries the name minted in step 1 and
+    the new binding together, and a reload alone would keep the old value.
 4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
     (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
     unsettled outcome.
 
-What the cutover proved, on the day it was done.  The router's release on the server
-carries `codex_wake.py`, `/health/CODEX` answers `healthy` with `delivery` on, and the seat
-is in `WAKE_ROUTER_DELIVERY_SEATS`.  A canary wake posted to the router's front with
-the router's own bearer was picked by the letter, and the delivery took the ssh route
-to the Mac (`route: ssh:codex-desktop`) and was answered by the Mac-side handler.  What the
-delivery proves next depends on the target:  a chat the store does not show as an
+What the cutover proved, on the day it was done.  The canary wake was picked by its
+letter, and the delivery took the ssh route to the Mac (`route: ssh:codex-desktop`), where
+the Mac-side handler answered it.  What the delivery proves next depends on the target:
+a chat the store does not show as an
 interactive chat is refused with `not-interactive-chat` before anything is enqueued, and that
 refusal is the platform's own contract, not a routing failure.  A chat that the Codex
 Desktop app has loaded is the only target that can take the wake, so the delivery proof

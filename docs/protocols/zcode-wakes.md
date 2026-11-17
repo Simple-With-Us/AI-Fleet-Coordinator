@@ -39,8 +39,28 @@ delivers over the one fixed route.  A chat on the Mac is reached over ssh throu
 The sample `scripts/simple_tools/server/listener.toml` declares the seat's binding, and the live
 file is moved to the sample's block by `apply_live_config.py --apply` once the image carries
 it:  `wake = "http"` with `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-the one bearer the router checks.  The container is restarted with it, because the
-environment is read once at the container's start.
+the one bearer the router checks.  That command runs only after the replacement has been
+explicitly reviewed, is live, and has been verified with a real wake;  a seat that fails any
+of those three keeps the binding it has, and the legacy binding stays active until all three
+hold.  The container is restarted with it, because the environment is read once at
+the container's start.
+
+The three gates, and what each of them answered on the day of the cutover.
+
+- Reviewed:  the ZC seat's platform module landed on main in pull request #2283 (squash
+  commit `11618d157`) after Kody's code review, and every finding on it was answered, fixed
+  and resolved before the merge.
+- Live:  the router's release on the server carries `zcode_wake.py`, `/health/ZC` answers
+  `healthy` with `delivery` on, and ZC is in `WAKE_ROUTER_DELIVERY_SEATS`.
+- Verified with a real wake:  a canary wake posted to the router's front with the router's
+  own bearer was picked by the seat's letter, bound to the session's own store row, and
+  handed to the ZCode runtime, which then failed at the seat's own model credential
+  (`project_token_login_failed` for the zai family).
+
+The binding that the change removed had delivered nothing:  the server's ZC inbox holds 151
+captured wakes and none of them was ever delivered, and the legacy bridge runs the same
+command with the same credential, so it fails the same way.  The bridge stays up and keeps
+its own values, and it retires only after a real wake is delivered end to end.
 
 The cutover was done in these five steps, in this order.  The legacy bridge stays the
 seat's live path until the router's own front has answered a real wake, so a cutover that
