@@ -127,6 +127,19 @@ class Remote(unittest.TestCase):
         self.assertEqual(data["structured"], {"count": 1, "ids": ["AFC-1"]})
         self.assertIn("Fix the thing", data["text"])
 
+    def test_a_tool_that_needs_a_summary_fails_fast_when_the_hosted_sends_none(self):
+        # Only the fenced reads may answer with the text envelope alone:  whoami has to name the
+        # seat and a write has to say what the hosted did, so a missing summary there is a failure
+        # and never a quiet success with nothing in it.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "{}"}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertNotIn("seat:", out)
+        self.assertEqual(len(calls), 1)
+
     def test_list_env_is_refused_because_the_hosted_tool_ignores_it(self):
         code, _, err, calls = self.run_cli(["list", "--env", "Mac"], rpc({"count": 0, "ids": []}))
         self.assertEqual(code, 2)

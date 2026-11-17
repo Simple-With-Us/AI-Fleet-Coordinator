@@ -6600,7 +6600,13 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
         # A fenced read answers with the text envelope only:  the hosted drops the summary object for
         # those tools (AFC-637), because the envelope may not carry it (it holds integers only) and the
         # text is the result.  An absent summary is that shape;  a summary of the wrong type is not.
-        sc = {}
+        # Every other tool needs its summary:  whoami has to name the seat, and a write has to say
+        # what the hosted did with it, so a missing summary there is a failure and never a quiet
+        # success with nothing in it.
+        if tool in ("linear_list", "linear_show"):
+            sc = {}
+        else:
+            die("the hosted endpoint sent no structured result", EXIT_ERROR)
     elif not isinstance(sc, dict):
         die("the hosted endpoint sent no structured result", EXIT_ERROR)
     # The hosted list/show keep the issue rows, comment bodies, labels and duplicate relations in the text
