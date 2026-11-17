@@ -125,3 +125,4 @@ ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTest
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:24
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:45
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:66
+eaef7728bc36e12af3d316ecb1302c6644cff39e:scripts/build-workflow-client-release.py:generic-api-key:14
