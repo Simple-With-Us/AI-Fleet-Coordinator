@@ -132,6 +132,18 @@ HOST_FACTS = (
     "pinned_profile",
     "pinned_owner_account",
 )
+#: The names every platform's own settings add to the router's names.  The shared local file is
+#: one file, and a platform's module may not be installed on this host:  its keys are still in
+#: the file, so the names it owns are known here for every platform, and one seat's file is
+#: never refused for a platform this host does not serve.  A platform that owns a name of its
+#: own adds it here, beside the router's names.
+PLATFORM_DEFAULTS: dict[str, Any] = {
+    **WR.ROUTER_DEFAULTS,
+    "local_host": "",
+    "mac_ssh": "",
+    "resume_timeout_seconds": 900,
+    "confirm_seconds": 20,
+}
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take

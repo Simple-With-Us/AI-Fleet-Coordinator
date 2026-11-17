@@ -470,6 +470,27 @@ class LocalFile(Settings):
                 with self.assertRaises(SystemExit):
                     self.loaded()
 
+    def test_a_platform_this_host_does_not_serve_still_owns_its_names(self) -> None:
+        """The shared file is one file, and one seat's key never refuses it for the others.
+
+        A platform whose module cannot be imported here still owns the names the file may
+        carry, so the union holds them:  `confirm_seconds` is owned by the Claude and Muse
+        platforms alone, and the host facts of every platform are here too.
+        """
+        real = importlib.import_module
+
+        def missing(name, *args, **kwargs):
+            if name == "simple_tools.claude_wake":
+                raise ImportError("not installed on this host")
+            return real(name, *args, **kwargs)
+
+        with mock.patch.object(SVC.importlib, "import_module", side_effect=missing):
+            values = SVC.file_defaults()
+        self.assertIn("confirm_seconds", values)
+        self.assertIn("resume_timeout_seconds", values)
+        for name in WS.HOST_FACTS:
+            self.assertIn(name, values)
+
     def test_a_named_file_that_is_missing_stops_the_router(self) -> None:
         settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path, required=True)
         with self.assertRaises(SystemExit):

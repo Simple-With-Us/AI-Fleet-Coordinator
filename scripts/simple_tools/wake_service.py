@@ -189,14 +189,17 @@ def file_defaults() -> dict[str, Any]:
     The file is shared by every seat, so a seat's own facts are in it too:  the union is what
     the reader is checked against, so one seat's key never refuses the file for the others.
     A platform this host does not serve is still a platform whose names the file may carry, so
-    the union is wider than the seats that are ready here."""
-    values: dict[str, Any] = {}
+    the union is wider than the seats that are ready here:  the names every platform owns are
+    here even when the module that owns them cannot be imported, so a platform's key never
+    refuses the file for the seats that are."""
+    values: dict[str, Any] = dict(WS.PLATFORM_DEFAULTS)
     for seat, entry in sorted(BUILDERS.items()):
         try:
             module = importlib.import_module(entry.module)
         except Exception:
             # A module that is not there, or that fails to import for any reason, still owns
-            # names the shared file may carry.
+            # names the shared file may carry:  the shared names above and the host facts below
+            # are here for it, so its keys are never refused for the seats that are ready.
             continue
         defaults = getattr(module, "DEFAULTS", None)
         if isinstance(defaults, Mapping):
