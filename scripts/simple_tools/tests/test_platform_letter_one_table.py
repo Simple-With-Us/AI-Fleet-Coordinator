@@ -214,11 +214,12 @@ class MiniMaxRow(Base):
     def test_the_parent_walk_stops_when_its_budget_is_spent(self) -> None:
         # A slow registry can cost a parent its registration, but not the chat's own letter:  the walk
         # may spend only what the row's budget leaves after the chat's own chain, and it stops when
-        # that is spent.
+        # less than one ancestor's chain is left.  Three seconds of allowance fit one generation
+        # (the register, the reopen that may follow it, the title update) and no more.
         import dataclasses
 
-        spec = dataclasses.replace(PM.SPEC, hook_budget=10, call_timeout=0, parent_call_timeout=0)
-        self.assertEqual(PL.walk_allowance(spec), 1.0)
+        spec = dataclasses.replace(PM.SPEC, hook_budget=12, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 3.0)
         self.add("m-0001", "Grandparent")
         self.add("m-0002", "Parent", parent="m-0001")
         self.add("m-0003", "Child", parent="m-0002")
@@ -233,6 +234,101 @@ class MiniMaxRow(Base):
             "the walk stops when its budget is spent",
         )
         self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_the_ancestors_chain_calls_share_what_is_left_of_the_budget(self) -> None:
+        # The chain is the register, the reopen that may follow it, and the title update, so each of
+        # its calls gets a share of what is left of the walk's budget:  the chain cannot outlast the
+        # allowance, however slow the registry is.
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=14, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 5.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[int] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append(timeout)
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertLessEqual(min(seen), 1, "an ancestor's chain call outlasted the allowance")
+
+    def test_an_ancestor_with_no_deadline_of_its_own_gets_the_shared_one(self) -> None:
+        # A row that declares no deadline of its own gets the shared one, not a one-second clamp:
+        # the sentinel of zero means "not declared".
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=30, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 21.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[int] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append(timeout)
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertIn(PL._API_TIMEOUT, seen, "the shared deadline was clamped away")
+
+    def test_a_failing_ancestor_call_is_charged_to_the_walk(self) -> None:
+        # A failing call that took its time is spent time:  the walk must not be told its budget is
+        # untouched, or the next generation starts with the whole allowance again.
+        import dataclasses
+        from unittest import mock
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=13, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 4.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        real = PL._apply
+
+        def failing(chat, answer, note):
+            if chat.session_id == "m-0003":
+                return real(chat, answer, note)
+            time.sleep(1.2)
+            raise RuntimeError("the registry call failed")
+
+        with mock.patch.object(PL, "_apply", failing):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk started another generation with a budget it had already spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_an_ancestor_that_is_not_a_chat_does_not_break_the_walk(self) -> None:
+        # An ancestor whose own kind is neither a chat nor a subagent ends that branch with a number,
+        # so the generation above it is still registered.
+        self.add("m-0001", "Grandparent", kind="cron")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
 
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")

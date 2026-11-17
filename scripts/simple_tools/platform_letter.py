@@ -2574,12 +2574,14 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
     model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
     does nothing here, and nothing here ever stops the sub-thread's own registration.
 
-    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  every ancestor's call
-    is capped by what is left of them, and the walk stops when they are spent.  It returns the seconds
-    it spent, so the generation above it knows what is left."""
+    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  every call of an
+    ancestor's chain is capped by what is left of them, so the chain (the register, the reopen that
+    may follow it, the title update) cannot outlast the allowance, and the walk stops when it is
+    spent.  It returns the seconds it spent, so the generation above it knows what is left."""
     spec = chat.spec
     if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH or allowance <= 0:
         return 0.0
+    frame_started = time.monotonic()
     try:
         sid = SI.check(parent, "the parent session id")
         mother = Chat(
@@ -2596,7 +2598,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
             return
         payload = spec.chat_payload(sid)
         if _text(spec.kind(payload, chat.env)) not in ("chat", "subagent"):
-            return
+            return 0.0
         grand = _text(spec.parent_id(payload, chat.env)) or str(note.get("parent") or "")
         spent = _ensure_parent(mother, grand, depth + 1, allowance)
         note = (
@@ -2605,8 +2607,12 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
         if _settled(note):
             return spent
         left = allowance - spent
-        if left < 1:
-            return spent  # less than a call's time is left:  the chat's own registration is what is left
+        if left < REGISTER_CALLS:
+            return spent  # less than an ancestor's chain is left:  the chat's own registration is what is left
+        # The chain is the register, the reopen that may follow it, and the title update, so each of
+        # its calls gets a share of what is left and the chain cannot outlast the allowance.  A row
+        # that declares no deadline of its own gets the shared one, not a one-second clamp.
+        cap = spec.parent_call_timeout or spec.call_timeout or _API_TIMEOUT
         mother.write(dict(note, failed_at=chat.now))
         started = time.monotonic()
         done = _apply(
@@ -2615,7 +2621,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
                 "register",
                 title=str(note.get("title") or ""),
                 parent=grand,
-                timeout=max(1, min(spec.parent_call_timeout or spec.call_timeout, int(left))),
+                timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
             ),
             dict(note, parent=grand),
         )
@@ -2625,7 +2631,9 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
         mother.write(done)
         return spent
     except Exception:  # noqa: BLE001 - the sub-thread is registered whether or not its parent could be
-        return 0.0
+        # The seconds this frame spent are gone with it, so the caller must not be told the budget
+        # is untouched:  a failing call that took its time is charged to the walk.
+        return time.monotonic() - frame_started
 
 
 def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
