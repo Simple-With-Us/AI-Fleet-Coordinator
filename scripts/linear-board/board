@@ -6603,7 +6603,16 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
         # Every other tool needs its summary:  whoami has to name the seat, and a write has to say
         # what the hosted did with it, so a missing summary there is a failure and never a quiet
         # success with nothing in it.
-        if tool in ("linear_list", "linear_show"):
+        # Only the fenced reads may answer with the envelope alone, and only when the envelope
+        # carries text:  an answer with neither a summary nor text is a failure, never a quiet
+        # success that reads as zero issues.
+        if tool in ("linear_list", "linear_show") and any(
+            isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            and part.get("text")
+            for part in result.get("content") or []
+        ):
             sc = {}
         else:
             die("the hosted endpoint sent no structured result", EXIT_ERROR)

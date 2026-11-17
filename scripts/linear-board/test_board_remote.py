@@ -127,6 +127,17 @@ class Remote(unittest.TestCase):
         self.assertEqual(data["structured"], {"count": 1, "ids": ["AFC-1"]})
         self.assertIn("Fix the thing", data["text"])
 
+    def test_an_empty_text_envelope_is_not_a_result(self):
+        # The envelope fallback is for a fenced read that carries text:  an answer with neither
+        # a summary nor text is a failure, never a quiet success that reads as zero issues.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": ""}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertEqual(len(calls), 1)
+
     def test_a_tool_that_needs_a_summary_fails_fast_when_the_hosted_sends_none(self):
         # Only the fenced reads may answer with the text envelope alone:  whoami has to name the
         # seat and a write has to say what the hosted did, so a missing summary there is a failure
