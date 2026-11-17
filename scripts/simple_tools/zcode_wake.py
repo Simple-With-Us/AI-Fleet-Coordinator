@@ -75,8 +75,8 @@ TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation", "title"
 WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: A Zulip link is longer than a name.
 MAX_LINK = 500
-#: The child's own output is scanned in memory and never kept:  bounded windows over the
-#: whole output, and only the typed code a documented signature maps to ever reaches a receipt.
+#: The child's own output is scanned in memory and never kept:  a bounded tail of it, and
+#: only the typed code a documented signature maps to ever reaches a receipt.
 OUTPUT_SCAN_CAP = 8192
 #: The limits an untrusted request is held to before any field of it is used:  an absolute
 #: byte cap on the request as it was parsed, how deep the value may nest, and how many nodes
@@ -585,8 +585,13 @@ def make_deliver(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.Popen,
+    remote_runner: Runner = subprocess.run,
 ) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
-    """ZCode's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
+    """ZCode's `deliver`:  this host directly, the Mac over ssh, any other host refused.
+
+    The two routes run two different children, so they take two runners:  the local turn is
+    started with a handle the module keeps, and the ssh call is a plain command that is
+    waited for and read at once."""
     local_host = str(config.get("local_host", "server"))
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
@@ -603,7 +608,9 @@ def make_deliver(
         if target.host == "mac":
             from . import claude_wake as CW
 
-            return CW.deliver_remote(env, config, target, wake, platform=PLATFORM, runner=runner)
+            return CW.deliver_remote(
+                env, config, target, wake, platform=PLATFORM, runner=remote_runner
+            )
         return WR.Delivery("refused", code="unknown-host")
 
     return deliver
@@ -614,6 +621,7 @@ def router_platform(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.Popen,
+    remote_runner: Runner = subprocess.run,
 ) -> WR.Platform:
     """Build the ZCode `Platform` for `wake_service.BUILDERS`."""
     return WR.Platform(
@@ -621,7 +629,7 @@ def router_platform(
         platform=PLATFORM,
         mention=MENTION,
         target_re=SESSION_RE,
-        deliver=make_deliver(env, config, runner=runner),
+        deliver=make_deliver(env, config, runner=runner, remote_runner=remote_runner),
         exclude=exclude_non_interactive(
             env,
             str(config.get("local_host", "server")),

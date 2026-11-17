@@ -647,6 +647,18 @@ class RouterPlatformTests(Base):
         self.assertEqual(delivery.outcome, "sent")
         self.assertIn(str(self.workspace), self.calls[0])
 
+    def test_the_two_routes_take_two_runners(self):
+        # The local turn is started with a handle the module keeps, and the ssh call is a plain
+        # command that is waited for and read at once:  one runner cannot be both.
+        import inspect
+
+        local = inspect.signature(zcode_wake.make_deliver).parameters
+        self.assertIs(local["runner"].default, subprocess.Popen)
+        self.assertIs(local["remote_runner"].default, subprocess.run)
+        remote = inspect.signature(zcode_wake.router_platform).parameters
+        self.assertIs(remote["runner"].default, subprocess.Popen)
+        self.assertIs(remote["remote_runner"].default, subprocess.run)
+
 
 if __name__ == "__main__":
     unittest.main()
