@@ -100,6 +100,8 @@ It returns a `Delivery` whose `outcome` is one of:
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
     failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
     refused      it can never work, or a retry could run the turn twice;  no retry
+    unknown      it may have run the wake and nobody can tell;  it is not retried (a retry could
+                 run the turn twice) and not recorded as delivered;  the receipt keeps it visible
 
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
@@ -246,7 +248,7 @@ DONE_KEEP_SECONDS = 30 * 86400
 REQUEST_TIMEOUT = 30
 # What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
 STOP_MARGIN_SECONDS = 5.0
-OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
+OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused", "unknown")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
@@ -1510,6 +1512,11 @@ class Router:
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
+        elif outcome == "unknown":
+            # The delivery may have run the wake and nobody can tell:  it is not recorded as
+            # delivered, and it is not retried, because a retry could run the turn twice.  The
+            # receipt keeps it visible, so an operator can see what is not settled.
+            self._finish(entry, pick, status="unknown", delivered=None, result=result)
         else:
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
 
