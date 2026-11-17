@@ -44,6 +44,17 @@ class Base(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.getvalue()
 
+    def slow_transport(self, seconds: float):
+        """A registry that takes its time:  the walk's budget is spent on the calls it really makes."""
+
+        def transport(argv):
+            time.sleep(seconds)
+            out = io.StringIO()
+            PL.registry_main(list(argv), env=getattr(self, "env")(), stdout=out)
+            return json.loads(out.getvalue())
+
+        return transport
+
     def note(self, seat: str, sid: str) -> dict:
         with open(os.path.join(self.state, seat, "letters", sid + ".json"), encoding="utf-8") as fh:
             return json.load(fh)
@@ -161,26 +172,35 @@ class MiniMaxRow(Base):
             self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
         self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
         self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
-        # And the register chain fits inside the budget:  the chat's own calls, and the ancestor
-        # generations this row's own depth allows, at the row's own deadlines.  The ancestor count is the
-        # worst case (the register, the reopen and the title update), not the usual one call.
+        # And the chain fits inside the budget:  the chat's own calls at the row's own deadlines, and
+        # the ancestor walk may spend what is left of the budget after them.  An ancestor's
+        # registration chains three calls (the register, the reopen and the title update), so what
+        # bounds the walk is the time it may spend, not a count of calls.
         self.assertLessEqual(
-            PM.PARENT_DEPTH * PL.PARENT_CALLS * PM.PARENT_CALL_TIMEOUT
-            + PL.CHAT_CALLS * PM.CALL_TIMEOUT,
+            PL.CHAT_CALLS * PM.CALL_TIMEOUT + PL.walk_allowance(PM.SPEC),
             min(PM.HOOK_TIMEOUTS.values()),
         )
         self.assertLess(PM.CALL_TIMEOUT, PL._API_TIMEOUT)
         self.assertEqual(PM.SPEC.call_timeout, PM.CALL_TIMEOUT)
         self.assertEqual(PM.SPEC.parent_call_timeout, PM.PARENT_CALL_TIMEOUT)
-        # The depth is the row's own, and the rows that can carry the shared one keep it:  this row is
-        # smaller, not the table.
-        self.assertEqual(PM.SPEC.parent_depth, PM.PARENT_DEPTH)
-        self.assertEqual(PL.effective_parent_depth(PM.SPEC), PM.PARENT_DEPTH)
-        self.assertEqual(PL.effective_parent_depth(PC.SPEC), PL.PARENT_DEPTH)
+        self.assertEqual(PM.SPEC.hook_budget, PM.HOOK_BUDGET)
+        self.assertEqual(PL.walk_allowance(PM.SPEC), PM.HOOK_BUDGET - PL.CHAT_CALLS * PM.CALL_TIMEOUT)
+        # The rows that keep the shared depth and the shared deadline are bounded the same way:  the
+        # walk may spend what their budget leaves, and no row's ancestor registration outlives its
+        # hook.
+        self.assertEqual(PL.PARENT_DEPTH, 3)
+        self.assertEqual(PC.SPEC.hook_budget, 0)
+        self.assertEqual(
+            PL.walk_allowance(PC.SPEC), PL.SHARED_HOOK_BUDGET - PL.CHAT_CALLS * PL._API_TIMEOUT
+        )
+        self.assertLessEqual(
+            PL.CHAT_CALLS * PL._API_TIMEOUT + PL.walk_allowance(PC.SPEC),
+            min(PL.HOOK_TIMEOUTS.values()),
+        )
 
-    def test_the_parent_walk_stops_at_the_row_own_depth(self) -> None:
-        # The runtime stops the hook at ten seconds, so this row registers one ancestor generation:  a
-        # sub-thread's parent is registered, and that parent's own parent is not.
+    def test_the_parent_walk_registers_the_ancestors_the_budget_allows(self) -> None:
+        # The row's budget is ten seconds, the chat's own chain is six of them, and the walk may spend
+        # the four that are left:  a parent and a grandparent are registered while that lasts.
         self.add("m-0001", "Grandparent")
         self.add("m-0002", "Parent", parent="m-0001")
         self.add("m-0003", "Child", parent="m-0002")
@@ -188,11 +208,31 @@ class MiniMaxRow(Base):
             PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
         )
         self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0001").get("label"))
         self.assertTrue(self.note("MM", "m-0003").get("label"))
-        self.assertFalse(
-            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0001.json")),
-            "the grandparent is one generation too many for the row's budget",
+
+    def test_the_parent_walk_stops_when_its_budget_is_spent(self) -> None:
+        # A slow registry can cost a parent its registration, but not the chat's own letter:  the walk
+        # may spend only what the row's budget leaves after the chat's own chain, and it stops when
+        # that is spent.
+        import dataclasses
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=10, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 1.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            spec,
+            {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"},
+            transport=self.slow_transport(0.6),
         )
+        self.assertTrue(self.note("MM", "m-0001").get("label"), "the first ancestor fits in the budget")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk stops when its budget is spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
 
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")

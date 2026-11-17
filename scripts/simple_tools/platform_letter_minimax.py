@@ -57,17 +57,15 @@ HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
 #: How long one registry call from this platform's hook may take, in seconds.  The runtime's ceiling is
-#: ten seconds and the chain that has to fit inside it is the chat's own three calls plus one ancestor
-#: generation's three calls, so the chat's calls are given two seconds each and the ancestors' one:
-#: three times two plus three times one is nine seconds, inside the ceiling.  Every other platform keeps
-#: the shared deadline, which is longer.
+#: ten seconds and the chain that has to fit inside it is the chat's own three calls, so the chat's
+#: calls are given two seconds each:  three times two is six seconds, and the ancestor walk may spend
+#: the four that are left of the ceiling.  Every other platform keeps the shared deadline, which is
+#: longer.
 CALL_TIMEOUT = 2
 PARENT_CALL_TIMEOUT = 1
-#: How many generations of ancestors this row's hook registers ahead of a sub-thread.  One generation
-#: fits the ten-second ceiling (PL.PARENT_CALLS * PARENT_CALL_TIMEOUT + PL.CHAT_CALLS * CALL_TIMEOUT is
-#: three seconds plus six) and a second does not, so the row carries one and not the shared depth of
-#: three:  a hook stopped by the runtime before it registers the chat leaves the chat without a letter.
-PARENT_DEPTH = 1
+#: How many seconds this row's hook has before the runtime stops it.  The chat's own chain (three
+#: calls at two seconds) is six of them, and the ancestor walk may spend the four that are left.
+HOOK_BUDGET = 10
 CLOSE_REASONS: tuple[str, ...] = ()
 # The retired client's letter cache (`minimax_retired_note`):  the most of one file that is read, and the most
 # project scopes looked through for it.
@@ -242,7 +240,7 @@ SPEC = PL.PlatformSpec(
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,
     parent_call_timeout=PARENT_CALL_TIMEOUT,
-    parent_depth=PARENT_DEPTH,
+    hook_budget=HOOK_BUDGET,
 )
 
 INSTALL = PL.JsonHookInstaller(

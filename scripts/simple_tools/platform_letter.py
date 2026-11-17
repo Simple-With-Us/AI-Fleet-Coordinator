@@ -418,9 +418,9 @@ class PlatformSpec:
     parent_call_timeout        the deadline for one ancestor's best-effort registration (0 for the row's
                                own):  an ancestor that cannot be registered does not stop the chat's own
                                registration, so it must not eat the chat's budget
-    parent_depth              how many generations of ancestors this platform's hook registers ahead of
-                               a sub-thread:  0 for the shared depth (`PARENT_DEPTH`), and a smaller
-                               number for a platform whose hook budget cannot carry the shared one
+    hook_budget               how many seconds this platform's hook has before its runtime stops it:
+                               the row's own budget (0 for the shared one), which is what the ancestor
+                               walk may spend, the chat's own chain being reserved out of it
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -462,7 +462,7 @@ class PlatformSpec:
     locations: tuple[str, ...] = LOCATIONS
     call_timeout: int = 0
     parent_call_timeout: int = 0
-    parent_depth: int = 0
+    hook_budget: int = 0
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
@@ -797,6 +797,10 @@ _API_TIMEOUT = 3
 #: The calls one chat's own registration makes:  the register, the reopen that may follow it, and the
 #: title update that carries the lettered title.
 CHAT_CALLS = 3
+#: The seconds a hook has before its runtime stops it, when a row declares none of its own:  the
+#: tightest of the shared budgets (HOOK_TIMEOUTS).  The ancestor walk may spend what is left of this
+#: after the chat's own chain is reserved out of it.
+SHARED_HOOK_BUDGET = min(HOOK_TIMEOUTS.values())
 #: The calls one ancestor's best-effort registration makes:  its register, the reopen that may follow
 #: it when the registry says that ancestor is closed, and the title update that carries the lettered
 #: title.  An ancestor that was registered before and came back closed is exactly the ancestor this
@@ -2543,16 +2547,22 @@ def _settled(note: Mapping[str, Any]) -> bool:
     )
 
 
-def effective_parent_depth(spec: "PlatformSpec") -> int:
-    """How many generations of ancestors this platform's hook registers ahead of a sub-thread.
+def walk_allowance(spec: PlatformSpec) -> float:
+    """The seconds the ancestor walk may spend on one hook:  the row's own hook budget less the
+    chat's own chain, which is reserved for it.
 
-    The shared depth is what every row gets, and a row whose hook budget cannot carry the shared one
-    declares its own (`PlatformSpec.parent_depth`):  a platform's runtime stops its hook, and a hook
-    stopped before it registers the chat leaves the chat without a letter."""
-    return spec.parent_depth or PARENT_DEPTH
+    A call count alone cannot say whether a walk fits:  an ancestor's registration chains up to three
+    calls (register, reopen, update), and how long each takes is not a number the code knows.  What
+    the hook's deadline is spent on is the time the calls really take, so the walk carries the
+    seconds it may still spend, every ancestor's call is capped by what is left of them, and the walk
+    stops when they are spent:  a slow registry can cost a parent its registration, never the chat's
+    own letter."""
+    budget = spec.hook_budget or SHARED_HOOK_BUDGET
+    chain = CHAT_CALLS * (spec.call_timeout or _API_TIMEOUT)
+    return max(0.0, float(budget - chain))
 
 
-def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
+def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0.0) -> float:
     """Register a sub-thread's parent before the sub-thread, when the parent holds no live registration.
 
     The registry gives a sub-thread the pair after its parent's only when it knows the parent; a parent it has never
@@ -2560,10 +2570,14 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
     ahead of it.  The parent's note says what the hook last got: open is left alone and costs no hop, anything else
     (no note, failed, closed) is registered now, with the parent's own parent first.  The parent's title and the
     model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
-    does nothing here, and nothing here ever stops the sub-thread's own registration."""
+    does nothing here, and nothing here ever stops the sub-thread's own registration.
+
+    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  every ancestor's call
+    is capped by what is left of them, and the walk stops when they are spent.  It returns the seconds
+    it spent, so the generation above it knows what is left."""
     spec = chat.spec
-    if spec.chat_payload is None or not parent or depth >= effective_parent_depth(spec):
-        return
+    if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH or allowance <= 0:
+        return 0.0
     try:
         sid = SI.check(parent, "the parent session id")
         mother = Chat(
@@ -2582,33 +2596,39 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
         if _text(spec.kind(payload, chat.env)) not in ("chat", "subagent"):
             return
         grand = _text(spec.parent_id(payload, chat.env)) or str(note.get("parent") or "")
-        _ensure_parent(mother, grand, depth + 1)
+        spent = _ensure_parent(mother, grand, depth + 1, allowance)
         note = (
             mother.read()
         )  # the grandparents' turn may have registered this one (a store that names a loop)
         if _settled(note):
-            return
+            return spent
+        left = allowance - spent
+        if left < 1:
+            return spent  # less than a call's time is left:  the chat's own registration is what is left
         mother.write(dict(note, failed_at=chat.now))
+        started = time.monotonic()
         done = _apply(
             mother,
             mother.registry(
                 "register",
                 title=str(note.get("title") or ""),
                 parent=grand,
-                timeout=spec.parent_call_timeout or spec.call_timeout,
+                timeout=max(1, min(spec.parent_call_timeout or spec.call_timeout, int(left))),
             ),
             dict(note, parent=grand),
         )
+        spent += time.monotonic() - started
         if done["state"] == "open":
             done["announce"] = True
         mother.write(done)
+        return spent
     except Exception:  # noqa: BLE001 - the sub-thread is registered whether or not its parent could be
-        return
+        return 0.0
 
 
 def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
     """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`)."""
-    _ensure_parent(chat, parent)
+    _ensure_parent(chat, parent, 0, walk_allowance(chat.spec))
     return chat.registry("register", title=title, parent=parent)
 
 
