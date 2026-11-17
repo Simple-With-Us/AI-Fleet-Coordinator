@@ -249,11 +249,11 @@ class MiniMaxRow(Base):
         self.add("m-0001", "Grandparent")
         self.add("m-0002", "Parent", parent="m-0001")
         self.add("m-0003", "Child", parent="m-0002")
-        seen: list[int] = []
+        seen: list[tuple[str, str, int]] = []
         real = registry_api.call
 
         def capture(env, op, params, timeout=25):
-            seen.append(timeout)
+            seen.append((op, str(params.get("session_id") or ""), timeout))
             return real(env, op, params, timeout=timeout)
 
         with mock.patch.object(registry_api, "call", capture):
@@ -261,7 +261,11 @@ class MiniMaxRow(Base):
                 spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
             )
         self.assertTrue(self.note("MM", "m-0002").get("label"))
-        self.assertLessEqual(min(seen), 1, "an ancestor's chain call outlasted the allowance")
+        # The chat's own registration is not the walk's, so only the ancestors' calls are read here:
+        # the chat's call would satisfy this assertion even if the walk's share were wrong.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertLessEqual(max(ancestors), 1, "an ancestor's chain call outlasted the allowance")
 
     def test_an_ancestor_with_no_deadline_of_its_own_gets_the_shared_one(self) -> None:
         # A row that declares no deadline of its own gets the shared one, not a one-second clamp:
@@ -276,18 +280,23 @@ class MiniMaxRow(Base):
         self.add("m-0001", "Grandparent")
         self.add("m-0002", "Parent", parent="m-0001")
         self.add("m-0003", "Child", parent="m-0002")
-        seen: list[int] = []
+        seen: list[tuple[str, str, int]] = []
         real = registry_api.call
 
         def capture(env, op, params, timeout=25):
-            seen.append(timeout)
+            seen.append((op, str(params.get("session_id") or ""), timeout))
             return real(env, op, params, timeout=timeout)
 
         with mock.patch.object(registry_api, "call", capture):
             self.run_hook(
                 spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
             )
-        self.assertIn(PL._API_TIMEOUT, seen, "the shared deadline was clamped away")
+        # Only the ancestors' calls are read:  the chat's own registration carries the shared
+        # deadline by itself, so an assertion over every call would pass even if the ancestor's
+        # call were clamped to a second.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertIn(PL._API_TIMEOUT, ancestors, "the shared deadline was clamped away")
 
     def test_a_failing_ancestor_call_is_charged_to_the_walk(self) -> None:
         # A failing call that took its time is spent time:  the walk must not be told its budget is

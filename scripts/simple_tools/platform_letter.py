@@ -2574,10 +2574,10 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
     model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
     does nothing here, and nothing here ever stops the sub-thread's own registration.
 
-    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  every call of an
-    ancestor's chain is capped by what is left of them, so the chain (the register, the reopen that
-    may follow it, the title update) cannot outlast the allowance, and the walk stops when it is
-    spent.  It returns the seconds it spent, so the generation above it knows what is left."""
+    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  each call of an
+    ancestor's chain gets a share of what is left of them, so the chain (the register, the reopen
+    that may follow it, the title update) cannot outlast the allowance, and the walk stops when it
+    is spent.  It returns the seconds it spent, so the generation above it knows what is left."""
     spec = chat.spec
     if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH or allowance <= 0:
         return 0.0

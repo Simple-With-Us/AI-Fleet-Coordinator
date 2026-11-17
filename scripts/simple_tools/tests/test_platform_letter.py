@@ -400,23 +400,34 @@ class RowContractTests(unittest.TestCase):
         # A row's budget is what its hook has before its runtime stops it, so it may not be larger
         # than the row's own tightest hook timeout, and a row whose runtime caps the timeout may not
         # declare more than the cap.
-        seen = 0
+        # A row that installs hook entries has its timeouts somewhere:  its own module-level
+        # HOOK_TIMEOUTS, or the shared ones.  A row that names neither is not a row this test may
+        # skip, so the test fails on it instead of passing over it.
+        installing = set()
         for name in PL.adapter_platforms():
+            module = PL.load_adapter(name)
+            if module is None:
+                continue
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            if "HOOK_TIMEOUTS" in source:
+                installing.add(name)
+        checked = set()
+        for name in sorted(installing):
             spec = PL.load_spec(name)
             module = PL.load_adapter(name)
-            if spec is None or module is None:
-                continue
-            timeouts = getattr(module, "HOOK_TIMEOUTS", None)
-            if not timeouts:
-                continue
-            seen += 1
+            self.assertIsNotNone(spec, name)
+            self.assertIsNotNone(module, name)
+            timeouts = getattr(module, "HOOK_TIMEOUTS", None) or PL.HOOK_TIMEOUTS
+            self.assertTrue(timeouts, "%s has no hook timeouts" % name)
+            checked.add(name)
             budget = spec.hook_budget or PL.SHARED_HOOK_BUDGET
             self.assertLessEqual(budget, min(timeouts.values()), name)
             cap = getattr(module, "HOOK_TIMEOUT_CAP", 0)
             if cap:
                 self.assertLessEqual(budget, cap, name)
                 self.assertLessEqual(max(timeouts.values()), cap, name)
-        self.assertGreater(seen, 3, "the table's rows were not all read")
+        self.assertEqual(checked, installing, "a row that installs hook entries was not checked")
+        self.assertGreater(len(checked), 3, "the table's rows were not all read")
 
     def test_no_shipped_module_still_names_the_retired_depth_field(self) -> None:
         # The row's parent depth is gone:  a module that still names it describes a field the row no
