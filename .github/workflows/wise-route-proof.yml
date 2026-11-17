@@ -1,0 +1,8 @@
+name: wise-route-proof
+on:
+  workflow_dispatch:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo route-proof
