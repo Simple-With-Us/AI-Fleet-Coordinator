@@ -183,6 +183,31 @@ def state_root(env: Mapping[str, str]) -> Path:
     return WS.state_root(env)
 
 
+def file_defaults() -> dict[str, Any]:
+    """Every name the shared local file may carry:  the union of the platform table's defaults.
+
+    The file is shared by every seat, so a seat's own facts are in it too:  the union is what
+    the reader is checked against, so one seat's key never refuses the file for the others.
+    A platform this host does not serve is still a platform whose names the file may carry, so
+    the union is wider than the seats that are ready here."""
+    values: dict[str, Any] = {}
+    for seat, entry in sorted(BUILDERS.items()):
+        try:
+            module = importlib.import_module(entry.module)
+        except Exception:
+            # A module that is not there, or that fails to import for any reason, still owns
+            # names the shared file may carry.
+            continue
+        defaults = getattr(module, "DEFAULTS", None)
+        if isinstance(defaults, Mapping):
+            values.update(defaults)
+    # A host fact whose platform is not on this host is still a name the shared file may
+    # carry, so it is known here:  one seat's key must never refuse the file for the others.
+    for name in WS.HOST_FACTS:
+        values.setdefault(name, "")
+    return values
+
+
 def default_state(env: Mapping[str, str], seat: str) -> Path:
     return state_root(env) / seat.lower()
 
@@ -300,7 +325,10 @@ def build(
             else:
                 absent.append(seat)
             _log("seat %s not served (%s)" % (seat, exc.reason))
-    shared_defaults: dict[str, Any] = {}
+    # The union of every seat's names, not only the ones this host serves:  the shared file is
+    # one file, and a key that belongs to a platform that is not installed here still belongs
+    # to it.
+    shared_defaults: dict[str, Any] = file_defaults()
     for seat_ready in ready:
         shared_defaults.update(seat_ready.defaults)
     local_path = state_root(env) / "config.json"
