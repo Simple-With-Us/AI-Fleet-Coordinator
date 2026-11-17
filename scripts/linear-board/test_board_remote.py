@@ -103,6 +103,21 @@ class Remote(unittest.TestCase):
         self.assertIn("AFC-12 | Fix the thing", out)
         self.assertIn("AFC-13 | Other", out)
 
+    def test_list_reads_the_text_envelope_when_the_hosted_sends_no_summary(self):
+        # The hosted drops structuredContent for a fenced read (AFC-637):  the envelope may not carry
+        # it, so the text is the result and the read must not refuse.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"content": [{"type": "text", "text": self.LIST_TEXT}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertEqual(code, 0, err)
+        self.assertIn("AFC-12 | Fix the thing", out)
+        self.assertIn("AFC-13 | Other", out)
+
     def test_list_json_keeps_both_parts(self):
         code, out, _, _ = self.run_cli(
             ["list", "--json"], rpc({"count": 1, "ids": ["AFC-1"]}, text=self.LIST_TEXT)
