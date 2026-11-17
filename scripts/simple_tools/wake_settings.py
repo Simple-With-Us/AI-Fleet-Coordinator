@@ -129,6 +129,8 @@ HOST_FACTS = (
     "mcode_model",
     "muse_bin",
     "zcode_bin",
+    "pinned_profile",
+    "pinned_owner_account",
 )
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
@@ -239,6 +241,17 @@ def from_knobs(seat: str, defaults: Mapping[str, Any]) -> dict[str, Any]:
     if "mac_ssh" in defaults:
         values["mac_ssh"] = knobs.resolve(MAC_SSH).value or ""
     return values
+
+
+def state_root(env: Mapping[str, str]) -> Path:
+    """The one folder the service's own state lives in."""
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return Path(home) / ".local" / "state" / "wake-router"
+
+
+def local_config_path(env: Mapping[str, str]) -> Path:
+    """The one local file the service reads:  `<state root>/config.json`."""
+    return state_root(env) / "config.json"
 
 
 def narrowed(
