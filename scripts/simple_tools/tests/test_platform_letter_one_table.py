@@ -177,24 +177,24 @@ class MiniMaxRow(Base):
         # registration chains three calls (the register, the reopen and the title update), so what
         # bounds the walk is the time it may spend, not a count of calls.
         self.assertLessEqual(
-            PL.CHAT_CALLS * PM.CALL_TIMEOUT + PL.walk_allowance(PM.SPEC),
+            PL.REGISTER_CALLS * PM.CALL_TIMEOUT + PL.walk_allowance(PM.SPEC),
             min(PM.HOOK_TIMEOUTS.values()),
         )
         self.assertLess(PM.CALL_TIMEOUT, PL._API_TIMEOUT)
         self.assertEqual(PM.SPEC.call_timeout, PM.CALL_TIMEOUT)
         self.assertEqual(PM.SPEC.parent_call_timeout, PM.PARENT_CALL_TIMEOUT)
         self.assertEqual(PM.SPEC.hook_budget, PM.HOOK_BUDGET)
-        self.assertEqual(PL.walk_allowance(PM.SPEC), PM.HOOK_BUDGET - PL.CHAT_CALLS * PM.CALL_TIMEOUT)
+        self.assertEqual(PL.walk_allowance(PM.SPEC), PM.HOOK_BUDGET - PL.REGISTER_CALLS * PM.CALL_TIMEOUT)
         # The rows that keep the shared depth and the shared deadline are bounded the same way:  the
         # walk may spend what their budget leaves, and no row's ancestor registration outlives its
         # hook.
         self.assertEqual(PL.PARENT_DEPTH, 3)
         self.assertEqual(PC.SPEC.hook_budget, 0)
         self.assertEqual(
-            PL.walk_allowance(PC.SPEC), PL.SHARED_HOOK_BUDGET - PL.CHAT_CALLS * PL._API_TIMEOUT
+            PL.walk_allowance(PC.SPEC), PL.SHARED_HOOK_BUDGET - PL.REGISTER_CALLS * PL._API_TIMEOUT
         )
         self.assertLessEqual(
-            PL.CHAT_CALLS * PL._API_TIMEOUT + PL.walk_allowance(PC.SPEC),
+            PL.REGISTER_CALLS * PL._API_TIMEOUT + PL.walk_allowance(PC.SPEC),
             min(PL.HOOK_TIMEOUTS.values()),
         )
 

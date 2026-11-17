@@ -786,28 +786,30 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
-#: 20 seconds (HOOK_TIMEOUTS) and a chat's own registration chains at most three calls (register,
-#: reopen, update), so one call gets three seconds:  the chain's worst case stays inside the
-#: tightest budget, and a healthy call to the listener answers in well under a second.  A
+#: 20 seconds (HOOK_TIMEOUTS) and a registration chains at most three calls (register, reopen,
+#: update), so one call gets three seconds:  the chain's worst case stays inside the tightest
+#: budget, and a healthy call to the listener answers in well under a second.  A
 #: platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An
-#: unsettled parent is registered first, at most once per RETRY_SECONDS (`_ensure_parent`), at the
-#: depth its own budget can carry (PlatformSpec.parent_depth).  The batch callers of
+#: unsettled parent is registered first, at most once per RETRY_SECONDS (`_ensure_parent`), and the
+#: ancestor walk may spend only what the row's own hook budget leaves after this chain is reserved
+#: out of it (PlatformSpec.hook_budget).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
 _API_TIMEOUT = 3
-#: The calls one chat's own registration makes:  the register, the reopen that may follow it, and the
-#: title update that carries the lettered title.
-CHAT_CALLS = 3
+#: The calls one registration makes:  the register, the reopen that may follow it, and the title
+#: update that carries the lettered title.  A chat's own registration and an ancestor's are the same
+#: call, so one number describes both:  the chat's own chain is reserved out of the row's hook
+#: budget, and the ancestor walk may spend what is left of it.
+REGISTER_CALLS = 3
 #: The seconds a hook has before its runtime stops it, when a row declares none of its own:  the
 #: tightest of the shared budgets (HOOK_TIMEOUTS).  The ancestor walk may spend what is left of this
 #: after the chat's own chain is reserved out of it.
 SHARED_HOOK_BUDGET = min(HOOK_TIMEOUTS.values())
-#: The calls one ancestor's best-effort registration makes:  its register, the reopen that may follow
-#: it when the registry says that ancestor is closed, and the title update that carries the lettered
-#: title.  An ancestor that was registered before and came back closed is exactly the ancestor this
-#: path registers,  so the reopen and the update are on it:  the count is the worst case, not the
-#: usual one.  A row whose hook budget cannot carry the worst case says so with its own parent
-#: depth (PlatformSpec.parent_depth).
-PARENT_CALLS = 3
+#: The calls one ancestor's best-effort registration makes are the calls any registration makes
+#: (REGISTER_CALLS):  its register, the reopen that may follow it when the registry says that
+#: ancestor is closed, and the title update that carries the lettered title.  An ancestor that was
+#: registered before and came back closed is exactly the ancestor this path registers,  so the
+#: reopen and the update are on it.  That is the worst case, and what bounds the walk is the time
+#: it may spend (walk_allowance), not a count of calls.
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -2558,7 +2560,7 @@ def walk_allowance(spec: PlatformSpec) -> float:
     stops when they are spent:  a slow registry can cost a parent its registration, never the chat's
     own letter."""
     budget = spec.hook_budget or SHARED_HOOK_BUDGET
-    chain = CHAT_CALLS * (spec.call_timeout or _API_TIMEOUT)
+    chain = REGISTER_CALLS * (spec.call_timeout or _API_TIMEOUT)
     return max(0.0, float(budget - chain))
 
 
