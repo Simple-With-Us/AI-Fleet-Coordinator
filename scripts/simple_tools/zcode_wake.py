@@ -64,9 +64,7 @@ SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 BAD_REQUEST = "bad-request"
 SECRET_FIELD = "secret-field"
-TARGET_FIELDS = frozenset(
-    {"session_id", "letter", "host", "generation", "title", "thread_link"}
-)
+TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation", "title", "thread_link"})
 #: The fields a wake request carries:  the router's own Wake, and nothing else.
 WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: A Zulip link is longer than a name.
@@ -288,9 +286,7 @@ def exclude_non_interactive(
         excluded |= set(local_ids) - seen
         want = os.path.realpath(workspace) if workspace else ""
         for task_id, workspace_path in rows:
-            if not workspace_path:
-                excluded.add(str(task_id))
-            elif want and os.path.realpath(str(workspace_path)) != want:
+            if not workspace_path or want and os.path.realpath(str(workspace_path)) != want:
                 excluded.add(str(task_id))
         return excluded
 
