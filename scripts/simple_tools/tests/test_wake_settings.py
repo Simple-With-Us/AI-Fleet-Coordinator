@@ -80,10 +80,11 @@ class Registered(Settings):
         from simple_tools import antigravity_wake as AGW
         from simple_tools import grok_wake as GW
         from simple_tools import minimax_wake as MW
+        from simple_tools import zcode_wake as ZCW
 
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
         defaults: set[str] = set()
-        for module in (CW, AGW, GW, MW):
+        for module in (CW, AGW, GW, MW, ZCW):
             defaults |= set(module.DEFAULTS)
         self.assertEqual(defaults, handled)
 
