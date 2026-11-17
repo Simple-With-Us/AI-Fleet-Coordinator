@@ -12,6 +12,18 @@ one decision still open.
     Zulip tag @ZC or DM zc-bot
       -> the listener that holds the seat (partition:  ZC = "server", the one server listener since Nov 10)
            records the message in the seat inbox   (works since Nov 6, OPS-1039)
+      -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1 to the one wake router's front,
+           bearer-signed with WAKE_ROUTER_KEY
+           -> afc-wake-router on jay-server (loopback 127.0.0.1:8794, front on the tailnet, port 8795)
+                validates the contract, remembers the wake id (the router's own receipts),
+                resolves the lettered target session from the Operator registry
+                (the topic's letter, else the most recent live server session),
+                and hands the wake to the seat's platform module
+                    zcode --cwd <workspace> --resume <session> -p "<[ZC·wake] ... thread link ...>"
+
+The legacy bridge chain, which is the fallback and not the live path any more:
+
+    Zulip tag @ZC or DM zc-bot
       -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1, bearer-signed with ZC_ROUTINE_KEY
            -> afc-zc-wake-bridge on jay-server (tailnet address only, port 8791)
                 validates the contract, remembers the wake id (dedupe),
@@ -58,9 +70,14 @@ The three gates, and what each of them answered on the day of the cutover.
   (`project_token_login_failed` for the zai family).
 
 The binding that the change removed had delivered nothing:  the server's ZC inbox holds 151
-captured wakes and none of them was ever delivered, and the legacy bridge runs the same
-command with the same credential, so it fails the same way.  The bridge stays up and keeps
-its own values, and it retires only after a real wake is delivered end to end.
+captured wakes and none of them was ever delivered.  The bridge's path is not the
+module's path:  the bridge resumes the session with its own command template and never
+checks the directory the session reports, while the module runs the CLI with the
+workspace the deployment names and refuses a session whose recorded directory differs
+from it (`workspace-mismatch`), so the router can refuse a delivery the bridge would
+have attempted.  Both reach the same ZCode runtime and the same model
+credential, so both stop at the provider today.  The bridge stays up and keeps its
+own values, and it retires only after a real wake is delivered end to end.
 
 The cutover was done in these five steps, in this order.  The legacy bridge stays up as
 the seat's fallback until the router's own front has answered a real wake end to end, so a
@@ -177,17 +194,22 @@ a working key for the MiniMax entry.  Flipping it is one config file:
 
     ~/.local/state/zc-wake/config.json   { "delivery_enabled": true, ... }
 
-## Arming the wake (runbook, after the provider decision)
+## Arming the legacy bridge (runbook, after the provider decision)
+
+This is the legacy bridge's own setup, not the seat's routine:  the seat's routine is the
+one wake router's, and the names below are the bridge's.
 
 1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
     `fleet-secrets` writes it;  never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  `[seat.ZC]` gains `wake = "http"` and the routine line reading
-    `url_env = "ZC_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
+    `url_env = "ZC_BRIDGE_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
     Fleet-OPS `/zulip` (its secondary read, `LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC
     `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a `daemon reload` does not.
-    `ZC_ROUTINE_URL` is the bridge's tailnet URL, `http://<jay-server tailnet ip>:8791/wake/ZC`.4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
+    `ZC_BRIDGE_ROUTINE_URL` is the bridge's tailnet URL,
+    `http://<jay-server tailnet ip>:8791/wake/ZC`.
+4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
     enable it, `curl -s http://127.0.0.1:8791/health`.
 5.  Prove it:  mention @ZC in a test topic;  the server listener's wake ledger (`simple-chat wakes` inside the container) records the POST,
     and `~/.local/state/zc-wake/delivery.jsonl` carries the receipt with the resolved session.
