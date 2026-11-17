@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -21,8 +22,8 @@ OTHER_PROJECT = (
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
-CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
-ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
+CLIENT_SECRET = str(uuid.uuid4())
+ACCESS_TOKEN = str(uuid.uuid4())
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
 KEYCHAIN_FULL = {"infisical-client-id": CLIENT_ID, "infisical-client-secret": CLIENT_SECRET}
 
@@ -308,24 +309,7 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_keeps_the_manual_cli_session_route(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-
-    def test_interactive_export_runs_in_an_owned_workdir(self):
+    def test_interactive_get_requires_its_own_scoped_token(self):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
@@ -340,263 +324,11 @@ class RunTests(Base):
             mock.patch.object(cli.sys, "stderr", TTY()),
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        self.assertTrue(world.export_cwds)
-        self.assertNotIn("/", world.export_cwds)
-        for cwd in world.export_cwds:
-            self.assertEqual(cwd, str(workdir))
-        self.assertEqual(oct(workdir.stat().st_mode & 0o777), "0o700")
-        # The intermediate base must be owner-only too: mkdir's mode applies
-        # only to the leaf, so without an explicit base chmod the per-project
-        # directory names (Infisical project ids) are enumerable by local users.
-        base = self.home / ".config" / "fleet-secrets" / "cli-session"
-        self.assertEqual(oct(base.stat().st_mode & 0o777), "0o700")
-        config = workdir / ".infisical.json"
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
-
-    def test_cli_session_refuses_a_symlinked_workdir(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        elsewhere = self.home / "elsewhere"
-        elsewhere.mkdir()
-        link_parent = self.home / ".config" / "fleet-secrets"
-        link_parent.mkdir(parents=True)
-        (link_parent / "cli-session").symlink_to(elsewhere, target_is_directory=True)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("cli-session-workdir-symlink", err)
-        self.assertEqual(oct(elsewhere.stat().st_mode & 0o777), "0o755")
-
-    def test_cli_session_replaces_a_symlinked_project_file_without_touching_target(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        target = self.home / "sensitive.txt"
-        target.write_text("keep-me")
-        (workdir / ".infisical.json").symlink_to(target)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        self.assertEqual(target.read_text(), "keep-me")
-        config = workdir / ".infisical.json"
-        self.assertFalse(config.is_symlink())
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
-
-    def test_cli_session_enforces_0600_on_a_preexisting_project_file(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        config = workdir / ".infisical.json"
-        config.write_text("{}")
-        config.chmod(0o644)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-
-    def test_cli_session_maps_oserror_to_a_clean_secrets_error(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        parent = self.home / ".config" / "fleet-secrets"
-        parent.mkdir(parents=True)
-        (parent / "cli-session").write_text("not a directory")
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("fleet-secrets: cli-session-workdir-unavailable", err)
-        self.assertNotIn("Traceback", err)
-
-    def test_cli_session_uses_unique_temp_names_and_leaves_none(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        seen = []
-        real_mkstemp = core.tempfile.mkstemp
-
-        def spy(*args, **kwargs):
-            fd, name = real_mkstemp(*args, **kwargs)
-            seen.append(name)
-            return fd, name
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.tempfile, "mkstemp", side_effect=spy),
-        ):
-            code1, out1, _ = self.call("get", "ALPHA", env=env)
-            code2, out2, _ = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code1, out1, code2, out2), (0, VAL_A, 0, VAL_A))
-        self.assertEqual(len(seen), 2)
-        self.assertNotEqual(seen[0], seen[1])
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        leftovers = [p.name for p in workdir.iterdir() if p.name.endswith(".tmp")]
-        self.assertEqual(leftovers, [])
-
-    def test_cli_session_tolerates_dir_fsync_einval(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        real_fsync = core.os.fsync
-        import errno as _errno
-        import stat as _stat
-
-        def picky(fd):
-            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
-                raise OSError(_errno.EINVAL, "fsync not supported on directory")
-            return real_fsync(fd)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.os, "fsync", side_effect=picky),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        self.assertTrue((workdir / ".infisical.json").exists())
-
-    def test_cli_session_uses_a_separate_workdir_per_project(self):
-        world = self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, _ = self.call("get", "ALPHA", env=env)
-            self.assertEqual((code, out), (0, VAL_A))
-            code, out, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator", env=env)
-            self.assertEqual((code, out), (0, VAL_A))
-        ops_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        afc_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / OTHER_PROJECT
-        self.assertTrue((afc_dir / ".infisical.json").exists())
-        self.assertTrue((ops_dir / ".infisical.json").exists())
-        self.assertNotEqual(str(afc_dir), str(ops_dir))
-        # Each directory holds only its own project file: a concurrent export
-        # for one project can never overwrite the other's resolved config.
-        self.assertEqual(
-            json.loads((afc_dir / ".infisical.json").read_text())["workspaceId"], OTHER_PROJECT
-        )
-        self.assertEqual(
-            json.loads((ops_dir / ".infisical.json").read_text())["workspaceId"], PROJECT
-        )
-
-    def test_cli_session_propagates_non_einval_dir_fsync_errors(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        real_fsync = core.os.fsync
-        import errno as _errno
-        import stat as _stat
-
-        def picky(fd):
-            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
-                raise OSError(_errno.EIO, "simulated durability failure")
-            return real_fsync(fd)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.os, "fsync", side_effect=picky),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("cli-session-workdir-unavailable", err)
-
-    def test_interactive_export_refreshes_a_stale_project_file(self):
-        world = self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        config = workdir / ".infisical.json"
-        config.write_text('{"workspaceId": "stale", "defaultEnvironment": "dev", "extra": 1}')
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn(core.ENV_TOKEN, err)
+        self.assertEqual(world.fetches, [])
+        self.assertEqual(world.calls, [])
+        self.assertEqual(self.exec_calls, [])
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
@@ -1136,6 +868,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return status, answer
 
@@ -1237,6 +970,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, None
 
@@ -1262,6 +996,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, {"secret": self._secret()}
 

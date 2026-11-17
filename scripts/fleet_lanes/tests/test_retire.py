@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import types
 import unittest
+import unittest.mock
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1502,16 +1503,24 @@ class PruneTests(WorldCase):
         self.w.commit(lane)
         self.w.push(lane, "claude/busy")
         self.w.merged_pr(lane, "claude/busy", number=71)
-        self.w.lsof = lambda: D.CmdResult(0, f"p4242\nczsh\nn{lane}/sub\n", "")
-        self.assertIn(
-            "process 4242 (zsh)",
-            self.w.run("prune", "--json").row("claude-busy")["reason"],
+        own_pid, other_pid = 4242, 4242424
+        # Control the caller pid so the self-pid exclusion is exercised
+        # deterministically: the mock row with our own pid must be ignored,
+        # while the other process inside the lane must keep it.
+        self.w.lsof = lambda: D.CmdResult(
+            0,
+            f"p{own_pid}\nczsh\nn{lane}/sub\np{other_pid}\ncbash\nn{lane}/sub\n",
+            "",
         )
-        self.w.lsof = lambda: D.CmdResult(None, error="FileNotFoundError: lsof")
-        res = self.w.run("prune", "--apply", "--json")
-        self.assertEqual(res.rc, 69)
-        self.assertIn("lsof failed", res.row("claude-busy")["reason"])
-        self.assertTrue(lane.exists())
+        with unittest.mock.patch("os.getpid", return_value=own_pid):
+            reason = self.w.run("prune", "--json").row("claude-busy")["reason"]
+            self.assertIn(f"process {other_pid} (bash)", reason)
+            self.assertNotIn(f"process {own_pid} (", reason)
+            self.w.lsof = lambda: D.CmdResult(None, error="FileNotFoundError: lsof")
+            res = self.w.run("prune", "--apply", "--json")
+            self.assertEqual(res.rc, 69)
+            self.assertIn("lsof failed", res.row("claude-busy")["reason"])
+            self.assertTrue(lane.exists())
 
     def test_seat_scope(self) -> None:
         mine = self.w.new_lane("mine")

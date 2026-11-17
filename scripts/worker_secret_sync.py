@@ -153,13 +153,13 @@ def load_folder_map(path=FOLDERS_PATH):
     for worker, row in data.items():
         if not WORKER_RE.fullmatch(worker) or not isinstance(row, dict):
             raise SyncError("folder-map-unreadable " + str(path))
-        project = row.get("project_id")
+        project_env = row.get("project_id_env")
         environment = row.get("environment")
         folder = row.get("folder")
         token_env = row.get("token_env")
         if (
-            not isinstance(project, str)
-            or not PROJECT_RE.fullmatch(project)
+            not isinstance(project_env, str)
+            or not TOKEN_ENV_RE.fullmatch(project_env)
             or environment != "prod"
             or not _folder_ok(folder)
             or not isinstance(token_env, str)
@@ -167,12 +167,26 @@ def load_folder_map(path=FOLDERS_PATH):
         ):
             raise SyncError("folder-map-unreadable " + str(path))
         parsed[worker] = {
-            "project_id": project,
+            "project_env": project_env,
             "environment": "prod",
             "folder": folder,
             "token_env": token_env,
         }
     return parsed
+
+
+def resolve_project_id(row, worker, env=None):
+    """Resolve one Worker's project id, naming the variable that must supply it.
+
+    The repo is public: the project id is never committed.  Only the requested
+    Worker's variable is read, after the caller has checked the Worker is in
+    the map, so another row's missing variable cannot abort this sync and an
+    unknown Worker is always reported as ``unknown-worker``.
+    """
+    project = (os.environ if env is None else env).get(row["project_env"]) or ""
+    if not PROJECT_RE.fullmatch(project):
+        raise SyncError("project-id-env-missing " + row["project_env"] + " " + worker)
+    return project
 
 
 def load_allowlist(worker, directory=ALLOWLIST_DIR):
@@ -531,9 +545,7 @@ def _cloudflare_token(token):
 ABSENT_BINDING = object()
 
 
-def put_secret(
-    transport, token, account, worker, name, value, existing_type=ABSENT_BINDING
-):
+def put_secret(transport, token, account, worker, name, value, existing_type=ABSENT_BINDING):
     if not NAME_RE.fullmatch(name):
         raise SyncError("invalid-secret-name")
     # A value put always writes secret_text; never silently convert a live
@@ -589,8 +601,7 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     annotations = result.get("annotations")
     if annotations is not None:
         if not isinstance(annotations, dict) or any(
-            not isinstance(k, str) or not isinstance(v, str)
-            for k, v in annotations.items()
+            not isinstance(k, str) or not isinstance(v, str) for k, v in annotations.items()
         ):
             raise SyncError("settings-incomplete annotations")
         # Echo only the user-controlled annotation keys: workers/triggered_by
@@ -619,7 +630,9 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     after_bindings = after_result.get("bindings")
     if not isinstance(after_bindings, list):
         raise SyncError("cloudflare-incomplete")
-    got = {(item.get("name"), item.get("type")) for item in after_bindings if isinstance(item, dict)}
+    got = {
+        (item.get("name"), item.get("type")) for item in after_bindings if isinstance(item, dict)
+    }
     if got != sent:
         raise SyncError("bindings-not-confirmed")
     for key, value in result.items():
@@ -652,13 +665,14 @@ def sync_worker(
     site=INFISICAL_SITE,
 ):
     """Returns ``(report, exit_code)``.  Values stay in this process."""
-    folders = load_folder_map()
+    folders = load_folder_map(FOLDERS_PATH)
     if worker not in folders:
         raise SyncError("unknown-worker")
     spec = folders[worker]
+    project_id = resolve_project_id(spec, worker, env)
     allowlist = load_allowlist(worker)
     token = require_service_token(env.get(spec["token_env"]))
-    values = read_infisical(transport, token, spec["project_id"], spec["folder"], site, now)
+    values = read_infisical(transport, token, project_id, spec["folder"], site, now)
     if DIGEST_KEY_NAME not in values:
         raise SyncError("digest-key-missing")
     digest_key = values[DIGEST_KEY_NAME]
@@ -694,9 +708,7 @@ def sync_worker(
         else:
             existing_type = ABSENT_BINDING
         try:
-            put_secret(
-                transport, cf, account, worker, name, values[name], existing_type
-            )
+            put_secret(transport, cf, account, worker, name, values[name], existing_type)
         except SyncError as exc:
             if written:
                 raise SyncError(
@@ -771,7 +783,7 @@ def cli(argv, *, account, guard, env=None, transport=None, now=None, stdout=None
         # interpolates one, using whatever credentials this process was given.
         secret_values = [env.get("CLOUDFLARE_API_TOKEN") or ""]
         try:
-            token_env = load_folder_map()[worker]["token_env"]
+            token_env = load_folder_map(FOLDERS_PATH)[worker]["token_env"]
             secret_values.append(env.get(token_env) or "")
         except (SyncError, KeyError):
             pass
