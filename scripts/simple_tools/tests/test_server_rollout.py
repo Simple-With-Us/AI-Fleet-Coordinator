@@ -851,17 +851,11 @@ class SampleRoutingTests(unittest.TestCase):
         from simple_tools import wake_service as SVC
 
         self.builders = SVC.BUILDERS
+        self.served = SVC.installed_seats()
 
     def _installed(self, seat: str) -> bool:
         """Whether this seat's platform module is on this host, which is what the router serves."""
-        entry = self.builders.get(seat)
-        if entry is None:
-            return False
-        try:
-            importlib.import_module(entry.module)
-        except ImportError:
-            return False
-        return True
+        return seat in self.served
 
     def test_every_seat_the_router_can_serve_wakes_at_the_router(self) -> None:
         for seat, entry in sorted(self.builders.items()):
