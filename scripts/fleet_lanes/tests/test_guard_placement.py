@@ -320,6 +320,21 @@ class Isolation(unittest.TestCase):
         self.assertIn("Add BotFleet to fleet-apps.json", empty.reason)
         self.assertNotIn("could not read", empty.reason)
 
+    def test_the_detection_says_whether_the_registry_was_read(self) -> None:
+        # The detection carries whether the registry was read, so a regression that inverts the
+        # flag is caught here instead of shipping.
+        fallback = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), fallback_ctx("isolation detect")
+        )
+        self.assertEqual(fallback.detected, "isolation")
+        self.assertFalse(fallback.detected_detail["registry_read"])
+
+        empty = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), empty_registry_ctx("isolation detect")
+        )
+        self.assertEqual(empty.detected, "isolation")
+        self.assertTrue(empty.detected_detail["registry_read"])
+
     def test_a_readable_registry_still_clears_a_repo_it_does_not_hold(self) -> None:
         # The refusal is narrow:  a registry that was read answers the question, and a repo it does
         # not hold is still someone's own.
