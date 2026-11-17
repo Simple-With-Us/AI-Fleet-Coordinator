@@ -77,15 +77,24 @@ class Registered(Settings):
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
-        from simple_tools import antigravity_wake as AGW
-        from simple_tools import grok_wake as GW
-        from simple_tools import minimax_wake as MW
+        import importlib
+
+        from simple_tools import wake_service as SVC
 
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
         defaults: set[str] = set()
-        for module in (CW, AGW, GW, MW):
-            defaults |= set(module.DEFAULTS)
-        self.assertEqual(defaults, handled)
+        # The one platform table is the list of modules, so a platform's module lands with its
+        # own facts and this test never has to name a module.
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            defaults |= set(getattr(module, "DEFAULTS", {}))
+        self.assertLessEqual(defaults, handled)
+        # A host fact no module on this host carries is fine:  its platform's module lands with
+        # it.  A knob no module carries is not:  that is a tunable nothing can read.
+        self.assertLessEqual(handled - defaults, set(WS.HOST_FACTS))
 
     def test_a_platforms_own_facts_reach_the_delivery(self) -> None:
         from simple_tools import minimax_wake as MW
@@ -460,6 +469,30 @@ class LocalFile(Settings):
                 self.local_path.write_text(text, encoding="utf-8")
                 with self.assertRaises(SystemExit):
                     self.loaded()
+
+    def test_a_platform_this_host_does_not_serve_still_owns_its_names(self) -> None:
+        """The shared file is one file, and one seat's key never refuses it for the others.
+
+        A platform whose module cannot be imported here still owns the names the file may
+        carry, so the union holds every name every platform owns:  the test makes every
+        platform's module fail to import and holds that each platform's own names are in the
+        union anyway.  A platform whose module is not on this host at all is covered by the
+        host facts, which are here for every platform.
+        """
+        def missing(name, *args, **kwargs):
+            raise ImportError("not installed on this host")
+
+        with mock.patch.object(SVC.importlib, "import_module", side_effect=missing):
+            values = SVC.file_defaults()
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            for name in getattr(module, "DEFAULTS", {}):
+                self.assertIn(name, values, "%s owns %s" % (seat, name))
+        for name in WS.HOST_FACTS:
+            self.assertIn(name, values)
 
     def test_a_named_file_that_is_missing_stops_the_router(self) -> None:
         settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path, required=True)

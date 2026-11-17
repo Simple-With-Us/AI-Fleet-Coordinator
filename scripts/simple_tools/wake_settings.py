@@ -121,7 +121,31 @@ NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
 #: The names the local file carries that are not settings:  facts about one host, or about one
 #: platform, which one Infisical value cannot hold.  A seat that does not have one of them
 #: ignores it.
-HOST_FACTS = ("local_host", "claude_bin", "workspace", "mcode_bin", "mcode_model")
+HOST_FACTS = (
+    "local_host",
+    "claude_bin",
+    "workspace",
+    "mcode_bin",
+    "mcode_model",
+    "muse_bin",
+    "zcode_bin",
+    "pinned_profile",
+    "pinned_owner_account",
+)
+#: The names every platform's own settings add to the router's names.  The shared local file is
+#: one file, and a platform's module may not be installed on this host:  its keys are still in
+#: the file, so the names it owns are known here for every platform, and one seat's file is
+#: never refused for a platform this host does not serve.  A platform that owns a name of its
+#: own adds it here, beside the router's names.  A governed setting takes its default from the
+#: knob registry, which is the one source of truth for it, so there is no second value here:
+#: a knob that is not registered stops this module from loading at all.
+PLATFORM_DEFAULTS: dict[str, Any] = {
+    **WR.ROUTER_DEFAULTS,
+    "local_host": "",
+    "mac_ssh": BY_NAME[MAC_SSH].default,
+    "resume_timeout_seconds": BY_NAME[INT_KNOBS["resume_timeout_seconds"]].default,
+    "confirm_seconds": BY_NAME[INT_KNOBS["confirm_seconds"]].default,
+}
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
@@ -231,6 +255,17 @@ def from_knobs(seat: str, defaults: Mapping[str, Any]) -> dict[str, Any]:
     if "mac_ssh" in defaults:
         values["mac_ssh"] = knobs.resolve(MAC_SSH).value or ""
     return values
+
+
+def state_root(env: Mapping[str, str]) -> Path:
+    """The one folder the service's own state lives in."""
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return Path(home) / ".local" / "state" / "wake-router"
+
+
+def local_config_path(env: Mapping[str, str]) -> Path:
+    """The one local file the service reads:  `<state root>/config.json`."""
+    return state_root(env) / "config.json"
 
 
 def narrowed(
