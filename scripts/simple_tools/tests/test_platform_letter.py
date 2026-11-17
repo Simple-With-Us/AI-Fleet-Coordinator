@@ -392,6 +392,44 @@ class ContractTests(unittest.TestCase):
             reg.close_db()
 
 
+class RowContractTests(unittest.TestCase):
+    """The rows of the one table agree with the library about what a hook has, and nobody names a
+    field the row no longer has."""
+
+    def test_every_row_states_a_budget_its_own_hook_timeout_carries(self) -> None:
+        # A row's budget is what its hook has before its runtime stops it, so it may not be larger
+        # than the row's own tightest hook timeout, and a row whose runtime caps the timeout may not
+        # declare more than the cap.
+        seen = 0
+        for name in PL.adapter_platforms():
+            spec = PL.load_spec(name)
+            module = PL.load_adapter(name)
+            if spec is None or module is None:
+                continue
+            timeouts = getattr(module, "HOOK_TIMEOUTS", None)
+            if not timeouts:
+                continue
+            seen += 1
+            budget = spec.hook_budget or PL.SHARED_HOOK_BUDGET
+            self.assertLessEqual(budget, min(timeouts.values()), name)
+            cap = getattr(module, "HOOK_TIMEOUT_CAP", 0)
+            if cap:
+                self.assertLessEqual(budget, cap, name)
+                self.assertLessEqual(max(timeouts.values()), cap, name)
+        self.assertGreater(seen, 3, "the table's rows were not all read")
+
+    def test_no_shipped_module_still_names_the_retired_depth_field(self) -> None:
+        # The row's parent depth is gone:  a module that still names it describes a field the row no
+        # longer has, and a caller that passed it would be giving seconds where generations were
+        # meant.  The names are assembled here so that this test does not name them itself.
+        retired = ("parent" + "_depth", "effective_parent" + "_depth")
+        root = Path(PL.__file__).resolve().parent
+        for path in sorted(root.rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for gone in retired:
+                self.assertNotIn(gone, text, "%s still names %s" % (path.name, gone))
+
+
 class RegistrySideTests(Base):
     def test_a_host_with_no_registry_api_is_not_configured_and_writes_nothing(self) -> None:
         other = os.path.join(self.tmp.name, "elsewhere")
