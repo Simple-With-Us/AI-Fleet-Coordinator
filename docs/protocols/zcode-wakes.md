@@ -27,6 +27,65 @@ seat's normal wake routine.  Wakes the seat's budget holds back, and messages th
 no delivery ran, stay in the inbox;  nothing is lost by a bridge that is down, and a wake id is
 marked seen only after the POST is answered.
 
+## The one wake router, and the cutover that is still open
+
+The ZC seat now has a platform module (`scripts/simple_tools/zcode_wake.py`), so the one shared
+wake router (`wake_service`, `simple-chat wake-router serve`) serves it like every other seat
+with a module:  it picks the lettered session, rechecks the registry before the delivery, and
+delivers over the one fixed route.  A chat on the Mac is reached over ssh through
+`claude_wake.deliver_remote`, and the Mac's own `simple-chat wake-deliver` dispatches to
+`deliver_request` in the module.
+
+The sample `scripts/simple_tools/server/listener.toml` still routes ZC at its own bridge, and
+that is deliberate.  A seat moves to the router only after its own path is deployed and
+verified live, and until then it keeps the binding it has:  the working path is never removed
+before the replacement has answered a real wake.
+
+The cutover, when it is done, is these four steps, in this order.
+
+1.  Mint `ZC_WAKE_ROUTER_URL` in AFC prod `/zulip`:  the router's front URL for this seat,
+    `https://<server tailnet host>:8795/wake/ZC`.  It is a new name on purpose:  `ZC_ROUTINE_URL`
+    still names the legacy bridge, and one name cannot be the router's front and the bridge at
+    the same time.
+2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
+    answers there:  `curl -s https://<server tailnet host>:8795/health/ZC` answers `healthy`
+    with `delivery` on, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
+3.  Change the live listener's `[seat.ZC]` block to
+    `wake = "http"` with
+    `routine = { url_env = "ZC_WAKE_ROUTER_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
+    The bearer is now the router's own key, so the key the bridge used is no longer accepted by
+    the router, and the URL names the front.
+4.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt
+    (`/receipt/ZC/<wake id>`) shows the picked session and a delivered or an explicitly
+    unsettled outcome.
+
+Only after step 4 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
+`zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
+never run one session at the same time, and its dedupe ledger is replaced by the router's own
+receipts.  Until then it stays as it is, with `ZC_ROUTINE_URL` and `ZC_ROUTINE_KEY` in Fleet-OPS
+`/zulip`.
+
+## What the module guarantees
+
+The delivery contract is the one the sibling platforms use, with the parts that are ZCode's own
+made explicit.
+
+- The workspace is the binding.  A session whose recorded workspace is not the workspace the
+  deployment names is never picked, and a delivery into another project's directory is refused
+  (`workspace-mismatch`).
+- The externally authored fields are checked before they reach a prompt:  a field of the wrong
+  type is refused, a field that carries credential material is refused by name
+  (`secret-field`, and the value is never echoed), and the note in front of the data is only the
+  router's own sentence.
+- A workspace path that begins with a dash is refused (`invalid-workspace`), so it can never be
+  read as an option by the CLI.
+- The three outcomes of a turn are kept apart.  A timeout is `unknown`:  the turn may have run,
+  so the wake is neither recorded as delivered nor retried, and the receipt keeps it visible.  A
+  turn that fails before any model response (the runtime's own documented
+  `project_token_login_failed`) is `failed` even when the process exits 0, so it is never
+  recorded as a delivery.  An exit 0 with nothing to show is `sent` with an unconfirmed
+  acknowledgement, and the receipt never claims a confirmed delivery for it.
+
 ## What is built and tested (PR: OPS-1048)
 
 - `scripts/zc-wake-bridge`  the receiver, the dedupe, the target resolution and the delivery

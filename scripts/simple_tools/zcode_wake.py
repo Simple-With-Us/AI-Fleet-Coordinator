@@ -16,8 +16,10 @@ know refuses (`session-not-found`);  one whose recorded workspace is gone refuse
 (`session-cwd-gone`);  one marked `running` in the index is `busy` and retried;  a sub-agent
 child in the CLI store (`~/.zcode/cli/db/db.sqlite`, `task_type = 'subagent_child'`) is
 refused (`session-subagent`).  Once `zcode` has started, any exit code other than 0 is final
-(`refused`), because the turn may have already run;  exit 0 is only `sent`, because the
-server's own log shows a failed turn exiting 0.
+(`refused`), because the turn may have already run;  a timeout is `unknown`, because the turn
+may have run and nobody can tell;  exit 0 is `sent` only when the child's own output carries
+no documented failure signature, because the server's own log shows a failed turn exiting 0,
+and the receipt never records that hand-over as a confirmed delivery.
 
 The legacy standalone bridge (`~/.local/state/zc-wake`, OPS-1048's first delivery) contends
 on the same per-session lock file during the cutover, so the two paths can never run one
@@ -25,7 +27,7 @@ session at the same time.
 
 The wake text is metadata:  who, where, the link and an instruction to read the message in
 Zulip.  The message body is never in it.  Topic and sender are Zulip-authored data, so they
-go into a fenced JSON block under an explicit notice that they are data and not instructions.
+are appended as a JSON object under an explicit notice that they are data and not instructions.
 
 A chat on the Mac.  When the router runs on the server and reaches a Mac target, delivery
 delegates to `claude_wake.deliver_remote` over ssh, specifying `platform="zcode"`.  On the
@@ -52,6 +54,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from . import secretscan
 from . import wake_router as WR
 
 SEAT = "ZC"
@@ -60,7 +63,21 @@ MENTION = "ZCode"
 SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 BAD_REQUEST = "bad-request"
-TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation"})
+SECRET_FIELD = "secret-field"
+TARGET_FIELDS = frozenset(
+    {"session_id", "letter", "host", "generation", "title", "thread_link"}
+)
+#: The fields a wake request carries:  the router's own Wake, and nothing else.
+WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
+#: A Zulip link is longer than a name.
+MAX_LINK = 500
+#: The child's own output is scanned in memory and never kept:  a bounded tail, and only the
+#: typed code a documented signature maps to ever reaches a receipt.
+OUTPUT_SCAN_CAP = 8192
+#: The failure the ZCode runtime documents for a turn that fails before any model response (it
+#: logs `model.request.failed` with that statusMessage).  A match means the turn failed even
+#: though the process exited 0, so the wake was not delivered and the try may be repeated.
+FAILURE_SIGNATURES = (("project_token_login_failed", "model-auth-login-failed"),)
 
 DEFAULTS: Mapping[str, Any] = {
     **WR.ROUTER_DEFAULTS,
@@ -81,6 +98,8 @@ NEVER_RAN: frozenset[str] = frozenset(
         "session-cwd-gone",
         "workspace-mismatch",
         "zcode-not-found",
+        "invalid-workspace",
+        SECRET_FIELD,
         "unknown-host",
         "unknown-platform",
         "platform-handler-missing",
@@ -108,6 +127,32 @@ def state_dir(env: Mapping[str, str]) -> Path:
         return Path(explicit)
     base = os.path.join(str(env.get("HOME") or os.path.expanduser("~")), ".local", "state")
     return Path(base) / "wake-router" / "zc"
+
+
+def _private_dir(folder: Path) -> None:
+    """Make this folder private, and every level of it that is missing.
+
+    A new level is created with mode 0o700 and the folder itself is refused when it is a
+    symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
+    makes one level;  this makes the chain, because a level with default permissions lets
+    another user list the session lock names under it."""
+    missing: list[Path] = []
+    probe = folder
+    while True:
+        if probe.is_symlink():
+            raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(probe))
+        if probe.exists():
+            break
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for part in reversed(missing):
+        if part.is_symlink():
+            raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(part))
+        part.mkdir(mode=0o700, exist_ok=True)
+    WR.private_dir(folder)
 
 
 def tasks_index_path(env: Mapping[str, str]) -> Path:
@@ -205,9 +250,14 @@ def _subagent_ids(env: Mapping[str, str], sids: list[str]) -> tuple[str, set[str
 
 
 def exclude_non_interactive(
-    env: Mapping[str, str], local_host: str
+    env: Mapping[str, str], local_host: str, workspace: str = ""
 ) -> Callable[[list[WR.Target]], set[str]]:
-    """Return session ids of local targets that are sub-agent children or not in the index."""
+    """Return session ids of local targets that cannot take a wake.
+
+    A session is excluded when it is a sub-agent child, when the index does not know it, when
+    its recorded workspace is gone, and when its recorded workspace is not the workspace this
+    seat delivers into:  a wake into another project's directory is the wrong-chat delivery
+    this platform exists to refuse, so it is never picked in the first place."""
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         local_ids = [t.session_id for t in targets if t.host == local_host]
@@ -236,8 +286,11 @@ def exclude_non_interactive(
             conn.close()
         seen = {str(r[0]) for r in rows}
         excluded |= set(local_ids) - seen
+        want = os.path.realpath(workspace) if workspace else ""
         for task_id, workspace_path in rows:
             if not workspace_path:
+                excluded.add(str(task_id))
+            elif want and os.path.realpath(str(workspace_path)) != want:
                 excluded.add(str(task_id))
         return excluded
 
@@ -276,10 +329,11 @@ def wake_text(wake: WR.Wake) -> str:
         "sender": wake.sender,
         "topic": wake.topic,
     }
+    note = wake.link_note if WR.link_note_ok(wake.link_note) else ""
     return WAKE_TEXT.format(
         wake_id=wake.wake_id,
         message_id=wake.message_id,
-        note=wake.link_note + "\u00a0 " if wake.link_note else "",
+        note=note + "\u00a0 " if note else "",
         fields=json.dumps(fields, ensure_ascii=False, sort_keys=True),
     )
 
@@ -305,7 +359,7 @@ def deliver_local(
         return WR.Delivery("busy", "resume", code="missing-workspace")
 
     folder = state_dir(env) / "locks"
-    WR.private_dir(folder)
+    _private_dir(folder)
     fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(fd, "w") as lock:
         try:
@@ -355,6 +409,10 @@ def deliver_local(
             recorded = str(row.get("workspace_path") or "")
             if not recorded:
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
+            if recorded.startswith("-"):
+                # A path that begins with a dash would be read as an option by the CLI, so it
+                # is refused before it can become one.
+                return WR.Delivery("refused", "resume", code="invalid-workspace")
             if os.path.realpath(recorded) != os.path.realpath(workspace):
                 return WR.Delivery("refused", "resume", code="workspace-mismatch")
             if not os.path.isdir(recorded):
@@ -380,24 +438,52 @@ def deliver_local(
                     cwd=recorded,
                     env=child_env,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     timeout=timeout_seconds,
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                return WR.Delivery("refused", "resume", code="resume-timeout")
+                # The turn may have run:  nobody can tell, so it is not delivered and it is not
+                # retried either.
+                return WR.Delivery("unknown", "resume", code="resume-timeout")
             except OSError as exc:
                 return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - may have started, so it is final
                 return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
 
             if proc.returncode == 0:
+                failure = _failure_signature(getattr(proc, "stdout", None))
+                if failure:
+                    # The turn failed before any model response, so nothing ran and the try may
+                    # be repeated.
+                    return WR.Delivery("failed", "resume", code=failure)
+                # The prompt reached the session, and nothing proves it was acted on:  the
+                # receipt records the hand-over without claiming a confirmed delivery.
                 return WR.Delivery("sent", "resume", ack="unknown", note="zcode-exit-0")
             return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
         finally:
             if legacy_lock is not None:
                 legacy_lock.close()
+
+
+def _failure_signature(output: object) -> str:
+    """The typed code for a documented failure in the child's own output, or "".
+
+    The raw output never leaves this function:  a bounded tail is scanned in memory, because a
+    child's output can quote the prompt, the session or a token, and a receipt is a durable
+    record.  No signature match is no code:  the failure is never guessed."""
+    if isinstance(output, bytes):
+        text = output.decode("utf-8", "replace")
+    elif isinstance(output, str):
+        text = output
+    else:
+        return ""
+    window = text[-OUTPUT_SCAN_CAP:]
+    for needle, code in FAILURE_SIGNATURES:
+        if needle in window:
+            return code
+    return ""
 
 
 def make_deliver(
@@ -442,7 +528,11 @@ def router_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=make_deliver(env, config, runner=runner),
-        exclude=exclude_non_interactive(env, str(config.get("local_host", "server"))),
+        exclude=exclude_non_interactive(
+            env,
+            str(config.get("local_host", "server")),
+            str(config.get("workspace") or ""),
+        ),
     )
 
 
@@ -451,9 +541,38 @@ def router_platform(
 # --------------------------------------------------------------------------------------------
 
 
-def _short(value: object) -> str:
-    text = str(value or "")
-    return text if re.fullmatch(r"[A-Za-z0-9:_-]{0,80}", text) else "unreadable"
+class SecretField(ValueError):
+    """A Zulip-authored field that carries credential material:  the name of the field, never
+    the value."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(field)
+        self.field = field
+
+
+def _text(data: Mapping[str, Any], name: str, limit: int = WR.NAME_CHARS) -> str:
+    """One text field of a request, of the type it claims and within its bound."""
+    value = data.get(name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(name)
+    return value
+
+
+def _zulip_field(data: Mapping[str, Any], name: str, limit: int = WR.NAME_CHARS) -> str:
+    """One Zulip-authored field:  scanned for credential material, then bounded.
+
+    A hit refuses the delivery by name:  the value is never kept, never logged and never put in
+    the prompt."""
+    value = data.get(name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(name)
+    if value and secretscan.scan(value):
+        raise SecretField(name)
+    return WR.clean(value, limit)
 
 
 def _target_from(value: object) -> WR.Target:
@@ -473,37 +592,58 @@ def _target_from(value: object) -> WR.Target:
     generation = value.get("generation")
     if type(generation) is not int or generation < 1:
         raise ValueError("bad generation")
+    title = value.get("title", "")
+    thread_link = value.get("thread_link", "")
+    if not isinstance(title, str) or len(title) > WR.NAME_CHARS:
+        raise ValueError("bad title")
+    if not isinstance(thread_link, str) or len(thread_link) > MAX_LINK:
+        raise ValueError("bad thread link")
     return WR.Target(
         session_id=session_id,
         letter=letter,
         host=host,
-        title=str(value.get("title") or ""),
-        thread_link=str(value.get("thread_link") or ""),
+        title=title,
+        thread_link=thread_link,
         generation=generation,
     )
 
 
 def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
-    """The Wake a request carries, validated on this side."""
-    if not WR.WAKE_ID_RE.fullmatch(str(data.get("wake_id") or "")):
+    """The Wake a request carries, validated on this side.
+
+    Every field is checked for the type it claims before it is used, and the Zulip-authored
+    ones are scanned for credential material and then bounded, so only the allowlisted form
+    reaches the agent."""
+    if not isinstance(data, Mapping) or not set(data) <= WAKE_FIELDS:
+        raise ValueError("bad wake")
+    wake_id = data.get("wake_id")
+    if not isinstance(wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake_id):
         raise ValueError("bad wake id")
     message_id = data.get("message_id", 0)
     if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 0:
         raise ValueError("bad message id")
+    dm = data.get("dm", False)
+    if not isinstance(dm, bool):
+        raise ValueError("bad dm")
+    link_note = data.get("link_note", "")
+    if not isinstance(link_note, str):
+        raise ValueError("bad link note")
     return WR.Wake(
-        wake_id=str(data.get("wake_id")),
-        seat=str(data.get("seat") or ""),
+        wake_id=wake_id,
+        seat=_text(data, "seat"),
         message_id=message_id,
-        channel=str(data.get("channel") or ""),
-        topic=str(data.get("topic") or ""),
-        zulip_link=str(data.get("zulip_link") or ""),
-        sender=str(data.get("sender") or ""),
-        dm=bool(data.get("dm")),
-        letter=str(data.get("letter") or ""),
-        picked=str(data.get("picked") or ""),
-        reason=str(data.get("reason") or ""),
-        link_note=str(data.get("link_note") or ""),
-        linked_by=str(data.get("linked_by") or ""),
+        channel=_zulip_field(data, "channel"),
+        topic=_zulip_field(data, "topic"),
+        zulip_link=_zulip_field(data, "zulip_link", MAX_LINK),
+        sender=_zulip_field(data, "sender"),
+        dm=dm,
+        letter=_text(data, "letter"),
+        picked=_text(data, "picked"),
+        reason=_text(data, "reason"),
+        # The note goes into the prompt outside the data, so only the router's own sentences
+        # are allowed there.
+        link_note=link_note if WR.link_note_ok(link_note) else "",
+        linked_by=_text(data, "linked_by"),
     )
 
 
@@ -528,6 +668,10 @@ def deliver_request(
     try:
         target = _target_from(request.get("target"))
         wake = _wake_from(request["wake"])
+    except SecretField as exc:
+        # The field is named and the value is not:  a refusal says which field, never what it
+        # carried.
+        return _answer(request, WR.Delivery("refused", code=SECRET_FIELD, note=exc.field))
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
 

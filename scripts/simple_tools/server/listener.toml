@@ -232,15 +232,16 @@ instance = "server"
 creds = "env"                     # ZULIP_OPENCODE_EMAIL, ZULIP_OPENCODE_API_KEY
 wake = "inbox"
 
-# ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like every other
-# seat with a module:  its wake goes to the router's front with the one bearer the router checks
-# (WAKE_ROUTER_KEY), and the URL that names the front is ZC_ROUTINE_URL in AFC prod /zulip.  Until both are
-# set the wake is logged routine-unready and dropped, and capture is unchanged.
+# ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md):  POST simple-tools-wake/1 with
+# Authorization: Bearer <ZC_ROUTINE_KEY> to ZC_ROUTINE_URL, the bridge's tailnet URL on this host.  The key is the
+# one in Fleet-OPS /zulip, read through the listener's secondary project read (infisical_env.py
+# LISTENER_READ_CODES);  the URL is in AFC prod /zulip.  Until both are set the wake is logged routine-unready and
+# dropped, and capture is unchanged.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
 wake = "http"
-routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.KIMI]
 instance = "server"
