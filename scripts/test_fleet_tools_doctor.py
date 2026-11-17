@@ -1848,45 +1848,102 @@ class MacCopyRowsTests(ReportAndRunTests):
     mac-style.  A Mac that also carries a fleet-cli release checkout (it publishes the server's
     bundle from it) was judged server-style and lost every one of those rows, so a stale
     ~/apps/fleet-rag went unnoticed and `recall contribute` failed for every seat on the Mac.
+    The revision the copies are judged against comes from the managed runtime itself, never from
+    the layout's runtime dict.
     """
 
+    def private_dir(self, path: Path) -> Path:
+        """A new directory that is owner-only and is never reached through a symlink."""
+        assert not path.parent.is_symlink(), path.parent
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.chmod(0o700)
+        return path
+
+    def managed_runtime(self, root: Path, files=None) -> str:
+        """A real managed runtime:  a git repository with an origin/main the doctor can read."""
+        shas = git_repo(root, files or [{"scripts/recall": "r1"}])
+        subprocess.run(
+            ["git", "-C", str(root), "update-ref", "refs/remotes/origin/main", shas[-1]],
+            check=True,
+            capture_output=True,
+        )
+        return shas[-1]
+
     def test_a_mac_with_a_release_checkout_still_reports_its_installed_copies(self):
-        (self.home / ".local/share/fleet-cli/repo/.git").mkdir(parents=True)
-        stub = {
-            "status": "OK",
-            "detail": "the copy equals main",
-            "state": "current",
-            "category": "fleet-tool",
-            "tool": "recall",
-        }
-        with mock.patch.object(doctor, "compare_copy", return_value=stub):
-            text, _ = self.run_doctor(["--json", "--no-network"], host="mac")
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            self.private_dir(self.home / ".local/share/fleet-cli/repo/.git")
+            tip = self.managed_runtime(self.rt_dir)
+        seen = {}
+
+        def spy(name, spec, repo, rt, runner=subprocess.run, **kw):
+            seen["name"] = name
+            seen["repo"] = repo
+            seen["rt"] = dict(rt)
+            return {"status": "OK", "detail": "stub", "state": "current", "category": "fleet-tool"}
+
+        rules = [
+            (("rev-parse", "HEAD"), (0, tip + "\n")),
+            (("rev-parse", "origin/main"), (0, tip + "\n")),
+        ]
+        with mock.patch.object(doctor, "compare_copy", side_effect=spy):
+            text, _ = self.run_doctor(["--json", "--no-network"], rules, host="mac")
         rows = {r["check"]: r for r in json.loads(text)["checks"]}
         self.assertIn("tool:recall", rows)
         self.assertIn("tool:fleet-mode", rows)
         self.assertEqual(rows["tool:recall"]["status"], "OK")
+        # The comparison runs against the managed runtime, with a revision from that runtime and
+        # not from the release checkout the layout would name.
+        self.assertEqual(seen["repo"], doctor.MAC_RUNTIME)
+        self.assertEqual(seen["rt"]["tip"], tip)
+        self.assertEqual(seen["rt"]["head"], tip)
+
+    def test_the_afc_tip_is_used_only_when_the_managed_runtime_holds_it(self):
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            repo = Path(self.tmp.name) / "runtime"
+            tip = self.managed_runtime(repo)
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                # A tip the runtime holds is the tip.
+                self.assertEqual(
+                    doctor.mac_copy_revision(tip=tip),
+                    {"tip": tip, "head": tip},
+                )
+                # A tip the runtime does not hold falls back to the runtime's own refs.
+                other = "f" * 40
+                self.assertEqual(
+                    doctor.mac_copy_revision(tip=other),
+                    {"tip": tip, "head": tip},
+                )
+                # A Mac with no managed runtime has no revision at all.
+            with mock.patch.object(doctor, "MAC_RUNTIME", Path(self.tmp.name) / "nothing"):
+                self.assertEqual(
+                    doctor.mac_copy_revision(tip=tip),
+                    {"tip": None, "head": None},
+                )
 
     def test_a_stale_installed_copy_is_reported_with_the_fix(self):
         # This case keeps a real git:  the comparison reads the blobs of a real repository.
         with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
             repo = Path(self.tmp.name) / "runtime"
-            shas = git_repo(repo, [{"scripts/recall": "r1", "scripts/fleet_rag/core.py": "v1"}])
-            tip = shas[-1]
+            tip = self.managed_runtime(
+                repo, [{"scripts/recall": "r1", "scripts/fleet_rag/core.py": "v1"}]
+            )
             self.touch("apps/fleet-rag/recall", "r1")
             self.touch("apps/fleet-rag/fleet_rag/core.py", "v1")
             with mock.patch.object(doctor, "MAC_RUNTIME", repo):
                 report = doctor.Report()
-                doctor.check_mac_copies(report, {"tip": tip, "head": tip})
+                doctor.check_mac_copies(report)
             rows = {r["check"]: r for r in report.rows}
             self.assertEqual(
                 (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("current", "OK")
             )
+            # The row names the revision it judged the copy against.
+            self.assertIn(tip[:7], rows["tool:recall"]["detail"])
 
             # An older copy of one file is stale, and the row names the command that fixes it.
             self.touch("apps/fleet-rag/fleet_rag/core.py", "v0")
             with mock.patch.object(doctor, "MAC_RUNTIME", repo):
                 report = doctor.Report()
-                doctor.check_mac_copies(report, {"tip": tip, "head": tip})
+                doctor.check_mac_copies(report)
             rows = {r["check"]: r for r in report.rows}
             self.assertEqual(
                 (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("stale", "FAIL")

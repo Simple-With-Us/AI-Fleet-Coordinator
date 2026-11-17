@@ -2228,7 +2228,28 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
     )
 
 
-def check_mac_copies(report: Report, rt: dict, runner: Callable = subprocess.run) -> None:
+def mac_copy_revision(
+    runner: Callable = subprocess.run, tip: str | None = None
+) -> dict:
+    """The revision the Mac's installed copies are judged against:  the managed runtime's own.
+
+    The layout's runtime dict is not it.  On a Mac that is judged server-style that dict describes
+    a different checkout (the fleet-cli release), and a foreign revision either judges the copies
+    against the wrong commit or leaves the row a permanent WARN/unknown, so a stale copy stays
+    invisible.  The AFC tip is used when the managed runtime really holds it,  and the runtime's
+    own origin/main or HEAD otherwise.  A Mac with no managed runtime has neither,  and the rows
+    answer WARN/unknown, never current.
+    """
+    head = git_try(MAC_RUNTIME, "rev-parse", "HEAD", runner=runner)
+    local = git_try(MAC_RUNTIME, "rev-parse", "origin/main", runner=runner)
+    if tip and git_has_commit(MAC_RUNTIME, tip, runner=runner):
+        return {"tip": tip, "head": head or None}
+    return {"tip": local or None, "head": head or None}
+
+
+def check_mac_copies(
+    report: Report, runner: Callable = subprocess.run, tip: str | None = None
+) -> None:
     """The Mac's installed copies (the fleet-rag install, fleet-mode, fleet-secrets) against the tip of main.
 
     These rows are about a copy on disk, not about where the Mac's commands run, so they hold for
@@ -2237,9 +2258,10 @@ def check_mac_copies(report: Report, rt: dict, runner: Callable = subprocess.run
     fleet-cli release checkout (the Mac publishes the server's bundle from it) was judged
     server-style, so every one of these rows was lost.  A stale ~/apps/fleet-rag then went
     unnoticed for days, and `recall contribute` failed with identity_required for every seat on
-    the Mac.  A Mac with no managed runtime has no object store to compare against and answers
-    WARN/unknown, never current.
+    the Mac.  The revision comes from the managed runtime itself (mac_copy_revision),  never from
+    the layout's runtime dict.
     """
+    rt = mac_copy_revision(runner, tip)
     for name in ("recall", "fleet-mode", "fleet-secrets"):
         add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
 
@@ -3722,7 +3744,7 @@ def run(
     if host == "mac":
         # The installed copies are the Mac's own state and are checked on every Mac, whichever
         # runtime layout it has:  they are not part of the layout choice.
-        check_mac_copies(report, rt, runner)
+        check_mac_copies(report, runner=runner, tip=(expected or {}).get("rev"))
     if on_mac_runtime:
         check_mac_tools(report, rt, runner)
         check_placement_watch(report)
