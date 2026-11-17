@@ -107,7 +107,7 @@ class Builder:
 BUILDERS: dict[str, Builder] = {
     "AG": Builder("antigravity", "simple_tools.antigravity_wake"),
     "CLAUDE": Builder("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"),
-    "CODEX": Builder("codex", "simple_tools.codex_wake", "make_platform"),
+    "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
     "MM": Builder("minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"),
     "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),

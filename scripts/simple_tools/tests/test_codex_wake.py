@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import asdict, dataclass, replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from simple_tools import codex_wake as CW
@@ -78,6 +79,17 @@ class CodexWakeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         os.mkdir(os.path.join(self.tmp.name, "workspace"))
+        # The Codex profile this seat owns, and the store the thread is read from.
+        self.profile = os.path.join(self.tmp.name, ".codex")
+        os.mkdir(self.profile)
+        self.store = os.path.join(self.profile, "state_5.sqlite")
+        store_patch = patch.object(PLC, "store_file", return_value=self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
+        # The Mac's own local settings file:  the profile this seat may wake.
+        local = CW.state_dir({"HOME": self.tmp.name}) / "config.json"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps({"pinned_profile": self.profile}), encoding="utf-8")
         self.meta = {
             "id": SID,
             "cwd": os.path.join(self.tmp.name, "workspace"),
@@ -109,8 +121,10 @@ class CodexWakeTests(unittest.TestCase):
             self.transport,
             {"HOME": self.tmp.name},
             metadata,
-            hostname=lambda: "jay-mac.local",
+            local_host="mac",
+            hostname=lambda: "example.test",
             registry_lookup=registry,
+            pinned_profile=self.profile,
         )
         self.target = TargetWithGeneration(
             SID, letter="BC", host="mac", title="untrusted title", thread_link="ignored", generation=7
@@ -146,7 +160,7 @@ class CodexWakeTests(unittest.TestCase):
         binding = self.transport.calls[0][1]
         self.assertEqual(binding, {
             "platform": "codex",
-            "host": "jay-mac.local",
+            "host": "example.test",
             "session_id": SID,
             "cwd": self.meta["cwd"],
         })
@@ -464,12 +478,100 @@ class CodexWakeTests(unittest.TestCase):
 
     def test_factory_declares_codex_platform_and_canonical_target_pattern(self):
         platform = CW.make_platform(
-            {}, {"local_host": "mac"}, transport=self.transport,
-            metadata_lookup=lambda env, sid: self.meta, hostname=lambda: "jay-mac.local"
+            {"HOME": self.tmp.name},
+            {"local_host": "mac", "pinned_profile": self.profile},
+            transport=self.transport,
+            metadata_lookup=lambda env, sid: self.meta,
+            hostname=lambda: "example.test",
         )
         self.assertEqual((platform.seat, platform.platform, platform.mention), ("CODEX", "codex", "Codex"))
         self.assertRegex(SID, platform.target_re)
         self.assertNotRegex("11111111111141118111111111111111", platform.target_re)
+
+    def test_the_settings_default_to_the_server(self):
+        self.assertEqual(CW.DEFAULTS["local_host"], "server")
+        self.assertEqual(
+            CW.CodexDelivery(self.transport, {"HOME": self.tmp.name}).local_host, "server"
+        )
+
+    def test_a_delivery_without_a_pinned_owner_is_refused(self):
+        adapter = CW.CodexDelivery(
+            self.transport,
+            {"HOME": self.tmp.name},
+            lambda env, sid: self.meta,
+            local_host="mac",
+            hostname=lambda: "example.test",
+            registry_lookup=lambda env, letter: self.registry_result,
+        )
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "no-pinned-owner"))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_a_delivery_into_another_profile_is_refused(self):
+        other = os.path.join(self.tmp.name, "other-codex")
+        os.mkdir(other)
+        adapter = CW.CodexDelivery(
+            self.transport,
+            {"HOME": self.tmp.name},
+            lambda env, sid: self.meta,
+            local_host="mac",
+            hostname=lambda: "example.test",
+            registry_lookup=lambda env, letter: self.registry_result,
+            pinned_profile=other,
+        )
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "owner-mismatch"))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_the_server_sends_a_mac_chat_over_ssh(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if argv[-1] == "true":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            answer = {
+                "wake_id": "wake-abc",
+                "session_id": SID,
+                "generation": 7,
+                "delivery": {
+                    "outcome": "sent",
+                    "route": "codex-desktop",
+                    "ack": "confirmed",
+                    "code": "",
+                    "note": "",
+                },
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(answer) + "\n", stderr="")
+
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            {
+                "local_host": "server",
+                "mac_ssh": "test@example.test",
+                "pinned_profile": self.profile,
+            },
+            transport=self.transport,
+            runner=runner,
+        )
+        delivery = platform.deliver(self.target, self.wake)
+        self.assertEqual((delivery.outcome, delivery.ack), ("sent", "confirmed"))
+        self.assertTrue(any(argv[0] == "ssh" for argv in calls))
+        self.assertEqual(self.transport.calls, [])  # the Mac-local adapter never ran
+
+    def test_the_server_refuses_a_host_it_cannot_reach(self):
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            {"local_host": "server", "mac_ssh": "test@example.test"},
+            transport=self.transport,
+        )
+        target = TargetWithGeneration(
+            SID, letter="BC", host="elsewhere", generation=7
+        )
+        delivery = platform.deliver(target, self.wake)
+        self.assertEqual((delivery.outcome, delivery.code), ("refused", "unknown-host"))
 
     def wire_request(self):
         return json.loads(json.dumps({
@@ -487,7 +589,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "example.test",
             )
         self.assertEqual(
             (result["wake_id"], result["session_id"], result["generation"]),
@@ -517,7 +619,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
         self.assertGreater(len(stream.requested), 1)
@@ -572,7 +674,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
         self.assertNotIn("untrusted display title", self.transport.calls[-1][2])
@@ -586,7 +688,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
 
@@ -601,7 +703,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
 
@@ -626,7 +728,7 @@ class CodexWakeTests(unittest.TestCase):
                     transport=self.transport,
                     metadata_lookup=lambda env, sid: self.meta,
                     registry_lookup=lambda env, letter: self.registry_result,
-                    hostname=lambda: "jay-mac.local",
+                    hostname=lambda: "example.test",
                 )
                 self.assertEqual(result["delivery"]["outcome"], "refused")
                 self.assertEqual(self.transport.calls, [])

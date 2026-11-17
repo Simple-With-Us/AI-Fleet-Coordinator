@@ -69,6 +69,63 @@ Use source-message JSON, server listener ledger JSONL, final router receipt JSON
 
 Exit 0 means prompt arrival in the expected chat, exit 3 means incomplete or rejected evidence, and exit 2 means invalid snapshot input.  Completion of the requested work is a separate observation.  Cover busy, duplicate, restart/failure, archive/reopen and letter reuse before declaring support functioning.
 
+## The route from the server
+
+The router on the server has no Codex Desktop, so a delivery that stayed there would answer
+every wake with a store it does not have.  The seat's platform therefore has two halves, and
+the platform table names both.
+
+- `router_platform` is the server's platform for seat CODEX.  A chat on the router's own host
+  goes to this module's own adapter, and a chat on the Mac goes over the one fixed ssh route
+  in `claude_wake.deliver_remote`, exactly as the other Mac-hosted platforms do.  Any other host
+  is refused.
+- `deliver_request` is the Mac-side handler that `simple-chat wake-deliver` dispatches to.  It
+  re-checks the request, re-reads the store, and hands the wake to the native transport.
+
+The adapter's `local_host` defaults to `server`, never to `mac`:  a host that has not named
+itself does not claim to be the Mac, so a delivery cannot land in a local store the host does
+not have.
+
+## The pinned owner
+
+The authority to enqueue a prompt into a Codex thread is granted to a target whose owner
+matches the one the deployment pins.  The registry's session row carries no owner column, so
+the authoritative owner of a Codex chat is the profile its thread lives in:  the Codex store
+this host reads.  The deployment names that profile in the Mac's own local settings file,
+`~/.local/state/codex-wake/config.json`:
+
+    { "pinned_profile": "/Users/jay/.codex" }
+
+A delivery whose store is another profile is refused (`owner-mismatch`), and a delivery with
+no pin at all is refused (`no-pinned-owner`), both before anything is enqueued.  A refusal
+that comes before the enqueue is a `NEVER_RAN` code, so its receipt says `delivered: false`.
+
+## The cutover, and what is not switched yet
+
+The sample `scripts/simple_tools/server/listener.toml` still routes CODEX through its inbox.
+That is deliberate:  a seat moves to the router only after its own path is deployed and
+verified live, and the working path is never removed before the replacement has answered a
+real wake.
+
+The cutover, when it is done, is these four steps, in this order.
+
+1.  Write the pinned profile into the Mac's local settings file, as above.
+2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
+    answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
+    `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
+3.  Change the live listener's `[seat.CODEX]` block to `wake = "http"` with
+    `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
+4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
+    (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
+    unsettled outcome.
+
+## The bounded JSON
+
+Every reader of untrusted JSON in the fleet now shares one bound:  `wake_router.bounded_json`
+holds a value to sixteen levels of depth and a thousand nodes, and the wake-acceptance tool
+applies it to the snapshot it parses and to every JSONL row it reads.  A byte cap alone does
+not bound the work the parser and the walker do.
+
 ## Deployment Record
 
 This source slice does not establish deployment.  AA owns shared dispatch, the server router and authoritative fleet-knobs settings; BB owns listener migration, credential binding and cursor handoff; CC owns hosted Muster reads and the migration checklist.  Do not move a seat or retire the existing Mac listener independently.  Register the installed Mac helper as On-demand in the process inventory and refresh its Notes copy when it is actually deployed.

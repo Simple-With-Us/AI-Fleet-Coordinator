@@ -180,15 +180,15 @@ creds = "env"                     # ZULIP_CLAUDE_EMAIL, ZULIP_CLAUDE_API_KEY
 wake = "http"
 routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
-# CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router serves it like
-# every other seat with a module:  its wake goes to the router's front with the one bearer the
-# router checks (WAKE_ROUTER_KEY), and the URL that names the front is CODEX_ROUTINE_URL in AFC
-# prod /zulip.
+# CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router can serve it
+# like every other seat with a module.  It keeps its inbox wake until that path is deployed and
+# verified live:  a seat moves to the router only after its own path has answered a real wake, and
+# the working path is never removed before the replacement has answered one.  The cutover is in
+# docs/protocols/codex-shared-router.md.
 [seat.CODEX]
 instance = "server"
 creds = "env"                     # ZULIP_CODEX_EMAIL, ZULIP_CODEX_API_KEY
-wake = "http"
-routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+wake = "inbox"
 
 [seat.AG]
 instance = "server"
