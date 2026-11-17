@@ -6306,18 +6306,35 @@ def _remote_error_object(result: dict, sc) -> dict:
 def _remote_content_ok(content) -> bool:
     """Whether a hosted content list is a list of parts this board can read.
 
-    The hosted's answer is untrusted:  the collection and every part in it are checked here, at
-    the boundary, so nothing downstream reads a section or a field of the wrong type.  A part
-    that names no type, or a type that is not a string, or a text part whose text is not a
-    string, is a shape this board does not accept."""
+    The hosted's answer is untrusted, and the board reads text parts and nothing else:  every
+    part must be an object whose `type` is `text` and whose `text` is a string.  A part of
+    another type, or a text part whose text is not a string, is a shape this board does not
+    accept, and it is refused here at the boundary, so no downstream code reads a field of a
+    shape it never checked."""
     if content is None:
         return True
     if not isinstance(content, list):
         return False
     for part in content:
-        if not isinstance(part, dict) or not isinstance(part.get("type"), str):
+        if not isinstance(part, dict):
             return False
-        if part.get("type") == "text" and not isinstance(part.get("text"), str):
+        if part.get("type") != "text" or not isinstance(part.get("text"), str):
+            return False
+    return True
+
+
+def _remote_error_content_ok(content) -> bool:
+    """Whether the hosted's error answer is a list of parts this board can read.
+
+    The error object is read from the parts that carry text, and the hosted may name no type
+    on them, so the type is not required on this path:  a part that carries no string text is
+    still refused, so the error code is never read out of a shape that was not checked."""
+    if content is None:
+        return True
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
             return False
     return True
 
@@ -6369,13 +6386,15 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
         return None, [], "the hosted endpoint sent no result" + unknown
     content = result.get("content")
     sc = result.get("structuredContent")
-    if (
-        not _remote_content_ok(content)
-        or (sc is not None and not isinstance(sc, dict))
-        or not isinstance(result.get("isError", False), bool)
+    if (sc is not None and not isinstance(sc, dict)) or not isinstance(
+        result.get("isError", False), bool
     ):
         return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
     if result.get("isError"):
+        # The hosted's own error:  the error object is read from the parts that carry text, and
+        # the hosted may name no type on them, so the type is not required on this path.
+        if not _remote_error_content_ok(content):
+            return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
         eo = _remote_error_object(result, sc)
         code = _remote_code(eo.get("code"))
         retry = eo.get("retry_after_s", eo.get("retry_after"))
@@ -6391,6 +6410,8 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
         return None, [], f"{tool} failed on the hosted server: {code}{after}{note}" + (
             f"; {hint}" if hint else ""
         )
+    if not _remote_content_ok(content):
+        return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
     return result, _remote_text_parts(content), ""
 
 
