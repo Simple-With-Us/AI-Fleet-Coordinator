@@ -109,6 +109,49 @@ class CoreTests(unittest.TestCase):
             "codex",
         )
 
+    def test_trusted_seat_accepts_a_chat_tag_when_no_seat_is_set(self):
+        # A Z Code chat session declares its chat tag (installed rules: chat tag `[ZC]`)
+        # instead of AGENT_SEAT, which a session must never write.  The tag names the seat.
+        registry = self.ctx().registry
+        seated = fg.trusted_seat({"AGENT_TAG": "ZC"}, registry)
+        self.assertIsNotNone(seated)
+        self.assertEqual(seated.suffix.lower(), "zc")
+        # a launcher's no-seat decision still wins over a declared tag
+        self.assertIsNone(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "x"}, registry)
+        )
+        # a real launcher assignment beats the tag
+        self.assertEqual(
+            fg.trusted_seat(
+                {"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "BotFleet", "AGENT_LAUNCH_SEAT": "CODEX"},
+                registry,
+            ).suffix.lower(),
+            "codex",
+        )
+        # an unknown tag names no seat
+        self.assertIsNone(fg.trusted_seat({"AGENT_TAG": "NOPE"}, registry))
+
+    def test_trusted_seat_tag_ranks_below_the_launcher_decision(self):
+        registry = self.ctx().registry
+        # a launcher present without an assigned seat still names no fleet identity,
+        # tag or not (the launcher contract)
+        self.assertIsNone(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "x"}, registry)
+        )
+        # a launcher assignment beats the tag
+        self.assertEqual(
+            fg.trusted_seat(
+                {"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "BotFleet", "AGENT_LAUNCH_SEAT": "CODEX"},
+                registry,
+            ).suffix.lower(),
+            "codex",
+        )
+        # an ambient AGENT_SEAT beats the tag
+        self.assertEqual(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_SEAT": "CLAUDE"}, registry).suffix.lower(),
+            "claude",
+        )
+
     def test_registered_suffix_and_legacy_alias_have_the_same_owner(self):
         for suffix in ("zc", "zcode"):
             path = "apps/lanes/BotFleet/%s-work/file.py" % suffix
