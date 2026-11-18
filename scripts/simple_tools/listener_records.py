@@ -164,7 +164,7 @@ _WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 _STATE_RE = re.compile(r"^[a-z_]{1,32}$")
 _VIA_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 # The ledger states of a wake that never went to an adapter:  the `reason` row field is then a fixed
-# code (`leased`, `loop_guard`, `wakes_per_hour`, `pin_stale`, ...) and says where the wake went or
+# code (`leased`, `loop_guard`, `wakes_per_hour`, `wake_type_not_runnable`, ...) and says where the wake went or
 # why it stopped.  A `failed` row's reason is free text, so it is never read for the via.
 _STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired", "evicted")
 

@@ -1,8 +1,8 @@
 """The model gate, phase 1 (record only):  every model start records why a model was needed, and nothing
 else about the start changes.  The pure verdict table, the ledger fields and their restore, the counts,
-the daemon starts (primary, fallback, chat inspection, routine), a gate that
-fails, and a replay showing the same message sequence decides the same with the gate, without it and
-with it broken.
+the daemon's one start (a routine forward:  the listener starts no model of its own since the owner's
+ruling of Nov 10, 2026), a gate that fails, and a replay showing the same message sequence decides the
+same with the gate, without it and with it broken.
 """
 
 from __future__ import annotations
@@ -10,11 +10,8 @@ from __future__ import annotations
 import copy
 import json
 import os
-import re
-import secrets
 import subprocess
 import tempfile
-import textwrap
 import time
 import types
 import unittest
@@ -22,27 +19,35 @@ from collections import Counter
 from typing import Any
 from unittest import mock
 
-from simple_tools import adapters as A
 from simple_tools import daemon as D
 from simple_tools import listener_cli as LC
 from simple_tools import live as L
+from simple_tools import operator_registry as OR
 from simple_tools import router as R
 from simple_tools import wakes as W
-from simple_tools.tests.harness import write_rc
-from simple_tools.tests.listener_harness import ListenerHarness, reply_output
-from simple_tools.tests.test_chat_inspection import (
-    CHAT_ID,
-    FakeCatalog,
-    FakeMuseRunner,
-    final_output,
-    inspect_output,
-    offered,
-)
+from simple_tools.tests.listener_harness import ListenerHarness
 from simple_tools.tests.test_daemon import MENTION, DaemonHarness
-from simple_tools.tests.test_openrouter_daemon import FALLBACK, OpenRouterHarness
-from simple_tools.tests.test_openrouter_wake import FALLBACK_MODEL
 from simple_tools.tests.test_server import SEAT as ROUTINE_SEAT
 from simple_tools.tests.test_server import ServerHarness
+
+#: A chat catalog id and one catalog row for it (they came from the deleted chat inspection tests).
+CHAT_ID = "a" * 64
+
+
+def offered(*, read: bool = True, stale: bool = False) -> dict[str, Any]:
+    return {
+        "id": CHAT_ID,
+        "seat": "CURSOR",
+        "platform": "cursor-cloud",
+        "host": "cursor-cloud",
+        "cwd": "cursor-cloud://bc-existing",
+        "session_id": "bc-existing",
+        "title": "Existing chat",
+        "updated_at": None,
+        "capabilities": {"read": read, "wake": True},
+        "status": "idle",
+        "stale": stale,
+    }
 
 
 class Boom:
@@ -292,13 +297,7 @@ class VerdictTableTests(unittest.TestCase):
 class FactSituationTests(GateLog, DaemonHarness):
     def setUp(self) -> None:
         super().setUp()
-        self.daemon_ = self.daemon(
-            claude_runner=Boom(),
-            muse_runner=Boom(),
-            mcode_runner=Boom(),
-            openrouter_runner=Boom(),
-            routine_runner=Boom(),
-        )
+        self.daemon_ = self.daemon(routine_runner=Boom())
         self.runner = self.daemon_.seats["CLAUDE"]
         for seat in ("CURSOR", "CODEX"):  # destinations a listed chat can belong to
             self.daemon_.seats[seat] = types.SimpleNamespace(
@@ -408,41 +407,35 @@ class FactSituationTests(GateLog, DaemonHarness):
     def test_the_gate_never_opens_the_registry_itself(self) -> None:
         pending = self.pending()
         pending.letter_candidates, pending.letter_holder_on_seat = 1, True
-        with mock.patch.object(
-            self.daemon_, "operator_candidates", side_effect=AssertionError("a second registry open")
+        with (
+            mock.patch.object(
+                OR, "candidates_for", side_effect=AssertionError("a second registry open")
+            ),
+            mock.patch.object(
+                OR, "candidates_for_letter", side_effect=AssertionError("a second registry open")
+            ),
         ):
             verdict = self.verdict("compose_reply", "@**Claude** Z hi", pending=pending, letter="Z")
         self.assertEqual(verdict.code, "det_tagged_letter_single")
 
-    def test_the_step_that_asks_the_registry_hands_its_answer_to_the_gate(self) -> None:
-        mine = {"seat": "CLAUDE", "platform": "claude"}
-        other = {"seat": "MM", "platform": "minimax"}
-        for found, expected in (
-            ([mine], (1, True)),
-            ([other], (1, False)),
-            ([mine, other], (2, False)),
-            ([], (0, False)),
-            # a registry row that is not a mapping:  the count is still known, the holder is not, and
-            # the ask itself neither raises nor changes (it returned at once for one candidate before)
-            ([None], (1, None)),
-            ([("CLAUDE",)], (1, None)),
-            ([{"seat": None}], (1, False)),
+    def test_the_gate_reads_the_letter_facts_the_pending_carries(self) -> None:
+        # The step that asked the registry and recorded these went with the retired wake types
+        # (owner ruling, Nov 10, 2026);  the gate's half is kept with the gate (a follow-up trims it).
+        for recorded, expected_single in (
+            ((1, True), True),
+            ((1, False), False),
+            ((2, False), False),
+            ((0, False), False),
+            ((1, None), False),  # the holder is not known:  no deterministic rule
         ):
-            with self.subTest(found=found):
+            with self.subTest(recorded=recorded):
                 pending = self.pending()
-                with mock.patch.object(
-                    self.daemon_, "operator_candidates", return_value=found
-                ) as asked:
-                    answer = self.daemon_.note_letter_candidates(self.runner, pending, "Z")
-                self.assertIsNone(answer)
-                self.assertEqual(asked.call_count, 1, "one registry open for the whole wake")
-                self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), expected)
-                # and the gate reads "holder not known" as no deterministic rule
+                pending.letter_candidates, pending.letter_holder_on_seat = recorded
                 kw: dict[str, Any] = dict(messages=[], letter="Z", chat_context=None)
                 facts = self.daemon_._gate_facts(self.runner, pending, **kw)
                 self.assertEqual(
                     W.model_gate_verdict("compose_reply", facts).code == "det_tagged_letter_single",
-                    expected == (1, True),
+                    expected_single,
                 )
 
     # ---- a live lease -----------------------------------------------------------------------
@@ -1091,8 +1084,16 @@ class StatusLineTests(unittest.TestCase):
                 )
 
 
+#: A routine seat's status block, as `Daemon.status` writes it for a seat whose routine is ready.
+ROUTINE_READY = {"ready": True, "host": "routine.test"}
+
+
 class StatusCommandTests(ListenerHarness):
-    """`simple-chat status` end to end: the real command over a status file and ledgers."""
+    """`simple-chat status` end to end: the real command over a status file and ledgers.
+
+    The seats are routine (http) or inbox seats, the only two a current listener writes;  the
+    `model_*` rows stand for ledger rows a retired claude, muse or openrouter wake wrote before the
+    owner's ruling of Nov 10, 2026, which the ledger keeps for 90 days and status still counts."""
 
     def seat(self, **extra: Any) -> dict[str, Any]:
         return dict({"bot": "x", "connected": True, "wake": "inbox", "budget": {}}, **extra)
@@ -1144,7 +1145,7 @@ class StatusCommandTests(ListenerHarness):
     def test_status_prints_the_starts_and_the_forwards(self) -> None:
         self.write_status(
             {
-                "CLAUDE": self.seat(wake="claude"),
+                "CLAUDE": self.seat(wake="http", routine=ROUTINE_READY),
                 "PLAIN": self.seat(),
                 "ROUTINE": self.seat(wake="http", routine={"ready": True, "host": "routine.test"}),
             }
@@ -1159,7 +1160,7 @@ class StatusCommandTests(ListenerHarness):
 
     def test_a_status_file_from_an_older_listener_with_the_bridge_keys_still_prints(self) -> None:
         # A listener that has not restarted onto this build still writes the bridge keys.
-        self.write_status({"CLAUDE": self.seat(wake="claude", muse_bridge=True)})
+        self.write_status({"CLAUDE": self.seat(wake="http", routine=ROUTINE_READY, muse_bridge=True)})
         path = os.path.join(L.listener_dir(self.root), "status.json")
         status = L.read_json(path)
         status["muse_bridge"] = {"enabled": True, "remote_seats": ["ECHO"], "pin": "ok"}
@@ -1168,8 +1169,36 @@ class StatusCommandTests(ListenerHarness):
         self.assertEqual(self.gate_lines(lines, "CLAUDE"), ["  model starts 24h 0 (avoidable 0)"])
         self.assertFalse([ln for ln in lines if "bridge" in ln.lower()])
 
+    def test_a_status_file_from_an_older_listener_with_a_retired_wake_type_still_prints(self) -> None:
+        # A listener that has not restarted onto this build still writes `wake = "claude"` and the ten
+        # retired seat keys;  the command reads them with .get and prints the seat with no extra state.
+        self.write_status(
+            {
+                "CLAUDE": self.seat(
+                    wake="claude",
+                    pinned=True,
+                    pin={"why": None},
+                    claude="/opt/claude",
+                    model="sonnet",
+                    fallback={"runtime": "openrouter", "stands_in": True, "primary_hold": "x"},
+                    routes_24h=3,
+                    route_enabled=False,
+                    quota={"known": True},
+                ),
+                "ROUTINE": self.seat(wake="http", routine=ROUTINE_READY),
+            }
+        )
+        lines = self.status_lines()
+        (claude,) = [ln for ln in lines if ln.startswith("CLAUDE ") and " last event " in ln]
+        self.assertIn("wake claude  wakes 24h", claude, "no pin, fallback or model state is printed")
+        self.assertNotIn("routes", claude)
+        self.assertNotIn("pinned", claude)
+        self.assertNotIn("fallback", claude)
+        (routine,) = [ln for ln in lines if ln.startswith("ROUTINE ") and " last event " in ln]
+        self.assertIn("wake http (routine ready, routine.test)", routine)
+
     def test_a_ledger_that_cannot_be_read_leaves_that_seats_line_out_and_the_others_stay(self) -> None:
-        self.write_status({"CLAUDE": self.seat(wake="claude"), "OTHER": self.seat(wake="claude")})
+        self.write_status({"CLAUDE": self.seat(wake="http", routine=ROUTINE_READY), "OTHER": self.seat(wake="http", routine=ROUTINE_READY)})
         self.write_ledger("OTHER", self.started_rows("OTHER", [("model_compose_reply", False)]))
         mine = L.SeatPaths(self.root, "CLAUDE").wakes
         with self.subTest("no permission"):
@@ -1190,7 +1219,7 @@ class StatusCommandTests(ListenerHarness):
             self.assertEqual(self.gate_lines(lines, "OTHER"), ["  model starts 24h 1 (avoidable 0)"])
 
     def test_a_corrupt_line_in_a_ledger_does_not_cost_the_seat_its_line(self) -> None:
-        self.write_status({"CLAUDE": self.seat(wake="claude")})
+        self.write_status({"CLAUDE": self.seat(wake="http", routine=ROUTINE_READY)})
         rows = self.started_rows("CLAUDE", [("model_compose_reply", False), ("det_eyes", True)])
         path = L.SeatPaths(self.root, "CLAUDE").wakes
         L.private_dir(os.path.dirname(path))
@@ -1206,138 +1235,10 @@ class StatusCommandTests(ListenerHarness):
 # --------------------------------------------------------------------------------------------
 
 
-class GateWakeTests(GateLog, DaemonHarness):
-    def wake(self, daemon: D.Daemon, text: str = MENTION, topic: str = "t") -> int:
-        before = len(self.ledger())
-        mid = self.fake.add_message("Codex", "simple-tools", topic, text)
-        self.pump_until(daemon, lambda: len(self.ledger()) > before)
-        self.wake_cycle(daemon)
-        return mid
-
-    def test_a_seat_wake_runs_once_as_before_and_its_rows_carry_the_gate_through_a_restart(self) -> None:
-        daemon = self.started()
-        self.wake(daemon)
-        rows = self.ledger()
-        self.assertEqual([r["state"] for r in rows], ["queued", "accepted", "started", "done"])
-        self.assertEqual(len(self.dumps()), 1, "the model ran exactly once, as it always did")
-        self.assertEqual(self.terminal_wakes()[-1]["action"], "reply")
-        self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
-        self.assertEqual(self.terminal_wakes()[-1]["post_error"], "operator_never_answers")
-        for row in rows[:2]:
-            self.assertFalse([k for k in row if k.startswith("gate")], "decided at the start, not before")
-        for row in rows[2:]:
-            self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_compose_reply", False))
-            self.assertFalse([k for k in row if k.startswith("gate_f") or k == "gate_inspect"])
-        (event,) = self.gate_events()
-        self.assertEqual(
-            {k: event[k] for k in ("seat", "wake_id", "purpose", "code", "avoidable", "rule")},
-            {
-                "seat": "CLAUDE",
-                "wake_id": rows[0]["wake_id"],
-                "purpose": "compose_reply",
-                "code": "model_compose_reply",
-                "avoidable": False,
-                "rule": "reply_composition_is_the_model_job",
-            },
-        )
-        # A restart reads the file, not memory:  a new daemon sees the same record.
-        daemon.shutdown()
-        again = self.started()
-        view = again.seats["CLAUDE"].ledger.wakes()[rows[0]["wake_id"]]
-        self.assertEqual((view["gate"], view["gate_avoidable"]), ("model_compose_reply", False))
-        counts = W.gate_counts(L.read_jsonl(self.seat_paths().wakes), self.clock.time())
-        self.assertEqual((counts["CLAUDE"]["starts"], counts["CLAUDE"]["avoidable"]), (1, 0))
-
-    def test_a_tagged_letter_with_one_session_is_recorded_avoidable_and_the_model_still_runs(self) -> None:
-        """The first known violation:  the letter names one session, so code could have decided, and
-        the model runs anyway.  Phase 1 records it and changes nothing."""
-        daemon = self.started()
-        one = [{"seat": "CLAUDE", "platform": "claude", "native_session_id": "s1"}]
-        with mock.patch.object(daemon, "operator_candidates", return_value=one):
-            self.wake(daemon, "@**Claude** Z can you check the cutover?")
-        self.assertEqual(len(self.dumps()), 1, "the model still ran")
-        row = [r for r in self.ledger() if r["state"] == "started"][0]
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("det_tagged_letter_single", True))
-        self.assertEqual(self.terminal_wakes()[-1]["state"], "done")
-
-    def test_a_tagged_letter_with_two_sessions_is_ambiguous_not_avoidable(self) -> None:
-        daemon = self.started()
-        two = [{"seat": "CLAUDE", "platform": "claude"}, {"seat": "MM", "platform": "minimax"}]
-        with mock.patch.object(daemon, "operator_candidates", return_value=two) as asked:
-            self.wake(daemon, "@**Claude** Z can you check the cutover?")
-        self.assertEqual(asked.call_count, 1, "the registry is opened once for the whole wake")
-        row = [r for r in self.ledger() if r["state"] == "started"][0]
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_letter_ambiguous", False))
-
-    def test_a_tagged_letter_whose_one_holder_is_on_another_seat_is_not_avoidable(self) -> None:
-        daemon = self.started()
-        elsewhere = [{"seat": "MM", "platform": "minimax"}]
-        with mock.patch.object(daemon, "operator_candidates", return_value=elsewhere):
-            self.wake(daemon, "@**Claude** Z can you check the cutover?")
-        row = [r for r in self.ledger() if r["state"] == "started"][0]
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_compose_reply", False))
-        self.assertEqual(len(self.dumps()), 1)
-
-    def test_a_wake_that_reached_the_model_with_an_eyes_marker_is_recorded_not_blocked(self) -> None:
-        """The router never offers a marker message, so this one is made by hand:  were one to leak
-        through, phase 1 would record it as avoidable and the model would still run."""
-        daemon = self.started()
-        daemon.history = lambda _runner, _pending: [
-            {"id": 55, "sender_id": 12, "client": "web", "content": ":eyes: not for the seat"}
-        ]
-        now = self.clock.time()
-        pending = W.Pending(
-            "leak", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"}, owner=True, now=now, due=now
-        )
-        pending.add({"id": 55, "ts": now}, True)
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        self.assertEqual(len(self.dumps()), 1)
-        row = [r for r in self.ledger() if r["state"] == "started"][0]
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("det_eyes", True))
-
-    def test_a_wake_a_live_session_took_starts_no_model_and_records_no_gate(self) -> None:
-        daemon = self.started()
-        mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.clock.advance(25)
-        daemon.tick()
-        self.write_lease("late", topics=[("simple-tools", "t")])
-        daemon.run_jobs("CLAUDE")
-        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("skipped", "leased"))
-        self.assertEqual(self.dumps(), [])
-        self.assertEqual(self.gate_events(), [])
-        self.assertFalse([k for r in self.ledger() for k in r if k.startswith("gate")])
-        self.assertEqual([i["id"] for i in self.live_items("late")], [mid])
-
-    def test_a_wake_with_no_primary_and_no_fallback_starts_nothing_and_records_no_gate(self) -> None:
-        daemon = self.started()
-        daemon._primary_state = lambda _runner: (None, "not_pinned", None)
-        self.wake(daemon)
-        self.assertEqual(self.gate_events(), [])
-        self.assertFalse([k for r in self.ledger() for k in r if k.startswith("gate")])
-
-    def test_a_primary_that_failed_with_no_fallback_still_has_its_start_recorded_and_no_fallback_field(self) -> None:
-        self.set_claude(mode="error")
-        daemon = self.started()
-        asked: list[str] = []
-        real = daemon._model_gate
-
-        def counting(runner: Any, pending: Any, purpose: str, **kw: Any) -> Any:
-            asked.append(purpose)
-            return real(runner, pending, purpose, **kw)
-
-        daemon._model_gate = counting
-        self.wake(daemon)
-        rows = self.ledger()
-        self.assertEqual([r["state"] for r in rows][-2:], ["started", "failed"])
-        for row in rows[-2:]:
-            self.assertEqual(row["gate"], "model_compose_reply")
-            self.assertNotIn("gate_fallback", row)
-        self.assertEqual(len(self.gate_events()), 1)
-        self.assertEqual(asked, ["compose_reply"], "no fallback is configured, so none is gated")
-
-
 class GateNeverBlocksTests(GateLog, DaemonHarness):
+    """The default seat wakes through its routine (DaemonHarness), so the start the gate records is the
+    routine forward, and a gate that fails never stops it."""
+
     def run_one(self) -> D.Daemon:
         daemon = self.started()
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
@@ -1347,7 +1248,8 @@ class GateNeverBlocksTests(GateLog, DaemonHarness):
 
     def assert_the_wake_ran_as_before(self) -> None:
         self.assertEqual([r["state"] for r in self.ledger()], ["queued", "accepted", "started", "done"])
-        self.assertEqual(len(self.dumps()), 1)
+        self.assertEqual(len(self.routine.received), 1, "the routine was called once, as before")
+        self.assertEqual(self.ledger()[2]["adapter"], "http")
         self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
 
     def test_a_gate_that_raises_records_gate_error_and_the_wake_runs(self) -> None:
@@ -1392,13 +1294,19 @@ class GateNeverBlocksTests(GateLog, DaemonHarness):
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
         self.assert_the_wake_ran_as_before()
-        self.assertEqual(self.ledger()[2]["gate"], "model_compose_reply", "the record still landed")
+        self.assertEqual(self.ledger()[2]["gate"], "det_routine_forward", "the record still landed")
 
-    def test_the_gate_error_is_counted_as_a_start(self) -> None:
+    def test_a_gate_error_on_a_routine_forward_is_still_counted_as_a_forward(self) -> None:
+        # An http start is a delivery whatever its code, so a broken gate cannot turn it into a model
+        # start in the counts.
         with mock.patch.object(W, "model_gate_verdict", side_effect=RuntimeError("boom")):
             self.run_one()
         counts = W.gate_counts(L.read_jsonl(self.seat_paths().wakes), self.clock.time())
-        self.assertEqual(counts["CLAUDE"]["codes"], {"gate_error": 1})
+        self.assertEqual(
+            (counts["CLAUDE"]["forwards"], counts["CLAUDE"]["starts"], counts["CLAUDE"]["codes"]),
+            (1, 0, {}),
+        )
+        self.assertEqual(len(self.routine.received), 1)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1411,13 +1319,13 @@ class Replay:
     was before the gate) and with the gate broken.  Not a test: `play` is run by hand, once per mode, so
     each mode gets its own fake Zulip, state directory and clock.
 
-    `instrument` also counts the calls the gate must never add: `takeover`, `lease_views`,
-    `operator_candidates`, ledger writes, JSONL appends and process spawns.  Every one has to come out
-    the same in all three modes."""
+    `instrument` also counts the calls the gate must never add: `takeover`, `lease_views`, ledger
+    writes, JSONL appends and process spawns.  Every one has to come out the same in all three modes.
+    (The registry open and the topic history fetch were counted too while the retired headless wake
+    path made them;  nothing makes them since the owner's ruling of Nov 10, 2026.)"""
 
     mode = "on"
     outcome: dict[str, Any]
-    letters: dict[str, list] | None = None  # what the registry answers, by letter, when a scenario fixes it
 
     def patch(self, owner: Any, name: str, value: Any) -> None:
         patcher = mock.patch.object(owner, name, value)
@@ -1430,8 +1338,6 @@ class Replay:
 
         def counted(self_: Any, *args: Any, **kwargs: Any) -> Any:
             replay.calls[name] += 1
-            if name == "operator_candidates" and replay.letters is not None:
-                return list(replay.letters.get(args[1], []))
             return original(self_, *args, **kwargs)
 
         self.patch(owner, name, counted)
@@ -1441,8 +1347,6 @@ class Replay:
         for owner, name in (
             (D.Daemon, "takeover"),
             (D.Daemon, "lease_views"),
-            (D.Daemon, "operator_candidates"),
-            (D.Daemon, "history"),  # a fetch of the topic over the network
             (W.Ledger, "append"),
         ):
             self.count(owner, name)
@@ -1497,7 +1401,8 @@ class Replay:
         self.outcome = {
             "rows": rows,
             "posts": [(p["type"], p["subject"], p["content"]) for p in self.operator_posts()],
-            "prompts": [re.sub(r"nonce=[0-9a-f]+", "nonce=N", d["stdin"]) for d in self.dumps()],
+            # any call of the fake claude but its liveness listing (none:  the listener starts no model)
+            "claude_calls": [d["argv"] for d in self.dumps()],
             "events": Counter(e for e in events if e != "model-gate"),
             "extras": extras,
             "calls": dict(self.calls),
@@ -1522,169 +1427,6 @@ def replay(case_class: type) -> dict[str, dict[str, Any]]:
     return outcomes
 
 
-class BasicScenario(Replay, DaemonHarness):
-    """The plain CLAUDE seat: a reply, an owner DM, a refused answer, a failed run and a wake a session took."""
-
-    def play(self) -> None:
-        self.instrument()
-        daemon = self.started()
-
-        def step(text: str, topic: str, seconds: float = 25.0) -> None:
-            before = len(self.ledger())
-            self.fake.add_message("Codex", "simple-tools", topic, text)
-            self.pump_until(daemon, lambda: len(self.ledger()) > before)
-            self.wake_cycle(daemon, seconds)
-
-        step(MENTION, "t")  # a peer is answered
-        before = len(self.ledger())
-        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) > before)
-        self.wake_cycle(daemon, 6)  # the owner is answered by direct message
-        self.set_claude(mode="ok", output={"action": "nuke"})
-        step(MENTION, "u")  # an answer the validator refuses
-        self.set_claude(mode="error")
-        step(MENTION, "v")  # a run that fails
-        self.set_claude(mode="ok", output=reply_output())
-        before = len(self.ledger())
-        self.fake.add_message("Codex", "simple-tools", "w", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) > before)
-        self.clock.advance(25)
-        daemon.tick()
-        self.write_lease("late", topics=[("simple-tools", "w")])
-        daemon.run_jobs("CLAUDE")  # a session takes the topic before the run
-        self.snapshot()
-
-
-class TaggedLetterScenario(Replay, DaemonHarness):
-    """A letter held by the tagged seat's own session, by two sessions, by another seat's, and by nobody."""
-
-    def play(self) -> None:
-        mine = {"seat": "CLAUDE", "platform": "claude"}
-        other = {"seat": "MM", "platform": "minimax"}
-        self.letters = {"Z": [mine], "Y": [mine, other], "X": [other], "W": []}
-        self.instrument()
-        daemon = self.started()
-        for letter, topic in (("Z", "z"), ("Y", "y"), ("X", "x"), ("W", "w")):
-            before = len(self.ledger())
-            self.fake.add_message("Codex", "simple-tools", topic, "@**Claude** %s can you check the cutover?" % letter)
-            self.pump_until(daemon, lambda: len(self.ledger()) > before)
-            self.wake_cycle(daemon)
-        self.snapshot()
-
-
-class FallbackScenario(Replay, OpenRouterHarness):
-    """A primary that hits its cap, one whose answer is refused, one that errors, and one that answers."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        claude_fallback_setup(self)
-
-    def play(self) -> None:
-        self.instrument()
-        daemon = self.started()
-        limited = A.RunResult()
-        limited.error = "You've hit your weekly limit"
-        limited.limited = True
-        real_run = daemon.claude_runner.run
-
-        def wake(topic: str) -> None:
-            mid = self.fake.add_message("Codex", "simple-tools", topic, MENTION)
-            self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
-            self.wake_cycle(daemon)
-
-        daemon.claude_runner.run = lambda *a, **k: limited
-        wake("a")
-        daemon.claude_runner.run = real_run
-        self.set_claude(mode="ok", output={"action": "reply"})
-        wake("b")
-        self.set_claude(mode="error")
-        wake("c")
-        self.set_claude(mode="ok", output=reply_output())
-        wake("d")
-        self.snapshot(models=self.models_asked(), router_calls=len(self.router.requests()))
-
-
-class InspectScenario(Replay, ListenerHarness):
-    """The second Muse call, for an owner and for a peer whose text names the chat, and a rejected one."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.write_config(wake="muse")
-
-    def play(self) -> None:
-        self.instrument()
-        muse = FakeMuseRunner(
-            [
-                (inspect_output(), 1.0, 0.1),
-                (final_output(), 1.0, 0.1),
-                (inspect_output(), 1.0, 0.1),
-                (final_output(), 1.0, 0.1),
-                (inspect_output("c" * 64), 1.0, 0.1),
-            ]
-        )
-        daemon = self.daemon(muse_runner=muse)
-        self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        daemon.seats["CURSOR"] = types.SimpleNamespace(
-            seat="CURSOR", cfg=types.SimpleNamespace(enabled=True, wake="inbox")
-        )
-        self.addCleanup(daemon.seats.pop, "CURSOR")
-        daemon._pinned_muse = lambda _runner: ("muse-binary", None, None)
-        texts = {55: "inspect the relevant chat", 56: "read chat %s please" % CHAT_ID, 57: "inspect it"}
-        daemon.history = lambda _runner, pending: [
-            {"id": pending.trigger_ids[0], "sender_id": 12, "client": "web", "content": texts[pending.trigger_ids[0]]}
-        ]
-        catalog = FakeCatalog([offered()], [{"role": "user", "text": "context"}])
-        daemon._chat_catalog = catalog
-        now = self.clock.time()
-        for n, (message_id, owner) in enumerate(((55, True), (56, False), (57, True))):
-            pending = W.Pending(
-                "inspect-%d" % n,
-                "CLAUDE",
-                {"channel": "simple-tools", "topic": "inspection %d" % n, "type": "stream"},
-                owner=owner,
-                now=now,
-                due=now,
-            )
-            pending.add({"id": message_id, "ts": now}, owner)
-            daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        prompts = [re.sub(r"nonce=[0-9a-f]+", "nonce=N", call["prompt"]) for call in muse.calls]
-        self.snapshot(muse_calls=len(muse.calls), excerpts=catalog.excerpt_calls, muse_prompts=prompts)
-
-
-class BoundChatScenario(Replay, DaemonHarness):
-    """A CODEX seat whose topic gets bound to an existing chat after the wake was accepted."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        codex_key = secrets.token_hex(16)
-        self.extra_keys.append(("codex-bot@zulip.test", codex_key))
-        self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
-        write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=codex_key, site=self.fake.url)
-        self.write_config(seats='[seat.CODEX]\nbot = "Codex"\nwake = "claude"\nmodel = "sonnet"\n')
-        self.pin("CODEX")
-
-    def play(self) -> None:
-        self.instrument()
-        daemon = self.daemon(env=self.env(SIMPLE_TOOLS_PARTITION=self.two_seat_partition()))
-        self.assertTrue(daemon.connect_seat("CODEX"), daemon.seats["CODEX"].error)
-
-        def wake(topic: str, bind: bool) -> None:
-            before = len(self.ledger("CODEX"))
-            self.fake.add_message("Cursor", "simple-tools", topic, "@**Codex** please look")
-            self.pump_until(daemon, lambda: len(self.ledger("CODEX")) > before, seat="CODEX")
-            self.clock.advance(25)
-            daemon.tick()
-            if bind:  # the binding appears after the router offered the wake, so the wake still runs
-                daemon.chat_queue("CODEX").bind(
-                    "SIMPLE-TOOLS", topic.upper(), "codex", "mac", "session-1", "/tmp"
-                )
-            daemon.run_jobs("CODEX")
-
-        wake("free", False)
-        wake("bound", True)
-        self.snapshot(("CODEX",))
-
-
 class RoutineScenario(Replay, ServerHarness):
     """An `http` routine seat that is woken twice."""
 
@@ -1699,22 +1441,6 @@ class RoutineScenario(Replay, ServerHarness):
         self.snapshot((ROUTINE_SEAT,), routine_calls=len(self.routine.received))
 
 
-def claude_fallback_setup(case: OpenRouterHarness) -> None:
-    """The CLAUDE seat with an OpenRouter fallback behind it, for the fallback tests and the replay."""
-    case.write_config(
-        seats=textwrap.dedent("""\
-            [seat.CLAUDE]
-            bot = "Claude"
-            wake = "claude"
-            model = "sonnet"
-            provider = "Claude Code"
-            fallback = "openrouter"
-            """)
-    )
-    case.pin()
-    case.pin_openrouter(seat="CLAUDE", role=FALLBACK)
-
-
 #: The daemon's own call pattern in each replay, measured on the clean base (927fd6eea, with the gate
 #: hooks stubbed out, which is the base) and pinned as literals.  The on, off and broken replays must
 #: agree with each other AND with these, so work that a gate does in a call's argument expression, where
@@ -1724,12 +1450,9 @@ def claude_fallback_setup(case: OpenRouterHarness) -> None:
 #: Re-measured Nov 10 2026 for reply wakes:  `zulip_get_messages` is one higher in every scenario, the one
 #: read of the seat's own latest posts that seeds the topic ledger at the seat's first connect
 #: (`Daemon._seed_topic_ledger`).  Nothing else moved.
+#: The other scenarios (a plain claude seat, a fallback, a chat inspection, a tagged letter and a bound
+#: chat) were deleted with the wake types they drove (owner, Nov 10, 2026:  the listener starts no model).
 BASE_CALLS = {
-    "basic": {"append": 19, "append_jsonl": 25, "history": 4, "lease_views": 20, "spawns": 5, "takeover": 12, "zulip_get_messages": 5},
-    "fallback": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "spawns": 3, "takeover": 12, "zulip_get_messages": 5},
-    "inspect": {"append": 6, "append_jsonl": 7, "lease_views": 5, "takeover": 5, "zulip_get_messages": 1},
-    "tagged": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "operator_candidates": 4, "spawns": 4, "takeover": 12, "zulip_get_messages": 5},
-    "bound": {"append": 8, "append_jsonl": 10, "history": 2, "lease_views": 9, "spawns": 2, "takeover": 6, "zulip_get_messages": 3},
     "routine": {"append": 8, "append_jsonl": 10, "lease_views": 7, "takeover": 4, "zulip_get_messages": 1},
 }
 
@@ -1747,7 +1470,7 @@ class NoBehaviourChangeTests(unittest.TestCase):
         fallback_codes: list | None = None,
     ) -> dict[str, Any]:
         on, off, broken = outcomes["on"], outcomes["off"], outcomes["broken"]
-        for key in ("rows", "posts", "prompts", "events", "extras", "calls"):
+        for key in ("rows", "posts", "claude_calls", "events", "extras", "calls"):
             self.assertEqual(on[key], off[key], "%s differ with the gate off" % key)
             self.assertEqual(on[key], broken[key], "%s differ with the gate broken" % key)
         # The calls are also the base's own, as literals: stubbing the gate out cannot remove work
@@ -1766,315 +1489,18 @@ class NoBehaviourChangeTests(unittest.TestCase):
             self.assertEqual([c for c in broken["fallback_codes"] if c], ["gate_error"] * len(fallback_codes))
         return on
 
-    def test_the_plain_seat_wakes_decide_the_same_and_the_gate_adds_no_call(self) -> None:
-        on = self.assert_replays_agree(
-            replay(BasicScenario), ["model_compose_reply"] * 4, BASE_CALLS["basic"]
-        )
-        # The sequence is varied enough to mean something:  a reply, an owner DM, a refused answer, a
-        # failed run and a wake a session took.
-        states = Counter(r["state"] for r in on["rows"] if r["state"] not in ("queued", "accepted"))
-        self.assertEqual(states, Counter({"done": 2, "failed": 2, "skipped": 1, "started": 4}))
-        self.assertEqual(on["posts"], [], "the Operator never answers on behalf of a platform")
-
-    def test_a_fallback_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
-        on = self.assert_replays_agree(
-            replay(FallbackScenario),
-            ["model_compose_reply"] * 4,
-            BASE_CALLS["fallback"],
-            ["model_fallback"] * 3,
-        )
-        self.assertEqual(on["extras"]["router_calls"], 3, "three wakes were answered by the fallback")
-
-    def test_an_inspect_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
-        on = self.assert_replays_agree(
-            replay(InspectScenario),
-            ["model_select_destination", "model_select_destination", "model_select_destination"],
-            BASE_CALLS["inspect"],
-        )
-        # two completed inspections and one rejected, so five Muse calls in all
-        self.assertEqual(on["extras"]["muse_calls"], 5)
-
-    def test_a_tagged_letter_path_decides_the_same_and_the_registry_is_asked_once_per_wake(self) -> None:
-        on = self.assert_replays_agree(
-            replay(TaggedLetterScenario),
-            ["det_tagged_letter_single", "model_letter_ambiguous", "model_compose_reply", "model_compose_reply"],
-            BASE_CALLS["tagged"],
-        )
-        self.assertEqual(on["calls"]["operator_candidates"], 4, "once per wake, with the gate on")
-
-    def test_a_bound_chat_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
-        on = self.assert_replays_agree(
-            replay(BoundChatScenario), ["model_compose_reply", "det_bound_chat"], BASE_CALLS["bound"]
-        )
-        self.assertEqual(on["posts"], [], "the bound wake still ran, and nothing was posted for it")
-
     def test_a_routine_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
         on = self.assert_replays_agree(
             replay(RoutineScenario), ["det_routine_forward"] * 2, BASE_CALLS["routine"]
         )
         self.assertEqual(on["extras"]["routine_calls"], 2)
+        # The fake claude was asked for nothing but its liveness listing:  no replay started a model.
+        self.assertEqual(on["claude_calls"], [])
 
 
 # --------------------------------------------------------------------------------------------
-# The fallback, the chat inspection and the routine
+# The routine
 # --------------------------------------------------------------------------------------------
-
-
-class ClaudeFallbackGateTests(GateLog, OpenRouterHarness):
-    """The CLAUDE seat with an OpenRouter fallback behind it (the same set-up as the fallback tests)."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.write_config(
-            seats=textwrap.dedent("""\
-                [seat.CLAUDE]
-                bot = "Claude"
-                wake = "claude"
-                model = "sonnet"
-                provider = "Claude Code"
-                fallback = "openrouter"
-                """)
-        )
-        self.pin()
-        self.pin_openrouter(seat="CLAUDE", role=FALLBACK)
-
-    def wake(self, daemon: D.Daemon, topic: str = "t") -> None:
-        mid = self.fake.add_message("Codex", "simple-tools", topic, MENTION)
-        self.pump_until(daemon, lambda: any(mid in r.get("trigger_ids", []) for r in self.ledger()))
-        self.wake_cycle(daemon)
-
-    def test_a_fallback_row_keeps_the_primary_code_and_adds_its_reason(self) -> None:
-        daemon = self.started()
-        limited = A.RunResult()
-        limited.error = "You've hit your weekly limit"
-        limited.limited = True
-        daemon.claude_runner.run = lambda *a, **k: limited
-        self.wake(daemon)
-        self.assertEqual(self.models_asked(), [FALLBACK_MODEL])
-        rows = self.ledger()
-        started_row = [r for r in rows if r["state"] == "started"][0]
-        done = [r for r in rows if r["state"] == "done"][0]
-        self.assertEqual((started_row["gate"], started_row["gate_avoidable"]), ("model_compose_reply", False))
-        self.assertNotIn("gate_fallback", started_row, "the fallback is decided later than the start")
-        self.assertEqual(
-            {k: v for k, v in done.items() if k.startswith("gate")},
-            {
-                "gate": "model_compose_reply",
-                "gate_avoidable": False,
-                "gate_fallback": "model_fallback",
-                "gate_fallback_reason": "primary_failed",
-            },
-        )
-        self.assertEqual(
-            [(e["purpose"], e["code"], e["rule"]) for e in self.gate_events()],
-            [
-                ("compose_reply", "model_compose_reply", "reply_composition_is_the_model_job"),
-                ("fallback", "model_fallback", "primary_failed"),
-            ],
-        )
-        counts = W.gate_counts(L.read_jsonl(self.seat_paths().wakes), self.clock.time())
-        self.assertEqual((counts["CLAUDE"]["starts"], counts["CLAUDE"]["fallbacks"]), (1, 1))
-
-    def test_an_answer_the_validator_refuses_is_its_own_reason(self) -> None:
-        self.set_claude(mode="ok", output={"action": "reply"})
-        daemon = self.started()
-        self.wake(daemon)
-        done = [r for r in self.ledger() if r["state"] == "done"][0]
-        self.assertEqual(done["gate_fallback_reason"], "primary_invalid_result")
-        self.assertEqual([e["rule"] for e in self.gate_events()][-1], "primary_invalid_result")
-
-    def test_a_fallback_that_never_started_leaves_no_fallback_field_and_no_event(self) -> None:
-        self.set_claude(mode="error")
-        daemon = self.started()
-        daemon.run_fallback = lambda *args: None  # every hold of run_fallback returns None
-        self.wake(daemon)
-        failed = [r for r in self.ledger() if r["state"] == "failed"][0]
-        self.assertEqual(failed["gate"], "model_compose_reply")
-        self.assertNotIn("gate_fallback", failed)
-        self.assertEqual([e["purpose"] for e in self.gate_events()], ["compose_reply"])
-
-    def test_the_fallback_is_gated_after_the_primary_and_the_gate_probes_no_lease(self) -> None:
-        limited = A.RunResult()
-        limited.error = "limit"
-        limited.limited = True
-        daemon = self.started()
-        daemon.claude_runner.run = lambda *a, **k: limited
-        asked: list[str] = []
-        real = daemon._model_gate
-
-        def counting(runner: Any, pending: Any, purpose: str, **kw: Any) -> Any:
-            asked.append(purpose)
-            if purpose == "fallback":
-                self.assertNotIn("live_lease", kw, "a lease is not probed again for a fallback")
-            return real(runner, pending, purpose, **kw)
-
-        daemon._model_gate = counting
-        self.wake(daemon)
-        self.assertEqual(asked, ["compose_reply", "fallback"])
-
-
-class MuseFallbackGateTests(GateLog, OpenRouterHarness):
-    def setUp(self) -> None:
-        super().setUp()
-        self.mm_config("muse", extra='fallback = "openrouter"')
-        self.pin_muse()
-        self.pin_openrouter(role=FALLBACK)
-
-    def test_a_primary_that_cannot_run_starts_nothing_and_only_the_fallback_is_a_start(self) -> None:
-        os.unlink(self.seat_paths("MM").wake_pin_muse)
-        daemon = self.mm()
-        self.mm_wake(daemon)
-        self.assertEqual(self.muse_runs(), 0)
-        done = self.final()
-        self.assertEqual(done["state"], "done")
-        self.assertEqual(
-            (done["gate"], done["gate_fallback"], done["gate_fallback_reason"]),
-            ("model_compose_reply", "model_fallback", "primary_unavailable"),
-        )
-        self.assertEqual(
-            [e["purpose"] for e in self.gate_events()], ["fallback"], "a skipped primary logs no start"
-        )
-
-    def test_a_muse_wake_that_was_offered_chats_is_a_destination_selection(self) -> None:
-        daemon = self.mm()
-        self.mm_wake(daemon, "no-chats")
-        self.assertEqual(self.final()["gate"], "model_compose_reply", "no catalog rows, so a reply")
-        daemon.chat_context = lambda *a, **k: [offered()]
-        self.mm_wake(daemon, "chats")
-        self.assertEqual(self.final()["gate"], "model_select_destination")
-
-
-class FallbackContextGateTests(GateLog, ListenerHarness):
-    """A fallback start is gated with the same trigger text and chat context as the primary was."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.write_config(
-            seats=textwrap.dedent("""\
-                [seat.CLAUDE]
-                bot = "Claude"
-                wake = "muse"
-                fallback = "openrouter"
-                """)
-        )
-
-    def test_a_fallback_for_an_owner_message_that_names_one_chat_is_recorded_avoidable(self) -> None:
-        muse = FakeMuseRunner([(final_output(), 1.0, 0.1, "the primary exploded")])
-        daemon = self.daemon(muse_runner=muse)
-        self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        daemon.seats["CURSOR"] = types.SimpleNamespace(
-            seat="CURSOR", cfg=types.SimpleNamespace(enabled=True, wake="inbox")
-        )
-        self.addCleanup(daemon.seats.pop, "CURSOR")
-        daemon._pinned_muse = lambda _runner: ("muse-binary", None, None)
-        daemon.history = lambda _runner, _pending: [
-            {"id": 55, "sender_id": 12, "client": "web", "content": "wake chat %s please" % CHAT_ID}
-        ]
-        daemon._chat_catalog = FakeCatalog([offered()])
-        answer = A.RunResult()
-        answer.parsed = final_output()
-        answer.result = {"structured_output": answer.parsed}
-        answer.exit = 0
-        answer.models = ["fallback-model"]
-        daemon.run_fallback = lambda *args: answer
-        now = self.clock.time()
-        pending = W.Pending(
-            "fallback-wake",
-            "CLAUDE",
-            {"channel": "simple-tools", "topic": "fallback", "type": "stream"},
-            owner=True,
-            now=now,
-            due=now,
-        )
-        pending.add({"id": 55, "ts": now}, True)
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        closing = [r for r in daemon.seats["CLAUDE"].ledger.rows() if r["state"] in ("done", "failed")][-1]
-        self.assertEqual(closing["gate"], "det_exact_chat_id")
-        self.assertEqual(
-            closing["gate_fallback"], "det_exact_chat_id", "the fallback sees the same context and text"
-        )
-        self.assertEqual(closing["gate_fallback_reason"], "primary_failed")
-
-class InspectionGateTests(GateLog, ListenerHarness):
-    def setUp(self) -> None:
-        super().setUp()
-        self.write_config(wake="muse")
-
-    def setup_wake(
-        self, outputs: list, text: str, *, owner: bool = True
-    ) -> tuple[D.Daemon, FakeMuseRunner, W.Pending]:
-        muse = FakeMuseRunner(outputs)
-        daemon = self.daemon(muse_runner=muse)
-        self.assertTrue(daemon.connect_seat("CLAUDE"), daemon.seats["CLAUDE"].error)
-        # The listed chat is a CURSOR chat, and its seat has to be switched on here to be a destination.
-        daemon.seats["CURSOR"] = types.SimpleNamespace(
-            seat="CURSOR", cfg=types.SimpleNamespace(enabled=True, wake="inbox")
-        )
-        self.addCleanup(daemon.seats.pop, "CURSOR")  # shutdown disconnects every real seat
-        daemon._pinned_muse = lambda _runner: ("muse-binary", None, None)
-        daemon.takeover = lambda _runner, _pending: None
-        daemon.history = lambda _runner, _pending: [
-            {"id": 55, "sender_id": 12, "client": "web", "content": text}
-        ]
-        daemon._chat_catalog = FakeCatalog([offered()], [{"role": "user", "text": "context"}])
-        now = self.clock.time()
-        pending = W.Pending(
-            "inspect-wake",
-            "CLAUDE",
-            {"channel": "simple-tools", "topic": "inspection", "type": "stream"},
-            owner=owner,
-            now=now,
-            due=now,
-        )
-        pending.add({"id": 55, "ts": now}, owner)
-        return daemon, muse, pending
-
-    def test_the_second_muse_call_is_a_second_recorded_start(self) -> None:
-        daemon, muse, pending = self.setup_wake(
-            [(inspect_output(), 1.0, 0.1), (final_output(), 1.0, 0.1)], "inspect the relevant chat"
-        )
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        self.assertEqual(len(muse.calls), 2, "both calls ran, as before")
-        rows = daemon.seats["CLAUDE"].ledger.rows()
-        done = [r for r in rows if r["state"] == "done"][-1]
-        self.assertEqual(
-            (done["gate"], done["gate_avoidable"], done["gate_inspect"]),
-            ("model_select_destination", False, "model_select_destination"),
-        )
-        self.assertEqual([e["purpose"] for e in self.gate_events()], ["select_destination", "inspect"])
-        counts = W.gate_counts(rows, self.clock.time())
-        self.assertEqual((counts["CLAUDE"]["starts"], counts["CLAUDE"]["inspects"]), (1, 1))
-
-    def test_an_inspection_the_text_already_named_exactly_is_recorded_avoidable(self) -> None:
-        daemon, muse, pending = self.setup_wake(
-            [(inspect_output(), 1.0, 0.1), (final_output(), 1.0, 0.1)], "read chat %s please" % CHAT_ID
-        )
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        self.assertEqual(len(muse.calls), 2)
-        done = [r for r in daemon.seats["CLAUDE"].ledger.rows() if r["state"] == "done"][-1]
-        self.assertEqual((done["gate"], done["gate_avoidable"], done["gate_inspect"]), ("det_exact_chat_id", True, "det_exact_chat_id"))
-
-    def test_the_same_inspection_for_a_peer_still_needs_the_risk_answer_so_it_is_not_avoidable(self) -> None:
-        daemon, muse, pending = self.setup_wake(
-            [(inspect_output(), 1.0, 0.1), (final_output(), 1.0, 0.1)],
-            "read chat %s please" % CHAT_ID,
-            owner=False,
-        )
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        self.assertEqual(len(muse.calls), 2, "the model still ran, as before")
-        done = [r for r in daemon.seats["CLAUDE"].ledger.rows() if r["state"] == "done"][-1]
-        self.assertEqual(
-            (done["gate"], done["gate_avoidable"], done["gate_inspect"]),
-            ("model_select_destination", False, "model_select_destination"),
-        )
-
-    def test_an_inspection_that_was_rejected_started_no_second_model_and_records_none(self) -> None:
-        daemon, muse, pending = self.setup_wake([(inspect_output("c" * 64), 1.0, 0.1)], "inspect it")
-        daemon.run_wake(daemon.seats["CLAUDE"], pending)
-        self.assertEqual(len(muse.calls), 1)
-        self.assertEqual([e["purpose"] for e in self.gate_events()], ["select_destination"])
-        rows = daemon.seats["CLAUDE"].ledger.rows()
-        self.assertFalse([r for r in rows if "gate_inspect" in r])
 
 
 class RoutineGateTests(GateLog, ServerHarness):
