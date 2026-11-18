@@ -295,6 +295,10 @@ MINIMAX_HOOK_NAME = "minimax-guard-hook"
 CLAUDE_FILE_HOOK_NAME = "claude-file-guard-hook"
 CLAUDE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit"
 CLAUDE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+# Z Code's file-guard tools and matcher.  ApplyPatch is the tool name Z Code delivers for a Write or an
+# Edit (the runtime aliases Write and Edit to ApplyPatch), so its matcher names it.
+ZCODE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "ApplyPatch")
+ZCODE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit|ApplyPatch"
 CLAUDE_FILE_HOOK_TIMEOUT_S = 10  # seconds.  A timeout fails open, and this hook starts Python on every file call
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
@@ -1791,9 +1795,27 @@ def muse_owner_actions(paths: Paths) -> list:
     ]
 
 
-def hook_command(paths: Paths, fmt: str) -> str:
+def seat_prefix(seat: str) -> str:
+    """The `env` prefix that gives a hook process a seat.
+
+    A platform whose runtime has no settings env block cannot hand the seat to the hook process the way
+    Claude Code does,  so the seat travels in the hook command itself (Z Code).  The command is a shell
+    string there,  so the shell that runs it reads the prefix.
+
+    The seat the session already declares wins:  a launcher's assignment,  then an ambient AGENT_SEAT,  then
+    the chat tag,  and only a session that declares none of them gets the platform default.  The prefix
+    never overrides a session's own seat,  so a Z Code session that runs for another seat stays that seat.
+    The guard reads AGENT_LAUNCH_SEAT before AGENT_SEAT,  so a launched session keeps its seat either way.
+    """
+    return (
+        'env AGENT_SEAT="${AGENT_LAUNCH_SEAT:-${AGENT_SEAT:-${AGENT_TAG:-' + seat + '}}}"'
+    )
+
+
+def hook_command(paths: Paths, fmt: str, seat: str = "") -> str:
     """The exact string written into a platform config."""
-    return f"{shlex.quote(paths.hook_shim)} --format {fmt}"
+    command = f"{shlex.quote(paths.hook_shim)} --format {fmt}"
+    return f"{seat_prefix(seat)} {command}" if seat else command
 
 
 def render_minimax_hook_shim(*, volume: str | None = None) -> str:
@@ -2554,6 +2576,10 @@ class Platform:
     platform_dir: str  # must exist, relative to home
     config_rel: str  # config file, relative to home
     supported: bool = True  # a hook entry in a config file that this tool writes
+    # The seat an ordinary session of this platform runs as,  for a platform whose runtime has no
+    # settings env block to declare it in (Claude Code has one,  Z Code does not).  The seat is written
+    # into the hook command,  so the guard process knows who is writing.
+    seat: str = ""
     kind: str = (
         "config"  # "plugin": no config file is edited (Muse Code takes hooks from a plugin);
     )
@@ -2942,9 +2968,14 @@ PLATFORMS: dict[str, Platform] = {
             in_all=True,
             new_mode=0o644,
             hook_extra=(("timeout", HOOK_TIMEOUT_S),),
+            seat="ZC",
             notes=(
                 "New last group under hooks.events.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
                 "Deny output is Claude-style JSON payload.",
+                "The hook command carries the seat: 'env AGENT_SEAT=ZC <shim> --format claude'.  Z Code has no"
+                " settings env block,  so this is how the guard process learns who is writing.",
+                "A second group, matcher ZCODE_FILE_MATCHER, runs claude-file-guard-hook with the same seat:  the"
+                " file guard is what refuses a write into another seat's lane.",
             ),
             unverified=(
                 "That Z Code fires the PreToolUse hook on shell executions without a full restart.",
@@ -3775,7 +3806,7 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     """Read-only: what `apply PLATFORM` would do, with a unified diff of the hooks this tool edits.  The diff
     shows only our own entry; other hooks are counted and elided."""
     path = config_path(paths, plat)
-    cmd = hook_command(paths, plat.fmt)
+    cmd = hook_command(paths, plat.fmt, plat.seat)
     if plat.kind == "plugin":
         if plat.key == "opencode":
             op = plan_opencode(paths, follow_symlinks=follow_symlinks)
@@ -3839,6 +3870,13 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         if plat.key == "claude":
             # The file guard is its own group in the same file, so one plan writes both, once.
             new_doc, file_action, file_notes = merge_claude_files(new_doc, claude_file_hook_command(paths))
+            action = _combine_actions(action, file_action)
+            notes.extend(file_notes)
+        elif plat.key == "zcode":
+            # Z Code keeps the file guard in the same file,  in a group of its own,  so one plan writes both.
+            new_doc, file_action, file_notes = merge_zcode_files(
+                new_doc, zcode_file_hook_command(paths, plat.seat)
+            )
             action = _combine_actions(action, file_action)
             notes.extend(file_notes)
     except Refused as exc:
@@ -4359,22 +4397,28 @@ def apply_platform(
                 "the installed hook shim fails its probes, so it will not be wired in: "
                 + bad[0].detail,
             )
-        if plat.key == "claude":
+        if plat.key in ("claude", "zcode"):
             if not (os.path.isfile(paths.claude_file_shim) and os.access(paths.claude_file_shim, os.X_OK)):
                 return Result(
                     plat.key,
                     "refused",
                     f"the file-guard shim {paths.claude_file_shim} is missing or not executable; run `apply tools` first",
                 )
+            file_command = (
+                claude_file_hook_command(paths)
+                if plat.key == "claude"
+                else zcode_file_hook_command(paths, plat.seat)
+            )
             bad = [
                 c
                 for c in probe_claude_files(
-                    claude_file_hook_command(paths),
+                    file_command,
                     paths.home,
                     paths.registry,
                     timeout,
                     minimal_path,
                     volume=_baked_volume(paths.claude_file_shim),
+                    target=plat.key,
                 )
                 if c.status == "FAIL"
             ]
@@ -4914,6 +4958,8 @@ def verify_platform(
             )
     if plat.key == "claude":
         out.extend(verify_claude_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
+    elif plat.key == "zcode":
+        out.extend(verify_zcode_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
     for problem in _switch_warnings(cfg.doc):
         out.append(
             Check(
@@ -4953,6 +4999,7 @@ def probe_claude_files(
     minimal_path: bool = True,
     source_registry: str | None = None,
     volume: str = "",
+    target: str = "claude",
 ) -> list[Check]:
     """Run Claude Code's file payloads through `command` (the file-guard shim) and check each answer.
 
@@ -4970,7 +5017,7 @@ def probe_claude_files(
         detail = str(exc)
         if source_registry and source_registry != registry:
             detail = f"{detail}; source registry: {source_registry}"
-        return [Check("claude", "registry-tree", "FAIL", detail)]
+        return [Check(target, "registry-tree", "FAIL", detail)]
     out: list[Check] = []
     for vname, vpath in _variants(minimal_path):
         env = probe_env(home, vpath)
@@ -4985,6 +5032,7 @@ def probe_claude_files(
             ("Read", "file_path", os.path.join(home, ".env"), True),
             ("Write", "file_path", integration, True),
             ("Edit", "file_path", secret, True),
+            ("ApplyPatch", "file_path", secret, True),
             ("MultiEdit", "file_path", secret, True),
             ("NotebookEdit", "notebook_path", secret + ".ipynb", True),
             ("Read", "file_path", integration, False),
@@ -5014,12 +5062,234 @@ def probe_claude_files(
             where = "integration" if path == integration else os.path.basename(path)
             out.append(
                 Check(
-                    "claude",
+                    target,
                     f"{tool}/{where}/{'deny' if deny else 'allow'}/{vname}",
                     "FAIL" if problem else "PASS",
                     (f"{problem}; " if problem else "") + f"exit={res.returncode} stdout={_brief(res.stdout)}",
                 )
             )
+    return out
+
+
+def zcode_file_hook_command(paths: Paths, seat: str = "") -> str:
+    """The exact string written into the Z Code file-guard group.
+
+    It takes no --format:  the deny is Claude's,  which is the shape Z Code delivers.  The seat is in the
+    command,  because the Z Code runtime has no settings env block to put it in,  and it is a default the
+    session's own seat beats (see seat_prefix).
+    """
+    command = shlex.quote(paths.claude_file_shim)
+    return f"{seat_prefix(seat)} {command}" if seat else command
+
+
+def locate_zcode_files(doc: dict) -> list[Entry]:
+    """The Z Code file-guard entries under hooks.events.PreToolUse,  with the problems that stop Z Code from
+    sending every file tool to them (a matcher that misses one,  a hook type that is not `command`)."""
+    plat = PLATFORMS["zcode"]
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.get("events")
+    if events is None:
+        return []
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.events.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        inner = group.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
+                continue
+            problems: list[str] = []
+            missed = [t for t in ZCODE_FILE_TOOLS if not _matcher_gates(group.get("matcher"), t)]
+            if missed:
+                problems.append(f"matcher {group.get('matcher')!r} never matches {', '.join(missed)}")
+            if hook.get("type", "command") != "command":
+                problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+            out.append(
+                Entry(
+                    hook["command"],
+                    f"hooks.events.{plat.event}[{gi}].hooks[{hi}]",
+                    problems,
+                    hook,
+                    group,
+                    gi,
+                    hi,
+                )
+            )
+    return out
+
+
+def zcode_unreadable_groups(doc: dict) -> list[str]:
+    """The paths of the Z Code hook groups the parser could not read.
+
+    A group that is not an object,  or one whose 'hooks' is not a list,  cannot show an entry,  so it is
+    skipped rather than refused:  a third-party group the fleet does not own must not block the fleet's
+    own hook update.  The paths are reported,  because a file guard hidden in such a group would be
+    invisible to the installer.
+    """
+    plat = PLATFORMS["zcode"]
+    hooks = doc.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        return []
+    groups = events.get(plat.event)
+    if not isinstance(groups, list):
+        return []
+    out: list[str] = []
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            out.append(f"hooks.events.{plat.event}[{gi}]")
+        elif not isinstance(group.get("hooks"), list):
+            out.append(f"hooks.events.{plat.event}[{gi}].hooks")
+    return out
+
+
+def merge_zcode_files(doc: dict, command: str) -> tuple[dict, str, list[str]]:
+    """(new document, action, notes) for the Z Code file-guard group.  action is added, updated or unchanged.  It
+    appends its own group (ZCODE_FILE_MATCHER) or corrects its own entry,  and never touches another hook."""
+    new = copy.deepcopy(doc)
+    entries = locate_zcode_files(new)
+    notes: list[str] = []
+    unreadable = zcode_unreadable_groups(new)
+    if unreadable:
+        notes.append(
+            f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+            f"({', '.join(unreadable)}), so a file guard in one of them would be invisible here"
+        )
+    if entries:
+        first = entries[0]
+        changed = False
+        if first.holder.get("command") != command:
+            first.holder["command"] = command
+            notes.append("file-guard hook command updated to the current path and seat")
+            changed = True
+        if first.group is not None and first.group.get("matcher") != ZCODE_FILE_MATCHER:
+            if len(first.group.get("hooks") or ()) == 1:
+                first.group["matcher"] = ZCODE_FILE_MATCHER
+                notes.append(f"file-guard group matcher set to {ZCODE_FILE_MATCHER}")
+                changed = True
+            elif first.problems:
+                notes.append(
+                    f"file-guard group matcher left at {first.group.get('matcher')!r}, because the group is shared:  "
+                    "fix it by hand"
+                )
+        if len(entries) > 1:
+            notes.append(
+                f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place"
+            )
+        return new, ("updated" if changed else "unchanged"), notes
+    hooks = new.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.setdefault("events", {})
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.setdefault(PLATFORMS["zcode"].event, [])
+    groups.append(
+        {
+            "matcher": ZCODE_FILE_MATCHER,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": CLAUDE_FILE_HOOK_TIMEOUT_S,
+                }
+            ],
+        }
+    )
+    return new, "added", notes
+
+
+def verify_zcode_files(
+    doc: dict, paths: Paths, path: str, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The file-guard group of ~/.zcode/cli/config.json:  present, a matcher that sends every file tool, the
+    current command with the seat in it,  and a command that denies and allows what it must."""
+    t = "zcode"
+    try:
+        entries = locate_zcode_files(doc)
+    except Refused as exc:
+        return [Check(t, "file-guard", "FAIL", str(exc))]
+    unreadable = zcode_unreadable_groups(doc)
+    if unreadable:
+        out_unreadable = [
+            Check(
+                t,
+                "unreadable groups",
+                "WARN",
+                f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+                f"({', '.join(unreadable)}), so a file guard in one of them would be invisible to this check",
+            )
+        ]
+    else:
+        out_unreadable = []
+    if not entries:
+        return out_unreadable + [
+            Check(
+                t,
+                "file-guard",
+                "FAIL",
+                f"no {CLAUDE_FILE_HOOK_NAME} hook under hooks.events.PreToolUse in {path}, so Read, Write, Edit, "
+                "MultiEdit, NotebookEdit and ApplyPatch are not guarded; run `apply zcode`",
+            )
+        ]
+    out: list[Check] = list(out_unreadable)
+    want = zcode_file_hook_command(paths, PLATFORMS["zcode"].seat)
+    for idx, entry in enumerate(entries):
+        label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"
+        if entry.problems:
+            out.append(Check(t, label, "FAIL", f"{entry.where}: " + "; ".join(entry.problems)))
+            continue
+        matcher = entry.group.get("matcher") if entry.group else None
+        if entry.command != want:
+            out.append(
+                Check(
+                    t,
+                    label,
+                    "FAIL" if len(entries) > 1 else "WARN",
+                    f"{entry.where} runs {entry.command}, not this install's {want}; re-run `apply zcode`"
+                    + ("" if len(entries) == 1 else " and remove the stale entry by hand"),
+                )
+            )
+        else:
+            out.append(Check(t, label, "PASS", f"{entry.where} matcher={matcher!r}"))
+    if len(entries) > 1 and all(e.command == want and not e.problems for e in entries):
+        out.append(
+            Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
+        )
+    commands = list(dict.fromkeys(e.command for e in entries if not e.problems))
+    if len(commands) > 2:
+        stale = [c for c in commands if c != want]
+        commands = ([want] if want in commands else []) + stale[: 2 - (want in commands)]
+    for command in commands:
+        try:
+            out.extend(
+                probe_claude_files(
+                    command,
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                    target=t,
+                )
+            )
+        except Refused as exc:
+            out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
     return out
 
 
@@ -5086,6 +5356,7 @@ def verify_claude_files(
                     timeout,
                     minimal_path,
                     volume=_baked_volume(paths.claude_file_shim),
+                    target=t,
                 )
             )
         except Refused as exc:

@@ -51,7 +51,8 @@ class World:
         self.export_cwds = []
 
     def fetch_project(
-        self, project, path, env, *, token=None, writer=False, names=None, timeout=None
+        self, project, path, env, *, token=None, writer=False, names=None,
+        allow_unresolved=False, timeout=None
     ):
         refusal = core.environment_refusal(env)
         if refusal:
@@ -61,7 +62,9 @@ class World:
             raise core.SecretsError(message)
         project_name = core.project_name_for_id(project, env)
         token = token or core.resolve_token(env, writer=writer, project_name=project_name)
-        self.fetches.append((project, path, dict(env), token, writer, names, timeout))
+        self.fetches.append(
+            (project, path, dict(env), token, writer, names, allow_unresolved, timeout)
+        )
         if self.export_stdout is not None:
             try:
                 return core._pairs(json.loads(self.export_stdout.decode("utf-8")))

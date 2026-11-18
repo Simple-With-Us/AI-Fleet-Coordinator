@@ -82,8 +82,12 @@ LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
 BAD_REQUEST = "bad-request"
 STDIN_LIMIT = 16 * 1024
-TAIL_BYTES = 256 * 1024
 CONFIRM_POLL_SECONDS = 1.0
+#: The transcript is scanned newest-first in chunks of this size:  a live transcript can
+#: record its cwd far from the tail, so no tail window can decide a missing cwd.
+_SCAN_CHUNK = 1 << 20
+#: A line cut by a chunk edge is carried into the next pass whole, so no overlap
+#: allowance is needed:  a chunk boundary only ever splits lines, never records.
 
 #: This seat's settings for the one-router service:  every router key, plus this platform's
 #: own.  `wake_service` refuses a module whose DEFAULTS miss a router key (`bad-defaults`).
@@ -375,26 +379,65 @@ def _list(path: str) -> list[str]:
         raise StoreUnreadable(str(exc)) from exc
 
 
+def _record_cwd(record: object) -> str:
+    """The working directory a transcript record asserts, or "" when it asserts none.
+    Only the schema-defined fields count:  a `cwd` mentioned inside a string value (tool
+    output, quoted chat text, a pasted snippet) is content, never an assertion, so raw
+    text matching must not decide this."""
+    if not isinstance(record, dict):
+        return ""
+    cwd = record.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return cwd
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        inner = payload.get("record")
+        if isinstance(inner, dict):
+            cwd = inner.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return ""
+
+
 def _session_cwd(session_dir: str) -> str:
-    """The chat's working directory, from the last `cwd` its transcript names in its tail, or
-    "" when it names none.  A transcript that cannot be read raises StoreUnreadable:  an
+    """The chat's working directory, from the newest `cwd` its transcript asserts, or ""
+    when it asserts none.  The scan runs newest-first in bounded chunks and stops at the
+    first assertion, so a transcript whose cwd sits far from the tail costs one backward
+    walk, not a tail window that can miss it;  proving no cwd exists still reads the
+    whole file, which no window can avoid.  A line cut by a chunk edge is carried into
+    the next pass whole.  A transcript that cannot be read raises StoreUnreadable:  an
     unknown cwd is a doubt that fails closed, never the absence a refusal is built on."""
     path = os.path.join(session_dir, "session.jsonl")
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - TAIL_BYTES))
-            tail = fh.read().decode("utf-8", "replace")
+            end = fh.tell()
+            carry = b""
+            while end > 0:
+                start = max(0, end - _SCAN_CHUNK)
+                fh.seek(start)
+                buf = fh.read(end - start) + carry
+                lines = buf.split(b"\n")
+                if start > 0:
+                    carry = lines[0]
+                    candidates = lines[1:]
+                else:
+                    carry = b""
+                    candidates = lines
+                for raw in reversed(candidates):
+                    if not raw.strip():
+                        continue
+                    try:
+                        record = json.loads(raw.decode("utf-8"))
+                    except ValueError:
+                        continue
+                    cwd = _record_cwd(record)
+                    if cwd and os.path.isabs(cwd):
+                        return cwd
+                end = start
     except OSError as exc:
         raise StoreUnreadable(str(exc)) from exc
-    found = re.findall(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', tail)
-    if not found:
-        return ""
-    try:
-        cwd = json.loads('"%s"' % found[-1])
-    except ValueError:
-        return ""
-    return cwd if isinstance(cwd, str) else ""
+    return ""
 
 
 def _child_env(env: Mapping[str, str]) -> dict[str, str]:

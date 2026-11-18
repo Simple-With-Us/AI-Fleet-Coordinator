@@ -2655,6 +2655,17 @@ class Retries(Base):
         self.assertEqual(len(self.delivered), 1)
         self.assertEqual(self.done()["status"], "dead")
 
+    def test_an_unknown_outcome_is_final_and_says_nobody_knows(self) -> None:
+        self.results = [WR.Delivery("unknown", "resume", code="resume-timeout")]
+        router = self.router()
+        router.accept(self.wake())
+        self.run_all(router)
+        receipt = self.done()
+        self.assertEqual(len(self.delivered), 1)  # never run again:  it may have run
+        self.assertEqual((receipt["status"], receipt["code"]), ("unknown", "resume-timeout"))
+        self.assertIsNone(receipt["delivered"])
+        self.assertFalse(self.pending().exists())
+
     def test_an_exception_is_a_failed_try(self) -> None:
         calls: list[int] = []
 
