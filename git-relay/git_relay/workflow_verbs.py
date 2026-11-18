@@ -312,6 +312,7 @@ SPECS = {
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_repo_hooks": ({"repository_hooks": "read"}, False),
+    "wf_repo_teams": ({"administration": "read"}, False),
     "wf_deploy_keys": ({"administration": "read"}, False),
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
@@ -648,6 +649,7 @@ _NEW_READS = frozenset(
         "wf_run_get",
         "wf_run_artifacts",
         "wf_repo_hooks",
+        "wf_repo_teams",
         "wf_deploy_keys",
         "wf_org_installations",
         "wf_repo_list",
@@ -807,6 +809,14 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_repo_teams": {
+            "teams": lambda v: seq(v, lambda x: fields(x, {
+                "id": positive, "slug": text, "name": text,
+                "permission": lambda x: x in ("pull", "triage", "push", "maintain", "admin"),
+                "privacy": lambda x: x is None or x in ("closed", "secret"),
+            }), 50),
+            "page": positive, "has_more": boolean,
+        },
         "wf_repo_hooks": {
             "hooks": lambda v: seq(
                 v,
@@ -1869,6 +1879,33 @@ class WorkflowVerbs:
         if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
+
+    def wf_repo_teams(self, repo, args):
+        """One bounded visible-team page, never a full access inventory claim."""
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/teams?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "team page unverifiable")
+        teams = []
+        seen = set()
+        for item in data:
+            if not isinstance(item, dict):
+                raise RelayGitHubError(502, "team metadata unverifiable")
+            ident, slug, name = item.get("id"), item.get("slug"), item.get("name")
+            if (type(ident) is not int or ident <= 0 or ident in seen or
+                not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", slug) or
+                not isinstance(name, str) or not name.strip() or len(name.encode("utf-8")) > 256 or
+                any(ord(c) < 32 or ord(c) == 127 for c in name) or
+                item.get("permission") not in ("pull", "triage", "push", "maintain", "admin") or
+                (item.get("privacy") is not None and item.get("privacy") not in ("closed", "secret"))):
+                raise RelayGitHubError(502, "team metadata unverifiable")
+            self._metadata_name(slug, 100)
+            self._metadata_name(name, 256)
+            seen.add(ident)
+            teams.append({k: item.get(k) for k in ("id", "slug", "name", "permission", "privacy")})
+        return {"teams": teams, "page": page, "has_more": len(teams) == limit}
 
     def wf_repo_hooks(self, repo, args):
         _only(args, ("repo", "per_page", "page"))

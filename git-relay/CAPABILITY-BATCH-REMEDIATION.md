@@ -17,3 +17,11 @@ The proposed repository administration, collaborator writes, branch-protection w
 ## Verification
 
 On Python 3.12, the exact final reconciled production tree passes all 1760 relay tests. This includes the three added decode-boundary tests, covering seven malformed input classes, valid scalar/array/Unicode bodies and empty completion.
+
+## First implemented capability slice
+
+`wf_repo_teams` now implements one bounded page of teams visible to the own App on the bound repository. Exact input is repo/page/per_page only, with at most50 items and page1-1000. The receipt contains only id, slug, name, permission and nullable privacy, with duplicate IDs, malformed fields, credential-shaped names and excessive pages refused. `has_more` means a full page, not a complete repository access inventory. It does not return URLs, descriptions, nested parents or actor credentials.
+
+The verb requests only administration:read plus metadata:read through the existing read-only minter class. No generic administration-write minting, live seat-policy installation or permission change occurs. The typed hosted catalog and response validator include it behind the existing workflow-tools gate. Official contract: https://docs.github.com/en/rest/repos/repos#list-repository-teams and https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json . The endpoint lists only teams visible to the caller; public repositories omit teams that did not explicitly add them.
+
+Current local source passes1769 relay tests on Python3.14.10,137 existing workflow catalog/transport tests and2 new repository-team catalog/receipt tests. The prior response-bound slice also passed1762 tests on Python3.12. All tests use fakes; no team or repository action was invoked. The broader administration/collaborator/branch-protection/ruleset/webhook/Actions settings implementation remains unfinished and the PR stays draft.
