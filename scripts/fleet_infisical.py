@@ -305,10 +305,13 @@ def fetch_all(
     token: str | None = None,
     allow_session: bool = False,
     writer: bool = False,
+    allow_unresolved: bool = False,
 ) -> dict[str, str]:
     """Read one declared folder with a scoped token; allow_session is a retired compatibility flag."""
     project = infisical_project_id(env, home_dir(env), project_name)
-    return fetch_project(project, path, env, token=token, writer=writer)
+    return fetch_project(
+        project, path, env, token=token, writer=writer, allow_unresolved=allow_unresolved
+    )
 
 
 def project_token_name(project_name: str) -> str:
@@ -483,6 +486,7 @@ def fetch_project(
     writer: bool = False,
     names: Iterable[str] | None = None,
     timeout: float = EXPORT_TIMEOUT,
+    allow_unresolved: bool = False,
 ) -> dict[str, str]:
     """Explicit project route shared with standalone recall and knobs consumers."""
     check_path(path)
@@ -567,7 +571,8 @@ def fetch_project(
             if key in found:
                 raise SecretsError("unverified-source")
             found[key] = value
-    reject_unresolved(found)
+    if not allow_unresolved:
+        reject_unresolved(found)
     return found
 
 

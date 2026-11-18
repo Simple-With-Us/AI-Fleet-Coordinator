@@ -140,6 +140,47 @@ class ScopeTests(unittest.TestCase):
         F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)
         self.assertLess(len(calls), 5, "the budget stops further git queries")
 
+    def test_a_chat_whose_git_query_times_out_is_named_as_unplaced(self):
+        # A folder that cannot be asked is not a folder that is not a repository:  the chat behind
+        # it may still be on the repo the alert names, so it is recorded rather than dropped
+        # quietly, because an alert that quietly loses a chat looks the same as one that never
+        # reached it.
+        def timed_out(cwd, *args):
+            raise F.GitQueryTimeout(cwd)
+
+        places = F.ChatPlaces(timed_out)
+        rows = [chat(1, 5, platform="claude", cwd="/w/st")]
+        picked = F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)
+        self.assertEqual(ids(picked), [], "a chat that cannot be placed is not picked")
+        self.assertEqual(len(places.unplaced), 1)
+        self.assertEqual(places.unplaced[0]["session_id"], "s1")
+        self.assertEqual(places.unplaced[0]["reason"], "git-timeout")
+
+    def test_a_folder_that_is_not_a_repository_is_not_an_unplaced_chat(self):
+        # The empty answer stays the answer for a folder that is simply not a repository:  that
+        # is a fact about the chat, not a failure to reach it.
+        places = F.ChatPlaces(lambda cwd, *args: "")
+        rows = [chat(1, 5, platform="claude", cwd="/w/plain")]
+        F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)
+        self.assertEqual(places.unplaced, [])
+
+    def test_a_spent_budget_names_the_folder_it_would_not_ask(self):
+        calls = []
+
+        def slow(cwd, *args):
+            calls.append(cwd)
+            time.sleep(0.05)
+            return ""
+
+        places = F.ChatPlaces(slow, budget=0.12)
+        rows = [chat(i, 1, platform="claude", cwd=f"/w/{i}") for i in range(10)]
+        F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)
+        self.assertLess(len(calls), 5, "the budget stops further git queries")
+        self.assertTrue(
+            any(row["reason"] == "git-budget-spent" for row in places.unplaced),
+            "a folder the budget would not ask is named too",
+        )
+
     def test_repo_scope_takes_every_recent_chat_on_that_repo(self):
         rows = [cloud(i, i, ST_URL) for i in range(1, 7)]
         rows += [
@@ -233,6 +274,33 @@ class DaemonFanoutTests(DaemonHarness):
         self.assertEqual(
             (result["queued"], result["already"], result["no_transport"]), (0, 5, {"claude": 1})
         )
+
+    def test_the_receipt_names_a_chat_the_alert_could_not_reach(self):
+        # The receipt carries it, so an owner alert that lost a chat says so.
+        daemon = self.started()
+        now = self.clock.time()
+        row = dict(chat(1, 0, platform="claude", cwd="/w/st"), seat="CLAUDE", updated_at=now - 60)
+        daemon._chat_catalog = FakeCatalog([row])
+        message_id = self.fake.add_message(
+            "Jay Wedgeworth", "simple-tools", "misc", "@**all** for ST: deploy is out"
+        )
+        def timed_out(cwd, *args):
+            raise F.GitQueryTimeout(cwd)
+
+        places = F.ChatPlaces(timed_out)
+        result = daemon.fanout(
+            message_id, "simple-tools", "misc", F.Scope(frozenset({"socratic-trade"})), places
+        )
+        self.assertEqual(
+            result.get("unplaced"),
+            [{"session_id": "s1", "platform": "claude", "reason": "git-timeout"}],
+            "the receipt names the chat the alert could not reach, and why",
+        )
+        places = F.ChatPlaces(lambda cwd, *args: "")
+        result = daemon.fanout(
+            message_id, "simple-tools", "misc", F.Scope(frozenset({"socratic-trade"})), places
+        )
+        self.assertNotIn("unplaced", result, "a chat with no repository is not a loss")
 
     def test_malformed_bindings_are_not_coerced_into_queue_identifiers(self):
         daemon = self.started()

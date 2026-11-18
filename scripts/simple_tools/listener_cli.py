@@ -289,7 +289,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
                 seat or "every seat",
-                " (headless wakes only)" if args.wakes_only else " (wakes and live interrupts)",
+                " (wakes only)" if args.wakes_only else " (wakes and live interrupts)",
                 " --seat " + seat if seat else "",
             )
         )
@@ -543,55 +543,16 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 lines.append("  RED %s" % problem)
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
-            if s.get("wake") == "claude":
-                pin = s.get("pin") or {}
-                # A stale pin is not a seat that was never set up, and the difference is the whole point
-                # of AFC-256:  say which one this is rather than a bare NOT pinned.
-                state = (
-                    " (pinned)"
-                    if s.get("pinned")
-                    else (
-                        " (NOT pinned: %s)" % pin.get("why") if pin.get("why") else " (NOT pinned)"
-                    )
-                )
-            elif s.get("wake") == "http":
+            if s.get("wake") == "http":
                 state = (
                     " (routine ready, %s)" % routine.get("host")
                     if routine.get("ready")
                     else " (routine NOT ready: %s)" % (routine.get("detail") or routine.get("why"))
                 )
-            elif s.get("wake") == "openrouter":
-                # No binary, so the pin is on the model and the request shape.
-                pin = s.get("pin") or {}
-                pin_text = (
-                    "pinned"
-                    if s.get("pinned")
-                    else "NOT pinned: %s" % (pin.get("why") or "not_pinned")
-                )
-                state = " (%s, %s)" % (s.get("model"), pin_text)
             else:
                 state = ""
-            fallback = s.get("fallback") or {}
-            if fallback:
-                fallback_pin = fallback.get("pin") or {}
-                state += "  fallback %s (%s, %s)%s" % (
-                    fallback.get("runtime"),
-                    fallback.get("model"),
-                    "pinned"
-                    if fallback.get("pinned")
-                    else "NOT pinned: %s" % (fallback_pin.get("why") or "not_pinned"),
-                    " ANSWERING IN PLACE OF THE WAKE (%s)" % fallback.get("primary_hold")
-                    if fallback.get("stands_in")
-                    else "",
-                )
-            routes = ""
-            if s.get("wake") == "claude":
-                routes = "  routes 24h %s%s" % (
-                    s.get("routes_24h", 0),
-                    "" if s.get("route_enabled", True) else " (routing off)",
-                )
             lines.append(
-                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (%s)%s"
+                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (%s)"
                 % (
                     seat,
                     "connected" if s.get("connected") else "DOWN",
@@ -601,7 +562,6 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     state,
                     s.get("wakes_24h"),
                     _wake_caps_text(s.get("budget")),
-                    routes,
                 )
             )
             for gate_text in _gate_status_lines(
@@ -1712,7 +1672,9 @@ def add_parsers(
     _status_args(q)
     q = add("pause", "kill switch: stop wakes and live interrupts (capture continues)", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every seat)")
-    q.add_argument("--wakes-only", action="store_true", help="stop headless wakes only")
+    q.add_argument(
+        "--wakes-only", action="store_true", help="stop routine wakes only, not live interrupts"
+    )
     q.add_argument(
         "--defer",
         action="store_true",
