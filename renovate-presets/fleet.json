@@ -28,7 +28,7 @@
   },
   "packageRules": [
     {
-      "description": "Major updates come once a month as their own PRs and never automerge.  Dependency Dashboard approval is not used because every fleet repo has GitHub issues turned off, so Renovate has no dashboard to approve from and majors would vanish silently.  Repos keep their own major labels, holds and PR text.",
+      "description": "Major updates come once a month as their own PRs and never automerge, so a human reviews every major before it lands.  Repos keep their own major labels, holds and PR text.",
       "matchUpdateTypes": [
         "major"
       ],
@@ -47,6 +47,9 @@
       ],
       "matchDepTypes": [
         "tool-constraint"
+      ],
+      "matchDepNames": [
+        "npm"
       ],
       "enabled": false
     }
