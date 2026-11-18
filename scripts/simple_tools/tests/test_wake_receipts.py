@@ -216,11 +216,17 @@ class ReceiptReadTests(ReceiptHarness):
     def test_a_delivered_receipt_writes_one_row_of_whitelisted_fields_only(self) -> None:
         daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
         wake_id = self.wake(daemon)
-        # Credential-shaped text in every field that must never be copied, and in one whitelisted
-        # field (`ack`), where its shape check passes and the secret scan must drop it.
-        anthropic = "sk-ant-" + "q" * 32
-        github = "ghp_" + "R7" * 18
-        zulip_like = "Ab3" * 10 + "Zz"
+        # Flagged text in every field that must never be copied, and in one whitelisted field
+        # (`ack`), where its shape check passes and the secret scan must drop it.  The reader's
+        # scan is stubbed so that plain markers stand in for credentials;  secretscan's own tests
+        # cover what the real scan matches.
+        anthropic = "PLAIN-MARKER-ONE-NOT-A-CREDENTIAL"
+        github = "PLAIN-MARKER-TWO-NOT-A-CREDENTIAL"
+        zulip_like = "PLAIN-MARKER-THREE-NOT-A-CREDENTIAL"
+        markers = (anthropic, github, zulip_like)
+        flagged = types.SimpleNamespace(
+            scan=lambda value, known=(): any(marker in value for marker in markers)
+        )
         body = self.receipt(
             wake_id,
             topic="deploy " + anthropic,
@@ -235,7 +241,8 @@ class ReceiptReadTests(ReceiptHarness):
             picked="letter",
         )
         self.answer(wake_id, body)
-        self.pass_at(daemon, 31)
+        with mock.patch.object(W, "secretscan", flagged):
+            self.pass_at(daemon, 31)
         row = self.outcome()
         self.assertEqual(
             sorted(row),
