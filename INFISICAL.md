@@ -106,10 +106,12 @@ Other seats retain their existing limits.  Upstream rate limits still apply.
 
 The Cursor Cloud letter sweep (`scripts/simple_tools/cursor_cloud_letters.py`) runs on the server as one Operator unit that names no seat, `afc-cursor-cloud-letters.service` with its timer, installed by `scripts/simple_tools/server/install-cursor-cloud-letters.sh` (owner ruling, Nov 12, 2026).  Its env file, `~/.config/afc-cursor-cloud-letters/env` (0600), holds two read-only service tokens and nothing else.  Both are named for their use, and a person mints them, logs each on the service-tokens tab and stages each in `~/.config/infisical-staging/` for the installer, which moves them into the env file and never prints them.
 
-| Variable | Token | Grant | What it reads |
-| --- | --- | --- | --- |
-| `FLEET_KNOBS_INFISICAL_TOKEN` | `afc-cursor-cloud-letters-knobs-ro` | AI Fleet Coordinator, prod, `/wake-router` only, read only | `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY`, through `registry_api` and `fleet_knobs`, the way the wake router reads them |
-| `CURSOR_LETTERS_INFISICAL_TOKEN` | `afc-cursor-cloud-letters-ro` | Fleet-OPS, prod, `/cursor-cloud-letters` only, read only | `CURSOR_SYNC_API_KEY`, through `fleet_infisical` (the token's own grant is checked first), held in memory and never put in the environment |
+| Variable | Token | Grant | Expires (UTC) | What it reads |
+| --- | --- | --- | --- | --- |
+| `FLEET_KNOBS_INFISICAL_TOKEN` | `afc-cursor-cloud-letters-knobs-ro` | AI Fleet Coordinator, prod, `/wake-router` only, read only | 2027-02-10T20:16:45.540Z | `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY`, through `registry_api` and `fleet_knobs`, the way the wake router reads them |
+| `CURSOR_LETTERS_INFISICAL_TOKEN` | `afc-cursor-cloud-letters-ro` | Fleet-OPS, prod, `/cursor-cloud-letters` only, read only | 2027-02-10T20:16:46.456Z | `CURSOR_SYNC_API_KEY`, through `fleet_infisical` (the token's own grant is checked first), held in memory and never put in the environment |
+
+Both rows record each token's exact `expiresAt` metadata, verified against the live service-token records on Nov 16, 2026.  The reader checks the token's own grant and refuses an expired or unparsable expiry (`token-expired-or-invalid`, `validate_service_metadata` in `scripts/fleet_infisical.py`; covered by `scripts/fleet_secrets/tests/test_scoped_tokens.py`) before any use.
 
 The registry knobs share `/wake-router` with the router's bearer `WAKE_ROUTER_KEY`, so the knob token can read that bearer too;  a narrower grant needs the two registry knobs in a folder of their own.  It replaces the per-seat `CLAUDE-cursor-cloud-letters-ro` (Fleet-OPS prod `/cursor-cloud-letters`), which is revoked once the shared unit has run clean (`scripts/simple_tools/README.md`, "Retiring the per-seat unit").
 

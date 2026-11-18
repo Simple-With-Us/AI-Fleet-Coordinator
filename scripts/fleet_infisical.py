@@ -521,6 +521,8 @@ def fetch_project(
         )
         if name is not None and status == 404:
             return name, []
+        if status == 408:
+            raise SecretsError("fetch-failed: timeout", 124)
         if status != 200 or not isinstance(payload, dict):
             raise SecretsError("fetch-failed")
         records = payload.get("secrets") if name is None else [payload.get("secret")]
@@ -605,6 +607,8 @@ def list_project_names(
         max_bytes=MAX_OUTPUT_BYTES,
         deadline=deadline,
     )
+    if status == 408:
+        raise SecretsError("fetch-failed: timeout", 124)
     if status != 200 or not isinstance(payload, dict):
         raise SecretsError("fetch-failed")
     records = payload.get("secrets")
@@ -845,14 +849,16 @@ def _api_json(
     try:
         timeout = API_TIMEOUT if deadline is None else min(API_TIMEOUT, deadline - time.monotonic())
         if timeout <= 0:
-            return 0, None
+            return 408, None
         with _opener().open(req, timeout=timeout) as resp:
             raw = resp.read(limit)
             status = resp.status
     except urllib.error.HTTPError as exc:
         raw = exc.read(limit)
         status = exc.code
-    except (urllib.error.URLError, OSError, TimeoutError):
+    except TimeoutError:
+        return 408, None
+    except (urllib.error.URLError, OSError):
         return 0, None
     finally:
         data = None
