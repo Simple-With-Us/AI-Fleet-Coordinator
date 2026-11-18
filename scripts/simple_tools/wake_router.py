@@ -284,6 +284,11 @@ REGISTRY_LOADER_SOURCE = "operator-registry-env"
 REGISTRY_HOST_SOURCE = (
     "operator-registry-env" if sys.platform == "darwin" else "router-environment"
 )
+#: Whether this host reads its registry configuration from the shared loader file.  The Mac's
+#: `wake-deliver` keeps that file, and the server's router reads the knobs it fetched, so the
+#: loader probe is asked only where the loader file is this host's source.  It is a module
+#: constant, so a test can ask the probe on any host.
+REGISTRY_LOADER_HOST = sys.platform == "darwin"
 #: How much of a registry answer's own words a delivery note carries:  a variable name and a
 #: reason, and never a value.  A note crosses to another host, whose readers keep only 80
 #: characters of it, so the source shapes it to that length rather than the reader cutting it.
@@ -1907,7 +1912,13 @@ def registry_loader_lost(env: Mapping[str, str], registry_env: Mapping[str, str]
     without the address the file holds lost it on the way.  A loader that is there and cannot
     be read lost it the same way.  A loader that was read and holds no address is a host that
     is not configured, and `registry_failure` answers that one with the variable that is
-    missing."""
+    missing.
+
+    The probe is the Mac's, because the shared loader file is the Mac's source.  A host that
+    reads its configuration elsewhere never lost the loader's address, so it never answers
+    with the loader's name:  that host's own source is named instead."""
+    if not REGISTRY_LOADER_HOST:
+        return False  # the loader file is not this host's source, so it cannot have lost anything
     if registry_api.base_url(registry_env):
         return False
     try:

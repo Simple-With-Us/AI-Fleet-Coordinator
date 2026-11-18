@@ -197,10 +197,11 @@ class RegistryOutageAnswer(unittest.TestCase):
         def no_registry(*_args, **_kwargs):
             raise OSError("the registry did not answer")
 
-        with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
-            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
-                claude = CW._recheck(env, self.target)
-                muse = MW._recheck(env, self.target, no_registry)
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
+                with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                    claude = CW._recheck(env, self.target)
+                    muse = MW._recheck(env, self.target, no_registry)
         for name, delivery in (("claude", claude), ("muse", muse)):
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
@@ -226,10 +227,11 @@ class RegistryOutageAnswer(unittest.TestCase):
         def no_registry(*_args, **_kwargs):
             raise OSError("the registry did not answer")
 
-        with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
-            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
-                claude = CW._recheck(env, self.target)
-                muse = MW._recheck(env, self.target, no_registry)
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
+                with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                    claude = CW._recheck(env, self.target)
+                    muse = MW._recheck(env, self.target, no_registry)
         for name, delivery in (("claude", claude), ("muse", muse)):
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
@@ -257,10 +259,11 @@ class RegistryOutageAnswer(unittest.TestCase):
         def no_registry(*_args, **_kwargs):
             raise OSError("the registry did not answer")
 
-        with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
-            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
-                claude = CW._recheck(env, self.target)
-                muse = MW._recheck(env, self.target, no_registry)
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
+                with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                    claude = CW._recheck(env, self.target)
+                    muse = MW._recheck(env, self.target, no_registry)
         for name, delivery in (("claude", claude), ("muse", muse)):
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)

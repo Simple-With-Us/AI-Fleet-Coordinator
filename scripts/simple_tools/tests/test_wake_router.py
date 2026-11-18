@@ -5489,17 +5489,18 @@ class RegistryNotConfigured(Base):
                 raise RuntimeError("refusing a symlinked directory: %s" % directory)
             directory.mkdir(mode=0o700, exist_ok=True)
         path.write_text("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
-        # The loader holds the address and the mapping lost it:  the read failed.
-        self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
-        # The mapping carries the address:  nothing was lost.
-        self.assertFalse(
-            WR.registry_loader_lost(
-                env, {"HOME": str(home), WR.registry_api.URL_ENV: "https://registry.example/api"}
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            # The loader holds the address and the mapping lost it:  the read failed.
+            self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
+            # The mapping carries the address:  nothing was lost.
+            self.assertFalse(
+                WR.registry_loader_lost(
+                    env, {"HOME": str(home), WR.registry_api.URL_ENV: "https://registry.example/api"}
+                )
             )
-        )
-        # The loader holds no address:  the host is not configured, and the variable is named.
-        path.write_text("# a loader with nothing of the registry in it\n")
-        self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
+            # The loader holds no address:  the host is not configured, and the variable is named.
+            path.write_text("# a loader with nothing of the registry in it\n")
+            self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
 
     def test_a_loader_that_cannot_be_read_is_told_from_a_loader_that_is_not_there(self) -> None:
         """A loader that is there and cannot be read lost the read:  the delivery fails closed
@@ -5520,7 +5521,12 @@ class RegistryNotConfigured(Base):
                 raise RuntimeError("refusing a symlinked directory: %s" % directory)
             directory.mkdir(mode=0o700, exist_ok=True)
         path.mkdir(mode=0o700, exist_ok=True)
-        self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
+        # A host that reads its configuration elsewhere never lost the loader's address, so it
+        # never answers with the loader's name.
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", False):
+            self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
 
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
         """The error text is the registry's, so a free run of capitals in it must not reach
