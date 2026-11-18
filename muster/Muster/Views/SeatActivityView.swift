@@ -813,7 +813,7 @@ struct SeatActivityView: View {
         .frame(width: quotaWidth, alignment: .leading)
         .help(cellHelp(row.quota, known: ApplyCopy.join(
             "The provider quota the Mac's eavesdropper publishes for this seat.",
-            "Today's eavesdropper runs no model and publishes none, so a reading here comes from an older one."
+            "Today's eavesdropper runs no model and publishes none, so any reading shown here comes from an older one."
         )))
     }
 
