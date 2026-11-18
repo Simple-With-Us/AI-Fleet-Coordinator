@@ -8282,10 +8282,12 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
         elif have is None:
             status = "new"
         else:
-            # Bytes alone do not make a shim current:  verify demands 0755, so a byte-identical shim
-            # that lost its exec bit is drift a re-apply repairs, never "same".
+            # Bytes alone do not make a shim current:  verify demands executability (any exec bit), so
+            # a byte-identical shim that lost every exec bit is drift a re-apply repairs, never
+            # "same".  A tightened but executable mode (say 0750) verifies PASS, so it stays "same"
+            # and apply leaves it alone rather than widening it.
             try:
-                mode_ok = stat.S_IMODE(os.stat(os.path.join(d, tool)).st_mode) == 0o755
+                mode_ok = bool(os.stat(os.path.join(d, tool)).st_mode & 0o111)
             except OSError:
                 mode_ok = False
             status = "same" if have == want and mode_ok else "changed"
@@ -8359,14 +8361,15 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
 def _emit_zcode_seat_plan(sp: ZcodeSeatPlan, emit: Callable[[str], None]) -> None:
     """The seat-default section of `plan zcode`, under the hooks-config plan of the same platform."""
     if sp.state == "stale":
-        # "a re-apply replaces what differs" is only true when apply may write at all;  for a refused
-        # profile or a foreign shim dir the stale mark stays and the REFUSED line names why a re-apply
-        # would change nothing.
-        state = (
-            "stale (apply refuses to write here; see the REFUSED line)"
-            if sp.bashrc_action == "refused" or sp.dir_state == "foreign"
-            else "stale (a re-apply replaces what differs)"
-        )
+        # "a re-apply replaces what differs" is only true when apply may write at all;  point at the
+        # line that actually names the blocker (the REFUSED line for a refused profile, the WARNING
+        # line above for a foreign shim dir), never at a line the emit does not print.
+        if sp.bashrc_action == "refused":
+            state = "stale (apply refuses to write here; see the REFUSED line)"
+        elif sp.dir_state == "foreign":
+            state = "stale (apply refuses to write here; see the warning above)"
+        else:
+            state = "stale (a re-apply replaces what differs)"
     else:
         state = sp.state
     emit(f"   seat default (Bash-tool shells): {sp.shim_dir} [{state}]")
@@ -8402,9 +8405,11 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
     block.  The two are one artifact set:  a tool off PATH skips the whole set (a PATH-fronted dir with
     a hole in it would be worse than none), and a profile the tool cannot manage safely skips it too.
     Every refusable condition is decided BEFORE the first byte is written, so a skipped result means
-    nothing was written.  A shim is rewritten when its bytes or its mode drift (verify demands 0755,
-    so a byte-identical shim that lost its exec bit is drift, not "current").  Idempotent:  a second
-    apply finds the shims byte-identical at 0755 and the block current and writes nothing."""
+    nothing was written.  A shim is rewritten when its bytes drift or it has no exec bit left (verify
+    demands executability, so a byte-identical shim with no exec bit is drift);  the rewrite lands
+    0755, and a tightened but executable mode is left alone rather than widened.  Idempotent:  a
+    second apply finds the shims byte-identical and executable and the block current and writes
+    nothing."""
     t = "zcode"
     resolved: dict[str, str] = {}
     missing: list[str] = []
@@ -8461,12 +8466,12 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
             mode_ok = False
             if have is not None:
                 try:
-                    mode_ok = stat.S_IMODE(os.stat(path).st_mode) == 0o755
+                    mode_ok = bool(os.stat(path).st_mode & 0o111)
                 except OSError:
                     mode_ok = False
-            # Bytes alone are not the contract:  a shim that lost its exec bit verifies FAIL, so the
-            # rewrite below restores the mode as well as the bytes, keeping apply and verify honest
-            # with each other.
+            # Bytes alone are not the contract:  a shim with no exec bit left verifies FAIL, so the
+            # rewrite restores executability (0755) and keeps apply and verify honest with each
+            # other;  a tightened but executable mode verifies PASS and is left unwidened.
             if have != want or not mode_ok:
                 atomic_write(path, want, 0o755)
                 shim_written.append(tool)

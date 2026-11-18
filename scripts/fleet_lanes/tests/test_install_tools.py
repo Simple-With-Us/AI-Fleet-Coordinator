@@ -7561,9 +7561,10 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertTrue(any(T.ZCODE_SEAT_TOOLS[2] in c.detail for c in seat), seat)
 
     def test_a_mode_drifted_shim_is_restored_by_apply(self) -> None:
-        """A shim whose bytes match but whose mode drifted verifies FAIL, so plan must call it changed
-        (stale, not current) and apply must rewrite it back to 0755 instead of reporting 'already
-        current' beside an unusable shim."""
+        """A shim whose bytes match but which has no exec bit verifies FAIL, so plan must call it
+        changed (stale, not current) and apply must rewrite it to 0755 instead of reporting 'already
+        current' beside an unusable shim.  A tightened but executable mode (0750) verifies PASS, so
+        plan keeps it same, apply leaves it unwidened, and the set reads current."""
         self.install_zcode()
         p = self.shim_path(T.ZCODE_SEAT_TOOLS[1])
         p.chmod(0o644)
@@ -7574,6 +7575,14 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertIn("seat default installed", r.detail)
         self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o755)
         self.assertEqual(self.seat_plan().state, "current")
+        # the same bytes at a tightened but executable mode are current, not drift
+        p.chmod(0o750)
+        sp = self.seat_plan()
+        self.assertEqual({fs.rel: fs.status for fs in sp.shims}[T.ZCODE_SEAT_TOOLS[1]], "same")
+        self.assertEqual(sp.state, "current")
+        r2 = self.install_zcode()
+        self.assertNotIn("seat default installed", r2.detail)
+        self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o750)
 
     def test_plan_does_not_call_a_refused_or_foreign_seat_new(self) -> None:
         """State 'new' promises apply can write the whole set from here:  a refused profile or a
@@ -7584,6 +7593,14 @@ class ZcodeBashToolSeatDefaultTests(World):
         sp = self.seat_plan()
         self.assertEqual(sp.bashrc_action, "refused")
         self.assertEqual(sp.state, "stale")
+        # the plan emit points at the line that actually names this blocker
+        rc, out, _ = run_main(
+            "plan", "--home", str(self.home), "--source", str(SCRIPTS_DIR),
+            "--registry", str(REGISTRY_FILE), "--sha", SHA, "zcode",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("see the REFUSED line", out)
+        self.assertNotIn("see the warning above", out)
         # the same for a shim dir that exists and is a symlink, with no profile trouble at all
         (self.home / ".bashrc").unlink()
         real_dir = self.home / "seat-bin-real"
@@ -7593,6 +7610,13 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertEqual(sp.dir_state, "foreign")
         self.assertEqual(sp.state, "stale")
         self.assertTrue(any("symlink" in w for w in sp.warnings), sp.warnings)
+        rc, out, _ = run_main(
+            "plan", "--home", str(self.home), "--source", str(SCRIPTS_DIR),
+            "--registry", str(REGISTRY_FILE), "--sha", SHA, "zcode",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("see the warning above", out)
+        self.assertNotIn("see the REFUSED line", out)
 
     def test_a_failed_seat_write_is_reported_as_partly_written(self) -> None:
         """The shims land before the profile, so a profile write that fails leaves a live partial set:
