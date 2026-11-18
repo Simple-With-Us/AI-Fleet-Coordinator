@@ -1526,6 +1526,68 @@ class ArchiveTests(WorkerCase):
             self.led.save()
         self.assertEqual((self.led.entries, self.led.archive), ({}, {}))
 
+    def whole_renders(self, spy: mock.MagicMock) -> int:
+        """How many times a save under `spy` rendered the whole ledger."""
+        return sum(1 for call in spy.dumps.call_args_list
+                   if call.args and call.args[0] is self.led.data)
+
+    def test_the_byte_bound_renders_the_ledger_once_a_round_not_once_an_entry(self) -> None:
+        # Kody, PR 2298: every entry the byte bound retired rendered the whole ledger again,
+        # which at 8 MB holds the routing thread for seconds.  The same entries go as when
+        # they went one at a time, and the ledger is rendered once a round.
+        names = ["AFC-1 topic %02d" % mid for mid in range(1, 13)]
+        for mid, name in enumerate(names, 1):
+            self.w.handle_event(message(mid, name, "hello " * 40))
+            self.t[0] += 10
+        self.led.save()
+        bound = len(self.led.path.read_bytes()) // 3
+        # The one-at-a-time rule, on a copy: retire the oldest, render, and again.
+        ref = lr.Ledger(Path(tempfile.mkdtemp()) / "ref.json")
+        ref.open()
+        ref.data = json.loads(json.dumps(self.led.data))
+        ref._index_archive()
+        with mock.patch.object(lr, "MAX_ARCHIVE", 3):
+            while len(json.dumps(ref.data, indent=1, sort_keys=True)) > bound:
+                ref._retire(min(ref.entries, key=lambda k: ref.entries[k]["last_touch"]))
+                ref._prune_archive()
+            with mock.patch.object(lr, "MAX_LEDGER_BYTES", bound):
+                with mock.patch.object(lr, "json", wraps=json) as spy:
+                    self.led.save()
+        retired = len(names) - len(ref.entries)
+        self.assertTrue(6 <= retired < len(names))
+        self.assertEqual(list(self.led.entries), list(ref.entries))  # the newest, as before
+        self.assertEqual(sorted(self.led.archive), sorted(ref.archive))
+        self.assertEqual(self.led.archive_dropped, ref.archive_dropped)  # full archive: credited
+        self.assertLessEqual(len(self.led.path.read_bytes()), bound)
+        # One render over the bound and one after the round, where one render for every entry
+        # retired made seven or more.
+        self.assertEqual(self.whole_renders(spy), 2)
+
+    def test_with_no_entry_left_the_archive_is_cut_once_a_round_too(self) -> None:
+        keys = [self.key("AFC-1", 5, "topic %d" % i) for i in range(40)]
+        for i, key in enumerate(keys):
+            self.led.archive_put(key, {"root": i + 1, "comment_id": "c%d" % (i + 1),
+                                       "pending": False, "at": float(i)})
+        self.led.save()
+        bound = len(self.led.path.read_bytes()) // 4
+        with mock.patch.object(lr, "MAX_LEDGER_BYTES", bound):
+            with mock.patch.object(lr, "json", wraps=json) as spy:
+                self.led.save()
+        kept = len(self.led.archive)
+        self.assertEqual(sorted(self.led.archive), sorted(keys[len(keys) - kept:]))  # newest
+        self.assertEqual(self.led.archive_dropped, len(keys) - kept)
+        self.assertLessEqual(len(self.led.path.read_bytes()), bound)
+        # No record went that the bound did not need gone: with the newest dropped one back,
+        # the file would not fit.
+        back = json.loads(json.dumps(self.led.data))
+        back["archive"][keys[len(keys) - kept - 1]] = {
+            "root": len(keys) - kept, "comment_id": "c%d" % (len(keys) - kept),
+            "pending": False, "at": float(len(keys) - kept - 1),
+        }
+        self.assertGreater(len(json.dumps(back, indent=1, sort_keys=True)), bound)
+        self.assertGreater(self.led.archive_dropped, 20)
+        self.assertEqual(self.whole_renders(spy), 2)  # not one more for every record dropped
+
     # -- the file --------------------------------------------------------------------------
     def test_a_ledger_without_an_archive_opens_and_saves_as_before(self) -> None:
         key = self.key("AFC-1", 5, "AFC-1 relay")
@@ -2228,6 +2290,39 @@ class CatchUpTests(WorkerCase):
         self.assertEqual((ops["seen"], ops["count"]), ([1, 2, 3, 4, 5, 6], 6))
         second.handle_event(message(7, "deploy thread", "and on"))
         self.assertEqual(len(self.topic.since_calls), 1)
+
+    def test_an_entry_the_shared_read_has_not_reached_is_not_given_up(self) -> None:
+        # One read serves both entries, from OPS-9's point, far behind AFC-1's.  A read that
+        # stops before AFC-1's point brought it nothing, but it moved on for OPS-9, and the next
+        # read starts nearer AFC-1's point.  Counted as a read that brought nothing new (Kody,
+        # PR 2298, asked for that), AFC-1 gave up at the third, before any read reached it, and
+        # never got 11 to 14.
+        first = self.restart()
+        for mid in range(1, 11):
+            content = {1: "this is AFC-1", 2: "and OPS-9 too"}.get(mid, "m%d" % mid)
+            self.topic.messages.append(past(mid, content))  # in the topic when routed
+            first.handle_event(message(mid, "deploy thread", content))
+        afc, ops = self.entry("AFC-1", "deploy thread"), self.entry("OPS-9", "deploy thread")
+        ops["seen"], ops["links"], ops["count"] = [1, 2], ops["links"][:2], 2
+        self.topic.messages += [past(mid, "m%d" % mid) for mid in range(11, 15)]  # missed
+        capped = [2, 2, 2, 2]  # the next four reads stop after two messages
+
+        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
+            got = self.topic.since(stream_id, topic, after_id)
+            return got[: capped.pop()] if capped else got
+
+        second = self.worker(history=self.topic.whole, history_since=since)
+        for mid in range(15, 20):
+            self.topic.messages.append(past(mid, "m%d" % mid))
+            second.handle_event(message(mid, "deploy thread", "m%d" % mid))
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls],
+                         [2, 4, 6, 8, 10])
+        self.assertFalse(any("gave up catching up" in line for line in self.logs))
+        self.assertEqual(afc["seen"], list(range(1, 20)))
+        self.assertEqual(ops["seen"], list(range(1, 20)))
+        self.topic.messages.append(past(20, "m20"))
+        second.handle_event(message(20, "deploy thread", "m20"))
+        self.assertEqual(len(self.topic.since_calls), 5)  # both settled at the live message
 
     def test_an_entry_made_or_restored_in_this_process_is_not_read_for(self) -> None:
         worker = self.restart()

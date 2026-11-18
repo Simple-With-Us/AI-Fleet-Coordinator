@@ -123,6 +123,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import heapq
 import http.client
 import json
 import math
@@ -427,6 +428,17 @@ def valid_archived(key: Any, record: Any) -> bool:
     )
 
 
+def _member_bytes(key: str, value: Any) -> int:
+    """The bytes one member of the ledger's entries or archive table takes in the file
+    Ledger._render writes, its separator included: its key and ": ", its value as json.dumps
+    renders it alone, the two more spaces each of the value's lines is indented by inside its
+    table, and the comma, newline and two spaces between it and its neighbour.  A table's last
+    member takes one byte more.  The file is ASCII (json.dumps escapes the rest), so its
+    characters are its bytes."""
+    text = json.dumps(value, indent=1, sort_keys=True)
+    return len(json.dumps(key)) + 2 + len(text) + 2 * text.count("\n") + 4
+
+
 class Ledger:
     """JSON file: key "ISSUE|stream_id|topic digest" -> comment id, links, timing.  Atomic,
     owner-only writes under an flock so a restart never double-comments.
@@ -558,20 +570,27 @@ class Ledger:
         self.dirty = False
 
     def _render(self) -> str:
+        """The file's text, within MAX_LEDGER_BYTES.  Over the bound, the oldest entries leave
+        for the archive, where each record is a fraction of its entry's size, so the file still
+        shrinks; with no entry left, the oldest archive records go.  Each round drops, oldest
+        first, as many as the bytes they free say the excess needs, and renders the whole
+        ledger once, where it used to render it again for every one dropped (Kody, PR 2298).
+        What a drop frees is never counted under what the file loses (_member_bytes), so a
+        round stops at or before the first drop that brings the file under the bound, and the
+        same ones go as when they were dropped one at a time."""
         self._prune_entries()
         self._prune_archive()
         text = json.dumps(self.data, indent=1, sort_keys=True)
-        while len(text.encode("utf-8")) > MAX_LEDGER_BYTES:
+        size = len(text.encode("utf-8"))
+        while size > MAX_LEDGER_BYTES:
             if self.data["entries"]:
-                # The oldest entry leaves for the archive, where its record is a fraction of
-                # the entry's size, so the file still shrinks.
-                self._drop_oldest()
-                self._prune_archive()
+                self._shed_entries(size - MAX_LEDGER_BYTES)
             elif self.archive:
-                self._drop_oldest_archived()  # no entry is left: the map itself gives way
+                self._shed_archived(size - MAX_LEDGER_BYTES)  # the map itself gives way
             else:
                 break
             text = json.dumps(self.data, indent=1, sort_keys=True)
+            size = len(text.encode("utf-8"))
         return text
 
     def _prune_entries(self) -> None:
@@ -583,12 +602,29 @@ class Ledger:
         for key, _ in order[:excess]:
             self._retire(key)
 
-    def _drop_oldest(self) -> None:
+    def _shed_entries(self, excess: int) -> None:
+        """Retire the oldest entries, oldest first, until the bytes they free cover `excess`:
+        each entry's own and those of the archive records it replaces or pushes past
+        MAX_ARCHIVE, less those of the record it leaves.  A member that goes is counted with
+        a byte to spare, and the record left with none, so the count is never under what the
+        file loses; the render that follows says whether another round is needed."""
         entries = self.data["entries"]
-        if not entries:
-            return
-        oldest = min(entries.items(), key=lambda kv: float(kv[1].get("last_touch", 0.0)))[0]
-        self._retire(oldest)
+        order = sorted(entries.items(), key=lambda kv: float(kv[1].get("last_touch", 0.0)))
+        freed = 0
+        for key, entry in order:
+            if freed >= excess:
+                return
+            filed = "%s|%d|%s" % split_key(key)  # the key _retire files the record under
+            held = self.archive.get(filed)
+            self._retire(key)
+            pushed = [(name, record) for name, record in self._prune_archive() if name != filed]
+            left = self.archive.get(filed)
+            freed += _member_bytes(key, entry) + 1
+            freed += sum(_member_bytes(name, record) + 1 for name, record in pushed)
+            if held is not None:
+                freed += _member_bytes(filed, held) + 1
+            if left is not None:
+                freed -= _member_bytes(filed, left)
 
     def _retire(self, key: str) -> None:
         """Take one entry out of the live table to keep the ledger bounded.  An entry that has
@@ -613,21 +649,33 @@ class Ledger:
         # up by and the only form it accepts when the file is read back.
         self.archive_put("%s|%d|%s" % split_key(key), record)
 
-    def _prune_archive(self) -> None:
+    def _prune_archive(self) -> list[tuple[str, dict[str, Any]]]:
+        """Drop the oldest archive records past MAX_ARCHIVE, and answer them, oldest first.
+        heapq.nsmallest is sorted()[:excess], ties included, at a cost that follows the excess:
+        an entry retired into a full archive pushes one record out, and the archive is not
+        sorted whole for it."""
         excess = len(self.archive) - MAX_ARCHIVE
         if excess <= 0:
-            return
-        order = sorted(self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0)))
-        for key, _ in order[:excess]:
+            return []
+        oldest = heapq.nsmallest(
+            excess, self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0))
+        )
+        for key, _ in oldest:
             self.archive_pop(key)
             self.archive_dropped += 1
+        return oldest
 
-    def _drop_oldest_archived(self) -> None:
-        if not self.archive:
-            return
-        oldest = min(self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0)))[0]
-        self.archive_pop(oldest)
-        self.archive_dropped += 1
+    def _shed_archived(self, excess: int) -> None:
+        """With no entry left, drop the oldest archive records until the bytes they free cover
+        `excess`, counted as _shed_entries counts them."""
+        order = sorted(self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0)))
+        freed = 0
+        for key, record in order:
+            if freed >= excess:
+                return
+            freed += _member_bytes(key, record) + 1
+            self.archive_pop(key)
+            self.archive_dropped += 1
 
     @property
     def entries(self) -> dict[str, Any]:
@@ -1970,8 +2018,11 @@ class RelayWorker:
         `mid` were never read).  A read that brought nothing past `origin` cannot be continued
         from anywhere new: after MAX_SHORT_READS of those in a row the entry is settled and the
         log says so, so a live message that is no longer in its topic never keeps the topic
-        reading at every message.  With no catch-up reader nothing can continue a read, and
-        the entry is settled."""
+        reading at every message.  A read that went past `origin` but not past the entry's own
+        `start` is not one of those: it moved on for an entry behind this one, the next read
+        starts nearer this one's point, and counted it would give the entry up before any read
+        had reached it (Kody asked for that count on PR 2298).  With no catch-up reader nothing
+        can continue a read, and the entry is settled."""
         newest = int(found[-1]["id"]) if found else None
         state = self._catching.get(key)
         recorded = state.recorded if state is not None else ()

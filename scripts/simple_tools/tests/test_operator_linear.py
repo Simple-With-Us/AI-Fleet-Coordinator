@@ -306,6 +306,10 @@ class FakeZulip:
         self.junk: list[tuple[int, object]] = []
         self.message_calls: list[dict] = []
         self.message_options: list[dict] = []  # the keyword options of each messages call
+        # Zulip places "oldest" before every message id.  True places it at the topic's first
+        # message instead, the reading of the API Kody took on PR 2298, so a test can show the
+        # read does not depend on which one a server takes.
+        self.oldest_is_first = False
 
     def get(self, path, params=None, **options):
         params = params or {}
@@ -324,7 +328,9 @@ class FakeZulip:
             if self.messages_error is not None:
                 raise self.messages_error
             anchor = params.get("anchor")
-            if anchor == "oldest":
+            if anchor == "oldest" and self.oldest_is_first and self.topic_messages:
+                start = self.topic_messages[0]["id"]
+            elif anchor == "oldest":
                 start = 0  # the server reads "oldest" as 0, before every message id
             elif isinstance(anchor, int) and not isinstance(anchor, bool):
                 start = anchor
@@ -397,15 +403,23 @@ class EngineTests(unittest.TestCase):
     def test_history_after_an_id_below_one_reads_from_the_topics_oldest_message(self) -> None:
         # The worker's catch-up of a topic whose first read failed starts after 0 (Kody, PR
         # 2298).  No message has that id, so the read asks for the topic's start by the API's
-        # own name, and include_anchor staying false does not skip the first message.
+        # own name.  It includes the anchor there (Kody, PR 2298, again), so the first message
+        # is read whether the server places "oldest" before it, as Zulip does, or at it.
         zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 6)])
-        for after in (0, -4):
-            zulip.message_calls.clear()
-            with mock.patch.object(opl, "PAGE", 2):
-                got = opl.fetch_topic_history(zulip, 5, "thread", after_id=after)
-            self.assertEqual([m["id"] for m in got], [1, 2, 3, 4, 5])
-            self.assertEqual(zulip.message_calls[0]["anchor"], "oldest")
-            self.assertIs(zulip.message_calls[0]["include_anchor"], False)
+        for oldest_is_first in (False, True):
+            zulip.oldest_is_first = oldest_is_first
+            for after in (None, 0, -4):
+                with self.subTest(oldest_is_first=oldest_is_first, after=after):
+                    zulip.message_calls.clear()
+                    with mock.patch.object(opl, "PAGE", 2):
+                        got = opl.fetch_topic_history(zulip, 5, "thread", after_id=after)
+                    self.assertEqual([m["id"] for m in got], [1, 2, 3, 4, 5])
+                    calls = zulip.message_calls
+                    self.assertEqual(calls[0]["anchor"], "oldest")
+                    self.assertIs(calls[0]["include_anchor"], True)
+                    # The later pages are anchored at a message, and leave it out.
+                    self.assertGreater(len(calls), 1)
+                    self.assertTrue(all(call["include_anchor"] is False for call in calls[1:]))
 
     def test_history_after_an_id_no_longer_in_the_topic_reads_on_from_its_place(self) -> None:
         # Message 3 was moved out of the topic (or deleted) after the entry recorded it.

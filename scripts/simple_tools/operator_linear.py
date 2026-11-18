@@ -393,10 +393,13 @@ def fetch_topic_history(
     ]
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
-    # An id anchors the first page at that message's place, and include_anchor is false below,
+    # An id anchors the first page at that message's place, and include_anchor is false for it,
     # so the page starts with the message after it.  No id, or one below 1 (no message has
     # one: a catch-up whose first read failed starts after 0), asks for the topic's start by
-    # the API's own name for it, never for a message 0.
+    # the API's own name for it, never for a message 0, and with include_anchor true.  Zulip
+    # places "oldest" before every message id, where including the anchor changes nothing; a
+    # server that placed it at the first message instead still answers that message (Kody, PR
+    # 2298).  The pages after the first are anchored at a message, and leave it out.
     anchor: Any = "oldest" if after_id is None or int(after_id) < 1 else int(after_id)
     limits: dict[str, Any] = {} if deadline is None else {"deadline": deadline}
     while len(out) < max_messages:
@@ -408,7 +411,7 @@ def fetch_topic_history(
                 "anchor": anchor,
                 "num_before": 0,
                 "num_after": wanted,
-                "include_anchor": False,
+                "include_anchor": anchor == "oldest",
                 "apply_markdown": False,
             },
             **limits,
