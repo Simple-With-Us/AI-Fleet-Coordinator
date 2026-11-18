@@ -12,6 +12,11 @@ lane-guard-hook).  The policy is the seat-neutral one in file_guard.py, with the
     refused (Claude Code passes AGENT_SEAT from its settings env block to the hook);
   * a missing secret table or registry refuses the file operation.
 
+ApplyPatch is in the tool map as a write:  it is the tool name Z Code delivers for a Write or an
+Edit (the runtime aliases Write and Edit to ApplyPatch),  and the Z Code file-guard group matches
+it,  so a payload that names it has to be judged.  A tool name the map does not know is not a file
+operation,  and it would be allowed without a look.
+
 Shell commands are not judged here:  lane-guard-hook and the secret guard hook own the shell.
 A payload that is not one of these file tools, or that is not JSON, allows.  An exception inside
 the policy for one of these file tools refuses it (fail closed);  a shim that cannot start Python
@@ -35,6 +40,7 @@ CLAUDE_FILE_TOOLS = file_guard.FileTools(
         "Edit": file_guard.WRITE,
         "MultiEdit": file_guard.WRITE,
         "NotebookEdit": file_guard.WRITE,
+        "ApplyPatch": file_guard.WRITE,
     },
     path_fields=file_guard.DEFAULT_PATH_FIELDS,
 )
@@ -51,8 +57,9 @@ def decide(payload: dict, ctx=None, secret_guard=None):
     """(reason or None, destination).
 
     Fails closed for Claude's own file tools:  when the policy itself raises (the fleet rule "fail closed when
-    required configuration or registry is unavailable"), a Read, Write, Edit, MultiEdit or NotebookEdit is refused
-    and the reason says the guard could not check it.  Any other payload is not this hook's to judge and allows.
+    required configuration or registry is unavailable"), a Read, Write, Edit, MultiEdit, NotebookEdit or ApplyPatch is
+    refused and the reason says the guard could not check it.  Any other payload is not this hook's to judge and
+    allows.
 
     Why this cannot brick file tools on a transient error:  the resolver's ValueError and OSError are handled in
     file_guard.path_reason, and a missing secret table or registry is a refusal inside file_reason, so what can
