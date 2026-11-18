@@ -220,7 +220,9 @@ class ServerPyAdmissionTests(unittest.TestCase):
 
     def test_durable_record_binds_registry_and_checkout(self):
         root = Path(__file__).resolve().parents[3]
-        record = json.loads((root / "docs/security/server-py-match-pinned-review-20261118.json").read_text())
+        record = json.loads(
+            (root / "docs/security/server-py-match-pinned-review-20261118.json").read_text()
+        )
         doc = record["reviewed_file"]
         self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
         census = frozenset(tuple(row) for row in doc["effective_matches"])
@@ -259,6 +261,10 @@ class ServerPyAdmissionTests(unittest.TestCase):
         # the normal scan refuses; proven with a synthetic stand-in body.
         body = "const secret = '" + "a" * 24 + "'; const token = '" + "b" * 24 + "';"
         key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
-        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: frozenset(list(MatchPinnedReview().metadata(relay, body))[:1])}):
+        with patch.object(
+            relay,
+            "_REVIEWED_GENERIC_MATCHES",
+            {key: frozenset(list(MatchPinnedReview().metadata(relay, body))[:1])},
+        ):
             self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
         self.assertEqual(relay.scan(body), "assigned secret")
