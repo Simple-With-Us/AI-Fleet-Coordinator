@@ -202,7 +202,9 @@ class ServerPyRetargetAdmissionTests(unittest.TestCase):
     def test_durable_record_binds_registry_and_checkout(self):
         root = Path(__file__).resolve().parents[3]
         record = json.loads(
-            (root / "docs/security/server-py-retarget-match-pinned-review-20261118.json").read_text()
+            (
+                root / "docs/security/server-py-retarget-match-pinned-review-20261118.json"
+            ).read_text()
         )
         doc = record["reviewed_file"]
         self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
@@ -240,4 +242,3 @@ class ServerPyRetargetAdmissionTests(unittest.TestCase):
         ):
             self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
         self.assertEqual(relay.scan(body), "assigned secret")
-
