@@ -55,6 +55,7 @@ class SyncTests(unittest.TestCase):
                 "workspace": self.env[core.ENV_PROJECT],
                 "permissions": ["read", "write"],
                 "scopes": [{"environment": "prod", "secretPath": PATH}],
+                "expiresAt": "2099-01-01T00:00:00Z",
             }
         return 200, {"message": "ok"}
 

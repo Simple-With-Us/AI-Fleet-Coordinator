@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fleet_secrets import core as scoped_secrets
+import fleet_infisical as scoped_secrets
 
 AUTH_ENV_VARS = scoped_secrets.AUTH_ENV_VARS
 
