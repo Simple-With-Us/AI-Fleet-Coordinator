@@ -175,10 +175,12 @@ class UnletteredSessionsTests(MiniMaxRow):
     placeholder could not see it."""
 
     def write_note(self, sid: str) -> None:
+        """A lettered chat, written the way the library writes a note:  owner-only folder, the file
+        whole, and a rename in place of a partial write."""
         path = PL.note_path(self.env(), PM.SEAT, sid)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"label": "AA", "generation": 1, "location": "mac"}, fh)
+        self.assertTrue(
+            PL._save_json(path, {"label": "AA", "generation": 1, "location": "mac"}), path
+        )
 
     def test_names_the_chats_that_hold_no_note(self) -> None:
         self.add("m-0001", "A Chat With No Note")
@@ -224,6 +226,66 @@ class UnletteredSessionsTests(MiniMaxRow):
             )
         conn.close()
         self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_malformed_session_id_is_an_error_and_not_a_skipped_row(self) -> None:
+        """An incomplete inventory must not read as a finished scan, so a malformed id is an
+        error."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (None, "A Broken Row", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        with self.assertRaises(ValueError):
+            PM.minimax_unlettered_sessions(self.env())
+
+    def test_a_row_with_no_timestamp_is_of_unknown_age_and_is_a_candidate(self) -> None:
+        """The chat that predates the hook is the one with no timestamp, so the age window must
+        not drop it."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-0020", "Untimed", "conversation", None, 0, None),
+            )
+        conn.close()
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0020"])
+
+    def test_the_scan_limit_counts_candidates_and_not_rows(self) -> None:
+        """The chats that are already lettered are the newest ones, so a scan that stops at them
+        never reaches the chat that needs a letter."""
+        for n in range(25):
+            sid = "m-1%03d" % n
+            self.add(sid, "Lettered", age=3600 + n)
+            self.write_note(sid)
+        self.add("m-2000", "The One That Needs A Letter", age=7200)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-2000"])
+
+    def test_a_store_path_with_punctuation_is_still_read(self) -> None:
+        """The store is opened by a URI that percent-encodes the path, so a folder whose name
+        holds a question mark or a hash is read and not skipped."""
+        home = os.path.join(self.tmp.name, "home?with#punctuation")
+        os.makedirs(home)
+        store = os.path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(store))
+        conn = sqlite3.connect(store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT,"
+                " session_kind TEXT, parent_session_id TEXT, archived INTEGER DEFAULT 0,"
+                " created_at_ms INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-0030", "Punctuated", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        env = {"HOME": home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        self.assertEqual(PM.minimax_unlettered_sessions(env), ["m-0030"])
 
     def test_the_repair_pass_letters_a_chat_that_started_before_the_hook(self) -> None:
         """The chat that predates the hook has no note and no placeholder, and the pass gives it a letter and

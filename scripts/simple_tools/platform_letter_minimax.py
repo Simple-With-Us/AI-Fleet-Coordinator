@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import sqlite3
 import time
@@ -239,29 +240,34 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     what the pass looks for.
 
     Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the columns
-    it needs) answers None:  no pass this time.  A chat's note is read again in its own replayed start
-    before anything changes."""
+    it needs) answers None:  no pass this time.  A row whose session id is malformed is an error and not a
+    skipped row, so an incomplete inventory never reads as a finished scan.  A chat's note is read again
+    in its own replayed start before anything changes."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return None
     now = time.time()
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=STORE_WAIT)
+        conn = sqlite3.connect(
+            pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
     except (sqlite3.Error, OSError, ValueError):
         return None
     try:
+        # The window applies to a chat whose age is known:  a row with no timestamp is of unknown age,
+        # and it is the chat that predates the hook, so the window must not drop it.
         rows = conn.execute(
             "SELECT session_id FROM local_runtime_sessions"
             " WHERE session_kind IN (?, ?)"
             " AND (parent_session_id IS NULL OR parent_session_id = '')"
             " AND (archived IS NULL OR archived = 0)"
-            " AND created_at_ms >= ? AND created_at_ms <= ?"
-            " ORDER BY created_at_ms DESC LIMIT ?",
+            " AND (created_at_ms IS NULL"
+            " OR (created_at_ms >= ? AND created_at_ms <= ?))"
+            " ORDER BY created_at_ms DESC",
             (
                 *CHAT_KINDS,
                 (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
                 (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
-                UNLETTERED_SCAN,
             ),
         ).fetchall()
     except sqlite3.Error:
@@ -271,10 +277,14 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     found: list[str] = []
     for (sid,) in rows:
         if not isinstance(sid, str) or not sid:
-            continue
+            raise ValueError(
+                "invalid session_id in local_runtime_sessions: %s" % type(sid).__name__
+            )
         if os.path.isfile(PL.note_path(env, SEAT, sid)):
             continue  # lettered already:  the pass has nothing to do for it
         found.append(sid)
+        if len(found) >= UNLETTERED_SCAN:
+            break  # the limit counts candidates:  the rows above them are already lettered
     return found
 
 
