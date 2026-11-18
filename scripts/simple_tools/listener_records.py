@@ -382,9 +382,7 @@ def pending_inbox_view(
         paths, {i for i in (_int(r.get("id")) for r in candidates) if i is not None}
     )
     pending = [
-        r
-        for r in candidates
-        if (receipts.get(_int(r.get("id"))) or {}).get("state") != W.DELIVERED
+        r for r in candidates if (receipts.get(_int(r.get("id"))) or {}).get("state") != W.DELIVERED
     ]
     shown = pending[: max(0, limit)]
     return {
