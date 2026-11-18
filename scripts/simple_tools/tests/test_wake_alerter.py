@@ -6,6 +6,9 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from unittest import mock
+
+import fleet_infisical as FI
 
 from simple_tools import wake_alerter as WA
 
@@ -232,69 +235,83 @@ class HardeningTests(unittest.TestCase):
 
 
 class KeyLookupTests(unittest.TestCase):
-    def test_key_comes_from_fleet_secrets_get_by_name_only(self):
-        seen = []
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.env = {"HOME": self.temp.name, FI.ENV_PROJECT: "11111111-2222-3333-4444-555555555555",
+                    FI.ENV_TOKEN: "st." + "synthetic-" * 4}
+        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-        class Done:
-            returncode = 0
-            stdout = b" the-key-0123\n"
-
-        def run(argv, **kw):
-            seen.append(argv)
-            return Done()
-
-        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
+    def test_key_comes_from_the_named_direct_read_without_a_subprocess(self):
         os.environ["OPERATOR_SECRET_PATH"] = "/zulip"
-        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
-        self.addCleanup(os.environ.pop, "OPERATOR_SECRET_PATH", None)
-        self.assertEqual(WA._fleet_secrets_get("ECHO_ROUTINE_KEY", run=run), "the-key-0123")
-        self.assertEqual(seen, [["/opt/fs", "get", "ECHO_ROUTINE_KEY", "--path", "/zulip"]])
+        os.environ[FI.ENV_READ_PATHS] = "/zulip,/unrelated"
+        with mock.patch.object(FI, "fetch_project", return_value={"ECHO_ROUTINE_KEY": "the-key-0123"}) as fetch:
+            self.assertEqual(WA._fleet_secrets_get("ECHO_ROUTINE_KEY", run=mock.Mock(side_effect=AssertionError("no subprocess"))), "the-key-0123")
+        self.assertEqual(fetch.call_args.args[:2], (self.env[FI.ENV_PROJECT], "/zulip"))
+        self.assertEqual(fetch.call_args.args[2][FI.ENV_READ_PATHS], "/zulip")
+        self.assertEqual(fetch.call_args.kwargs["names"], ("ECHO_ROUTINE_KEY",))
+        self.assertEqual(fetch.call_args.kwargs["timeout"], WA.SECRET_TIMEOUT_SECONDS)
 
     def test_a_failing_or_missing_lookup_is_empty(self):
-        class Bad:
-            returncode = 3
-            stdout = b"x"
-
-        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
-        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
-        self.assertEqual(WA._fleet_secrets_get("N", run=lambda *a, **k: Bad()), "")
-
-        def boom(*a, **k):
-            raise OSError("x")
-
-        self.assertEqual(WA._fleet_secrets_get("N", run=boom), "")
-
-    def _run_with(self, returncode, stdout, exc=None):
-        class Done:
-            pass
-
-        done = Done()
-        done.returncode, done.stdout = returncode, stdout
-
-        def run(argv, **kw):
-            if exc:
-                raise exc
-            return done
-
-        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
-        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
-        return run
+        with mock.patch.object(FI, "fetch_project", return_value={}):
+            self.assertEqual(WA._fleet_secrets_get("N"), "")
+        with mock.patch.object(FI, "fetch_project", side_effect=OSError("untrusted failure")):
+            self.assertEqual(WA._fleet_secrets_get("N"), "")
 
     def test_failures_keep_their_reason_and_never_the_value(self):
-        import subprocess
-
-        for rc, out, exc, want in (
-            (3, b"secret-value-xyz", None, "exited 3"),
-            (0, b"", None, "empty"),
-            (0, b"has space in it", None, "does not look like"),
-            (0, b"short", None, "does not look like"),
-            (0, b"x", subprocess.TimeoutExpired("fs", 30), "timed out"),
-            (0, b"x", OSError("no"), "could not run"),
+        for value, exc, want in (
+            ("secret-value-xyz", FI.SecretsError("untrusted failure"), "unavailable"),
+            ("", None, "empty"),
+            ("has space in it", None, "does not look like"),
+            ("short", None, "does not look like"),
+            ("x", TimeoutError("untrusted failure"), "timed out"),
+            ("x", OSError("untrusted failure"), "unavailable"),
         ):
-            key, why = WA._read_key("ECHO_ROUTINE_KEY", run=self._run_with(rc, out, exc))
+            with mock.patch.object(FI, "fetch_project", return_value={"ECHO_ROUTINE_KEY": value}, side_effect=exc):
+                key, why = WA._read_key("ECHO_ROUTINE_KEY")
             self.assertEqual(key, "")
             self.assertIn(want, why)
             self.assertNotIn("secret-value-xyz", why)
+            self.assertNotIn("untrusted failure", why)
+
+    def test_a_missing_bootstrap_never_reaches_infisical(self):
+        os.environ.pop(FI.ENV_TOKEN)
+        with mock.patch.object(FI, "fetch_project") as fetch:
+            self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], "")
+            fetch.assert_not_called()
+
+    def test_project_selection_uses_only_that_projects_own_binding(self):
+        os.environ.update({"OPERATOR_SECRET_PROJECT": "ai-fleet-coordinator",
+                           "OPERATOR_SECRET_PATH": "/zulip",
+                           "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "66666666-7777-8888-9999-000000000000"})
+        with mock.patch.object(FI, "fetch_project") as fetch:
+            self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], "")
+            fetch.assert_not_called()
+        os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN] = "st." + "afc-synthetic-" * 3
+        with mock.patch.object(FI, "fetch_project", return_value={"ECHO_ROUTINE_KEY": KEY}) as fetch:
+            self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], KEY)
+        self.assertEqual(fetch.call_args.args[0], os.environ["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"])
+        self.assertEqual(fetch.call_args.kwargs["token"], os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN])
+
+    def test_hook_children_receive_no_infisical_bootstrap_binding(self):
+        os.environ.update({"INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "private-binding",
+                           "FLEET_KNOBS_INFISICAL_TOKEN": "private-binding",
+                           "ECHO_ROUTINE_KEY": "private-key"})
+        child = WA._hook_env({"wake_id": "w1"})
+        for name in (FI.ENV_TOKEN, "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN", "ECHO_ROUTINE_KEY"):
+            self.assertNotIn(name, child)
+        self.assertEqual(child[FI.ENV_PROJECT], self.env[FI.ENV_PROJECT])
+
+    def test_the_shared_reader_loads_in_isolated_script_mode(self):
+        import subprocess
+        import sys
+
+        code = "import runpy; m=runpy.run_path(%r); assert m['_infisical_reader']().__name__ == 'fleet_infisical'" % WA.__file__
+        done = subprocess.run([sys.executable, "-I", "-c", code], cwd=self.temp.name,
+                              env={}, capture_output=True, timeout=5)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_placeholders_in_values_are_not_expanded_again(self):
         argv = WA._hook_argv("run {topic} {seat}", "echo", {"topic": "{seat}{state}"})
