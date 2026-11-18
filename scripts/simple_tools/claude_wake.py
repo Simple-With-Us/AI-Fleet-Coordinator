@@ -833,10 +833,21 @@ def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     env loader every Mac registry client uses (a forced ssh command has no login profile).  Only
     the server's router reads them from the /wake-router knobs:  a Mac that could read that folder
     would also hold the router's bearer.  Without them every registry call answers
-    `not_configured`."""
+    `not_configured`.
+
+    The loader is read once and the mapping it gives is the one every call and every
+    classification uses, so the host is judged on the configuration it really has.  A loader
+    that cannot be read leaves the environment's own values in place:  the router's env
+    holds the knobs' values, and the process environment is where the knobs are read
+    from."""
     from . import platform_letter as PL
 
-    return PL.with_registry_env(dict(env))
+    merged = dict(env)
+    try:
+        merged = PL.with_registry_env(merged)
+    except Exception:  # noqa: BLE001 - the host's own configuration still decides
+        pass
+    return merged
 
 
 def _remote_config(env: Mapping[str, str]) -> Mapping[str, Any]:
@@ -848,19 +859,35 @@ def _remote_config(env: Mapping[str, str]) -> Mapping[str, Any]:
 
 def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run yet,
-    so a registry that cannot be read is `failed` and is tried again."""
+    so a registry that cannot be read is `busy` and is tried again without spending an
+    attempt;  a host with no registry address or key is `failed`, because a retry does not
+    fix it."""
+    # The registry environment is the one the call uses and the one the host is judged on:
+    # the shared loader file on the Mac, the knobs on the server.  One mapping, built once,
+    # so a call and the classification that follows it are made on the same configuration.
+    registry_env = _registry_env(env)
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
     try:
         answer = WR.registry_api.call(
-            _registry_env(env),
+            registry_env,
             "resolve",
             {"platform": PLATFORM, "letter": target.letter},
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        # The host's own configuration decides:  a host with no address or key fails
+        # closed, and a host that is configured answers the outage and spends no attempt.
+        return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
         # `registry-not-configured` when this host has no registry address or key.
-        return WR.Delivery("failed", code=WR.registry_trouble(answer))
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed Claude chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
@@ -873,7 +900,8 @@ def _deliver_here(
     env: Mapping[str, str], session_id: str, wake: WR.Wake, target: WR.Target | None = None
 ) -> WR.Delivery:
     """One delivery on this host, after the checks that must come first.  Nothing has run until
-    `deliver_local` is called, so a failure before it is `failed`."""
+    `deliver_local` is called, so a failure before it is `failed`, and a registry that cannot be
+    read is `busy`."""
     try:
         config = _remote_config(env)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - SystemExit is a bad local config file
@@ -909,8 +937,19 @@ def _module_delivery(
     handler = getattr(module, entry.handler, None)
     if not callable(handler):
         return _answer(request, WR.Delivery("refused", code=WR.HANDLER_MISSING))
+    registry_env = _registry_env(env)
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return _answer(
+            request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
+        )
     try:
-        answer = handler(request, env=_registry_env(env))
+        answer = handler(request, env=registry_env)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return _answer(
             request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
