@@ -1265,6 +1265,17 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _declared_length(response):
+    """The response's Content-Length as a non-negative int, or None when it has none."""
+    headers = getattr(response, "headers", None)
+    try:
+        value = headers.get("Content-Length") if headers is not None else None
+        length = int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return length if length is not None and length >= 0 else None
+
+
 def _read_router_health_body(response, max_bytes, deadline):
     """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
     raw_fp = getattr(response, "fp", None)
@@ -1272,13 +1283,26 @@ def _read_router_health_body(response, max_bytes, deadline):
     read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
     chunks = bytearray()
     limit = max_bytes + 1
+    is_closed = getattr(response, "isclosed", None)
+    declared = _declared_length(response)
     while len(chunks) < limit:
+        # A body with a Content-Length is complete once that many bytes are read.  Reading on
+        # would wait on a kept-alive socket (Python 3.9's read1 never closes a known-length
+        # response), or set a timeout on the socket http.client already closed (3.11 and
+        # later), which fails with a bad file descriptor.
+        if declared is not None and len(chunks) >= declared:
+            break
+        if chunks and is_closed is not None and is_closed():
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("router health read deadline exceeded")
-        if sock is not None and hasattr(sock, "settimeout"):
+        if sock is not None and hasattr(sock, "settimeout") and sock.fileno() != -1:
             sock.settimeout(remaining)
-        chunk = read_fn(min(4096, limit - len(chunks)))
+        size = min(4096, limit - len(chunks))
+        if declared is not None:
+            size = min(size, declared - len(chunks))
+        chunk = read_fn(size)
         if not chunk:
             break
         chunks.extend(chunk)
@@ -2640,10 +2664,14 @@ def test_wake_detail(reduced, chat):
     name = _test_wake_name(chat)
     answer = reduced["answer"]
     router = reduced["router"]
-    delivery = {True: "on", False: "off, so a real wake would be held"}.get(router["delivery"], "unknown")
+    delivery = {True: "on", False: "off, so a real wake would be held"}.get(
+        router["delivery"], "unknown"
+    )
     if reduced["passed"]:
         why = ", ".join(
-            f"{label} {value}" for label, value in (("pick", answer["pick"]), ("reason", answer["reason"])) if value
+            f"{label} {value}"
+            for label, value in (("pick", answer["pick"]), ("reason", answer["reason"]))
+            if value
         )
         return (
             f"the router accepted the dry run for {name} and picked that chat"
@@ -3954,7 +3982,9 @@ def handle(
                     result="planned",
                     detail=f"sends the wake router one dry-run wake addressed to {_test_wake_name(chat)};  "
                     "the router picks as for a real wake, delivers nothing and logs one test receipt",
-                    testWakeTarget={key: chat[key] for key in ("seat", "letter", "generation", "host")},
+                    testWakeTarget={
+                        key: chat[key] for key in ("seat", "letter", "generation", "host")
+                    },
                 )
                 return answer, 0
             with contextlib.ExitStack() as held:
@@ -3966,13 +3996,16 @@ def handle(
                 try:
                     fields, code = run_test_wake(ctx, chat)
                 except Exception:  # noqa: BLE001 - a run that may have sent still gets its one audit row
-                    fields, code = {
-                        "ok": False,
-                        "result": "failed",
-                        "detail": TEST_WAKE_ERRORS["test_wake_failed"],
-                        "errorCode": "test_wake_failed",
-                        "testWake": None,
-                    }, 1
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "failed",
+                            "detail": TEST_WAKE_ERRORS["test_wake_failed"],
+                            "errorCode": "test_wake_failed",
+                            "testWake": None,
+                        },
+                        1,
+                    )
             answer.update(fields)
             audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
