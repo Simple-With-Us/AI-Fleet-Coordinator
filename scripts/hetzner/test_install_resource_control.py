@@ -69,9 +69,6 @@ class InstallerTests(unittest.TestCase):
             "hetzner/fleet_coding_memory.py",
             "hetzner/coding_resources.py",
         }
-        expected.update(
-            "fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py")
-        )
         actual = {
             str(path.relative_to(self.destination))
             for path in self.destination.rglob("*")
@@ -80,7 +77,6 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         for path in (
             self.destination,
-            self.destination / "fleet_secrets",
             self.destination / "hetzner",
         ):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
@@ -110,7 +106,7 @@ class InstallerTests(unittest.TestCase):
         muster_imports = ",muster_approval,muster_trust_files" if has_cryptography else ""
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_infisical,hetzner.fleet_coding_memory"
             + muster_imports
             + ";runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
@@ -214,7 +210,7 @@ class InstallerTests(unittest.TestCase):
         (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
-        (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
+        (source / "hetzner").symlink_to(SCRIPTS / "hetzner", target_is_directory=True)
         with self.assertRaises(OSError):
             self.install(source)
         self.assertFalse(self.destination.exists())
@@ -234,10 +230,7 @@ class InstallerTests(unittest.TestCase):
         (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
-        for package, names in (
-            ("fleet_secrets", ("__init__.py", "core.py")),
-            ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
-        ):
+        for package, names in (("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),):
             (source / package).mkdir()
             for name in names:
                 (source / package / name).write_text("pass\n")
@@ -276,10 +269,7 @@ class InstallerTests(unittest.TestCase):
         if trust_text is not None:
             (source / "muster_agent").mkdir()
             (source / "muster_agent" / "muster_trust_files.py").write_text(trust_text)
-        for package, names in (
-            ("fleet_secrets", ("__init__.py", "core.py")),
-            ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
-        ):
+        for package, names in (("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),):
             (source / package).mkdir()
             for name in names:
                 (source / package / name).write_text("pass\n")

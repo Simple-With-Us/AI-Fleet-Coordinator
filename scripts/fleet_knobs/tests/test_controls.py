@@ -228,7 +228,7 @@ class StatusValuesTests(KnobTestCase):
 class PlanTruthTests(KnobTestCase):
     def setUp(self):
         super().setUp()
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         verifier = mock.patch.object(core, "verify_service_token", return_value=("/",))
         verifier.start()

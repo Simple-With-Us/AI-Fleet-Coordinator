@@ -23,7 +23,7 @@ class SetTestCase(KnobTestCase):
         super().setUp()
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".simple-tools" / "listener" / "knobs.jsonl")
-        from fleet_secrets import core as secrets
+        import fleet_infisical as secrets
 
         verifier = mock.patch.object(secrets, "verify_service_token", return_value=("/",))
         verifier.start()
@@ -191,7 +191,7 @@ class WriteTests(SetTestCase):
         self.assertEqual(self.set_calls(), [])
 
     def test_writer_scope_is_verified_before_cli_write(self):
-        from fleet_secrets import core as secrets
+        import fleet_infisical as secrets
 
         with mock.patch.object(
             secrets, "verify_service_token", side_effect=secrets.SecretsError("scope")

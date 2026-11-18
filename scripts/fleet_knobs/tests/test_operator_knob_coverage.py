@@ -62,7 +62,6 @@ ALLOWLIST: dict[str, str] = {
     "OPERATOR_SECRET_PROJECT": "Infisical project of a secret, not a value.",
     "OPERATOR_LINEAR_INFISICAL_TOKEN": "bootstrap credential for reading Infisical itself;  cannot live in Infisical.",
     "OPERATOR_ZULIP_EMAIL": "the Operator bot's identity, resolved through the credential store.",
-    "FLEET_SECRETS_BIN": "path to the fleet-secrets binary on this host.",
     "GH_TOKEN": "set for a child process by the GitHub client, not read as a setting.",
     "ZULIP_SITE": "the Zulip site address, a host fact shared by every seat.",
     # Per-host paths and test seams, not owner-tunable behaviour.

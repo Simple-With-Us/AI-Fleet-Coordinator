@@ -21,7 +21,7 @@ class UnsetTests(KnobTestCase):
         super().setUp()
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".simple-tools" / "listener" / "knobs.jsonl")
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         verifier = mock.patch.object(core, "verify_service_token", return_value=("/",))
         verifier.start()
