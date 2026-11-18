@@ -145,6 +145,7 @@ SHIPPED = (
     "fleet-apps.json",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
+    "scripts/fleet_infisical_cli.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
@@ -174,6 +175,7 @@ SHIPPED_EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -537,6 +539,9 @@ SHIPPED_REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter node test: mirrors the release REPO_ONLY
+        # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
+        "scripts/simple_tools/thread_registry_export.test.mjs",
     }
 )
 

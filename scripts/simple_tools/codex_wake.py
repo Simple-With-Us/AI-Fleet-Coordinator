@@ -364,12 +364,16 @@ class CodexDelivery:
         try:
             current = self.registry_lookup(self.env, target.letter)
         except Exception:  # noqa: BLE001 - no enqueue without a readable identity check
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            # The host's own configuration decides, as it does in every other platform:  a
+            # host with no address or key fails closed and names the variable, and a host
+            # that is configured answers the outage and spends no attempt.
+            return WR.registry_failure(self.env, route="codex-desktop")
         if not isinstance(current, Mapping) or "error" in current:
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            return WR.registry_delivery(current, route="codex-desktop")
         found = current.get("found")
         if type(found) is not bool:
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            # The registry answered, but its row is not a row:  a data fault, not an outage.
+            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
         if not found or WR._closed(current):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
 
@@ -388,7 +392,8 @@ class CodexDelivery:
             or not seat_value.strip()
             or seat_value.strip() != seat_value
         ):
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            # The registry answered, but its row is not a row:  a data fault, not an outage.
+            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
         if (
             session_id != target.session_id
             or letter != target.letter
