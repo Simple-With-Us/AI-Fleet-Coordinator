@@ -153,10 +153,13 @@ The steps, in this order.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
-3.  Change the live listener's `[seat.CODEX]` block to `wake = "http"` with
+3.  Move the live listener's `[seat.CODEX]` block to the router's binding, which the sample
+    declares:  `wake = "http"` with
     `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    and restart the listener container:  the restart carries the name minted in step 1 and
-    the new binding together, and a reload alone would keep the old value.
+    and `apply_live_config.py --apply` writes the sample's block into the live file, because the
+    sample is the file of record and every apply replaces that block with the sample's.  The
+    container is restarted with it:  the restart carries the name minted in step 1 and the new
+    binding together, and a reload alone would keep the old value.
 4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
     (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
     unsettled outcome.

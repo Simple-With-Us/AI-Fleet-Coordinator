@@ -83,10 +83,12 @@ The cutover was done in these five steps, in this order.  The legacy bridge sta
 the seat's fallback until the router's own front has answered a real wake end to end, so a
 cutover that does not work never leaves the seat without a route.
 
-1.  Free the seat's own convention for the router.  A seat's `routine.url_env` is always
-    `<SEAT>_ROUTINE_URL`, and the sample's partition check holds every seat that is routed at
-    the router to that name, so the router's front for this seat is `ZC_ROUTINE_URL` and the
-    legacy bridge moves to `ZC_BRIDGE_ROUTINE_URL`.  The bridge's URL value does not change,
+1.  Free the seat's own convention for the router.  A seat's `routine.url_env` in the live
+    listener is one of the two names the seat's own code derives, `<SEAT>_ROUTINE_URL` or
+    `ZULIP_ALERT_<SEAT>_ENDPOINT`:  the settings-edit path refuses any other name for that
+    sub-key (`env_name_not_allowed`), so the router's front for this seat is `ZC_ROUTINE_URL`.
+    The legacy bridge keeps its own URL under `ZC_BRIDGE_ROUTINE_URL`, so the two URLs are two
+    names and a rollback has a value to point at.  The bridge's URL value does not change,
     only the name it is read under:  mint `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` with the
     bridge's URL, and mint `ZC_ROUTINE_URL` with the router's front URL,
     `https://<server tailnet host>:8795/wake/ZC`.  One name never serves the router's front and
@@ -108,23 +110,33 @@ cutover that does not work never leaves the seat without a route.
     or an explicitly unsettled outcome.  Nothing in the live listener changes in this step, so
     the seat's own capture path is untouched and the seat keeps receiving its messages if the
     router's front does not.
-4.  Only then change the live listener's `[seat.ZC]` block to `wake = "http"` with
+4.  Only then move the live listener's `[seat.ZC]` block to the router's binding.  The
+    sample declares it:  `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    and restart the container:  the routine's URL comes from the environment, which is read
-    once at the container's start, so a reload alone would keep the old URL.  The bearer is
-    now the router's own key, so the key the bridge used is no longer accepted by the router,
-    and the URL names the front.
+    and `apply_live_config.py --apply` writes that block into the live file:  the sample is the
+    file of record, and every apply replaces this seat's block with the sample's, so a hand
+    edit of the live file does not survive.  The container is restarted with it, because the
+    routine's URL comes from the environment, which is read once at the container's start, so a
+    reload alone would keep the old URL.  The bearer is now the router's own key, so the key
+    the bridge used is no longer accepted by the router, and the URL names the front.
 5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
     picked session and a delivered or an explicitly unsettled outcome.  A front that
     misbehaves here is a rollback, and the values a rollback needs are still in place:
-    `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`
-    are the bridge's own values and were never withdrawn, so the live `[seat.ZC]` block goes
-    back to `wake = "http"` with `routine = { url_env = "ZC_BRIDGE_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    which is the bridge's own legacy path, and the container is restarted:  the environment is
-    read once at the start, so a reload alone would leave the routine unset and the seat
-    would not be woken at all.  The capture the seat had before the cutover comes
-    back without any of that:  `wake = "inbox"` and a reload alone put the seat back on the
-    live file's own binding.
+    `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's own URL, and
+    `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip` holds the bridge's own key, and neither was ever
+    withdrawn.  The rollback puts the seat back on the shape it had before the cutover, which
+    is the shape the bridge answers:  `wake = "http"` with
+    `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    and `ZC_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's URL again, the value
+    `ZC_BRIDGE_ROUTINE_URL` keeps under its own name.  Both names are the seat's own, so the
+    settings-edit path can write that routine as well as the sample.  The change is made in
+    the file of record:  the sample's `[seat.ZC]` block is edited to the bridge's binding and
+    `apply_live_config.py --apply` writes it into the live file, because every apply replaces
+    that block with the sample's.  The container is restarted with it:  the environment is read
+    once at the start, so a reload alone would leave the routine unset and the seat would not
+    be woken at all.  The capture the seat had before the cutover comes back without any of
+    that:  `wake = "inbox"` and a reload alone put the seat back on the live file's own
+    binding.
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
@@ -182,17 +194,27 @@ made explicit.
   whose letter was retired or whose registration closed never wins, a session our own lock
   holds is left to finish (`session-busy`).
 
-## The one open decision:  the headless provider
+## The one open decision:  the seat's model credential
 
-Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  On this server the
-headless run takes its model from the desktop's provider order (`~/.zcode/v2/provider_config.json`),
-whose first entry (MiniMax) holds a dead key:  every headless run answers 401 invalid api key
-today, verified live on Nov 7.  The config therefore ships with `delivery_enabled` false, and
-every accepted wake is logged undelivered (`reason: delivery-disabled`) until the owner names
-the provider the seat's headless runs should use  the Z.AI account the seat already runs on, or
-a working key for the MiniMax entry.  Flipping it is one config file:
+Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  The router's delivery for
+this seat is armed:  `WAKE_ROUTER_DELIVERY_ENABLED` is true and ZC is named in
+`WAKE_ROUTER_DELIVERY_SEATS`, both in the router's own Infisical folder `/wake-router`, and the
+router's `/health/ZC` answers `healthy` with delivery on.  The one local file for the whole
+router, `~/.local/state/wake-router/config.json`, can only narrow that, never widen it, and the
+seat's own per-seat file is `~/.local/state/wake-router/zc/config.json`.
 
-    ~/.local/state/zc-wake/config.json   { "delivery_enabled": true, ... }
+What is still open is the seat's model credential on the server.  The headless run asks the
+Z.AI project-access token for the `zai` family, and the answer is
+`project_token_login_failed` (stage `resolve`), so the turn fails before any model response and
+the router's receipt says the wake was not delivered (`resume-exit-1`, status dead).  The fix
+is the seat's own login on the server (`zcode login zai`, in a browser), which is the owner's
+to do.  The older note about a dead MiniMax key in the desktop's provider order no longer
+describes what the headless run does:  the run asks the Z.AI account, and it never gets as far
+as a model.
+
+The legacy bridge's own switch is a different file on a different path:
+`~/.local/state/zc-wake/config.json` carries `delivery_enabled` for the bridge only, and the
+router never reads it.
 
 ## Arming the legacy bridge (runbook, after the provider decision)
 
@@ -203,12 +225,17 @@ one wake router's, and the names below are the bridge's.
     `fleet-secrets` writes it;  never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
-3.  Server listener:  `[seat.ZC]` gains `wake = "http"` and the routine line reading
-    `url_env = "ZC_BRIDGE_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
-    Fleet-OPS `/zulip` (its secondary read, `LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC
-    `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a `daemon reload` does not.
-    `ZC_BRIDGE_ROUTINE_URL` is the bridge's tailnet URL,
-    `http://<jay-server tailnet ip>:8791/wake/ZC`.
+3.  Server listener:  the seat's block moves to the bridge's own binding, which is the shape
+    the seat had before the cutover:  `wake = "http"` with
+    `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    and `ZC_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's tailnet URL,
+    `http://<jay-server tailnet ip>:8791/wake/ZC`, the value `ZC_BRIDGE_ROUTINE_URL` keeps under
+    its own name.  The change is made in the sample, the file of record, and
+    `apply_live_config.py --apply` writes it into the live file.  The server loader reads the
+    key from Fleet-OPS `/zulip` (its secondary read, `INFISICAL_LISTENER_READ_PROJECT_ID` in
+    `server/infisical_env.py`, whose name set `_secondary_names` builds) and the URL from AFC
+    `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a
+    `daemon reload` does not.
 4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
     enable it, `curl -s http://127.0.0.1:8791/health`.
 5.  Prove it:  mention @ZC in a test topic;  the server listener's wake ledger (`simple-chat wakes` inside the container) records the POST,
