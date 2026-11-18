@@ -392,6 +392,55 @@ class ContractTests(unittest.TestCase):
             reg.close_db()
 
 
+class RowContractTests(unittest.TestCase):
+    """The rows of the one table agree with the library about what a hook has, and nobody names a
+    field the row no longer has."""
+
+    def test_every_row_states_a_budget_its_own_hook_timeout_carries(self) -> None:
+        # A row's budget is what its hook has before its runtime stops it, so it may not be larger
+        # than the row's own tightest hook timeout, and a row whose runtime caps the timeout may not
+        # declare more than the cap.
+        # A row that installs hook entries has its timeouts somewhere:  its own module-level
+        # HOOK_TIMEOUTS, or the shared ones.  A row that names neither is not a row this test may
+        # skip, so the test fails on it instead of passing over it.
+        installing = set()
+        for name in PL.adapter_platforms():
+            module = PL.load_adapter(name)
+            if module is None:
+                continue
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            if "HOOK_TIMEOUTS" in source:
+                installing.add(name)
+        checked = set()
+        for name in sorted(installing):
+            spec = PL.load_spec(name)
+            module = PL.load_adapter(name)
+            self.assertIsNotNone(spec, name)
+            self.assertIsNotNone(module, name)
+            timeouts = getattr(module, "HOOK_TIMEOUTS", None) or PL.HOOK_TIMEOUTS
+            self.assertTrue(timeouts, "%s has no hook timeouts" % name)
+            checked.add(name)
+            budget = spec.hook_budget or PL.SHARED_HOOK_BUDGET
+            self.assertLessEqual(budget, min(timeouts.values()), name)
+            cap = getattr(module, "HOOK_TIMEOUT_CAP", 0)
+            if cap:
+                self.assertLessEqual(budget, cap, name)
+                self.assertLessEqual(max(timeouts.values()), cap, name)
+        self.assertEqual(checked, installing, "a row that installs hook entries was not checked")
+        self.assertGreater(len(checked), 3, "the table's rows were not all read")
+
+    def test_no_shipped_module_still_names_the_retired_depth_field(self) -> None:
+        # The row's parent depth is gone:  a module that still names it describes a field the row no
+        # longer has, and a caller that passed it would be giving seconds where generations were
+        # meant.  The names are assembled here so that this test does not name them itself.
+        retired = ("parent" + "_depth", "effective_parent" + "_depth")
+        root = Path(PL.__file__).resolve().parent
+        for path in sorted(root.rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for gone in retired:
+                self.assertNotIn(gone, text, "%s still names %s" % (path.name, gone))
+
+
 class RegistrySideTests(Base):
     def test_a_host_with_no_registry_api_is_not_configured_and_writes_nothing(self) -> None:
         other = os.path.join(self.tmp.name, "elsewhere")
@@ -2808,6 +2857,30 @@ class GoneReportTests(Base):
         with mock.patch.object(registry_api, "_open", capture):
             yield seen
 
+    def test_the_gone_report_honours_the_platforms_own_deadline(self) -> None:
+        # A row whose runtime stops its hook sooner declares its own deadline, and the gone report is one
+        # of that hook's calls:  it must not wait for the shared one.
+        spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            gone_sessions=lambda env, sids: {"s-0001"},
+            call_timeout=2,
+        )
+        seen: list[int] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(timeout)
+            return real(request, timeout)
+
+        self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name
+        self.start("s-0003", self.t0, spec=spec)
+        with mock.patch.object(registry_api, "_open", capture):
+            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due
+        self.assertEqual(seen, [2])
+
     def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
         with self.reports() as sent:
             for sid in ("s-0001", "s-0002", "s-0003"):
@@ -4291,6 +4364,46 @@ class InstallTests(Base):
         with open(self.hooks_path(), "w") as fh:
             json.dump(doc, fh)
         os.chmod(self.hooks_path(), mode)
+
+
+    def test_the_installer_refuses_a_timeout_the_runtime_would_reject(self) -> None:
+        # A runtime that refuses the timeout never runs the hook, so the installer writes nothing at all.
+        code, out = self.run_install(self.installer(events={"SessionStart": 20}, timeout_cap=10))
+        self.assertEqual(code, 1)
+        self.assertEqual(out["refused"], "timeout_over_cap")
+        self.assertEqual((out["cap"], out["timeouts"]), (10, {"SessionStart": 20}))
+        self.assertFalse(os.path.exists(self.hooks_path()))
+
+    def test_check_names_a_longer_installed_timeout_and_the_entry_is_not_current(self) -> None:
+        # The entry is installed and reads as right, and the runtime refuses its timeout:  it is not current, and the
+        # answer says which timeout the runtime would not take.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer, check=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(out["over_cap"], {"SessionStart": [20]})
+        self.assertFalse(out["current"]["SessionStart"])
+
+    def test_an_install_replaces_a_longer_installed_timeout(self) -> None:
+        # The entry the runtime refuses is replaced in place by one it runs.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer)
+        self.assertEqual((code, out["changed"]), (0, ["SessionStart"]))
+        self.assertEqual(self.run_install(installer, check=True)[0], 0)
+        for group in self.load()["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                self.assertEqual(hook["timeout"], 10)
 
     def test_install_is_idempotent_keeps_other_hooks_and_removes_cleanly(self) -> None:
         other = {"hooks": [{"type": "command", "command": "/x/guard.py", "timeout": 5}]}

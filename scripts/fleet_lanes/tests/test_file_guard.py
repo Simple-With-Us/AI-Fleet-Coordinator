@@ -267,10 +267,22 @@ class ClaudeAdapterTests(unittest.TestCase):
                 "Edit": "write",
                 "MultiEdit": "write",
                 "NotebookEdit": "write",
+                "ApplyPatch": "write",
             },
         )
         self.assertIn("notebook_path", claude.CLAUDE_FILE_TOOLS.path_fields)
         self.assertFalse(claude.CLAUDE_FILE_POLICY.deny_integration_reads)
+
+    def test_apply_patch_is_judged_as_a_write(self):
+        """ApplyPatch is the tool name Z Code delivers for a Write or an Edit (AFC-813).
+
+        The Z Code file-guard group matches it,  so a payload that names it has to be judged:  a tool
+        name the map does not know is not a file operation,  and it would be allowed unchecked.
+        """
+        self.assertIn("secret-bearing", self.decide("ApplyPatch", ".secrets/x"))
+        self.assertIn("integration tree", self.decide("ApplyPatch", "Code/BotFleet/src/file.py"))
+        self.assertIn("another seat", self.decide("ApplyPatch", "apps/lanes/BotFleet/codex-work/f.py"))
+        self.assertIsNone(self.decide("ApplyPatch", "apps/lanes/BotFleet/claude-work/f.py"))
 
     def test_every_file_tool_refuses_the_secrets(self):
         for tool in ("Read", "Write", "Edit", "MultiEdit"):

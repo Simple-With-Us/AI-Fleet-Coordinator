@@ -44,6 +44,17 @@ class Base(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.getvalue()
 
+    def slow_transport(self, seconds: float):
+        """A registry that takes its time:  the walk's budget is spent on the calls it really makes."""
+
+        def transport(argv):
+            time.sleep(seconds)
+            out = io.StringIO()
+            PL.registry_main(list(argv), env=getattr(self, "env")(), stdout=out)
+            return json.loads(out.getvalue())
+
+        return transport
+
     def note(self, seat: str, sid: str) -> dict:
         with open(os.path.join(self.state, seat, "letters", sid + ".json"), encoding="utf-8") as fh:
             return json.load(fh)
@@ -151,6 +162,229 @@ class MiniMaxRow(Base):
         self.assertIs(PL.load_spec("minimax"), PM.SPEC)
         self.assertEqual((PM.SPEC.seat, PM.SPEC.output, PM.SPEC.events["Stop"]), ("MM", "text", "turn"))
 
+    def test_the_prompt_event_names_the_chat_from_its_first_message(self) -> None:
+        # The hook does not take a brand-new chat's title before the chat has a descriptive one.  MiniMax Code
+        # names a chat itself, and a placeholder the hook put there first was put over by the runtime's own name,
+        # which took the letter with it.  So the start leaves the name to the runtime, and the letter goes on at
+        # the chat's first prompt, on the words the chat has by then.
+        self.add("m-0001")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"})
+        label = self.note("MM", "m-0001")["label"]
+        self.assertEqual(self.title("m-0001"), "")
+        self.run_hook(PM.SPEC, {"hook_event_name": "UserPromptSubmit", "session_id": "m-0001",
+                                "prompt": "Coordinate P-BF-6 completion via Zulip"})
+        title = self.title("m-0001")
+        self.assertTrue(title.startswith(label + ": "), title)
+        self.assertNotIn("New Chat", title)
+        self.assertIn("P-BF-6", title)
+
+    def test_a_subagent_takes_its_own_letter_and_title(self) -> None:
+        # MiniMax Code sends the PARENT's session id for a subagent event, so the child's own id has to be read
+        # from the payload, and the child takes the pair after its parent's.  The letter goes on the name the
+        # runtime gave the child.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStart", "session_id": "m-0200",
+                                "childSessionId": "m-0201"})
+        child = self.note("MM", "m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertNotEqual(child["label"], parent["label"])
+        self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
+
+    def test_a_subagent_with_no_name_yet_is_left_to_the_runtime(self) -> None:
+        # The same rule as a chat:  a subagent with no descriptive name yet keeps the name MiniMax Code gives it,
+        # and the letter goes on that name at the subagent's first turn end.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        self.add("m-0201", kind="task", parent="m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStart", "session_id": "m-0200",
+                                "childSessionId": "m-0201"})
+        child = self.note("MM", "m-0201")
+        self.assertEqual(self.title("m-0201"), "")
+        self.set_title("m-0201", "Child work")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStop", "session_id": "m-0200",
+                                "childSessionId": "m-0201"})
+        self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
+
+    def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
+        # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
+        # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
+        # note is written and no title is renamed.  The cap is the runtime's, so the timeouts stay under it.
+        self.assertEqual(PM.HOOK_TIMEOUT_CAP, 10)
+        for event, timeout in PM.HOOK_TIMEOUTS.items():
+            self.assertGreaterEqual(timeout, 1, event)
+            self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
+        self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
+        self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
+        # And the chain fits inside the budget:  the chat's own calls at the row's own deadlines, and
+        # the ancestor walk may spend what is left of the budget after them.  An ancestor's
+        # registration chains three calls (the register, the reopen and the title update), so what
+        # bounds the walk is the time it may spend, not a count of calls.
+        self.assertLessEqual(
+            PL.REGISTER_CALLS * PM.CALL_TIMEOUT + PL.walk_allowance(PM.SPEC),
+            min(PM.HOOK_TIMEOUTS.values()),
+        )
+        self.assertLess(PM.CALL_TIMEOUT, PL._API_TIMEOUT)
+        self.assertEqual(PM.SPEC.call_timeout, PM.CALL_TIMEOUT)
+        self.assertEqual(PM.SPEC.parent_call_timeout, PM.PARENT_CALL_TIMEOUT)
+        self.assertEqual(PM.SPEC.hook_budget, PM.HOOK_BUDGET)
+        self.assertEqual(PL.walk_allowance(PM.SPEC), PM.HOOK_BUDGET - PL.REGISTER_CALLS * PM.CALL_TIMEOUT)
+        # The rows that keep the shared depth and the shared deadline are bounded the same way:  the
+        # walk may spend what their budget leaves, and no row's ancestor registration outlives its
+        # hook.
+        self.assertEqual(PL.PARENT_DEPTH, 3)
+        self.assertEqual(PC.SPEC.hook_budget, 0)
+        self.assertEqual(
+            PL.walk_allowance(PC.SPEC), PL.SHARED_HOOK_BUDGET - PL.REGISTER_CALLS * PL._API_TIMEOUT
+        )
+        self.assertLessEqual(
+            PL.REGISTER_CALLS * PL._API_TIMEOUT + PL.walk_allowance(PC.SPEC),
+            min(PL.HOOK_TIMEOUTS.values()),
+        )
+
+    def test_the_parent_walk_registers_the_ancestors_the_budget_allows(self) -> None:
+        # The row's budget is ten seconds, the chat's own chain is six of them, and the walk may spend
+        # the four that are left:  a parent and a grandparent are registered while that lasts.
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0001").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
+
+    def test_the_parent_walk_stops_when_its_budget_is_spent(self) -> None:
+        # A slow registry can cost a parent its registration, but not the chat's own letter:  the walk
+        # may spend only what the row's budget leaves after the chat's own chain, and it stops when
+        # less than one ancestor's chain is left.  Three seconds of allowance fit one generation
+        # (the register, the reopen that may follow it, the title update) and no more.
+        import dataclasses
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=12, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 3.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            spec,
+            {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"},
+            transport=self.slow_transport(0.6),
+        )
+        self.assertTrue(self.note("MM", "m-0001").get("label"), "the first ancestor fits in the budget")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk stops when its budget is spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_the_ancestors_chain_calls_share_what_is_left_of_the_budget(self) -> None:
+        # The chain is the register, the reopen that may follow it, and the title update, so each of
+        # its calls gets a share of what is left of the walk's budget:  the chain cannot outlast the
+        # allowance, however slow the registry is.
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=14, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 5.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[tuple[str, str, int]] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append((op, str(params.get("session_id") or ""), timeout))
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        # The chat's own registration is not the walk's, so only the ancestors' calls are read here:
+        # the chat's call would satisfy this assertion even if the walk's share were wrong.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertLessEqual(max(ancestors), 1, "an ancestor's chain call outlasted the allowance")
+
+    def test_an_ancestor_with_no_deadline_of_its_own_gets_the_shared_one(self) -> None:
+        # A row that declares no deadline of its own gets the shared one, not a one-second clamp:
+        # the sentinel of zero means "not declared".
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=30, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 21.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[tuple[str, str, int]] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append((op, str(params.get("session_id") or ""), timeout))
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        # Only the ancestors' calls are read:  the chat's own registration carries the shared
+        # deadline by itself, so an assertion over every call would pass even if the ancestor's
+        # call were clamped to a second.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertIn(PL._API_TIMEOUT, ancestors, "the shared deadline was clamped away")
+
+    def test_a_failing_ancestor_call_is_charged_to_the_walk(self) -> None:
+        # A failing call that took its time is spent time:  the walk must not be told its budget is
+        # untouched, or the next generation starts with the whole allowance again.
+        import dataclasses
+        from unittest import mock
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=13, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 4.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        real = PL._apply
+
+        def failing(chat, answer, note):
+            if chat.session_id == "m-0003":
+                return real(chat, answer, note)
+            time.sleep(1.2)
+            raise RuntimeError("the registry call failed")
+
+        with mock.patch.object(PL, "_apply", failing):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk started another generation with a budget it had already spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_an_ancestor_that_is_not_a_chat_does_not_break_the_walk(self) -> None:
+        # An ancestor whose own kind is neither a chat nor a subagent ends that branch with a number,
+        # so the generation above it is still registered.
+        self.add("m-0001", "Grandparent", kind="cron")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
+
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")
         self.add("m-0002", "", "conversation", "m-0001")
@@ -175,7 +409,8 @@ class MiniMaxRow(Base):
         t0 = time.time()
         self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"}, now=t0)
         label = self.note("MM", "m-0001")["label"]
-        self.assertEqual(self.title("m-0001"), "%s: New Chat" % label)
+        # The start leaves the name to the runtime, so the runtime's own title is the one that shows.
+        self.assertEqual(self.title("m-0001"), "")
         self.set_title("m-0001", "Fix the wake path")
         self.assertEqual(self.run_hook(PM.SPEC, {"hook_event_name": "Stop", "session_id": "m-0001"}, now=t0 + 5), "")
         self.assertEqual(self.title("m-0001"), "%s: Fix the wake path" % label)
@@ -252,13 +487,14 @@ class MiniMaxRetiredClient(Base):
         code, answer = self.install("--check")
         self.assertEqual((code, answer["retired"]["hooks"]), (1, ["PreToolUse"]))
         code, answer = self.install()
-        self.assertEqual((code, sorted(answer["changed"])), (0, ["PreToolUse", "SessionStart", "Stop"]))
+        self.assertEqual((code, sorted(answer["changed"])),
+                         (0, ["PreToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]))
         with open(self.hooks_file(), encoding="utf-8") as fh:
             hooks = json.load(fh)["hooks"]
         self.assertNotIn("mm-session-letter", json.dumps(hooks))
         self.assertEqual(hooks["PreToolUse"], [{"matcher": "Write", "hooks": [{"type": "command",
                                                                               "command": "another-tool guard"}]}])
-        for event in ("SessionStart", "Stop"):
+        for event in ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop"):
             commands = [h["command"] for group in hooks[event] for h in group["hooks"]]
             self.assertEqual(len(commands), 1, event)
             self.assertTrue(commands[0].endswith("platform-letter hook --platform minimax"), commands[0])
@@ -629,3 +865,98 @@ class RequestCommand(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MiniMaxTitleSource(Base):
+    """The real runtime's store shape:  it carries the extra data column the title source lives in."""
+
+    DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+           " parent_session_id TEXT, extra_data_json TEXT)")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(self.store))
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(self.DDL)
+        conn.close()
+
+    def add(self, sid: str, title: str = "", extra: object = None) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?)",
+                         (sid, title, "conversation", None, json.dumps(extra) if extra is not None else None))
+        conn.close()
+
+    def row(self, sid: str):
+        conn = sqlite3.connect(self.store)
+        row = conn.execute("SELECT title, extra_data_json FROM local_runtime_sessions WHERE session_id = ?",
+                            (sid,)).fetchone()
+        conn.close()
+        return row
+
+    def request(self, sid: str, title: str, shown: str = "", reason: str = "start") -> PL.TitleRequest:
+        # The words are what the library puts in a request:  the title with the letter taken off.
+        words = title.split(": ", 1)[1] if ": " in title else ""
+        return PL.TitleRequest(platform="minimax", session_id=sid, label="YY", title=title, words=words,
+                                current="", reason=reason, data={}, env=self.home_env(), shown=shown, held=())
+
+    def home_env(self) -> dict:
+        return {"HOME": self.home}
+
+    def test_the_rename_marks_the_title_as_the_hook_own(self) -> None:
+        # The runtime only auto-titles a chat whose titleSource is still "default", and it put its own title over
+        # the lettered one:  the hook's write carries the source, so the runtime leaves the lettered title alone.
+        # The write also remembers the title the hook put there, so the hook's own title is told apart from a name
+        # a person gave even when the note lost it.
+        self.add("m-0100")
+        self.assertTrue(PM.minimax_rename(self.request("m-0100", "YY: Work")))
+        title, extra = self.row("m-0100")
+        self.assertEqual(title, "YY: Work")
+        self.assertEqual(json.loads(extra)["titleSource"], "manual")
+        self.assertEqual(json.loads(extra)["hookTitle"], "YY: Work")
+
+    def test_a_title_a_person_chose_is_left_alone(self) -> None:
+        # The runtime marks a name a person set as "manual" too, so a manual title that is not the hook's own is
+        # the person's words, and the hook never overwrites them.  The hook also says it did not write it:  a
+        # writer that returns True has put the title on the chat, and this one did not.
+        self.add("m-0101", "YY: My Own Name", {"titleSource": "manual", "effectiveModel": "m-1"})
+        self.assertFalse(PM.minimax_rename(self.request("m-0101", "YY: Coordinate Work", shown="YY: Coordinate Work")))
+        title, extra = self.row("m-0101")
+        self.assertEqual(title, "YY: My Own Name")
+        self.assertEqual(json.loads(extra)["effectiveModel"], "m-1")
+
+    def test_a_placeholder_title_is_never_written(self) -> None:
+        # A chat with no descriptive name yet keeps the name MiniMax Code gives it.  The hook does not put
+        # "New Chat" on the thread, because the runtime then puts its own name over it and the letter goes with
+        # it:  the letter goes on at the chat's first prompt instead.
+        self.add("m-0102")
+        self.assertFalse(PM.minimax_rename(self.request("m-0102", "YY: New Chat")))
+        title, extra = self.row("m-0102")
+        self.assertEqual(title, "")
+
+    def test_a_title_the_hook_cannot_claim_is_left_alone(self) -> None:
+        # A person named the chat and the runtime marked it as a person's:  the hook has no record of a title of
+        # its own on that row, so it does not write over the name, and it says it did not write it.
+        self.add("m-0105", "YY: P-BF-6 Work", {"titleSource": "manual"})
+        self.assertFalse(PM.minimax_rename(self.request("m-0105", "YY: Coordinate Work")))
+        title, extra = self.row("m-0105")
+        self.assertEqual(title, "YY: P-BF-6 Work")
+
+    def test_the_hook_writes_its_own_title_again_when_the_note_lost_it(self) -> None:
+        # The note that holds the hook's own last title can be lost, and the hook's own title is remembered in
+        # the row itself:  a row the hook wrote is written again, and is not taken for a name a person gave.
+        self.add("m-0103", "YY: Work", {"titleSource": "manual", "hookTitle": "YY: Work"})
+        self.assertTrue(PM.minimax_rename(self.request("m-0103", "YY: Work")))
+        title, extra = self.row("m-0103")
+        self.assertEqual(title, "YY: Work")
+        self.assertEqual(json.loads(extra)["hookTitle"], "YY: Work")
+
+    def test_the_letter_goes_on_the_name_the_runtime_gave_the_chat(self) -> None:
+        # MiniMax Code names a chat itself:  the letter goes on that name, under the letter.
+        self.add("m-0104", "Coordinate P-BF-6")
+        self.assertTrue(PM.minimax_rename(self.request("m-0104", "YY: Coordinate P-BF-6", reason="prompt")))
+        title, extra = self.row("m-0104")
+        self.assertEqual(title, "YY: Coordinate P-BF-6")
+        self.assertEqual(json.loads(extra)["titleSource"], "manual")
