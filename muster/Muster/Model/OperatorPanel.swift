@@ -458,8 +458,16 @@ struct OperatorWakeSeat: Decodable, Equatable {
     let seat: String
     let recentTotal: Int?
     let recent: [OperatorWake]
+    /// The wakes held back now, with their reasons (`OperatorRouter.swift`).
+    let heldBack: OperatorHeldBack?
+    /// The notes waiting for the owner.
+    let ownerQueue: OperatorOwnerQueue?
 
-    enum CodingKeys: String, CodingKey { case seat, recent }
+    enum CodingKeys: String, CodingKey {
+        case seat, recent
+        case heldBack = "held_back"
+        case ownerQueue = "owner_queue"
+    }
 
     private struct Recent: Decodable {
         let total: Int?
@@ -482,12 +490,17 @@ struct OperatorWakeSeat: Decodable, Equatable {
         let recent = container.optionalField(Recent.self, .recent)
         recentTotal = recent?.total
         self.recent = recent?.rows ?? []
+        heldBack = container.optionalField(OperatorHeldBack.self, .heldBack)
+        ownerQueue = container.optionalField(OperatorOwnerQueue.self, .ownerQueue)
     }
 
-    init(seat: String, recentTotal: Int? = nil, recent: [OperatorWake] = []) {
+    init(seat: String, recentTotal: Int? = nil, recent: [OperatorWake] = [],
+         heldBack: OperatorHeldBack? = nil, ownerQueue: OperatorOwnerQueue? = nil) {
         self.seat = seat
         self.recentTotal = recentTotal
         self.recent = recent
+        self.heldBack = heldBack
+        self.ownerQueue = ownerQueue
     }
 }
 
@@ -760,6 +773,9 @@ struct OperatorSeatRow: Equatable, Identifiable {
     let lastSeen: String
     var platform: String = "Other"
     var issues: [String] = []
+    /// The exact chat a test wake would address:  set only for a live chat whose seat, letter,
+    /// generation and host the registry all gave.
+    var testTarget: OperatorWakeTarget? = nil
 
     var isLive: Bool {
         state.text == "Live"
@@ -1246,7 +1262,11 @@ enum OperatorPanelPresentation {
                 router: cachedRouter(for: session.seat),
                 lastSeen: OperatorPanelText.relative(session.lastSeen, now: now),
                 platform: platformLabel(session.platform),
-                issues: cleanedIssues(for: session)
+                issues: cleanedIssues(for: session),
+                testTarget: session.status == "active"
+                    ? OperatorWakeTarget.make(seat: session.seat, letter: session.letter,
+                                              generation: session.generation, hostCode: session.hostCode)
+                    : nil
             )
         }
         let groups = buildSeatGroups(rows: rows, grouping: grouping)

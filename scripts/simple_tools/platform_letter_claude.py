@@ -38,8 +38,9 @@ never fails a chat's start over this file.
   whole command is the question (`platform_letter.parent_ssh_command`), answered with the parent's session id or
   nothing.  On the Mac the key is forced to `platform-letter parent-ssh-gate`, which matches that command whole
   and runs nothing else, so the key gives no shell.  The ids are checked before they reach the command line, the
-  call is bounded (MAC_TIMEOUT_SECONDS), and a Mac that does not answer is no parent.  Nothing but that question
-  crosses:  the registry is never reached over ssh.
+  call is bounded (MAC_START_TIMEOUT_SECONDS at the chat's own start, MAC_TIMEOUT_SECONDS after it), and a Mac
+  that does not answer in time is no parent.  Nothing but that question crosses:  the registry is never reached
+  over ssh.
 - A parent registered first (`claude_chat_payload`).  The library registers a sub-thread's parent ahead of it when the
   parent holds no letter on this host, and asks this file about the parent with a payload that says so.  Only a chat
   whose record this host holds and that runs on this host is one:  a chat the app runs over ssh (`sshConfig`) has its
@@ -50,6 +51,11 @@ never fails a chat's start over this file.
   tool is the one thing it takes, and only the chat's model can call that, so the model is told to, once per title
   (the library holds a repeat back);  a chat another chat has just started is told to check its title itself.  A
   name a person gave (`titleSource` "user") is left alone:  the tool would stop to ask them to approve it.
+  A hook on a host with no store (the server) cannot see the app's title, and the Mac's answer cannot tell a chat
+  nobody started from one it has no record of, so a brand-new chat that runs in the app (`source` startup, with an
+  app id) is told to check its title whenever no parent was named:  another chat may have started it.  A
+  `/clear`, a fork or a resume may carry a name a person gave, and a terminal `claude` shows the hook's own title,
+  so those are told nothing.
 - A resumed chat's title (`claude_stored_title`).  A chat that is resumed with no title gets the one its first
   prompt gives, read from the first lines of its own transcript, and only a transcript under `~/.claude`.
 - Archived chats (`claude_gone`, `archive_states`).  The app marks an archived chat in its record (`isArchived`).
@@ -136,13 +142,27 @@ REMOTE_SCAN_DAYS = 14
 REMOTE_SCAN_RECORDS = 300
 REMOTE_QUIET_SECONDS = 3600
 # Asking the Mac for a chat's parent (`parent_from_mac`):  how long ssh may take to connect, and the whole round
-# trip (an asleep or unreachable Mac costs this much, once per RETRY_SECONDS for a chat).  It must fit the
-# tightest hook budget together with what follows it in the same hook run.  A chat with no letter asks on a
-# prompt or a turn end, whose budget is 15 seconds:  2 for this call, then the register chain of at most three
-# registry calls of 4 seconds each (platform_letter._API_TIMEOUT), 14 in all.  A start has 20:  2, the same 12,
-# and one gone report of 4.
+# trip.  An unreachable or asleep Mac ends at the connect bound;  only a Mac that answers slowly costs the
+# whole round trip, once per RETRY_SECONDS for a chat.
+#
+# The round trip from the server, measured on Nov 18, 2026 with these options (AFC-830):  about 1.8 seconds for
+# ssh alone (the connect, the key exchange and the login), and 2.1 to 3.9 with the Mac's lookup, over 13 runs.
+# The bound was 2.0, so nearly every answer came after the cut, and every chat the app started from another chat on
+# the server took a main-chat pair.  Each bound below holds the slowest measured trip with a second to spare.
+#
+# A bound must fit its hook's budget together with what follows it in the same hook run.  A chat's own start
+# (SessionStart, 20 seconds) is where its pair is chosen, so it gets the longer bound:  6 for this call, then the
+# register chain of at most three registry calls of 3 seconds each (platform_letter._API_TIMEOUT), and one gone
+# report of 3, 18 in all.  A chat with no letter asks again on a prompt or a turn end, whose budget is 15:  5 for
+# this call and the same chain of 9, 14 in all.
+#
+# A parent the Mac names only after the chat took a main-chat pair (a later resume's question) is kept in the note,
+# and the chat keeps its pair:  the registry resumes the pair a live chat holds, and that pair is already the chat's
+# address (its title, the Zulip mentions and the wakes that reach it), so changing it would break more than the wrong
+# row costs.
 MAC_CONNECT_SECONDS = 2
-MAC_TIMEOUT_SECONDS = 2.0
+MAC_START_TIMEOUT_SECONDS = 6.0
+MAC_TIMEOUT_SECONDS = 5.0
 # ssh as it is run:  no prompt, the connect bounded, no connection shared with (or left behind for) any other
 # ssh of the account (ControlMaster=no starts none and ControlPath=none joins none, so an open master of the account
 # can never carry this command, and it never runs on a channel that skips the key's forced command), nothing
@@ -176,8 +196,9 @@ ARCHIVE_SCAN_RECORDS = 3000
 # A record is about 0.65 MB (the real store:  112 records, 69 MB, a scan of it takes 0.15 to 0.5 s with the files
 # cached).  512 MiB is some 800 records, or 5 s of reading at a slow disk's 100 MB/s, so ARCHIVE_SCAN_SECONDS bounds a
 # scan by the clock as well:  a hook scans twice (for its own chats and for the ones the app runs elsewhere) inside one
-# SessionStart's budget of 20 seconds, after 2 for the ssh call and 12 for the registry calls, so two scans may take
-# 4 at most.  A scan that runs out of either stops, and what it did not read keeps its chats (`unseen`).
+# SessionStart's budget of 20 seconds, after 12 for the registry calls, so two scans may take 4 at most (a host that
+# has a store to scan never asks the Mac, so the ssh call's bound is not spent beside them).  A scan that runs
+# out of either stops, and what it did not read keeps its chats (`unseen`).
 ARCHIVE_SCAN_BYTES = 512 << 20
 ARCHIVE_SCAN_SECONDS = 2.0
 
@@ -463,7 +484,11 @@ _ASKED: dict[tuple[str, ...], str] = {}
 
 
 def parent_from_mac(
-    env: Mapping[str, str], sid: str, host_session_id: str = "", cleared: bool = False
+    env: Mapping[str, str],
+    sid: str,
+    host_session_id: str = "",
+    cleared: bool = False,
+    timeout: float = MAC_TIMEOUT_SECONDS,
 ) -> str:
     """The session id of the chat that started chat `sid`, asked of the Mac, or "".
 
@@ -475,8 +500,10 @@ def parent_from_mac(
     is the host's own setting (`platform_letter.mac_ssh`);  with none, nothing is asked.  The session id and the
     app id are checked against their own patterns first (an app id that fails is left out, a session id that
     fails asks nothing), ssh may not prompt, shares no connection and forwards nothing (SSH_OPTIONS), and the
-    round trip is cut at MAC_TIMEOUT_SECONDS.  An answer that arrived whole before the cut still counts.  Any
-    failure, a timeout with no answer, or an answer that is not a session id is no parent."""
+    round trip is cut at `timeout` (MAC_START_TIMEOUT_SECONDS at the chat's own start, MAC_TIMEOUT_SECONDS
+    after it).  An answer that arrived whole before the cut still counts.  Any failure, a timeout with no
+    answer, or an answer that is not a session id is no parent.  An empty answer never proves that nobody
+    started the chat:  the Mac's verb prints nothing for a chat it has no record of, too (`claude_title_advice`)."""
     dest = PL.mac_ssh(env)
     sid = _session_id(sid)
     if not dest or not sid:
@@ -496,7 +523,7 @@ def parent_from_mac(
     cmd += ["--", dest, remote]
     parent = ""
     try:
-        done = _run_ssh(cmd, MAC_TIMEOUT_SECONDS)
+        done = _run_ssh(cmd, timeout)
         if done.returncode == 0:
             parent = _answered(done.stdout)
     except subprocess.TimeoutExpired as late:
@@ -519,11 +546,17 @@ def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
     A parent is a non-empty session id that is not this chat's own.  Anything unreadable or malformed is no parent:
     the lookup is a hint the chat was never owed, so nothing it can raise stops a chat's start.  The start after a
-    `/clear` lets the app id decide (`allow_lag`), because the app may not have written the new session id yet."""
+    `/clear` lets the app id decide (`allow_lag`), because the app may not have written the new session id yet.
+
+    The chat's own start asks the Mac with the longer bound (MAC_START_TIMEOUT_SECONDS), because that is where
+    its pair is chosen;  a prompt, a turn end, and the library's question about another chat (`ASKED_ABOUT`) ask
+    with MAC_TIMEOUT_SECONDS."""
     sid = _session_id(PL.from_payload("session_id")(payload, env))
     if not sid:
         return ""
-    cleared = payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "clear"
+    starting = payload.get("hook_event_name") == "SessionStart"
+    cleared = starting and payload.get("source") == "clear"
+    own_start = starting and payload.get(ASKED_ABOUT) is not True
     # Another host's question, through the `parent` verb, is answered from this host's own records.
     asked = payload.get(PL.PARENT_VERB) is True
     host = str(env.get(ENV_HOST_SESSION) or "")
@@ -531,7 +564,8 @@ def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
         host = payload[PL.PARENT_APP_ID]
     try:
         if not asked and not os.path.isdir(store_root(_home(env))):
-            parent = parent_from_mac(env, sid, host, cleared)
+            bound = MAC_START_TIMEOUT_SECONDS if own_start else MAC_TIMEOUT_SECONDS
+            parent = parent_from_mac(env, sid, host, cleared, bound)
         else:
             parent, _why = lookup(
                 _home(env), host_session_id=host, cli_session_id=sid, allow_lag=cleared
@@ -784,7 +818,15 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
 
     A concrete rename needs the chat's own record, and a chat another chat just started may not have its session id
     or its title in its record yet.  So a start that is not a resume, of a chat another chat started, tells the model
-    to look at its title itself and put the letter on it, whenever no concrete rename was found."""
+    to look at its title itself and put the letter on it, whenever no concrete rename was found.
+
+    On a host with no store (the server) the hook never sees the app's title, and no answer from the Mac proves a
+    chat is a main chat:  its verb prints nothing both for a chat nobody started and for one it has no record of,
+    and an answer that comes after the cut is none.  So a brand-new chat that runs in the app (`source` startup,
+    with an app id) and has no parent named is told to look too:  otherwise a chat another chat started keeps that
+    chat's title, without its letter, for as long as it lives (AFC-830).  A main chat looks and finds the
+    hook's own title on it.  A `/clear`, a fork or a resume is told nothing, since its title may be one a person
+    gave, and so is a terminal `claude`, which has no app id and shows the hook's own title."""
     label = request.label
     if not label:
         return ""
@@ -799,14 +841,29 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
     fix = _rename_line(known, label, request.held) if known is not None else ""
     if fix:
         return fix
-    resumed = PL.from_payload("source")(request.data, request.env) == "resume"
-    if request.reason != "start" or resumed or not claude_parent(request.data, request.env):
+    source = PL.from_payload("source")(request.data, request.env)
+    if request.reason != "start" or source == "resume":
+        return ""
+    if claude_parent(request.data, request.env):
+        return (
+            "Another chat started this one, and the app shows the title that chat gave it over the one this hook "
+            'sets.  As your first step, unprompted, call %s with session_id "self" (load it with ToolSearch if it '
+            'is deferred).  If the title does not start with "%s: ", call %s with session_id "self" and the title '
+            '"%s: <that title>".' % (READ_TOOL, label, RENAME_TOOL, label)
+        )
+    if (
+        source not in ("", "startup")
+        or not request.env.get(ENV_HOST_SESSION)
+        or os.path.isdir(store_root(_home(request.env)))
+    ):
         return ""
     return (
-        "Another chat started this one, and the app shows the title that chat gave it over the one this hook "
-        'sets.  As your first step, unprompted, call %s with session_id "self" (load it with ToolSearch if it '
-        'is deferred).  If the title does not start with "%s: ", call %s with session_id "self" and the title '
-        '"%s: <that title>".' % (READ_TOOL, label, RENAME_TOOL, label)
+        "This hook cannot see the title the app shows for this chat, and it was not told that another chat "
+        "started it (a slow Mac hides that), so the app may show a title another chat gave it, without this "
+        'chat\'s letter.  As your first step, unprompted, call %s with session_id "self" (load it with '
+        'ToolSearch if it is deferred).  If the title does not start with "%s: " and is not "%s", call %s with '
+        'session_id "self" and the title "%s: <that title>".'
+        % (READ_TOOL, label, PL.PLACEHOLDER, RENAME_TOOL, label)
     )
 
 

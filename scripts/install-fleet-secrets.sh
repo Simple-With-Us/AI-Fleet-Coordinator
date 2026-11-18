@@ -58,6 +58,7 @@ install_fleet_secrets_main() {
     install -m 0644 "$f" "$dest/fleet_secrets/$(basename "$f")"
   done
   install -m 0644 "$here/fleet_infisical.py" "$dest/fleet_infisical.py"
+  install -m 0644 "$here/fleet_infisical_cli.py" "$dest/fleet_infisical_cli.py"
   install -m 0755 "$here/fleet-secrets" "$dest/fleet-secrets"
   launcher="$dest/fleet-secrets"
   if [ "$linux_bootstrap" -eq 1 ]; then
