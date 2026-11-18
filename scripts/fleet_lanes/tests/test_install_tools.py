@@ -7374,6 +7374,407 @@ class ZcodeSeatTests(World):
         self.assertEqual(new["hooks"]["events"]["PreToolUse"][0], doc["hooks"]["events"]["PreToolUse"][0])
 
 
+class ZcodeBashToolSeatDefaultTests(World):
+    """The Bash-tool seat default:  ~/.fleet-zcode-seat-bin (four shims at the front of PATH) plus the
+    marked ~/.bashrc block, written by `apply zcode` only.
+
+    The Z Code CLI bakes a shell snapshot from ~/.bashrc that carries PATH and shell functions but no
+    plain env exports, so the seat declaration travels through the shims (and the guarded export in the
+    block covers interactive shells).  Everything here runs against fake tools on a temp PATH:  the
+    exec target an apply bakes in must derive from PATH at apply time, never from a hardcoded home.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed_platforms()
+        self.toolbin = self.tmp / "toolbin"
+        self.toolbin.mkdir()
+        for name in T.ZCODE_SEAT_TOOLS:
+            self.fake_tool(name)
+        # The tools apply must resolve live on PATH, and nothing else on the host's PATH may answer:
+        # the resolution has to come from this temp tree, whatever the host has in ~/.local/bin.
+        path_patch = mock.patch.dict(os.environ, {"PATH": f"{self.toolbin}:/usr/bin:/bin"})
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
+        # verify zcode runs the hook probes against the stable dir, so the tools must be installed
+        # before anything else (the same thing World.install does for the platforms it applies).
+        r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+        self.assertTrue(r.ok, r)
+
+    # -- builders
+
+    def fake_tool(self, name: str, body: str = "#!/bin/sh\nexit 0\n") -> Path:
+        p = self.toolbin / name
+        p.write_text(body, encoding="utf-8")
+        p.chmod(0o755)
+        return p
+
+    def seat_plan(self) -> T.ZcodeSeatPlan:
+        return T.plan_zcode_seat_default(self.paths)
+
+    def shim_path(self, name: str) -> Path:
+        return self.home / T.ZCODE_SEAT_BIN_DIRNAME / name
+
+    def install_zcode(self) -> T.Result:
+        r = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertTrue(r.ok, r)
+        return r
+
+    def child_env(self, extra: dict) -> dict:
+        """A child environment with every seat and Z Code variable scrubbed, then the case's own values
+        put back:  a shell running the tests inside a real Z Code session carries ZCODE_SESSION_ID, and
+        a leftover one would turn the no-marker cases into seat-setting ones."""
+        env = os.environ.copy()
+        for key in (
+            "AGENT_SEAT",
+            "AGENT_TAG",
+            "AGENT_LAUNCH_SEAT",
+            "AGENT_LAUNCHER",
+            "ZCODE_SESSION_ID",
+            "ZCODE_RUNTIME_ENV",
+        ):
+            env.pop(key, None)
+        env.update(extra)
+        return env
+
+    def bashrc(self) -> str:
+        return (self.home / ".bashrc").read_text(encoding="utf-8")
+
+    # -- plan
+
+    def test_plan_reports_both_artifacts_before_apply(self) -> None:
+        sp = self.seat_plan()
+        self.assertEqual(sp.state, "new")
+        self.assertEqual([fs.status for fs in sp.shims], ["new"] * len(T.ZCODE_SEAT_TOOLS))
+        self.assertEqual(sp.dir_state, "absent")
+        self.assertEqual(sp.bashrc_action, "create")
+        self.assertEqual(sp.missing, [])
+        for tool in T.ZCODE_SEAT_TOOLS:
+            self.assertEqual(sp.resolved[tool], str(self.toolbin / tool))
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            str(SCRIPTS_DIR),
+            "--registry",
+            str(REGISTRY_FILE),
+            "--sha",
+            SHA,
+            "zcode",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("seat default (Bash-tool shells)", out)
+        self.assertIn("(exec " + str(self.toolbin / "simple-chat") + ")", out)
+
+    def test_plan_blocks_the_whole_set_when_a_tool_is_missing(self) -> None:
+        (self.toolbin / T.ZCODE_SEAT_TOOLS[1]).unlink()
+        sp = self.seat_plan()
+        self.assertEqual(sp.state, "blocked")
+        self.assertEqual(sp.missing, [T.ZCODE_SEAT_TOOLS[1]])
+        # the resolvable tools still show what apply would write; only the missing one is pending
+        self.assertEqual({fs.rel: fs.status for fs in sp.shims}[T.ZCODE_SEAT_TOOLS[1]], "pending")
+        self.assertEqual(
+            {fs.status for fs in sp.shims if fs.rel != T.ZCODE_SEAT_TOOLS[1]}, {"new"}
+        )
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            str(SCRIPTS_DIR),
+            "--registry",
+            str(REGISTRY_FILE),
+            "--sha",
+            SHA,
+            "zcode",
+        )
+        self.assertIn("all-or-nothing", out)
+
+    # -- apply
+
+    def test_apply_writes_the_shims_byte_exactly_with_their_modes(self) -> None:
+        r = self.install_zcode()
+        self.assertIn("seat default installed", r.detail)
+        d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
+        self.assertTrue(d.is_dir())
+        self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o755)
+        for tool in T.ZCODE_SEAT_TOOLS:
+            p = self.shim_path(tool)
+            self.assertEqual(
+                p.read_bytes(),
+                T.render_zcode_seat_shim(tool, str(self.toolbin / tool)).encode("utf-8"),
+                tool,
+            )
+            self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((self.home / ".bashrc").stat().st_mode), 0o644)
+
+    def test_the_exec_target_comes_from_path_at_apply_time(self) -> None:
+        # A tool that moved between installs is drift verify can see:  the shim bakes WHERE the tool
+        # was, so the bytes change when PATH resolves it elsewhere.  `other` comes FIRST, so it wins
+        # over the same-named tool in the usual toolbin.
+        other = self.tmp / "elsewhere"
+        other.mkdir()
+        moved = other / T.ZCODE_SEAT_TOOLS[0]
+        moved.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        moved.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{other}:{self.toolbin}:/usr/bin:/bin"}):
+            self.install_zcode()
+        self.assertIn(
+            f"exec {shlex.quote(str(moved))} ", self.shim_path(T.ZCODE_SEAT_TOOLS[0]).read_text()
+        )
+        # and the other three still resolve from the toolbin they were found in
+        self.assertIn(
+            f"exec {shlex.quote(str(self.toolbin / T.ZCODE_SEAT_TOOLS[1]))} ",
+            self.shim_path(T.ZCODE_SEAT_TOOLS[1]).read_text(),
+        )
+
+    def test_a_re_apply_never_resolves_a_shim_through_itself(self) -> None:
+        """Once installed, the shim dir sits at the front of PATH on a real host; the resolution must
+        skip it, or the second apply would bake the shim as its own exec target and the first call
+        would recurse forever."""
+        self.install_zcode()
+        first = self.shim_path(T.ZCODE_SEAT_TOOLS[0]).read_bytes()
+        with mock.patch.dict(
+            os.environ, {"PATH": f"{self.home / T.ZCODE_SEAT_BIN_DIRNAME}:{self.toolbin}:/usr/bin:/bin"}
+        ):
+            r = self.install_zcode()
+        self.assertNotIn("seat default", r.detail)  # already current, nothing rewritten
+        self.assertEqual(self.shim_path(T.ZCODE_SEAT_TOOLS[0]).read_bytes(), first)
+        self.assertNotIn(
+            str(self.home / T.ZCODE_SEAT_BIN_DIRNAME),
+            self.shim_path(T.ZCODE_SEAT_TOOLS[0]).read_text(),
+        )
+
+    def test_a_missing_tool_writes_nothing_at_all(self) -> None:
+        (self.toolbin / T.ZCODE_SEAT_TOOLS[2]).unlink()
+        r = self.install_zcode()  # the hooks config still installs; only the seat default is held back
+        self.assertIn("seat default not written", r.detail)
+        self.assertIn(T.ZCODE_SEAT_TOOLS[2], r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists(), "all-or-nothing: no shims")
+        self.assertFalse((self.home / ".bashrc").exists(), "all-or-nothing: no profile block")
+        sp = self.seat_plan()
+        self.assertEqual(sp.state, "blocked")
+        checks = self.verify("zcode")
+        seat = [c for c in checks if c.name.startswith("seat") or c.name == "bashrc block"]
+        self.assertEqual([c.status for c in seat], ["WARN"] * len(seat))
+        self.assertTrue(any(T.ZCODE_SEAT_TOOLS[2] in c.detail for c in seat), seat)
+
+    # -- bashrc block
+
+    def test_the_block_is_inserted_once_at_the_top_and_stays_put(self) -> None:
+        self.install_zcode()
+        text = self.bashrc()
+        # a file the installer created leads with its two header lines, then the block before anything else
+        head = text.split("# --- begin")[0]
+        self.assertEqual(
+            [ln for ln in head.split("\n") if ln.strip()],
+            [
+                "# ~/.bashrc: created by fleet_lanes.install_tools so the Z Code Bash-tool seat default has a",
+                "# home on this host;  the marked block below is all of it.",
+            ],
+            head,
+        )
+        self.assertEqual(text.count("# --- begin " + T.ZCODE_SEAT_BLOCK_NAME), 1)
+        self.assertIn(T.GENERATED_MARK, text)
+        sp = self.seat_plan()
+        self.assertEqual(sp.state, "current")
+        self.assertEqual(sp.bashrc_action, "none")
+
+    def test_an_edited_block_is_replaced_in_place_not_duplicated(self) -> None:
+        self.install_zcode()
+        text = self.bashrc()
+        with (self.home / ".bashrc").open("w", encoding="utf-8") as fh:
+            fh.write(text.replace("export AGENT_SEAT=ZC", "export AGENT_SEAT=ZZ"))
+        sp = self.seat_plan()
+        self.assertEqual(sp.bashrc_action, "replace")
+        self.assertEqual(sp.state, "stale")
+        self.install_zcode()
+        new = self.bashrc()
+        self.assertEqual(new.count("# --- begin " + T.ZCODE_SEAT_BLOCK_NAME), 1)
+        self.assertIn("export AGENT_SEAT=ZC", new)
+        self.assertNotIn("export AGENT_SEAT=ZZ", new)
+        self.assertEqual(self.seat_plan().state, "current")
+
+    def test_a_hand_block_is_replaced_and_the_rest_of_the_file_is_kept(self) -> None:
+        """The host that had the fix by hand carries a seat block with no installer mark; apply must
+        recognize it, remove it and put the marked block at the top, without touching other lines."""
+        hand = (
+            "# --- fleet: Z Code session seat declaration (ZC default, never an override) ---\n"
+            "if [ -n \"${ZCODE_SESSION_ID:-}\" ] || [ -n \"${ZCODE_RUNTIME_ENV:-}\" ]; then\n"
+            "  if [ -z \"${AGENT_SEAT:-}\" ] && [ -z \"${AGENT_LAUNCH_SEAT:-}\" ] && [ -z \"${AGENT_TAG:-}\" ]; then\n"
+            "    export AGENT_SEAT=ZC\n"
+            "  fi\n"
+            "fi\n"
+            "# --- end fleet: Z Code session seat declaration -------------------------------\n"
+            "\n"
+            "# Added by MiniMax Code\n"
+            'export PATH="/somewhere/minimax/bin:$PATH"\n'
+        )
+        (self.home / ".bashrc").write_text(hand, encoding="utf-8")
+        sp = self.seat_plan()
+        self.assertEqual(sp.bashrc_action, "hand")
+        self.assertEqual(sp.hand_line, 1)
+        r = self.install_zcode()
+        self.assertIn("replaced the hand-written seat block", r.detail)
+        new = self.bashrc()
+        self.assertNotIn("Z Code session seat declaration", new)
+        self.assertTrue(new.startswith("# --- begin " + T.ZCODE_SEAT_BLOCK_NAME))
+        self.assertIn("# Added by MiniMax Code", new)
+        self.assertIn("/somewhere/minimax/bin", new)
+
+    def test_idempotent_second_apply_writes_nothing(self) -> None:
+        self.install_zcode()
+        after_first = snapshot(self.home)
+        r = self.install_zcode()
+        self.assertNotIn("seat default", r.detail)
+        self.assertEqual(snapshot(self.home), after_first)
+
+    # -- shim behavior (the guard, run as a real shell)
+
+    def test_the_shim_sets_the_seat_only_for_a_seatless_zcode_shell(self) -> None:
+        """The precedence contract, run through the real shim:  a Z Code shell with no seat gets ZC; a
+        launcher assignment, an existing seat or a chat tag wins; a process outside Z Code passes
+        through with no seat."""
+        self.fake_tool(T.ZCODE_SEAT_TOOLS[0], body='#!/bin/sh\nprintf %s "$AGENT_SEAT"\n')
+        self.install_zcode()
+        shim = str(self.shim_path(T.ZCODE_SEAT_TOOLS[0]))
+        cases = (
+            ({"ZCODE_SESSION_ID": "sess_x"}, "ZC"),
+            ({"ZCODE_RUNTIME_ENV": "production"}, "ZC"),
+            ({"ZCODE_SESSION_ID": "s", "AGENT_SEAT": "CODEX"}, "CODEX"),
+            ({"ZCODE_SESSION_ID": "s", "AGENT_TAG": "CODEX"}, ""),
+            ({"ZCODE_SESSION_ID": "s", "AGENT_LAUNCH_SEAT": "BF-TRADER", "AGENT_LAUNCHER": "botfleet"}, ""),
+            ({}, ""),
+        )
+        for extra, want in cases:
+            with self.subTest(env=extra):
+                out = subprocess.run(
+                    [shim], capture_output=True, text=True, env=self.child_env(extra), timeout=30
+                )
+                self.assertEqual(out.stdout, want, out)
+
+    def test_the_shim_execs_the_resolved_target_with_arguments(self) -> None:
+        self.fake_tool(
+            T.ZCODE_SEAT_TOOLS[0],
+            body='#!/bin/sh\n[ "$1" = "--format" ] && [ "$2" = claude ] && echo ARGS-OK\n',
+        )
+        self.install_zcode()
+        out = subprocess.run(
+            [str(self.shim_path(T.ZCODE_SEAT_TOOLS[0])), "--format", "claude"],
+            capture_output=True,
+            text=True,
+            env=self.child_env({}),
+            timeout=30,
+        )
+        self.assertEqual(out.stdout.strip(), "ARGS-OK", out)
+
+    # -- bashrc behavior
+
+    def test_the_block_guards_itself_against_resourcing_and_beats_nothing(self) -> None:
+        self.install_zcode()
+        base = self.child_env({"HOME": str(self.home), "ZCODE_SESSION_ID": "sess_x"})
+        script = (
+            f'source "{self.home / ".bashrc"}" && printf "%s\\n" "$AGENT_SEAT" && '
+            f'source "{self.home / ".bashrc"}" && printf "%s\\n" "$AGENT_SEAT" && '
+            'printf "%s\\n" "${PATH%%:*}"'
+        )
+        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        seat1, seat2, front = out.stdout.strip().split("\n")
+        self.assertEqual((seat1, seat2), ("ZC", "ZC"))
+        self.assertEqual(front, str(self.home / T.ZCODE_SEAT_BIN_DIRNAME))
+        # A launcher assignment set before the shell starts is never overridden.
+        base = self.child_env({"HOME": str(self.home), "AGENT_LAUNCH_SEAT": "BF-TRADER"})
+        script = f'source "{self.home / ".bashrc"}" && printf "%s\\n" "${{AGENT_SEAT:-unset}}"'
+        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        self.assertEqual(out.stdout.strip(), "unset", out)
+
+    # -- verify
+
+    def test_verify_passes_a_fresh_install_and_catches_drift(self) -> None:
+        self.install_zcode()
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)
+        names = {c.name for c in checks}
+        self.assertIn("seat shim dir", names)
+        self.assertIn("bashrc block", names)
+        for tool in T.ZCODE_SEAT_TOOLS:
+            self.assertIn(f"shim {tool}", names)
+        # a shim edited after apply
+        p = self.shim_path(T.ZCODE_SEAT_TOOLS[3])
+        p.write_text(p.read_text().replace("exec", "exec "), encoding="utf-8")
+        self.assertFails(self.verify("zcode"), f"shim {T.ZCODE_SEAT_TOOLS[3]}")
+        p.chmod(0o755)
+        with p.open("w", encoding="utf-8") as fh:
+            fh.write(T.render_zcode_seat_shim(T.ZCODE_SEAT_TOOLS[3], str(self.toolbin / T.ZCODE_SEAT_TOOLS[3])))
+        # a shim that lost its exec bit
+        p.chmod(0o644)
+        self.assertFails(self.verify("zcode"), "not executable")
+        p.chmod(0o755)
+        # a shim dir with the wrong mode
+        d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
+        os.chmod(d, 0o700)
+        self.assertFails(self.verify("zcode"), "expected 0755")
+        os.chmod(d, 0o755)
+        # a bashrc without the block
+        (self.home / ".bashrc").unlink()
+        self.assertFails(self.verify("zcode"), "bashrc block")
+
+    def test_verify_warns_about_unmanaged_dir_entries_and_stray_seat_lines(self) -> None:
+        self.install_zcode()
+        (self.shim_path(T.ZCODE_SEAT_TOOLS[0]).parent / "gh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        with (self.home / ".bashrc").open("a", encoding="utf-8") as fh:
+            fh.write("\nexport AGENT_SEAT=SOMEONE\n")
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)  # a WARN is honest but not a failure
+        warns = [c for c in checks if c.status == "WARN"]
+        self.assertTrue(any("does not write" in c.detail for c in warns), warns)
+        self.assertTrue(any("stray seat lines" in c.name for c in warns), warns)
+
+    # -- platform gating
+
+    def test_only_zcode_writes_the_artifacts(self) -> None:
+        T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+        r = T.apply_platform(T.PLATFORMS["codex"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertTrue(r.ok, r)
+        self.assertNotIn("seat default", r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            str(SCRIPTS_DIR),
+            "--registry",
+            str(REGISTRY_FILE),
+            "--sha",
+            SHA,
+            "codex",
+        )
+        self.assertNotIn("seat default", out)
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            str(SCRIPTS_DIR),
+            "--registry",
+            str(REGISTRY_FILE),
+            "--sha",
+            SHA,
+            "zcode",
+        )
+        self.assertIn("seat default (Bash-tool shells)", out)
+
+    def test_a_refused_zcode_apply_writes_none_of_the_artifacts(self) -> None:
+        os.unlink(self.paths.hook_shim)  # no stable shim: the platform apply refuses before anything
+        before = snapshot(self.home)
+        r = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP)
+        self.assertEqual(r.status, "refused", r)
+        self.assertEqual(snapshot(self.home), before)
+
 
 if __name__ == "__main__":
     unittest.main()
