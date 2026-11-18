@@ -223,7 +223,12 @@ class InstallerTests(unittest.TestCase):
         legacy = self.root / "usr/local/lib/fleet-resource-control"
         legacy.mkdir(parents=True)
         self.root.chmod(0o755)
-        for folder in (self.root / "usr", self.root / "usr/local", self.root / "usr/local/lib", legacy):
+        for folder in (
+            self.root / "usr",
+            self.root / "usr/local",
+            self.root / "usr/local/lib",
+            legacy,
+        ):
             folder.chmod(folder_mode)
         settings = legacy / "fleet-ops-eavesdropper-settings.json"
         settings.write_text(json.dumps({"applyEnabled": value}))
@@ -238,7 +243,9 @@ class InstallerTests(unittest.TestCase):
         expected = repository.replace(b'"applyEnabled": false', b'"applyEnabled": true', 1)
         self.assertEqual(installed.read_bytes(), expected)
         # The root-owned copy is only read, never changed, and nothing is written beside it.
-        legacy = self.root / "usr/local/lib/fleet-resource-control/fleet-ops-eavesdropper-settings.json"
+        legacy = (
+            self.root / "usr/local/lib/fleet-resource-control/fleet-ops-eavesdropper-settings.json"
+        )
         self.assertEqual(json.loads(legacy.read_text()), {"applyEnabled": True})
         self.assertEqual(os.listdir(legacy.parent), ["fleet-ops-eavesdropper-settings.json"])
 
@@ -273,7 +280,13 @@ class InstallerTests(unittest.TestCase):
             (legacy / "fleet-ops-eavesdropper-settings.json").rename(target)
             (legacy / "fleet-ops-eavesdropper-settings.json").symlink_to(target)
 
-        for arrange in (group_writable_file, group_writable_folder, another_owner, linked_folder, linked_file):
+        for arrange in (
+            group_writable_file,
+            group_writable_folder,
+            another_owner,
+            linked_folder,
+            linked_file,
+        ):
             with self.subTest(case=arrange.__name__):
                 shutil.rmtree(self.home / ".local", ignore_errors=True)
                 arrange()
