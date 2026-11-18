@@ -1,6 +1,8 @@
 name: wise-route-proof
+# Combined-client workflow-route proof 2026-11-17T21:52 CST (client 67462bec)
 on:
   workflow_dispatch:
+permissions: {}
 jobs:
   noop:
     runs-on: ubuntu-latest
