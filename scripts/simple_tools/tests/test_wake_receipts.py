@@ -486,6 +486,23 @@ class ReceiptUrlTests(ReceiptHarness):
             self.assertIsNone(A.receipt_url(url, seat, wake_id), url)
 
 
+class ReceiptUrlTypeTests(unittest.TestCase):
+    def test_a_seat_wake_id_or_url_that_is_not_text_is_refused_and_never_raises(self) -> None:
+        url = "https://r.example/wake/CLAUDE"
+        for value in (
+            (url, 5, "w1"),
+            (url, "CLAUDE", 7),
+            (url, ["CLAUDE"], "w1"),
+            (url, "CLAUDE", b"w1"),
+            (None, "CLAUDE", "w1"),
+            (url.encode(), "CLAUDE", "w1"),
+        ):
+            self.assertIsNone(A.receipt_url(*value), value)
+        self.assertEqual(
+            A.receipt_url(url, "CLAUDE", "w1"), "https://r.example/receipt/CLAUDE/w1"
+        )
+
+
 class ReceiptReaderTests(ReceiptHarness):
     def test_a_delivered_wake_leaves_operator_inbox_pending_and_a_dead_one_stays(self) -> None:
         daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
@@ -527,6 +544,24 @@ class ReceiptReaderTests(ReceiptHarness):
         self.assertIn("delivered", items[unsure], "the router's null `delivered` was not kept")
         self.assertIsNone(items[unsure]["delivered"])
         self.assertNotIn("most-recent", json.dumps(items[waiting]), "an awaited wake shows a receipt")
+
+    def test_a_wake_shows_only_the_receipt_fields_of_its_own_outcome_row(self) -> None:
+        # The `done` row counts the POST's attempts;  a receipt that names none must not show that
+        # count as the router's in the wakes view.
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        wake_id = self.wake(daemon)
+        self.assertEqual(self.done_row(wake_id)["attempts"], 1)
+        body = self.receipt(wake_id)
+        del body["attempts"]
+        self.answer(wake_id, body)
+        self.pass_at(daemon, 31)
+        self.assertNotIn("attempts", self.outcome())
+        (item,) = LR.wakes_view(self.root, "CLAUDE", now=self.clock.time())["items"]
+        self.assertEqual(
+            (item["wake_id"], item["state"], item.get("receipt_status")),
+            (wake_id, "delivered", "delivered"),
+        )
+        self.assertNotIn("attempts", item, "the done row's POST attempts showed as the router's")
 
     def test_a_wake_with_a_router_outcome_still_counts_against_the_budget(self) -> None:
         ledger = W.Ledger(os.path.join(str(self.tmp), "budget-wakes.jsonl"))
@@ -610,15 +645,45 @@ class ReceiptRecoveryTests(ReceiptHarness):
             sorted("/receipt/CLAUDE/%s" % w for w in (recent, old, lost)),
             "the router's receipts of the wakes from before the listener read them were not read",
         )
+        # Nothing on those rows names the routine that answered them, so only the router's own
+        # terminal receipt settles one:  `lost`, which the router has no receipt of, stays `done`.
         self.assertEqual(
-            sorted((r["wake_id"], r["state"], r.get("receipt_last")) for r in self.outcomes()),
-            sorted([(recent, "delivered", None), (old, "undelivered", None),
-                    (lost, "unknown", "http_404")]),
+            sorted((r["wake_id"], r["state"]) for r in self.outcomes()),
+            sorted([(recent, "delivered"), (old, "undelivered")]),
+        )
+        self.assertEqual(W.Ledger(self.seat_paths().wakes).wakes()[lost]["state"], "done")
+        self.assertEqual(
+            [(e["wake_id"], e["receipt_last"]) for e in self.log_events("wake-receipt-unclaimed")],
+            [(lost, "http_404")],
         )
         # Each was read once:  the old ones were past the deadline, so they had their last read.
         self.pass_at(daemon, 3600)
         self.assertEqual(len(self.receipt_gets()), 3)
         self.assertEqual(self.outcomes("CODEX"), [])
+
+    def test_a_202_the_router_never_stored_is_never_given_an_outcome(self) -> None:
+        # A `done` 202 from before the listener read receipts, with no hosted Worker answer on its
+        # row:  the router's, or a Worker's (or another routine's) whose 202 body was not the
+        # Worker's answer.  The row cannot tell them apart, so the router's 404 at every read,
+        # the last one included, leaves the wake as it was instead of recording `unknown`.
+        self.write_config(seats=router_seat("CLAUDE", "Claude"))
+        write_done(self.seat_paths(), "w-worker-7", self.clock.time() - 3600)
+        daemon = self.daemon(env=self.env(**{
+            C.ROUTER_BEARER_ENV: self.router_key, "CLAUDE_ROUTINE_URL": self.url(),
+        }))
+        self.pass_at(daemon, 15)
+        self.assertEqual(self.receipt_gets(), ["/receipt/CLAUDE/w-worker-7"])
+        self.pass_at(daemon, DEADLINE)  # past its deadline:  the last read
+        self.assertEqual(len(self.receipt_gets()), 2)
+        self.assertEqual(self.outcomes(), [], "a wake the router never claimed got an outcome")
+        view = W.Ledger(self.seat_paths().wakes).wakes()["w-worker-7"]
+        self.assertEqual(view["state"], "done")
+        self.assertEqual(
+            [(e["wake_id"], e["receipt_last"]) for e in self.log_events("wake-receipt-unclaimed")],
+            [("w-worker-7", "http_404")],
+        )
+        self.pass_at(daemon, 3600)
+        self.assertEqual(len(self.receipt_gets()), 2, "a wake left as it was was read again")
 
     def test_a_seat_a_reload_adds_back_reads_on_from_its_ledger(self) -> None:
         both = router_seat("CLAUDE", "Claude") + router_seat("CODEX", "Codex")

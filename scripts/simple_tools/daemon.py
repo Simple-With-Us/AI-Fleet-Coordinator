@@ -334,10 +334,11 @@ class SeatRunner:
         self.running: W.Pending | None = None
         self.ledger = W.Ledger(self.paths.wakes)
         # The wakes the router accepted whose receipt is still to be read (AFC-824):  wake id ->
-        # {"done_at", "read_at", "last", "routine"}.  Rebuilt from the ledger at start and for a
-        # seat a reload adds (_recover_receipts), and guarded by the daemon's _receipt_lock:  the
-        # wake worker adds, the receipt pass reads and settles.  `routine` is the routine the
-        # wake was sent with (Daemon._await_receipt).
+        # {"done_at", "read_at", "last", "routine", "inferred"}.  Rebuilt from the ledger at start
+        # and for a seat a reload adds (_recover_receipts), and guarded by the daemon's
+        # _receipt_lock:  the wake worker adds, the receipt pass reads and settles.  `routine` is
+        # the routine the wake was sent with (Daemon._await_receipt), and `inferred` is true for a
+        # wake whose `done` row does not say it went to the router (Daemon._receipt_final).
         self.receipt_waits: dict[str, dict[str, Any]] = {}
         # Highest event id routed from the outgoing-webhook spool this boot (AFC-652):  those
         # routes do not advance the native cursor, so a restart before the cursor passes them
@@ -8369,7 +8370,13 @@ class Daemon:
         with self._receipt_lock:
             runner.receipt_waits.setdefault(
                 wake_id,
-                {"done_at": float(done_at), "read_at": None, "last": None, "routine": routine},
+                {
+                    "done_at": float(done_at),
+                    "read_at": None,
+                    "last": None,
+                    "routine": routine,
+                    "inferred": False,
+                },
             )
 
     def _recover_receipts(self, runner: SeatRunner) -> None:
@@ -8378,19 +8385,26 @@ class Daemon:
         is their only record, so a restart reads on from each `done` time, and a wake with an
         outcome row is never read again.  While the seat routes to the router by its config, that
         includes its `done` wakes from before the listener read receipts (no `receipt_awaited`),
-        for as long as the router keeps a receipt (W.RECEIPT_BACKFILL).  The ledger is read under
-        _receipt_lock, the lock _receipt_settle appends under, so an outcome an earlier runner of
-        the seat was writing is either in the ledger read here or never written (that runner is
-        no longer the seat's)."""
+        for as long as the router keeps a receipt (W.RECEIPT_BACKFILL).  Nothing on such a row
+        says which routine answered it, so its wait is `inferred`:  only a terminal receipt that
+        names it settles it, and with none by its deadline it is left as it was (_receipt_final).
+        The ledger is read under _receipt_lock, the lock _receipt_settle appends under, so an
+        outcome an earlier runner of the seat was writing is either in the ledger read here or
+        never written (that runner is no longer the seat's)."""
         routine = runner.cfg.routine if C.routes_to_router(runner.cfg.routine) else None
         with self._receipt_lock:
-            found = W.awaiting_receipts(
-                runner.ledger.wakes(), backfill=routine is not None, now=self.clock.time()
-            )
+            views = runner.ledger.wakes()
+            found = W.awaiting_receipts(views, backfill=routine is not None, now=self.clock.time())
             for wake_id, done_at in found.items():
                 runner.receipt_waits.setdefault(
                     wake_id,
-                    {"done_at": float(done_at), "read_at": None, "last": None, "routine": routine},
+                    {
+                        "done_at": float(done_at),
+                        "read_at": None,
+                        "last": None,
+                        "routine": routine,
+                        "inferred": views[wake_id].get("receipt_awaited") is not True,
+                    },
                 )
 
     def _maybe_start_receipt_pass(self, now: float) -> None:
@@ -8438,23 +8452,27 @@ class Daemon:
         error.  At the deadline a wake gets one last read and, with no terminal
         answer, the outcome `unknown`, never `delivered`.  A wake is read with the routine it
         was sent with (else its seat's);  one whose routine is not the router's, or whose routine
-        URL gives no receipt URL, is not read, and reaches `unknown` at its
-        deadline.  Returns the counts `due`, `reads` and `outcomes`."""
+        URL gives no receipt URL, is not read, and reaches `unknown` at its deadline.  A wake
+        taken up from a `done` row that does not say it went to the router (`inferred`,
+        _recover_receipts) is settled only by a terminal receipt that names it:  at its deadline
+        it is left as it was instead (_receipt_final).  Returns the counts `due`, `reads` and
+        `outcomes`."""
         now = self.clock.time() if now is None else float(now)
         began = self.clock.monotonic()
-        due: list[tuple[float, float, str, SeatRunner, C.RoutineConfig | None]] = []
+        due: list[tuple[float, float, str, SeatRunner, C.RoutineConfig | None, bool]] = []
         with self._receipt_lock:
             for runner in list(self.seats.values()):
                 for wake_id, wait in runner.receipt_waits.items():
                     at = W.receipt_next_read(wait["done_at"], wait["read_at"])
                     if at <= now:
-                        due.append((at, wait["done_at"], wake_id, runner, wait.get("routine")))
+                        sent_with, inferred = wait.get("routine"), wait.get("inferred") is True
+                        due.append((at, wait["done_at"], wake_id, runner, sent_with, inferred))
         due.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
         with self.hidden_lock:
             known = list(self.hidden)
         resolved: dict[tuple[int, int], tuple[Any, ...]] = {}
         reads = outcomes = 0
-        for _at, done_at, wake_id, runner, sent_with in due:
+        for _at, done_at, wake_id, runner, sent_with, inferred in due:
             if self.stop.is_set():
                 break
             if self.seats.get(runner.seat) is not runner:
@@ -8470,9 +8488,7 @@ class Daemon:
             target, url, why = self._receipt_source(runner, wake_id, routine, resolved)
             if target is None:
                 if final:
-                    outcomes += self._receipt_settle(
-                        runner, wake_id, "unknown", {"receipt_last": why}
-                    )
+                    outcomes += self._receipt_final(runner, wake_id, why, inferred)
                 else:
                     self._receipt_note(runner, wake_id, now, why)
                 continue
@@ -8491,7 +8507,7 @@ class Daemon:
                 continue
             last = W.receipt_read_word(read.status, read.body, read.error)
             if final:
-                outcomes += self._receipt_settle(runner, wake_id, "unknown", {"receipt_last": last})
+                outcomes += self._receipt_final(runner, wake_id, last, inferred)
             else:
                 self._receipt_note(runner, wake_id, now, last)
         return {"due": len(due), "reads": reads, "outcomes": outcomes}
@@ -8542,6 +8558,28 @@ class Daemon:
             if wait is not None:
                 wait["read_at"] = now
                 wait["last"] = last
+
+    def _receipt_final(self, runner: SeatRunner, wake_id: str, last: str, inferred: bool) -> int:
+        """A wake at its deadline with no terminal receipt.  One whose `done` row said it went to
+        the router gets the outcome `unknown`, with `last` as its `receipt_last`.  One taken up on
+        a guess (`inferred`, _recover_receipts) may never have gone to the router at all:  a
+        Worker's or another routine's 202 whose body was not the Worker's answer reads the same
+        on its row.  So it gets no row and stays `done` (accepted), its reads end, and one
+        `wake-receipt-unclaimed` line says so;  a restart reads it once more while the router
+        keeps receipts (W.RECEIPT_BACKFILL).  Returns 1 for an outcome row, else 0."""
+        if not inferred:
+            return self._receipt_settle(runner, wake_id, "unknown", {"receipt_last": last})
+        with self._receipt_lock:
+            if (
+                self.stop.is_set()
+                or self.seats.get(runner.seat) is not runner
+                or runner.receipt_waits.pop(wake_id, None) is None
+            ):
+                return 0
+        self.log.write(
+            "wake-receipt-unclaimed", seat=runner.seat, wake_id=wake_id, receipt_last=last
+        )
+        return 0
 
     def _receipt_settle(
         self, runner: SeatRunner, wake_id: str, state: str, fields: Mapping[str, Any]

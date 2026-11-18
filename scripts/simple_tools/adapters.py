@@ -2919,8 +2919,11 @@ def receipt_url(url: str, seat: str, wake_id: str) -> str | None:
     """The wake router's receipt URL for one wake:  the routine URL with its final `/wake/<SEAT>`
     replaced by `/receipt/<SEAT>/<wake_id>` (wake_router.RECEIPT_PATH_RE), keeping any path before
     it (a router behind a prefix).  None when the URL does not end that way, carries a query or a
-    fragment (the router's paths never do), or the seat or wake id is not one its path accepts."""
-    if not _ROUTER_SEAT_RE.fullmatch(seat or "") or not _ROUTER_WAKE_ID_RE.fullmatch(wake_id or ""):
+    fragment (the router's paths never do), or the seat or wake id is not one its path accepts.
+    Any of the three that is not a string is refused the same way, never raised on."""
+    if not (isinstance(url, str) and isinstance(seat, str) and isinstance(wake_id, str)):
+        return None
+    if not _ROUTER_SEAT_RE.fullmatch(seat) or not _ROUTER_WAKE_ID_RE.fullmatch(wake_id):
         return None
     try:
         parts = urllib.parse.urlsplit(url)

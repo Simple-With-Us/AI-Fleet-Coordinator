@@ -145,16 +145,21 @@ class Ledger:
         row (OUTCOME_STATES, AFC-824), which can land up to RECEIPT_DEADLINE after the wake ran:
         it does not move `ts`, so `ts` stays the time the wake itself last moved, and what is
         measured from it (the stale-once day, the 24-hour wakes view) is measured from the run.
-        The outcome's own time is `times[<outcome>]`."""
+        The outcome's own time is `times[<outcome>]`, and the outcome row itself is kept whole as
+        `outcome_row`, so what the router said (outcome_fields) is read from that row alone and
+        never from a field an earlier row of the wake carried."""
         merged: dict[str, dict[str, Any]] = {}
         for row in self.rows():
             wake_id = row.get("wake_id")
             if not isinstance(wake_id, str):
                 continue
             view = merged.setdefault(wake_id, {"times": {}})
-            skip = ("times", "ts") if row.get("state") in OUTCOME_STATES else ("times",)
+            outcome = row.get("state") in OUTCOME_STATES
+            skip = ("times", "outcome_row", "ts") if outcome else ("times", "outcome_row")
             view.update({k: v for k, v in row.items() if k not in skip})
             view["times"].setdefault(str(row.get("state")), row.get("ts"))
+            if outcome:
+                view["outcome_row"] = dict(row)
         return merged
 
     def prune(self, now: float) -> None:
@@ -1079,17 +1084,20 @@ def receipt_row_fields(receipt: Mapping[str, Any], known: Iterable[str] = ()) ->
 
 
 def outcome_fields(view: Mapping[str, Any]) -> dict[str, Any]:
-    """The receipt fields a merged ledger view holds, read back under the same shapes, plus the
-    daemon's own `receipt_last`:  what listener_records shows for an outcome row.  An outcome with
-    no `receipt_status` came from no receipt (the deadline), so it shows `receipt_last` alone:  a
-    field such as `attempts` in its view is the `done` row's, about the POST, not the router's."""
+    """The receipt fields of a merged ledger view's own outcome row (`outcome_row`, Ledger.wakes),
+    read back under the same shapes, plus the daemon's own `receipt_last`:  what listener_records
+    shows for an outcome.  Only that row is read, never the merged fields:  a field the receipt
+    did not have, such as `attempts`, is then absent, and not the `done` row's count of POSTs
+    shown as the router's.  An outcome the deadline wrote holds `receipt_last` alone."""
+    row = view.get("outcome_row")
+    if not isinstance(row, Mapping):
+        return {}
     out: dict[str, Any] = {}
-    if _receipt_value(view, "receipt_status", _receipt_status, ())[0]:
-        for _name, row_name, check in RECEIPT_FIELDS:
-            kept, value = _receipt_value(view, row_name, check, ())
-            if kept:
-                out[row_name] = value
-    last = view.get("receipt_last")
+    for _name, row_name, check in RECEIPT_FIELDS:
+        kept, value = _receipt_value(row, row_name, check, ())
+        if kept:
+            out[row_name] = value
+    last = row.get("receipt_last")
     if isinstance(last, str) and RECEIPT_LAST_RE.fullmatch(last):
         out["receipt_last"] = last
     return out
@@ -1174,8 +1182,11 @@ def awaiting_receipts(
     before the listener read receipts counts too, while the router still keeps its receipt (done
     less than RECEIPT_BACKFILL before `now`):  an `http` wake the routine answered 202, the
     router's answer to a wake it stored, with no answer of the hosted Worker on its row
-    (`routine_delivered` and `routine_outcome`, adapters.routine_answer).  One that is past the
-    deadline gets one last read (Daemon.receipt_pass), so each is read at most once more."""
+    (`routine_delivered` and `routine_outcome`, adapters.routine_answer).  One that is past the
+    deadline gets one last read (Daemon.receipt_pass), so each is read at most once more.  That
+    202 is a guess, not a record:  a Worker's (or another routine's) 202 whose body was not the
+    Worker's answer reads the same, so the daemon settles such a wake only on a terminal receipt
+    that names it, which the router writes only for a wake it stored (Daemon._receipt_final)."""
     out: dict[str, float] = {}
     for wake_id, view in views.items():
         if view.get("state") != "done":
@@ -1192,7 +1203,8 @@ def awaiting_receipts(
 
 def _router_stored(view: Mapping[str, Any]) -> bool:
     """Whether a `done` view is an `http` wake answered the way the router answers a wake it
-    stored (wake_router.Router.accept:  202), and not by the hosted Worker."""
+    stored (wake_router.Router.accept:  202), and not by the hosted Worker with its answer.  It
+    is a guess:  any routine's 202 that left no Worker answer on the row looks the same."""
     status = view.get("http_status")
     return (
         view.get("adapter") == "http"
