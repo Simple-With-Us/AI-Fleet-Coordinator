@@ -61,6 +61,7 @@ def caller_key(seat):
         env[FI.ENV_READ_PATHS] = CALLER_SECRET_FOLDER
         key, status = FI.fetch_scoped(name, CALLER_SECRET_FOLDER, CALLER_TOKEN_ACCOUNT, env)
     except TimeoutError:
+        # The shared client lets a socket timeout through as a `TimeoutError`.
         # Distinct infrastructure signals:  a hung lookup is 124, a missing
         # credential source is 127, so operators can tell both from a refused lookup.
         print(name + " unavailable: Infisical lookup timed out", file=sys.stderr)

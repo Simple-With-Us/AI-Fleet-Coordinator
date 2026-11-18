@@ -31,7 +31,10 @@ def scoped_secret_get(path, name):
 
     Errors name the variable, never a value or a backend detail.  Every local failure
     happens before any provider request, so the broker releases the caller nonce:
-    "refused" for a missing or rejecting store, "retryable" for a timeout."""
+    "refused" for a missing or rejecting store, "retryable" for a timeout.
+
+    The shared client lets a socket timeout through as a `TimeoutError`,  so the timeout
+    branch below is the live path for a hung lookup,  not a defensive leftover."""
     account = TOKEN_ACCOUNTS.get(path)
     if not account:
         raise RoutingError(name + " unavailable: no scoped token covers " + path, outcome="refused")

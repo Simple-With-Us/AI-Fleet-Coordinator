@@ -281,6 +281,19 @@ class CallerKeyTests(unittest.TestCase):
                 with self.assertRaises(ClientError) as c: caller_key('ECHO')
         self.assertIn('OPERATOR_GITHUB_CALLER_ECHO_HMAC',str(c.exception))
 
+    def test_a_timeout_exits_124(self):
+        import os
+        from unittest.mock import patch
+        from simple_tools.operator_github_client import caller_key
+
+        def timeout(name, folder, account, env=None):
+            raise TimeoutError("timed out")
+
+        with patch.dict(os.environ,{},clear=True):
+            with patch.object(fleet_infisical, "fetch_scoped", timeout):
+                with self.assertRaises(SystemExit) as c: caller_key('ECHO')
+        self.assertEqual(c.exception.code, 124)
+
     def test_a_missing_token_exits_127(self):
         import os
         from unittest.mock import patch

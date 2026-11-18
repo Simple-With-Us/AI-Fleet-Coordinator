@@ -10,9 +10,11 @@ no token, and the status must say which refusal it was.
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -167,6 +169,48 @@ class FetchScopedTests(unittest.TestCase):
         ):
             value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
         self.assertEqual((value, status), ("", "forbidden"))
+
+
+class TimeoutTests(unittest.TestCase):
+    """A hung lookup is transient,  never a broken credential."""
+
+    def api(self) -> tuple[int, object]:
+        return fi._api_json("GET", "/v2/service-token", "st.abc.def.ghi", None, {})
+
+    def test_a_read_timeout_is_a_timeout_error(self) -> None:
+        hung = socket.timeout("timed out")  # noqa: UP041 - not TimeoutError on Python 3.9
+        with mock.patch.object(fi, "_opener", side_effect=hung):
+            with self.assertRaises(fi.SecretsTimeout):
+                self.api()
+
+    def test_a_wrapped_connect_timeout_is_a_timeout_error(self) -> None:
+        reason = socket.timeout("timed out")  # noqa: UP041 - not TimeoutError on Python 3.9
+        with mock.patch.object(fi, "_opener", side_effect=urllib.error.URLError(reason)):
+            with self.assertRaises(fi.SecretsTimeout):
+                self.api()
+
+    def test_a_timeout_is_both_a_secrets_error_and_a_timeout_error(self) -> None:
+        self.assertTrue(issubclass(fi.SecretsTimeout, fi.SecretsError))
+        self.assertTrue(issubclass(fi.SecretsTimeout, TimeoutError))
+
+    def test_a_connection_error_is_still_a_plain_failure(self) -> None:
+        with mock.patch.object(fi, "_opener", side_effect=OSError("connection refused")):
+            self.assertEqual(self.api(), (0, None))
+
+    def test_fetch_scoped_lets_a_timeout_through(self) -> None:
+        with mock.patch.object(fi, "token_from_store", return_value=("st.abc.def.ghi", "ok")):
+            with mock.patch.object(fi, "fetch_verified", side_effect=fi.SecretsTimeout()):
+                with self.assertRaises(TimeoutError):
+                    fi.fetch_scoped("NAME", "/folder", "consumer-ro", {})
+
+    def test_fetch_scoped_still_reports_a_refusal_as_a_status(self) -> None:
+        with mock.patch.object(fi, "token_from_store", return_value=("st.abc.def.ghi", "ok")):
+            with mock.patch.object(
+                fi, "fetch_verified", side_effect=fi.SecretsError("token-verification-failed")
+            ):
+                self.assertEqual(
+                    fi.fetch_scoped("NAME", "/folder", "consumer-ro", {}), ("", "forbidden")
+                )
 
 
 if __name__ == "__main__":

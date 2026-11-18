@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -160,6 +161,18 @@ class UsageError(SecretsError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, 2)
+
+
+class SecretsTimeout(SecretsError, TimeoutError):
+    """A socket timeout against Infisical:  transient,  never a refusal.
+
+    It is a `SecretsError`,  so every fail-closed path still catches it,  and a
+    `TimeoutError`,  so a consumer that can retry says "retryable" instead of
+    reading a hung lookup as a broken credential.
+    """
+
+    def __init__(self, message: str = "fetch-failed: timeout") -> None:
+        super().__init__(message, 4)
 
 
 # --------------------------------------------------------------------------- configuration
@@ -839,6 +852,16 @@ def _decode_json(raw: bytes):
     return value
 
 
+def _is_timeout(reason: object) -> bool:
+    """True when a transport failure is a timeout rather than a refusal.
+
+    `socket.timeout` is listed beside `TimeoutError` because the two are only the
+    same class from Python 3.10 on,  and the Mac still runs part of this code
+    under 3.9,  where a read timeout is not a `TimeoutError`.
+    """
+    return isinstance(reason, (TimeoutError, socket.timeout))
+
+
 def _api_json(
     method: str,
     path: str,
@@ -882,7 +905,18 @@ def _api_json(
     except urllib.error.HTTPError as exc:
         raw = exc.read(limit)
         status = exc.code
-    except (urllib.error.URLError, OSError, TimeoutError):
+    except urllib.error.URLError as exc:
+        # A connect timeout arrives wrapped in a URLError.  It is transient,  not a refusal.
+        if _is_timeout(exc.reason):
+            raise SecretsTimeout() from None
+        return 0, None
+    # `socket.timeout` is only an alias of `TimeoutError` from Python 3.10 on,  and the
+    # Mac still runs part of this code under 3.9,  so both names are caught here.
+    except (TimeoutError, socket.timeout):  # noqa: UP041 - both names are needed on 3.9
+        # A read timeout is transient too.  It reaches the consumer as a timeout,  so a
+        # consumer that can retry says so instead of reporting a broken credential.
+        raise SecretsTimeout() from None
+    except OSError:
         return 0, None
     finally:
         data = None
@@ -1175,6 +1209,9 @@ def fetch_scoped(
     "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
     it), "no-token", "keychain-locked", "token-unreadable" or "failed".
 
+    A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
+    retry says so instead of reading a hung lookup as a broken credential.
+
     The value never appears in a message, a log or an exception.
     """
     env = os.environ if env is None else env
@@ -1183,6 +1220,9 @@ def fetch_scoped(
         return "", status
     try:
         return fetch_verified(name, folder, env, token), "ok"
+    except TimeoutError:
+        # The timeout reaches the consumer instead of being reported as a refusal.
+        raise
     except SecretsError as exc:
         message = exc.message
         if exc.code == 3:

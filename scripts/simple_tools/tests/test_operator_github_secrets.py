@@ -93,6 +93,20 @@ class Tests(unittest.TestCase):
         self.assertIn("SOME_NAME", str(caught.exception))
 
 
+class TimeoutOutcomeTests(unittest.TestCase):
+    """A hung lookup is retryable;  a refused credential is not."""
+
+    def test_a_timeout_is_retryable_and_not_refused(self) -> None:
+        def timeout(name, folder, account, env=None):
+            raise TimeoutError("timed out")
+
+        with patch.object(fleet_infisical, "fetch_scoped", timeout):
+            with self.assertRaises(RoutingError) as caught:
+                scoped_secret_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
+        self.assertEqual(caught.exception.outcome, "retryable")
+        self.assertIn("OPERATOR_GITHUB_CALLER_CODEX_HMAC", str(caught.exception))
+
+
 class LocalFailureOutcomeTests(unittest.TestCase):
     def test_local_lookup_failures_are_refused_so_the_nonce_is_released(self):
         for status in ("no-token", "keychain-locked", "token-unreadable", "forbidden", "failed"):
