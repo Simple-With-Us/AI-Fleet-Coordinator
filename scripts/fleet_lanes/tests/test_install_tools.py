@@ -7600,7 +7600,7 @@ class ZcodeBashToolSeatDefaultTests(World):
         )
         self.assertEqual(rc, 0, out)
         self.assertIn("see the REFUSED line", out)
-        self.assertNotIn("see the warning above", out)
+        self.assertNotIn("see the WARNING line", out)
         # the same for a shim dir that exists and is a symlink, with no profile trouble at all
         (self.home / ".bashrc").unlink()
         real_dir = self.home / "seat-bin-real"
@@ -7615,7 +7615,7 @@ class ZcodeBashToolSeatDefaultTests(World):
             "--registry", str(REGISTRY_FILE), "--sha", SHA, "zcode",
         )
         self.assertEqual(rc, 0, out)
-        self.assertIn("see the warning above", out)
+        self.assertIn("see the WARNING line", out)
         self.assertNotIn("see the REFUSED line", out)
 
     def test_a_failed_seat_write_is_reported_as_partly_written(self) -> None:

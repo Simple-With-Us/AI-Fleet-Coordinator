@@ -8361,13 +8361,13 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
 def _emit_zcode_seat_plan(sp: ZcodeSeatPlan, emit: Callable[[str], None]) -> None:
     """The seat-default section of `plan zcode`, under the hooks-config plan of the same platform."""
     if sp.state == "stale":
-        # "a re-apply replaces what differs" is only true when apply may write at all;  point at the
-        # line that actually names the blocker (the REFUSED line for a refused profile, the WARNING
-        # line above for a foreign shim dir), never at a line the emit does not print.
+        # "a re-apply replaces what differs" is only true when apply may write at all;  name the line
+        # that identifies the blocker by its emit label, with no direction word, since both the
+        # REFUSED line and the WARNING lines print below this one.
         if sp.bashrc_action == "refused":
             state = "stale (apply refuses to write here; see the REFUSED line)"
         elif sp.dir_state == "foreign":
-            state = "stale (apply refuses to write here; see the warning above)"
+            state = "stale (apply refuses to write here; see the WARNING line)"
         else:
             state = "stale (a re-apply replaces what differs)"
     else:
