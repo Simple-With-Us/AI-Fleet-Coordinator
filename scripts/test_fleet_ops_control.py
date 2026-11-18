@@ -6248,6 +6248,22 @@ class TestWakeTests(Base):
         )
         self.assertEqual((code, answer["result"]), (2, "refused"))
 
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        # Kody, PR 2299:  a run that raised must not leave the audit log without a row.
+        reader = TestWakeReader(report=self.report(), sessions=self.registry())
+
+        def broken(ctx, chat):
+            raise RuntimeError("unexpected")
+
+        with mock.patch.object(foc, "run_test_wake", broken):
+            code, answer = self.go(reader=reader)
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", "test_wake_failed"))
+        self.assertNotIn("unexpected", json.dumps(answer))
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in self.audit_rows()],
+            [("server test-wake", self.TARGET, "failed")],
+        )
+
     def test_a_run_takes_the_one_action_lock(self):
         lock = self.state / "ops-control.lock"
         fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)

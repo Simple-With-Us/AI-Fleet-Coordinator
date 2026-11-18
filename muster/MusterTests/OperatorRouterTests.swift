@@ -134,6 +134,20 @@ final class OperatorTestWakeResultTests: XCTestCase {
         XCTAssertTrue(plan.advice(for: .testWake(target))?.contains("no longer live") == true)
     }
 
+    func test_every_code_the_helper_answers_has_advice() {
+        // Kody, PR 2299:  each test-wake code the helper can answer says why in the sheet.
+        let codes = ["target_gone", "target_ambiguous", "registry_unavailable", "letter_not_picked", "wrong_target",
+                     "no_pick", "not_the_router", "router_unreachable", "routine_not_configured",
+                     "routine_key_refused", "routine_url_refused", "seat_not_loaded", "no_routine", "usage",
+                     "not_accepted", "not_dry_run", "test_wake_failed", "docker_unavailable",
+                     "container_not_running", "read_failed", "timeout", "too_large", "not_json"]
+        for code in codes {
+            var outcome = OpsOutcome(kind: .failed, ok: false, commands: [], detail: "", exitCode: 1)
+            outcome.errorCode = code
+            XCTAssertNotNil(outcome.advice(for: .testWake(target)), code)
+        }
+    }
+
     func test_a_plan_carries_no_result() {
         let outcome = OpsResultParser.parse(result(answer(result: "planned")), mode: .plan,
                                             action: .testWake(target), timeout: 90)

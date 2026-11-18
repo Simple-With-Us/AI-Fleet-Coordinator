@@ -1576,6 +1576,32 @@ struct OpsOutcome: Equatable {
             return "The router would have woken another chat than the one you picked.\(gap)Nothing was delivered."
         case "no_pick":
             return "The router would have woken no chat for this wake.\(gap)Nothing was delivered."
+        case "not_the_router":
+            return "That seat's routine is not the shared wake router, so nothing was sent."
+        case "router_unreachable":
+            return "The wake router gave no answer at the routine's host, so nothing was sent."
+        case "routine_not_configured", "routine_key_refused", "routine_url_refused":
+            return "The seat's routine address or key is not usable in the Eavesdropper, so nothing was sent."
+        case "seat_not_loaded":
+            return "That seat is not a loaded seat of the Eavesdropper, so nothing was sent."
+        case "no_routine":
+            return "That seat has no routine, so it has no router to test."
+        case "usage":
+            return "The Eavesdropper refused the test wake request, so nothing was sent."
+        case "not_accepted", "not_dry_run":
+            return "The wake router did not answer the dry run as its own.\(gap)Nothing was delivered."
+        case "test_wake_failed":
+            return "The test wake stopped without an answer the server could read.\(gap)It may have reached the router, and nothing was delivered."
+        case "docker_unavailable", "container_not_running", "read_failed":
+            if case .testWake = action {
+                return "The test wake could not be run in the Eavesdropper's container, so nothing was sent."
+            }
+            return nil
+        case "timeout", "too_large", "not_json":
+            if case .testWake = action {
+                return "The test wake's answer could not be read in time.\(gap)Nothing was delivered."
+            }
+            return nil
         default:
             return nil
         }

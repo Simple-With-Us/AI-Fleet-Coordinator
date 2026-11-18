@@ -630,6 +630,7 @@ TEST_WAKE_ERRORS = {
     "seat_not_loaded": "the seat is not a loaded seat of the Eavesdropper",
     "no_routine": "the seat has no routine, so it has no router to test",
     "usage": "the Eavesdropper refused the test-wake request",
+    "test_wake_failed": "the test wake stopped without an answer this helper could read;  it may have reached the router",
 }
 TEST_WAKE_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -3962,7 +3963,16 @@ def handle(
                 confirm_test_wake_target(ctx, chat)
                 if isinstance(reason_out, dict):
                     reason_out["started"] = True
-                fields, code = run_test_wake(ctx, chat)
+                try:
+                    fields, code = run_test_wake(ctx, chat)
+                except Exception:  # noqa: BLE001 - a run that may have sent still gets its one audit row
+                    fields, code = {
+                        "ok": False,
+                        "result": "failed",
+                        "detail": TEST_WAKE_ERRORS["test_wake_failed"],
+                        "errorCode": "test_wake_failed",
+                        "testWake": None,
+                    }, 1
             answer.update(fields)
             audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
