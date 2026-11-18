@@ -11,6 +11,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from fleet_secrets import cli, core
 
@@ -280,7 +281,7 @@ class GetTests(Base):
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${folder.OTHER}"}))
-        code, _out, err = self.call("run", "--", "true")
+        code, _out, err = self.call("run", "--only", "ALPHA,BROKEN", "--", "true")
         self.assertEqual(code, 5)
         self.assertIn("BROKEN", err)
         self.assertNotIn("folder.OTHER", err)
@@ -316,7 +317,7 @@ class RunTests(Base):
     def test_run_injects_env_and_execs(self):
         self.use(World())
         self.env["KEEP"] = "kept"
-        _code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
+        _code, _, err = self.call("run", "--only", "ALPHA,BETA", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
         ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
@@ -325,11 +326,11 @@ class RunTests(Base):
     def test_run_replaces_an_existing_variable(self):
         self.use(World())
         self.env["ALPHA"] = "old"
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(self.exec_calls[0][2]["ALPHA"], VAL_A)
 
     def test_noninteractive_get_names_and_run_require_a_scoped_token(self):
-        for args in (("get", "ALPHA"), ("names",), ("run", "--", "mycmd")):
+        for args in (("get", "ALPHA"), ("names",), ("run", "--only", "ALPHA", "--", "mycmd")):
             with self.subTest(args=args):
                 world = self.use(World())
                 env = dict(self.env)
@@ -393,7 +394,7 @@ class RunTests(Base):
                 }
             )
         )
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["PATH"], self.env["PATH"])
         self.assertEqual(env["HOME"], self.env["HOME"])
@@ -429,7 +430,7 @@ class RunTests(Base):
             core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
         }
         self.use(World(secrets=secrets))
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
@@ -454,7 +455,7 @@ class RunTests(Base):
         self.env[core.ENV_TOKEN] = "st.parent-token-fixture"
         self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
         self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA,BETA", "--", "mycmd")
         self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(len(self.exec_calls), 2)
         for _, _, env in self.exec_calls:
@@ -464,7 +465,7 @@ class RunTests(Base):
 
     def test_names_that_are_not_env_names_are_dropped(self):
         self.use(World(secrets={"ALPHA": VAL_A, "bad-name": "x", "9LIVES": "y"}))
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertNotIn("bad-name", env)
         self.assertNotIn("9LIVES", env)
@@ -478,7 +479,7 @@ class RunTests(Base):
     def test_command_not_found_is_127(self):
         self.use(World())
         with mock.patch.object(cli.os, "execvpe", side_effect=FileNotFoundError):
-            code, _, err = self.call("run", "--", "nosuchcmd")
+            code, _, err = self.call("run", "--only", "ALPHA", "--", "nosuchcmd")
         self.assertEqual(code, 127)
         self.assertIn("nosuchcmd", err)
         self.assertNoSentinel(err)
@@ -745,13 +746,14 @@ class UsageTests(Base):
 
 
 class SetTests(Base):
-    """`set` writes one secret over REST with the machine identity's token.  _api is faked, so no network."""
+    """`set` uses the scoped writer and retained intent against fake REST, never a network."""
 
     def setUp(self):
         super().setUp()
         self.api = []
         self.statuses = {}
         self.bodies = {}
+        self.stored = {}
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
@@ -762,6 +764,22 @@ class SetTests(Base):
 
     def fake_api_json(self, method, path, token, body, env, **kwargs):
         status = self.fake_api(method, path, token, body, env)
+        if method in ("PATCH", "POST"):
+            kwargs["on_status"](status)
+            if status in (200, 201, 202):
+                self.stored[path.rsplit("/", 1)[-1]] = body["secretValue"]
+        if method == "GET" and "/v3/secrets/raw/" in path:
+            name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
+            return status, {
+                "secret": dict(
+                    secretKey=name,
+                    secretValue=self.stored[name],
+                    type="shared",
+                    workspace=PROJECT,
+                    environment="prod",
+                    secretPath="/linear",
+                )
+            }
         return status, self.bodies.get((method, path), None)
 
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
@@ -776,8 +794,13 @@ class SetTests(Base):
     def test_update_path_sends_the_value_in_the_body_only_and_strips_one_newline(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         code, out, err = self.run_set("CACHE_MY_APP", "--path", "/linear")
-        self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
-        method, path, token, body = self.api[-1]
+        self.assertEqual((code, err), (0, ""))
+        receipt = json.loads(out)
+        self.assertEqual(
+            (receipt["result"], receipt["name"], receipt["outcome"]),
+            ("updated", "CACHE_MY_APP", "ok"),
+        )
+        method, path, token, body = next(row for row in self.api if row[0] == "PATCH")
         self.assertEqual(
             (method, path, token),
             ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
@@ -792,22 +815,73 @@ class SetTests(Base):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.statuses["PATCH"] = 404
         code, out, _ = self.run_set("CACHE_NEW_APP", "--path", "/linear")
-        self.assertEqual((code, out), (0, "created CACHE_NEW_APP at /linear\n"))
-        self.assertEqual([a[0] for a in self.api if "/v3/secrets/raw/" in a[1]], ["PATCH", "POST"])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (json.loads(out)["result"], json.loads(out)["name"]), ("created", "CACHE_NEW_APP")
+        )
+        self.assertEqual([a[0] for a in self.api if a[0] in ("PATCH", "POST")], ["PATCH", "POST"])
 
     def test_set_never_creates_a_folder_and_checks_it_exists_first(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual([a for a in self.api if a[1] == "/v1/folders"], [])
         self.assertEqual(self.api[0][0], "GET")
-        self.assertIn("secretPath=/linear", self.api[0][1])
+        self.assertEqual(parse_qs(urlsplit(self.api[0][1]).query)["secretPath"], ["/linear"])
+
+    def test_same_identity_replays_known_receipt_and_never_rewrites(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        intent = cli.write_intent_for_cli(self.env, "fleet-infisical-cli")
+        args = (
+            "CACHE_K",
+            "--path",
+            "/linear",
+            "--request-id",
+            intent.request_id,
+            "--request-created-at",
+            str(intent.created_at_ms),
+        )
+        self.assertEqual(self.run_set(*args)[0], 0)
+        count = len(self.api)
+        code, out, err = self.run_set(*args)
+        self.assertEqual((code, err, len(self.api)), (0, "", count))
+        self.assertTrue(json.loads(out)["replayed"])
+        code, out, err = self.run_set(*args, stdin="different-synthetic-value")
+        self.assertEqual((code, len(self.api)), (4, count))
+        self.assertEqual(json.loads(out)["outcome"], "intent_conflict")
+
+    def test_unknown_blocks_same_and_fresh_ids_and_reports_original(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 0
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        original = json.loads(out)
+        self.assertEqual(original["outcome"], "outcome_unknown")
+        count = len(self.api)
+        for suffix in (
+            (
+                "--request-id",
+                original["request_id"],
+                "--request-created-at",
+                str(original["created_at_ms"]),
+            ),
+            (),
+        ):
+            code, out, err = self.run_set("CACHE_K", "--path", "/linear", *suffix)
+            self.assertEqual((code, len(self.api)), (4, count))
+            held = json.loads(out)
+            self.assertEqual(
+                (held["request_id"], held["created_at_ms"]),
+                (original["request_id"], original["created_at_ms"]),
+            )
+            self.assertTrue(held["request_may_have_been_sent"])
 
     def test_a_missing_folder_fails_with_folder_missing_and_writes_nothing(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.statuses["GET"] = 404
         code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A)
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("folder-missing", err)
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["outcome"], "refused")
+        self.assertIn("write-refused", err)
         self.assertEqual([a[0] for a in self.api], ["GET"])
         self.assertNoSentinel(err)
 
@@ -816,7 +890,7 @@ class SetTests(Base):
         self.statuses["GET"] = 500
         code, _, err = self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual(code, 4)
-        self.assertIn("folder-check http-500", err)
+        self.assertIn("write-refused", err)
         self.assertEqual([a[0] for a in self.api], ["GET"])
 
     def test_names_and_folders_off_the_allowlist_are_refused_before_any_login_or_call(self):
@@ -900,7 +974,8 @@ class SetTests(Base):
         self.statuses["PATCH"] = 403
         code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A + "\n")
         self.assertEqual(code, 4)
-        self.assertIn("http-403", err)
+        self.assertEqual(json.loads(out)["provider_status"], 403)
+        self.assertIn("write-refused", err)
         self.assertNoSentinel(out, err)
 
     def test_set_requires_separate_write_token(self):
