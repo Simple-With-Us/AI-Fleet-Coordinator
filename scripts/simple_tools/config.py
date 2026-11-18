@@ -826,6 +826,12 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
                 "seat.%s.%s is deprecated:  it still works as before, and goes away when seats move "
                 "to the one wake path (a routine, or capture only)" % (seat, key)
             )
+            claude = section.get("claude") if key == "claude" else None
+            if key == "claude" and (not isinstance(claude, str) or not os.path.isabs(claude)):
+                found.append(
+                    "seat.%s.claude must be an absolute path;  it is ignored, so the liveness "
+                    "check of a live Claude Code session asks no binary" % seat
+                )
         else:
             found.append("seat.%s.%s is not a known seat setting and is ignored" % (seat, key))
     budget = section.get("budget")
@@ -1419,11 +1425,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         # Code session is interactive.  The other runtime settings (`model`, `muse`, `mcode`,
         # `fallback` and the rest) are left over and ignored with a warning (seat_key_warnings).
         claude = section.get("claude")
-        claude_bad = claude is not None and (
-            not isinstance(claude, str) or not os.path.isabs(claude)
-        )
-        if claude_bad:
-            wake_problems.append("seat.%s.claude must be an absolute path" % seat_name)
+        if claude is not None and (not isinstance(claude, str) or not os.path.isabs(claude)):
+            # Only the liveness check reads it, so a bad path is a warning (seat_key_warnings) and the
+            # check asks no binary:  an unrelated setting must never cost a seat its routine.
+            claude = None
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -1487,8 +1492,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             # Fail soft:  keep the seat connected and capturing, wake it by inbox only, and say why.
             errors.extend(wake_problems)
             wake, routine, held_back = "inbox", None, None
-            if claude_bad:  # a valid path stays:  the liveness check reads it whatever the wake
-                claude = None
         seat_cfg = SeatConfig(
             seat_name,
             bot,

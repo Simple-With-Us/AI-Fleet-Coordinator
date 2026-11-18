@@ -115,7 +115,7 @@ class FailSoftConfig(unittest.TestCase):
                 # Another wake problem found earlier in the section (bearer_locator is checked
                 # before the wake) still comes second:  the banner and status show the first one.
                 text = text.replace(
-                    'bot = "Claude"', 'bot = "Claude"\nbearer_locator = "Fleet-OPS/x"'
+                    'bot = "Claude"', 'bot = "Claude"\nbearer_locator = "example-test/x"'
                 )
                 seat = self.assertDowngraded(C.from_dict(tomllib.loads(text)))
                 self.assertEqual(seat.config_problems[0], retired_message(value))
@@ -129,14 +129,40 @@ class FailSoftConfig(unittest.TestCase):
             [retired_message("claude"), 'seat.CLAUDE.routine applies only to wake = "http"'],
         )
 
-    def test_a_bad_budget_or_path_downgrades_only_the_wake(self) -> None:
-        for extra in (
-            'claude = "relative/claude"',
-            "budget = { nope = 1 }",
-        ):
+    def test_a_bad_budget_downgrades_only_the_wake(self) -> None:
+        for extra in ("budget = { nope = 1 }",):
             with self.subTest(extra=extra):
                 seat = self.assertDowngraded(C.from_dict(tomllib.loads(BASE % extra)))
                 self.assertEqual(seat.bot, "Claude")
+
+    def test_a_bad_claude_path_only_warns_and_the_seat_keeps_its_routine(self) -> None:
+        # `claude` names the binary the liveness check of a live Claude Code session asks and nothing
+        # else, so a relative or non-string value is ignored with a warning:  it must never cost an
+        # http seat its routine (Kody's finding on this change;  the same rule as the leftover keys).
+        warning = (
+            "seat.CLAUDE.claude must be an absolute path;  it is ignored, so the liveness check of a "
+            "live Claude Code session asks no binary"
+        )
+        for value in ('"relative/claude"', "5", "true", '""'):
+            with self.subTest(value=value):
+                cfg = load("claude = %s" % value)
+                self.assertEqual(cfg.errors, [])
+                seat = cfg.seats["CLAUDE"]
+                self.assertEqual((seat.wake, seat.mode), ("http", "routine"))
+                self.assertIsNotNone(seat.routine)
+                self.assertEqual(seat.config_problems, [])
+                self.assertIsNone(seat.claude)
+                self.assertIn(warning, cfg.warnings)
+        good = load('claude = "/usr/local/bin/claude"')
+        self.assertEqual(good.errors, [])
+        self.assertEqual(good.seats["CLAUDE"].claude, "/usr/local/bin/claude")
+        self.assertNotIn(warning, good.warnings)
+
+    def test_a_bad_claude_path_does_not_hide_a_retired_wake(self) -> None:
+        text = (BASE % 'claude = "relative/claude"').replace('wake = "http"', 'wake = "claude"')
+        seat = self.assertDowngraded(C.from_dict(tomllib.loads(text)))
+        self.assertEqual(seat.config_problems[0], retired_message("claude"))
+        self.assertIsNone(seat.claude)
 
     def test_a_credential_problem_still_skips_the_seat_but_status_can_name_it(self) -> None:
         cfg = C.from_dict(

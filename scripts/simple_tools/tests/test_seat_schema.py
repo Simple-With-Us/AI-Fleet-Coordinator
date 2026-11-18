@@ -179,8 +179,16 @@ class SeatKeySchema(unittest.TestCase):
         seat = load(ROUTINE_SEAT % 'claude = "/opt/claude/bin/claude"').seats["JET"]
         self.assertEqual((seat.wake, seat.claude), ("http", "/opt/claude/bin/claude"))
         cfg = load(ROUTINE_SEAT % 'claude = "relative/claude"')
-        self.assertEqual(cfg.seats["JET"].config_problems, ["seat.JET.claude must be an absolute path"])
-        self.assertIsNone(cfg.seats["JET"].claude, "a path that is not absolute is never kept")
+        # A path that is not absolute is never kept, and only warns:  the liveness check is the one
+        # reader, so it must not cost the seat its routine.
+        self.assertEqual(cfg.seats["JET"].config_problems, [])
+        self.assertEqual(cfg.seats["JET"].wake, "http")
+        self.assertIsNone(cfg.seats["JET"].claude)
+        self.assertIn(
+            "seat.JET.claude must be an absolute path;  it is ignored, so the liveness check of a "
+            "live Claude Code session asks no binary",
+            cfg.warnings,
+        )
 
     def test_a_seat_whose_wake_is_downgraded_keeps_a_valid_claude_path(self) -> None:
         # The liveness check reads `claude` whatever the wake, so a downgrade to inbox keeps it.
