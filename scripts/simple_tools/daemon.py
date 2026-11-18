@@ -6371,9 +6371,7 @@ class Daemon:
                     },
                 )
 
-    def _sent_routine(
-        self, runner: SeatRunner, view: Mapping[str, Any]
-    ) -> C.RoutineConfig | None:
+    def _sent_routine(self, runner: SeatRunner, view: Mapping[str, Any]) -> C.RoutineConfig | None:
         """The router routine a wake was sent with, rebuilt from its `done` row's
         `receipt_routine` (C.router_routine), or None:  for a row with none, and when the
         variable it names no longer resolves, from the environment the daemon started with, to
