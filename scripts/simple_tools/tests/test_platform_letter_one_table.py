@@ -129,7 +129,7 @@ class ClaudeRow(Base):
 
 class MiniMaxRow(Base):
     DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
-           " parent_session_id TEXT)")
+           " parent_session_id TEXT, archived INTEGER DEFAULT 0, created_at_ms INTEGER)")
 
     def setUp(self) -> None:
         super().setUp()
@@ -140,10 +140,15 @@ class MiniMaxRow(Base):
             conn.execute(self.DDL)
         conn.close()
 
-    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "") -> None:
+    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "",
+            archived: int = 0, age: float = 3600.0) -> None:
         conn = sqlite3.connect(self.store)
         with conn:
-            conn.execute("INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?)", (sid, title, kind, parent or None))
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (sid, title, kind, parent or None, archived, int((time.time() - age) * 1000)),
+            )
         conn.close()
 
     def title(self, sid: str) -> str:
@@ -161,6 +166,77 @@ class MiniMaxRow(Base):
     def test_the_row_is_in_the_table(self) -> None:
         self.assertIs(PL.load_spec("minimax"), PM.SPEC)
         self.assertEqual((PM.SPEC.seat, PM.SPEC.output, PM.SPEC.events["Stop"]), ("MM", "text", "turn"))
+
+
+class UnletteredSessionsTests(MiniMaxRow):
+    """`minimax_unlettered_sessions`:  the repair pass's candidates are this host's chats that hold no letter
+    note, old enough that their own start has finished and young enough to be a live loss, newest first.  A chat
+    that started before the hook was installed has no note at all, and the pass that looked for the "??: "
+    placeholder could not see it."""
+
+    def write_note(self, sid: str) -> None:
+        path = PL.note_path(self.env(), PM.SEAT, sid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"label": "AA", "generation": 1, "location": "mac"}, fh)
+
+    def test_names_the_chats_that_hold_no_note(self) -> None:
+        self.add("m-0001", "A Chat With No Note")
+        self.add("m-0002", "A Lettered Chat")
+        self.write_note("m-0002")
+        self.add("m-0003", "Brand New", age=60)
+        self.add("m-0004", "Ancient", age=365 * 86400)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0001"])
+
+    def test_names_the_newest_first(self) -> None:
+        self.add("m-0005", "Older", age=7200)
+        self.add("m-0006", "Newer", age=3600)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0006", "m-0005"])
+
+    def test_a_sub_thread_is_not_a_candidate(self) -> None:
+        self.add("m-0007", "A Chat", kind="conversation")
+        self.add("m-0008", "Its Sub-Thread", kind="task", parent="m-0007")
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0007"])
+
+    def test_an_archived_chat_is_not_a_candidate(self) -> None:
+        self.add("m-0009", "Put Away", archived=1)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
+
+    def test_a_cron_run_is_not_a_candidate(self) -> None:
+        self.add("m-0010", "A Cron Run", kind="cron")
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
+
+    def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
+        os.unlink(self.store)
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_store_without_the_columns_it_needs_answers_none(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+                " parent_session_id TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?)",
+                ("m-0011", "Old Store", "conversation", None),
+            )
+        conn.close()
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_the_repair_pass_letters_a_chat_that_started_before_the_hook(self) -> None:
+        """The chat that predates the hook has no note and no placeholder, and the pass gives it a letter and
+        puts it on its title:  the repair the issue asks for, proved."""
+        self.add("m-0012", "A Chat From Before The Hook")
+        out = PL.repair_unlettered(PM.SPEC, self.env(), PM.SEAT, "mac", now=time.time())
+        self.assertEqual(out["asked"], ["m-0012"])
+        self.assertEqual(out["repaired"], ["m-0012"])
+        note = self.note(PM.SEAT, "m-0012")
+        self.assertEqual(len(note["label"]), 2, note)
+        self.assertTrue(self.title("m-0012").startswith(note["label"] + ": "), self.title("m-0012"))
+        # And a second pass finds nothing:  the chat is lettered now.
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
 
     def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
         # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with

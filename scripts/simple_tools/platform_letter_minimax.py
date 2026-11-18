@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -215,6 +216,68 @@ def minimax_chat_payload(sid: str) -> Mapping[str, Any]:
     return {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
 
 
+#: The most chats one scan names, the oldest a candidate may be, and the age a chat must have reached before
+#: it is named:  a chat that is starting now runs its own hook, and one that is older than the window is a
+#: chat this pass was never about.  The window is wide because the candidates are the chats that started
+#: before the hook was installed, and those are as old as the gap between the two.
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 90 * 86400
+#: How long a read of the session store waits for a locked one before it reads nothing.
+STORE_WAIT = 0.5
+
+
+def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's chats that hold no letter note, newest first, for the scheduled repair pass
+    (`repair_unlettered`).
+
+    A chat that started before the hook was installed has no note at all, and its title never carried the
+    "??: " placeholder, so a pass that looks for the placeholder cannot see it and reads as "there is
+    nothing to repair".  This looks for the note instead:  a chat the store holds, that is not a sub-thread
+    and not archived, and that has no note under the state root.  A chat the retired client lettered keeps
+    its letter in that client's own cache and is still a candidate, because the note this row writes is
+    what the pass looks for.
+
+    Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the columns
+    it needs) answers None:  no pass this time.  A chat's note is read again in its own replayed start
+    before anything changes."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return None
+    now = time.time()
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=STORE_WAIT)
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT session_id FROM local_runtime_sessions"
+            " WHERE session_kind IN (?, ?)"
+            " AND (parent_session_id IS NULL OR parent_session_id = '')"
+            " AND (archived IS NULL OR archived = 0)"
+            " AND created_at_ms >= ? AND created_at_ms <= ?"
+            " ORDER BY created_at_ms DESC LIMIT ?",
+            (
+                *CHAT_KINDS,
+                (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
+                (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+                UNLETTERED_SCAN,
+            ),
+        ).fetchall()
+    except sqlite3.Error:
+        return None  # a store this old cannot say what it holds:  no pass
+    finally:
+        conn.close()
+    found: list[str] = []
+    for (sid,) in rows:
+        if not isinstance(sid, str) or not sid:
+            continue
+        if os.path.isfile(PL.note_path(env, SEAT, sid)):
+            continue  # lettered already:  the pass has nothing to do for it
+        found.append(sid)
+    return found
+
+
 #: The wrappers the retired MiniMax client left on a host, under the home folder.  Nothing runs them any more;
 #: `install --check` names the ones still there and no installer deletes them.
 RETIRED_FILES = (".local/bin/mm-session-letter", ".local/bin/mm-registry-env")
@@ -235,6 +298,7 @@ SPEC = PL.PlatformSpec(
     output="text",
     quiet_events=("Stop",),
     chat_payload=minimax_chat_payload,
+    unlettered_sessions=minimax_unlettered_sessions,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
