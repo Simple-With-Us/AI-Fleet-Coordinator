@@ -150,7 +150,7 @@ seat's evidence is never the other's:  this seat's three gates are the ones abov
 three gates are the ones in `docs/protocols/zcode-wakes.md`, where the ZC seat's own review,
 its own live answer and its own real wake are recorded.  Neither seat's legacy binding had
 delivered anything when the apply replaced it:  the server's wake ledger holds no wake for
-this seat at all, and the legacy bridge's own ledger on the server holds 83 wakes for ZC and
+this seat at all, and the legacy bridge's own ledger on the server holds 52 wakes for ZC and
 not one of them was delivered, so no path that worked was removed before a replacement had
 answered one.
 

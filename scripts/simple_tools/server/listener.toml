@@ -247,9 +247,10 @@ wake = "inbox"
 # only after the router replacement had been explicitly reviewed, was live, and had
 # answered a real wake end to end, and the legacy bridge stays active until every one of those
 # gates has passed.  The bridge had delivered nothing, so nothing that worked was removed:  its
-# own ledger holds 83 wakes and not one of them was delivered.  The bridge's own URL is taken
-# from the bridge's own bind, and its own key is already in the loader's secondary read, so a
-# rollback has a value to point at.  The cutover is in docs/protocols/zcode-wakes.md.
+# own ledger holds 52 wakes and not one of them was delivered.  The bridge's own URL is
+# governed in AFC prod /zulip under ZC_BRIDGE_ROUTINE_URL, and its own key is already in the
+# loader's secondary read, so a rollback has a value to point at.  The cutover is in
+# docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
