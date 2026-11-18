@@ -98,8 +98,12 @@ def osascript_argv(osascript: str, text: str, title: str) -> list[str]:
 
 QUERY = "since_hours=24&limit=100"
 # Wakes that ran or are about to run.  held_back, dropped, skipped, surfaced, expired and
-# evicted never ran, so they neither banner nor run a hook.
-ALERT_STATES = frozenset({"queued", "accepted", "started", "done", "failed"})
+# evicted never ran, so they neither banner nor run a hook.  delivered, undelivered and unknown
+# are the wake router's outcome of a `done` wake (AFC-824, wakes.OUTCOME_STATES):  a wake that
+# reached one between two polls still ran, and alerts once like any other.
+ALERT_STATES = frozenset(
+    {"queued", "accepted", "started", "done", "failed", "delivered", "undelivered", "unknown"}
+)
 MAX_SEEN_WAKE_IDS = 500
 REQUEST_TIMEOUT_SECONDS = 10
 

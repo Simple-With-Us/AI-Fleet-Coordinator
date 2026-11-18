@@ -379,6 +379,11 @@ class AllowlistNotesTests(Base):
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
         ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
+        ),
         "com.jay.fleet-mac-services": (
             "reporting",
             "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "
@@ -5876,6 +5881,14 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
+                    # The real router sends a Content-Length:  http.client closes the response,
+                    # and its socket, as soon as that many bytes are read.  The reader must stop
+                    # there, not set a timeout on the closed socket (read_failed on the server).
+                    state["headers"] = {"Content-Length": str(len(state["body"]))}
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state["headers"] = {}
                     state.update(
                         status=503,
                         body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
@@ -5918,6 +5931,47 @@ class RouterHealthTests(Base):
             finally:
                 srv.shutdown()
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
+
+    def test_a_known_length_body_is_complete_without_another_read(self):
+        # Python 3.9's HTTPResponse.read1 neither counts a known length down nor closes the
+        # response, so isclosed() stays false:  the reader must stop on the Content-Length
+        # instead of reading again and waiting on the kept-alive socket.
+        body = b'{"healthy": true, "seats": {}}'
+
+        class Headers(dict):
+            pass
+
+        class KeptAlive:
+            headers = Headers({"Content-Length": str(len(body))})
+
+            def __init__(self):
+                self.sent = False
+                self.reads = 0
+
+            def isclosed(self):
+                return False
+
+            def read1(self, size):
+                self.reads += 1
+                if self.sent:
+                    raise AssertionError("read again after the declared length")
+                self.sent = True
+                return body[:size]
+
+        response = KeptAlive()
+        deadline = foc.time.monotonic() + 5
+        self.assertEqual(foc._read_router_health_body(response, 1024, deadline), body)
+        self.assertEqual(response.reads, 1)
+        # A declared length above the cap still reads only the cap plus one byte, which the
+        # caller answers as too_large.
+        response = KeptAlive()
+        response.headers = Headers({"Content-Length": "999999"})
+        self.assertEqual(len(foc._read_router_health_body(response, 8, deadline)), 9)
+        # A missing or unreadable Content-Length leaves the length undeclared.
+        for headers in (Headers(), Headers({"Content-Length": "x"}), None):
+            response = KeptAlive()
+            response.headers = headers
+            self.assertIsNone(foc._declared_length(response))
 
     def test_read_router_health_http_times_out_slow_trickle_peer(self):
         import http.server

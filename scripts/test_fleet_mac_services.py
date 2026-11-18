@@ -520,6 +520,7 @@ class RepoTemplates(unittest.TestCase):
         for label, script, interval in (
             ("com.jay.fleet-worker-health", "fleet-worker-health.py", 900),
             ("com.jay.fleet-mac-services", "fleet-mac-services.py", 300),
+            ("com.jay.fleet-api-health", "fleet-api-health.py", 900),
         ):
             with open(os.path.join(launchd, label + ".plist"), "rb") as handle:
                 data = plistlib.load(handle)
