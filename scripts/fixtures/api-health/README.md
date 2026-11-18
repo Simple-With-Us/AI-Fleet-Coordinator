@@ -18,7 +18,7 @@ CT's public health response nests checks under pipeline.checks. Polling checks d
 
 ## Mapping choice
 
-For source-native CT checks, all three chamber polls must be explicitly ok or degraded to report ingestionAlive true. Any critical or stalled poll reports false; a missing, unknown or duplicate poll keeps it null. This is a conservative aggregate of polling liveness, not proof that every downstream stage completed. The upstream aggregate is preserved and cannot be hidden by a healthy display subset.
+For source-native CT checks, all three chamber polls must be explicitly ok to report ingestionAlive true. Any critical or stalled poll reports false; a missing, unknown, degraded or duplicate poll keeps it null. This is a conservative aggregate of polling liveness, not proof that every downstream stage completed. The upstream aggregate is preserved and cannot be hidden by a healthy display subset.
 
 The displayed house and oge components follow their chamber polling checks. senate_efd follows its own canary. No backlog-to-liveness alias is used. Legacy payload support remains for existing callers, but malformed native checks cannot fall back to legacy green.
 

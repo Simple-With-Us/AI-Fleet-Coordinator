@@ -115,7 +115,9 @@ FETCH_ERROR_CODES = ("timeout", "unreachable", "unparseable", "refused_url")
 
 def utc_stamp(epoch=None):
     """An ISO 8601 UTC stamp in the spelling every collector uses."""
-    moment = datetime.fromtimestamp(time.time() if epoch is None else epoch, timezone.utc)
+    moment = datetime.fromtimestamp(
+        time.time() if epoch is None else epoch, timezone.utc
+    )
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -171,7 +173,9 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
         raise ValueError("refused url: %r" % (url,))
     timeout = max(1, min(int(timeout), MAX_TIMEOUT_SECONDS))
     request = urllib.request.Request(
-        url, method="GET", headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+        url,
+        method="GET",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
     )
     build = opener if opener is not None else urllib.request.build_opener(_NoRedirect)
     try:
@@ -214,7 +218,7 @@ def _observation_age(payload, now):
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             return None
-        return int(now - parsed.timestamp())
+        return now - parsed.timestamp()
     except (ValueError, OverflowError, OSError):
         return None
 
@@ -248,7 +252,7 @@ def map_st_live(payload, http_status, now):
         return row
     row["mangoReachable"] = mango["reachable"]
     age = _observation_age(payload, now)
-    row["observationAgeSeconds"] = age
+    row["observationAgeSeconds"] = int(age) if age is not None else None
     if mango["reachable"] is not True:
         row["state"] = "fail"
         row["reason"] = "mango_unreachable"
@@ -292,23 +296,46 @@ def _component_state(value):
             return "ok"
         if word in ("warn", "warning", "degraded"):
             return "warn"
-        if word in ("fail", "failed", "down", "error", "unhealthy", "critical", "stalled"):
+        if word in (
+            "fail",
+            "failed",
+            "down",
+            "error",
+            "unhealthy",
+            "critical",
+            "stalled",
+        ):
             return "fail"
     return "unknown"
+
+
+def _native_ct_state(value):
+    """Exact upstream enum, never a legacy truthy/alias decoder."""
+    if not isinstance(value, str):
+        return "unknown"
+    return {
+        "ok": "ok",
+        "degraded": "warn",
+        "critical": "fail",
+        "stalled": "fail",
+        "unknown": "unknown",
+    }.get(value, "unknown")
 
 
 def _ct_pipeline_components(payload):
     """Source-native CT checks, without conflating backlog and liveness.
 
-    All three chamber polls must explicitly be current to prove ingestion
-    alive.  A failed poll proves that lane stopped.  An empty outbox does
+    All three chamber polls must explicitly be ok to prove discovery-poll
+    liveness (not end-to-end ingestion).  A failed poll proves that lane stopped.  An empty outbox does
     not prove any poll ran.  The separate senate_efd canary is not Senate
     polling: a canary failure alone never declares ingestion stopped.
     Duplicate IDs are ambiguous and therefore unknown, never first-wins.
     """
+    if "pipeline" not in payload:
+        return None
     pipeline = payload.get("pipeline")
     if not isinstance(pipeline, dict) or "checks" not in pipeline:
-        return None
+        return {}
     checks = pipeline.get("checks")
     if not isinstance(checks, list):
         return {}
@@ -317,7 +344,9 @@ def _ct_pipeline_components(payload):
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
             continue
         name = entry["id"]
-        by_id[name] = "unknown" if name in by_id else _component_state(entry.get("status"))
+        by_id[name] = (
+            "unknown" if name in by_id else _native_ct_state(entry.get("status"))
+        )
     found = {}
     for target, source in (
         ("house", "polling_house"),
@@ -327,15 +356,13 @@ def _ct_pipeline_components(payload):
         if source in by_id:
             found[target] = by_id[source]
     polls = [
-        by_id.get(name, "unknown")
+        (by_id.get(name, "unknown") if by_id.get(name) != "warn" else "unknown")
         for name in ("polling_house", "polling_senate", "polling_executive")
     ]
     if "fail" in polls:
         found["ingestion"] = "fail"
     elif all(state == "ok" for state in polls):
         found["ingestion"] = "ok"
-    elif all(state in ("ok", "warn") for state in polls):
-        found["ingestion"] = "warn"
     else:
         found["ingestion"] = "unknown"
     return found
@@ -387,7 +414,8 @@ def map_ct_health(payload, http_status, now):
         "upstreamStatus": None,
         "ingestionAlive": None,
         "components": [
-            {"name": name, "state": "unknown", "reported": False} for name in CT_COMPONENTS
+            {"name": name, "state": "unknown", "reported": False}
+            for name in CT_COMPONENTS
         ],
     }
     if http_status != 200 or not isinstance(payload, dict):
@@ -432,7 +460,9 @@ def map_ct_health(payload, http_status, now):
         for entry in components
         if entry["name"] != CT_INGESTION_COMPONENT and entry["state"] == "fail"
     ]
-    warning = [entry["name"] for entry in components if entry["state"] in ("warn", "unknown")]
+    warning = [
+        entry["name"] for entry in components if entry["state"] in ("warn", "unknown")
+    ]
     if failing:
         # senate_efd down is an upstream outage, not stopped ingestion.
         row["state"] = "warn"
@@ -470,7 +500,11 @@ def _app_row(mapper, url, timeout, now, fetcher):
         row["error"] = row["reason"]
     else:
         row = mapper(payload, status, now)
-    row["provenance"] = {"source": url, "fetchedAt": fetched_at, "httpStatus": status or 0}
+    row["provenance"] = {
+        "source": url,
+        "fetchedAt": fetched_at,
+        "httpStatus": status or 0,
+    }
     return row
 
 
@@ -573,7 +607,9 @@ def main(argv=None):
     # Exit 0 only when both apps were actually observed:  a row carrying a
     # fetch error, or still unknown after mapping, means this run proved
     # less than the whole document, and the caller should hear that.
-    observed = all("error" not in row and row["state"] != "unknown" for row in doc["apps"])
+    observed = all(
+        "error" not in row and row["state"] != "unknown" for row in doc["apps"]
+    )
     return 0 if observed else 1
 
 
