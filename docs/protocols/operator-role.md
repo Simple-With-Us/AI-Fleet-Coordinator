@@ -160,7 +160,7 @@ and defined outputs.
 2.  **It posts no wake reply and wears no seat's wake tag.**  The owner ruled that "The operator
     should never be answering on behalf of a platform", so the Operator posts no wake reply, no
     owner ack, no route page and no quota notice, for any seat.  The listener starts no model
-    since the same day, so no code is left that takes a model's answer (`Daemon.post` and `act`
+    (owner ruling, Nov 10, 2026), so no code is left that takes a model's answer (`Daemon.post` and `act`
     are gone;  ledger rows from before may still carry `operator_never_answers`).  Its own notes
     are tagged `[OPERATOR·note]`.
 
