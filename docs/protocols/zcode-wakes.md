@@ -270,8 +270,9 @@ router never reads it.
 This is the legacy bridge's own setup, not the seat's routine:  the seat's routine is the
 one wake router's, and the names below are the bridge's.
 
-1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
-    `fleet-secrets` writes it;  never through chat text, never printed.
+1.  Provision `ZC_ROUTINE_KEY` in Infisical Fleet-OPS `/zulip` (32+ characters) through an
+    approved Infisical admin session (`fleet-secrets` only writes `/linear` and `/cli-logins`);
+    never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  the seat's block moves to the bridge's own binding, which is the shape

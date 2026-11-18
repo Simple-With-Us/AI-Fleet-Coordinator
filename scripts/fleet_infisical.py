@@ -1978,13 +1978,18 @@ def _check_recovery_identity(raw: str, intent: WriteIntent) -> None:
     try:
         stored = _decode_json(raw.encode("utf-8"))
     except Exception:
-        return
-    if not isinstance(stored, dict):
-        return
+        raise SecretsError("write-identity-unavailable") from None
+    if (
+        not isinstance(stored, dict)
+        or not isinstance(stored.get("request_id"), str)
+        or type(stored.get("created_at_ms")) is not int
+        or not isinstance(stored.get("purpose"), str)
+    ):
+        raise SecretsError("write-identity-unavailable")
     mismatches = []
-    if stored.get("created_at_ms") != intent.created_at_ms:
+    if stored["created_at_ms"] != intent.created_at_ms:
         mismatches.append("created_at_ms")
-    if stored.get("purpose") != intent.purpose:
+    if stored["purpose"] != intent.purpose:
         mismatches.append("purpose")
     if mismatches:
         raise SecretsError(

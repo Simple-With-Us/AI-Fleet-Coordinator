@@ -48,7 +48,7 @@ after the POST is handled.
 
 ## Arming the wake
 
-1. Mint `AG_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters) via `fleet-secrets`.
+1. Provision `AG_ROUTINE_KEY` in Infisical Fleet-OPS `/zulip` (32+ characters) through an approved Infisical admin session (`fleet-secrets` only writes `/linear` and `/cli-logins`).
 2. Write the same value to `~/.local/state/ag-wake/routine-key` (mode `0600`).
 3. Configure `~/.local/state/ag-wake/config.json` with `{"delivery_enabled": true, "target_host": "server"}` on the server (or `"target_host": "mac"` on the Mac).
 4. In the listener config, set `[seat.AG]` `wake = "http"`, `url_env = "AG_ROUTINE_URL"` and `key_env = "AG_ROUTINE_KEY"`.
