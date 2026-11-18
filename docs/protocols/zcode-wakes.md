@@ -161,8 +161,10 @@ cutover that does not work never leaves the seat without a route.
     `INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID` or the first line of
     `~/.simple-tools/ai-fleet-coordinator-project-id`, and a run with neither stops and names
     that variable.  The token is minted under the `service-tokens` skill, one project, one
-    environment, one folder, read-write, an expiry, and a row in the service-token registry,
-    and it lives in the consumer's own store;  an operator's Infisical login session is not
+    environment, one folder, read-write, an expiry, and a row in the service-token registry.
+    The token this rollback uses was minted on Nov 17, 2026 and its registered expiry is
+    `2027-02-16T02:20:42Z`, and a re-mint moves that timestamp and the registry row with
+    it, and the token lives in the consumer's own store;  an operator's Infisical login session is not
     that route and is refused for writes.  The route was exercised on Nov 17, 2026:  the
     scoped token's own metadata proved the project, the environment, the folder and the write
     permission, a write with the value the name already held answered HTTP 200, the name
