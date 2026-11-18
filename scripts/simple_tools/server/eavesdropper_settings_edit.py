@@ -1629,7 +1629,12 @@ def main(argv=None, stdin=None, out=None):
             )
         except Exception:  # noqa: BLE001 - private input failures have one closed response
             answer, code = (
-                {"tool": TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                {
+                    "tool": TOOL,
+                    "ok": False,
+                    "result": "refused",
+                    "errorCode": "bootstrap_unavailable",
+                },
                 2,
             )
         finally:
