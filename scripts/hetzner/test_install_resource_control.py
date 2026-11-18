@@ -156,7 +156,9 @@ class InstallerTests(unittest.TestCase):
         trap = self.root / "reader-untrusted-cwd"
         trap.mkdir()
         home = self.root / "reader-home"
-        home.mkdir()
+        if home.is_symlink():
+            raise ValueError(f"refusing symlink: {home}")
+        home.mkdir(mode=0o700)
 
         def invoke(api, payload=None):
             code = r"""
@@ -234,6 +236,8 @@ print(json.dumps({
         # A real read-only payload needs no compatibility package or writer ledger in either
         # interpreter.  The bounded worker executes only this copied canonical source.
         reader_only = self.root / "read-only-payload"
+        if reader_only.is_symlink():
+            raise ValueError(f"refusing symlink: {reader_only}")
         reader_only.mkdir(mode=0o700)
         for name in ("fleet-ops-control.py", "fleet_infisical.py"):
             target = reader_only / name

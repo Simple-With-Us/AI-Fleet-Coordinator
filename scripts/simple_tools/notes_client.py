@@ -1,7 +1,7 @@
 """The Python side of the Operator notes API (AFC-486, docs/protocols/operator-notes.md).
 
 `OperatorClient` signs and sends one call (notes_wire.py);  `operator_client` builds one for this host from the
-fleet knob OPERATOR_API_URL and the principal's key in Infisical (`fleet-secrets get`, AI Fleet Coordinator, prod,
+fleet knob OPERATOR_API_URL and the principal's key in Infisical (the shared direct reader, AI Fleet Coordinator, prod,
 /operator), held in memory only.  That shared service credential is for the backend (the Mac runner's claims and
 reports, the doctor's health check), never for a caller's notes action.  `call`, `status` and `log` are what
 simple-notes and the stdio MCP run, the same code on every host:  on a Mac they run apple-notes-coding.sh
@@ -15,9 +15,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
 import socket
 import subprocess
 import threading
@@ -28,6 +26,8 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+import fleet_infisical as FI
 
 from . import notes as N
 from . import notes_service_reader as SR
@@ -67,35 +67,24 @@ def fleet_secrets_get(
     env: Mapping[str, str],
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
-    """One value from Infisical (AI Fleet Coordinator, prod) through `fleet-secrets get`, quotes dropped;  "" when
-    fleet-secrets is missing, refuses or fails.  A lookup that hangs is NotesError not_configured, never a missing value."""
-    binary = shutil.which("fleet-secrets", path=env.get("PATH")) or os.path.expanduser(
-        "~/.local/bin/fleet-secrets"
-    )
-    if not os.access(binary, os.X_OK):
-        return ""
+    """One direct, scoped Infisical read; the legacy function name and runner argument are API compatibility only."""
+    scoped = dict(env)
+    scoped[FI.ENV_READ_PATHS] = path
     try:
-        done = runner(
-            [binary, "get", name, "--path", path, "--project", W.KEY_PROJECT],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=dict(env),
-        )
-    except subprocess.TimeoutExpired:
+        project = FI.infisical_project_id(scoped, FI.home_dir(scoped), W.KEY_PROJECT)
+        binding = FI.resolve_token(scoped, project_name=W.KEY_PROJECT)
+        values = FI.fetch_project(project, path, scoped, token=binding, names=(name,), timeout=30.0)
+    except TimeoutError:
         # A hung lookup is not a missing value:  say so, so the caller does not go looking for a key that is there.
         # Nothing has been sent yet, so this is never an unknown outcome.
         raise N.NotesError(
             "not_configured",
-            "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again"
+            "Infisical did not answer within 30 seconds reading %s, so nothing was sent;  try again"
             % name,
         ) from None
-    except (OSError, subprocess.SubprocessError):
+    except (FI.SecretsError, OSError):
         return ""
-    if done.returncode != 0:
-        return ""
-    return (done.stdout or "").strip().strip('"').strip("'")
+    return (values.get(name) or "").strip().strip('"').strip("'")
 
 
 def base_url(
@@ -103,10 +92,8 @@ def base_url(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str | None:
     """The Operator API's https origin:  OPERATOR_API_URL in the environment (tests, a one-off override), else the fleet
-    knob of that name, else the same key read with `fleet-secrets get`.  The last step is for a host where fleet_knobs
-    has no Infisical login of its own:  the server's agent shells carry no automation pair, so there the knob is only
-    its last-known-good copy, which lapses after 48 hours (fleet_knobs/lkg.py), while fleet-secrets logs in for itself
-    the way it does for the principal's key.  None when none of them names an https origin with no path."""
+    knob of that name, else the same key read directly with the caller's own scoped service-token binding.
+    None when none of them names an https origin with no path."""
     raw = (env.get(KNOB) or "").strip()
     if not raw:
         try:
@@ -136,7 +123,7 @@ def base_url(
 
 
 class KeySource:
-    """A principal's key:  the environment variable of its name (a container, a test), else `fleet-secrets get`.
+    """A principal's key: the environment variable of its name, else a direct scoped Infisical read.
     Kept in memory for KEY_CACHE_S, and dropped when the Operator answers 401 so a rotation is picked up."""
 
     def __init__(

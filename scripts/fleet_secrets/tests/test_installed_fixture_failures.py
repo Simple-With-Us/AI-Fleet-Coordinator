@@ -30,7 +30,7 @@ class InstalledFixtureFailureTests(unittest.TestCase):
     def test_missing_executable_reports_127(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = run_fixture(
-                [str(Path(tmp) / "absent-fixture")], cwd=tmp, env={"PATH": os.defpath}
+                [str(Path(tmp) / "absent-fixture")], cwd=tmp, env={"PATH": os.defpath}, timeout=5
             )
         self.assertEqual(
             (result.returncode, result.stdout, result.stderr),

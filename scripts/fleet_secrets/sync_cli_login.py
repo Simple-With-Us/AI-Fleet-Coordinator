@@ -64,6 +64,8 @@ def _read_from_env(name: str, env: dict) -> str:
 
 def _read_from_fleet_secrets(name: str, path: str, env: dict) -> str:
     """Compatibility source spelling; one named direct read through its own scoped reader."""
+    core.check_path(path)
+    core.check_writable(name, path)
     project = core.infisical_project_id(env, core.home_dir(env))
     reader = core.resolve_token(env)
     return (
@@ -129,7 +131,9 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         help="where the value comes from",
     )
     parser.add_argument(
-        "--from-path", default="/", help="the folder the fleet-secrets read looks in"
+        "--from-path",
+        default=None,
+        help="the allowlisted /cli-logins folder the fleet-secrets read looks in (default: --path)",
     )
     parser.add_argument("--file", default="", help="the file the owner handed over")
     parser.add_argument(
@@ -175,7 +179,8 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         if args.reconcile:
             result = core.reconcile_secret(args.name, args.path, env, intent=intent)
         else:
-            value = read_value(args.name, args.source, args.from_path, args.file, env)
+            from_path = args.path if args.from_path is None else args.from_path
+            value = read_value(args.name, args.source, from_path, args.file, env)
             result = sync(args.name, args.path, value, env, intent=intent)
         if (
             not isinstance(result, core.WriteReceipt)
