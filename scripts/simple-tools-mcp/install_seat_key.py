@@ -44,7 +44,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from fleet_secrets import core as scoped_secrets
+import fleet_infisical as scoped_secrets
 
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
 INFISICAL_API = "https://app.infisical.com"
