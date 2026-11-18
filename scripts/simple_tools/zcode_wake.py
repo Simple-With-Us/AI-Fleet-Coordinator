@@ -602,6 +602,11 @@ def deliver_local(
                 # A path that begins with a dash would be read as an option by the CLI, so it
                 # is refused before it can become one.
                 return WR.Delivery("refused", "resume", code="invalid-workspace")
+            # The exact binding is the session's own row:  its id was checked against the
+            # requested session above, and the delivery below runs in the directory that
+            # row reports about itself.  The configured workspace is the root this seat's
+            # chats live under, so a session in another project under it is this seat's own
+            # work and is not a wrong-chat delivery.
             if not WR.workspace_allowed(recorded, workspace):
                 return WR.Delivery("refused", "resume", code="workspace-mismatch")
             if not os.path.isdir(recorded):
