@@ -644,6 +644,17 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if key is None and exc.code == "response_too_large":
+                    # A bounded READ changed nothing. Retrying the same body cannot
+                    # make it fit. Writes still keep their unknown-outcome fence.
+                    outcome = "github_terminal"
+                    detail = {"status": exc.status, "github_code": exc.code}
+                    return 502, {
+                        "error": "github response exceeded the relay bound",
+                        "github_status": exc.status,
+                        "github_code": exc.code,
+                        "retryable": False,
+                    }
                 if (
                     key is None
                     and exc.status in (0, 408, 429)
