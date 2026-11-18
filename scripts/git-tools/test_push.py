@@ -1363,5 +1363,19 @@ class Identity(PushCase):
                 G.build_parser().parse_args(["push", *extra])
 
 
+class NarrowPushReleaseBuilder(unittest.TestCase):
+    def test_offline_release_builder_safety(self):
+        path = HERE.parent / "test_push_client_release.py"
+        spec = importlib.util.spec_from_file_location("push_release_safety", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+        result = unittest.TestResult()
+        suite.run(result)
+        self.assertGreater(result.testsRun, 0)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+
+
 if __name__ == "__main__":
     unittest.main()

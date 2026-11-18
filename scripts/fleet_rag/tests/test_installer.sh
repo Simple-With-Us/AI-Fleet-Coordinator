@@ -30,6 +30,7 @@ cp -R "$SCRIPTS/fleet_lanes" "$FAKE_REPO/scripts/fleet_lanes"
 cp -R "$SCRIPTS/fleet_config" "$FAKE_REPO/scripts/fleet_config"
 mkdir -p "$FAKE_REPO/scripts/fleet_secrets"
 cp "$SCRIPTS/fleet_secrets/__init__.py" "$SCRIPTS/fleet_secrets/core.py" "$FAKE_REPO/scripts/fleet_secrets/"
+cp "$SCRIPTS/fleet_infisical.py" "$FAKE_REPO/scripts/fleet_infisical.py"
 cp -R "$SCRIPTS/linear-board" "$FAKE_REPO/scripts/linear-board"
 mkdir -p "$FAKE_REPO/scripts/simple_tools"
 cp "$SCRIPTS/simple_tools/secretscan.py" "$FAKE_REPO/scripts/simple_tools/"
@@ -165,6 +166,7 @@ assert "dry-run --hooks copies nothing" test ! -e "$FAKE_HOME/.claude/hooks/flee
 echo "== first install"
 run --with-seat-mcp > "$TMP/run1.out"
 assert "fleet_rag package installed" test -f "$FAKE_HOME/apps/fleet-rag/fleet_rag/core.py"
+assert "shared Infisical client installed" test -f "$FAKE_HOME/apps/fleet-rag/fleet_infisical.py"
 assert "tests dir excluded from install" test ! -e "$FAKE_HOME/apps/fleet-rag/fleet_rag/tests"
 assert "__pycache__ excluded from install" test ! -e "$FAKE_HOME/apps/fleet-rag/fleet_rag/__pycache__"
 assert "recall is executable" test -x "$FAKE_HOME/apps/fleet-rag/recall"
@@ -237,7 +239,11 @@ assert "second run: still one SessionStart entry of ours" test "$(hook_count "$F
 assert "codex toml still has exactly one block" test "$(grep -c '^\[mcp_servers.fleet-recall\]' "$FAKE_HOME/.codex/config.toml")" = "1"
 
 echo "== uninstall restores"
+run --dry-run --uninstall > "$TMP/dry-uninstall.out"
+assert "uninstall plan names shared client" grep -q 'fleet_infisical.py' "$TMP/dry-uninstall.out"
+assert "dry uninstall preserves shared client" test -f "$FAKE_HOME/apps/fleet-rag/fleet_infisical.py"
 run --uninstall > "$TMP/run3.out"
+assert "uninstall removes shared client" test ! -e "$FAKE_HOME/apps/fleet-rag/fleet_infisical.py"
 if json_has "$FAKE_HOME/.claude.json" fleet-recall; then fail "claude.json: fleet-recall removed"; else pass "claude.json: fleet-recall removed"; fi
 assert "claude.json: github still present" json_has "$FAKE_HOME/.claude.json" github
 assert "claude.json: content equals pre-install (modulo formatting)" test "$(json_get "$FAKE_HOME/.claude.json" mcpServers)" = "$(json_get "$TMP/snap-before/claude.json" mcpServers)"
