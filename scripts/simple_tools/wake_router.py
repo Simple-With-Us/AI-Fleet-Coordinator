@@ -281,9 +281,7 @@ REGISTRY_LOADER_SOURCE = "operator-registry-env"
 #: names no setting:  the source this host reads its configuration from, which is the shared
 #: loader file on the Mac and the router's own environment on the server.  It is a token the
 #: transport keeps, so it carries no space.
-REGISTRY_HOST_SOURCE = (
-    "operator-registry-env" if sys.platform == "darwin" else "router-environment"
-)
+REGISTRY_HOST_SOURCE = "operator-registry-env" if sys.platform == "darwin" else "router-environment"
 #: Whether this host reads its registry configuration from the shared loader file.  The Mac's
 #: `wake-deliver` keeps that file, and the server's router reads the knobs it fetched, so the
 #: loader probe is asked only where the loader file is this host's source.  It is a module
