@@ -144,13 +144,31 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["session_id"], SID)
         self.assertEqual(answer["generation"], 1)
 
-    def test_unreadable_registry_is_failed_not_refused(self) -> None:
+    def test_unreadable_registry_is_busy_not_refused(self) -> None:
+        """A host that is configured to reach the registry and cannot:  an outage, and
+        nothing runs."""
+        def boom(_env, _letter):
+            raise OSError("registry down")
+
+        self.env = {
+            **self.env,
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
+        answer = self._deliver(resolve_row=boom)
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
+        self.assertEqual(answer["delivery"]["code"], "registry-unavailable")
+        self.assertEqual(self.calls, [])
+
+    def test_an_unreadable_registry_on_an_unconfigured_host_fails_closed(self) -> None:
+        """A host with no registry address or key cannot be retried into working:  it is a
+        deployment fault, and nothing runs."""
         def boom(_env, _letter):
             raise OSError("registry down")
 
         answer = self._deliver(resolve_row=boom)
         self.assertEqual(answer["delivery"]["outcome"], "failed")
-        self.assertEqual(answer["delivery"]["code"], "registry-unavailable")
+        self.assertEqual(answer["delivery"]["code"], WR.NOT_CONFIGURED)
         self.assertEqual(self.calls, [])
 
     def test_row_of_another_seat_proves_no_release(self) -> None:
@@ -324,6 +342,42 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["outcome"], "refused")
         self.assertEqual(answer["delivery"]["code"], "session-cwd-gone")
         self.assertEqual(self.calls, [])
+
+    def test_a_cwd_recorded_before_a_large_tail_is_still_found(self) -> None:
+        transcript = self.session_dir / "session.jsonl"
+        transcript.write_text(json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8")
+        with open(transcript, "a", encoding="utf-8") as fh:
+            for _ in range(400000):
+                fh.write("{}\n")
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
+
+    def test_a_nested_envelope_cwd_is_found(self) -> None:
+        record = {
+            "schema_version": 1,
+            "stream": "events",
+            "record_type": "record",
+            "payload": {"record": {"cwd": str(self.work)}},
+        }
+        (self.session_dir / "session.jsonl").write_text(
+            json.dumps(record) + "\n{}\n", encoding="utf-8"
+        )
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
+
+    def test_a_cwd_mentioned_inside_a_string_value_is_not_an_assertion(self) -> None:
+        transcript = self.session_dir / "session.jsonl"
+        transcript.write_text(
+            json.dumps({"cwd": str(self.work)}) + "\n"
+            + json.dumps({"note": 'saw "cwd": "/nowhere/at/all" in output'})
+            + "\n",
+            encoding="utf-8",
+        )
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
 
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))
