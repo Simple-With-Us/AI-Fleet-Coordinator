@@ -1273,7 +1273,9 @@ class DaemonCopyOwnershipTests(ServerHarness):
             return result
 
         listener = self.state_dir / "listener"
-        listener.mkdir(parents=True, exist_ok=True)
+        if not listener.exists():
+            listener.mkdir(mode=0o700)
+        os.close(os.open(listener, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
         with open(listener / "daemon.lock", "w") as running:
             fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with mock.patch.object(config, "load", side_effect=marked), mock.patch.object(settings, "remember_verified") as remember:

@@ -1559,9 +1559,39 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
 
 
 BOOTSTRAP_MAX_BYTES = 64 * 1024
+BOOTSTRAP_MAX_DEPTH = 16
+BOOTSTRAP_MAX_NODES = 1000
 BOOTSTRAP_PROJECT = "INFISICAL_OPERATOR_SETTINGS_PROJECT_ID"
 BOOTSTRAP_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
 BOOTSTRAP_READER = "OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"
+
+
+def _validate_json_limits(value, *, max_depth=BOOTSTRAP_MAX_DEPTH, max_nodes=BOOTSTRAP_MAX_NODES):
+    """Iteratively bound JSON depth and node count before inspection."""
+    stack = [(value, 1)]
+    seen = set()
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        if depth > max_depth:
+            raise ValueError("depth_exceeded")
+        nodes += 1
+        if nodes > max_nodes:
+            raise ValueError("nodes_exceeded")
+        if isinstance(current, dict):
+            obj_id = id(current)
+            if obj_id in seen:
+                raise ValueError("cycle")
+            seen.add(obj_id)
+            for child in current.values():
+                stack.append((child, depth + 1))
+        elif isinstance(current, list):
+            obj_id = id(current)
+            if obj_id in seen:
+                raise ValueError("cycle")
+            seen.add(obj_id)
+            for child in current:
+                stack.append((child, depth + 1))
 
 
 def bootstrap_request(raw):
@@ -1583,6 +1613,7 @@ def bootstrap_request(raw):
         if len(raw) > BOOTSTRAP_MAX_BYTES:
             return refused, 2
         envelope = json.loads(raw, object_pairs_hook=pairs)
+        _validate_json_limits(envelope)
         if (
             not isinstance(envelope, dict)
             or set(envelope) != {"protocol", "request", "bootstrap"}
