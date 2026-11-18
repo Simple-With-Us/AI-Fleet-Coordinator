@@ -773,7 +773,9 @@ class PublicActivityTests(unittest.TestCase):
                 },
             ),
         ]
-        days = sorted(digest.bucket_all([], opened, closed).values(), key=lambda d: d.day, reverse=True)
+        days = sorted(
+            digest.bucket_all([], opened, closed).values(), key=lambda d: d.day, reverse=True
+        )
         now = datetime(2026, 11, 18, 20, 0, tzinfo=UTC)
         tz = ZoneInfo("America/Chicago")
 
@@ -782,14 +784,19 @@ class PublicActivityTests(unittest.TestCase):
         ics_doc = digest.build_daily_ics(days, now, "https://example.com")
 
         self.assertIn("0 PRs merged · 1 issues opened · 2 issues closed", md)
-        self.assertIn("**AFC** `Claude` [AFC-843](https://linear.app/simple-with-us/issue/AFC-843/hosted):", md)
+        self.assertIn(
+            "**AFC** `Claude` [AFC-843](https://linear.app/simple-with-us/issue/AFC-843/hosted):",
+            md,
+        )
         self.assertIn("BF-2559 Scope 3: Editable minFreeDiskMb _(Duplicate)_", md)
 
-        self.assertIn('<a href="https://linear.app/simple-with-us/issue/AFC-843/hosted">AFC-843</a>', html_doc)
-        self.assertIn('agent-logos/claude.svg', html_doc)
-        self.assertIn('agent-logos/ag.svg', html_doc)
+        self.assertIn(
+            '<a href="https://linear.app/simple-with-us/issue/AFC-843/hosted">AFC-843</a>', html_doc
+        )
+        self.assertIn("agent-logos/claude.svg", html_doc)
+        self.assertIn("agent-logos/ag.svg", html_doc)
         self.assertIn('title="Instinct">Instinct</span>', html_doc)
-        self.assertIn('agent-logos/app-cc.png', html_doc)
+        self.assertIn("agent-logos/app-cc.png", html_doc)
         self.assertIn("BF-2559 Scope 3: Editable minFreeDiskMb", html_doc)
         self.assertIn('<span class="issue-state">(Duplicate)</span>', html_doc)
         self.assertNotIn("#843", html_doc)
@@ -797,7 +804,9 @@ class PublicActivityTests(unittest.TestCase):
         unfolded_ics = re.sub(r"\r?\n[ \t]", "", ics_doc)
         self.assertIn("SUMMARY:Fleet: 0 merged · 1 opened · 2 closed", unfolded_ics)
         self.assertIn("[AFC-843] (claude) Hosted eavesdropper_status", unfolded_ics)
-        self.assertIn("[BF-2686] (instinct) BF-2559 Scope 3: Editable minFreeDiskMb (Duplicate)", unfolded_ics)
+        self.assertIn(
+            "[BF-2686] (instinct) BF-2559 Scope 3: Editable minFreeDiskMb (Duplicate)", unfolded_ics
+        )
 
     def test_main_fetches_linear_issues_when_key_set_and_fails_on_linear_error(self) -> None:
         day = date(2026, 11, 18)
@@ -840,7 +849,9 @@ class PublicActivityTests(unittest.TestCase):
                 os.chdir(cwd)
             assert_public_artifact_boundary(root, ("site/index.html", "site/digest.md"))
             self.assertIn("BF-2686", (root / "site" / "index.html").read_text())
-            self.assertIn("1 issues opened · 1 issues closed", (root / "site" / "digest.md").read_text())
+            self.assertIn(
+                "1 issues opened · 1 issues closed", (root / "site" / "digest.md").read_text()
+            )
 
         with tempfile.TemporaryDirectory() as tmp:
             env = {

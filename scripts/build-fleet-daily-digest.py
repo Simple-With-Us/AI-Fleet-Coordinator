@@ -163,9 +163,7 @@ def linear_graphql(query: str, variables: dict[str, Any], tok: str) -> dict[str,
     raise last_exc or RuntimeError("Linear GraphQL failed")
 
 
-def load_public_team_map(
-    repos: list[str], apps_path: Path | None = None
-) -> dict[str, str]:
+def load_public_team_map(repos: list[str], apps_path: Path | None = None) -> dict[str, str]:
     """Map uppercase Linear team keys to verified-public GitHub repo names."""
     path = apps_path or DEFAULT_APPS_PATH
     if not path.is_file():
@@ -323,8 +321,10 @@ def fetch_linear_issue_churn(
 
     opened: list[tuple[date, dict[str, Any]]] = []
     closed: list[tuple[date, dict[str, Any]]] = []
-    since_iso = datetime.combine(since, datetime.min.time(), tzinfo=tz).astimezone(UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+    since_iso = (
+        datetime.combine(since, datetime.min.time(), tzinfo=tz)
+        .astimezone(UTC)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     team_keys = sorted(team_map.keys())
     cursor: str | None = None
@@ -869,7 +869,7 @@ def _linear_issue_agents(node: dict[str, Any], *, closed: bool) -> list[str]:
     """Extract coding-seat slugs from Linear labels, delegate, and creator."""
     claimed: list[str] = []
     seat_labels: list[str] = []
-    labels = ((node.get("labels") or {}).get("nodes") or [])
+    labels = (node.get("labels") or {}).get("nodes") or []
     for lbl in labels:
         if not isinstance(lbl, dict):
             continue
