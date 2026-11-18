@@ -193,6 +193,34 @@ class CongressTradeMappingTests(unittest.TestCase):
         self.assertIs(oge["reported"], False)
         self.assertNotEqual(doc["worst"], "ok")
 
+    def test_an_ingestion_failure_is_fail_even_with_a_check_unreported(self):
+        body = ct_payload(components={"house": "ok", "senate_efd": "ok", "ingestion": "fail"})
+        doc = collect_with((200, st_payload(), None), (200, body, None))
+        row = app_row(doc, "CT")
+        self.assertEqual(row["state"], "fail")
+        self.assertEqual(row["reason"], "ingestion_failed")
+        self.assertIs(row["ingestionAlive"], False)
+        self.assertEqual(doc["worst"], "fail")
+
+    def test_an_unreadable_ingestion_value_proves_neither_alive_nor_stopped(self):
+        body = ct_payload(
+            components={"house": "ok", "senate_efd": "ok", "oge": "ok", "ingestion": "sideways"}
+        )
+        doc = collect_with((200, st_payload(), None), (200, body, None))
+        row = app_row(doc, "CT")
+        self.assertEqual(row["state"], "unknown")
+        self.assertEqual(row["reason"], "ingestion_unproved")
+        self.assertIsNone(row["ingestionAlive"])
+
+
+class LaunchAgentTests(unittest.TestCase):
+    def test_the_agent_runs_the_collector_from_the_managed_runtime(self):
+        plist = pathlib.Path(_HERE, "launchd", "com.jay.fleet-api-health.plist").read_text()
+        sibling = pathlib.Path(_HERE, "launchd", "com.jay.fleet-mac-services.plist").read_text()
+        runtime = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/"
+        self.assertIn(runtime + "fleet-mac-services.py", sibling)
+        self.assertIn(runtime + "fleet-api-health.py", plist)
+
 
 class FailClosedTests(unittest.TestCase):
     def test_timeout_fails_closed_to_unknown_and_still_writes(self):

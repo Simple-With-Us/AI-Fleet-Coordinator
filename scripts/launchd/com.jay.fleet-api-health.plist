@@ -21,7 +21,7 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>-I</string>
-    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-api-health.py</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet-api-health.py</string>
     <string>--write</string>
     <string>/Users/jay/.local/state/fleet-tools/api-health.json</string>
   </array>

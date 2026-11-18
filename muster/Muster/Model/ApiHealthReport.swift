@@ -51,6 +51,16 @@ enum ApiHealthState: String {
         self = state
     }
 
+    /// The collector's ranking,  worst highest:  ok,  warn,  unknown,  fail.
+    var rank: Int {
+        switch self {
+        case .ok: return 0
+        case .warn: return 1
+        case .unknown: return 2
+        case .fail: return 3
+        }
+    }
+
     /// The state in the grid's own vocabulary.
     var cellState: CellState {
         switch self {
@@ -102,19 +112,23 @@ struct ApiHealthApp: Decodable, Identifiable, Equatable {
         case observationAgeSeconds, upstreamStatus, ingestionAlive, components, provenance
     }
 
+    /// A row of the wrong shape throws,  and the whole file then reads as unknown:
+    /// nothing downstream ever sees a field the collector did not write as written.
+    /// A field the collector leaves out or writes as null is nil;  ST rows carry no
+    /// components.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        app = (try? container.decodeIfPresent(String.self, forKey: .app)) ?? ""
-        displayName = try? container.decodeIfPresent(String.self, forKey: .displayName)
-        state = try? container.decodeIfPresent(String.self, forKey: .state)
-        reason = try? container.decodeIfPresent(String.self, forKey: .reason)
-        error = try? container.decodeIfPresent(String.self, forKey: .error)
-        mangoReachable = try? container.decodeIfPresent(Bool.self, forKey: .mangoReachable)
-        observationAgeSeconds = try? container.decodeIfPresent(Int.self, forKey: .observationAgeSeconds)
-        upstreamStatus = try? container.decodeIfPresent(String.self, forKey: .upstreamStatus)
-        ingestionAlive = try? container.decodeIfPresent(Bool.self, forKey: .ingestionAlive)
-        components = (try? container.decodeIfPresent([ApiHealthComponent].self, forKey: .components)) ?? []
-        provenance = try? container.decodeIfPresent(ApiHealthProvenance.self, forKey: .provenance)
+        app = try container.decode(String.self, forKey: .app)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        mangoReachable = try container.decodeIfPresent(Bool.self, forKey: .mangoReachable)
+        observationAgeSeconds = try container.decodeIfPresent(Int.self, forKey: .observationAgeSeconds)
+        upstreamStatus = try container.decodeIfPresent(String.self, forKey: .upstreamStatus)
+        ingestionAlive = try container.decodeIfPresent(Bool.self, forKey: .ingestionAlive)
+        components = try container.decodeIfPresent([ApiHealthComponent].self, forKey: .components) ?? []
+        provenance = try container.decodeIfPresent(ApiHealthProvenance.self, forKey: .provenance)
     }
 
     var id: String { app }
@@ -142,10 +156,10 @@ struct ApiHealthReport: Decodable {
         // The version and the tool are the gate.
         schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
         tool = try container.decode(String.self, forKey: .tool)
-        collector = try? container.decodeIfPresent(String.self, forKey: .collector)
-        generatedAt = try? container.decodeIfPresent(String.self, forKey: .generatedAt)
-        worst = try? container.decodeIfPresent(String.self, forKey: .worst)
-        apps = (try? container.decodeIfPresent([ApiHealthApp].self, forKey: .apps)) ?? []
+        collector = try container.decodeIfPresent(String.self, forKey: .collector)
+        generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
+        worst = try container.decodeIfPresent(String.self, forKey: .worst)
+        apps = try container.decode([ApiHealthApp].self, forKey: .apps)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -256,13 +270,16 @@ enum ApiHealthReportReader {
     ///
     /// A file out of its window is unknown;  inside it,  the worst app's state rules,
     /// and an app the collector could not observe reads as unproven,  never as a pass.
+    ///
+    /// The apps are ranked the way the collector ranks them (`_STATE_RANK` in
+    /// `scripts/fleet-api-health.py`),  so an unobserved app outranks a warning one
+    /// and the reader never shows the file better than the collector wrote it.
     private static func overall(of reading: ApiHealthReading) -> CellState {
         guard reading.isCurrent, !reading.apps.isEmpty else { return .unknown }
-        var worst = reading.worst.cellState
-        for app in reading.apps
-        where GridBuilder.severityIndex(of: app.cellState) < GridBuilder.severityIndex(of: worst) {
-            worst = app.cellState
+        var worst = reading.worst
+        for app in reading.apps where app.healthState.rank > worst.rank {
+            worst = app.healthState
         }
-        return worst
+        return worst.cellState
     }
 }

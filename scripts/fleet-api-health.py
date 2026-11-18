@@ -56,8 +56,9 @@ observed", never "observed healthy".
   fleet-api-health.py [--write PATH] [--timeout SECONDS] [--dry-run]
 
 --dry-run fetches, prints the document and writes nothing.  Exit 0 only
-when both apps were observed (neither row is ``unknown`` for a fetch
-reason);  1 otherwise, with the file still written.  Python 3.9,
+when both apps were observed and mapped to a known state (no row is
+``unknown``, whether from a fetch error or a check the upstream did not
+report);  1 otherwise, with the file still written.  Python 3.9,
 standard library only.
 """
 
@@ -366,9 +367,19 @@ def map_ct_health(payload, http_status, now):
     row["components"] = components
     by_name = {entry["name"]: entry for entry in components}
     ingestion = by_name[CT_INGESTION_COMPONENT]
+    # Alive or stopped only when ingestion was reported in a word this
+    # adapter knows;  an unreadable value proves neither.
     row["ingestionAlive"] = (
-        None if not ingestion["reported"] else ingestion["state"] in ("ok", "warn")
+        ingestion["state"] in ("ok", "warn")
+        if ingestion["reported"] and ingestion["state"] != "unknown"
+        else None
     )
+    # An observed ingestion failure is CT's failure even when some other
+    # check went unreported:  the one outage seen must not read as unknown.
+    if ingestion["state"] == "fail":
+        row["state"] = "fail"
+        row["reason"] = "ingestion_failed"
+        return row
     unreported = [entry["name"] for entry in components if not entry["reported"]]
     if unreported:
         # A missing optional check is unknown, never zero and never green.
@@ -376,10 +387,6 @@ def map_ct_health(payload, http_status, now):
         return row
     if ingestion["state"] == "unknown":
         row["reason"] = "ingestion_unproved"
-        return row
-    if ingestion["state"] == "fail":
-        row["state"] = "fail"
-        row["reason"] = "ingestion_failed"
         return row
     failing = [
         entry["name"]

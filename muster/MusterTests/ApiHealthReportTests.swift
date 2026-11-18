@@ -58,8 +58,32 @@ final class ApiHealthReportTests: XCTestCase {
     }
 
     func test_another_version_reads_as_unknown() throws {
+        let original = try fixture("api_health_current", "json")
+        // The fixture is compact JSON,  so the key and its value carry no space.
+        XCTAssertTrue(original.contains("\"schemaVersion\":1"))
+        let json = original.replacingOccurrences(of: "\"schemaVersion\":1", with: "\"schemaVersion\":2")
+        let reading = try readText(json)
+        XCTAssertEqual(reading.problem?.contains("version 2"), true)
+        XCTAssertTrue(reading.apps.isEmpty)
+        XCTAssertEqual(reading.state, .unknown)
+    }
+
+    func test_an_unknown_app_outranks_a_warning_one_as_the_collector_ranks_them() throws {
+        // The collector ranks ok < warn < unknown < fail,  so one warn app and one
+        // unknown app make the file unknown,  never the better-looking drift.
         let json = try fixture("api_health_current", "json")
-            .replacingOccurrences(of: "\"schemaVersion\": 1", with: "\"schemaVersion\": 2")
+            .replacingOccurrences(of: "\"state\":\"ok\",\"upstreamOk\":true", with: "\"state\":\"unknown\",\"upstreamOk\":true")
+            .replacingOccurrences(of: "\"worst\":\"warn\"", with: "\"worst\":\"unknown\"")
+        let reading = try readText(json)
+        XCTAssertNil(reading.problem)
+        XCTAssertEqual(reading.apps.first?.healthState, .unknown)
+        XCTAssertEqual(reading.apps.last?.healthState, .warn)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func test_an_app_row_of_the_wrong_shape_makes_the_file_unreadable() throws {
+        let json = try fixture("api_health_current", "json")
+            .replacingOccurrences(of: "\"observationAgeSeconds\":30", with: "\"observationAgeSeconds\":\"thirty\"")
         let reading = try readText(json)
         XCTAssertNotNil(reading.problem)
         XCTAssertTrue(reading.apps.isEmpty)
