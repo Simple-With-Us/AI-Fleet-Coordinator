@@ -1,0 +1,4 @@
+# Server workflow write proof 2026-11-17
+name: server-proof
+on: [push]
+jobs: {}
