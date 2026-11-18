@@ -29,11 +29,14 @@ for being live:  the turn has not run, and a later try can run it.
 
 The registry is asked again immediately before delivering, while the per-session lock is
 held, as the router did before sending.  A letter that no longer holds this session at this
-generation, or is closed, is `refused`.  A registry that cannot be read, and a live row that
-cannot be read as a well-formed Muse Code chat of this seat, are `failed` -- nothing has run,
-so a bounded retry is safe, and neither is proof that the letter was released.  `failed` is
-used only there and where the delivery command itself never started;  once a command may
-have run a turn, any failure is `refused` and final.
+generation, or is closed, is `refused`.  A registry that cannot be read is `busy`:  nothing
+has run, and the outage may outlast the wake's attempts, so the retry spends none of them.
+A host with no registry address or key is `failed`, because a retry does not fix a
+deployment fault.  A live row that cannot be read as a well-formed Muse Code chat of this
+seat is `failed` too -- nothing has run, so a bounded retry is safe, and neither is proof
+that the letter was released.  `failed` is used only there and where the delivery command
+itself never started;  once a command may have run a turn, any failure is `refused` and
+final.
 
 Host facts come from this host only:  the session store under this user's Muse data root
 and the `muse` binary on this host's PATH.  Delivery settings are the router's, passed to
@@ -234,15 +237,26 @@ def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """`env` with the registry's address and key:  a forced ssh command has no login profile."""
+    """`env` with the registry's address and key:  a forced ssh command has no login profile.
+
+    The loader is read once and the mapping it gives is the one every call and every
+    classification uses, so the host is judged on the configuration it really has.  A loader
+    that cannot be read leaves the environment's own values in place."""
     from . import platform_letter as PL
 
-    return PL.with_registry_env(dict(env))
+    merged = dict(env)
+    try:
+        merged = PL.with_registry_env(merged)
+    except Exception:  # noqa: BLE001 - the host's own configuration still decides
+        pass
+    return merged
 
 
-def _resolve(env: Mapping[str, str], letter: str) -> Any:
+def _resolve(registry_env: Mapping[str, str], letter: str) -> Any:
+    """The registry's answer for one letter, made on the registry environment the caller
+    built."""
     return WR.registry_api.call(
-        _registry_env(env),
+        registry_env,
         "resolve",
         {"platform": PLATFORM, "letter": letter},
         timeout=WR.REGISTRY_TIMEOUT,
@@ -251,13 +265,28 @@ def _resolve(env: Mapping[str, str], letter: str) -> Any:
 
 def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.Delivery | None:
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run
-    yet, so a registry that cannot be read is `failed` and is tried again."""
+    yet, so a registry that cannot be read is `busy` and is tried again without spending an
+    attempt."""
+    # The registry environment is the one the call uses and the one the host is judged on:
+    # the shared loader file on the Mac, the knobs on the server.  One mapping, built once,
+    # so a call and the classification that follows it are made on the same configuration.
+    registry_env = _registry_env(env)
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
     try:
-        answer = resolve(env, target.letter)
+        answer = resolve(registry_env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        # The host's own configuration decides:  a host with no address or key fails
+        # closed, and a host that is configured answers the outage and spends no attempt.
+        return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code="registry-unavailable")
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed MC chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
