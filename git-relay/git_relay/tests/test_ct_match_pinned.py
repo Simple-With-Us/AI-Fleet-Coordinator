@@ -76,7 +76,7 @@ class MatchPinnedReview(unittest.TestCase):
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 4)
         self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 2)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 2)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 3)
         key, census = next(
             (key, census)
             for key, census in relay._REVIEWED_GENERIC_MATCHES.items()
@@ -187,3 +187,55 @@ class DurableReviewTests(unittest.TestCase):
             relay._REVIEWED_GENERIC_MATCHES[ct_key],
             frozenset(tuple(row) for row in ct["effective_matches"]),
         )
+
+
+class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
+    """The Usage-Monitor upgrade-reviewed-hub.py v3 candidate: exact digest, exact one-match census."""
+
+    key = (
+        "Simple-With-Us/Usage-Monitor",
+        "upgrade-reviewed-hub.py",
+        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    )
+    census = frozenset({("assigned secret", 8115, 8143, 8123, 8143)})
+
+    def test_registry_pins_exact_census(self):
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
+        self.assertNotIn(self.key, relay._REVIEWED_GENERIC_FIXTURES)
+
+    def test_durable_record_binds_registry(self):
+        root = Path(__file__).resolve().parents[3]
+        record = json.loads(
+            (root / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json").read_text()
+        )
+        doc = record["reviewed_file"]
+        self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
+        self.assertEqual(frozenset(tuple(row) for row in doc["effective_matches"]), self.census)
+        self.assertEqual(doc["bytes"], 36664)
+        self.assertEqual(doc["lines"], 814)
+        self.assertEqual(
+            record["provenance_source"]["sha256"],
+            "e98aaf3f5c7141bd2e80ab2b310ebe216c8ec4b43480ac6e5178a61b47407fea",
+        )
+
+    def test_stale_or_incomplete_census_refuses_the_proposed_digest(self):
+        body = "const secret = '" + "a" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        real = MatchPinnedReview().metadata(relay, body)
+        self.assertEqual(len(real), 1)
+        for metadata in (frozenset(), frozenset({("assigned secret", 0, 1, 0, 1)})):
+            with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: metadata}):
+                self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: real}):
+            self.assertIsNone(relay.scan_file(key[0], key[1], body))
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
+
+    def test_loaded_credential_and_dedicated_pattern_stay_absolute(self):
+        with patch.object(
+            relay, "_REVIEWED_GENERIC_MATCHES", {self.key: self.census}
+        ):
+            self.assertEqual(
+                relay.scan_file(self.key[0], self.key[1], "prefix " + "KnownCredentialValue123", known=("KnownCredentialValue123",)),
+                "a loaded credential",
+            )
+
