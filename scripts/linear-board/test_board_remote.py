@@ -510,16 +510,22 @@ class Remote(unittest.TestCase):
             path.chmod(0o600)
             for mode in (0o600, 0o644):
                 path.chmod(mode)
-                code, _, _, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], [])
+                code, _, _, calls = self.run_writes(
+                    ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], []
+                )
                 self.assertEqual((code, calls), (2, []))
             link = Path(tmp) / "link"
             link.symlink_to(path)
-            code, _, _, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX", "--text-file", str(link)], [])
+            code, _, _, calls = self.run_writes(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(link)], []
+            )
             self.assertEqual((code, calls), (2, []))
 
     def test_file_not_read_when_remote_writes_gated_off(self):
         with unittest.mock.patch.object(board, "read_text_input") as reader:
-            code, _, _, calls = self.run_cli(["comment", "AFC-1", "--by", "CODEX", "--text-file", "missing"], rpc({}))
+            code, _, _, calls = self.run_cli(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", "missing"], rpc({})
+            )
         reader.assert_not_called()
         self.assertEqual((code, calls), (2, []))
 
@@ -527,10 +533,22 @@ class Remote(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             argv = ["status", "AFC-1", "completed", "--resolution", "Fixed with tests"]
             env = {"LINEAR_BOARD_CACHE_DIR": tmp}
-            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"id": "AFC-1", "status": "completed"}), rpc({"ok": True, "id": "c1"})], env)
+            code, _, err, calls = self.run_writes(
+                argv,
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-1", "status": "completed"}),
+                    rpc({"ok": True, "id": "c1"}),
+                ],
+                env,
+            )
             self.assertEqual(code, 0, err)
-            self.assertEqual([c["name"] for c in calls], ["identities", "linear_status", "linear_comment"])
-            self.assertEqual(calls[-1]["arguments"]["body"], "Resolution (completed): Fixed with tests")
+            self.assertEqual(
+                [c["name"] for c in calls], ["identities", "linear_status", "linear_comment"]
+            )
+            self.assertEqual(
+                calls[-1]["arguments"]["body"], "Resolution (completed): Fixed with tests"
+            )
             code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
             self.assertEqual(code, 0, err)
             self.assertEqual([c["name"] for c in calls], ["identities"])
@@ -540,7 +558,15 @@ class Remote(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             argv = ["status", "AFC-2", "completed", "--resolution", "Fixed"]
             env = {"LINEAR_BOARD_CACHE_DIR": tmp}
-            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"id": "AFC-2", "status": "completed"}), rpc({"code": "outcome_unknown"}, is_error=True)], env)
+            code, _, err, calls = self.run_writes(
+                argv,
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-2", "status": "completed"}),
+                    rpc({"code": "outcome_unknown"}, is_error=True),
+                ],
+                env,
+            )
             self.assertNotEqual(code, 0)
             self.assertIn("state change completed", err)
             code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
@@ -552,7 +578,9 @@ class Remote(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             argv = ["status", "AFC-3", "completed", "--resolution", "Fixed"]
             env = {"LINEAR_BOARD_CACHE_DIR": tmp}
-            code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"code": "outcome_unknown"}, is_error=True)], env)
+            code, _, _, calls = self.run_writes(
+                argv, [rpc(self.IDANS), rpc({"code": "outcome_unknown"}, is_error=True)], env
+            )
             self.assertNotEqual(code, 0)
             self.assertNotIn("linear_comment", [c["name"] for c in calls])
             code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
@@ -563,28 +591,49 @@ class Remote(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             code, _, err, calls = self.run_writes(
                 ["status", "AFC-4", "duplicate", "--resolution", "dup of AFC-2"],
-                [rpc(self.IDANS), rpc({"id": "AFC-4", "status": "duplicate"}), rpc({"ok": True, "id": "c"})],
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-4", "status": "duplicate"}),
+                    rpc({"ok": True, "id": "c"}),
+                ],
                 {"LINEAR_BOARD_CACHE_DIR": tmp},
             )
             self.assertEqual(code, 0, err)
             self.assertEqual(calls[1]["arguments"]["of"], "AFC-2")
-            self.assertEqual(calls[2]["arguments"]["body"], "Resolution (duplicate of AFC-2): dup of AFC-2")
-        for resolution in ("fixed", "dup of AFC-2 and duplicate of AFC-3", "ghp_" + "A1b2C3d4E5" * 4):
-            code, _, _, calls = self.run_writes(["status", "AFC-4", "duplicate", "--resolution", resolution], [])
+            self.assertEqual(
+                calls[2]["arguments"]["body"], "Resolution (duplicate of AFC-2): dup of AFC-2"
+            )
+        for resolution in (
+            "fixed",
+            "dup of AFC-2 and duplicate of AFC-3",
+            "ghp_" + "A1b2C3d4E5" * 4,
+        ):
+            code, _, _, calls = self.run_writes(
+                ["status", "AFC-4", "duplicate", "--resolution", resolution], []
+            )
             self.assertEqual((code, calls), (2, []))
 
     def test_resolution_journal_never_keeps_hosted_echoed_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, _, err, _ = self.run_writes(
                 ["status", "AFC-8", "completed", "--resolution", "Private resolution tail"],
-                [rpc(self.IDANS), rpc({"body": "Private resolution tail"}, text="Private resolution tail"), rpc({"body": "Private resolution tail"}, text="Private resolution tail")],
+                [
+                    rpc(self.IDANS),
+                    rpc({"body": "Private resolution tail"}, text="Private resolution tail"),
+                    rpc({"body": "Private resolution tail"}, text="Private resolution tail"),
+                ],
                 {"LINEAR_BOARD_CACHE_DIR": tmp},
             )
             self.assertEqual(code, 0, err)
-            self.assertNotIn("Private resolution tail", (Path(tmp) / "remote-resolution.json").read_text())
+            self.assertNotIn(
+                "Private resolution tail", (Path(tmp) / "remote-resolution.json").read_text()
+            )
 
     def test_resolution_journal_busy_and_existing_ttl_boundary(self):
-        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"LINEAR_BOARD_CACHE_DIR": tmp}):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            unittest.mock.patch.dict(os.environ, {"LINEAR_BOARD_CACHE_DIR": tmp}),
+        ):
             store = board.RemoteResolutionStore("CODEX", "binding", {"id": "AFC-9"}, "state")
             with unittest.mock.patch.object(board.time, "time", return_value=1000):
                 self.assertEqual(store.begin("digest", "linear_status")[0], "send")
@@ -592,7 +641,9 @@ class Remote(unittest.TestCase):
                 store.finish({"structured": {"completed": True}, "text": ""})
             with unittest.mock.patch.object(board.time, "time", return_value=1001):
                 self.assertEqual(store.begin("digest", "linear_status")[0], "duplicate")
-            with unittest.mock.patch.object(board.time, "time", return_value=1000 + board.IDEM_TTL_S + 1):
+            with unittest.mock.patch.object(
+                board.time, "time", return_value=1000 + board.IDEM_TTL_S + 1
+            ):
                 self.assertEqual(store.begin("digest", "linear_status")[0], "send")
 
     def test_remote_with_mac_collab_backend_fails_closed_without_exec_or_call(self):
