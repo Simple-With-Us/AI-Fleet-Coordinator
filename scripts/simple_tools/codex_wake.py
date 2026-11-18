@@ -369,7 +369,8 @@ class CodexDelivery:
             return WR.registry_delivery(WR.registry_trouble(current), route="codex-desktop")
         found = current.get("found")
         if type(found) is not bool:
-            return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE, route="codex-desktop")
+            # The registry answered, but its row is not a row:  a data fault, not an outage.
+            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
         if not found or WR._closed(current):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
 
@@ -388,7 +389,8 @@ class CodexDelivery:
             or not seat_value.strip()
             or seat_value.strip() != seat_value
         ):
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            # The registry answered, but its row is not a row:  a data fault, not an outage.
+            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
         if (
             session_id != target.session_id
             or letter != target.letter

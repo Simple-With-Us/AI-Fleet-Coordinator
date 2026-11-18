@@ -218,7 +218,9 @@ def _wake_from(data: object) -> WR.Wake:
 
 def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     """Why this wake must not run, or None when the registry still holds this chat.
-    Nothing has been prompted yet, so a registry that cannot be read is `busy`."""
+    Nothing has been prompted yet, so a registry that cannot be read is `busy` and is tried
+    again without spending an attempt;  a host with no registry address or key is `failed`,
+    because a retry does not fix it."""
     try:
         answer = WR.registry_api.call(
             env,

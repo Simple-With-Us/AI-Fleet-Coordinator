@@ -829,7 +829,9 @@ def _remote_config(env: Mapping[str, str]) -> Mapping[str, Any]:
 
 def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run yet,
-    so a registry that cannot be read is `busy` and is tried again without spending an attempt."""
+    so a registry that cannot be read is `busy` and is tried again without spending an
+    attempt;  a host with no registry address or key is `failed`, because a retry does not
+    fix it."""
     try:
         answer = WR.registry_api.call(
             _registry_env(env),
