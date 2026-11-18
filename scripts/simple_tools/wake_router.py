@@ -277,9 +277,7 @@ NOT_INSTALLED = "not-installed"
 #: source an operator has to fix, never the error's own words.  The Mac reads the shared
 #: loader file and the server's router reads its own environment, so the note names the
 #: source this host reads.  It is a token the transport keeps, so it carries no space.
-REGISTRY_ENV_SOURCE = (
-    "operator-registry-env" if sys.platform == "darwin" else "router-environment"
-)
+REGISTRY_ENV_SOURCE = "operator-registry-env" if sys.platform == "darwin" else "router-environment"
 #: How much of a registry answer's own words a delivery note carries:  a variable name and a
 #: reason, and never a value.  A note crosses to another host, whose readers keep only 80
 #: characters of it, so the source shapes it to that length rather than the reader cutting it.

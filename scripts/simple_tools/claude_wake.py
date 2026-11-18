@@ -922,7 +922,9 @@ def _module_delivery(
         # identity is unverifiable here, so the delivery fails closed and the note names
         # the source that could not be read.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
-        return _answer(request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE))
+        return _answer(
+            request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
+        )
     try:
         answer = handler(request, env=registry_env)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
