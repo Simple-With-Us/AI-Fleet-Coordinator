@@ -68,7 +68,8 @@ class ZcodeBashrcClassifyTests(unittest.TestCase):
         _, _, stray = _zcode_bashrc_classify(text)
         self.assertEqual(len(stray), 1, stray)
         self.assertIn("line 1:", stray[0])
-        self.assertIn("redacted", stray[0])
+        # the summary names the line number and what matched, and never the line itself
+        self.assertIn("mentions AGENT_SEAT outside any managed block", stray[0])
         self.assertNotIn("hunter2", stray[0])
         self.assertNotIn("AGENT_SEAT=", stray[0])
 
@@ -145,10 +146,12 @@ class ApplyZcodeSeatDefaultTests(unittest.TestCase):
         bashrc = os.path.join(self.home, ".bashrc")
         installed = open(bashrc, encoding="utf-8").read()
         self.assertIn(BLOCK, installed)
-        # The seat shims sit in front of PATH after the block: the shim dir is re-fronted on every
-        # sourcing, so a later dotfile prepend cannot leave them behind (Sentry, AFC-839 round).
-        self.assertIn('export PATH="$_zc_seat_bin:$PATH"', installed)
-        self.assertNotIn('*":$_zc_seat_bin:"*) ;;', installed)
+        # The seat shims sit in front of PATH after the block: the shim dir is deduped out of PATH and
+        # re-fronted on every sourcing, so a later dotfile prepend cannot leave them behind (Sentry,
+        # AFC-839 round);  the loop itself is exercised end to end in
+        # fleet_lanes/tests/test_install_tools.py (a later prepend cannot shadow the shims).
+        self.assertIn('export PATH="$_zc_seat_bin${_zc_kept:+:$_zc_kept}"', installed)
+        self.assertNotIn('case ":$PATH:" in', installed)
 
     def test_a_second_apply_is_unchanged(self):
         self._place_tools_on_path()

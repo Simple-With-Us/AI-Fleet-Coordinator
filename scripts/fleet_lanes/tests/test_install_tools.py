@@ -7560,6 +7560,40 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertEqual([c.status for c in seat], ["WARN"] * len(seat))
         self.assertTrue(any(T.ZCODE_SEAT_TOOLS[2] in c.detail for c in seat), seat)
 
+    def test_hooks_write_failure_leaves_the_seat_default_untouched(self) -> None:
+        """The seat default is applied only after the hooks config has landed:  a hooks write that
+        fails must leave no shim and no profile block behind (no partial apply), and the failure is
+        what the Result reports."""
+        real_atomic = T.atomic_write
+        settings = self.config("zcode")
+
+        def failing_write(path, data, mode):
+            if str(path) == str(settings):
+                raise OSError(28, "No space left on device")
+            return real_atomic(path, data, mode)
+
+        with mock.patch.object(T, "atomic_write", failing_write):
+            r = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "failed", r)
+        self.assertIn("not changed", r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists(), "no shims on a failed hooks write")
+        self.assertFalse((self.home / ".bashrc").exists(), "no profile block on a failed hooks write")
+
+    def test_seat_refusal_after_hooks_landed_reports_both_halves(self) -> None:
+        """A seat default that cannot be written after the hooks config has landed must not roll the
+        hooks write back:  the Result keeps the hooks status and names the seat default as the pending
+        half, and the profile apply refused to manage is untouched."""
+        target = self.home / "bashrc-real"
+        target.write_text("# the owner's real profile\n", encoding="utf-8")
+        (self.home / ".bashrc").symlink_to(target)
+        r = self.install_zcode()
+        self.assertTrue(r.ok, r)
+        self.assertIn("seat default not written", r.detail)
+        self.assertIn("symlink", r.detail)
+        self.assertTrue(self.config("zcode").exists(), "the hooks config landed and stayed")
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists(), "refused: no shims")
+        self.assertEqual(target.read_text(encoding="utf-8"), "# the owner's real profile\n")
+
     # -- bashrc block
 
     def test_the_block_is_inserted_once_at_the_top_and_stays_put(self) -> None:
@@ -7690,6 +7724,46 @@ class ZcodeBashToolSeatDefaultTests(World):
         out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
         self.assertEqual(out.stdout.strip(), "unset", out)
 
+    def test_a_later_path_prepend_cannot_shadow_the_shims(self) -> None:
+        """Dedupe-then-force-prepend:  the block removes every occurrence of the shim dir from PATH and
+        puts it at the front, so a snapshot bake that left the dir behind another entry holding a fleet
+        tool, or any prepend that follows the block in the dotfiles, cannot put another copy of a fleet
+        tool ahead of the shims;  re-sourcing never stacks a second copy."""
+        decoy = self.tmp / "decoy-bin"
+        decoy.mkdir()
+        d = decoy / T.ZCODE_SEAT_TOOLS[0]
+        d.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        d.chmod(0o755)
+        late = self.home / "late-bin"
+        late.mkdir()
+        self.install_zcode()
+        with (self.home / ".bashrc").open("a", encoding="utf-8") as fh:
+            fh.write(f'export PATH="{late}:$PATH"\n')
+        shim = str(self.shim_path(T.ZCODE_SEAT_TOOLS[0]))
+        shim_dir = str(self.home / T.ZCODE_SEAT_BIN_DIRNAME)
+        base = self.child_env(
+            {
+                "HOME": str(self.home),
+                "ZCODE_SESSION_ID": "sess_x",
+                "PATH": f"{decoy}:{shim_dir}:{self.toolbin}:/usr/bin:/bin",
+            }
+        )
+        script = (
+            f'source "{self.home / ".bashrc"}" && command -v simple-chat && printf "%s\\n" "$PATH" && '
+            f'source "{self.home / ".bashrc"}" && command -v simple-chat && printf "%s\\n" "$PATH"'
+        )
+        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        resolved_1, path_1, resolved_2, path_2 = out.stdout.strip().split("\n")
+        self.assertEqual(resolved_1, shim, f"first source resolves the shim, not the decoy: {path_1}")
+        self.assertEqual(resolved_2, shim, f"second source still resolves the shim: {path_2}")
+        for path in (path_1, path_2):
+            entries = path.split(":")
+            self.assertEqual(entries.count(shim_dir), 1, path)  # one copy, never a stack
+            self.assertLess(
+                entries.index(shim_dir), entries.index(str(decoy)), path
+            )  # the shims beat the decoy that PATH once put ahead
+
     # -- verify
 
     def test_verify_passes_a_fresh_install_and_catches_drift(self) -> None:
@@ -7731,6 +7805,163 @@ class ZcodeBashToolSeatDefaultTests(World):
         warns = [c for c in checks if c.status == "WARN"]
         self.assertTrue(any("does not write" in c.detail for c in warns), warns)
         self.assertTrue(any("stray seat lines" in c.name for c in warns), warns)
+
+    def test_verify_warns_not_fails_on_an_unmanageable_profile(self) -> None:
+        """A profile apply refuses to manage (a symlink today, a non-regular file just the same) is an
+        unmanaged artifact, not a broken install:  verify says WARN with the remediation, never FAIL,
+        so a host in that state does not read as permanently broken."""
+        self.install_zcode()
+        target = self.home / "bashrc-real"
+        (self.home / ".bashrc").rename(target)
+        (self.home / ".bashrc").symlink_to(target)
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)
+        warn = next(c for c in checks if c.name == "bashrc block")
+        self.assertEqual(warn.status, "WARN")
+        self.assertIn("symlink", warn.detail)
+        self.assertIn("apply zcode", warn.detail)
+        # the same verdict for a bashrc that exists but is not a regular file
+        (self.home / ".bashrc").unlink()
+        os.mkfifo(self.home / ".bashrc")
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)
+        warn = next(c for c in checks if c.name == "bashrc block")
+        self.assertEqual(warn.status, "WARN")
+        self.assertIn("not a regular file", warn.detail)
+
+    def test_apply_refuses_a_non_regular_profile_and_writes_nothing(self) -> None:
+        """A FIFO at ~/.bashrc is the owner's content:  apply must refuse the seat default rather than
+        replace the file, after the hooks config has landed, and plan must say the same thing."""
+        os.mkfifo(self.home / ".bashrc")
+        r = self.install_zcode()
+        self.assertTrue(r.ok, r)
+        self.assertIn("seat default not written", r.detail)
+        self.assertIn("not a regular file", r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists(), "refused: no shims")
+        self.assertTrue(stat.S_ISFIFO(os.lstat(self.home / ".bashrc").st_mode), "the FIFO is untouched")
+        sp = self.seat_plan()
+        self.assertEqual(sp.bashrc_action, "refused")
+        self.assertIn("not a regular file", sp.bashrc_reason)
+
+    @unittest.skipIf(
+        os.geteuid() == 0, "root passes every search and owner check, so the mode bits cannot deny it"
+    )
+    def test_an_unreadable_profile_is_unmanageable(self) -> None:
+        """A profile this process cannot read cannot be classified or preserved, so every caller treats
+        it as unmanageable:  apply refuses with nothing written and verify warns, never fails red on a
+        state only the owner can repair."""
+        p = self.home / ".bashrc"
+        p.write_text("# the owner's\n", encoding="utf-8")
+        os.chmod(p, 0o000)
+        self.addCleanup(os.chmod, p, 0o644)
+        kind, raw, reason = T._zcode_bashrc_read(str(p))
+        self.assertEqual(kind, "unmanageable")
+        self.assertIsNone(raw)
+        self.assertIn("cannot be read", reason)
+        r = self.install_zcode()
+        self.assertTrue(r.ok, r)
+        self.assertIn("seat default not written", r.detail)
+        self.assertIn("cannot be read", r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists())
+        # the profile check is a WARN with the remediation;  the missing shims are honest FAILs (the
+        # set was never written), the same verdict a fresh host earns before its first apply
+        checks = self.verify("zcode")
+        block = [c for c in checks if c.name == "bashrc block"]
+        self.assertEqual([c.status for c in block], ["WARN"])
+        self.assertIn("cannot be read", block[0].detail)
+        self.assertTrue(any(c.status == "FAIL" for c in checks if c.name.startswith("shim")), checks)
+
+    def test_malformed_marker_layouts_are_refused_and_write_nothing(self) -> None:
+        """A reversed marker pair or a hand-written block interleaved with the managed one would splice
+        the profile at crossed indexes and duplicate or orphan unrelated lines, so classify refuses
+        them before any write:  the profile stays byte-identical and no seat artifact appears."""
+        ours_b = "# --- begin " + T.ZCODE_SEAT_BLOCK_NAME + " --- mark"
+        ours_e = "# --- end " + T.ZCODE_SEAT_BLOCK_NAME + " --- mark"
+        cases = {
+            "reversed pair": f"{ours_e}\nkeep this line exactly\n{ours_b}\n",
+            "reversed hand block": (
+                "# --- end fleet: Z Code session seat declaration ---\n"
+                "keep this line exactly\n"
+                "# --- fleet: Z Code session seat declaration ---\n"
+            ),
+            "interleaved blocks": (
+                "# --- fleet: Z Code session seat declaration ---\n"
+                f"{ours_b}\n"
+                "# --- end fleet: Z Code session seat declaration ---\n"
+                f"{ours_e}\n"
+            ),
+            "hand block inside the managed one": (
+                f"{ours_b}\n"
+                "middle of the managed block\n"
+                "# --- fleet: Z Code session seat declaration ---\n"
+                "AGENT_SEAT=ZC\n"
+                "# --- end fleet: Z Code session seat declaration ---\n"
+                f"{ours_e}\n"
+            ),
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                (self.home / ".bashrc").write_text(text, encoding="utf-8")
+                with self.assertRaises(T.Refused):
+                    T._zcode_bashrc_classify(text)
+                sp = self.seat_plan()
+                self.assertEqual(sp.bashrc_action, "refused")
+                r = self.install_zcode()
+                self.assertTrue(r.ok, r)
+                self.assertIn("seat default not written", r.detail)
+                self.assertEqual(self.bashrc(), text, "the profile stays byte-identical")
+                self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists())
+
+    def test_stray_diagnostics_never_quote_the_profile_line(self) -> None:
+        """The stray-line report names the line number and what matched, never the raw text:  a profile
+        line can carry a credential on the same line as a seat word, and neither plan nor verify may
+        copy that line into its output."""
+        self.install_zcode()
+        secret_line = "export AGENT_SEAT=guest # demo sk-do-not-leak-abc123"
+        shim_line = f'export PATH="$HOME/{T.ZCODE_SEAT_BIN_DIRNAME}:$PATH" # sk-do-not-leak-def456'
+        with (self.home / ".bashrc").open("a", encoding="utf-8") as fh:
+            fh.write(secret_line + "\n" + shim_line + "\n")
+        text = self.bashrc()
+        first = text.split("\n").index(secret_line) + 1
+        second = text.split("\n").index(shim_line) + 1
+        sp = self.seat_plan()
+        self.assertEqual(
+            sp.stray,
+            [
+                f"line {first}: mentions AGENT_SEAT outside any managed block",
+                f"line {second}: mentions {T.ZCODE_SEAT_BIN_DIRNAME} outside any managed block",
+            ],
+            sp.stray,
+        )
+        for entry in sp.stray:
+            self.assertNotIn("sk-do-not-leak", entry)
+            self.assertNotIn("guest", entry)
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)
+        stray = next(c for c in checks if c.name == "stray seat lines")
+        self.assertIn(f"line {first}", stray.detail)
+        self.assertIn(f"line {second}", stray.detail)
+        self.assertNotIn("sk-do-not-leak", stray.detail)
+
+    def test_a_crlf_profile_is_normalized_in_place_not_stacked(self) -> None:
+        """CRLF endings do not defeat the markers (a trailing CR sits past the marker prefix), so a
+        CRLF file reads as one prepend or one drifted block, never as a broken pair;  apply normalizes
+        our span in place, the owner's lines keep their bytes, and the second apply is a no-op."""
+        (self.home / ".bashrc").write_bytes(
+            b"export PATH=/usr/local/bin:$PATH\r\n# a real line the owner keeps\r\n"
+        )
+        r = self.install_zcode()
+        self.assertTrue(r.ok, r)
+        self.assertIn("seat default installed", r.detail)
+        text = self.bashrc()
+        self.assertEqual(text.count("# --- begin " + T.ZCODE_SEAT_BLOCK_NAME), 1)
+        # read the bytes:  read_text's universal newlines would quietly fold the CRLF the owner keeps
+        raw = (self.home / ".bashrc").read_bytes()
+        self.assertIn(b"export PATH=/usr/local/bin:$PATH\r\n", raw)
+        self.assertIn(b"# a real line the owner keeps\r\n", raw)
+        self.assertEqual(self.seat_plan().state, "current")
+        r2 = self.install_zcode()
+        self.assertNotIn("seat default", r2.detail)
 
     # -- platform gating
 

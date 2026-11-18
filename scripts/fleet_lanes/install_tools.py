@@ -1556,11 +1556,13 @@ def render_zcode_seat_shim(tool: str, target: str) -> str:
 def render_zcode_bashrc_block() -> str:
     """The marked block `apply zcode` keeps in ~/.bashrc:  the shim dir at the front of PATH, then the
     same guarded seat default the shims carry, for the interactive shells the CLI's snapshot PATH does
-    not reach.  The prepend re-fronts the shim dir on every sourcing, so a dotfile line that prepends
-    other dirs cannot leave the seat shims behind it, and an assignment never grows PATH;  the block
-    carries GENERATED_MARK in both markers so a re-apply replaces it in place instead of stacking a
-    second copy.  The prepend exports PATH and nothing else, and the only other export in the block is
-    the guarded AGENT_SEAT default."""
+    not reach.  The PATH handling is dedupe-then-force-prepend in pure POSIX sh:  every occurrence of
+    the shim dir already in PATH is removed and the dir is put at the front unconditionally, so a
+    snapshot bake (or an earlier source of this file followed by a later dotfile prepend) that left the
+    dir behind another entry holding a fleet tool cannot shadow the shims, and re-sourcing the file
+    never grows PATH or stacks a second copy.  The block carries GENERATED_MARK in both markers so a
+    re-apply replaces it in place instead of stacking a second copy.  The prepend never exports
+    anything, and the only export in the block is the guarded AGENT_SEAT default."""
     return (
         f"# --- begin {ZCODE_SEAT_BLOCK_NAME} --- {GENERATED_MARK}.  Do not edit; run "
         "`python3 -m fleet_lanes.install_tools apply zcode`.\n"
@@ -1571,11 +1573,23 @@ def render_zcode_bashrc_block() -> str:
         "# AGENT_SEAT or a chat tag (AGENT_TAG) always wins;  this block never writes AGENT_LAUNCH_SEAT or\n"
         "# AGENT_LAUNCHER.\n"
         '_zc_seat_bin="$HOME/' + ZCODE_SEAT_BIN_DIRNAME + '"\n'
-        '# Re-front the shim dir on every sourcing:  a dotfile line that prepends other dirs would'
-        ' leave the seat shims behind it.  An assignment never grows PATH, so re-sourcing the file'
-        ' is byte-stable.\n'
-        'export PATH="$_zc_seat_bin:$PATH"\n'
-        "unset _zc_seat_bin\n"
+        "# Drop every occurrence of the shim dir already in PATH, then put it at the front\n"
+        "# unconditionally:  a prepend that runs later in the dotfiles must not leave the dir\n"
+        "# behind another entry that also holds a fleet tool, and re-sourcing must never stack\n"
+        "# a second copy.  Other entries keep their order, duplicates included.\n"
+        '_zc_old="${PATH:-}:"\n'
+        '_zc_kept=""\n'
+        '_zc_sep=""\n'
+        'while [ -n "$_zc_old" ]; do\n'
+        '  _zc_one="${_zc_old%%:*}"\n'
+        '  _zc_old="${_zc_old#*:}"\n'
+        '  if [ "$_zc_one" != "$_zc_seat_bin" ]; then\n'
+        '    _zc_kept="$_zc_kept$_zc_sep$_zc_one"\n'
+        '    _zc_sep=":"\n'
+        "  fi\n"
+        "done\n"
+        'export PATH="$_zc_seat_bin${_zc_kept:+:$_zc_kept}"\n'
+        'unset _zc_seat_bin _zc_old _zc_kept _zc_sep _zc_one\n'
         'if [ -n "${ZCODE_SESSION_ID:-}" ] || [ -n "${ZCODE_RUNTIME_ENV:-}" ]; then\n'
         '  if [ -z "${AGENT_SEAT:-}" ] && [ -z "${AGENT_LAUNCH_SEAT:-}" ] && [ -z "${AGENT_TAG:-}" ]; then\n'
         f"    export AGENT_SEAT={ZCODE_SEAT_TAG}\n"
@@ -4414,6 +4428,21 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
     raise OSError("could not find a free backup name")
 
 
+def _zcode_seat_note(plat_key: str, paths: Paths) -> str:
+    """Apply the Bash-tool seat default and shape its Result-detail note.  Called only AFTER the hooks
+    config has landed (see apply_platform):  a refusal or failure at this point must not roll the hooks
+    write back, so the Result keeps the hooks status and the note names what is present and what is
+    still pending, which is the file's convention for post-write report-only failures."""
+    if plat_key != "zcode":
+        return ""
+    seat = apply_zcode_seat_default(paths)
+    if not seat.ok:
+        return f"; seat default not written: {seat.detail}"
+    if seat.status == "installed":
+        return f"; seat default installed: {seat.detail}"
+    return ""
+
+
 def apply_platform(
     plat: Platform,
     paths: Paths,
@@ -4541,18 +4570,11 @@ def apply_platform(
                     "the installed file-guard shim fails its probes, so it will not be wired in: "
                     + bad[0].detail,
                 )
-    seat_note = ""
     if plan.action == "unchanged":
-        # The seat default is decided on this path too:  nothing else is written here, so ordering
-        # cannot leave a partial artifact, and an already-current hooks config still gets its first
-        # seat default installed.
-        seat = apply_zcode_seat_default(paths)
-        if not seat.ok:
-            seat_note = f"; seat default not written: {seat.detail}"
-        elif seat.status == "installed":
-            seat_note = f"; seat default installed: {seat.detail}"
+        # The hooks config is already on disk, so the seat default may follow it (same contract as the
+        # written path below:  the seat default is applied only once the hooks config is present).
         note = "".join("; " + n for n in plan.notes)
-        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}{seat_note}")
+        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}{_zcode_seat_note(plat.key, paths)}")
     cfg = plan.cfg
     assert cfg is not None and plan.new_text is not None
     # Self-checks on the document we are about to write.
@@ -4623,19 +4645,14 @@ def apply_platform(
             f"{plan.path} failed validation after the write; the original was restored",
             backup,
         )
-    # The Bash-tool seat default travels LAST on this path:  every refusal gate and the hooks write
-    # and its validation have landed, so a failure above leaves the profile untouched and a seat
-    # default is never installed beside a hooks config that did not land.
-    if plat.key == "zcode":
-        seat = apply_zcode_seat_default(paths)
-        if not seat.ok:
-            seat_note = f"; seat default not written: {seat.detail}"
-        elif seat.status == "installed":
-            seat_note = f"; seat default installed: {seat.detail}"
     detail = f"{plan.path}" + (f" (backup {backup})" if backup else " (new file)")
     if plan.notes:
         detail += "; " + "; ".join(plan.notes)
-    detail += seat_note
+    # The seat default travels with the zcode platform, but only from here:  every gate and the write
+    # itself can still refuse or fail the hooks config, and a refusal before this point must leave
+    # nothing of the seat default on disk, while a seat-default refusal or failure after it is
+    # reported in the detail without rolling the hooks write back.
+    detail += _zcode_seat_note(plat.key, paths)
     return Result(plat.key, "added" if plan.action == "add" else "updated", detail, backup)
 
 
@@ -8072,6 +8089,42 @@ class ZcodeSeatPlan:
     warnings: list[str]
 
 
+def _zcode_bashrc_read(bashrc: str) -> tuple[str, bytes | None, str]:
+    """(kind, raw, reason) for ~/.bashrc as the seat default sees it, read-only.  kind is "absent"
+    (nothing there), "regular" (raw holds the file's bytes) or "unmanageable" (reason names why apply
+    will not touch the file:  a symlink, a directory, a FIFO or another non-regular file, one this
+    process cannot read, or one it cannot even examine).  One verdict shared by plan, apply and verify,
+    so the three can never disagree about whether the profile is a file install_tools may manage, and
+    an unmanageable profile can never reach a write."""
+    if os.path.islink(bashrc):
+        return ("unmanageable", None, f"{bashrc} is a symlink; refusing to manage it")
+    try:
+        st = os.lstat(bashrc)
+    except FileNotFoundError:
+        return ("absent", None, "")
+    except OSError:
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} cannot be examined by this process; refusing to manage it",
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} exists and is not a regular file; refusing to manage it",
+        )
+    try:
+        with open(bashrc, "rb") as fh:
+            return ("regular", fh.read(), "")
+    except OSError:
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} cannot be read by this process; refusing to manage it",
+        )
+
+
 def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
     """(action, hand_line, stray) for ~/.bashrc's current content, read-only.  The action is what apply
     would do:  replace (our marked block differs from what this version writes; the span is replaced in
@@ -8083,7 +8136,11 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
     apply leaves every one of them alone and reports them, because they are the owner's content and the
     shim guard makes a second declaration harmless.  Raises Refused for markers that cannot be trusted:
     one marker of a pair, or more than one pair, means the file was edited mid-surgery and guessing
-    would corrupt it."""
+    would corrupt it.  It also refuses layouts it cannot splice safely:  an end marker ahead of its
+    begin marker (splicing at crossed indexes duplicates unrelated lines) and a hand-written block that
+    shares any line range with the managed one (a replace would rewrite or orphan the other block's
+    lines).  The stray report names the line number and what matched, never the raw line:  a profile
+    can carry a credential on the same line as a seat word."""
     lines = text.split("\n")
     begin = f"# --- begin {ZCODE_SEAT_BLOCK_NAME}"
     end = f"# --- end {ZCODE_SEAT_BLOCK_NAME}"
@@ -8100,11 +8157,10 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
             + (f"begin at line {ours_b[0] + 1}" if ours_b else f"end at line {ours_e[0] + 1}")
             + "); restore or remove the partial block by hand, then re-run"
         )
-    if ours_b and ours_b[0] > ours_e[0]:
+    if ours_b and ours_e[0] < ours_b[0]:
         raise Refused(
-            f"the begin marker of the marked {ZCODE_SEAT_BLOCK_NAME} block (line {ours_b[0] + 1}) comes after "
-            f"its end marker (line {ours_e[0] + 1}); a reversed pair would splice new block lines into the middle "
-            "of unrelated profile text; reorder the pair or remove it by hand, then re-run"
+            f"the end marker of the {ZCODE_SEAT_BLOCK_NAME} pair (line {ours_e[0] + 1}) appears before its "
+            f"begin marker (line {ours_b[0] + 1}); restore the order or remove the block by hand, then re-run"
         )
     hand_line: int | None = None
     hand_b = [i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_BEGIN)]
@@ -8114,20 +8170,19 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
             "the earlier hand-written seat block markers cannot be trusted ("
             + f"{len(hand_b)} begin, {len(hand_e)} end); fix them by hand, then re-run"
         )
-    if hand_b and hand_b[0] > hand_e[0]:
+    if hand_b and hand_e[0] < hand_b[0]:
         raise Refused(
-            f"the hand-written seat block's begin marker (line {hand_b[0] + 1}) comes after its end marker "
-            f"(line {hand_e[0] + 1}); reorder the pair or remove it by hand, then re-run"
+            f"the end marker of the hand-written seat block (line {hand_e[0] + 1}) appears before its begin "
+            f"marker (line {hand_b[0] + 1}); restore the order or remove the block by hand, then re-run"
         )
-    if ours_b and hand_b:
-        ours_lo, ours_hi = min(ours_b[0], ours_e[0]), max(ours_b[0], ours_e[0])
-        hand_lo, hand_hi = min(hand_b[0], hand_e[0]), max(hand_b[0], hand_e[0])
-        if ours_lo <= hand_hi and hand_lo <= ours_hi:
-            raise Refused(
-                f"the hand-written seat block (lines {hand_lo + 1}-{hand_hi + 1}) overlaps the marked "
-                f"{ZCODE_SEAT_BLOCK_NAME} block (lines {ours_lo + 1}-{ours_hi + 1}); removing both by span would "
-                "duplicate or drop the lines between them; separate the blocks by hand, then re-run"
-            )
+    # The reversed checks above have already sorted each pair, so the [0] indexes are the mins and the
+    # [1]-free form below is a plain interval overlap, containment included.
+    if ours_b and hand_b and ours_b[0] <= hand_e[0] and hand_b[0] <= ours_e[0]:
+        raise Refused(
+            f"the hand-written seat block (lines {hand_b[0] + 1}-{hand_e[0] + 1}) and the marked "
+            f"{ZCODE_SEAT_BLOCK_NAME} block (lines {ours_b[0] + 1}-{ours_e[0] + 1}) overlap; the two spans "
+            "cannot be rewritten independently; separate or remove one of them by hand, then re-run"
+        )
     if hand_b:
         hand_line = hand_b[0] + 1
     managed: set[int] = set()
@@ -8135,14 +8190,13 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
         managed.update(range(ours_b[0], ours_e[0] + 1))
     if hand_b:
         managed.update(range(hand_b[0], hand_e[0] + 1))
-    stray = [
-        # Line number only:  a profile can hold secrets, and the raw text never leaves the host file.
-        f"line {i + 1}: seat-related line (content redacted)"
-        for i, ln in enumerate(lines)
-        if i not in managed
-        and ln.strip()
-        and ("AGENT_SEAT" in ln or ZCODE_SEAT_BIN_DIRNAME in ln)
-    ]
+    stray = []
+    for i, ln in enumerate(lines):
+        if i in managed or not ln.strip():
+            continue
+        matched = [w for w in ("AGENT_SEAT", ZCODE_SEAT_BIN_DIRNAME) if w in ln]
+        if matched:
+            stray.append(f"line {i + 1}: mentions {' and '.join(matched)} outside any managed block")
     if ours_b:
         block = render_zcode_bashrc_block()
         have = "\n".join(lines[ours_b[0] : ours_e[0] + 1]) + "\n"
@@ -8241,23 +8295,18 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
             f"{d} holds entries install_tools does not write (left alone): " + ", ".join(extra)
         )
     bashrc = paths.zcode_bashrc
-    raw = None if os.path.islink(bashrc) else _read_regular(bashrc)
-    bashrc_action, bashrc_reason, hand_line, stray = "refused", "", None, []
-    if os.path.islink(bashrc):
-        bashrc_reason = f"{bashrc} is a symlink; refusing to manage it"
-    else:
+    kind, raw, bashrc_reason = _zcode_bashrc_read(bashrc)
+    bashrc_action, hand_line, stray = "refused", None, []
+    if kind == "absent":
+        bashrc_action, bashrc_reason = "create", ""
+    elif kind == "regular":
         try:
-            text = "" if raw is None else raw.decode("utf-8")
+            text = (raw or b"").decode("utf-8")
         except UnicodeDecodeError:
             bashrc_reason = f"{bashrc} is not UTF-8 text; fix or convert it first"
-            text = None
-        except Refused as exc:
-            bashrc_reason = str(exc)
-            text = None
-        if text is not None:
+        else:
             try:
-                action, hand_line, stray = _zcode_bashrc_classify(text)
-                bashrc_action = "create" if raw is None else action
+                bashrc_action, hand_line, stray = _zcode_bashrc_classify(text)
             except Refused as exc:
                 bashrc_reason = str(exc)
     current = (
@@ -8356,12 +8405,16 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
     if os.path.exists(d) and not os.path.isdir(d):
         return Result(t, "refused", f"{d} exists and is not a directory; nothing written")
     bashrc = paths.zcode_bashrc
-    if os.path.islink(bashrc):
-        return Result(t, "refused", f"{bashrc} is a symlink; nothing written")
-    raw = _read_regular(bashrc)
+    # The one shared verdict on the profile:  a symlink, a non-regular file, or anything this process
+    # cannot read is refused before a single byte is written, replacing an owner file that is not a
+    # regular text file is never attempted, and nothing here can disagree with what plan and verify
+    # said about the same path.
+    kind, raw, reason = _zcode_bashrc_read(bashrc)
+    if kind == "unmanageable":
+        return Result(t, "refused", f"{reason}; nothing written")
     text: str | None
     try:
-        text = None if raw is None else raw.decode("utf-8")
+        text = None if kind == "absent" else (raw or b"").decode("utf-8")
     except UnicodeDecodeError:
         return Result(t, "refused", f"{bashrc} is not UTF-8 text; nothing written")
     if text is not None:
@@ -8414,7 +8467,9 @@ def verify_zcode_seat_default(paths: Paths) -> list[Check]:
     re-apply would write NOW, so a tool that moved since apply reads as the drift it is) with their
     modes, and exactly one current marked block in ~/.bashrc.  When a tool is off PATH the artifact set
     is not managed on this host:  that is a WARN, not a FAIL, so a host without the fleet tools reads
-    healthy with the gap named, and never as broken."""
+    healthy with the gap named, and never as broken.  A profile apply cannot manage (a symlink, a
+    non-regular file, one this process cannot read) is the same kind of honest WARN with the remediation
+    named, never a FAIL:  the state is undecidable from the tool's side, and red-forever proves nothing."""
     t = "zcode"
     missing = [tool for tool in ZCODE_SEAT_TOOLS if not _resolve_zcode_tool(tool, paths)]
     if missing:
@@ -8455,61 +8510,61 @@ def verify_zcode_seat_default(paths: Paths) -> list[Check]:
             _check_zcode_seat_text(t, f"shim {tool}", os.path.join(d, tool), render_zcode_seat_shim(tool, target))
         )
     bashrc = paths.zcode_bashrc
-    if os.path.islink(bashrc):
-        # A symlinked profile is the owner's choice, and apply refuses to edit through one by design:
-        # the gap is named, the host reads healthy, and remediation replaces the link with a real file.
+    kind, raw, reason = _zcode_bashrc_read(bashrc)
+    if kind == "unmanageable":
+        # An unmanageable profile is an unmanaged artifact, not a broken install (the same honest WARN
+        # the unmanaged-tools case carries):  a symlinked ~/.bashrc is a legitimate setup that apply
+        # rightly refuses, and a FAIL here would read as permanently broken on a host nothing can
+        # repair from the tool's side.
         out.append(
             Check(
                 t,
                 "bashrc block",
                 "WARN",
-                f"{bashrc} is a symlink, so the marked block is not managed here (apply never edits through "
-                "a link); replace the link with a real file and run `apply zcode`, or point the checks at the "
-                "target file",
+                reason
+                + "; manage the marked block by hand or make the path a regular file, then re-run `apply zcode`",
             )
         )
+    elif kind == "absent":
+        out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} does not exist; run `apply zcode`"))
     else:
-        raw = _read_regular(bashrc)
-        if raw is None:
-            out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} does not exist; run `apply zcode`"))
+        try:
+            action, hand_line, stray = _zcode_bashrc_classify((raw or b"").decode("utf-8"))
+        except UnicodeDecodeError:
+            out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} is not UTF-8 text"))
+        except Refused as exc:
+            out.append(Check(t, "bashrc block", "FAIL", str(exc)))
         else:
-            try:
-                action, hand_line, stray = _zcode_bashrc_classify(raw.decode("utf-8"))
-            except UnicodeDecodeError:
-                out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} is not UTF-8 text"))
-            except Refused as exc:
-                out.append(Check(t, "bashrc block", "FAIL", str(exc)))
-            else:
-                if action == "none":
-                    out.append(Check(t, "bashrc block", "PASS", f"one current marked block in {bashrc}"))
-                elif action == "replace":
-                    out.append(
-                        Check(
-                            t,
-                            "bashrc block",
-                            "FAIL",
-                            f"the marked block in {bashrc} differs from what this install_tools writes; re-run `apply zcode`",
-                        )
+            if action == "none":
+                out.append(Check(t, "bashrc block", "PASS", f"one current marked block in {bashrc}"))
+            elif action == "replace":
+                out.append(
+                    Check(
+                        t,
+                        "bashrc block",
+                        "FAIL",
+                        f"the marked block in {bashrc} differs from what this install_tools writes; re-run `apply zcode`",
                     )
-                else:  # prepend or hand
-                    why = (
-                        f"the hand-written seat block at line {hand_line} would be replaced"
-                        if action == "hand"
-                        else "no marked block at the top"
+                )
+            else:  # prepend or hand
+                why = (
+                    f"the hand-written seat block at line {hand_line} would be replaced"
+                    if action == "hand"
+                    else "no marked block at the top"
+                )
+                out.append(
+                    Check(t, "bashrc block", "FAIL", f"no current marked block in {bashrc} ({why}); run `apply zcode`")
+                )
+            if stray:
+                out.append(
+                    Check(
+                        t,
+                        "stray seat lines",
+                        "WARN",
+                        f"{bashrc} sets a seat outside the managed block (left alone; the shim guard makes a "
+                        "second declaration harmless): " + "; ".join(stray),
                     )
-                    out.append(
-                        Check(t, "bashrc block", "FAIL", f"no current marked block in {bashrc} ({why}); run `apply zcode`")
-                    )
-                if stray:
-                    out.append(
-                        Check(
-                            t,
-                            "stray seat lines",
-                            "WARN",
-                            f"{bashrc} sets a seat outside the managed block (left alone; the shim guard makes a "
-                            "second declaration harmless): " + "; ".join(stray),
-                        )
-                    )
+                )
     return out
 
 
