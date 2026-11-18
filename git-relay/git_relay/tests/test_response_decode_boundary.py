@@ -2,7 +2,7 @@
 
 import unittest
 
-from git_relay.github_client import GitHubClient
+from git_relay.github_client import (GitHubClient, MAX_RESPONSE_DEPTH, MAX_RESPONSE_NODES, _reject_surrogates)
 from git_relay.server import RelayGitHubError
 
 
@@ -50,6 +50,24 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
             (b'"\\ud83d\\ude00"', "\U0001f600"),
         ]:
             self.assertEqual(self.call(body), expected)
+
+    def test_explicit_depth_bound_independent_of_json_decoder(self):
+        value = 0
+        for _ in range(MAX_RESPONSE_DEPTH):
+            value = [value]
+        _reject_surrogates(value)
+        with self.assertRaises(RelayGitHubError) as raised:
+            _reject_surrogates([value])
+        self.assertEqual(raised.exception.status, 0)
+
+    def test_total_nodes_count_array_elements_and_object_keys(self):
+        _reject_surrogates([0] * (MAX_RESPONSE_NODES - 1))
+        for value in ([0] * MAX_RESPONSE_NODES,
+                      {str(i): 0 for i in range(MAX_RESPONSE_NODES // 2)}):
+            with self.subTest(kind=type(value).__name__):
+                with self.assertRaises(RelayGitHubError) as raised:
+                    _reject_surrogates(value)
+                self.assertEqual(raised.exception.status, 0)
 
     def test_empty_completion_still_works(self):
         self.assertEqual(self.call(b""), {})

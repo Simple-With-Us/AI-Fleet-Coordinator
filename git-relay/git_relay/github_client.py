@@ -324,25 +324,37 @@ class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
 
 
+MAX_RESPONSE_DEPTH = 128
+MAX_RESPONSE_NODES = 100_000
+
+
 def _reject_surrogates(node):
-    """A JSON body can legally escape lone surrogates (\\ud800);  Python decodes
-    them to str, but any later .encode("utf-8") on such a string raises
-    UnicodeEncodeError - a ValueError - which Relay.handle would read as a
-    local refusal even after a write landed.  Reject at the decode boundary
-    so no surrogate ever reaches verb or projection code.  The walk is
-    iterative:  a recursive walk would impose its own ceiling under json's
-    parse depth and raise RecursionError on deeply nested input."""
-    stack = [node]
+    """Validate decoded bodies with runtime-independent work/depth limits.
+
+    Parser recursion behavior differs across Python versions. Keep outcome status
+    unknown after an upstream write if any decoded body exceeds these bounds.
+    Iterator frames keep auxiliary memory proportional to depth, not array width.
+    """
+    stack = [(iter((node,)), 0)]
+    nodes = 0
     while stack:
-        item = stack.pop()
+        items, depth = stack[-1]
+        try:
+            item = next(items)
+        except StopIteration:
+            stack.pop()
+            continue
+        nodes += 1
+        if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
+            raise RelayGitHubError(0, "github response exceeded structure bound")
         if isinstance(item, str):
             if any("\ud800" <= c <= "\udfff" for c in item):
                 raise RelayGitHubError(0, "github response carried invalid unicode")
         elif isinstance(item, list):
-            stack.extend(item)
+            stack.append((iter(item), depth + 1))
         elif isinstance(item, dict):
-            stack.extend(item.keys())
-            stack.extend(item.values())
+            stack.append((iter(item.keys()), depth + 1))
+            stack.append((iter(item.values()), depth + 1))
 
 
 def _redirected(exc: RelayGitHubError) -> bool:
