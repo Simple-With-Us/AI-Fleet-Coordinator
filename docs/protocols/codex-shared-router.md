@@ -137,7 +137,7 @@ The three gates, and what each of them answered on the day of the cutover.
   the ssh route (`route: ssh:codex-desktop`).
 
 The legacy binding that the sample's change removed was the seat's inbox capture on the
-server, and it had delivered nothing:  the server's CODEX inbox holds no wake at all, so
+server, and it had delivered nothing:  the server's wake ledger holds no wake for the seat at all, so
 nothing that worked was removed with it.  The live block is moved to the sample's block by the
 apply, and that apply is the cutover:  it writes the sample's block for every seat it manages,
 this seat and ZC among them, so the first apply after the image carries the new sample moves
