@@ -12,7 +12,8 @@ const onlyOf=name=>{
 test('names equal the relay SPECS',()=>{
   const rel=specs.slice().sort();
   assert.deepEqual([...WF_V1_ACTIONS].sort(),rel);
-  assert.equal(WF_V1_TOOLS.length,rel.length);
+  assert.equal(WF_V1_TOOLS.length,rel.length-1);
+  assert.ok(!WF_V1_TOOLS.some(t=>t.name==="gr_wf_pr_create"));
 });
 test('argument sets equal the relay _only() sets',()=>{
   for(const t of WF_V1_TOOLS){
@@ -94,7 +95,7 @@ test('held and unknown answers carry only a validated allowlisted github_code',a
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv({GR_WORKFLOW_TOOLS:""})).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_TOOLS.length);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -105,7 +106,7 @@ test('all workflow tools have dispatch and correct read/write scope',()=>{
     assert.equal(typeof HostedTools.prototype['tool_gr_'+action],'function');
     const read=WF_V1_READ_ACTIONS.includes(action);
     assert.equal(HOSTED_READ_TOOLS.has('gr_'+action),read);
-    assert.equal(HOSTED_WRITE_TOOLS.has('gr_'+action),!read);
+    assert.equal(HOSTED_WRITE_TOOLS.has('gr_'+action),!read && action !== 'wf_pr_create');
   }
 });
 test('end-to-end front dispatch pins origin, caller bearer, Access headers and head fence',async()=>{
@@ -187,7 +188,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_TOOLS.length);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -1137,13 +1138,13 @@ test('Actions inventory attempts: exact identities, bounded pages, secret metada
 // ---- R-verbs corrective v2 ----
 const S40='a'.repeat(40);
 test('v2: custody verb arg contracts',()=>{
-  for(const a of ['wf_pr_create','wf_pr_edit','wf_pr_close']){
+  for(const a of ['wf_pr_edit','wf_pr_close']){
     const tool=WF_V1_TOOLS.find(t=>t.name==='gr_'+a);
     assert.ok(tool,a);
     assert.equal(tool.inputSchema.additionalProperties,false);
     assert.ok(!WF_V1_READ_ACTIONS.includes(a),a+' is a write');
   }
-  assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_create').inputSchema.required,['repo','base','head','title','body','expected_head_sha']);
+  assert.ok(!WF_V1_TOOLS.some(t=>t.name==='gr_wf_pr_create'));
   assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit').inputSchema.required,['repo','number','expected_head_sha','expected_base_ref']);
   assert.deepEqual(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_close').inputSchema.required,['repo','number','expected_head_sha','expected_base_ref']);
 });
@@ -1158,17 +1159,12 @@ test('v2: custody verb arg validation',()=>{
 
   // Capability descriptions follow live seat policy, never assert stale universal denial or fallback authority.
   {
-    const c = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_create');
     const e = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit');
-    assert.match(c.description, /calling seat's own GitHub App/);
-    assert.match(c.description, /normal fleet PR creation use gr_open_pr/);
-    assert.match(c.description, /live seat policy grants it/);
-    assert.match(c.description, /expected_head_sha/);
-    assert.ok(!c.description.includes('Inactive candidate'));
     assert.match(e.description, /live seat policy grants this verb/);
+
     assert.match(e.description, /gr_edit_pr/);
     assert.ok(!e.description.includes('Inactive candidate'));
-    for (const tool of [c, e]) {
+    for (const tool of [e]) {
       assert.doesNotMatch(tool.description, /UNGRANTED|owner 2026|2026-11-10|gh fallback|owner's account/);
       assert.match(tool.description, /direct GitHub/);
     }
@@ -1179,9 +1175,7 @@ test('v2: custody verb arg validation',()=>{
 });
 test('v2: custody receipts cross-checked against args',async()=>{
   const createOk=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:S40,base_ref:'main'}})));
-  assert.ok(!(await createOk.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
   const createWrongBase=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:S40,base_ref:'release'}})));
-  assert.ok((await createWrongBase.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
   const editEcho=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main',head_repo:repo,title:'n',body:'b'}})));
   assert.ok(!(await editEcho.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
   const editMoved=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:'b'.repeat(40),base_ref:'main',head_repo:repo,title:'n',body:'b'}})));
@@ -1193,7 +1187,6 @@ test('v2: custody receipts cross-checked against args',async()=>{
   const closeStillOpen=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main'}})));
   assert.ok((await closeStillOpen.call('gr_wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'})).isError);
   const createForeignHead=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_ref:'wise/x',head_sha:'c'.repeat(40),base_ref:'main'}})));
-  assert.ok((await createForeignHead.call('gr_wf_pr_create',{repo,base:'main',head:'wise/x',title:'t',body:'b',expected_head_sha:S40})).isError);
   const editRetarget=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'release',head_repo:repo,title:'n',body:'b'}})));
   assert.ok((await editRetarget.call('gr_wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'})).isError);
   const editForkRepo=harness(async()=>new Response(JSON.stringify({pull:{number:7,state:'open',head_sha:S40,base_ref:'main',head_repo:'other/repo',title:'n',body:'b'}})));
@@ -1307,4 +1300,14 @@ test('v2: blob_create custody dispatch end-to-end follows the opt-in',async()=>{
   assert.ok(!(await falseOk.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
   const falseOver=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:40001}})));
   assert.ok((await falseOver.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
+});
+test("issue milestone set/remove strict nullable scalar and exact receipt",async()=>{
+ for(const n of [3,0]){
+  const args={repo,number:2,milestone_number:n},receipt={issue_number:2,milestone_number:n===0?null:n};
+  assert.equal(validWfV1Args("wf_issue_milestone_set",args),true);assert.equal(validWfV1Response("wf_issue_milestone_set",receipt,args),true);
+  assert.equal(validWfV1Response("wf_issue_milestone_set",{...receipt,issue_number:4},args),false);
+  const t=harness(async(u,i)=>{assert.ok(u.endsWith("/v1/wf_issue_milestone_set"));return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call("gr_wf_issue_milestone_set",args)).isError);
+ }
+ for(const n of [true,-1,"3",null])assert.equal(validWfV1Args("wf_issue_milestone_set",{repo,number:2,milestone_number:n}),false);
+ assert.equal(validWfV1Args("wf_issue_milestone_set",{repo,number:2}),false);
 });
