@@ -190,10 +190,19 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.install(source)
 
+    REPOSITORY_FROM = (False, "the repository")
+
+    @staticmethod
+    def usable(value, **extra):
+        """An installed allowlist the settings editor would accept, with this switch."""
+        doc = {"schemaVersion": 1, "applyEnabled": value, "seat": {}, "tables": {}}
+        doc.update(extra)
+        return json.dumps(doc)
+
     def test_a_fresh_install_takes_the_repositorys_apply_enabled(self):
         repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
         self.assertIs(json.loads(repository)["applyEnabled"], False)
-        self.assertIsNone(self.install())
+        self.assertEqual(self.install(), self.REPOSITORY_FROM)
         installed = self.destination / "fleet-ops-eavesdropper-settings.json"
         self.assertEqual(installed.read_bytes(), repository)
 
@@ -216,7 +225,7 @@ class InstallerTests(unittest.TestCase):
 
     LEGACY_FROM = "the root-owned copy in /usr/local/lib/fleet-resource-control"
 
-    def make_legacy(self, value, file_mode=0o644, folder_mode=0o755):
+    def make_legacy(self, value, file_mode=0o644, folder_mode=0o755, text=None):
         """The root-owned install the move replaces, owned here by the test account."""
         self.module.LEGACY_OWNER_UID = os.getuid()
         shutil.rmtree(self.root / "usr", ignore_errors=True)
@@ -231,7 +240,7 @@ class InstallerTests(unittest.TestCase):
         ):
             folder.chmod(folder_mode)
         settings = legacy / "fleet-ops-eavesdropper-settings.json"
-        settings.write_text(json.dumps({"applyEnabled": value}))
+        settings.write_text(self.usable(value) if text is None else text)
         settings.chmod(file_mode)
         return legacy
 
@@ -246,7 +255,7 @@ class InstallerTests(unittest.TestCase):
         legacy = (
             self.root / "usr/local/lib/fleet-resource-control/fleet-ops-eavesdropper-settings.json"
         )
-        self.assertEqual(json.loads(legacy.read_text()), {"applyEnabled": True})
+        self.assertEqual(legacy.read_text(), self.usable(True))
         self.assertEqual(os.listdir(legacy.parent), ["fleet-ops-eavesdropper-settings.json"])
 
     def test_a_new_installed_copy_outranks_the_root_owned_one(self):
@@ -256,7 +265,7 @@ class InstallerTests(unittest.TestCase):
         installed = self.destination / "fleet-ops-eavesdropper-settings.json"
         self.assertIs(json.loads(installed.read_text())["applyEnabled"], False)
 
-    def test_an_untrusted_root_owned_copy_is_never_read(self):
+    def test_an_untrusted_or_unusable_root_owned_copy_is_never_kept(self):
         def group_writable_file():
             self.make_legacy(True, file_mode=0o664)
 
@@ -280,17 +289,22 @@ class InstallerTests(unittest.TestCase):
             (legacy / "fleet-ops-eavesdropper-settings.json").rename(target)
             (legacy / "fleet-ops-eavesdropper-settings.json").symlink_to(target)
 
-        for arrange in (
+        def refused_by_the_editor():
+            self.make_legacy(True, text=json.dumps({"applyEnabled": True}))
+
+        cases = (
             group_writable_file,
             group_writable_folder,
             another_owner,
             linked_folder,
             linked_file,
-        ):
+            refused_by_the_editor,
+        )
+        for arrange in cases:
             with self.subTest(case=arrange.__name__):
                 shutil.rmtree(self.home / ".local", ignore_errors=True)
                 arrange()
-                self.assertIsNone(self.install())
+                self.assertEqual(self.install(), self.REPOSITORY_FROM)
                 installed = self.destination / "fleet-ops-eavesdropper-settings.json"
                 self.assertIs(json.loads(installed.read_text())["applyEnabled"], False)
 
@@ -302,7 +316,7 @@ class InstallerTests(unittest.TestCase):
         (source / "fleet-ops-eavesdropper-settings.json").write_text(json.dumps(doubled))
         self.install(source)
         installed = self.destination / "fleet-ops-eavesdropper-settings.json"
-        installed.write_text(json.dumps({"applyEnabled": True}))
+        installed.write_text(self.usable(True))
         self.assertEqual(self.install(source), (True, "the installed copy"))
         self.assertEqual(
             json.loads(installed.read_text()),
@@ -313,11 +327,30 @@ class InstallerTests(unittest.TestCase):
         repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
         self.install()
         installed = self.destination / "fleet-ops-eavesdropper-settings.json"
-        for unusable in (b"not json", b"[]", b'{"applyEnabled": "yes"}', b"{}"):
-            with self.subTest(unusable=unusable):
+        too_large = self.usable(True, notes=["x" * (64 * 1024)]).encode()
+        for unusable in (
+            b"not json",
+            b"[]",
+            b"{}",
+            self.usable("yes").encode(),
+            # The settings editor refuses these whole, so their switch never took effect.
+            json.dumps({"applyEnabled": True}).encode(),
+            self.usable(True, schemaVersion=2).encode(),
+            self.usable(True, unknown=1).encode(),
+            self.usable(True, tables={"seat": {}}).encode(),
+            too_large,
+        ):
+            with self.subTest(unusable=unusable[:60]):
                 installed.write_bytes(unusable)
-                self.assertIsNone(self.install())
+                self.assertEqual(self.install(), self.REPOSITORY_FROM)
                 self.assertEqual(installed.read_bytes(), repository)
+
+    def test_a_linked_foreign_or_writable_installed_copy_fails_the_installation(self):
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.chmod(0o664)
+        with self.assertRaises(RuntimeError):
+            self.install()
 
     def test_symlink_installed_file_refused_without_touching_target(self):
         self.destination.mkdir(parents=True)

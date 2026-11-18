@@ -26,6 +26,11 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 SETTINGS = 'fleet-ops-eavesdropper-settings.json'
 APPLY_ENABLED = re.compile(r'("applyEnabled"\s*:\s*)(true|false)')
+# The helper reads the settings allowlist up to this size (EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES
+# in fleet-ops-control.py), and the settings editor accepts only these top-level fields
+# (validate_allowlist in simple_tools/server/eavesdropper_settings_edit.py).
+SETTINGS_MAX_BYTES = 64 * 1024
+SETTINGS_FIELDS = {'schemaVersion', 'applyEnabled', 'seat', 'tables', 'notes'}
 # The root-owned install this one replaces (docs/rollouts/2026-11-12-helper-to-jay.md).  Its
 # settings file is read once, to carry the owner's applyEnabled across the move, and only when it
 # and every folder above it are root's and writable by no one else.
@@ -117,13 +122,30 @@ def write_file(parent, name, data, owner):
             os.unlink(temporary, dir_fd=parent)
 
 
+def usable_allowlist(doc):
+    """Whether the settings editor would accept this allowlist's top level, as validate_allowlist
+    does:  schemaVersion 1, no unknown field, a true-or-false applyEnabled, and seat and tables."""
+    return (
+        isinstance(doc, dict)
+        and doc.get('schemaVersion') == 1
+        and set(doc) <= SETTINGS_FIELDS
+        and isinstance(doc.get('applyEnabled'), bool)
+        and isinstance(doc.get('seat'), dict)
+        and isinstance(doc.get('tables'), dict)
+        and 'seat' not in doc['tables']
+    )
+
+
 def installed_apply_enabled(parent, owner):
-    """The installed settings allowlist's applyEnabled, or None when there is no usable copy.
+    """An installed settings allowlist's applyEnabled, or None when that copy is not usable.
 
     The repository's file ships applyEnabled false, and an update that wrote it over an installed
-    true would silently take the owner's permission away.  So an update keeps the installed value.
-    A missing, linked, foreign, writable, oversized or malformed installed file gives None, and the
-    repository's value stands:  the helper would not honour such a file's switch either.
+    true would silently take the owner's permission away.  So an update keeps the installed value,
+    and the file written is still the repository's text with only that value changed.
+    A missing, oversized or malformed copy, or one the settings editor would refuse, gives None and
+    the repository's value stands, since the old switch had no effect either.  A linked, foreign or
+    writable copy also gives None here;  in the install folder, write_file then refuses to replace
+    it and the installation fails.
     """
     try:
         fd = os.open(SETTINGS, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
@@ -132,16 +154,16 @@ def installed_apply_enabled(parent, owner):
     with os.fdopen(fd, 'rb') as installed:
         info = os.fstat(installed.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022
-                or info.st_size > MAX_SOURCE_BYTES):
+                or info.st_size > SETTINGS_MAX_BYTES):
             return None
-        data = installed.read(MAX_SOURCE_BYTES + 1)
+        data = installed.read(SETTINGS_MAX_BYTES + 1)
+    if len(data) > SETTINGS_MAX_BYTES:
+        return None
     try:
         doc = json.loads(data)
     except ValueError:
         return None
-    if isinstance(doc, dict) and isinstance(doc.get('applyEnabled'), bool):
-        return doc['applyEnabled']
-    return None
+    return doc['applyEnabled'] if usable_allowlist(doc) else None
 
 
 def legacy_apply_enabled():
@@ -279,18 +301,17 @@ def install(source_directory):
     other = muster_agent_copy()
     if other is not None and other != payload['muster_trust_files.py']:
         raise RuntimeError('the installed copies of muster_trust_files.py differ')
-    return None if kept is None else (kept, kept_from)
+    if kept is None:
+        return settings['applyEnabled'], 'the repository'
+    return kept, kept_from
 
 
 if __name__ == '__main__':
     try:
-        kept = install(sys.argv[1])
+        value, source = install(sys.argv[1])
     except (OSError, RuntimeError, ValueError, SyntaxError, KeyError):
         print('Resource control installation failed; verify reviewed source and protected destination paths.', file=sys.stderr)
         raise SystemExit(1)
     print('Resource control code installed; credentials, keys and runtime state were untouched.')
-    if kept is None:
-        print('The settings allowlist took the repository\'s applyEnabled (no usable installed copy).')
-    else:
-        print('The settings allowlist kept applyEnabled %s from %s.' % ('true' if kept[0] else 'false', kept[1]))
+    print('The settings allowlist has applyEnabled %s, from %s.' % ('true' if value else 'false', source))
 PY
