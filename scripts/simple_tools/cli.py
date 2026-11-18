@@ -3525,7 +3525,8 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
             if getattr(args, "full", False):
-                targs["full"] = True        elif cmd == "search":
+                targs["full"] = True
+        elif cmd == "search":
             targs = {"limit": args.limit}
             words = list(getattr(args, "words", None) or [])
             if words:
