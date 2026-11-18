@@ -319,12 +319,17 @@ def _ct_pipeline_components(payload):
         name = entry["id"]
         by_id[name] = "unknown" if name in by_id else _component_state(entry.get("status"))
     found = {}
-    for target, source in (("house", "polling_house"), ("oge", "polling_executive"),
-                           ("senate_efd", "senate_efd")):
+    for target, source in (
+        ("house", "polling_house"),
+        ("oge", "polling_executive"),
+        ("senate_efd", "senate_efd"),
+    ):
         if source in by_id:
             found[target] = by_id[source]
-    polls = [by_id.get(name, "unknown") for name in
-             ("polling_house", "polling_senate", "polling_executive")]
+    polls = [
+        by_id.get(name, "unknown")
+        for name in ("polling_house", "polling_senate", "polling_executive")
+    ]
     if "fail" in polls:
         found["ingestion"] = "fail"
     elif all(state == "ok" for state in polls):

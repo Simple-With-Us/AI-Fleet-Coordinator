@@ -354,7 +354,11 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertEqual(api_health.map_st_live(payload, 200, now)["state"], "unknown")
 
     def test_st_legacy_observation_does_not_substitute_for_native_probe(self):
-        payload = {"ok":True,"mango":{"reachable":True,"observedAt":FRESH_STAMP},"observationAgeSeconds":0}
+        payload = {
+            "ok": True,
+            "mango": {"reachable": True, "observedAt": FRESH_STAMP},
+            "observationAgeSeconds": 0,
+        }
         self.assertEqual(api_health.map_st_live(payload, 200, NOW)["state"], "unknown")
         for stamp in ("bad", "2026-11-17T11:59:30", "2026-11-17T12:00:30Z"):
             payload["mango"]["checkedAt"] = stamp
@@ -365,12 +369,16 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertEqual(row["state"], "warn")
         self.assertTrue(row["ingestionAlive"])
         self.assertEqual(row["upstreamStatus"], "degraded")
-        self.assertEqual(next(c for c in row["components"] if c["name"] == "senate_efd")["state"], "warn")
+        self.assertEqual(
+            next(c for c in row["components"] if c["name"] == "senate_efd")["state"], "warn"
+        )
 
     def test_each_chamber_poll_required_for_ingestion(self):
         for source in ("polling_house", "polling_senate", "polling_executive"):
             payload = self.native()
-            payload["pipeline"]["checks"] = [c for c in payload["pipeline"]["checks"] if c["id"] != source]
+            payload["pipeline"]["checks"] = [
+                c for c in payload["pipeline"]["checks"] if c["id"] != source
+            ]
             row = api_health.map_ct_health(payload, 200, NOW)
             self.assertIsNone(row["ingestionAlive"])
             self.assertEqual(row["state"], "unknown")
@@ -378,26 +386,31 @@ class ActualPipelineMappingTests(unittest.TestCase):
     def test_stalled_poll_is_failure_not_unknown_or_canary_warning(self):
         for source in ("polling_house", "polling_senate", "polling_executive"):
             payload = self.native()
-            next(c for c in payload["pipeline"]["checks"] if c["id"] == source)["status"] = "stalled"
+            next(c for c in payload["pipeline"]["checks"] if c["id"] == source)["status"] = (
+                "stalled"
+            )
             row = api_health.map_ct_health(payload, 200, NOW)
             self.assertEqual(row["state"], "fail")
             self.assertFalse(row["ingestionAlive"])
 
     def test_clear_backlog_alone_never_proves_ingestion_alive(self):
-        payload = {"status":"ok", "pipeline":{"checks":[{"id":"ingestion_backlog", "status":"ok"}]}}
+        payload = {
+            "status": "ok",
+            "pipeline": {"checks": [{"id": "ingestion_backlog", "status": "ok"}]},
+        }
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertIsNone(row["ingestionAlive"])
         self.assertEqual(row["state"], "unknown")
 
     def test_duplicate_poll_unknown_not_first_wins(self):
         payload = self.native()
-        payload["pipeline"]["checks"].append({"id":"polling_senate", "status":"ok"})
+        payload["pipeline"]["checks"].append({"id": "polling_senate", "status": "ok"})
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertIsNone(row["ingestionAlive"])
         self.assertEqual(row["state"], "unknown")
 
     def test_native_malformed_does_not_fall_back_to_legacy_green(self):
-        payload = ct_payload(pipeline={"checks":None})
+        payload = ct_payload(pipeline={"checks": None})
         self.assertEqual(api_health.map_ct_health(payload, 200, NOW)["state"], "unknown")
 
     def test_other_upstream_degradation_is_not_hidden_by_display_subset(self):
@@ -410,10 +423,13 @@ class ActualPipelineMappingTests(unittest.TestCase):
 
     def test_native_canary_failure_does_not_mean_ingestion_stopped(self):
         payload = self.native()
-        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")["status"] = "stalled"
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")["status"] = (
+            "stalled"
+        )
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertEqual(row["state"], "warn")
         self.assertTrue(row["ingestionAlive"])
+
 
 if __name__ == "__main__":
     unittest.main()
