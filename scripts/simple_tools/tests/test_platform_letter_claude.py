@@ -1589,30 +1589,8 @@ class ParentFromMacTests(HookBase):
         self.assertEqual((note["parent"], note["label"]), ("p-0001", main))
         self.assertEqual(self.row("c-0001", "server")["label"], main)
 
-    def test_the_question_says_whether_the_mac_answered(self) -> None:
-        for n, (answer, lineage) in enumerate((
-            ("p-0001\n", ("p-0001", True)),
-            ("", ("", True)),  # it finished and printed nothing:  the chat has no parent
-            ("\n\n", ("", True)),
-            ("not a session id\n", ("", False)),
-            ("c-%04d\n", ("", False)),  # the chat as its own parent
-            (subprocess.TimeoutExpired("ssh", 6.0), ("", False)),
-            (subprocess.TimeoutExpired("ssh", 6.0, output="p-0001\n"), ("p-0001", True)),
-            (OSError("no ssh here"), ("", False)),
-            (lambda cmd: SimpleNamespace(returncode=255, stdout="", stderr=""), ("", False)),
-            (lambda cmd: SimpleNamespace(returncode=0, stdout=None, stderr=""), ("", False)),
-        )):
-            sid = "c-%04d" % n
-            self.answer = answer % n if isinstance(answer, str) and "%" in answer else answer
-            with self.subTest(n=n):
-                self.assertEqual(PC.claude_lineage({"session_id": sid}, self.server_env()), lineage)
-        # A host that cannot ask (no destination) cannot know either;  the Mac and its records always know.
-        self.assertEqual(PC.claude_lineage({"session_id": "c-0100"}, self.server_env(dest="")), ("", False))
-        self.app_record(self.CHILD, "c-0101")
-        self.assertEqual(PC.claude_lineage({"session_id": "c-0101"}, self.claude_env(self.CHILD)), ("", True))
-
-    def test_a_server_start_whose_lineage_is_unknown_is_told_to_check_its_title(self) -> None:
-        # The Mac did not answer, so the hook cannot tell a chat another chat started (whose app title keeps that
+    def test_a_new_server_chat_with_no_parent_named_is_told_to_check_its_title(self) -> None:
+        # With no parent named, the server's hook cannot tell a chat another chat started (whose app title keeps that
         # chat's words, without this chat's letter) from a main chat:  the model is told to look.  This is what
         # Claude TT and Claude UU missed on Nov 18, 2026 (AFC-830).
         start = {"hook_event_name": "SessionStart", "source": "startup"}
@@ -1620,6 +1598,8 @@ class ParentFromMacTests(HookBase):
             (subprocess.TimeoutExpired("ssh", PC.MAC_START_TIMEOUT_SECONDS), None),
             (OSError("no ssh here"), None),
             ("not a session id\n", None),
+            # Nothing printed:  nobody started it, or the Mac has no record of it yet, which the verb cannot tell.
+            ("", None),
             ("p-0001\n", ""),  # no Mac to ask
         )):
             sid = "u-%04d" % n
@@ -1628,30 +1608,33 @@ class ParentFromMacTests(HookBase):
                 out = self.server_hook(dict(start, session_id=sid), env=self.server_env(dest=dest))
                 label = self.row(sid, "server")["label"]
                 context = out["additionalContext"]
-                self.assertIn("could not learn whether another chat started it", context)
+                self.assertIn("it was not told that another chat started it", context)
                 self.assertIn("mcp__ccd_session_mgmt__get_session", context)
                 self.assertIn("mcp__ccd_session_mgmt__set_session_title", context)
                 self.assertIn('"%s: <that title>"' % label, context)
                 self.assertIn('is not "%s"' % PL.PLACEHOLDER, context)
                 self.assertNotIn("Another chat started this one", context)
-        # Not a resume (its start was told), and not a terminal `claude`, whose title is the hook's own.
+        # Not a resume (its start was told), a /clear or a fork (each may carry a title a person gave, which the
+        # rename tool would stop to ask them about), and not a terminal `claude`, whose title is the hook's own.
         self.answer = subprocess.TimeoutExpired("ssh", PC.MAC_START_TIMEOUT_SECONDS)
         for sid, payload, env in (
             ("u-0100", dict(start, source="resume"), self.server_env()),
             ("u-0101", start, self.server_env(host="")),
+            ("u-0102", dict(start, source="clear"), self.server_env()),
+            ("u-0103", dict(start, source="fork"), self.server_env()),
         ):
             with self.subTest(sid=sid):
                 out = self.server_hook(dict(payload, session_id=sid), env=env)
                 self.assertNotIn("set_session_title", out.get("additionalContext", ""))
 
-    def test_a_server_main_chat_the_mac_answered_for_is_told_nothing(self) -> None:
-        # The Mac said nobody started it:  the app takes the hook's own title, so there is nothing to fix.
-        for n, answer in enumerate(("", "\n")):
-            self.answer = answer
-            sid = "m-%04d" % n
-            out = self.server_hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"})
-            self.assertNotIn("set_session_title", out.get("additionalContext", ""), answer)
-            self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.row(sid, "server")["label"])
+    def test_a_chat_on_the_mac_with_no_parent_is_told_nothing(self) -> None:
+        # The Mac reads the app's own record, so it knows a main chat, and the app takes the hook's title for it.
+        self.app_record(self.CHILD, "m-0001")
+        # This class's `answer` is the fake Mac's reply, so the hook is run with the base class's own helper.
+        out = HookBase.answer(self, {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                              host=self.CHILD)
+        self.assertNotIn("set_session_title", out.get("additionalContext", ""))
+        self.assertEqual(self.calls, [])  # and asks nothing over ssh
 
     def test_a_server_with_no_destination_is_a_main_chat_and_asks_nothing(self) -> None:
         out = self.server_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},

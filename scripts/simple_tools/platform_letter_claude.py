@@ -51,9 +51,11 @@ never fails a chat's start over this file.
   tool is the one thing it takes, and only the chat's model can call that, so the model is told to, once per title
   (the library holds a repeat back);  a chat another chat has just started is told to check its title itself.  A
   name a person gave (`titleSource` "user") is left alone:  the tool would stop to ask them to approve it.
-  A hook on a host with no store (the server) cannot see the app's title at all, so a chat's own fresh start is
-  told to check it when the Mac names a parent, and also when the hook could not learn the chat's lineage (the Mac
-  did not answer, or there is no Mac to ask):  that chat may have been started by another (`claude_lineage`).
+  A hook on a host with no store (the server) cannot see the app's title, and the Mac's answer cannot tell a chat
+  nobody started from one it has no record of, so a brand-new chat that runs in the app (`source` startup, with an
+  app id) is told to check its title whenever no parent was named:  another chat may have started it.  A
+  `/clear`, a fork or a resume may carry a name a person gave, and a terminal `claude` shows the hook's own title,
+  so those are told nothing.
 - A resumed chat's title (`claude_stored_title`).  A chat that is resumed with no title gets the one its first
   prompt gives, read from the first lines of its own transcript, and only a transcript under `~/.claude`.
 - Archived chats (`claude_gone`, `archive_states`).  The app marks an archived chat in its record (`isArchived`).
@@ -477,16 +479,8 @@ def _answered(out: object) -> str:
     return _session_id(lines[-1]) if lines else ""
 
 
-#: What the Mac answered in this process, so one hook run asks it once however many readers want the parent:  the
-#: parent's session id ("" for none) and whether the Mac answered at all.
-_ASKED: dict[tuple[str, ...], tuple[str, bool]] = {}
-
-
-def _blank(out: object) -> bool:
-    """ssh printed nothing but blank lines:  the Mac's answer that the chat has no parent."""
-    if isinstance(out, bytes):
-        out = out.decode("utf-8", "replace")
-    return isinstance(out, str) and not out.strip()
+#: What the Mac answered in this process, so one hook run asks it once however many readers want the parent.
+_ASKED: dict[tuple[str, ...], str] = {}
 
 
 def parent_from_mac(
@@ -495,8 +489,8 @@ def parent_from_mac(
     host_session_id: str = "",
     cleared: bool = False,
     timeout: float = MAC_TIMEOUT_SECONDS,
-) -> tuple[str, bool]:
-    """(the session id of the chat that started chat `sid`, asked of the Mac, or "";  whether the Mac answered).
+) -> str:
+    """The session id of the chat that started chat `sid`, asked of the Mac, or "".
 
     The desktop app's records are on the Mac, and a chat the app runs over ssh has its hook on the other host.  So
     a hook that finds no store asks the Mac, with ONE ssh call that only reads.  The command it sends is the
@@ -508,18 +502,18 @@ def parent_from_mac(
     fails asks nothing), ssh may not prompt, shares no connection and forwards nothing (SSH_OPTIONS), and the
     round trip is cut at `timeout` (MAC_START_TIMEOUT_SECONDS at the chat's own start, MAC_TIMEOUT_SECONDS
     after it).  An answer that arrived whole before the cut still counts.  Any failure, a timeout with no
-    answer, or an answer that is not a session id is no parent, and no answer:  only a whole session id, or a
-    question that finished and printed nothing (the chat has no parent), is the Mac's answer.  With no destination, or ids that build no question, nothing is asked and nothing is answered."""
+    answer, or an answer that is not a session id is no parent.  "" never proves that nobody started the chat:
+    the Mac's verb prints nothing for a chat it has no record of, too (`claude_title_advice`)."""
     dest = PL.mac_ssh(env)
     sid = _session_id(sid)
     if not dest or not sid:
-        return "", False
+        return ""
     app_id = ""
     if isinstance(host_session_id, str) and HOST_ID.fullmatch(host_session_id):
         app_id = host_session_id
     remote = PL.parent_ssh_command(PLATFORM, sid, app_id, "clear" if cleared else "")
     if not remote:
-        return "", False  # not a command the gate would take:  nothing is sent
+        return ""  # not a command the gate would take:  nothing is sent
     key = (dest, remote)
     if key in _ASKED:
         return _ASKED[key]
@@ -527,27 +521,24 @@ def parent_from_mac(
     for option in SSH_OPTIONS:
         cmd += ["-o", option]
     cmd += ["--", dest, remote]
-    parent, answered = "", False
+    parent = ""
     try:
         done = _run_ssh(cmd, timeout)
         if done.returncode == 0:
             parent = _answered(done.stdout)
-            answered = bool(parent) or _blank(done.stdout)
     except subprocess.TimeoutExpired as late:
         # The answer may be in hand though ssh did not exit (something of the account's still holds its pipe).
         parent = _answered(late.stdout)
-        answered = bool(parent)
     except (OSError, subprocess.SubprocessError):
-        pass  # the Mac is unreachable, or ssh could not run:  no parent is known
+        parent = ""  # the Mac is unreachable, or ssh could not run:  no parent is known
     if parent == sid:
-        parent, answered = "", False  # the chat as its own parent is no answer
-    _ASKED[key] = (parent, answered)
-    return parent, answered
+        parent = ""
+    _ASKED[key] = parent
+    return parent
 
 
-def claude_lineage(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bool]:
-    """(the session id of the chat that started this one, from the desktop app's records, or "";  whether this hook
-    could find out).
+def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    """The session id of the chat that started this one, from the desktop app's records, or "".
 
     On a host with no app store (the server, where the app's chats run over ssh), the Mac is asked
     (`parent_from_mac`).  Asked by another host through the `parent` verb, this host answers from its own records
@@ -559,13 +550,10 @@ def claude_lineage(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[
 
     The chat's own start asks the Mac with the longer bound (MAC_START_TIMEOUT_SECONDS), because that is where
     its pair is chosen;  a prompt, a turn end, and the library's question about another chat (`ASKED_ABOUT`) ask
-    with MAC_TIMEOUT_SECONDS.
-
-    The hook could not find out only on a host with no app store whose Mac did not answer, or that has no Mac to
-    ask:  that chat may have been started by another, and `claude_title_advice` treats it so."""
+    with MAC_TIMEOUT_SECONDS."""
     sid = _session_id(PL.from_payload("session_id")(payload, env))
     if not sid:
-        return "", True
+        return ""
     starting = payload.get("hook_event_name") == "SessionStart"
     cleared = starting and payload.get("source") == "clear"
     own_start = starting and payload.get(ASKED_ABOUT) is not True
@@ -577,22 +565,16 @@ def claude_lineage(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[
     try:
         if not asked and not os.path.isdir(store_root(_home(env))):
             bound = MAC_START_TIMEOUT_SECONDS if own_start else MAC_TIMEOUT_SECONDS
-            parent, known = parent_from_mac(env, sid, host, cleared, bound)
+            parent = parent_from_mac(env, sid, host, cleared, bound)
         else:
             parent, _why = lookup(
                 _home(env), host_session_id=host, cli_session_id=sid, allow_lag=cleared
             )
-            known = True
     except Exception:  # noqa: BLE001 - the app's private file;  a surprise is no parent, never a failed start
-        return "", True
+        return ""
     if not isinstance(parent, str) or not parent or parent == sid:
-        return "", known
-    return parent, True
-
-
-def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    """The spec's `parent_id`:  the parent `claude_lineage` found, or ""."""
-    return claude_lineage(payload, env)[0]
+        return ""
+    return parent
 
 
 def claude_chat_payload(sid: str) -> Mapping[str, Any]:
@@ -779,11 +761,13 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
     or its title in its record yet.  So a start that is not a resume, of a chat another chat started, tells the model
     to look at its title itself and put the letter on it, whenever no concrete rename was found.
 
-    On a host with no store (the server) the hook never sees the app's title, and it learns that another chat
-    started this one only when the Mac answers in time.  A start whose lineage it could not learn (the Mac did not
-    answer, or there is no Mac to ask) is told to look too:  otherwise a chat another chat started keeps that chat's
-    title, without its letter, for as long as it lives (AFC-830).  A terminal `claude`, which has no app id, is
-    told nothing:  the hook's own title is the one it shows."""
+    On a host with no store (the server) the hook never sees the app's title, and no answer from the Mac proves a
+    chat is a main chat:  its verb prints nothing both for a chat nobody started and for one it has no record of,
+    and an answer that comes after the cut is none.  So a brand-new chat that runs in the app (`source` startup,
+    with an app id) and has no parent named is told to look too:  otherwise a chat another chat started keeps that
+    chat's title, without its letter, for as long as it lives (AFC-830).  A main chat looks and finds the
+    hook's own title on it.  A `/clear`, a fork or a resume is told nothing, since its title may be one a person
+    gave, and so is a terminal `claude`, which has no app id and shows the hook's own title."""
     label = request.label
     if not label:
         return ""
@@ -798,25 +782,28 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
     fix = _rename_line(known, label, request.held) if known is not None else ""
     if fix:
         return fix
-    resumed = PL.from_payload("source")(request.data, request.env) == "resume"
-    if request.reason != "start" or resumed:
+    source = PL.from_payload("source")(request.data, request.env)
+    if request.reason != "start" or source == "resume":
         return ""
-    parent, known = claude_lineage(request.data, request.env)
-    if parent:
+    if claude_parent(request.data, request.env):
         return (
             "Another chat started this one, and the app shows the title that chat gave it over the one this hook "
             'sets.  As your first step, unprompted, call %s with session_id "self" (load it with ToolSearch if it '
             'is deferred).  If the title does not start with "%s: ", call %s with session_id "self" and the title '
             '"%s: <that title>".' % (READ_TOOL, label, RENAME_TOOL, label)
         )
-    if known or not request.env.get(ENV_HOST_SESSION):
+    if (
+        source not in ("", "startup")
+        or not request.env.get(ENV_HOST_SESSION)
+        or os.path.isdir(store_root(_home(request.env)))
+    ):
         return ""
     return (
-        "This hook cannot see the title the app shows for this chat, and could not learn whether another chat "
-        "started it, so the app may show a title another chat gave it, without this chat's letter.  As "
-        'your first step, unprompted, call %s with session_id "self" (load it with ToolSearch if it is '
-        'deferred).  If the title does not start with "%s: " and is not "%s", call %s with session_id "self" '
-        'and the title "%s: <that title>".' % (READ_TOOL, label, PL.PLACEHOLDER, RENAME_TOOL, label)
+        "This hook cannot see the title the app shows for this chat, and it was not told that another chat "
+        "started it (a slow Mac hides that), so the app may show a title another chat gave it, without this "
+        "chat's letter.  As your first step, unprompted, call %s with session_id \"self\" (load it with "
+        'ToolSearch if it is deferred).  If the title does not start with "%s: " and is not "%s", call %s with '
+        'session_id "self" and the title "%s: <that title>".' % (READ_TOOL, label, PL.PLACEHOLDER, RENAME_TOOL, label)
     )
 
 
