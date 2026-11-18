@@ -178,6 +178,11 @@ REPAIR_SWEEP_SECONDS = 3600
 REPAIR_PASS_SECONDS = 5
 #: The most chats one pass replays:  the repair is real work on a live chat's start budget.
 REPAIR_MAX_CHATS = 5
+#: How long a claim beside the repair stamp holds:  the lock a pass takes to read and write the stamp as one step
+#: (`_claim`), and the spawn claim a chat's start takes before it sets off a run, so several chats starting in the
+#: same moment set off one run between them.  A claim older than this is a holder that died, and is taken over.
+REPAIR_LOCK_SECONDS = 30
+REPAIR_SPAWN_CLAIM_SECONDS = 300
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -3253,10 +3258,13 @@ def find_new_chat(
     return spec, found, seat
 
 
-def _start_payload(spec: PlatformSpec, sid: str) -> dict[str, Any]:
+def _start_payload(spec: PlatformSpec, sid: str, own: bool = False) -> dict[str, Any]:
     """The payload a chat's own start would carry on a resume:  the adapter's (`chat_payload`), else the plain one,
-    under the platform's own start event name."""
-    if spec.chat_payload is not None:
+    under the platform's own start event name.  `own` is a chat this shell's own variables name (the chat asking
+    for itself):  it takes the plain payload, since an adapter's `chat_payload` is the library's question about a
+    chat this hook did not fire for, and an adapter may answer that only for chats it can see on the host (Claude's
+    takes only a desktop-app chat with a record here, so a terminal chat asking for itself would be refused)."""
+    if spec.chat_payload is not None and not own:
         return dict(spec.chat_payload(sid))
     event = next((name for name, verb in spec.events.items() if verb == "start"), "SessionStart")
     return {"hook_event_name": event, "session_id": sid, "source": "resume"}
@@ -3285,7 +3293,7 @@ def request_new(
         stdout.write("no letter: %s does not run on the %s\n" % (spec.display, where))
         return 1
     try:
-        payload = _start_payload(spec, sid)
+        payload = _start_payload(spec, sid, own=sid in _own_session_ids(spec, env, generic=True))
         sid = _text(payload.get("session_id")) or sid
         if not in_scope(spec, env, payload):
             stdout.write(
@@ -4004,6 +4012,43 @@ def report_gone_elsewhere(
     return {"gone": fresh, "closed": closed, "kept": sorted(in_use)}
 
 
+def _claim(path: str, ttl: float) -> bool:
+    """Take a claim file with an exclusive create, so two processes never both hold it.  A claim older than `ttl`
+    seconds (by the file's own time) is a holder that died:  it is removed and taken once more.  False when the
+    claim is held, or cannot be made."""
+    for _attempt in range(2):
+        try:
+            folder = os.path.dirname(path)
+            if _folder_is_link(folder):
+                return False
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(path).st_mtime
+            except OSError:
+                continue  # released meanwhile:  try once more
+            if 0 <= age < ttl:
+                return False
+            try:
+                os.unlink(path)
+            except OSError:
+                return False
+            continue
+        except OSError:
+            return False
+        os.close(fd)
+        return True
+    return False
+
+
+def _release(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def repair_unlettered(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -4020,13 +4065,17 @@ def repair_unlettered(
     window and never on every start.  A finished pass also leaves its outcome beside the time (chats found,
     replayed and lettered, and each replay that failed with its session id and exception type - or the
     listing's error):  a stamp with no outcome is a pass that never finished, which a host check can tell from a
-    healthy quiet window.  A candidate the hook itself would refuse (`in_scope`), or whose note says closed or
+    healthy quiet window.  The stamp is read and written under a short lock (`_claim`), so two runs set off in the
+    same moment never both make a pass.  A listed id that is not a well-formed session id is dropped (it would
+    name a note path), a candidate the hook itself would refuse (`in_scope`), or whose note says closed or
     mismatch, is left alone, and a pass starts no new replay once REPAIR_PASS_SECONDS have gone by.
 
     A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
-    still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
-    chat lettered meanwhile is left alone (its start reads the title fresh).  What the repaired chats' starts
-    print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
+    still knows resumes the letter it holds (nothing re-allocates), and one it does not know registers again.  A
+    chat whose note already holds a letter is never replayed, even when the app's own record still shows "??: "
+    (a row with no title writer cannot change that record):  replaying it every pass would keep a dormant chat
+    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  What the
+    repaired chats' starts print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
     if (
         spec.unlettered_sessions is None
         or spec.chat_payload is None
@@ -4035,16 +4084,27 @@ def repair_unlettered(
     ):
         return {"skipped": "this platform names no unlettered chats on this host"}
     path = repair_stamp_path(env, seat, spec.platform, where)
-    stamp = _read_json(path)
-    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
-        return {"skipped": "not due"}
-    if not _save_json(path, {"at": now}):
-        # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
-        return {"skipped": "the stamp could not be saved", "recorded": False}
+    lock = path + ".lock"
+    if not _claim(lock, REPAIR_LOCK_SECONDS):
+        return {"skipped": "another pass holds the stamp"}
     try:
-        found = [
-            sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
-        ]
+        stamp = _read_json(path)
+        if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
+            return {"skipped": "not due"}
+        if not _save_json(path, {"at": now}):
+            # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
+            return {"skipped": "the stamp could not be saved", "recorded": False}
+    finally:
+        _release(lock)
+    try:
+        found = []
+        for item in spec.unlettered_sessions(env) or []:
+            try:
+                sid = SI.check(_text(item), "a listed session id")
+            except ValueError:
+                continue  # a store's id that is no session id never becomes a note path
+            if sid not in found:
+                found.append(sid)
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
         mark = {"at": now, "outcome": {"error": "the adapter could not list them"}}
         recorded = _save_json(path, mark)
@@ -4067,9 +4127,13 @@ def repair_unlettered(
             sid = _text(payload.get("session_id")) or sid
             if not in_scope(spec, env, payload):
                 continue  # what the hook itself would refuse (headless, another launcher's, a bare sub-agent)
+            sid = SI.check(sid, "a listed session id")
             chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
-            if chat.read().get("state") in ("closed", "mismatch"):
+            held_note = chat.read()
+            if held_note.get("state") in ("closed", "mismatch"):
                 continue  # a settled no-letter state:  replaying it would re-register it every pass
+            if lettered(held_note):
+                continue  # it holds a letter:  a replay would only mark a dormant chat seen again
             on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
             failures.append({"sid": sid, "error": type(exc).__name__})
@@ -4220,7 +4284,9 @@ def repair_after_start(
     Eavesdropper sweeps).  Nothing is started for a platform whose row names no "??" chats, for a host that does
     not say where it is, or for a caller that brought its own registry transport or its own environment mapping
     (a test, an embedding caller):  the child reads this process's own settings, so it could not reach the
-    registry that caller meant.  True when a run was started."""
+    registry that caller meant.  Before it spawns, the start takes a spawn claim beside the stamp (an exclusive
+    create, held REPAIR_SPAWN_CLAIM_SECONDS), so several chats starting in the same moment set off one run.  True
+    when a run was started."""
     spec = chat.spec
     if spec.unlettered_sessions is None or spec.chat_payload is None:
         return False
@@ -4228,9 +4294,12 @@ def repair_after_start(
         return False
     if spawn is None and chat.env is not os.environ:
         return False
-    stamp = _read_json(repair_stamp_path(chat.env, chat.seat, spec.platform, chat.location))
+    path = repair_stamp_path(chat.env, chat.seat, spec.platform, chat.location)
+    stamp = _read_json(path)
     if "at" in stamp and 0 <= chat.now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
         return False
+    if not _claim(path + ".spawn", REPAIR_SPAWN_CLAIM_SECONDS):
+        return False  # another chat's start set off this window's run moments ago
     try:
         return bool(
             (spawn or _spawn_detached)(repair_command(spec.platform, chat.location), chat.env)

@@ -2771,8 +2771,11 @@ class RepairCliTests(Base):
         self.assertEqual(code, 0)
         code, out = self.repair("--platform", "faux", "--location", "server", now=1001.0)
         self.assertIn("not due", out)
+        self.unlettered.append("s-0203")
         code, out = self.repair("--platform", "faux", "--location", "server", "--force", now=1001.0)
-        self.assertIn("s-0201", out)
+        self.assertIn("s-0203", out)
+        # The first pass lettered s-0201:  a chat holding a letter is never replayed, forced or not.
+        self.assertNotIn("s-0201", out)
 
     def test_a_platform_with_no_surface_is_a_bad_argument(self) -> None:
         plain = make_spec(platform="faux", source="faux-hook", display="Faux")

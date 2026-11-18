@@ -40,9 +40,11 @@ import sqlite3
 import sys
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import platform_letter as PL
+from . import session_ids as SI
 
 PLATFORM = "zcode"
 SEAT = "ZC"
@@ -213,14 +215,15 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     """This host's interactive sessions whose title still carries the "??: " placeholder, newest first, for the
     repair a session's start sets off (`platform_letter.repair_after_start`).  Read only, a short wait for a lock,
     and any doubt (no store, a locked one, a store without the columns this reads) answers None:  no pass this
-    time.  Each session's title is read again in its own replayed start before anything changes."""
+    time.  An id that is not a well-formed session id is left out.  Each session's title is read again in its own
+    replayed start before anything changes."""
     path = store_file(env)
     if not os.path.isfile(path):
         return None
     now_ms = int(time.time() * 1000)
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=0.5)
-    except sqlite3.Error:
+        conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=0.5)
+    except (sqlite3.Error, ValueError):
         return None
     try:
         rows = conn.execute(
@@ -237,7 +240,13 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         return None
     finally:
         conn.close()
-    return [row[0] for row in rows if isinstance(row[0], str) and row[0]]
+    found: list[str] = []
+    for row in rows:
+        try:
+            found.append(SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id"))
+        except ValueError:
+            continue  # a store id that is no session id would name a note path outside the letters folder
+    return found
 
 
 def zcode_rename(request: Any) -> bool:

@@ -21,7 +21,9 @@ from simple_tools import registry_api
 from simple_tools.tests.test_platform_letter import PAIR, Base, make_spec
 
 #: Rows whose `unlettered_sessions` is in an open pull request by its own seat, so this change does not edit the
-#: row:  MiniMax's (#2292, `minimax_unlettered_sessions`).  The entry is harmless once that lands.
+#: row:  MiniMax's (#2292, `minimax_unlettered_sessions`).  The exemption only covers a row with neither a list nor a
+#: reason:  once #2292 lands, MiniMax's row takes the first branch below and is held to it like any other.  After
+#: #2292 merges, drop "minimax" here and add it to the expected set in `test_the_rows_that_list_their_chats`.
 PENDING_FEEDS = {"minimax"}
 
 
@@ -177,6 +179,28 @@ class RequestNewChatTests(Base):
             self.assertEqual(code, 1)
             self.assertIn("does not run on the server", line)
 
+    def test_a_claude_terminal_chat_asks_for_itself_with_the_real_row(self) -> None:
+        """Claude's own `chat_payload` asks about a chat this hook did not fire for, and takes only a desktop chat
+        with a record here;  a terminal chat naming itself through its own variables starts on the plain payload."""
+        sid = "0b7c2f2e-1111-4222-8333-944455550001"
+        with mock.patch.dict(PL.SPECS, {"codex": PL.load_spec("codex")}):
+            env = self.server_env(CLAUDE_CODE_SESSION_ID=sid, CLAUDE_CODE_ENTRYPOINT="cli")
+            code, line = self.request(env=env)
+        self.assertEqual(code, 0, line)
+        held = self.lookup(sid, platform="claude")
+        self.assertIsNotNone(held)
+        self.assertEqual(line, "letter %s: Claude chat %s\n" % (held["label"], sid))
+
+    def test_a_claude_chat_named_only_by_id_still_needs_its_record_here(self) -> None:
+        """An id that is not this shell's own is the question about another chat:  Claude's row answers it only
+        for a desktop chat this host runs, so a typo never registers a phantom Claude chat."""
+        sid = "0b7c2f2e-1111-4222-8333-944455550002"
+        env = self.server_env(CLAUDE_CODE_ENTRYPOINT="cli")
+        code, line = self.request("--session-id", sid, "--platform", "claude", env=env)
+        self.assertEqual(code, 1, line)
+        self.assertIn("does not take a letter", line)
+        self.assertIsNone(self.lookup(sid, platform="claude"))
+
     def test_the_client_never_reads_a_host_registry_settings_file(self) -> None:
         """Every host reads the registry the same way (its environment, else fleet_knobs):  a retired settings file
         in the home is never sourced, so a chat on a host that has only that file gets no letter."""
@@ -194,6 +218,101 @@ class RequestNewChatTests(Base):
 
 def _ago(seconds: float) -> float:
     return time.time() - seconds
+
+
+class ClaudeRepairTests(Base):
+    """The repair on the real Claude row:  a "??" desktop chat with no note registers once, and one whose note
+    already holds a letter is never replayed, though the app's record still says "??: " (the row has no writer)."""
+
+    SID = "0b7c2f2e-1111-4222-8333-944455556666"
+
+    def setUp(self) -> None:
+        super().setUp()
+        org = os.path.join(CL.store_root(self.home), "account", "org")
+        os.makedirs(org)
+        path = os.path.join(org, "local_a.json")
+        with open(path, "w") as fh:
+            json.dump({"cliSessionId": self.SID, "title": "??: Fix Login"}, fh)
+        os.utime(path, (_ago(3600), _ago(3600)))
+        self.claude_env = self.env(CLAUDE_CODE_ENTRYPOINT="claude-desktop")
+
+    def repair(self, now: float) -> dict:
+        return PL.repair_unlettered(CL.SPEC, self.claude_env, "CLAUDE", "mac", now=now, force=True)
+
+    def test_a_chat_with_a_letter_is_not_replayed_every_pass(self) -> None:
+        first = self.repair(time.time())
+        self.assertEqual(first["asked"], [self.SID], first)
+        self.assertEqual(first["repaired"], [self.SID], first)
+        held = self.lookup(self.SID, location="mac", platform="claude")
+        self.assertIsNotNone(held)
+        seen = held.get("last_seen_at")
+        # The app's record still says "??: Fix Login":  the next pass lists it again and leaves it alone.
+        self.assertEqual(CL.claude_unlettered_sessions(self.claude_env), [self.SID])
+        later = self.repair(time.time() + PL.REPAIR_SWEEP_SECONDS)
+        self.assertEqual(later["asked"], [], later)
+        self.assertEqual(self.lookup(self.SID, location="mac", platform="claude").get("last_seen_at"), seen)
+
+
+class RepairClaimTests(Base):
+    """The stamp is read and written as one step, and a burst of chat starts sets off one run."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.listed = 0
+
+        def listing(env):
+            self.listed += 1
+            return []
+
+        self.spec = make_spec(
+            unlettered_sessions=listing,
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid},
+        )
+
+    def test_a_held_lock_skips_the_pass(self) -> None:
+        path = PL.repair_stamp_path(self.server_env(), "CODEX", "codex", "server")
+        self.assertTrue(PL._claim(path + ".lock", PL.REPAIR_LOCK_SECONDS))
+        done = PL.repair_unlettered(self.spec, self.server_env(), "CODEX", "server", now=time.time())
+        self.assertEqual(done, {"skipped": "another pass holds the stamp"})
+        self.assertEqual(self.listed, 0)
+        PL._release(path + ".lock")
+        done = PL.repair_unlettered(self.spec, self.server_env(), "CODEX", "server", now=time.time())
+        self.assertEqual(self.listed, 1, done)
+        self.assertFalse(os.path.exists(path + ".lock"))  # released once the stamp is written
+
+    def test_a_dead_holders_claim_is_taken_over(self) -> None:
+        path = os.path.join(self.tmp.name, "claims", "x.lock")
+        self.assertTrue(PL._claim(path, 30))
+        self.assertFalse(PL._claim(path, 30))
+        os.utime(path, (_ago(60), _ago(60)))
+        self.assertTrue(PL._claim(path, 30))
+
+    def test_a_burst_of_starts_sets_off_one_run(self) -> None:
+        spawned: list[list[str]] = []
+
+        def spawn(argv, env) -> bool:
+            spawned.append(list(argv))
+            return True
+
+        for n in range(4):
+            chat = PL.Chat(self.spec, self.server_env(), "server", "s-%04d" % n, now=time.time())
+            PL.repair_after_start(chat, spawn)
+        self.assertEqual(len(spawned), 1)
+
+
+class StoreIdTests(Base):
+    """A listed id that is not a session id never becomes a note path, whatever the store holds."""
+
+    def test_the_pass_drops_an_id_that_would_leave_the_letters_folder(self) -> None:
+        spec = make_spec(
+            unlettered_sessions=lambda env: ["../../escape", "/etc/x", "s-0301"],
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid},
+        )
+        done = PL.repair_unlettered(spec, self.server_env(), "CODEX", "server", now=time.time())
+        self.assertEqual(done["asked"], ["s-0301"], done)
+        for root, _dirs, files in os.walk(self.tmp.name):
+            for name in files:
+                self.assertNotIn("escape", name, root)
 
 
 class UnletteredListingTests(unittest.TestCase):
@@ -256,10 +375,28 @@ class UnletteredListingTests(unittest.TestCase):
             ("z-deleted", "??: Deleted", "interactive", None, ms(100), ms(3600)),
             ("z-lettered", "AA: Fine", "interactive", None, None, ms(3600)),
         ]
+        rows.append(("../escape", "??: Odd", "interactive", None, None, ms(3600)))
         conn.executemany("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)", rows)
         conn.commit()
         conn.close()
         self.assertEqual(ZC.zcode_unlettered_sessions(self.where), ["z-old-enough"])
+
+    def test_zcode_store_under_a_home_whose_path_needs_escaping(self) -> None:
+        self.where = {"HOME": os.path.join(self.home, "a b?c#d%")}
+        path = os.path.join(self.where["HOME"], ZC.STORE_SUBPATH)
+        os.makedirs(os.path.dirname(path))
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE session (id text primary key, title text, task_type text, time_archived integer, "
+            "time_deleted integer, time_created integer)"
+        )
+        conn.execute(
+            "INSERT INTO session VALUES ('z-one', '??: One', 'interactive', NULL, NULL, ?)",
+            (int(_ago(3600) * 1000),),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(ZC.zcode_unlettered_sessions(self.where), ["z-one"])
 
     def test_claude_desktop_records(self) -> None:
         org = os.path.join(CL.store_root(self.home), "account", "org")
