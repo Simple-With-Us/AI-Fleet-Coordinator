@@ -6816,7 +6816,9 @@ class PauseTests(Base):
     def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
         reader = PauseReader([self.status()], raise_on_run=True)
         code, answer = self.go("pause", "server", reader=reader)
-        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed"))
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed")
+        )
         self.assertNotIn("reader broke", json.dumps(answer))
         self.assertEqual(len(self.audit_rows()), 1)
 
@@ -6835,12 +6837,16 @@ class PauseTests(Base):
                     reader = PauseReader([self.status(pause)])
                     code, answer = self.go(verb, target, mode=mode, reader=reader)
                     self.assertEqual(
-                        (code, answer["result"], answer["errorCode"]), (2, "refused", "drain_active")
+                        (code, answer["result"], answer["errorCode"]),
+                        (2, "refused", "drain_active"),
                     )
                     self.assertEqual(reader.runs, [])
 
     def test_a_wakes_only_pause_never_loosens_a_full_one(self):
-        for target, pause in (("CLAUDE", {"CLAUDE": self.entry()}), ("server", {"*": self.entry()})):
+        for target, pause in (
+            ("CLAUDE", {"CLAUDE": self.entry()}),
+            ("server", {"*": self.entry()}),
+        ):
             with self.subTest(target=target):
                 reader = PauseReader([self.status(pause)])
                 code, answer = self.go("pause-wakes", target, mode="--plan", reader=reader)
@@ -6854,7 +6860,9 @@ class PauseTests(Base):
             ("pause-wakes", "CLAUDE", {"*": self.entry()}),
         ):
             with self.subTest(verb=verb, pause=pause):
-                code, answer = self.go(verb, target, mode="--plan", reader=PauseReader([self.status(pause)]))
+                code, answer = self.go(
+                    verb, target, mode="--plan", reader=PauseReader([self.status(pause)])
+                )
                 self.assertEqual((code, answer["result"]), (0, "planned"))
 
     def test_the_checks_run_again_under_the_lock(self):
