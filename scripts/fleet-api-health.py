@@ -64,13 +64,14 @@ standard library only.
 import argparse
 import json
 import os
+import socket
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 TOOL = "fleet-api-health"
 COLLECTOR = "api"
@@ -87,6 +88,9 @@ ALLOWED_URLS = frozenset({ST_LIVE_URL, CT_HEALTH_URL})
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 256 * 1024
+# A read that times out raises `socket.timeout`, which is `TimeoutError` only from Python 3.10;  the
+# Mac's /usr/bin/python3 is 3.9, where it is a plain OSError and would read as `unreachable`.
+TIMEOUTS = (TimeoutError, socket.timeout)
 
 # ST green needs an observation at most this old.  Two minutes covers a
 # live loop that observes about once a minute while still refusing to
@@ -110,7 +114,9 @@ FETCH_ERROR_CODES = ("timeout", "unreachable", "unparseable", "refused_url")
 
 def utc_stamp(epoch=None):
     """An ISO 8601 UTC stamp in the spelling every collector uses."""
-    moment = datetime.fromtimestamp(time.time() if epoch is None else epoch, UTC)
+    moment = datetime.fromtimestamp(
+        time.time() if epoch is None else epoch, timezone.utc
+    )
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -130,7 +136,7 @@ def parse_iso(raw):
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()
 
 
@@ -175,11 +181,11 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as err:
         return err.code, None, "http_%d" % err.code
-    except TimeoutError:
+    except TIMEOUTS:
         return 0, None, "timeout"
     except urllib.error.URLError as err:
         reason = getattr(err, "reason", None)
-        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+        if isinstance(reason, TIMEOUTS) or "timed out" in str(reason).lower():
             return 0, None, "timeout"
         return 0, None, "unreachable"
     except OSError:
@@ -402,7 +408,7 @@ def _app_row(mapper, url, timeout, now, fetcher):
         status, payload, error = fetcher(url, timeout)
     except ValueError:
         status, payload, error = 0, None, "refused_url"
-    except TimeoutError:
+    except TIMEOUTS:
         status, payload, error = 0, None, "timeout"
     if error is not None or payload is None:
         row = mapper(None, status or 0, now)

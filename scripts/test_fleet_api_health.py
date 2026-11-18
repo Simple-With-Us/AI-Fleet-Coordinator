@@ -23,15 +23,17 @@ import pathlib
 import stat
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_SPEC = importlib.util.spec_from_file_location("fleet_api_health", _HERE / "fleet-api-health.py")
+_SPEC = importlib.util.spec_from_file_location(
+    "fleet_api_health", _HERE / "fleet-api-health.py"
+)
 api_health = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(api_health)
 
 # One fixed clock for every fixture:  2026-11-17T12:00:00Z.
-NOW = datetime(2026, 11, 17, 12, 0, 0, tzinfo=UTC).timestamp()
+NOW = datetime(2026, 11, 17, 12, 0, 0, tzinfo=timezone.utc).timestamp()
 FRESH_STAMP = "2026-11-17T11:59:30Z"  # 30 seconds before NOW:  fresh
 STALE_STAMP = "2026-11-17T11:50:00Z"  # 10 minutes before NOW:  stale
 
@@ -75,7 +77,9 @@ def fetcher_for(st_result, ct_result):
 
 
 def collect_with(st_result, ct_result):
-    return api_health.collect(now=NOW, fetcher=fetcher_for(st_result, ct_result))
+    return api_health.collect(
+        now=NOW, fetcher=fetcher_for(st_result, ct_result)
+    )
 
 
 def app_row(doc, app):
@@ -177,7 +181,9 @@ class CongressTradeMappingTests(unittest.TestCase):
         self.assertIs(row["ingestionAlive"], False)
 
     def test_ct_missing_optional_check_is_unknown_never_green(self):
-        body = ct_payload(components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"})
+        body = ct_payload(
+            components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"}
+        )
         doc = collect_with((200, st_payload(), None), (200, body, None))
         row = app_row(doc, "CT")
         self.assertEqual(row["state"], "unknown")
@@ -207,17 +213,67 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(api_health.store_reading(written, now=NOW), "unknown")
 
     def test_unparseable_and_http_error_fail_closed(self):
-        doc = collect_with((200, None, "unparseable"), (503, None, "http_503"))
+        doc = collect_with(
+            (200, None, "unparseable"), (503, None, "http_503")
+        )
         self.assertEqual(app_row(doc, "ST")["state"], "unknown")
         self.assertEqual(app_row(doc, "ST")["error"], "unparseable")
         self.assertEqual(app_row(doc, "CT")["state"], "unknown")
         self.assertEqual(app_row(doc, "CT")["error"], "http_503")
+
+    def test_a_read_timeout_is_a_timeout_on_every_python(self):
+        # Sentry, PR 2302:  on Python 3.9 a read timeout is a bare `socket.timeout`, not a
+        # `TimeoutError`, and must still read as `timeout`, not `unreachable`.
+        import socket
+
+        class SlowResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, size):
+                raise socket.timeout("timed out")
+
+        class Opener:
+            def open(self, request, timeout=None):
+                return SlowResponse()
+
+        for raised in (socket.timeout("timed out"), TimeoutError("timed out")):
+            with self.subTest(raised=type(raised).__name__):
+
+                class Raising:
+                    def open(self, request, timeout=None, raised=raised):
+                        raise raised
+
+                self.assertEqual(
+                    api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Raising()), (0, None, "timeout")
+                )
+        self.assertEqual(api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()), (0, None, "timeout"))
+        self.assertIn(socket.timeout, api_health.TIMEOUTS)
 
     def test_one_app_failing_does_not_hide_the_other(self):
         doc = collect_with((0, None, "unreachable"), (200, ct_payload(), None))
         self.assertEqual(app_row(doc, "ST")["state"], "unknown")
         self.assertEqual(app_row(doc, "CT")["state"], "ok")
         self.assertEqual(doc["worst"], "unknown")
+
+
+class Python39Tests(unittest.TestCase):
+    def test_the_collector_and_its_tests_import_on_python_3_9(self):
+        # The Mac's LaunchAgent runs the collector under /usr/bin/python3 (3.9), where the
+        # 3.11+ UTC constant of the datetime module does not exist.  An automated fix rewrote
+        # `timezone.utc` to it on PR 2302;  ruff.toml now keeps both files at py39, and this
+        # catches any other route.
+        for name in ("fleet-api-health.py", "test_fleet_api_health.py"):
+            with self.subTest(name=name):
+                source = (_HERE / name).read_text(encoding="utf-8")
+                self.assertNotIn("datetime" + ".UTC", source)
+                self.assertNotIn("import" + " UTC", source)
+                self.assertNotIn("UTC" + ", datetime", source)
 
 
 class BoundAndStoreTests(unittest.TestCase):
@@ -255,8 +311,12 @@ class BoundAndStoreTests(unittest.TestCase):
         doc = collect_with((200, st_payload(), None), (200, ct_payload(), None))
         later = NOW + api_health.STORE_MAX_AGE_SECONDS + 1
         self.assertEqual(api_health.store_reading(doc, now=later), "unknown")
-        self.assertEqual(api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown")
-        self.assertEqual(api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown")
+        self.assertEqual(
+            api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown"
+        )
+        self.assertEqual(
+            api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown"
+        )
         self.assertEqual(api_health.store_reading(None, now=NOW), "unknown")
         self.assertEqual(api_health.store_reading({}, now=NOW), "unknown")
 
