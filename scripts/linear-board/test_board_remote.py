@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -475,8 +476,6 @@ class Remote(unittest.TestCase):
     def test_write_options_with_no_hosted_equivalent_are_refused(self):
         for argv in (
             ["claim", "AFC-1", "--by", "CODEX", "--steal", "--reason", "r"],
-            ["comment", "AFC-1", "--by", "CODEX", "--text-file", "-"],
-            ["status", "AFC-1", "done", "--resolution", "fixed"],
             ["file", "--title", "T", "--fix", "f"],
             ["file", "--title", "T", "--by", "X"],
         ):
@@ -484,6 +483,117 @@ class Remote(unittest.TestCase):
                 code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)] * 2)
                 self.assertEqual(code, 2)
                 self.assertNotIn("linear_comment", [c["name"] for c in calls])
+
+    def test_remote_text_file_uses_private_file_and_scans_before_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body"
+            path.write_text("A file body with a full tail")
+            path.chmod(0o600)
+            code, _, err, calls = self.run_writes(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)],
+                [rpc(self.IDANS), rpc({"ok": True, "id": "comment"})],
+            )
+            self.assertEqual(code, 0, err)
+            self.assertEqual(calls[-1]["arguments"]["body"], path.read_text())
+            for content in (" ", "x" * 10001, "token ghp_" + "A1b2C3d4E5" * 4):
+                path.write_text(content)
+                code, _, _, calls = self.run_writes(
+                    ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], []
+                )
+                self.assertNotEqual(code, 0)
+                self.assertEqual(calls, [])
+
+    def test_remote_text_file_refuses_unsafe_mode_utf8_and_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body"
+            path.write_bytes(b"\xff")
+            path.chmod(0o600)
+            for mode in (0o600, 0o644):
+                path.chmod(mode)
+                code, _, _, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], [])
+                self.assertEqual((code, calls), (2, []))
+            link = Path(tmp) / "link"
+            link.symlink_to(path)
+            code, _, _, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX", "--text-file", str(link)], [])
+            self.assertEqual((code, calls), (2, []))
+
+    def test_file_not_read_when_remote_writes_gated_off(self):
+        with unittest.mock.patch.object(board, "read_text_input") as reader:
+            code, _, _, calls = self.run_cli(["comment", "AFC-1", "--by", "CODEX", "--text-file", "missing"], rpc({}))
+        reader.assert_not_called()
+        self.assertEqual((code, calls), (2, []))
+
+    def test_resolution_orders_state_then_comment_and_identical_retry_sends_neither(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-1", "completed", "--resolution", "Fixed with tests"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"id": "AFC-1", "status": "completed"}), rpc({"ok": True, "id": "c1"})], env)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([c["name"] for c in calls], ["identities", "linear_status", "linear_comment"])
+            self.assertEqual(calls[-1]["arguments"]["body"], "Resolution (completed): Fixed with tests")
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+            self.assertNotIn("Fixed with tests", (Path(tmp) / "remote-resolution.json").read_text())
+
+    def test_resolution_comment_failure_preserves_state_and_blocks_uncertain_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-2", "completed", "--resolution", "Fixed"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"id": "AFC-2", "status": "completed"}), rpc({"code": "outcome_unknown"}, is_error=True)], env)
+            self.assertNotEqual(code, 0)
+            self.assertIn("state change completed", err)
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertNotEqual(code, 0)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+            self.assertIn("inspect the issue", err)
+
+    def test_resolution_state_failure_never_sends_comment_or_repeats_unknown_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-3", "completed", "--resolution", "Fixed"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS), rpc({"code": "outcome_unknown"}, is_error=True)], env)
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("linear_comment", [c["name"] for c in calls])
+            code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertNotEqual(code, 0)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_duplicate_resolution_derives_target_and_formats_comment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, calls = self.run_writes(
+                ["status", "AFC-4", "duplicate", "--resolution", "dup of AFC-2"],
+                [rpc(self.IDANS), rpc({"id": "AFC-4", "status": "duplicate"}), rpc({"ok": True, "id": "c"})],
+                {"LINEAR_BOARD_CACHE_DIR": tmp},
+            )
+            self.assertEqual(code, 0, err)
+            self.assertEqual(calls[1]["arguments"]["of"], "AFC-2")
+            self.assertEqual(calls[2]["arguments"]["body"], "Resolution (duplicate of AFC-2): dup of AFC-2")
+        for resolution in ("fixed", "dup of AFC-2 and duplicate of AFC-3", "ghp_" + "A1b2C3d4E5" * 4):
+            code, _, _, calls = self.run_writes(["status", "AFC-4", "duplicate", "--resolution", resolution], [])
+            self.assertEqual((code, calls), (2, []))
+
+    def test_resolution_journal_never_keeps_hosted_echoed_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, _ = self.run_writes(
+                ["status", "AFC-8", "completed", "--resolution", "Private resolution tail"],
+                [rpc(self.IDANS), rpc({"body": "Private resolution tail"}, text="Private resolution tail"), rpc({"body": "Private resolution tail"}, text="Private resolution tail")],
+                {"LINEAR_BOARD_CACHE_DIR": tmp},
+            )
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("Private resolution tail", (Path(tmp) / "remote-resolution.json").read_text())
+
+    def test_resolution_journal_busy_and_existing_ttl_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"LINEAR_BOARD_CACHE_DIR": tmp}):
+            store = board.RemoteResolutionStore("CODEX", "binding", {"id": "AFC-9"}, "state")
+            with unittest.mock.patch.object(board.time, "time", return_value=1000):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "send")
+                self.assertEqual(store.begin("digest", "linear_status")[0], "busy")
+                store.finish({"structured": {"completed": True}, "text": ""})
+            with unittest.mock.patch.object(board.time, "time", return_value=1001):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "duplicate")
+            with unittest.mock.patch.object(board.time, "time", return_value=1000 + board.IDEM_TTL_S + 1):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "send")
 
     def test_remote_with_mac_collab_backend_fails_closed_without_exec_or_call(self):
         with unittest.mock.patch.object(board.os, "execv") as ex:
