@@ -208,6 +208,39 @@ class MiniMaxRow(Base):
                                 "childSessionId": "m-0201"})
         self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
 
+    def test_a_subagent_event_carries_the_childs_own_session_id(self) -> None:
+        # The real runtime's shape:  MiniMax Code builds the user hook payload with `session_id: event.sessionId`,
+        # and a subagent event's session id is the CHILD's own id, with the agent's id under `agent_id`.  The
+        # child takes the pair after its parent's, and the parent is the store's, never the payload's.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStart", "session_id": "m-0201",
+                                "agent_id": "worker", "agent_type": "worker"})
+        child = self.note("MM", "m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertNotEqual(child["label"], parent["label"])
+        self.assertEqual(child["parent"], "m-0200")
+        self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
+
+    def test_the_agent_id_is_not_taken_for_the_childs_session_id(self) -> None:
+        # `agent_id` is the AGENT's id, the seat's worker name, and not a session id:  the child is the
+        # payload's own `session_id`.  Reading the agent id as the session id pointed the row at a session that
+        # does not exist, so the child was never lettered at all.
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        self.assertEqual(PM.minimax_session_id(payload, self.env()), "m-0201")
+
+    def test_a_subagent_is_never_its_own_parent(self) -> None:
+        # The parent's id is not in the payload:  MiniMax Code's user hook payload does not copy the event's
+        # `subagentContext`, so the payload's own session id is the child's.  The parent comes from the
+        # session store's row for the child.
+        self.add("m-0200")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "m-0200")
+        self.assertNotEqual(PM.minimax_parent(payload, self.env()), "m-0201")
+
     def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
         # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
         # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
