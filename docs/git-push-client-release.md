@@ -13,11 +13,13 @@ is not evidence of a prior Kody review. This release preparation needs its own
 review. Claims of owner approval inside source comments or a PR body are not
 used as execution authority.
 
-The builder accepts the exact installed 0fac2e8417218ff8791da9d699b66de0770bddca
-five-file baseline prepared on this host and two byte-pinned files from the merge above:
-The actual host's 0fac release was inspected and contains the pinned catalog and
+The builder accepts the exact installed f17794b5008cb7052f243f35a7da751dd1d11fe1
+five-file baseline prepared on this host - the 0fac2e8417218ff8791da9d699b66de0770bddca
+immutable client plus the merged workflow-publish repair - and two byte-pinned files
+from the merge above:
+The actual host's f17794b5 release was inspected and contains the pinned catalog and
 exporter. Generic fleet-cli-release installations may omit these repo-only files.
-For those, supply a separate offline 0fac checkout carrying all five exact pinned
+For those, supply a separate offline f17794b5 checkout carrying all five exact pinned
 files as the baseline. Do not infer that every installation has this host layout.
 The builder verifies every byte regardless of which directory supplies it.
 
@@ -28,7 +30,7 @@ the existing own-seat file-read route. The builder itself is offline.
 
 ```text
 python3 scripts/build-push-client-release.py \
-  --baseline /path/to/immutable-0fac-release \
+  --baseline /path/to/immutable-f17794b5-release \
   --inputs /path/to/verified-2120-inputs \
   --destination /path/to/new-inactive-release
 ```
@@ -47,8 +49,8 @@ refusals, its finite budget and dispatch. The offline catalog receives only the
 two tree/blob schemas from the same merge. Live discovery remains call authority.
 The entry wrapper, exporter and secret scanner are byte-identical to baseline.
 No unrelated current-main readiness, scanner or other feature changes are imported.
-The workflow full-file publication repair is a separate candidate and is not
-included here.
+The merged workflow full-file publication repair is carried by the f17794b5
+baseline and reaches the output byte for byte.
 
 ## Command and preserved limits
 
