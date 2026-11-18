@@ -70,7 +70,10 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
+<<<<<<< HEAD
             "fleet_infisical_cli.py",
+=======
+>>>>>>> origin/main
             "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
@@ -367,7 +370,10 @@ print(json.dumps({
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
+<<<<<<< HEAD
             "fleet_infisical_cli.py",
+=======
+>>>>>>> origin/main
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -388,7 +394,10 @@ print(json.dumps({
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
+<<<<<<< HEAD
             "fleet_infisical_cli.py",
+=======
+>>>>>>> origin/main
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -447,7 +456,10 @@ print(json.dumps({
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
+<<<<<<< HEAD
             "fleet_infisical_cli.py",
+=======
+>>>>>>> origin/main
         ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))

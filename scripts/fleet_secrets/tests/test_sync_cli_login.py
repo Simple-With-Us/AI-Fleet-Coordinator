@@ -58,7 +58,40 @@ class SyncTests(unittest.TestCase):
             "updated",
         )
 
+<<<<<<< HEAD
     def run_sync(self, args=None):
+=======
+    def fake_api_json(self, method, path, token, body, env, **kwargs):
+        self.api.append((method, path, token, dict(body or {})))
+        if path == "/v2/service-token":
+            return 200, {
+                "workspace": self.env[core.ENV_PROJECT],
+                "permissions": ["read", "write"],
+                "scopes": [{"environment": "prod", "secretPath": PATH}],
+                "expiresAt": "2099-01-01T00:00:00Z",
+            }
+        return 200, {"message": "ok"}
+
+    def _resolve_token(
+        self, env, cli=None, mode=None, *, writer=False, project_name=core.DEFAULT_PROJECT
+    ):
+        self.token_calls.append((writer, project_name))
+        return TOKEN if writer else READ_TOKEN
+
+    def fake_ensure_folder(self, path, env, token):
+        self.folder_tokens.append(token)
+
+    def fake_put(self, name, path, value, env, token=None):
+        self.write_tokens.append(token)
+        return "updated"
+
+    def fake_fetch(self, path, env, project_name=core.DEFAULT_PROJECT, token=None, writer=False):
+        self.read_tokens.append(token)
+        self.assertFalse(writer)
+        return dict(self.written)
+
+    def run_sync(self, argv=None, env=None):
+>>>>>>> origin/main
         out, err = io.StringIO(), io.StringIO()
         with (
             mock.patch.object(sync.caller, "write_intent_for_cli", self.factory, create=True),

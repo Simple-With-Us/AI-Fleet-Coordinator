@@ -30,6 +30,8 @@ TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPI
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
 UNTOUCHED = ["MA", "GROK-WEB", "WISE", "ECHO"]
 INFISICAL_PROJECT_ID = "00000000-0000-4000-8000-000000000042"
+PRIMARY_BINDING = "st.primary-test-token"
+WAKE_BINDING = "st.router-test-token"
 
 
 def _load(name: str):
@@ -55,9 +57,9 @@ def folder(path: str) -> str:
 class FakeInfisical:
     def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str]) -> None:
         self.client_id, self.client_secret, self.secrets = client_id, client_secret, secrets_map
-        self.token = "st." + "service-token-fixture-value"
+        self.token = PRIMARY_BINDING
         # The second, narrower token:  exactly prod /wake-router, the router's bearer and the registry key.
-        self.wake_token = "st." + "wake-router-token-fixture-value"
+        self.wake_token = WAKE_BINDING
         self.operator_secrets = {
             "OPERATOR_ZULIP_USER_ID": "4242",
             "OPERATOR_ZULIP_EMAIL": "operator-bot@zulip.test",
@@ -184,8 +186,8 @@ class InfisicalEnvTests(unittest.TestCase):
         }
 
     def env(self, fake: FakeInfisical | None = None, **extra: str) -> dict[str, str]:
-        env = {"INFISICAL_TOKEN": "st.service-token-fixture-value",
-               "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN": "st.wake-router-token-fixture-value",
+        env = {"INFISICAL_TOKEN": PRIMARY_BINDING,
+               "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN": WAKE_BINDING,
                "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID, "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
                "HOME": str(self.tmp), "ZULIP_SITE": "https://simplewithus.zulipchat.com"}
         if fake:
@@ -195,7 +197,7 @@ class InfisicalEnvTests(unittest.TestCase):
 
     def test_it_loads_only_the_allowlisted_names_and_drops_the_identity(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
-            out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="stale-coolify-copy"))
+            out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="stale-container"))
         for name in ("ZULIP_GB_FIXER_EMAIL", "ZULIP_GB_FIXER_API_KEY", "ZULIP_ALERT_GB_FIXER_ENDPOINT",
                      "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL"):
             self.assertEqual(out[name], self.values[name], "%s comes from Infisical, which wins" % name)
@@ -499,7 +501,7 @@ class InfisicalEnvTests(unittest.TestCase):
     def test_an_invalid_wake_router_token_is_named(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             with self.assertRaisesRegex(IE.LoadError, "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN is invalid"):
-                IE.build_env(self.env(fake, EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN="not-a-service-token"))
+                IE.build_env(self.env(fake, EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN="invalid"))
         self.assertEqual(fake.requests, [])
 
     def test_the_primary_token_is_never_used_for_wake_router(self) -> None:
@@ -541,11 +543,31 @@ class InfisicalEnvTests(unittest.TestCase):
         for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_CODEX_EMAIL", "ZULIP_ZC_API_KEY", "ZULIP_KIMI_API_KEY",
                      "ZULIP_AMP_API_KEY", "ZULIP_GROK_API_KEY", "ZULIP_OPENCODE_EMAIL"):
             self.assertIn(name, names)
-        # GROK-BUILD is "none", so the GROK seat's older ZULIP_GROK_BUILD_* stem never loads, and
+        # GROK is enabled with canonical names; the retired GROK-BUILD stem never loads, and
         # OPERATOR is "mac".
         for name in ("ZULIP_BF_BUILDER_EMAIL", "ZULIP_GROK_BUILD_API_KEY", "ZULIP_OPERATOR_API_KEY",
                      "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
+
+    def test_grok_loads_canonical_credentials_without_reviving_the_retired_seat(self) -> None:
+        values = dict(
+            self.values,
+            ZULIP_GROK_EMAIL="grok-build-bot@zulip.test",
+            ZULIP_GROK_API_KEY="grok-" + secrets.token_hex(16),
+            ZULIP_GROK_BUILD_EMAIL="retired-grok-bot@zulip.test",
+            ZULIP_GROK_BUILD_API_KEY="retired-" + secrets.token_hex(16),
+        )
+        with FakeInfisical(self.cid, self.csecret, values) as fake:
+            out, line = IE.build_env(self.env(fake))
+        cfg = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
+        self.assertIn("GROK", cfg.seats)
+        self.assertNotIn("GROK", cfg.disabled)
+        for name in ("ZULIP_GROK_EMAIL", "ZULIP_GROK_API_KEY"):
+            self.assertEqual(out[name], values[name])
+        for name in ("ZULIP_GROK_BUILD_EMAIL", "ZULIP_GROK_BUILD_API_KEY"):
+            self.assertNotIn(name, out)
+        for value in values.values():
+            self.assertNotIn(value, line)
 
     # ---- the launcher and the entrypoint as processes
 
@@ -686,7 +708,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), ["AMP", "GROK"], "only the two keyless Mac CLI seats are off")
+        self.assertEqual(sorted(cfg.disabled), ["AMP"], "only the keyless AMP seat is off")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)
@@ -810,6 +832,83 @@ class ApplyLiveConfigTests(unittest.TestCase):
         for text in (FIXTURE.read_text(), (SERVER_DIR / "listener.toml").read_text()):
             preamble, blocks = AL.blocks(text)
             self.assertEqual("".join(preamble) + "".join("".join(b) for _, b in blocks), text)
+
+
+class SampleRoutingTests(unittest.TestCase):
+    """The one rule for every seat:  a seat the router can serve wakes at the router, and a seat
+    the router cannot serve does not.
+
+    The platform table is `simple_tools.wake_service.BUILDERS`, the one table on both hosts, and a
+    seat's platform module is the thing that decides whether the router can serve it.  The sample
+    routes a seat at the router when its routine's key is the one bearer the router checks
+    (`WAKE_ROUTER_KEY`);  a seat with no module must not be routed there, because the router
+    answers it `not-installed` and the wake is lost instead of queued.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfg = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
+        from simple_tools import wake_service as SVC
+
+        self.builders = SVC.BUILDERS
+        self.served = SVC.installed_seats()
+
+    def _installed(self, seat: str) -> bool:
+        """Whether this seat's platform module is on this host, which is what the router serves."""
+        return seat in self.served
+
+    def test_a_seat_routed_at_the_router_uses_the_router_binding(self) -> None:
+        """Every seat the sample routes at the router is bound to the router's own key and front.
+
+        A seat that has a platform module is not required to be routed at the router yet:  a
+        seat moves to the router only after its own path is deployed and verified live, and
+        until then it keeps the binding it has (its own bridge, or its inbox).  So the sample
+        is checked for the shape of a routed seat, not for the whole table.
+
+        The sample names variables and not URLs, so a seat is recognised as being at the
+        router by the bearer its routine names.  The whole binding is checked and not the
+        wake kind alone:  a seat at the router that names another seat's front, or a key, a
+        header or a method the router does not check, is a seat whose wake the router
+        refuses, so the sample must never show one."""
+        for seat, seat_cfg in sorted(self.cfg.seats.items()):
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is None or routine.key_env != "WAKE_ROUTER_KEY":
+                continue
+            self.assertEqual(seat_cfg.wake, "http", seat)
+            self.assertEqual(routine.auth, "bearer", seat)
+            self.assertEqual(routine.header, "Authorization", seat)
+            self.assertEqual(routine.method, "POST", seat)
+            self.assertEqual(routine.url_env, "%s_ROUTINE_URL" % seat, seat)
+            self.assertTrue(self._installed(seat), "%s is routed at the router with no module" % seat)
+
+    def test_the_router_s_bearer_is_named_in_no_other_role(self) -> None:
+        """The router's bearer is one name, and it is only ever a routine's key.
+
+        The seat the sample routes at the router is recognised by the bearer it names, so a
+        seat that posts at the router's front with anything but the router's bearer is a seat
+        the router refuses.  The bearer may be named as a routine key with bearer auth and in
+        no other role, and a seat that puts it anywhere else sends the one shared credential
+        off to somewhere it does not belong."""
+        for seat, seat_cfg in sorted(self.cfg.seats.items()):
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is None:
+                continue
+            for name in (
+                getattr(seat_cfg, "email_env", ""),
+                getattr(seat_cfg, "key_env", ""),
+                getattr(seat_cfg, "site_env", ""),
+                routine.url_env,
+            ):
+                self.assertNotEqual(name, "WAKE_ROUTER_KEY", seat)
+            if routine.key_env == "WAKE_ROUTER_KEY":
+                self.assertEqual(routine.auth, "bearer", seat)
+
+    def test_no_seat_without_a_module_is_routed_at_the_router(self) -> None:
+        for seat, seat_cfg in sorted(self.cfg.seats.items()):
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is None or routine.key_env != "WAKE_ROUTER_KEY":
+                continue
+            self.assertTrue(self._installed(seat), "%s is routed at the router with no module" % seat)
 
 
 if __name__ == "__main__":

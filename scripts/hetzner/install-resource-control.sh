@@ -147,7 +147,10 @@ def install(source_directory):
             # under the same owner and mode rule as the reducer.
             'muster_approval.py',
             'fleet_infisical.py',
+<<<<<<< HEAD
             'fleet_infisical_cli.py',
+=======
+>>>>>>> origin/main
         ):
             payload[name] = read_source(source, name)
         # The shared /etc/muster reader has one source file in the repository,

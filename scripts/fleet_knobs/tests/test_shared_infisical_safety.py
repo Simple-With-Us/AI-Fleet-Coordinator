@@ -1,5 +1,6 @@
 """Shared-client review regressions with no live stores, subprocesses or network."""
 
+import builtins
 import json
 import os
 import secrets
@@ -101,14 +102,19 @@ class ExternalShapeTests(unittest.TestCase):
 
 class ImportFailureTests(KnobTestCase):
     def test_broken_client_import_does_not_poison_a_healthy_sibling(self):
-        for broken in ("def invalid syntax", "raise ImportError('private-dependency')"):
+        original = builtins.__import__
+        for failure in (SyntaxError("private-source-text"), ImportError("private-dependency")):
             self.new_process()
+
+            def load(name, *args, **kwargs):
+                if name == "fleet_infisical":
+                    raise failure
+                return original(name, *args, **kwargs)
+
             with (
-                tempfile.TemporaryDirectory() as root,
                 mock.patch.object(source, "HELPER_LOADER", source._load_helper),
-                mock.patch.object(source, "__file__", str(Path(root) / "fleet_knobs/source.py")),
+                mock.patch("builtins.__import__", side_effect=load),
             ):
-                (Path(root) / "fleet_infisical.py").write_text(broken)
                 knobs.resolve("FLEET_AUTOPUSH_MODE")
             self.assertEqual(knobs.report()["fetch_reason"], "scoped-reader-unavailable")
             self.assertFalse(Path(lkg.failure_path()).exists())
@@ -129,17 +135,9 @@ class ExpiryDiagnosticTests(unittest.TestCase):
             with self.assertRaises(source.FetchFailed) as caught:
                 source.fetch_named(("FLEET_AUTOPUSH_MODE",), project_id=source.PROJECT_ID, path="/")
         self.assertEqual(caught.exception.reason, "token-expired-or-invalid")
-        writer = source._load_helper()
-        self.assertIsNotNone(writer)
-        with (
-            mock.patch.object(
-                writer,
-                "verify_service_token",
-                side_effect=writer.SecretsError("token-expired-or-invalid"),
-            ),
-            self.assertRaisesRegex(setter.Refused, "expiry") as caught,
-        ):
-            setter.verify_writer(own, {})
+        with mock.patch.object(client, "verify_service_token", side_effect=refusal):
+            with self.assertRaisesRegex(setter.Refused, "expiry") as caught:
+                setter.verify_writer(own, {})
         self.assertNotIn(own, str(caught.exception))
         settings = InfisicalSettings(
             project_id="synthetic-project", api_base="https://invalid.test"

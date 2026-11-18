@@ -5,8 +5,11 @@ The REST helper verifies grant metadata and exact project, prod environment, and
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import hashlib
 import importlib.util
+=======
+>>>>>>> origin/main
 import os
 import re
 import shutil
@@ -40,11 +43,14 @@ ENV_KNOBS_TOKEN = "FLEET_KNOBS_INFISICAL_TOKEN"
 # Legacy identity names are stripped from helper environments and never authenticate a request.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
 ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
+<<<<<<< HEAD
 
 _HELPER_LOCK = threading.RLock()
 _HELPER_CACHE: tuple[tuple, ModuleType] | None = None
 _HELPER_NAME = "_fleet_knobs_fleet_infisical"
 _MAX_HELPER_BYTES = 2 * 1024 * 1024
+=======
+>>>>>>> origin/main
 
 
 class FetchFailed(Exception):
@@ -167,6 +173,7 @@ def _scoped_fetch(
 
 
 def _load_helper() -> ModuleType | None:
+<<<<<<< HEAD
     """Reuse only our pinned source identity, never a sys.path/sys.modules candidate or stale pyc."""
     global _HELPER_CACHE
     with _HELPER_LOCK:
@@ -215,6 +222,14 @@ def _load_helper() -> ModuleType | None:
             if isinstance(exc, Exception):
                 return None
             raise
+=======
+    """The packaged shared REST client; no application install or path override is consulted."""
+    try:
+        import fleet_infisical
+    except Exception:
+        return None
+    return fleet_infisical
+>>>>>>> origin/main
 
 
 # Tests replace this with a callable that returns a fake helper, or None for "no helper".

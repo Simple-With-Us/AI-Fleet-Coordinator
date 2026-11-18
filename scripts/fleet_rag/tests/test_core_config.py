@@ -354,6 +354,7 @@ class OverrideTests(unittest.TestCase):
                 self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
     def test_login_and_fetch_use_the_overridden_infisical(self) -> None:
+<<<<<<< HEAD
         project = str(uuid.uuid4())
         with ScopedReadAPI({"TEI_RERANK_URL": "https://rr"}, project=project) as api:
             env = {**BYO, "FLEET_RECALL_INFISICAL_TOKEN": api.token,
@@ -369,6 +370,42 @@ class OverrideTests(unittest.TestCase):
             self.assertTrue(all("workspaceId=" + project in url for url in values))
             self.assertTrue(all("environment=prod" in url and "secretPath=%2F" in url for url in values))
             self.assertTrue(all(core.SHARED_PROJECT not in url for url in values))
+=======
+        seen: list[str] = []
+
+        from fleet_secrets import core as secrets
+
+        def fake_api(method, path, token, body, env, **kwargs):
+            seen.append(path)
+            if path == "/v2/service-token":
+                return 200, {"workspace": "proj-1234", "permissions": ["read"],
+                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}
+            name = path.split("?", 1)[0].rsplit("/", 1)[-1]
+            if name != "TEI_RERANK_URL":
+                return 404, {}
+            record = {"secretKey": "TEI_RERANK_URL", "secretValue": "https://rr",
+                      "type": "shared", "workspace": "proj-1234",
+                      "environment": "prod", "secretPath": "/"}
+            return 200, {"secret": record}
+
+        env = {
+            **BYO,
+            "FLEET_RECALL_INFISICAL_TOKEN": SERVICE_TOKEN,
+            "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
+            "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
+            "FLEET_RAG_INFISICAL_ENV": "prod",
+        }
+        with (mock.patch.dict(os.environ, env, clear=True),
+              mock.patch.object(secrets, "_api_json", fake_api)):
+            cfg = core.load_config()
+        self.assertEqual(cfg["TEI_RERANK_URL"], "https://rr")
+        self.assertEqual(seen[0], "/v2/service-token")
+        self.assertIn("/v3/secrets/raw", seen[1])
+        self.assertIn("workspaceId=proj-1234", seen[1])
+        self.assertIn("environment=prod", seen[1])
+        # The owner's project id is never used once an override is set.
+        self.assertNotIn(core.SHARED_PROJECT, seen[1])
+>>>>>>> origin/main
 
 
 @unittest.skipUnless(shutil.which("rsync"), "standalone installer requires rsync")
@@ -480,6 +517,7 @@ class ReadTokenFileTests(unittest.TestCase):
     def named_binding(self):
         return self.binding(FLEET_RECALL_INFISICAL_TOKEN_FILE=str(self.named))
 
+<<<<<<< HEAD
     def test_retired_default_is_not_probed_read_or_counted_as_a_binding(self):
         self.write(self.retired, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
         with mock.patch.object(core.os, "open", side_effect=AssertionError("implicit file probe")):
@@ -488,6 +526,12 @@ class ReadTokenFileTests(unittest.TestCase):
         with (mock.patch.dict(os.environ, {**self.env(), **BYO}, clear=True),
               mock.patch.object(core, "infisical_login", side_effect=AssertionError("offline auth"))):
             self.assertEqual(core.load_config(), BYO)
+=======
+    def test_environment_variable_wins_and_no_file_is_none(self) -> None:
+        self.assertIsNone(self.binding())
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={SERVICE_TOKEN}\n")
+        self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN=self.TOKEN), self.TOKEN)
+>>>>>>> origin/main
 
     def test_explicit_current_raw_assignment_and_read_only_files(self):
         for content in (self.TOKEN, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n",

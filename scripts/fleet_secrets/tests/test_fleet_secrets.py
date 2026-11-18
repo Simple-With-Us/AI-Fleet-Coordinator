@@ -331,7 +331,11 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
+<<<<<<< HEAD
     def test_interactive_get_requires_its_own_scoped_token_before_any_read(self):
+=======
+    def test_interactive_get_requires_its_own_scoped_token(self):
+>>>>>>> origin/main
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)

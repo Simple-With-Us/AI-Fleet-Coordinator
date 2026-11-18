@@ -2,6 +2,7 @@
 
 New consumers import fleet_infisical directly.  This alias retains the existing
 CLI and import contract without another reader implementation.
+<<<<<<< HEAD
 
 This compatibility path trusts its Python process.  The preload check compares
 declared routing origin; it does not authenticate executed provenance against
@@ -59,6 +60,13 @@ def _load_client():
 
 
 _client = _load_client()
+=======
+"""
+
+import sys
+
+import fleet_infisical as _client
+>>>>>>> origin/main
 
 _compat_name = __name__
 globals().update(vars(_client))

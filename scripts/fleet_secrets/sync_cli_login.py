@@ -47,7 +47,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fleet_infisical as core
+<<<<<<< HEAD
 import fleet_infisical_cli as caller
+=======
+>>>>>>> origin/main
 
 # The names a CLI reads out of its environment.  The write allowlist is the gate,  and
 # this is the same list,  so the two cannot drift.
