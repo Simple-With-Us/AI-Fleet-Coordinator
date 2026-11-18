@@ -2772,6 +2772,23 @@ class Retries(Base):
         self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.EXPIRED))
         self.assertIs(receipt["delivered"], False)
 
+    def test_an_outage_that_ends_a_wake_says_the_registry_was_down(self) -> None:
+        """A wake that ends while the registry is down says the registry was down:  the
+        receipt must not blame malformed data."""
+
+        def deliver(target, wake):
+            self.delivered.append((target.session_id, wake.wake_id))
+            self.clock.now += 10000  # the delivery itself outlasts the wake's age
+            return WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)
+
+        router = self.router(deliver=deliver, max_age_seconds=100)
+        router.accept(self.wake())
+        self.run_all(router, 4)
+        receipt = self.done()
+        self.assertEqual(receipt["status"], "dead")
+        self.assertEqual(receipt["code"], WR.REGISTRY_UNAVAILABLE)
+        self.assertEqual(receipt["note"], "")
+
     def test_a_registry_outage_retries_the_pick(self) -> None:
         self.registry.down = True
         router = self.router()
@@ -4901,12 +4918,33 @@ class Remote(RemoteBase):
                 spy.assert_not_called()
 
     def test_a_registry_call_that_raises_is_a_retry_and_no_delivery(self) -> None:
+        """A host that is configured to reach the registry and cannot:  an outage, retried
+        without spending an attempt, and no delivery."""
+        configured = {
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
         with (
+            mock.patch.object(CW, "_registry_env", side_effect=lambda env: {**env, **configured}),
             mock.patch.object(WR.registry_api, "call", side_effect=ValueError("broken")),
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             _, answer = self.run_main(self.envelope())
         self.assertEqual(answer["delivery"]["outcome"], "busy")
+        self.assertEqual(answer["delivery"]["code"], WR.REGISTRY_UNAVAILABLE)
+        spy.assert_not_called()
+
+    def test_a_raised_registry_call_on_an_unconfigured_host_fails_closed(self) -> None:
+        """A host with no registry address or key cannot be retried into working:  it is a
+        deployment fault, and the answer names the variable that is missing."""
+        with (
+            mock.patch.object(WR.registry_api, "call", side_effect=ValueError("broken")),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            _, answer = self.run_main(self.envelope())
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["code"], WR.NOT_CONFIGURED)
+        self.assertIn(WR.registry_api.URL_ENV, answer["delivery"]["note"])
         spy.assert_not_called()
 
     def test_settings_that_cannot_be_read_are_a_retry_and_no_delivery(self) -> None:
@@ -5342,7 +5380,9 @@ class RegistryNotConfigured(Base):
     def test_the_check_before_delivery_is_a_retry_named_not_configured(self) -> None:
         router = self.router()
         with mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED):
-            self.assertEqual(router._stale(WR.Target(SID_A, "AA", generation=1)), WR.NOT_CONFIGURED)
+            self.assertEqual(
+                router._stale(WR.Target(SID_A, "AA", generation=1))[0], WR.NOT_CONFIGURED
+            )
 
     def test_an_outage_is_still_unavailable(self) -> None:
         self.assertEqual(WR.registry_trouble({"error": "x", "code": "timeout"}), "registry-unavailable")
@@ -5350,6 +5390,50 @@ class RegistryNotConfigured(Base):
         self.assertEqual(WR.registry_trouble(None), WR.UNREADABLE_ANSWER)
         self.assertEqual(WR.registry_trouble(["found"]), WR.UNREADABLE_ANSWER)
         self.assertEqual(WR.registry_trouble({"found": True}), WR.UNREADABLE_ANSWER)
+
+    def test_an_answer_with_a_malformed_error_is_not_an_answer(self) -> None:
+        """The shape of the answer is checked before any field of it is read:  an error that
+        is not a non-empty string, or a code that is not a string, is malformed data."""
+        for answer in (
+            {"error": "", "code": "timeout"},
+            {"error": "   ", "code": "timeout"},
+            {"error": 7, "code": "timeout"},
+            {"error": "down", "code": 503},
+            {"error": ["down"], "code": "timeout"},
+            {"error": "down", "code": ["timeout"]},
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(WR.registry_trouble(answer), WR.UNREADABLE_ANSWER)
+                delivery = WR.registry_delivery(answer)
+                self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.UNREADABLE_ANSWER))
+
+    def test_the_note_names_the_variable_and_survives_the_transport(self) -> None:
+        """The note is the variable's own name:  it is what an operator needs, and it is
+        shaped so the remote readers keep it."""
+        answer = {
+            "error": "the registry key is not set (SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY)",
+            "code": "not_configured",
+        }
+        delivery = WR.registry_delivery(answer)
+        self.assertEqual(delivery.note, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY")
+        # The whitelist the readers of another host's answer use.
+        self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
+
+    def test_a_pick_stage_failure_names_the_variable_that_is_missing(self) -> None:
+        """A host with no registry address or key fails at the pick:  the receipt says which
+        variable is missing, and the wake ends dead."""
+        router = self.router(max_attempts=1)
+        answer = {
+            "error": "no registry API URL is configured (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL)",
+            "code": "not_configured",
+        }
+        with mock.patch.object(WR.registry_api, "call", return_value=answer):
+            router.accept(self.wake())
+            self.drain(router)
+        receipt = self.done()
+        self.assertEqual(receipt["status"], "dead")
+        self.assertEqual(receipt["code"], WR.NOT_CONFIGURED)
+        self.assertEqual(receipt["note"], "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL")
 
     def test_a_missing_key_names_the_variable_that_is_missing(self) -> None:
         answer = {
@@ -5367,6 +5451,20 @@ class RegistryNotConfigured(Base):
         self.assertEqual((missing.outcome, missing.code), ("failed", WR.NOT_CONFIGURED))
         routed = WR.registry_outage(route="codex-desktop")
         self.assertEqual(routed.route, "codex-desktop")
+
+    def test_a_raised_call_is_an_outage_on_a_configured_host_and_a_fault_otherwise(self) -> None:
+        """The answer for a registry call that raised:  an outage on a host that is
+        configured to reach the registry, and a fail-closed fault, with the variable named,
+        on one that is not."""
+        configured = {
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
+        outage = WR.registry_failure(configured)
+        self.assertEqual((outage.outcome, outage.code), ("busy", WR.REGISTRY_UNAVAILABLE))
+        bare = WR.registry_failure({})
+        self.assertEqual((bare.outcome, bare.code), ("failed", WR.NOT_CONFIGURED))
+        self.assertIn(WR.registry_api.URL_ENV, bare.note)
 
     def test_health_says_so(self) -> None:
         router = self.router()

@@ -438,6 +438,8 @@ class Pick:
     link_note: str = ""
     # The seat tag on the addressed letter's open row when it is another seat's, else "".
     letter_other_seat: str = ""
+    # What the registry said, as a transport-safe token:  the variable that is missing.
+    note: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
@@ -1095,7 +1097,11 @@ class Router:
             found = answer.get("found") if isinstance(answer, Mapping) else None
             if type(found) is not bool or "error" in answer:
                 # Unreadable, so not a dead letter:  falling back would wake a chat not addressed.
-                return Pick(reason=registry_trouble(answer), retry=True)
+                return Pick(
+                    reason=registry_trouble(answer),
+                    retry=True,
+                    note=registry_note(answer.get("error")) if isinstance(answer, Mapping) else "",
+                )
             live = found and not _closed(answer)
             target = self._valid(answer) if live else None
             if target is not None:
@@ -1120,7 +1126,10 @@ class Router:
         if not isinstance(answer, Mapping) or "error" in answer:
             # The letter was read before the outage, so what it said still goes on the receipt.
             return Pick(
-                reason=registry_trouble(answer), retry=True, letter_other_seat=letter_other_seat
+                reason=registry_trouble(answer),
+                retry=True,
+                letter_other_seat=letter_other_seat,
+                note=registry_note(answer.get("error")) if isinstance(answer, Mapping) else "",
             )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
@@ -1487,9 +1496,15 @@ class Router:
             if pick.retry:
                 if pick.reason == REGISTRY_UNAVAILABLE:
                     # A registry that cannot be read is an outage, not a failed delivery.
-                    self._retry_outage(entry, pick.reason, pick)
+                    self._retry_outage(entry, pick=pick)
                     return
-                self._retry(entry, counted=True, code=pick.reason, pick=pick)
+                self._retry(
+                    entry,
+                    counted=True,
+                    code=pick.reason,
+                    pick=pick,
+                    result=Delivery("failed", code=pick.reason, note=pick.note),
+                )
                 return
             entry["pick"] = asdict(pick)
             self._save(entry)
@@ -1518,16 +1533,22 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale = self._stale(pick.target)
+            stale, stale_note = self._stale(pick.target)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
             if stale:
                 if stale == REGISTRY_UNAVAILABLE:
                     # The check before delivery could not read the registry:  an outage.
-                    self._retry_outage(entry, stale, pick)
+                    self._retry_outage(entry, pick=pick)
                     return
-                self._retry(entry, counted=True, code=stale, pick=pick)
+                self._retry(
+                    entry,
+                    counted=True,
+                    code=stale,
+                    pick=pick,
+                    result=Delivery("failed", code=stale, note=stale_note),
+                )
                 return
             entry["attempts"] += 1
             entry["in_flight"] = True
@@ -1550,10 +1571,14 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target) -> str:
-        """Empty when the registry still has this letter on this session at the generation picked,
-        else why not:  `RELEASED` when it says so, or the code of a bounded retry when it cannot be
-        read or its row cannot be read as a chat of this seat.  Neither of those is a yes or a no."""
+    def _stale(self, target: Target) -> tuple[str, str]:
+        """The reason this chat must not be delivered to, and the note that says why.
+
+        The reason is empty when the registry still has this letter on this session at the
+        generation picked, else `RELEASED` when it says so, or the code of a bounded retry when
+        it cannot be read or its row cannot be read as a chat of this seat.  Neither of those
+        is a yes or a no.  The note names the variable that is missing, when the registry named
+        one, so the receipt of the failure says what to fix."""
         answer = registry_api.call(
             self.env,
             "resolve",
@@ -1561,11 +1586,12 @@ class Router:
             timeout=REGISTRY_TIMEOUT,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return registry_trouble(answer)
+            note = registry_note(answer.get("error")) if isinstance(answer, Mapping) else ""
+            return registry_trouble(answer), note
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
-            return UNREADABLE_ROW
-        return "" if held else RELEASED
+            return UNREADABLE_ROW, ""
+        return (RELEASED, "") if not held else ("", "")
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1588,7 +1614,7 @@ class Router:
             # A registry that cannot be read is an outage, not a failed delivery, whichever
             # platform answered it:  it spends none of the wake's attempts.  An `unknown`
             # answer stays final, because the delivery may have run and nobody can tell.
-            self._retry_outage(entry, result.code, pick)
+            self._retry_outage(entry, result=result, pick=pick)
             return
         if outcome in ("sent", "completed"):
             # A hand-over with no proof is recorded as unknown (null), never as delivered.
@@ -1607,23 +1633,33 @@ class Router:
         else:
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
 
-    def _retry_outage(self, entry: dict[str, Any], code: str, pick: Pick | None = None) -> None:
+    def _retry_outage(
+        self,
+        entry: dict[str, Any],
+        result: Delivery | None = None,
+        pick: Pick | None = None,
+    ) -> None:
         """Requeue a wake whose registry could not be read.
 
         An outage is not a failed delivery:  it spends none of the wake's five attempts, so a
         registry that is down for twenty minutes cannot kill a wake it would have carried.
         The wait grows like a failed delivery's backoff, because an outage may last hours and
-        every try costs a call to a service that is down;  the wake's age still bounds it."""
-        self._log(code, entry["wake"]["wake_id"])
+        every try costs a call to a service that is down;  the wake's age still bounds it.
+
+        `result` is the answer that said so, when there is one:  the platform's own delivery
+        answer keeps its route and its note.  The answer this builds for itself is the outage
+        answer, never a failure:  a wake that ends while the registry is down says the registry
+        was down, and does not blame malformed data."""
+        self._log(REGISTRY_UNAVAILABLE, entry["wake"]["wake_id"])
         outages = int(entry.get("outages", 0)) + 1
         entry["outages"] = outages
         backoff = self.config["retry_backoff"]
         self._retry(
             entry,
             counted=False,
-            code=code,
+            code=REGISTRY_UNAVAILABLE,
             pick=pick,
-            result=registry_delivery(code),
+            result=result or registry_outage(),
             wait=backoff[min(outages - 1, len(backoff) - 1)],
         )
 
@@ -1800,22 +1836,71 @@ def registry_trouble(answer: object) -> str:
     outage and spends no attempt;  `registry-answer-unreadable` when the answer is not a
     reading at all, which is malformed external data and not an outage.  Nothing is delivered on
     any of them, and the shape of the answer is checked here, before any other code reads a
-    field of it."""
+    field of it.
+
+    The shape is the whole shape:  an error that is not a non-empty string, or a code that is
+    not a string, is not an answer the registry speaks, so it is malformed data rather than a
+    trouble to retry."""
     if not isinstance(answer, Mapping):
         return UNREADABLE_ANSWER
-    if "error" not in answer:
+    error = answer.get("error")
+    if not isinstance(error, str) or not error.strip():
         return UNREADABLE_ANSWER
-    if answer.get("code") == "not_configured":
+    code = answer.get("code")
+    if code is not None and not isinstance(code, str):
+        return UNREADABLE_ANSWER
+    if code == "not_configured":
         return NOT_CONFIGURED
     return REGISTRY_UNAVAILABLE
 
 
+def registry_note(text: object) -> str:
+    """The name of the variable a registry error names, as a token the transport keeps.
+
+    The note crosses between hosts and is read back through a whitelist that admits only
+    letters, digits, colon, underscore and dash, so free text is thrown away exactly when it
+    is meant to help.  The variable's own name is what an operator needs, and it survives."""
+    raw = text if isinstance(text, str) else ""
+    names = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", raw)
+    named = [name for name in names if "_" in name]
+    if named:
+        return named[0][:NOTE_CHARS]
+    if names:
+        return max(names, key=len)[:NOTE_CHARS]
+    return ""
+
+
 def registry_outage(route: str = "") -> Delivery:
-    """The answer every platform gives when the registry could not be reached at all.
+    """The answer for a registry that could not be reached at all.
 
     Nothing ran and nothing is the chat's fault, so the router retries the wake without
-    spending one of its five attempts, and the wake waits for the registry to come back."""
+    spending one of its five attempts, and the wake waits for the registry to come back.
+    A host that is not configured to reach the registry is not an outage:  `registry_failure`
+    answers that one, and it fails closed."""
     return Delivery("busy", route, code=REGISTRY_UNAVAILABLE)
+
+
+def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> Delivery:
+    """The answer for a registry call that raised.
+
+    A host that is not configured to reach the registry at all has no address and no key.
+    That is a deployment fault, which no retry can repair, so it fails closed:  `failed`, one
+    of the wake's attempts spent, and the note names the variable that is missing.  Every
+    other raise is a reachability failure, which is an outage:  `busy`, no attempt spent, and
+    the wake waits for the registry to come back.
+
+    The configuration is read with the registry API's own readers, so the answer names the
+    same variable the registry itself names.  A configuration that cannot be read at all is
+    answered as an outage, because a fault in reading it is not a fault in it."""
+    try:
+        answer = registry_api.configuration(env)
+        configured = bool(answer.get("configured"))
+        reason = str(answer.get("reason") or "")
+    except Exception:  # noqa: BLE001 - an unreadable configuration is an outage, never a crash
+        configured, reason = True, ""
+    if not configured:
+        return Delivery("failed", route, code=NOT_CONFIGURED, note=registry_note(reason))
+    return registry_outage(route)
 
 
 def registry_delivery(answer: object, route: str = "") -> Delivery:
@@ -1828,15 +1913,15 @@ def registry_delivery(answer: object, route: str = "") -> Delivery:
     rather than down.
 
     An answer that carries an error is a trouble.  A host with no registry address or key is
-    `failed`, because a retry does not fix a deployment fault, and the note carries the
-    registry's own words about which variable is missing.  Anything else is an outage:  it is
-    `busy`, it spends none of the wake's attempts, and it waits for the registry."""
+    `failed`, because a retry does not fix a deployment fault, and the note names the variable
+    that is missing.  Anything else is an outage:  it is `busy`, it spends none of the wake's
+    attempts, and it waits for the registry."""
     code = registry_trouble(answer)
     if code == REGISTRY_UNAVAILABLE:
         return Delivery("busy", route, code=code)
     note = ""
     if isinstance(answer, Mapping):
-        note = str(answer.get("error", ""))[:NOTE_CHARS]
+        note = registry_note(answer.get("error"))
     return Delivery("failed", route, code=code, note=note)
 
 

@@ -832,15 +832,17 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     so a registry that cannot be read is `busy` and is tried again without spending an
     attempt;  a host with no registry address or key is `failed`, because a retry does not
     fix it."""
+    registry_env = _registry_env(env)
     try:
         answer = WR.registry_api.call(
-            _registry_env(env),
+            registry_env,
             "resolve",
             {"platform": PLATFORM, "letter": target.letter},
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.registry_outage()
+        # A host that cannot reach the registry at all is a deployment fault, not an outage.
+        return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
         # `registry-not-configured` when this host has no registry address or key.
         return WR.registry_delivery(answer)

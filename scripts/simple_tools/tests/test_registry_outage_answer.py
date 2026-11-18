@@ -31,14 +31,23 @@ class RegistryOutageAnswer(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="afc809", dir="/tmp")
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.env = {"HOME": self.tmp}
+        # A host that is configured to reach the registry:  a call that raises is an outage.
+        self.env = {
+            "HOME": self.tmp,
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
+        # A host with no registry address and no key:  a deployment fault, not an outage.
+        self.bare_env = {"HOME": self.tmp}
         self.target = WR.Target(session_id=SID, letter=LETTER, host="mac", generation=1)
 
-    def _answers(self, answer):
+    def _answers(self, answer, env=None):
         """What each platform answers when the registry answers `answer`.
 
         `None` is a registry that does not answer at all;  a mapping is what it answered.
+        `env` is the host's environment:  the default one is configured to reach the registry.
         """
+        env = self.env if env is None else env
         if answer is None:
 
             def lookup(env, op, params=None, *, timeout=25):
@@ -59,15 +68,15 @@ class RegistryOutageAnswer(unittest.TestCase):
                 raise OSError("the registry did not answer")
             return answer
 
-        codex = CXW.CodexDelivery(transport=None, env=self.env, registry_lookup=codex_lookup)
+        codex = CXW.CodexDelivery(transport=None, env=env, registry_lookup=codex_lookup)
         with mock.patch.object(WR.registry_api, "call", lookup):
             return {
-                "claude": CW._recheck(self.env, self.target),
-                "antigravity": AGW._recheck(self.env, self.target),
-                "grok": GW._recheck(self.env, self.target),
-                "minimax": MMW._recheck(self.env, self.target),
-                "muse": MW._recheck(self.env, self.target, muse_lookup),
-                "zcode": ZCW._recheck(self.env, self.target),
+                "claude": CW._recheck(env, self.target),
+                "antigravity": AGW._recheck(env, self.target),
+                "grok": GW._recheck(env, self.target),
+                "minimax": MMW._recheck(env, self.target),
+                "muse": MW._recheck(env, self.target, muse_lookup),
+                "zcode": ZCW._recheck(env, self.target),
                 "codex": codex._still_registered(self.target),
             }
 
@@ -98,6 +107,17 @@ class RegistryOutageAnswer(unittest.TestCase):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
                 self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", delivery.note)
+
+    def test_a_raised_call_on_an_unconfigured_host_fails_closed(self) -> None:
+        """A host with no registry address or key cannot be retried into working, so every
+        platform answers `failed` with the house code, and the note names the variable."""
+        answers = self._answers(None, env=self.bare_env)
+        self.assertEqual(len(answers), 7)
+        for name, delivery in answers.items():
+            with self.subTest(platform=name):
+                self.assertIsNotNone(delivery)
+                self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+                self.assertIn(WR.registry_api.URL_ENV, delivery.note)
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
         """An answer that is not a mapping is malformed data:  `failed`, with the house code,

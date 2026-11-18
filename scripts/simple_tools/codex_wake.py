@@ -364,7 +364,8 @@ class CodexDelivery:
         try:
             current = self.registry_lookup(self.env, target.letter)
         except Exception:  # noqa: BLE001 - no enqueue without a readable identity check
-            return WR.registry_outage(route="codex-desktop")
+            # A host that cannot reach the registry at all is a deployment fault, not an outage.
+            return WR.registry_failure(self.env, route="codex-desktop")
         if not isinstance(current, Mapping) or "error" in current:
             return WR.registry_delivery(current, route="codex-desktop")
         found = current.get("found")

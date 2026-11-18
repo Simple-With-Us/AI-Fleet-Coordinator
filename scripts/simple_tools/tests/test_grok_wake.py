@@ -99,7 +99,12 @@ def row(state: str = "idle", **over) -> dict:
 class GrokWake(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp(prefix="grok-wake-")
-        self.env = {"HOME": self.tmp, "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": "http://127.0.0.1:9"}
+        # A host that is configured to reach the registry:  a call that raises is an outage.
+        self.env = {
+            "HOME": self.tmp,
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": "http://127.0.0.1:9",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "registry-" + "0" * 16,
+        }
         self.registry = mock.Mock(return_value=held())
         patcher = mock.patch.object(WR.registry_api, "call", self.registry)
         patcher.start()
@@ -223,6 +228,17 @@ class GrokWake(unittest.TestCase):
         drive, answer = self.deliver()
         self.assertEqual(answer["delivery"],
                          {"outcome": "busy", "route": "", "ack": "unknown", "code": "registry-unavailable", "note": ""})
+        self.assertEqual(drive.calls, [])
+
+    def test_a_raised_registry_call_on_an_unconfigured_host_fails_closed(self) -> None:
+        """A host with no registry key cannot be retried into working:  it is a deployment
+        fault, and nothing is prompted."""
+        self.registry.side_effect = OSError("down")
+        env = {"HOME": self.tmp, "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": "http://127.0.0.1:9"}
+        drive = Drive([row()])
+        answer = GW.deliver_request(request(), env=env, runner=drive)
+        self.assertEqual(answer["delivery"]["code"], WR.NOT_CONFIGURED)
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
         self.assertEqual(drive.calls, [])
 
     def test_a_registry_with_no_key_is_not_configured(self) -> None:
