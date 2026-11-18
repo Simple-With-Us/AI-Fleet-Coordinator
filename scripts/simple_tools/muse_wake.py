@@ -82,8 +82,14 @@ LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
 BAD_REQUEST = "bad-request"
 STDIN_LIMIT = 16 * 1024
-TAIL_BYTES = 256 * 1024
 CONFIRM_POLL_SECONDS = 1.0
+#: The transcript is scanned newest-first in chunks of this size:  a live transcript can
+#: record its cwd far from the tail, so no tail window can decide a missing cwd.
+_SCAN_CHUNK = 1 << 20
+#: A single `"cwd"` record longer than this cannot span a chunk edge and still be found;
+#: records are paths, so this is orders of magnitude past any real one.
+_SCAN_OVERLAP = 8192
+_CWD_RE = re.compile(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 #: This seat's settings for the one-router service:  every router key, plus this platform's
 #: own.  `wake_service` refuses a module whose DEFAULTS miss a router key (`bad-defaults`).
@@ -376,25 +382,40 @@ def _list(path: str) -> list[str]:
 
 
 def _session_cwd(session_dir: str) -> str:
-    """The chat's working directory, from the last `cwd` its transcript names in its tail, or
-    "" when it names none.  A transcript that cannot be read raises StoreUnreadable:  an
-    unknown cwd is a doubt that fails closed, never the absence a refusal is built on."""
+    """The chat's working directory, from the newest `cwd` its transcript names, or ""
+    when it names none.  The scan runs newest-first in bounded chunks on the raw bytes
+    (byte offsets stay exact across chunk edges, where a decoded string's would not), and
+    a match counts only when it starts in the chunk just read:  one starting in the
+    carried overlap was already fully visible in the newer pass.  A transcript that
+    cannot be read raises StoreUnreadable:  an unknown cwd is a doubt that fails closed,
+    never the absence a refusal is built on."""
     path = os.path.join(session_dir, "session.jsonl")
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - TAIL_BYTES))
-            tail = fh.read().decode("utf-8", "replace")
+            end = fh.tell()
+            carry = b""
+            while end > 0:
+                start = max(0, end - _SCAN_CHUNK)
+                fh.seek(start)
+                chunk = fh.read(end - start)
+                buf = chunk + carry
+                newest = None
+                for match in _CWD_RE.finditer(buf):
+                    if match.start() >= len(chunk):
+                        continue
+                    newest = match.group(1)
+                if newest is not None:
+                    try:
+                        cwd = json.loads('"%s"' % newest.decode("utf-8"))
+                    except ValueError:
+                        return ""
+                    return cwd if isinstance(cwd, str) else ""
+                carry = chunk[:_SCAN_OVERLAP]
+                end = start
     except OSError as exc:
         raise StoreUnreadable(str(exc)) from exc
-    found = re.findall(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', tail)
-    if not found:
-        return ""
-    try:
-        cwd = json.loads('"%s"' % found[-1])
-    except ValueError:
-        return ""
-    return cwd if isinstance(cwd, str) else ""
+    return ""
 
 
 def _child_env(env: Mapping[str, str]) -> dict[str, str]:

@@ -325,6 +325,30 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "session-cwd-gone")
         self.assertEqual(self.calls, [])
 
+    def test_a_cwd_recorded_before_a_large_tail_is_still_found(self) -> None:
+        transcript = self.session_dir / "session.jsonl"
+        transcript.write_text(json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8")
+        with open(transcript, "a", encoding="utf-8") as fh:
+            for _ in range(400000):
+                fh.write("{}\n")
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
+
+    def test_a_nested_envelope_cwd_is_found(self) -> None:
+        record = {
+            "schema_version": 1,
+            "stream": "events",
+            "record_type": "record",
+            "payload": {"record": {"cwd": str(self.work)}},
+        }
+        (self.session_dir / "session.jsonl").write_text(
+            json.dumps(record) + "\n{}\n", encoding="utf-8"
+        )
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
+
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))
         delivery = answer["delivery"]
