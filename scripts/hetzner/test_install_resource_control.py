@@ -63,6 +63,7 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
+            "fleet_infisical_cli.py",
             "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
@@ -110,9 +111,10 @@ class InstallerTests(unittest.TestCase):
         muster_imports = ",muster_approval,muster_trust_files" if has_cryptography else ""
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,fleet_secrets.cli,fleet_infisical_cli,hetzner.fleet_coding_memory"
             + muster_imports
-            + ";runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
+            + ";assert fleet_secrets.cli is fleet_infisical_cli;"
+            "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
             [sys.executable, "-I", "-c", code, str(self.destination)],
@@ -208,6 +210,7 @@ class InstallerTests(unittest.TestCase):
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -228,6 +231,7 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -269,6 +273,7 @@ class InstallerTests(unittest.TestCase):
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))

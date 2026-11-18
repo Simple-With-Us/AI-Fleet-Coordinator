@@ -428,7 +428,7 @@ class CodexWakeTests(unittest.TestCase):
                 )
                 self.assertEqual(self.transport.queue_add_calls, 0)
 
-    def test_malformed_registry_found_flag_retries_without_native_enqueue(self):
+    def test_malformed_registry_found_flag_is_a_bad_row_and_not_an_outage(self):
         malformed = (
             {},
             {"found": None},
@@ -448,7 +448,7 @@ class CodexWakeTests(unittest.TestCase):
                 self.transport.calls.clear()
                 self.transport.events.clear()
                 result = self.deliver()
-                self.assertEqual((result.outcome, result.code), ("busy", "registry-unavailable"))
+                self.assertEqual((result.outcome, result.code), ("failed", WR.UNREADABLE_ROW))
                 self.assertEqual(
                     self.transport.events,
                     ["preflight", "receipt_state", "send", "registry"],
@@ -466,7 +466,7 @@ class CodexWakeTests(unittest.TestCase):
             with self.subTest(seat=seat):
                 self.registry_result = {**self.registry_result, "seat": seat}
                 result = self.deliver()
-                self.assertEqual((result.outcome, result.code), ("busy", "registry-unavailable"))
+                self.assertEqual((result.outcome, result.code), ("failed", WR.UNREADABLE_ROW))
                 self.assertEqual(self.transport.queue_add_calls, 0)
                 self.transport.calls.clear()
                 self.transport.events.clear()
