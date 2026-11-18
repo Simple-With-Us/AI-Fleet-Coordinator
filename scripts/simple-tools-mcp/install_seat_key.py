@@ -171,22 +171,25 @@ def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, 
 # owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
 # checks the token's own grant and the answer's own provenance before the value is used.
 HANDOFF_TOKEN_ACCOUNT = "install-seat-key-ro"
-HANDOFF_FOLDER = "/"
+HANDOFF_FOLDER = "/global-api-keys"
+# The Zulip names live in their own folder, so they carry their own grant.
+HANDOFF_ZULIP_TOKEN_ACCOUNT = "install-seat-key-zulip-ro"
+HANDOFF_ZULIP_FOLDER = "/zulip"
 
 
 def handoff(name: str) -> str:
     """One credential:  the environment first, then this script's own scoped token against
-    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).  Only the
-    name is ever reported."""
+    the Infisical Fleet-OPS folder that holds it.  The flat handoff file is retired
+    (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
+    folder = HANDOFF_ZULIP_FOLDER if "ZULIP" in name else HANDOFF_FOLDER
+    account = HANDOFF_ZULIP_TOKEN_ACCOUNT if "ZULIP" in name else HANDOFF_TOKEN_ACCOUNT
     try:
         env = dict(os.environ)
-        env[scoped_secrets.ENV_READ_PATHS] = HANDOFF_FOLDER
-        found, status = scoped_secrets.fetch_scoped(
-            name, HANDOFF_FOLDER, HANDOFF_TOKEN_ACCOUNT, env
-        )
+        env[scoped_secrets.ENV_READ_PATHS] = folder
+        found, status = scoped_secrets.fetch_scoped(name, folder, account, env)
     except Exception:
         found, status = "", "unavailable"
     if status == "ok" and found:

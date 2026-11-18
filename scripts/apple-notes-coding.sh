@@ -2395,7 +2395,7 @@ sys.stdout.write(value)
 _pushover_secret() {
   local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    value="$(_infisical_secret "$name" "%2F" "apple-notes-ro")"
+    value="$(_infisical_secret "$name" "%2Fglobal-api-keys" "apple-notes-ro")"
   fi
   printf '%s' "$value"
 }

@@ -117,7 +117,7 @@ function log(message) {
  *  identity and no cached copy:  a missing item, a locked keychain or a refused grant yields
  *  nothing. */
 const TOKEN_ACCOUNT = "fleet-mode-digest-ro";
-const SECRET_FOLDER = "/";
+const SECRET_FOLDER = "/global-api-keys";
 const INFISICAL_API = process.env.INFISICAL_API_BASE || "https://app.infisical.com";
 
 /** The scoped token from the owner's login keychain, or null.  Never printed or logged. */

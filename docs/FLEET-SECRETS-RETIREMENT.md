@@ -70,19 +70,19 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `fleet-config-check-ro` | Fleet-OPS | `/zulip` | the compliance checker's Zulip key | Mac |
 | `outbox-bridge-ro` | Fleet-OPS | `/zulip` | the GitHub outbox bridge | Mac |
 | `grok-acp-ro` | Fleet-OPS | `/grok-acp` | the Grok ACP secret | Mac |
-| `cursor-surfaces-ro` | Fleet-OPS | `/` | the Cursor chat surfaces | Mac |
+| `cursor-surfaces-ro` | Fleet-OPS | `/global-api-keys` | the Cursor chat surfaces | Mac |
 | `seat-mcp-ro` | Fleet-OPS | `/seat-mcp` | the seat MCP token | Mac |
-| `worker-health-ro` | Fleet-OPS | `/` | the fleet worker health key | Mac |
+| `worker-health-ro` | Fleet-OPS | `/` | the fleet worker health key (the name is in neither project) | Mac |
 | `zulip-provision-ro` | Fleet-OPS | `/zulip_operator` | the Zulip bot provisioner | Mac |
 | `fleet-work-backup-ro` | Fleet-OPS | `/global-api-keys` | the backup job's credentials | server |
-| `fleet-mode-digest-ro` | Fleet-OPS | `/` | the weekly fleet-mode digest | Mac |
-| `infra-phase0-ro` | Fleet-OPS | `/` | the ST-MCP infra phase 0 | Mac |
-| `install-seat-key-ro` | Fleet-OPS | `/` | the seat-key handoff | Mac |
+| `fleet-mode-digest-ro` | Fleet-OPS | `/global-api-keys` | the weekly fleet-mode digest | Mac |
+| `infra-phase0-ro` | Fleet-OPS | `/global-api-keys` | the ST-MCP infra phase 0 | Mac |
+| `install-seat-key-ro` | Fleet-OPS | `/global-api-keys` | the seat-key handoff's Cloudflare credentials | Mac |
+| `install-seat-key-zulip-ro` | Fleet-OPS | `/zulip` | the seat-key handoff's Zulip credentials | Mac |
 | `ios-testflight-freshness-ro` | Fleet-OPS | `/asc` | the TestFlight freshness check | Mac |
 | `sheet-read-ro` | Fleet-OPS | `/google-sheets-sa` | the sheet reader | both |
 | `zulip-linkifiers-operator-ro` | Fleet-OPS | `/zulip_operator` | the linkifier's Operator credential | server |
 | `zulip-linkifiers-zulip-ro` | Fleet-OPS | `/zulip` | the linkifier's seat credential | server |
-| `zulip-linkifiers-root-ro` | Fleet-OPS | `/` | the linkifier's project-root fallback | server |
 | `muster-fleetops-ro` | Fleet-OPS | `/` | Muster's Fleet-OPS reads | Mac |
 | `muster-afc-ro` | AI Fleet Coordinator | `/` | Muster's knob registry root | Mac |
 | `muster-afc-code-mirrors-ro` | AI Fleet Coordinator | `/code-mirrors` | Muster's knob registry | Mac |
@@ -96,14 +96,31 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `afc-wake-router-ro` | AI Fleet Coordinator | `/wake-router` | the wake router | server |
 | `scout-runtime-ro` | Fleet-OPS | `/senate-relay` | the Scout runner | Mac |
 | `scout-runtime-global-ro` | Fleet-OPS | `/global-api-keys` | the Scout runner | Mac |
-| `sentry-dashboards-ro` | Fleet-OPS | `/` | the Sentry dashboards | Mac |
+| `sentry-dashboards-ro` | Fleet-OPS | `/global-api-keys` | the Sentry dashboards | Mac |
 | `autorotate-publish-ro` | Fleet-OPS | `/asc` | the autorotate publisher | Mac |
 | `b2-hetzner-size-ro` | Fleet-OPS | `/global-api-keys` | the Backblaze size helper | Mac |
-| `mm-board-ro` | Fleet-OPS | `/` | the Linear board helper | Mac |
+| `mm-board-ro` | Fleet-OPS | `/linear` | the Linear board helper | Mac |
+| `apple-notes-ro` | Fleet-OPS | `/global-api-keys` | the Apple Notes helper's Pushover credentials | Mac |
+| `fleetlink-email-ro` | Fleet-OPS | `/global-api-keys` | the FleetLink email helper | Mac |
+| `hetzner-availability-ro` | Fleet-OPS | `/global-api-keys` | the Hetzner availability watcher | Mac |
+| `hetzner-cx43-watch-ro` | Fleet-OPS | `/global-api-keys` | the Hetzner price watch | Mac |
+| `pushover-notify-ro` | Fleet-OPS | `/global-api-keys` | the Pushover notification path | Mac |
+| `r2-usage-monitor-ro` | Fleet-OPS | `/global-api-keys` | the R2 usage monitor | Mac |
+| `fleet-ops-sheet-ro` | Fleet-OPS | `/google-sheets-sa` | the operator sheet helper | Mac |
+| `fleet-apps-sheet-sync-ro` | Fleet-OPS | `/google-sheets-sa` | the fleet apps sheet sync | Mac |
+| `fleet-tools-mm-sheets-ro` | Fleet-OPS | `/google-sheets-sa` | the fleet reference sheet helper | Mac |
+| `fleet-tools-mm-asc-ro` | Fleet-OPS | `/asc` | the App Store Connect helper | Mac |
+| `operator-thread-registry-ro` | Fleet-OPS | `/operator-thread-registry` | the session registry drain | Mac |
+| `icloud-mail-ro` | Fleet-OPS | `/icloud-mail` | the iCloud mail client | Mac |
+| `botfleet-server-ro` | Fleet-OPS | `/` | the BotFleet harness start script's identity names | Mac |
+| `usage-monitor-collectors-ro` | Fleet-OPS | `/global-api-keys` | the Usage Monitor collectors | Mac |
+| `usage-monitor-collectors-global-ro` | Fleet-OPS | `/` | the Usage Monitor collectors' root-level names | Mac |
 
-A grant covers exactly its folder and no other:  a token scoped to `/` does not reach a subfolder, so a consumer that
-reads two folders holds two tokens.  The grants that are root-wide are the ones whose names genuinely live at the
-project root;  a folder-consolidation follow-up narrows those.
+A grant covers exactly its folder and no other:  a token scoped to `/` does not reach a subfolder, so a consumer that
+reads two folders holds two tokens.  The Fleet-OPS project root is a cross-folder alias layer, so a name at the root
+is a reference to a name in a subfolder and the raw route returns the reference rather than the value;  the shared
+client refuses that, so every consumer here is held to the folder its own names live in.  The root-wide grants that
+remain are the ones whose names really are literals at the root.
 
 ## What stays
 
@@ -113,10 +130,10 @@ wherever they live.
 
 ## The retired machine identity
 
-The Mac System Keychain still holds `INFISICAL_ST_CLIENT_ID` and `INFISICAL_ST_CLIENT_SECRET` under the item
-`com.jays.agent-bar.mac.infisical-identity`, and the stale installed reader authenticates with it
-(`auth_mode: system-keychain`).  That is the universal-auth identity AFC-752 retired.  It goes with the reader,
-once no host holds it.
+The Mac System Keychain held `INFISICAL_ST_CLIENT_ID` and `INFISICAL_ST_CLIENT_SECRET` under the item
+`com.jays.agent-bar.mac.infisical-identity`, and the stale installed reader authenticated with it
+(`auth_mode: system-keychain`).  That is the universal-auth identity AFC-752 retired.  The item is gone from the
+Mac's login keychain, and the reader that used it is gone from both hosts.
 
 ## Done means
 
@@ -126,3 +143,5 @@ once no host holds it.
 - Both hosts have no `fleet-secrets` binary and no reader package.
 - The Mac retired identity item is gone.
 - The doctor reports no `fleet-secrets` row, and the fleet compliance checks no longer start the command.
+- Every grant above names the folder the consumer's own names live in, and every consumer's read is proved against
+  that folder.

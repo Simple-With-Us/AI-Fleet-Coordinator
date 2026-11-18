@@ -64,7 +64,7 @@ API = "https://api.cloudflare.com/client/v4"
 # owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
 # checks the token's own grant and the answer's own provenance before the value is used.
 TOKEN_ACCOUNT = "infra-phase0-ro"
-SECRET_FOLDER = "/"
+SECRET_FOLDER = "/global-api-keys"
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 

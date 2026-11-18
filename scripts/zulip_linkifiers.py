@@ -212,7 +212,6 @@ CHECKS: list[tuple[str, str | None]] = [
 TOKEN_ACCOUNTS = {
     "/zulip_operator": "zulip-linkifiers-operator-ro",
     "/zulip": "zulip-linkifiers-zulip-ro",
-    "/": "zulip-linkifiers-root-ro",
 }
 
 
@@ -220,12 +219,13 @@ def _fleet_secret(name: str) -> str:
     """One Infisical value through this script's own scoped token, or "" (never logged).
 
     The folder is chosen by the name:  the Operator's own credentials live in
-    /zulip_operator, and everything else is read from /zulip, with the project root as the
-    last place the old reader looked.
+    /zulip_operator, and everything else is read from /zulip.  The project root is not a
+    source for them:  a name at the root is a reference to a name in a subfolder, and the
+    raw route returns the reference rather than the value.
     """
     import fleet_infisical as FI
 
-    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", "/"]
+    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip"]
     env = dict(os.environ)
     project = (env.get(FI.ENV_PROJECT) or "").strip()
     if not project:

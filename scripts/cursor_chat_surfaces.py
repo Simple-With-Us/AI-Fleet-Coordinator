@@ -40,7 +40,7 @@ API_KEY_NAMES = ("CURSOR_API_KEY", "CURSOR_SYNC_API_KEY")
 # keychain on the Mac, a private file on a server);  the shared Infisical client checks the
 # token's own grant and the answer's own provenance before the value is used.
 TOKEN_ACCOUNT = "cursor-surfaces-ro"
-SECRET_FOLDER = "/"
+SECRET_FOLDER = "/global-api-keys"
 REPO_SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_SCRIPTS))
 LIVE_FILES = (
