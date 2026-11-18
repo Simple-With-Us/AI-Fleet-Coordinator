@@ -106,12 +106,10 @@ USER_AGENT = (
     f"fleet-recall-fallback/{__version__} (+https://github.com/Simple-With-Us/AI-Fleet-Coordinator)"
 )
 
-# Every MCP client on this Mac registers `fleet-recall` as a plain `python3 fleet-recall-mcp.py`
-# (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
-# rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
-# requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# a name not in the environment comes from Infisical through `fleet-secrets get` (AFC-359:  no
-# credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
+# A plain `python3 fleet-recall-mcp.py` registration may have none of these names in its
+# environment.  A missing name comes from a direct named Infisical read with this consumer's
+# own explicit Fleet-OPS root binding (AFC-785: no app or credential file is read).
+# RECALL_API_TOKEN is a root key of that name; the Cloudflare
 # Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
 # under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
 # environment always wins.
@@ -405,11 +403,10 @@ def using_fake_backend() -> bool:
 def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
-    Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from Infisical through `fleet-secrets` the same
-    way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
-    works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
-    and no change to any client's MCP config.
+    Environment first; when a name is absent, the shared direct reader can read it through
+    this consumer's own explicit Fleet-OPS root binding.  A missing or refused binding leaves
+    credentials absent.  The dedicated recall-project reader is a separate purpose and cannot
+    supply this binding.
     """
     vals = _resolve_public_env()
     return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
