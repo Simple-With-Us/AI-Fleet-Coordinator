@@ -5963,8 +5963,16 @@ class TestWakeReader:
     `sessions`, and the test-wake command as the container's `simple-chat daemon test-wake --json`
     would, after checking its fixed argv."""
 
-    def __init__(self, status=0, report=None, stderr=b"", over=False, raw=None, sessions=None,
-                 registry_status=0):
+    def __init__(
+        self,
+        status=0,
+        report=None,
+        stderr=b"",
+        over=False,
+        raw=None,
+        sessions=None,
+        registry_status=0,
+    ):
         self.status = status
         self.report = report
         self.stderr = stderr
@@ -5978,7 +5986,13 @@ class TestWakeReader:
     def __call__(self, argv, timeout=None, env=None, max_bytes=None):
         if "-c" in argv:
             self.registry_calls.append(list(argv))
-            assert argv[1:6] == ["exec", "--user", "simpletools", "eavesdropper", "/usr/local/bin/python3"], argv
+            assert argv[1:6] == [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/usr/local/bin/python3",
+            ], argv
             body = json.dumps(self.sessions).encode() if self.sessions is not None else b""
             return self.registry_status, body, b"", False
         self.calls.append((list(argv), dict(env or {}), timeout, max_bytes))
@@ -6025,7 +6039,12 @@ class TestWakeTests(Base):
                 "host": self.HOST,
             },
             "router_health": {"healthy": True, "delivery": True, "reason": None},
-            "request": {"wake_id": self.WAKE_ID, "topic": self.TOPIC, "content": self.BODY, "test": True},
+            "request": {
+                "wake_id": self.WAKE_ID,
+                "topic": self.TOPIC,
+                "content": self.BODY,
+                "test": True,
+            },
             "http_status": 200,
             "answer": {
                 "test": True,
@@ -6060,7 +6079,9 @@ class TestWakeTests(Base):
         if self.reader.sessions is None and self.reader.registry_status == 0:
             self.reader.sessions = self.registry()
         context.reader = self.reader
-        return self.run_main(["server", "test-wake", target or self.TARGET, mode, "--json"], context)
+        return self.run_main(
+            ["server", "test-wake", target or self.TARGET, mode, "--json"], context
+        )
 
     def assert_nothing_hidden(self, answer):
         text = json.dumps(answer)
@@ -6072,14 +6093,27 @@ class TestWakeTests(Base):
         self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
         self.assertEqual(
             answer["commands"],
-            [[
-                answer["commands"][0][0], "exec", "--user", "simpletools", "eavesdropper",
-                "/app/scripts/simple_tools/server/entrypoint.sh",
-                "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "BB", "--json",
-            ]],
+            [
+                [
+                    answer["commands"][0][0],
+                    "exec",
+                    "--user",
+                    "simpletools",
+                    "eavesdropper",
+                    "/app/scripts/simple_tools/server/entrypoint.sh",
+                    "daemon",
+                    "test-wake",
+                    "--seat",
+                    "CLAUDE",
+                    "--letter",
+                    "BB",
+                    "--json",
+                ]
+            ],
         )
         self.assertEqual(
-            answer["testWakeTarget"], {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"}
+            answer["testWakeTarget"],
+            {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"},
         )
         self.assertIn("CLAUDE BB.2 (server)", answer["detail"])
         self.assertEqual(len(self.reader.registry_calls), 1)
@@ -6088,10 +6122,14 @@ class TestWakeTests(Base):
 
     def test_a_chat_that_is_gone_or_not_one_row_is_refused_and_nothing_is_sent(self):
         cases = {
-            "target_gone": TestWakeReader(report=self.report(), sessions=self.registry(("CLAUDE", "server", "BB", 3))),
+            "target_gone": TestWakeReader(
+                report=self.report(), sessions=self.registry(("CLAUDE", "server", "BB", 3))
+            ),
             "target_ambiguous": TestWakeReader(
                 report=self.report(),
-                sessions=self.registry(("CLAUDE", "server", "BB", 2), ("CLAUDE", "server", "BB", 2)),
+                sessions=self.registry(
+                    ("CLAUDE", "server", "BB", 2), ("CLAUDE", "server", "BB", 2)
+                ),
             ),
             "registry_unavailable": TestWakeReader(report=self.report(), registry_status=1),
         }
@@ -6099,12 +6137,16 @@ class TestWakeTests(Base):
             for mode in ("--plan", "--yes"):
                 with self.subTest(word=word, mode=mode):
                     code, answer = self.go(mode=mode, reader=reader)
-                    self.assertEqual((code, answer["result"], answer.get("errorCode")), (2, "refused", word))
+                    self.assertEqual(
+                        (code, answer["result"], answer.get("errorCode")), (2, "refused", word)
+                    )
                     self.assertEqual(reader.calls, [], "nothing goes to the router")
         # A chat on another host, or another seat's chat with the letter, is not the target.
         for rows in ((("CLAUDE", "mac", "BB", 2),), (("CODEX", "server", "BB", 2),)):
             with self.subTest(rows=rows):
-                code, answer = self.go(mode="--plan", reader=TestWakeReader(sessions=self.registry(*rows)))
+                code, answer = self.go(
+                    mode="--plan", reader=TestWakeReader(sessions=self.registry(*rows))
+                )
                 self.assertEqual((code, answer.get("errorCode")), (2, "target_gone"))
 
     def test_a_passed_dry_run_is_accepted_and_never_delivered(self):
@@ -6173,15 +6215,23 @@ class TestWakeTests(Base):
         for report, status, word in cases:
             with self.subTest(word=word, answer=report["answer"]["picked_letter"]):
                 code, answer = self.go(reader=TestWakeReader(status=status, report=report))
-                self.assertEqual((code, answer["ok"], answer["result"], answer["errorCode"]), (1, False, "failed", word))
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "failed", word),
+                )
                 self.assertFalse(answer["testWake"]["passed"])
                 self.assertIn("nothing was delivered", answer["detail"])
 
     def test_a_dry_run_that_picked_no_chat_fails_with_its_word(self):
         report = self.report(picked=False, passed=False)
-        report["answer"].update(picked_letter="", picked_generation=0, session_id="", reason="no-live-session")
+        report["answer"].update(
+            picked_letter="", picked_generation=0, session_id="", reason="no-live-session"
+        )
         code, answer = self.go(reader=TestWakeReader(status=1, report=report))
-        self.assertEqual((code, answer["ok"], answer["result"], answer["errorCode"]), (1, False, "failed", "no_pick"))
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["errorCode"]),
+            (1, False, "failed", "no_pick"),
+        )
         self.assertIn("reason no_live_session", answer["detail"])
         self.assertIsNone(answer["testWake"]["answer"]["pickedLetter"])
         self.assert_nothing_hidden(answer)
@@ -6197,7 +6247,12 @@ class TestWakeTests(Base):
         }
         for error, word in cases.items():
             with self.subTest(error=error[:30]):
-                report = {"seat": "CLAUDE", "routine": {"host": self.HOST}, "error": error, "passed": False}
+                report = {
+                    "seat": "CLAUDE",
+                    "routine": {"host": self.HOST},
+                    "error": error,
+                    "passed": False,
+                }
                 code, answer = self.go(reader=TestWakeReader(status=1, report=report))
                 self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
                 self.assertEqual(answer["testWake"]["error"], word)
@@ -6208,7 +6263,9 @@ class TestWakeTests(Base):
 
     def test_a_report_that_says_passed_with_a_failing_exit_is_not_done(self):
         code, answer = self.go(reader=TestWakeReader(status=1, report=self.report()))
-        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", "not_accepted"))
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "not_accepted")
+        )
         self.assertFalse(answer["testWake"]["passed"])
 
     def test_usage_refusals_and_container_trouble_are_words(self):
@@ -6226,7 +6283,9 @@ class TestWakeTests(Base):
             "timeout": TestWakeReader(status=124),
             "docker_unavailable": TestWakeReader(status=127),
             "too_large": TestWakeReader(status=-9, over=True),
-            "container_not_running": TestWakeReader(status=1, stderr=b"Error: container x is not running", raw=b""),
+            "container_not_running": TestWakeReader(
+                status=1, stderr=b"Error: container x is not running", raw=b""
+            ),
             "not_json": TestWakeReader(status=0, raw=b"not json"),
         }
         for word, reader in trouble.items():
@@ -6235,8 +6294,16 @@ class TestWakeTests(Base):
                 self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
 
     def test_a_bad_target_a_mac_and_the_muster_route_are_refused(self):
-        for target in ("CLAUDE", "claude.BB.2.S", "CLAUDE.BB.0.S", "CLAUDE.BBB.2.S", "CLAUDE.BB.2.X",
-                       "CLAUDE.BB.2", "A" * 40 + ".BB.2.S", "CLAUDE;rm.BB.2.S"):
+        for target in (
+            "CLAUDE",
+            "claude.BB.2.S",
+            "CLAUDE.BB.0.S",
+            "CLAUDE.BBB.2.S",
+            "CLAUDE.BB.2.X",
+            "CLAUDE.BB.2",
+            "A" * 40 + ".BB.2.S",
+            "CLAUDE;rm.BB.2.S",
+        ):
             with self.subTest(target=target):
                 code, answer = self.go(mode="--plan", target=target)
                 self.assertEqual((code, answer["result"]), (2, "refused"))
@@ -6244,7 +6311,13 @@ class TestWakeTests(Base):
         code, answer = self.go(mode="--plan", platform="darwin")
         self.assertEqual((code, answer["result"]), (2, "refused"))
         answer, code = foc.handle(
-            self.ctx(), "server", "test-wake", self.TARGET, "yes", require_approval=True, approval={}
+            self.ctx(),
+            "server",
+            "test-wake",
+            self.TARGET,
+            "yes",
+            require_approval=True,
+            approval={},
         )
         self.assertEqual((code, answer["result"]), (2, "refused"))
 
@@ -6257,7 +6330,9 @@ class TestWakeTests(Base):
 
         with mock.patch.object(foc, "run_test_wake", broken):
             code, answer = self.go(reader=reader)
-        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", "test_wake_failed"))
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "test_wake_failed")
+        )
         self.assertNotIn("unexpected", json.dumps(answer))
         self.assertEqual(
             [(r["verb"], r["target"], r["result"]) for r in self.audit_rows()],
@@ -6274,14 +6349,18 @@ class TestWakeTests(Base):
             code, answer = self.go()
         finally:
             os.close(fd)
-        self.assertEqual((code, answer["result"], answer.get("errorCode")), (2, "refused", "action_busy"))
+        self.assertEqual(
+            (code, answer["result"], answer.get("errorCode")), (2, "refused", "action_busy")
+        )
         self.assertEqual(self.reader.calls, [])
 
     def test_ssh_forced_command_accepts_test_wake(self):
         for mode in ("--plan", "--yes"):
             words = foc.parse_ssh_command(f"server test-wake {self.TARGET} {mode} --json")
             self.assertEqual(words, ["server", "test-wake", self.TARGET, mode, "--json"])
-        ctx = self.ctx(environ={"SSH_ORIGINAL_COMMAND": f"server test-wake {self.TARGET} --yes --json"})
+        ctx = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": f"server test-wake {self.TARGET} --yes --json"}
+        )
         ctx.reader = TestWakeReader(report=self.report(), sessions=self.registry())
         out = io.StringIO()
         code = foc.main(["--from-ssh"], ctx=ctx, out=out)
