@@ -148,6 +148,19 @@ def trusted_seat(env: Mapping, registry):
         seat_name = None
     else:
         seat_name = env.get("AGENT_SEAT")
+    # Z Code chat sessions declare their chat tag (installed rules: chat tag `[ZC]`)
+    # instead of AGENT_SEAT, which a session must never write.  The tag names the seat
+    # and ranks below a launcher's assignment and an ambient AGENT_SEAT:  same trust
+    # source class as AGENT_SEAT itself (the session's own environment).
+    if not seat_name and not env.get("AGENT_LAUNCHER"):
+        # A Z Code chat session declares its chat tag (installed rules: chat tag `[ZC]`)
+        # instead of AGENT_SEAT, which a session must never write.  The tag names the seat
+        # and ranks below a launcher's assignment and an ambient AGENT_SEAT:  same trust
+        # source class as AGENT_SEAT itself (the session's own environment).  A launcher
+        # present without a seat still names no fleet identity, tag or not.
+        tag = str(env.get("AGENT_TAG") or "").strip()
+        if tag:
+            seat_name = tag
     seat = registry.seat_by_name(seat_name) if seat_name else None
     if seat is None and seat_name:
         seat = layout.role_lane_seat(seat_name, registry)

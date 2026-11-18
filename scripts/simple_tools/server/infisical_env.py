@@ -193,6 +193,10 @@ def allowed_names(codes: set[str]) -> set[str]:
             "ZULIP_ALERT_%s_KEY" % code,
             "%s_ROUTINE_URL" % code,
             "%s_ROUTINE_KEY" % code,
+            # A seat's own legacy bridge, when it still has one, is named under its own name
+            # and never under the seat's routine name:  the router's front and the bridge are
+            # two names, so a rollback has a URL to point at.
+            "%s_BRIDGE_ROUTINE_URL" % code,
         }
     return names
 
