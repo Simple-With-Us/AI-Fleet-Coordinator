@@ -102,6 +102,7 @@ import { IdentityCache, bearerCacheMs } from "./identity-cache.js";
 import { answerLifecycle, serveRoutedMcp } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
 import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
+import { DiagnosticCoalescer } from "./diagnostic-coalesce.js";
 
 export { SeatGate };
 
@@ -337,6 +338,24 @@ async function recordDiagnostic(env, entry) {
   if (!diagnosticRowAllowed()) return;
   try { await gate(env, GATE_LOG_NAME).recordDiagnostic(entry); }
   catch { console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind })); }
+}
+
+// The relay check routes' refusal rows (AFC-844):  each kind+reason+seat writes at
+// most once a minute per isolate, carrying the occurrences it stood for
+// (src/diagnostic-coalesce.js), so a refusal loop cannot use up the shared
+// diagnosticRow budget.  The write goes to waitUntil, so a slow log never delays
+// the answer the relay is waiting for.
+const GR_REFUSALS = new DiagnosticCoalescer();
+
+function recordGrRefusal(env, ctx, entry) {
+  const count = GR_REFUSALS.take(entry);
+  if (count === 0) return undefined;
+  const write = recordDiagnostic(env, { ...entry, count });
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(write);
+    return undefined;
+  }
+  return write;
 }
 
 // ---------------------------------------------------------------- /mcp
@@ -1008,6 +1027,9 @@ async function serveApp(request, env, _ctx) {
   if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
     hostedSeats: config.hostedSeats,
     eventsOnlySeats: config.eventsOnlySeats,
+    // Each refusal is an aggregated diagnostics row (kind gr_assert, AFC-844), so a
+    // bearer_rejected the Worker caused has a readable cause in worker_diagnostics.
+    recordRefusal: (entry) => recordGrRefusal(env, _ctx, entry),
     // The signed grant_ref must name a grant that still exists for the
     // seat:  listUserGrants is the provider's own view (the same one the
     // admin revoke and consent replacement paths maintain), filtered to
@@ -1731,7 +1753,8 @@ async function serveRequest(request, env, ctx) {
       return response;
     }
     // Neither verify route is rate limited:  the relay reads any non-200 as a refusal.
-    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs });
+    // Each refusal is an aggregated diagnostics row (kind gr_bearer, AFC-844).
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs, recordRefusal: (entry) => recordGrRefusal(env, ctx, entry) });
     // Enter through the provider so its request-local OAuth helpers exist.
     if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
     const credential = route === "mcp" ? await credentialHash(request) : null;

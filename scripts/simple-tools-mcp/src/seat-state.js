@@ -928,11 +928,14 @@ const SAFE_DIAGNOSTIC_REASON = /^[a-z0-9_:-]{1,80}$/i;
 const SAFE_DIAGNOSTIC_SEAT = /^[A-Z][A-Z0-9_-]{0,39}$/;
 
 /** Aggregate safe, low-cardinality failures in the global log gate. */
-async function recordDiagnosticInner(store, { kind, reason, seat, status } = {}, now = Date.now()) {
+async function recordDiagnosticInner(store, { kind, reason, seat, status, count: occurrences = 1 } = {}, now = Date.now()) {
   if (typeof kind !== "string" || !SAFE_DIAGNOSTIC_KIND.test(kind)) throw new TypeError("invalid diagnostic kind");
   if (typeof reason !== "string" || !SAFE_DIAGNOSTIC_REASON.test(reason)) throw new TypeError("invalid diagnostic reason");
   if (seat !== undefined && seat !== null && (typeof seat !== "string" || !SAFE_DIAGNOSTIC_SEAT.test(seat))) throw new TypeError("invalid diagnostic seat");
   if (status !== undefined && status !== null && (!Number.isInteger(status) || status < 100 || status > 599)) throw new TypeError("invalid diagnostic status");
+  // A coalesced write (src/diagnostic-coalesce.js, AFC-844) carries the occurrences it
+  // stood for;  every other caller writes one.
+  if (!Number.isSafeInteger(occurrences) || occurrences < 1 || occurrences > 1_000_000) throw new TypeError("invalid diagnostic count");
 
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
   const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
@@ -941,12 +944,12 @@ async function recordDiagnosticInner(store, { kind, reason, seat, status } = {},
   const index = rows.findIndex((row) => `${row.kind}\0${row.reason}\0${row.seat ?? ""}` === key);
   if (index >= 0) {
     const [row] = rows.splice(index, 1);
-    row.count = Math.min(Number.MAX_SAFE_INTEGER, (Number.isSafeInteger(row.count) ? row.count : 0) + 1);
+    row.count = Math.min(Number.MAX_SAFE_INTEGER, (Number.isSafeInteger(row.count) ? row.count : 0) + occurrences);
     row.ts = now;
     if (status !== undefined && status !== null) row.status = status;
     rows.push(row);
   } else {
-    const row = { kind, reason, seat: rowSeat, count: 1, ts: now };
+    const row = { kind, reason, seat: rowSeat, count: occurrences, ts: now };
     if (status !== undefined && status !== null) row.status = status;
     rows.push(row);
   }
@@ -1188,11 +1191,14 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
   const mine = subsNamed(subs, name);
-  const token = crypto.randomUUID();
-  seen[wakeId] = { s: "claimed", at: now, until: now + WAKE_LEASE_MS, token };
+  // The claim's lease id (a fresh random UUID, not a credential), stored and returned as
+  // `token`.  The local has its own name because git-relay's generic assigned-secret rule
+  // reads `token = <16+ chars>` as a literal secret and refuses the whole file (AFC-844).
+  const leaseId = crypto.randomUUID();
+  seen[wakeId] = { s: "claimed", at: now, until: now + WAKE_LEASE_MS, token: leaseId };
   await putWakeSeen(store, seen);
   await audit(store, { event: "event_wake_captured", wake_ref: wakeRef, message_id: messageId ?? null, subscribers: mine.length, ...(prior ? { reclaimed: true } : {}) }, now);
-  return { verdict: "go", token, subs: mine.map((sub) => ({ ...sub })) };
+  return { verdict: "go", token: leaseId, subs: mine.map((sub) => ({ ...sub })) };
 }
 
 /**
@@ -1783,7 +1789,9 @@ const GR_JTI_MAX = 512;
  * assertion jti - a single transaction, so the check and the claim can never
  * be split.  `expiresAt` is the assertion's exp in epoch milliseconds.
  * Returns { ok: true } exactly once per jti, or { ok: false, reason } with
- * "paused", "grant_invalid", "replayed" or "jti_store_full".
+ * "paused", "grant_invalid", "replayed" or "jti_store_full".  A grant_invalid
+ * also carries `gate`, the gate's own code (stale_epoch, stale_phase,
+ * grant_too_old or bad_props), for the verify route's diagnostics row (AFC-844).
  */
 export async function claimGrAssert(store, { epoch, approvedAt, phase, jti, expiresAt }, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
@@ -1791,7 +1799,9 @@ export async function claimGrAssert(store, { epoch, approvedAt, phase, jti, expi
     // Revocation equivalence, per call:  the same gate check serveMcp runs.
     // A refusal spends nothing - a paused-then-unpaused assertion still works.
     const gate = await check(txn, { epoch, approvedAt, phase }, now);
-    if (gate.code !== "ok") return { ok: false, reason: gate.code === "paused" ? "paused" : "grant_invalid" };
+    // The relay sees only `paused` or `grant_invalid`;  `gate` keeps the gate's own code.
+    if (gate.code === "paused") return { ok: false, reason: "paused" };
+    if (gate.code !== "ok") return { ok: false, reason: "grant_invalid", gate: gate.code };
     const seen = (await txn.get(GR_JTI_KEY)) ?? {};
     for (const [k, v] of Object.entries(seen)) {
       if (!(Number.isFinite(v) && v > now)) delete seen[k];

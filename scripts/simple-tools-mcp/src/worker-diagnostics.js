@@ -80,8 +80,8 @@ export const WORKER_DIAGNOSTICS_TOOLS = Object.freeze([
     title: "Worker Diagnostics",
     description:
       "The hosted Worker's own diagnostics, newest first, read-only:  `wake` is the wake route's rows (reason such as wake_key_missing, method_not_allowed, payload_too_large or a failed signature check, the seat, how many times, the last HTTP status and when), " +
-      `optionally for one seat, and \`recent\` is the newest rows of every kind (wake, token, mcp, provider).${GAP}Rows are aggregated by kind, reason and seat and kept 90 days.${GAP}` +
-      "Use it to find out why a wake or an MCP call was refused.  It returns names, reasons, seats, counts, timestamps and status codes only, never keys, headers or bodies.",
+      `optionally for one seat, and \`recent\` is the newest rows of every kind (wake, token, mcp, provider, gr_bearer, gr_assert).${GAP}Rows are aggregated by kind, reason and seat and kept 90 days.${GAP}` +
+      "Use it to find out why a wake, an MCP call or a relayed GitHub call was refused:  a `gr_bearer` or `gr_assert` row is the reason the Worker refused the relay's check of a bearer or an assertion, which the relay itself reports only as bearer_rejected or verifier_unavailable (in `recent`;  `seat` filters only wake rows).  No such row means the relay refused on its own (its refusal cache or a check call that timed out) or the Worker hit an error (a `provider` row).  It returns names, reasons, seats, counts, timestamps and status codes only, never keys, headers or bodies.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

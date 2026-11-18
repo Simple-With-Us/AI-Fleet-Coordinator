@@ -128,7 +128,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
 | `eavesdropper_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
-| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404.  Hosted only:  no CLI command or stdio tool serves it (CLI Equivalents) |
+| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404, or why the Worker refused the relay's check of a bearer or an assertion (`gr_bearer` and `gr_assert` rows, in `recent`).  Hosted only:  no CLI command or stdio tool serves it (CLI Equivalents) |
 
 ### notes
 
