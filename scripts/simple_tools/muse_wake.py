@@ -86,10 +86,8 @@ CONFIRM_POLL_SECONDS = 1.0
 #: The transcript is scanned newest-first in chunks of this size:  a live transcript can
 #: record its cwd far from the tail, so no tail window can decide a missing cwd.
 _SCAN_CHUNK = 1 << 20
-#: A single `"cwd"` record longer than this cannot span a chunk edge and still be found;
-#: records are paths, so this is orders of magnitude past any real one.
-_SCAN_OVERLAP = 8192
-_CWD_RE = re.compile(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+#: A line cut by a chunk edge is carried into the next pass whole, so no overlap
+#: allowance is needed:  a chunk boundary only ever splits lines, never records.
 
 #: This seat's settings for the one-router service:  every router key, plus this platform's
 #: own.  `wake_service` refuses a module whose DEFAULTS miss a router key (`bad-defaults`).
@@ -381,14 +379,34 @@ def _list(path: str) -> list[str]:
         raise StoreUnreadable(str(exc)) from exc
 
 
+def _record_cwd(record: object) -> str:
+    """The working directory a transcript record asserts, or "" when it asserts none.
+    Only the schema-defined fields count:  a `cwd` mentioned inside a string value (tool
+    output, quoted chat text, a pasted snippet) is content, never an assertion, so raw
+    text matching must not decide this."""
+    if not isinstance(record, dict):
+        return ""
+    cwd = record.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return cwd
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        inner = payload.get("record")
+        if isinstance(inner, dict):
+            cwd = inner.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return ""
+
+
 def _session_cwd(session_dir: str) -> str:
-    """The chat's working directory, from the newest `cwd` its transcript names, or ""
-    when it names none.  The scan runs newest-first in bounded chunks on the raw bytes
-    (byte offsets stay exact across chunk edges, where a decoded string's would not), and
-    a match counts only when it starts in the chunk just read:  one starting in the
-    carried overlap was already fully visible in the newer pass.  A transcript that
-    cannot be read raises StoreUnreadable:  an unknown cwd is a doubt that fails closed,
-    never the absence a refusal is built on."""
+    """The chat's working directory, from the newest `cwd` its transcript asserts, or ""
+    when it asserts none.  The scan runs newest-first in bounded chunks and stops at the
+    first assertion, so a transcript whose cwd sits far from the tail costs one backward
+    walk, not a tail window that can miss it;  proving no cwd exists still reads the
+    whole file, which no window can avoid.  A line cut by a chunk edge is carried into
+    the next pass whole.  A transcript that cannot be read raises StoreUnreadable:  an
+    unknown cwd is a doubt that fails closed, never the absence a refusal is built on."""
     path = os.path.join(session_dir, "session.jsonl")
     try:
         with open(path, "rb") as fh:
@@ -398,20 +416,24 @@ def _session_cwd(session_dir: str) -> str:
             while end > 0:
                 start = max(0, end - _SCAN_CHUNK)
                 fh.seek(start)
-                chunk = fh.read(end - start)
-                buf = chunk + carry
-                newest = None
-                for match in _CWD_RE.finditer(buf):
-                    if match.start() >= len(chunk):
+                buf = fh.read(end - start) + carry
+                lines = buf.split(b"\n")
+                if start > 0:
+                    carry = lines[0]
+                    candidates = lines[1:]
+                else:
+                    carry = b""
+                    candidates = lines
+                for raw in reversed(candidates):
+                    if not raw.strip():
                         continue
-                    newest = match.group(1)
-                if newest is not None:
                     try:
-                        cwd = json.loads('"%s"' % newest.decode("utf-8"))
+                        record = json.loads(raw.decode("utf-8"))
                     except ValueError:
-                        return ""
-                    return cwd if isinstance(cwd, str) else ""
-                carry = chunk[:_SCAN_OVERLAP]
+                        continue
+                    cwd = _record_cwd(record)
+                    if cwd and os.path.isabs(cwd):
+                        return cwd
                 end = start
     except OSError as exc:
         raise StoreUnreadable(str(exc)) from exc

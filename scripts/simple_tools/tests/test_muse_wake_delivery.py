@@ -349,6 +349,18 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["outcome"], "sent")
         self.assertEqual(self.calls[0]["cwd"], str(self.work))
 
+    def test_a_cwd_mentioned_inside_a_string_value_is_not_an_assertion(self) -> None:
+        transcript = self.session_dir / "session.jsonl"
+        transcript.write_text(
+            json.dumps({"cwd": str(self.work)}) + "\n"
+            + json.dumps({"note": 'saw "cwd": "/nowhere/at/all" in output'})
+            + "\n",
+            encoding="utf-8",
+        )
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(self.work))
+
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))
         delivery = answer["delivery"]
