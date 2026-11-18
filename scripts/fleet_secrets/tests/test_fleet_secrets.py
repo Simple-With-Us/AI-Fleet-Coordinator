@@ -51,8 +51,16 @@ class World:
         self.export_cwds = []
 
     def fetch_project(
-        self, project, path, env, *, token=None, writer=False, names=None,
-        allow_unresolved=False, timeout=None
+        self,
+        project,
+        path,
+        env,
+        *,
+        token=None,
+        writer=False,
+        names=None,
+        allow_unresolved=False,
+        timeout=None,
     ):
         refusal = core.environment_refusal(env)
         if refusal:
