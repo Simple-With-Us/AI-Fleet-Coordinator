@@ -192,6 +192,34 @@ class TransportTests(unittest.TestCase):
         (self.home / ".codex/queue_1.sqlite").touch()
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
+    def test_receipt_probe_distinguishes_absence_from_unavailable(self):
+        self.assertEqual(self.adapter.receipt_state(self.binding, "wake text"), "absent")
+        self.adapter._receipts.clear()
+        self.failure_method = "thread/queue/list"
+        self.assertEqual(self.adapter.receipt_state(self.binding, "wake text"), "unavailable")
+        self.assertFalse(self.adapter.receipt(self.binding, "wake text"))
+        self.assertNotIn("thread/queue/add", [name for name, _ in self.calls])
+
+    def test_receipt_probe_distinguishes_queue_from_user_input(self):
+        text = "wake w-123 source 12345"
+        self.queued.append({
+            "clientUserMessageId": message_id(self.binding, text),
+            "input": [{"type": "text", "text": text, "textElements": []}],
+        })
+        self.assertEqual(self.adapter.receipt_state(self.binding, text), "queued")
+        self.adapter._receipts.clear()
+        self.path.write_text(json.dumps({"type": "event_msg", "payload": {
+            "type": "user_message", "message": text}}) + "\n")
+        self.assertEqual(self.adapter.receipt_state(self.binding, text), "observed")
+        self.assertTrue(self.adapter.receipt(self.binding, text))
+
+    def test_assistant_quote_is_not_an_observed_receipt(self):
+        text = "wake w-123 source 12345"
+        self.path.write_text(json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": text}]}}) + "\n")
+        self.assertEqual(self.adapter.receipt_state(self.binding, text), "absent")
+
     def test_queue_short_pages_complete_with_one_shared_deadline(self):
         calls = []
         class SmallPages:

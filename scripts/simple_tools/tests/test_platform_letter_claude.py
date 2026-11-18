@@ -922,7 +922,10 @@ class ArchiveStatesTests(StoreBase):
         with mock.patch.object(PC.time, "monotonic", lambda: next(ticks)):
             self.assertEqual(PC.archive_states(self.home, wanted), {"s-0001": PC.UNREADABLE, "s-0004": PC.UNREADABLE})
             self.assertEqual(PC.claude_gone({"HOME": self.home}, wanted), set())
-        self.assertLessEqual(PC.ARCHIVE_SCAN_SECONDS * 2 + 2 + 3 * PL._API_TIMEOUT, PC.HOOK_TIMEOUTS["SessionStart"])
+        # The register chain and one gone report beside the two scans.  A host that has a store to scan never asks
+        # the Mac, so the ssh call's bound is not spent here.
+        self.assertLessEqual(PC.ARCHIVE_SCAN_SECONDS * 2 + (PL.REGISTER_CALLS + 1) * PL._API_TIMEOUT,
+                             PC.HOOK_TIMEOUTS["SessionStart"])
         self.assertLess(PC.ARCHIVE_SCAN_BYTES, 1 << 30)
 
     def test_an_archived_record_does_not_stand_beside_an_oversized_live_record_of_the_same_chat(self) -> None:
@@ -1288,6 +1291,11 @@ class GoneElsewhereTests(HookBase):
         ])
 
 
+#: Seconds:  the slowest of 13 round trips of the Mac's parent question, measured from the server with the hook's own
+#: ssh options on Nov 18, 2026 (AFC-830).  The bound was 2.0 then, and nearly every answer came after it.
+SLOWEST_MAC_TRIP = 3.91
+
+
 class ParentFromMacTests(HookBase):
     """A chat the app runs on the server has its record on the Mac.  Its hook, which finds no store, asks the Mac
     for its parent with one read-only ssh call, when it was told where the Mac is."""
@@ -1332,6 +1340,20 @@ class ParentFromMacTests(HookBase):
         with open(os.path.join(self.server_home, "state", "CLAUDE", "letters", sid + ".json")) as fh:
             return json.load(fh)
 
+    def mac_gate(self, cmd: list[str]) -> SimpleNamespace:
+        """What sshd does with a key that has the forced command:  the gate runs, with what the client asked for in
+        SSH_ORIGINAL_COMMAND, and no shell reads it.  The Mac's records are this test's home."""
+        out, err = io.StringIO(), io.StringIO()
+        code = PL.main([PL.PARENT_GATE], env={"HOME": self.home, PL.ENV_SSH_COMMAND: cmd[-1]}, stdout=out,
+                       stderr=err)
+        self.assertEqual(err.getvalue(), "")
+        return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr="")
+
+    def family_on_the_server(self) -> None:
+        """A parent and the chat it started, both run by the app on the server over ssh."""
+        self.app_record(self.PARENT, "p-0001", sshConfig={"sshHost": "the-server"})
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, sshConfig={"sshHost": "the-server"})
+
     def test_the_mac_is_asked_once_with_one_bounded_read_only_command(self) -> None:
         parent = PC.claude_parent({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},
                                   self.server_env())
@@ -1346,13 +1368,17 @@ class ParentFromMacTests(HookBase):
         ])
         # The command is the question itself, word for word what the Mac's gate accepts:  no path, no quotes.
         self.assertTrue(PL.PARENT_SSH_RE.fullmatch(cmd[-1]))
-        self.assertEqual((timeout, PC.MAC_TIMEOUT_SECONDS, PC.MAC_CONNECT_SECONDS), (2.0, 2.0, 2))
+        # The chat's own start asks with the longer bound:  that is where its pair is chosen.
+        self.assertEqual((timeout, PC.MAC_START_TIMEOUT_SECONDS, PC.MAC_TIMEOUT_SECONDS, PC.MAC_CONNECT_SECONDS),
+                         (6.0, 6.0, 5.0, 2))
+        # Both bounds hold the slowest round trip measured from the server, with a second to spare.
+        self.assertGreaterEqual(min(PC.MAC_START_TIMEOUT_SECONDS, PC.MAC_TIMEOUT_SECONDS), SLOWEST_MAC_TRIP + 1)
         # The budgets:  the call, then a register chain of three registry calls, inside the tightest hook's
-        # timeout (a prompt or a turn end);  and on a start one gone report more.
-        chain = 3 * PL._API_TIMEOUT
+        # timeout (a prompt or a turn end);  and on a start, with its own bound, one gone report more.
+        chain = PL.REGISTER_CALLS * PL._API_TIMEOUT
         self.assertLess(PC.MAC_TIMEOUT_SECONDS + chain, min(PC.HOOK_TIMEOUTS["UserPromptSubmit"],
                                                             PC.HOOK_TIMEOUTS["Stop"]))
-        self.assertLess(PC.MAC_TIMEOUT_SECONDS + chain + PL._API_TIMEOUT, PC.HOOK_TIMEOUTS["SessionStart"])
+        self.assertLess(PC.MAC_START_TIMEOUT_SECONDS + chain + PL._API_TIMEOUT, PC.HOOK_TIMEOUTS["SessionStart"])
         # The start after a /clear says so, and a chat with no app id is asked about by its session id alone.
         PC.claude_parent({"hook_event_name": "SessionStart", "session_id": "c-0002", "source": "clear"},
                          self.server_env())
@@ -1453,19 +1479,8 @@ class ParentFromMacTests(HookBase):
 
     def test_a_server_chat_is_placed_after_its_parent_through_the_whole_round_trip(self) -> None:
         # The Mac holds the records;  the fake ssh runs the Mac's own verb with the command the server built.
-        self.app_record(self.PARENT, "p-0001", sshConfig={"sshHost": "the-server"})
-        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, sshConfig={"sshHost": "the-server"})
-
-        def mac(cmd):
-            # What sshd does with a key that has the forced command:  the gate runs, with what the client asked
-            # for in SSH_ORIGINAL_COMMAND, and no shell reads it.
-            out, err = io.StringIO(), io.StringIO()
-            code = PL.main([PL.PARENT_GATE], env={"HOME": self.home, PL.ENV_SSH_COMMAND: cmd[-1]}, stdout=out,
-                           stderr=err)
-            self.assertEqual(err.getvalue(), "")
-            return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr="")
-
-        self.answer = mac
+        self.family_on_the_server()
+        self.answer = self.mac_gate
         t0 = time.time()
         self.server_hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"},
                          env=self.server_env(host=self.PARENT), now=t0)
@@ -1507,6 +1522,119 @@ class ParentFromMacTests(HookBase):
             PC._ASKED.clear()
             self.server_hook(dict(start, source="resume"), now=t0 + n * PL.RETRY_SECONDS)
         self.assertEqual(len(self.calls), 2)
+
+    def test_only_the_chats_own_start_asks_with_the_longer_bound(self) -> None:
+        cases = (
+            ({"hook_event_name": "SessionStart", "source": "startup"}, PC.MAC_START_TIMEOUT_SECONDS),
+            ({"hook_event_name": "SessionStart", "source": "resume"}, PC.MAC_START_TIMEOUT_SECONDS),
+            ({"hook_event_name": "SessionStart", "source": "clear"}, PC.MAC_START_TIMEOUT_SECONDS),
+            ({"hook_event_name": "UserPromptSubmit", "prompt": "go"}, PC.MAC_TIMEOUT_SECONDS),
+            ({"hook_event_name": "Stop"}, PC.MAC_TIMEOUT_SECONDS),
+            ({}, PC.MAC_TIMEOUT_SECONDS),
+            # The library's question about another chat (a parent registered ahead of its sub-thread) is not that
+            # chat's start.
+            (dict(PC.claude_chat_payload("x-0001")), PC.MAC_TIMEOUT_SECONDS),
+        )
+        for n, (payload, bound) in enumerate(cases):
+            PC.claude_parent(dict(payload, session_id="c-%04d" % n), self.server_env())
+            self.assertEqual(self.calls[-1][1], bound, payload)
+        self.assertEqual(len(self.calls), len(cases))
+
+    def test_a_mac_as_slow_as_the_slowest_measured_trip_still_places_the_chat_after_its_parent(self) -> None:
+        # The Mac answers only when the hook waits as long as the slowest trip measured from the server.
+        self.family_on_the_server()
+
+        def slow(cmd):
+            bound = self.calls[-1][1]
+            if bound < SLOWEST_MAC_TRIP:
+                raise subprocess.TimeoutExpired("ssh", bound)
+            return self.mac_gate(cmd)
+
+        self.answer = slow
+        start = {"hook_event_name": "SessionStart", "source": "startup"}
+        t0 = time.time()
+        self.server_hook(dict(start, session_id="p-0001"), env=self.server_env(host=self.PARENT), now=t0)
+        self.server_hook(dict(start, session_id="c-0001"), env=self.server_env(host=self.CHILD), now=t0)
+        parent, label = self.row("p-0001", "server")["label"], self.row("c-0001", "server")["label"]
+        self.assertEqual((label[0], label != parent), (parent[0], True))
+        self.assertEqual(self.server_note("c-0001")["parent"], "p-0001")
+        # A prompt's shorter bound holds the same trip.
+        PC._ASKED.clear()
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        self.assertEqual(PC.claude_parent(prompt, self.server_env(host=self.CHILD)), "p-0001")
+        # The old bound of 2.0 cut the same answer off:  the chat was no one's child.
+        PC._ASKED.clear()
+        with mock.patch.object(PC, "MAC_START_TIMEOUT_SECONDS", 2.0):
+            self.assertEqual(PC.claude_parent(dict(start, session_id="c-0001"), self.server_env(host=self.CHILD)), "")
+
+    def test_a_parent_named_after_the_chat_took_a_main_pair_is_kept_and_the_pair_stays(self) -> None:
+        # A chat whose start heard nothing from the Mac took a main-chat pair.  A later start (a resume after the
+        # window) that hears its parent keeps the parent in the note, and the chat keeps its pair:  the registry
+        # resumes the pair a live chat holds, and that pair is already the chat's address.
+        self.family_on_the_server()
+        start = {"hook_event_name": "SessionStart", "source": "startup"}
+        t0 = time.time()
+        self.answer = self.mac_gate
+        self.server_hook(dict(start, session_id="p-0001"), env=self.server_env(host=self.PARENT), now=t0)
+        PC._ASKED.clear()
+        self.answer = subprocess.TimeoutExpired("ssh", PC.MAC_START_TIMEOUT_SECONDS)
+        self.server_hook(dict(start, session_id="c-0001"), env=self.server_env(host=self.CHILD), now=t0)
+        main = self.row("c-0001", "server")["label"]
+        self.assertEqual((main[0], self.server_note("c-0001")["parent"]), (main[1], ""))
+        PC._ASKED.clear()
+        self.answer = self.mac_gate
+        self.server_hook(dict(start, session_id="c-0001", source="resume"), env=self.server_env(host=self.CHILD),
+                         now=t0 + PL.RETRY_SECONDS + 10)
+        note = self.server_note("c-0001")
+        self.assertEqual((note["parent"], note["label"]), ("p-0001", main))
+        self.assertEqual(self.row("c-0001", "server")["label"], main)
+
+    def test_a_new_server_chat_with_no_parent_named_is_told_to_check_its_title(self) -> None:
+        # With no parent named, the server's hook cannot tell a chat another chat started (whose app title keeps that
+        # chat's words, without this chat's letter) from a main chat:  the model is told to look.  This is what
+        # Claude TT and Claude UU missed on Nov 18, 2026 (AFC-830).
+        start = {"hook_event_name": "SessionStart", "source": "startup"}
+        for n, (answer, dest) in enumerate((
+            (subprocess.TimeoutExpired("ssh", PC.MAC_START_TIMEOUT_SECONDS), None),
+            (OSError("no ssh here"), None),
+            ("not a session id\n", None),
+            # Nothing printed:  nobody started it, or the Mac has no record of it yet, which the verb cannot tell.
+            ("", None),
+            ("p-0001\n", ""),  # no Mac to ask
+        )):
+            sid = "u-%04d" % n
+            self.answer = answer
+            with self.subTest(n=n):
+                out = self.server_hook(dict(start, session_id=sid), env=self.server_env(dest=dest))
+                label = self.row(sid, "server")["label"]
+                context = out["additionalContext"]
+                self.assertIn("it was not told that another chat started it", context)
+                self.assertIn("mcp__ccd_session_mgmt__get_session", context)
+                self.assertIn("mcp__ccd_session_mgmt__set_session_title", context)
+                self.assertIn('"%s: <that title>"' % label, context)
+                self.assertIn('is not "%s"' % PL.PLACEHOLDER, context)
+                self.assertNotIn("Another chat started this one", context)
+        # Not a resume (its start was told), a /clear or a fork (each may carry a title a person gave, which the
+        # rename tool would stop to ask them about), and not a terminal `claude`, whose title is the hook's own.
+        self.answer = subprocess.TimeoutExpired("ssh", PC.MAC_START_TIMEOUT_SECONDS)
+        for sid, payload, env in (
+            ("u-0100", dict(start, source="resume"), self.server_env()),
+            ("u-0101", start, self.server_env(host="")),
+            ("u-0102", dict(start, source="clear"), self.server_env()),
+            ("u-0103", dict(start, source="fork"), self.server_env()),
+        ):
+            with self.subTest(sid=sid):
+                out = self.server_hook(dict(payload, session_id=sid), env=env)
+                self.assertNotIn("set_session_title", out.get("additionalContext", ""))
+
+    def test_a_chat_on_the_mac_with_no_parent_is_told_nothing(self) -> None:
+        # The Mac reads the app's own record, so it knows a main chat, and the app takes the hook's title for it.
+        self.app_record(self.CHILD, "m-0001")
+        # This class's `answer` is the fake Mac's reply, so the hook is run with the base class's own helper.
+        out = HookBase.answer(self, {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                              host=self.CHILD)
+        self.assertNotIn("set_session_title", out.get("additionalContext", ""))
+        self.assertEqual(self.calls, [])  # and asks nothing over ssh
 
     def test_a_server_with_no_destination_is_a_main_chat_and_asks_nothing(self) -> None:
         out = self.server_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},
