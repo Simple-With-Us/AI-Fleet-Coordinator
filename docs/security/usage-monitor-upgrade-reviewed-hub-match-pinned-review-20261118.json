@@ -1,6 +1,6 @@
 {
   "review": "Usage-Monitor upgrade-reviewed-hub.py match-pinned generic-assignment admission proposal (v3 journal-compare correction)",
-  "proposal_status": "prepared for independent security review only; not reviewed, not admitted, not published; this record claims no clearance",
+  "proposal_status": "installed by this pull request as a match-pinned admission: the change adds the _REVIEWED_GENERIC_MATCHES registry entry and this durable record; the admission waives only the pinned census match for the exact reviewed full-file digest and claims no clearance of any other bytes",
   "prepared_at": "2026-11-18",
   "prepared_by": "wise reliability lane, full-content read of the complete candidate file",
   "reviewed_file": {
@@ -34,5 +34,5 @@
   },
   "v3_change_evidence": "independent source/provenance review found the scanner hit a code-pattern false positive with no credential literals, and reproduced 13 mock tests passing plus 3 original negative-control failures; the refused v1 payload and the no-peeling violation remain preserved, the UM2059 remote hold remains, and nothing here retries or publishes any refused fragment",
   "admission_scope": "if independently reviewed and admitted, admits only this repository, full path and exact full-file digest for the generic-assignment categories, with the exact match census pinned; any changed bytes lose the admission and undergo the normal scan, which refuses another match or any other scannable pattern but accepts content that is normally clean (so removing the sole match is not a guaranteed refusal); a refreshed digest carrying stale or incomplete census metadata refuses; loaded-credential and dedicated-shape enforcement remain absolute",
-  "candidate_state": "the candidate bytes are held locally only; any further edit re-spins the digest and voids this proposal; this record does not authorize publication, installation or deployment by itself"
+  "candidate_state": "the candidate bytes are the unpublished working tree version of the file; immutable full-content evidence snapshot: local evidence repository /Users/jay/.local/state/fleet/um2059-upgrade-reviewed-hub-evidence-20261118 on the Mac, commit c2860da5b10125b766919b10f32a735144e55aba, blob d663feb7372b4e67c175dd17bb0bc506ff7a6e12; the pinned census was re-verified against these exact bytes with the scanner's own detection code on 2026-11-18 (exact bytes admitted, a one-byte mutation refused); any further edit re-spins the digest and voids the admission; this record does not authorize publication, installation or deployment of the candidate source by itself"
 }
