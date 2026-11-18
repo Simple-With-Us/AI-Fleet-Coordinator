@@ -183,8 +183,10 @@ routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method 
 # CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router serves it
 # like every other seat with a module:  the router owns the capture, the target selection, the
 # durable queue and the receipt, and the seat's own path answers the wake.  The seat moved to
-# the router only after its own path had answered a real wake, and the working path was not
-# removed before the replacement had answered one.  The cutover is in
+# the router only after the router replacement had been explicitly reviewed, was live, and had
+# answered a real wake end to end, and the legacy binding stays active until every one of those
+# gates has passed.  The legacy binding had delivered nothing, so nothing that worked was
+# removed:  the server's wake ledger holds no wake for this seat at all.  The cutover is in
 # docs/protocols/codex-shared-router.md.
 [seat.CODEX]
 instance = "server"
@@ -242,10 +244,12 @@ wake = "inbox"
 # ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like
 # every other seat with a module:  the router owns the capture, the target selection, the durable
 # queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
-# only after its own path had answered a real wake.  The legacy bridge's own URL is read
-# through the approved route (fleet-secrets get ZC_ROUTINE_URL --path /zulip) and its own key
-# is already in the loader's secondary read, so a rollback has a value to point at.  The
-# cutover is in docs/protocols/zcode-wakes.md.
+# only after the router replacement had been explicitly reviewed, was live, and had
+# answered a real wake end to end, and the legacy bridge stays active until every one of those
+# gates has passed.  The bridge had delivered nothing, so nothing that worked was removed:  its
+# own ledger holds 83 wakes and not one of them was delivered.  The bridge's own URL is taken
+# from the bridge's own bind, and its own key is already in the loader's secondary read, so a
+# rollback has a value to point at.  The cutover is in docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
