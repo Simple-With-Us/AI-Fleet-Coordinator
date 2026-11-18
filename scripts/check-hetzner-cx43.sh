@@ -10,18 +10,19 @@
 
 set -uo pipefail
 
-# Cron's PATH is minimal, so the absolute path;  override with FLEET_SECRETS_BIN.
-FLEET_SECRETS="${FLEET_SECRETS_BIN:-/Users/jay/.local/bin/fleet-secrets}"
+# Cron's PATH is minimal, so the reader's full path;  override with INFISICAL_SCOPED_READER.
+READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+# Environment first, then the shared scoped reader with this watcher's own service token
+# (OPS-1096;  the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
-  TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"
+if [ -z "$TOKEN" ] && [ -x "$READER" ]; then
+  TOKEN="$(python3 "$READER" get HCLOUD_TOKEN --folder / --project fleet-ops --account hetzner-cx43-watch-ro 2>/dev/null || true)"
 fi
 if [ -z "$TOKEN" ]; then
   echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"

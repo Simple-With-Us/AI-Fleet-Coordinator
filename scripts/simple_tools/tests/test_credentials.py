@@ -304,6 +304,12 @@ class InfisicalFallbackTests(Harness):
     def test_default_fetch_without_its_service_token_fails_before_a_request(self) -> None:
         env = self.fake_infisical({})
         del env[FI.ENV_TOKEN]
+        # The consumer's own scoped token is the fallback, so "no token" means none in the
+        # environment and none in the store.  A Mac's login keychain answers for every
+        # account, so the store is refused here rather than left to the host.
+        store = mock.patch.object(FI, "token_from_store", return_value=("", "absent"))
+        store.start()
+        self.addCleanup(store.stop)
         with self.assertRaises(Z.CredentialError) as ctx:
             Z._fetch_from_infisical(("A",), env, self.home)
         self.assertIn("service-token-required", str(ctx.exception))

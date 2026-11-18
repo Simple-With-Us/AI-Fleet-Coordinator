@@ -88,16 +88,38 @@ function base64url(input) {
 }
 
 // AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
-// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
+// Infisical Fleet-OPS /google-sheets-sa through the shared scoped reader with this script's
+// own service token.  Never written to disk or printed.
+//
+// The reader is the one implementation the fleet uses.  Its path is a full path because a
+// timer inherits no useful PATH, and it is overridable for a host that installs it elsewhere.
+const READER =
+  process.env.INFISICAL_SCOPED_READER ||
+  join(homedir(), "apps", "infisical-scoped", "infisical-scoped.py");
+const READER_ACCOUNT = "fleet-apps-sheet-sync-ro";
+const READER_FOLDER = "/google-sheets-sa";
 function loadServiceAccount() {
   let raw = process.env.GOOGLE_SHEETS_SA || "";
   if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
-      }).replace(/\n$/, "");
+      raw = execFileSync(
+        "python3",
+        [
+          READER,
+          "get",
+          "GOOGLE_SHEETS_SA",
+          "--folder",
+          READER_FOLDER,
+          "--project",
+          "fleet-ops",
+          "--account",
+          READER_ACCOUNT,
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"]
+        }
+      ).replace(/\n$/, "");
     } catch {
       raw = "";
     }

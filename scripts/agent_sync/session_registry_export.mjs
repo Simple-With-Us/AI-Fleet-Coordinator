@@ -14,9 +14,9 @@
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  Its key JSON comes
 // from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
-// same credential seam as the thread registry's drain;  one seam serves both tabs of
-// the workbook.  The workbook must be shared (Editor) with that service account's
+// /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through the shared scoped
+// reader with this drain's own service token — the same credential seam as the thread
+// registry's drain;  one seam serves both tabs of the workbook.  The workbook must be shared (Editor) with that service account's
 // client_email or every call 403s and the drain writes nothing.  Credentials are never
 // written to disk or printed.  No silent fallback to any other identity.
 //
@@ -48,15 +48,36 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// The reader is the one implementation the fleet uses.  Its path is a full path because a
+// timer inherits no useful PATH, and it is overridable for a host that installs it elsewhere.
+const READER =
+  process.env.INFISICAL_SCOPED_READER ||
+  join(homedir(), "apps", "infisical-scoped", "infisical-scoped.py");
+const READER_ACCOUNT = "operator-thread-registry-ro";
+const READER_FOLDER = "/operator-thread-registry";
+
 function loadServiceAccount() {
   let raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
   if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/operator-thread-registry"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).replace(/\n$/, "");
+      raw = execFileSync(
+        "python3",
+        [
+          READER,
+          "get",
+          "OPERATOR_GOOGLE_SHEETS_SA",
+          "--folder",
+          READER_FOLDER,
+          "--project",
+          "fleet-ops",
+          "--account",
+          READER_ACCOUNT,
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      ).replace(/\n$/, "");
     } catch {
       raw = "";
     }

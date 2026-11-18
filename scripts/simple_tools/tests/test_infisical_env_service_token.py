@@ -290,7 +290,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
                 )
 
     def test_standalone_auth_inventory_matches_shared_helper(self):
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         self.assertEqual(
             MODULE.AUTH_ENV_VARS,
