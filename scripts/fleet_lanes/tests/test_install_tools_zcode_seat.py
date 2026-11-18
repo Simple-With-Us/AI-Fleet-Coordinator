@@ -6,6 +6,7 @@ source review plus the Sentry findings) on apply/verify_zcode_seat_default."""
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from fleet_lanes.install_tools import (
     Paths,
@@ -105,10 +106,11 @@ class ApplyZcodeSeatDefaultTests(unittest.TestCase):
         os.makedirs(bin_dir, exist_ok=True)
         for tool in ("simple-chat", "simple-board", "recall", "simple-git"):
             write(os.path.join(bin_dir, tool), "#!/bin/sh\nexit 0\n", 0o755)
-        os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
-
-    def tearDown(self):
-        self._tmp.cleanup()
+        # patch.dict restores the process-wide PATH at test end:  a leaked prepend would let later
+        # tests in this suite resolve these fakes and fail order-dependently.
+        patcher = mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ["PATH"]})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_a_reversed_profile_is_refused_and_stays_byte_for_byte(self):
         self._place_tools_on_path()
@@ -147,9 +149,9 @@ class ApplyZcodeSeatDefaultTests(unittest.TestCase):
         installed = open(bashrc, encoding="utf-8").read()
         self.assertIn(BLOCK, installed)
         # The seat shims sit in front of PATH after the block: the shim dir is deduped out of PATH and
-        # re-fronted on every sourcing, so a later dotfile prepend cannot leave them behind (Sentry,
-        # AFC-839 round);  the loop itself is exercised end to end in
-        # fleet_lanes/tests/test_install_tools.py (a later prepend cannot shadow the shims).
+        # re-fronted on every sourcing, so a stale snapshot bake cannot leave them behind another
+        # entry that holds a fleet tool (Sentry, AFC-839 round);  the loop itself is exercised end to
+        # end in fleet_lanes/tests/test_install_tools.py.
         self.assertIn('export PATH="$_zc_seat_bin${_zc_kept:+:$_zc_kept}"', installed)
         self.assertNotIn('case ":$PATH:" in', installed)
 
@@ -169,7 +171,10 @@ class VerifyZcodeSeatDefaultTests(unittest.TestCase):
         os.makedirs(bin_dir, exist_ok=True)
         for tool in ("simple-chat", "simple-board", "recall", "simple-git"):
             write(os.path.join(bin_dir, tool), "#!/bin/sh\nexit 0\n", 0o755)
-        os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
+        # patch.dict, so the fakes never leak into the rest of the suite's PATH
+        patcher = mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ["PATH"]})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         apply_zcode_seat_default(self.paths)
 
     def tearDown(self):

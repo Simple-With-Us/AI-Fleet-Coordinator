@@ -7560,6 +7560,62 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertEqual([c.status for c in seat], ["WARN"] * len(seat))
         self.assertTrue(any(T.ZCODE_SEAT_TOOLS[2] in c.detail for c in seat), seat)
 
+    def test_a_mode_drifted_shim_is_restored_by_apply(self) -> None:
+        """A shim whose bytes match but whose mode drifted verifies FAIL, so plan must call it changed
+        (stale, not current) and apply must rewrite it back to 0755 instead of reporting 'already
+        current' beside an unusable shim."""
+        self.install_zcode()
+        p = self.shim_path(T.ZCODE_SEAT_TOOLS[1])
+        p.chmod(0o644)
+        sp = self.seat_plan()
+        self.assertEqual({fs.rel: fs.status for fs in sp.shims}[T.ZCODE_SEAT_TOOLS[1]], "changed")
+        self.assertEqual(sp.state, "stale")
+        r = self.install_zcode()
+        self.assertIn("seat default installed", r.detail)
+        self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o755)
+        self.assertEqual(self.seat_plan().state, "current")
+
+    def test_plan_does_not_call_a_refused_or_foreign_seat_new(self) -> None:
+        """State 'new' promises apply can write the whole set from here:  a refused profile or a
+        foreign shim dir is refused by apply, so plan must not show it as pending-new."""
+        target = self.home / "bashrc-real"
+        target.write_text("# the owner's real profile\n", encoding="utf-8")
+        (self.home / ".bashrc").symlink_to(target)
+        sp = self.seat_plan()
+        self.assertEqual(sp.bashrc_action, "refused")
+        self.assertEqual(sp.state, "stale")
+        # the same for a shim dir that exists and is a symlink, with no profile trouble at all
+        (self.home / ".bashrc").unlink()
+        real_dir = self.home / "seat-bin-real"
+        real_dir.mkdir()
+        (self.home / T.ZCODE_SEAT_BIN_DIRNAME).symlink_to(real_dir)
+        sp = self.seat_plan()
+        self.assertEqual(sp.dir_state, "foreign")
+        self.assertEqual(sp.state, "stale")
+        self.assertTrue(any("symlink" in w for w in sp.warnings), sp.warnings)
+
+    def test_a_failed_seat_write_is_reported_as_partly_written(self) -> None:
+        """The shims land before the profile, so a profile write that fails leaves a live partial set:
+        the note must say 'partly written', never 'not written', or the operator thinks the disk is
+        clean while PATH-fronted shims exist."""
+        real_atomic = T.atomic_write
+        bashrc = self.home / ".bashrc"
+
+        def failing_write(path, data, mode):
+            if str(path) == str(bashrc):
+                raise OSError(28, "No space left on device")
+            return real_atomic(path, data, mode)
+
+        with mock.patch.object(T, "atomic_write", failing_write):
+            r = self.install_zcode()
+        self.assertTrue(r.ok, r)  # the hooks config landed and stayed
+        self.assertIn("seat default partly written", r.detail)
+        self.assertNotIn("seat default not written", r.detail)
+        d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
+        self.assertTrue(d.is_dir())
+        for tool in T.ZCODE_SEAT_TOOLS:
+            self.assertTrue(self.shim_path(tool).is_file(), tool)
+
     def test_hooks_write_failure_leaves_the_seat_default_untouched(self) -> None:
         """The seat default is applied only after the hooks config has landed:  a hooks write that
         fails must leave no shim and no profile block behind (no partial apply), and the failure is
@@ -7724,11 +7780,13 @@ class ZcodeBashToolSeatDefaultTests(World):
         out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
         self.assertEqual(out.stdout.strip(), "unset", out)
 
-    def test_a_later_path_prepend_cannot_shadow_the_shims(self) -> None:
-        """Dedupe-then-force-prepend:  the block removes every occurrence of the shim dir from PATH and
-        puts it at the front, so a snapshot bake that left the dir behind another entry holding a fleet
-        tool, or any prepend that follows the block in the dotfiles, cannot put another copy of a fleet
-        tool ahead of the shims;  re-sourcing never stacks a second copy."""
+    def test_the_snapshot_baked_shim_dir_is_deduped_and_re_froned(self) -> None:
+        """Dedupe-then-force-prepend:  when PATH already carries the shim dir but behind another entry
+        that also holds a fleet tool (a stale snapshot bake), the block pulls it to the front and
+        leaves exactly one copy, and a tool-less dir prepended later in the dotfiles cannot shadow the
+        shims.  The block runs at the TOP of the file, so a later prepend of a directory holding its
+        own copy of a fleet tool is the owner's explicit ordering choice and wins;  the block does not
+        fight content the file adds after it."""
         decoy = self.tmp / "decoy-bin"
         decoy.mkdir()
         d = decoy / T.ZCODE_SEAT_TOOLS[0]
@@ -7970,6 +8028,12 @@ class ZcodeBashToolSeatDefaultTests(World):
         r = T.apply_platform(T.PLATFORMS["codex"], self.paths, now=lambda: STAMP, shim_proven=True)
         self.assertTrue(r.ok, r)
         self.assertNotIn("seat default", r.detail)
+        self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+        # the unchanged path is guarded too:  an already-current codex config installs nothing for it
+        r2 = T.apply_platform(T.PLATFORMS["codex"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r2.status, "unchanged", r2)
+        self.assertNotIn("seat default", r2.detail)
         self.assertFalse((self.home / T.ZCODE_SEAT_BIN_DIRNAME).exists())
         self.assertFalse((self.home / ".bashrc").exists())
         rc, out, _ = run_main(

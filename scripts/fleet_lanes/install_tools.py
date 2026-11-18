@@ -1561,8 +1561,8 @@ def render_zcode_bashrc_block() -> str:
     snapshot bake (or an earlier source of this file followed by a later dotfile prepend) that left the
     dir behind another entry holding a fleet tool cannot shadow the shims, and re-sourcing the file
     never grows PATH or stacks a second copy.  The block carries GENERATED_MARK in both markers so a
-    re-apply replaces it in place instead of stacking a second copy.  The prepend never exports
-    anything, and the only export in the block is the guarded AGENT_SEAT default."""
+    re-apply replaces it in place instead of stacking a second copy.  The prepend exports PATH and
+    nothing else, and the only other export in the block is the guarded AGENT_SEAT default."""
     return (
         f"# --- begin {ZCODE_SEAT_BLOCK_NAME} --- {GENERATED_MARK}.  Do not edit; run "
         "`python3 -m fleet_lanes.install_tools apply zcode`.\n"
@@ -4437,6 +4437,10 @@ def _zcode_seat_note(plat_key: str, paths: Paths) -> str:
         return ""
     seat = apply_zcode_seat_default(paths)
     if not seat.ok:
+        # "failed" is not "not written":  the shims land before the profile, so a failed step can
+        # leave a live partial set, and the note must not tell the operator the disk is clean.
+        if seat.status == "failed":
+            return f"; seat default partly written: {seat.detail}"
         return f"; seat default not written: {seat.detail}"
     if seat.status == "installed":
         return f"; seat default installed: {seat.detail}"
@@ -8278,7 +8282,13 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
         elif have is None:
             status = "new"
         else:
-            status = "same" if have == want else "changed"
+            # Bytes alone do not make a shim current:  verify demands 0755, so a byte-identical shim
+            # that lost its exec bit is drift a re-apply repairs, never "same".
+            try:
+                mode_ok = stat.S_IMODE(os.stat(os.path.join(d, tool)).st_mode) == 0o755
+            except OSError:
+                mode_ok = False
+            status = "same" if have == want and mode_ok else "changed"
         shims.append(FileStatus(tool, status))
     blocked = bool(missing)
     if dir_state == "foreign":
@@ -8319,11 +8329,13 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
         state = "blocked"
     elif current:
         state = "current"
-    elif all(s.status in ("new", "pending") for s in shims) and bashrc_action in (
-        "create",
-        "prepend",
-        "hand",
-        "refused",
+    elif (
+        # "new" must mean apply CAN write the whole set from here:  a refused profile or a foreign
+        # shim dir is refused by apply, so calling it pending-new would promise a write that never
+        # happens;  the REFUSED line and the warnings name those states instead.
+        dir_state != "foreign"
+        and all(s.status in ("new", "pending") for s in shims)
+        and bashrc_action in ("create", "prepend", "hand", "replace")
     ):
         state = "new"
     else:
@@ -8346,7 +8358,17 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
 
 def _emit_zcode_seat_plan(sp: ZcodeSeatPlan, emit: Callable[[str], None]) -> None:
     """The seat-default section of `plan zcode`, under the hooks-config plan of the same platform."""
-    state = sp.state if sp.state != "stale" else "stale (a re-apply replaces what differs)"
+    if sp.state == "stale":
+        # "a re-apply replaces what differs" is only true when apply may write at all;  for a refused
+        # profile or a foreign shim dir the stale mark stays and the REFUSED line names why a re-apply
+        # would change nothing.
+        state = (
+            "stale (apply refuses to write here; see the REFUSED line)"
+            if sp.bashrc_action == "refused" or sp.dir_state == "foreign"
+            else "stale (a re-apply replaces what differs)"
+        )
+    else:
+        state = sp.state
     emit(f"   seat default (Bash-tool shells): {sp.shim_dir} [{state}]")
     if sp.state == "blocked":
         emit(
@@ -8380,8 +8402,9 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
     block.  The two are one artifact set:  a tool off PATH skips the whole set (a PATH-fronted dir with
     a hole in it would be worse than none), and a profile the tool cannot manage safely skips it too.
     Every refusable condition is decided BEFORE the first byte is written, so a skipped result means
-    nothing was written.  Idempotent:  a second apply finds the shims byte-identical and the block
-    current and writes nothing."""
+    nothing was written.  A shim is rewritten when its bytes or its mode drift (verify demands 0755,
+    so a byte-identical shim that lost its exec bit is drift, not "current").  Idempotent:  a second
+    apply finds the shims byte-identical at 0755 and the block current and writes nothing."""
     t = "zcode"
     resolved: dict[str, str] = {}
     missing: list[str] = []
@@ -8434,7 +8457,17 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
         for tool in ZCODE_SEAT_TOOLS:
             want = render_zcode_seat_shim(tool, resolved[tool]).encode("utf-8")
             path = os.path.join(d, tool)
-            if _read_regular(path) != want:
+            have = _read_regular(path)
+            mode_ok = False
+            if have is not None:
+                try:
+                    mode_ok = stat.S_IMODE(os.stat(path).st_mode) == 0o755
+                except OSError:
+                    mode_ok = False
+            # Bytes alone are not the contract:  a shim that lost its exec bit verifies FAIL, so the
+            # rewrite below restores the mode as well as the bytes, keeping apply and verify honest
+            # with each other.
+            if have != want or not mode_ok:
                 atomic_write(path, want, 0o755)
                 shim_written.append(tool)
         bashrc_written = action != "none"
