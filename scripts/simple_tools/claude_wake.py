@@ -641,7 +641,13 @@ def deliver_remote_turn(
         return WR.Turn(single)
     # The Mac gives the turn its one-wake time limit once per member, and so does this wait.
     delivery, answer, sent = _remote(
-        env, config, target, head, request, platform=platform, runner=runner,
+        env,
+        config,
+        target,
+        head,
+        request,
+        platform=platform,
+        runner=runner,
         members=1 + len(riders),
     )
     if not sent or delivery.code == "remote-needs-update":

@@ -791,7 +791,13 @@ def deliver_request(
             return _answer(request, stale)
         try:
             delivery = deliver_local(
-                here, config, target.session_id, wake, runner=runner, sleep=sleep, _locked=True,
+                here,
+                config,
+                target.session_id,
+                wake,
+                runner=runner,
+                sleep=sleep,
+                _locked=True,
                 _turn=turn,
             )
         except OSError as exc:
@@ -869,9 +875,7 @@ def router_platform(
             "turn_dispatch": WR.TURN_CONTRACT,
         }
         try:
-            answer = deliver_request(
-                request, env=here, settings=config, runner=runner, sleep=sleep
-            )
+            answer = deliver_request(request, env=here, settings=config, runner=runner, sleep=sleep)
         except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
             error = WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
             return WR.Turn(error, unreadable=True)
