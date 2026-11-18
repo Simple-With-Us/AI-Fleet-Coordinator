@@ -72,7 +72,12 @@ The three gates, and what each of them answered on the day of the cutover.
   (`project_token_login_failed` for the zai family).
 
 The binding that the change removed had delivered nothing:  the legacy bridge's own ledger on
-the server holds 52 wakes, and not one of them was delivered.  The bridge's path is not the
+the server holds 52 wakes, and not one of them was delivered.  That count is a recorded
+result and not a claim, so it comes with the command that produced it:  the bridge's own
+receipt ledger on the server, `/home/jay/.local/state/zc-wake/wakes.jsonl`, read with
+`python3 -c "import json;rows=[json.loads(l) for l in open('/home/jay/.local/state/zc-wake/wakes.jsonl') if l.strip()];ids=[r.get('wake_id') for r in rows];print(json.dumps({'lines':len(rows),'distinct':len(set(ids)),'delivered_true':sum(1 for r in rows if r.get('delivered') is True),'delivered_false':sum(1 for r in rows if r.get('delivered') is False),'delivered_null':sum(1 for r in rows if r.get('delivered') is None)}))"`, which on Nov 17, 2026 answered
+`{"lines": 83, "distinct": 52, "delivered_true": 0, "delivered_false": 31, "delivered_null": 52}`:  the 83 rows are 52 routing rows and 31 final rows, and not one row
+records a delivery.  The bridge's path is not the
 module's path:  the bridge resumes the session with its own command template and never
 checks the directory the session reports, while the module runs the CLI with the
 workspace the deployment names and refuses a session whose recorded directory differs
@@ -95,7 +100,11 @@ cutover that does not work never leaves the seat without a route.
     `ZC_BRIDGE_ROUTINE_URL`, so the seat's own name never serves the router's front and the
     bridge at the same time, and the operator reads that one through the approved route,
     `fleet-secrets get ZC_BRIDGE_ROUTINE_URL --path /zulip --project ai-fleet-coordinator`,
-    captured into the write and never echoed.  The bridge's own key is already in the loader's
+    captured into the write and never echoed.  The explicit project selector is part of that
+    route and not an extra on it:  the reader's default project is Fleet-OPS, the name is not
+    there, and the same read without the selector exits 3 with "key ZC_BRIDGE_ROUTINE_URL is
+    not in Infisical at /zulip" (checked on Nov 17, 2026), because the name lives in the AI
+    Fleet Coordinator project.  The bridge's own key is already in the loader's
     secondary read, so a rollback has a value to point at.  The
     environment is read once at the container's start, so the container is restarted after the
     name is minted.  The seat's own binding is named here, so the
@@ -130,13 +139,33 @@ cutover that does not work never leaves the seat without a route.
     misbehaves here is a rollback, and the values a rollback needs are still in place:
     the bridge's own URL is governed in AFC prod `/zulip` under `ZC_BRIDGE_ROUTINE_URL`, and its
     own key is already in the loader's secondary read, and neither was ever withdrawn.  The
+    rollback puts the seat back on the shape it had before the cutover, which is the shape the
     bridge answers:  `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
     and `ZC_ROUTINE_URL` in AFC prod `/zulip` is re-pointed at the bridge's own URL, which the
     operator reads from `ZC_BRIDGE_ROUTINE_URL` in the same folder and writes into that name
     without echoing it, and that is the one write the rollback needs outside the server:  that
     name carries the router's front today, so the write is what moves the seat back and not a
-    read of what the name holds.  Both names
+    read of what the name holds.  That write has one named route, and it is not
+    `fleet-secrets set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
+    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins/<SEAT>`,
+    and the writer writes the Fleet-OPS project, so `fleet-secrets set ZC_ROUTINE_URL --path
+    /zulip` exits 2 on the allowlist and could not reach this project anyway.  The write goes
+    through the Infisical CLI against the AI Fleet Coordinator project
+    (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), environment `prod` (the only one), folder
+    `/zulip`, name `ZC_ROUTINE_URL`, type `shared`:  `infisical secrets set
+    'ZC_ROUTINE_URL=@<0600 value file>' --path /zulip --projectId
+    9bf7417a-fbbb-42ca-870c-2b45207233f5 --env prod --type shared --silent`, with the value
+    read from a 0600 file and never in an argument or a log, and the file deleted afterwards.
+    The credential for it is a scoped Infisical service token for exactly that project,
+    environment and folder with write access, minted under the `service-tokens` skill (one
+    project, one environment, one folder, read-write, an expiry, and a row in the
+    service-token registry) and bound as `INFISICAL_TOKEN` for the command, never as an
+    argument;  an operator's own Infisical login session is the same command with their own
+    credential.  That route was exercised on Nov 17, 2026 with the value the name already
+    held, and the CLI answered "SECRET VALUE UNCHANGED" with exit 0 and the name read back
+    unchanged, so the project, the folder, the name, the type and the command shape are all
+    confirmed.  Both names
     are the seat's own, so the settings-edit path writes that routine, and the daemon picks it
     up on the reload that write ends with.  The sample has to come back with it:  the sample
     still carries the router's binding for this seat, so the next apply would move the seat
@@ -156,6 +185,7 @@ never run one session at the same time, and its dedupe ledger is replaced by the
 receipts.  Until then it stays as it is, with the bridge's own URL governed in AFC prod
 `/zulip` under `ZC_BRIDGE_ROUTINE_URL` and its own key already in the loader's secondary read,
 and the sample keeps carrying the router's binding for this seat.
+
 ## What the module guarantees
 
 The delivery contract is the one the sibling platforms use, with the parts that are ZCode's own
@@ -195,7 +225,7 @@ made explicit.
   executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only
   secret), `config.json` (the delivery switch and command template), `seen.json`,
   `wakes.jsonl` (the receipt ledger:  a routing row per wake, plus a final row per delivered
-  wake, so count distinct `wake_id` values and not lines).
+  wake, so count distinct `wake_id` values and not lines).  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
   hand, the same code the POST path runs.
 - `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
   registry env file (`~/.local/bin/operator-registry-env`) itself (the letter hooks no longer read it:  they get the same

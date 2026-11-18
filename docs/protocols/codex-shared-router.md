@@ -137,8 +137,10 @@ The three gates, and what each of them answered on the day of the cutover.
   the ssh route (`route: ssh:codex-desktop`).
 
 The legacy binding that the sample's change removed was the seat's inbox capture on the
-server, and it had delivered nothing:  the server's wake ledger holds no wake for the seat at all, so
-nothing that worked was removed with it.  The live block is moved to the sample's block by the
+server, and it had delivered nothing:  the server's wake ledger holds no wake for the seat
+at all, so nothing that worked was removed with it.  That is a recorded result too:  on the
+server, `docker exec eavesdropper /app/scripts/simple-chat wakes --as CODEX` answered
+`no wakes for CODEX` on Nov 17, 2026.  The live block is moved to the sample's block by the
 apply, and that apply is the cutover:  it writes the sample's block for every seat it manages,
 this seat and ZC among them, so the first apply after the image carries the new sample moves
 both seats to the router whatever the operator meant to move.  Both seats' three gates are
@@ -150,9 +152,11 @@ seat's evidence is never the other's:  this seat's three gates are the ones abov
 three gates are the ones in `docs/protocols/zcode-wakes.md`, where the ZC seat's own review,
 its own live answer and its own real wake are recorded.  Neither seat's legacy binding had
 delivered anything when the apply replaced it:  the server's wake ledger holds no wake for
-this seat at all, and the legacy bridge's own ledger on the server holds 52 wakes for ZC and
-not one of them was delivered, so no path that worked was removed before a replacement had
-answered one.
+this seat at all (`docker exec eavesdropper /app/scripts/simple-chat wakes --as CODEX` answered
+`no wakes for CODEX` on Nov 17, 2026), and the legacy bridge's own ledger on the server holds
+52 wakes for ZC and not one of them was delivered (the command that produced that count and
+its recorded result are in `docs/protocols/zcode-wakes.md`), so no path that worked was removed
+before a replacement had answered one.
 
 The steps, in this order.
 

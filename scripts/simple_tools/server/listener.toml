@@ -182,11 +182,12 @@ routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method 
 
 # CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router serves it
 # like every other seat with a module:  the router owns the capture, the target selection, the
-# durable queue and the receipt, and the seat's own path answers the wake.  The seat moved to
+# durable queue and the receipt, and the seat's own path answers the wake.  The seat moved to
 # the router only after the router replacement had been explicitly reviewed, was live, and had
 # answered a real wake end to end, and the legacy binding stays active until every one of those
-# gates has passed.  The legacy binding had delivered nothing, so nothing that worked was
-# removed:  the server's wake ledger holds no wake for this seat at all.  The cutover is in
+# gates has passed.  The legacy binding had delivered nothing, so nothing that worked was
+# removed:  the server's wake ledger holds no wake for this seat at all (the command that proves
+# it and its recorded result are in docs/protocols/codex-shared-router.md).  The cutover is in
 # docs/protocols/codex-shared-router.md.
 [seat.CODEX]
 instance = "server"
@@ -243,13 +244,14 @@ wake = "inbox"
 
 # ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like
 # every other seat with a module:  the router owns the capture, the target selection, the durable
-# queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
+# queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
 # only after the router replacement had been explicitly reviewed, was live, and had
 # answered a real wake end to end, and the legacy bridge stays active until every one of those
-# gates has passed.  The bridge had delivered nothing, so nothing that worked was removed:  its
-# own ledger holds 52 wakes and not one of them was delivered.  The bridge's own URL is
+# gates has passed.  The bridge had delivered nothing, so nothing that worked was removed:  its
+# own ledger holds 52 wakes and not one of them was delivered (the command that produced that
+# count and its recorded result are in docs/protocols/zcode-wakes.md).  The bridge's own URL is
 # governed in AFC prod /zulip under ZC_BRIDGE_ROUTINE_URL, and its own key is already in the
-# loader's secondary read, so a rollback has a value to point at.  The cutover is in
+# loader's secondary read, so a rollback has a value to point at.  The cutover is in
 # docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
