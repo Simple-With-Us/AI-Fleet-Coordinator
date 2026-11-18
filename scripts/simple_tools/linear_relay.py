@@ -1054,7 +1054,7 @@ class _CatchUp:
     """An entry whose catch-up is still open (AFC-821), in memory only.  What its topic got after
     `start` is unknown to the entry, except the ids in `recorded`: the next read starts there."""
 
-    __slots__ = ("start", "recorded")
+    __slots__ = ("recorded", "start")
 
     def __init__(self, start: int, recorded: Iterable[int] = ()) -> None:
         self.start = int(start)
