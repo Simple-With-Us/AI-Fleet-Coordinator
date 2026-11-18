@@ -186,7 +186,10 @@ def _word(value: Any, shape: re.Pattern[str]) -> str | None:
 
 def _receipt(wake_id: str, view: Mapping[str, Any]) -> dict[str, Any]:
     """One wake's receipt from its merged ledger view:  `state` is the ledger's latest state word and
-    `at` the time of its latest row.
+    `at` the view's `ts`, the time the wake itself last moved.  For a wake the one wake router
+    accepted, that latest word is the router's terminal outcome once the daemon read it
+    (`delivered`, `undelivered` or `unknown`, wakes.OUTCOME_STATES), and `done` until then;  the
+    outcome row does not move `at` (wakes.Ledger.wakes).
 
     `via` is how the wake was or was not carried, in the ledger's own words (the `adapter` that took it, or
     the `reason` code of a wake that stopped before it ran), else None;  it says nothing of the router's own choice."""
@@ -337,9 +340,16 @@ def pending_inbox_view(
 ) -> dict[str, Any]:
     """Wake-worthy seat-inbox items after `after_seq`, oldest first (the pending read a hosted
     seat polls:  OPS-1047).  An item is pending when its seq is past `after_seq`, its stored row
-    carries the router prefilter's `wake_worthy` verdict (daemon.make_item, from router.prefilter)
-    and it was not delivered to a lease.  Both the active inbox file and its rotated `.1` copy are
-    read (a row the daemon rotated before the seat polled is still pending).  `count` is every pending item after `after_seq`, not
+    carries the router prefilter's `wake_worthy` verdict (daemon.make_item, from router.prefilter),
+    it was not delivered to a lease, and the wake that carries it does not have the wake router's
+    `delivered` outcome (AFC-824).  An item whose wake the router left undelivered, or whose
+    outcome is unknown or still awaited, stays pending, and so does one whose wake is older than
+    the ledger window read here.  `delivered` is the router's own word, which includes a hand-over
+    it has no proof of (the outcome row's `delivered` is then null, wakes.RECEIPT_TERMINAL).  A
+    held-back message another wake listed is not carried by that wake:  the list names it without
+    its text, so it stays pending until a wake that carries it is delivered.  Both the active
+    inbox file and its rotated `.1` copy are read (a row the daemon rotated before the seat
+    polled is still pending).  `count` is every pending item after `after_seq`, not
     just the page shown;  `latest_seq` is the newest seq in the inbox file, pending or not, so a
     check with no pending items still learns how far the inbox has run.  Read-only like every
     view here:  neither the acknowledged cursor (seat-inbox.cursor.json) nor the daemon's own
@@ -347,7 +357,9 @@ def pending_inbox_view(
 
     Each shown item also carries a `receipt` (wake_receipts):  `{wake_id, state, via, at}` joined
     from the wake ledger by message id, or None when no ledger wake carries the message.  It is
-    read-only like the rest, and a count-only read (limit 0) never opens the ledger."""
+    read-only like the rest.  The ledger is read (one bounded tail read, cached while the file is
+    unchanged) whenever there is a candidate item, a count-only read (limit 0) included, because
+    the count leaves out the delivered ones;  a read with no candidate never opens it."""
     paths = seat_paths(root, seat)
     # Both inbox files, reconciled like the daemon's _seat_inbox_rows:  rotation moves the whole
     # file to seat-inbox.jsonl.1 and starts a fresh one, so a wake-worthy row still waiting for a
@@ -361,15 +373,20 @@ def pending_inbox_view(
                 by_seq[seq] = row
     rows = [by_seq[seq] for seq in sorted(by_seq)]
     latest_seq = max((r["seq"] for r in rows), default=0)
-    pending = [
+    candidates = [
         r
         for r in rows
         if r["seq"] > after_seq and r.get("wake_worthy") and not r.get("delivered_to")
     ]
-    shown = pending[: max(0, limit)]
     receipts = wake_receipts(
-        paths, {i for i in (_int(r.get("id")) for r in shown) if i is not None}
+        paths, {i for i in (_int(r.get("id")) for r in candidates) if i is not None}
     )
+    pending = [
+        r
+        for r in candidates
+        if (receipts.get(_int(r.get("id"))) or {}).get("state") != W.DELIVERED
+    ]
+    shown = pending[: max(0, limit)]
     return {
         "seat": seat,
         "after_seq": after_seq,
@@ -457,7 +474,10 @@ def mark_surfaced(root: str, seat: str, upto: int) -> int:
 
 
 def wake_item(view: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    """One wake of the wakes view.  A wake the one wake router accepted also carries
+    `receipt_awaited` while its outcome is still to be read, and once it has one, the receipt
+    fields its outcome row kept (wakes.outcome_fields, read back under the same shapes)."""
+    item = {
         "wake_id": view.get("wake_id"),
         "state": view.get("state"),
         "ts": view.get("ts"),
@@ -471,6 +491,11 @@ def wake_item(view: Mapping[str, Any]) -> dict[str, Any]:
         "catch_up": bool(view.get("catch_up")),
         "by": view.get("by"),
     }
+    if view.get("state") in W.OUTCOME_STATES:
+        item.update(W.outcome_fields(view))
+    elif view.get("state") == "done" and view.get("receipt_awaited") is True:
+        item["receipt_awaited"] = True
+    return item
 
 
 def wakes_view(
@@ -497,10 +522,16 @@ def wakes_view(
     by_state: dict[str, int] = {}
     for view in rows:
         by_state[str(view.get("state"))] = by_state.get(str(view.get("state")), 0) + 1
+    # The wake router's outcomes among these wakes (AFC-824).  `awaiting` counts every wake still
+    # waiting on its receipt, however old:  its reads run until wakes.RECEIPT_DEADLINE after the
+    # 2xx, past a 24-hour window, and a wake leaves the count once its outcome is written.
+    outcomes = W.outcome_counts(rows)
+    outcomes["awaiting"] = W.outcome_counts(views.values())["awaiting"]
     return {
         "seat": seat,
         "total": len(rows),
         "by_state": dict(sorted(by_state.items())),
+        "outcomes": outcomes,
         "items": [wake_item(v) for v in (rows[-limit:] if limit else [])],
     }
 
@@ -649,6 +680,11 @@ def status_view(root: str, seat: str, *, now: float | None = None) -> dict[str, 
         "held_back_lost": held["lost"],
         "wakes_24h": wakes["total"],
         "wakes_by_state": wakes["by_state"],
+        # What the wake router did with the wakes that ran in the last 24 hours (AFC-824):  a
+        # `done` wake is only stored there, so these say how many it delivered, did not deliver
+        # or could not tell, counted by the time each wake ran (an outcome row does not move it),
+        # and how many wakes of any age still await its receipt.
+        "wake_outcomes_24h": wakes["outcomes"],
         "leases": leases,
         "nudges_pending": sum(
             1 for i in nudges["items"] if i.get("status") in ("pending", "unknown", "dispatching")
