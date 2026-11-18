@@ -5,9 +5,15 @@
     notary_report.py log          stdin: `notarytool log` JSON
                                   prints the status, its summary and each issue's severity,
                                   path and message, and nothing else
+    notary_report.py failure      stdin: whatever a failed `notarytool submit` wrote
+                                  prints one line naming the kind of failure, and the HTTP
+                                  status as digits when Apple gave one, and nothing else
 
 The submission id goes back to notarytool as an argument, so it must be a UUID:  a value
 that is not one, or one that starts with `-`, never reaches a child process.
+
+A failed submission's own text is never printed:  only a fixed sentence chosen from the
+list in FAILURE_KINDS, so a key id, an issuer or a path can never reach the release log.
 """
 
 import json
@@ -84,11 +90,61 @@ def summarize_log(text):
     return lines
 
 
+# Each kind is (name, the words that mark it, the sentence printed).  The first match wins,
+# so the specific answers come before the general ones.  Only the sentence is printed.
+FAILURE_KINDS = (
+    ("agreement",
+     ("required agreement", "agreement is missing", "agreements_missing", "agreement has expired",
+      "in-effect agreement"),
+     "Apple refused the key because a required Apple Developer agreement is missing or expired.  "
+     "The account holder accepts it at developer.apple.com/account."),
+    ("not_authorized",
+     ("http status code: 401", "status code 401", "unable to authenticate", "not_authorized",
+      "invalid credentials", "authentication credentials are missing or invalid"),
+     "Apple did not accept the API key (401):  the key is revoked, or the key id, issuer and key "
+     "file do not belong together."),
+    ("forbidden",
+     ("http status code: 403", "status code 403", "forbidden"),
+     "Apple accepted the key but refused the request (403):  a missing or expired agreement, "
+     "or a key role that may not notarize."),
+    ("key_unreadable",
+     ("no such file", "invalid private key", "could not read the private key", "failed to load",
+      "unable to read", "no keychain password item"),
+     "notarytool could not read the API key file on the runner."),
+    ("apple_unavailable",
+     ("http status code: 500", "http status code: 502", "http status code: 503",
+      "http status code: 504", "service unavailable", "internal server error"),
+     "Apple's notary service answered with a server error."),
+    ("network",
+     ("nsurlerrordomain", "timed out", "network connection was lost", "could not connect",
+      "internet connection appears to be offline"),
+     "The runner could not reach Apple's notary service."),
+)
+HTTP_STATUS = re.compile(r"(?:http status code|status code)[:\s]+([1-5][0-9]{2})\b", re.IGNORECASE)
+
+
+def classify_failure(text):
+    """The kind name, its sentence and Apple's HTTP status (digits or None) for a failed submit."""
+    if len(text.encode("utf-8", "replace")) > MAX_BYTES:
+        text = text[:MAX_BYTES]
+    lowered = text.lower()
+    match = HTTP_STATUS.search(text)
+    status = match.group(1) if match else None
+    for name, marks, sentence in FAILURE_KINDS:
+        if any(mark in lowered for mark in marks):
+            return name, sentence, status
+    return "unknown", "notarytool gave no answer this script recognizes.", status
+
+
 def main(argv, stdin):
-    if len(argv) != 2 or argv[1] not in ("submission", "log"):
-        print("Usage: notary_report.py [submission|log]", file=sys.stderr)
+    if len(argv) != 2 or argv[1] not in ("submission", "log", "failure"):
+        print("Usage: notary_report.py [submission|log|failure]", file=sys.stderr)
         return 2
     text = stdin.read()
+    if argv[1] == "failure":
+        name, sentence, status = classify_failure(text)
+        print("notarytool failure: %s%s.  %s" % (name, " (HTTP %s)" % status if status else "", sentence))
+        return 0
     if argv[1] == "submission":
         parsed = parse_submission(text)
         if parsed is None:

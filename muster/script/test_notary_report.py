@@ -98,5 +98,65 @@ class LogTests(unittest.TestCase):
         self.assertEqual(len(lines[1]), len("summary: ") + report.FIELD_LIMIT)
 
 
+class FailureTests(unittest.TestCase):
+    """A failed submit's own words never reach the log, only a fixed sentence and a status."""
+
+    # Shaped like notarytool's answers;  the key id and issuer are made at run time.
+    KEY_ID = uuid.uuid4().hex[:10].upper()
+    ISSUER = str(uuid.uuid4())
+
+    def run_failure(self, text):
+        out = io.StringIO()
+        real_stdout = report.sys.stdout
+        report.sys.stdout = out
+        try:
+            status = report.main(["notary_report", "failure"], io.StringIO(text))
+        finally:
+            report.sys.stdout = real_stdout
+        self.assertEqual(status, 0)
+        return out.getvalue()
+
+    def test_a_missing_agreement_is_named(self):
+        text = ("Error: HTTP status code: 403. A required agreement is missing or has expired. "
+                "This request requires an in-effect agreement that has not been signed or has expired.")
+        name, _, status = report.classify_failure(text)
+        self.assertEqual((name, status), ("agreement", "403"))
+
+    def test_an_agreement_error_code_alone_is_named(self):
+        name, _, _ = report.classify_failure('{"code": "FORBIDDEN.REQUIRED_AGREEMENTS_MISSING_OR_EXPIRED"}')
+        self.assertEqual(name, "agreement")
+
+    def test_a_refused_key_is_named(self):
+        text = "Error: HTTP status code: 401. Unable to authenticate. Invalid credentials."
+        self.assertEqual(report.classify_failure(text)[::2], ("not_authorized", "401"))
+
+    def test_a_bare_forbidden_is_named(self):
+        self.assertEqual(report.classify_failure("Error: HTTP status code: 403.")[::2], ("forbidden", "403"))
+
+    def test_other_kinds(self):
+        cases = {
+            "Error: invalid private key at path": "key_unreadable",
+            "Error: HTTP status code: 503. Service Unavailable": "apple_unavailable",
+            "NSURLErrorDomain Code=-1001 The request timed out.": "network",
+            "": "unknown",
+            "something new from Apple": "unknown",
+        }
+        for text, kind in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(report.classify_failure(text)[0], kind)
+
+    def test_the_printed_line_carries_no_text_from_the_answer(self):
+        text = ("Error: HTTP status code: 401. Unable to authenticate. key id %s issuer %s "
+                "path /Users/runner/work/_temp/AuthKey_%s.p8" % (self.KEY_ID, self.ISSUER, self.KEY_ID))
+        line = self.run_failure(text)
+        self.assertIn("notarytool failure: not_authorized (HTTP 401).", line)
+        for secret in (self.KEY_ID, self.ISSUER, "AuthKey", "/Users/runner"):
+            self.assertNotIn(secret, line)
+
+    def test_an_unknown_answer_prints_only_the_fixed_sentence(self):
+        line = self.run_failure("odd answer %s" % self.ISSUER)
+        self.assertEqual(line.strip(), "notarytool failure: unknown.  notarytool gave no answer this script recognizes.")
+
+
 if __name__ == "__main__":
     unittest.main()
