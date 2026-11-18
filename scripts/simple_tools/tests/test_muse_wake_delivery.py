@@ -144,13 +144,31 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["session_id"], SID)
         self.assertEqual(answer["generation"], 1)
 
-    def test_unreadable_registry_is_failed_not_refused(self) -> None:
+    def test_unreadable_registry_is_busy_not_refused(self) -> None:
+        """A host that is configured to reach the registry and cannot:  an outage, and
+        nothing runs."""
+        def boom(_env, _letter):
+            raise OSError("registry down")
+
+        self.env = {
+            **self.env,
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
+        answer = self._deliver(resolve_row=boom)
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
+        self.assertEqual(answer["delivery"]["code"], "registry-unavailable")
+        self.assertEqual(self.calls, [])
+
+    def test_an_unreadable_registry_on_an_unconfigured_host_fails_closed(self) -> None:
+        """A host with no registry address or key cannot be retried into working:  it is a
+        deployment fault, and nothing runs."""
         def boom(_env, _letter):
             raise OSError("registry down")
 
         answer = self._deliver(resolve_row=boom)
         self.assertEqual(answer["delivery"]["outcome"], "failed")
-        self.assertEqual(answer["delivery"]["code"], "registry-unavailable")
+        self.assertEqual(answer["delivery"]["code"], WR.NOT_CONFIGURED)
         self.assertEqual(self.calls, [])
 
     def test_row_of_another_seat_proves_no_release(self) -> None:
