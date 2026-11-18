@@ -25,3 +25,20 @@ regexTarget = "secret"
 # the spec's base64url form leaves off.  So the header is followed by exactly 86 characters, from
 # either base64 alphabet (the header reads the same in both).
 regexes = ['''^MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE[A-Za-z0-9+/_-]{86}(==)?$''']
+
+# The fleet's Infisical service tokens are named after their consumer and grant, for example
+# "zulip-linkifiers-operator-ro" or "infra-phase0-ro".  Those names are identifiers:  they say
+# which token to look up in the consumer's own store, and the token value itself never appears
+# in a file.  The generic-api-key rule reads the word "token" in the constant name as its
+# keyword and then scores the account name's entropy, so a name like "infra-phase0-ro" reads
+# as a key and is reported.
+#
+# The exception is limited three ways:  only the generic-api-key rule, only a value that is a
+# whole lower-case service-token account name ending in "-ro", and nothing else.  A real
+# credential is never that shape, and every other rule still reports the file.
+[[allowlists]]
+description = "Infisical service-token account names"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[a-z0-9]+(-[a-z0-9]+)*-ro$''']
