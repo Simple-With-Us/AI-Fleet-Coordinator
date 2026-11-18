@@ -379,6 +379,11 @@ class AllowlistNotesTests(Base):
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
         ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
+        ),
         "com.jay.fleet-mac-services": (
             "reporting",
             "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "
@@ -2732,7 +2737,7 @@ class CredentialTests(Base):
     """A caller-scoped service token reaches only the fleet-secrets child."""
 
     ROWS = RedeployTests.ROWS
-    TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+    TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
     VALUE = "st." + "scoped-fleet-ops-control-token"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
@@ -2762,7 +2767,7 @@ class CredentialTests(Base):
         return path
 
     def pair_text(self):
-        return "# fleet-ops-control\n" + f"{self.TOKEN}={self.VALUE}\n"
+        return "# fleet-ops-control\n" + f"{self.TOKEN_NAME}={self.VALUE}\n"
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
@@ -2781,7 +2786,7 @@ class CredentialTests(Base):
             "PATH": "/usr/bin",
             **self.SHARED_AUTH,
             **self.COORDINATES,
-            self.TOKEN: "st.different-process-reader-token",
+            self.TOKEN_NAME: "st.different-process-reader-token",
         }
         code, ans = self.redeploy(inherited)
         # A server redeploy is submitted rather than run inline:  the merged code answers
@@ -2789,7 +2794,7 @@ class CredentialTests(Base):
         self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
         env = self.secrets_env()
         self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN, env)
+        self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
         self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
@@ -2804,7 +2809,7 @@ class CredentialTests(Base):
         )
         ((argv, env),) = self.runner.calls
         self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertNotIn(self.TOKEN, env)
+        self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
     def test_process_scoped_token_is_mapped_for_the_child(self):
@@ -2812,13 +2817,13 @@ class CredentialTests(Base):
             "PATH": "/usr/bin",
             **self.SHARED_AUTH,
             **self.COORDINATES,
-            self.TOKEN: self.VALUE,
+            self.TOKEN_NAME: self.VALUE,
         }
         code, _ = self.redeploy(inherited)
         self.assertEqual(code, 0)
         env = self.secrets_env()
         self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN, env)
+        self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
         self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
         self.runner.calls.clear()
@@ -2827,7 +2832,7 @@ class CredentialTests(Base):
             self.ctx(environ=inherited),
         )
         ((argv, env),) = self.runner.calls
-        self.assertNotIn(self.TOKEN, env)
+        self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
     def test_no_file_discards_broad_token_and_machine_credentials(self):

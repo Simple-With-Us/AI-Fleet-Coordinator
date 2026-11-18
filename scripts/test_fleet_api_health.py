@@ -26,9 +26,7 @@ import unittest
 from datetime import datetime, timezone
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_SPEC = importlib.util.spec_from_file_location(
-    "fleet_api_health", _HERE / "fleet-api-health.py"
-)
+_SPEC = importlib.util.spec_from_file_location("fleet_api_health", _HERE / "fleet-api-health.py")
 api_health = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(api_health)
 
@@ -77,9 +75,7 @@ def fetcher_for(st_result, ct_result):
 
 
 def collect_with(st_result, ct_result):
-    return api_health.collect(
-        now=NOW, fetcher=fetcher_for(st_result, ct_result)
-    )
+    return api_health.collect(now=NOW, fetcher=fetcher_for(st_result, ct_result))
 
 
 def app_row(doc, app):
@@ -181,9 +177,7 @@ class CongressTradeMappingTests(unittest.TestCase):
         self.assertIs(row["ingestionAlive"], False)
 
     def test_ct_missing_optional_check_is_unknown_never_green(self):
-        body = ct_payload(
-            components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"}
-        )
+        body = ct_payload(components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"})
         doc = collect_with((200, st_payload(), None), (200, body, None))
         row = app_row(doc, "CT")
         self.assertEqual(row["state"], "unknown")
@@ -241,9 +235,7 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(api_health.store_reading(written, now=NOW), "unknown")
 
     def test_unparseable_and_http_error_fail_closed(self):
-        doc = collect_with(
-            (200, None, "unparseable"), (503, None, "http_503")
-        )
+        doc = collect_with((200, None, "unparseable"), (503, None, "http_503"))
         self.assertEqual(app_row(doc, "ST")["state"], "unknown")
         self.assertEqual(app_row(doc, "ST")["error"], "unparseable")
         self.assertEqual(app_row(doc, "CT")["state"], "unknown")
@@ -278,9 +270,12 @@ class FailClosedTests(unittest.TestCase):
                         raise raised
 
                 self.assertEqual(
-                    api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Raising()), (0, None, "timeout")
+                    api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Raising()),
+                    (0, None, "timeout"),
                 )
-        self.assertEqual(api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()), (0, None, "timeout"))
+        self.assertEqual(
+            api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()), (0, None, "timeout")
+        )
         self.assertIn(socket.timeout, api_health.TIMEOUTS)
 
     def test_one_app_failing_does_not_hide_the_other(self):
@@ -339,12 +334,8 @@ class BoundAndStoreTests(unittest.TestCase):
         doc = collect_with((200, st_payload(), None), (200, ct_payload(), None))
         later = NOW + api_health.STORE_MAX_AGE_SECONDS + 1
         self.assertEqual(api_health.store_reading(doc, now=later), "unknown")
-        self.assertEqual(
-            api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown"
-        )
-        self.assertEqual(
-            api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown"
-        )
+        self.assertEqual(api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown")
+        self.assertEqual(api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown")
         self.assertEqual(api_health.store_reading(None, now=NOW), "unknown")
         self.assertEqual(api_health.store_reading({}, now=NOW), "unknown")
 
