@@ -51,7 +51,16 @@ class World:
         self.export_cwds = []
 
     def fetch_project(
-        self, project, path, env, *, token=None, writer=False, names=None, timeout=None
+        self,
+        project,
+        path,
+        env,
+        *,
+        token=None,
+        writer=False,
+        names=None,
+        allow_unresolved=False,
+        timeout=None,
     ):
         refusal = core.environment_refusal(env)
         if refusal:
@@ -61,13 +70,32 @@ class World:
             raise core.SecretsError(message)
         project_name = core.project_name_for_id(project, env)
         token = token or core.resolve_token(env, writer=writer, project_name=project_name)
-        self.fetches.append((project, path, dict(env), token, writer, names, timeout))
+        self.fetches.append(
+            (project, path, dict(env), token, writer, names, allow_unresolved, timeout)
+        )
         if self.export_stdout is not None:
             try:
                 return core._pairs(json.loads(self.export_stdout.decode("utf-8")))
             except (ValueError, UnicodeDecodeError):
                 raise core.SecretsError("fetch-failed: bad-output") from None
         return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
+
+    def list_names(self, project, path, env, *, token=None, timeout=None):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, False, (), timeout))
+        if self.export_stdout is not None:
+            try:
+                json.loads(self.export_stdout.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+        return tuple(sorted(key for key in self.secrets if core.NAME_RE.fullmatch(key)))
 
     def run(self, argv, **kw):
         argv = list(argv)
@@ -155,6 +183,9 @@ class Base(unittest.TestCase):
         fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
         fetch.start()
         self.addCleanup(fetch.stop)
+        names = mock.patch.object(core, "list_project_names", world.list_names)
+        names.start()
+        self.addCleanup(names.stop)
         return world
 
     def call(self, *argv, env=None):
@@ -170,9 +201,10 @@ class Base(unittest.TestCase):
 
 class GetTests(Base):
     def test_get_prints_exact_value_without_newline(self):
-        self.use(World())
+        world = self.use(World())
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
 
     def test_get_several_names_prints_one_json_object(self):
         w = self.use(World())
@@ -309,7 +341,7 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_requires_its_own_scoped_token(self):
+    def test_interactive_get_requires_its_own_scoped_token_before_any_read(self):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
@@ -453,6 +485,18 @@ class RunTests(Base):
 
 
 class NamesTests(Base):
+    def test_names_never_exports_secret_values(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_project", side_effect=AssertionError("value export")):
+            code, out, err = self.call("names", "--path", "/metadata")
+        self.assertEqual((code, out, err), (0, "ALPHA\nBETA\n", ""))
+        self.assertEqual((world.fetches[0][1], world.fetches[0][5]), ("/metadata", ()))
+
+    def test_legacy_import_uses_the_shared_command_implementation(self):
+        import fleet_infisical_cli
+
+        self.assertIs(cli, fleet_infisical_cli)
+
     def test_names_sorted_one_per_line_and_no_values(self):
         self.use(World(secrets={"ZED": VAL_B, "ALPHA": VAL_A}))
         code, out, err = self.call("names")
@@ -558,18 +602,83 @@ class ConfigTests(Base):
 
 class DoctorTests(Base):
     def test_doctor_checks_the_second_project_with_its_scoped_token(self):
-        self.use(World())
+        world = World()
+        self.use(world)
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
         self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+        self.assertEqual(
+            [(row[0], row[1]) for row in world.fetches],
+            [(PROJECT, "/"), (OTHER_PROJECT, "/fleetlink")],
+        )
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertFalse(rep["ok"])
+
+    def test_selected_doctor_reads_only_the_default_project_root(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
+        self.assertNoSentinel(out, err)
+
+    def test_selected_doctor_uses_only_the_selected_project_and_path(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.ENV_TOKEN)
+        code, out, err = self.call(
+            "doctor", "--json", "--project=ai-fleet-coordinator", "--path=/catalog"
+        )
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["auth_mode"], "token")
+        self.assertTrue(rep["reader_configured"])
+        self.assertFalse(rep["writer_configured"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertNoSentinel(out, err)
+
+    def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
+        world = World()
+        self.use(world)
+        rep = cli.doctor_report(self.env, path="/catalog")
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/catalog")])
+
+    def test_selected_doctor_validates_the_route_before_fetching(self):
+        world = World()
+        self.use(world)
+        for args in (("--project=unknown",), ("--project=fleet-ops", "--path=/../private")):
+            with self.subTest(args=args):
+                code, out, _ = self.call("doctor", "--json", *args)
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(world.fetches, [])
+
+    def test_selected_doctor_preserves_value_validation_without_returning_values(self):
+        world = World(secrets={"ALPHA": "${UNRESOLVED_EXAMPLE}"})
+        self.use(world)
+        code, out, err = self.call("doctor", "--json", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(rep["names_count"], 1)
+        self.assertEqual(rep["unresolved_reference_count"], 1)
+        self.assertFalse(rep["ok"])
+        self.assertNotIn("UNRESOLVED_EXAMPLE", out + err)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
 
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
