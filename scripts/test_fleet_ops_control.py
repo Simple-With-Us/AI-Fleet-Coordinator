@@ -6425,7 +6425,6 @@ class TestWakeTests(Base):
         self.assertEqual(answer["testWake"]["wakeId"], self.WAKE_ID)
 
 
-
 class PauseReader:
     """Stands in for `run_bounded_read`:  answers the status read (`cat` of status.json) with the
     next of `statuses` (the last one repeats), and the pause or resume command with `status`."""
@@ -6445,7 +6444,12 @@ class PauseReader:
             self.reads += 1
             document = self.statuses[index]
             if document is None:
-                return 1, b"", b"Error response from daemon: container eavesdropper is not running", False
+                return (
+                    1,
+                    b"",
+                    b"Error response from daemon: container eavesdropper is not running",
+                    False,
+                )
             return 0, json.dumps(document).encode(), b"", False
         assert argv[1:8] == [
             "exec",
@@ -6529,7 +6533,9 @@ class PauseTests(Base):
             with self.subTest(target=target, code_word=code_word):
                 reader = PauseReader(statuses)
                 code, answer = self.go("pause", target, reader=reader)
-                self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", code_word))
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (2, "refused", code_word)
+                )
                 self.assertEqual(reader.runs, [])
 
     def test_a_resume_with_nothing_to_lift_is_refused(self):
@@ -6565,7 +6571,8 @@ class PauseTests(Base):
         rows = self.audit_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(
-            (rows[0]["verb"], rows[0]["target"], rows[0]["result"]), ("server pause", "CLAUDE", "done")
+            (rows[0]["verb"], rows[0]["target"], rows[0]["result"]),
+            ("server pause", "CLAUDE", "done"),
         )
 
     def test_a_change_the_status_never_shows_is_not_confirmed(self):
@@ -6592,12 +6599,19 @@ class PauseTests(Base):
             (127, b"", False, "docker_unavailable"),
             (124, b"", False, "timeout"),
             (0, b"", True, "too_large"),
-            (1, b"Error response from daemon: container eavesdropper is not running", False, "container_not_running"),
+            (
+                1,
+                b"Error response from daemon: container eavesdropper is not running",
+                False,
+                "container_not_running",
+            ),
         ):
             with self.subTest(code_word=code_word):
                 reader = PauseReader([self.status()], status=status, stderr=stderr, over=over)
                 code, answer = self.go("pause", "server", reader=reader)
-                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", code_word))
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (1, "failed", code_word)
+                )
                 self.assertNotIn("usage: simple-chat", json.dumps(answer))
 
     def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
@@ -6621,6 +6635,7 @@ class PauseTests(Base):
         ):
             with self.assertRaises(foc.Refused, msg=line):
                 foc.parse_ssh_command(line)
+
 
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):

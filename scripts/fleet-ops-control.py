@@ -2933,7 +2933,9 @@ def pause_detail(verb, seat):
     if verb == PAUSE_VERB:
         return f"{name}:  wakes and live interrupts stop;  capture goes on, and resume lifts it"
     if verb == PAUSE_WAKES_VERB:
-        return f"{name}:  routine wakes stop;  live interrupts and capture go on, and resume lifts it"
+        return (
+            f"{name}:  routine wakes stop;  live interrupts and capture go on, and resume lifts it"
+        )
     if seat is None:
         return "every pause is lifted, the fleet-wide one and each seat's"
     return f"{name}'s own pause is lifted;  a fleet-wide pause, if any, stays"
@@ -4840,22 +4842,27 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + (
-        "update",
-        "update-status",
-        "unit-status",
-        "redeploy",
-        "logs",
-        "resource-status",
-        "resource-policy",
-        "seat-inventory",
-        "eavesdropper-status",
-        EAVESDROPPER_SETTINGS_VERB,
-        "operator-sessions",
-        "operator-wakes",
-        ROUTER_HEALTH_VERB,
-        TEST_WAKE_VERB,
-    ) + PAUSE_VERBS:
+    if (
+        plain[1]
+        not in ACTIONS
+        + (
+            "update",
+            "update-status",
+            "unit-status",
+            "redeploy",
+            "logs",
+            "resource-status",
+            "resource-policy",
+            "seat-inventory",
+            "eavesdropper-status",
+            EAVESDROPPER_SETTINGS_VERB,
+            "operator-sessions",
+            "operator-wakes",
+            ROUTER_HEALTH_VERB,
+            TEST_WAKE_VERB,
+        )
+        + PAUSE_VERBS
+    ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")
