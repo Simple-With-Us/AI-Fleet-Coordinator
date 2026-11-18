@@ -2694,6 +2694,16 @@ class Retries(Base):
         self.run_all(router)
         self.assertEqual(self.done()["status"], "delivered")
 
+    def test_an_unknown_answer_is_final_even_when_it_names_the_outage(self) -> None:
+        """A delivery that may have run is never retried, whatever the code says."""
+        self.results = [WR.Delivery("unknown", "resume", code=WR.REGISTRY_UNAVAILABLE)]
+        router = self.router(max_attempts=2)
+        router.accept(self.wake())
+        self.run_all(router)
+        receipt = self.done()
+        self.assertEqual(receipt["status"], "unknown")
+        self.assertEqual(len(self.delivered), 1)
+
     def test_a_registry_outage_answer_spends_no_attempt(self) -> None:
         """The answer a registry outage gets is not a failed delivery, so the wake's five
         attempts are untouched and the wake waits for the registry to come back."""

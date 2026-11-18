@@ -1571,12 +1571,13 @@ class Router:
             self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
-        if result.code == REGISTRY_UNAVAILABLE:
+        outcome = result.outcome if result.outcome in OUTCOMES else "failed"
+        if result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused"):
             # A registry that cannot be read is an outage, not a failed delivery, whichever
-            # platform answered it:  it spends none of the wake's attempts.
+            # platform answered it:  it spends none of the wake's attempts.  An `unknown`
+            # answer stays final, because the delivery may have run and nobody can tell.
             self._retry_outage(entry, result.code, pick)
             return
-        outcome = result.outcome if result.outcome in OUTCOMES else "failed"
         if outcome in ("sent", "completed"):
             # A hand-over with no proof is recorded as unknown (null), never as delivered.
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
