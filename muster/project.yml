@@ -174,8 +174,6 @@ targets:
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
-      - path: Muster/Model/WakeSettingsStore.swift
-      - path: Muster/Model/WakeSettingsWriter.swift
       - path: Muster/FleetServices/ControlAPI.swift
       - path: Muster/FleetServices/FleetServiceControl.swift
       - path: Muster/FleetServices/FleetHost.swift

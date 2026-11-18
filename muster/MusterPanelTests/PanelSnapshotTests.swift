@@ -17,8 +17,8 @@ import XCTest
 /// store here starts a timer, a watcher or a run of its own.
 ///
 /// Inert by default:  a few panels read through app singletons (`OpsController.shared`,
-/// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
-/// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
+/// `FleetViewStore.shared`, `SeatActivityStore.shared`, `OperatorPanelStore.shared`,
+/// `RouterTestWakeStore.shared`, `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
 /// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
 /// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
 /// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
