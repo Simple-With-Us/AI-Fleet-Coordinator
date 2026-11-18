@@ -675,9 +675,13 @@ PAUSE_VERBS = (PAUSE_VERB, PAUSE_WAKES_VERB, RESUME_VERB)
 # A seat word is the Operator's own seat shape (`OPERATOR_SEAT_RE`, which Muster's
 # `OpsCommandBuilder.isSeatName` mirrors).
 PAUSE_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
-# The command writes the pause file and returns;  the Eavesdropper publishes the state it then holds
-# in its status within seconds.  The read-back waits for it at most this long.
-PAUSE_TIMEOUT = 30
+# The command runs through the container's entrypoint, which loads the listener's variables from
+# Infisical before it starts (up to about 18 seconds a request when Infisical is slow), so it gets
+# the bound `server test-wake` has.  It writes the pause file and returns;  the Eavesdropper
+# publishes the state it then holds in its status within seconds, and the read-back waits for that
+# at most PAUSE_CONFIRM_SECONDS.  The worst case, with both status reads, stays inside Muster's
+# 180-second wait for a server run.
+PAUSE_TIMEOUT = TEST_WAKE_TIMEOUT
 PAUSE_MAX_BYTES = 16 * 1024
 PAUSE_CONFIRM_SECONDS = 30
 PAUSE_CONFIRM_EVERY = 2
@@ -691,7 +695,7 @@ PAUSE_ERRORS = {
 }
 PAUSE_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
-    "timeout": "the pause or resume took too long",
+    "timeout": "the pause or resume took too long, and the Eavesdropper's status did not show the change;  it may still take effect",
     "container_not_running": "the eavesdropper container is not running",
     "read_failed": "the pause or resume could not be run in the eavesdropper container",
     "too_large": "the pause or resume printed more than the allowed size",
@@ -2978,7 +2982,7 @@ def run_pause(ctx, verb, seat):
         reason = _docker_failure(err)
         if reason not in PAUSE_UNAVAILABLE:
             reason = "read_failed"
-    if reason is not None:
+    if reason is not None and reason != "timeout":
         return {
             "ok": False,
             "result": "failed",
@@ -2986,6 +2990,8 @@ def run_pause(ctx, verb, seat):
             "errorCode": reason,
             "pause": None,
         }, 1
+    # A timeout stops only the docker client:  the command may still finish in the container, so the
+    # status is read back before the run is called failed, and a change it shows is done.
     deadline = ctx.monotonic() + PAUSE_CONFIRM_SECONDS
     pause = None
     while True:
@@ -3003,6 +3009,14 @@ def run_pause(ctx, verb, seat):
         if remaining <= 0:
             break
         ctx.sleep(min(PAUSE_CONFIRM_EVERY, remaining))
+    if reason == "timeout":
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": PAUSE_UNAVAILABLE["timeout"],
+            "errorCode": "timeout",
+            "pause": pause,
+        }, 1
     return {
         "ok": False,
         "result": "failed",

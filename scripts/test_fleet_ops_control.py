@@ -6614,6 +6614,27 @@ class PauseTests(Base):
                 )
                 self.assertNotIn("usage: simple-chat", json.dumps(answer))
 
+    def test_a_timeout_is_read_back_before_it_is_called_failed(self):
+        # A slow Infisical in the entrypoint can outlast the bound;  the docker client stops, the
+        # command may still finish in the container, and a change the status shows is done.
+        before = self.status()
+        reader = PauseReader(
+            [before, before, before, self.status({"*": self.entry(wakes_only=True)})], status=124
+        )
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["pause"]["all"]["wakesOnly"], True)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # The bound is the test wake's, which runs through the same entrypoint.
+        self.assertEqual(reader.runs[0][1], foc.TEST_WAKE_TIMEOUT)
+        self.assertEqual(foc.PAUSE_TIMEOUT, foc.TEST_WAKE_TIMEOUT)
+        # A timeout the status never confirms keeps its own code and keeps the pause it read.
+        reader = PauseReader([before], status=124)
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", "timeout"))
+        self.assertIn("may still take effect", answer["detail"])
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
     def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
         reader = PauseReader([self.status()], raise_on_run=True)
         code, answer = self.go("pause", "server", reader=reader)
