@@ -167,7 +167,10 @@ Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partit
 `owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
 seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
-lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
+lease's `lease_id`, `session_id` and `title`.  A current listener no longer writes `claude`, `muse`,
+`pin`, `pinned`, `model`, `routes_24h`, `route_enabled`, `provider`, `fallback` or `quota` (the
+claude, muse and openrouter wake types were retired, Nov 10, 2026);  a document from an older
+listener may still carry them, and it is read as before.  `drain` is not read either:  it is the AFC-652
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.

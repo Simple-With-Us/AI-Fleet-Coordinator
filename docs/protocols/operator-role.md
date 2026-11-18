@@ -54,7 +54,7 @@ These are the owner's rulings.  Where the code does not do one yet, [the listen
 | --- | --- | --- |
 | The Operator as a service seat | `scripts/simple_tools/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
 | The Operator's identity, read from the environment | `scripts/simple_tools/service_identity.py`, `scripts/simple_tools/dm_policy.py`: `operator_user_id(env, pinned)` | built |
-| No Operator direct messages | `scripts/simple_tools/dm_policy.py` still lets the Operator open a direct message (`check_new_dm()`, and `ZulipClient.operator_status_dm` for its status message), and `scripts/simple_tools/daemon.py` still DMs the owner (`dm_owner`, `_run_broadcast_audit`) | not built:  these move to Side-Chats |
+| No Operator direct messages | `scripts/simple_tools/dm_policy.py` still lets the Operator open a direct message (`check_new_dm()`, and `ZulipClient.operator_status_dm` for its status message), and `scripts/simple_tools/daemon.py` still DMs the owner (`_run_broadcast_audit`;  `dm_owner` stays as code, though no wake raises an escalation note since the listener stopped starting models) | not built:  these move to Side-Chats |
 | Session letters | `scripts/simple_tools/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
 | The registry on the Fleet Reference sheet | `scripts/simple_tools/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
 | The Zulip to Linear mirror | `scripts/simple_tools/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
@@ -159,9 +159,10 @@ and defined outputs.
 
 2.  **It posts no wake reply and wears no seat's wake tag.**  The owner ruled that "The operator
     should never be answering on behalf of a platform", so the Operator posts no wake reply, no
-    owner ack, no route page and no quota notice, for any seat.  `Daemon.post` is a refusal that
-    records `operator_never_answers` on the wake's ledger row.  Its own notes are tagged
-    `[OPERATOR·note]`.
+    owner ack, no route page and no quota notice, for any seat.  The listener starts no model
+    since the same day, so no code is left that takes a model's answer (`Daemon.post` and `act`
+    are gone;  ledger rows from before may still carry `operator_never_answers`).  Its own notes
+    are tagged `[OPERATOR·note]`.
 
 3.  **It never DMs and never asks.**  The Operator asks nobody a clarifying question, and anything
     that would be a direct message goes in Side-Chats.  The candidate list and the registration
