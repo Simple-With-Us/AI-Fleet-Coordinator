@@ -38,6 +38,24 @@ test("each kind, reason and seat coalesces on its own", () => {
   assert.equal(c.take({ kind: "gr_bearer", reason: "paused", seat: "ECHO" }), 0);
 });
 
+test("a write that did not land gives its occurrences back, and the next one writes at once", () => {
+  let now = NOW;
+  const c = new DiagnosticCoalescer({ now: () => now });
+  const entry = { kind: "gr_bearer", reason: "unavailable" };
+  assert.equal(c.take(entry), 1);
+  assert.equal(c.take(entry), 0);
+  // The first write was dropped (budget spent or log down):  it hands its one back.
+  c.giveBack(entry, 1);
+  now += 1;
+  // Not held for the window:  this write carries the given-back one, the pending one and itself.
+  assert.equal(c.take(entry), 3);
+  assert.equal(c.take(entry), 0);
+  // A give-back for a key the coalescer no longer remembers still counts.
+  const fresh = new DiagnosticCoalescer({ now: () => now });
+  fresh.giveBack({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }, 2);
+  assert.equal(fresh.take({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }), 3);
+});
+
 test("the coalescer's memory is bounded, oldest key first", () => {
   let now = NOW;
   const c = new DiagnosticCoalescer({ now: () => now, maxKeys: 2 });

@@ -334,10 +334,17 @@ async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
 
 // Persist only fixed reason codes for pre-tool failures.  This must never
 // change the response if diagnostics storage itself is unavailable.
+// Answers whether the row was written (false when the isolate's budget was spent or the
+// log failed);  callers other than recordGrRefusal ignore it.
 async function recordDiagnostic(env, entry) {
-  if (!diagnosticRowAllowed()) return;
-  try { await gate(env, GATE_LOG_NAME).recordDiagnostic(entry); }
-  catch { console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind })); }
+  if (!diagnosticRowAllowed()) return false;
+  try {
+    await gate(env, GATE_LOG_NAME).recordDiagnostic(entry);
+    return true;
+  } catch {
+    console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind }));
+    return false;
+  }
 }
 
 // The relay check routes' refusal rows (AFC-844):  each kind+reason+seat writes at
@@ -350,7 +357,11 @@ const GR_REFUSALS = new DiagnosticCoalescer();
 function recordGrRefusal(env, ctx, entry) {
   const count = GR_REFUSALS.take(entry);
   if (count === 0) return undefined;
-  const write = recordDiagnostic(env, { ...entry, count });
+  // A write that does not land hands its occurrences back (Sentry, PR 2331), so the next
+  // occurrence writes at once instead of waiting out the window.
+  const write = recordDiagnostic(env, { ...entry, count }).then((written) => {
+    if (!written) GR_REFUSALS.giveBack(entry, count);
+  });
   if (ctx && typeof ctx.waitUntil === "function") {
     ctx.waitUntil(write);
     return undefined;

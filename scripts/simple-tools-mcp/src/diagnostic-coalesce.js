@@ -46,4 +46,17 @@ export class DiagnosticCoalescer {
     while (this.keys.size > this.maxKeys) this.keys.delete(this.keys.keys().next().value);
     return count;
   }
+
+  /**
+   * A write that `take` allowed did not land (the isolate's diagnostics budget was
+   * spent, or the log failed).  Its occurrences go back to pending and the window
+   * reopens, so the next occurrence writes at once and carries them.
+   */
+  giveBack({ kind, reason, seat = null }, count) {
+    const key = `${kind}\0${reason}\0${seat ?? ""}`;
+    const state = this.keys.get(key) ?? { writtenAt: -Infinity, pending: 0 };
+    state.writtenAt = -Infinity;
+    state.pending += count;
+    this.keys.set(key, state);
+  }
 }
