@@ -4,7 +4,9 @@ and wake count caps that have no default.
 A seat either has a `routine` (an HTTP POST to a router that decides, delivers and wakes) or it only
 captures into its inbox.  These tests hold the safe first step:  a deprecated key still behaves exactly
 as before and only warns, a stray key never downgrades a seat or drops its routine, and a cap the seat
-leaves unset is no limit while `0` still pauses wakes.
+leaves unset is no limit while `0` still pauses wakes.  The claude, muse and openrouter wake types are
+retired (the listener starts no model):  a seat that names one is refused as a wake problem and only
+captures, and the settings only those runtimes read are left over and ignored with a warning.
 """
 
 from __future__ import annotations
@@ -58,6 +60,28 @@ fallback = "openrouter"
 fallback_model = "minimax/MiniMax-M3.1-Flash"
 """
 
+# The settings only the retired runtimes read (owner, Nov 10, 2026:  the listener starts no model).
+RUNTIME_KEYS = (
+    "model",
+    "muse",
+    "mcode",
+    "mcode_model",
+    "provider",
+    "fallback",
+    "fallback_model",
+    "fallback_uncontained_ok",
+    "typing_indicator",
+    "route_enabled",
+)
+
+
+def retired(seat: str, wake: str) -> str:
+    return (
+        'seat.%s.wake = "%s" is retired:  the listener starts no model (owner, Nov 10, 2026);  '
+        'write wake = "http" with a routine, or wake = "inbox" to capture only;  until then the '
+        "seat only captures" % (seat, wake)
+    )
+
 
 def load(text: str) -> C.Config:
     return C.from_dict(tomllib.loads(HEAD + text))
@@ -67,16 +91,12 @@ def shape(seat: C.SeatConfig) -> dict[str, Any]:
     """Everything about a parsed seat that decides how it behaves."""
     return {
         "wake": seat.wake,
-        "model": seat.model,
         "budget": dict(seat.budget),
         "live": dict(seat.live),
         "routine": seat.routine.describe() if seat.routine else None,
         "problems": list(seat.config_problems),
         "held_back": seat.held_back,
         "enabled_seat": seat.enabled,
-        "fallback": seat.fallback,
-        "route_enabled": seat.route_enabled,
-        "typing_indicator": seat.typing_indicator,
         "mode": seat.mode,
     }
 
@@ -117,29 +137,65 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.warnings, [])
 
-    def test_every_legacy_key_still_works_and_warns_naming_the_seat_and_key(self) -> None:
+    def test_a_retired_wake_seat_is_refused_and_its_runtime_keys_are_leftover_warnings(self) -> None:
         cfg = load(LEGACY_CLAUDE_SEAT + LEGACY_MUSE_SEAT)
-        self.assertEqual(cfg.errors, [], "a deprecated key is not an error")
+        # One error per seat, its wake refusal:  the runtime keys add none, whatever their values.
+        self.assertEqual(cfg.errors, [retired("CLAUDE", "claude"), retired("MM", "muse")])
+        self.assertEqual(cfg.skipped_seats, {}, "a refused wake still loads and captures")
         claude, muse = cfg.seats["CLAUDE"], cfg.seats["MM"]
-        # Exactly the behavior the keys had before the schema:  nothing is downgraded or dropped.
-        self.assertEqual(claude.config_problems, [])
-        self.assertEqual(
-            (claude.wake, claude.model, claude.claude, claude.mcode, claude.mcode_model),
-            ("claude", "sonnet", "/opt/claude/bin/claude", "/opt/mcode/bin/mcode",
-             "minimax/MiniMax-M3.1-Flash"),
-        )
-        self.assertEqual((claude.fallback, claude.fallback_uncontained_ok), ("mcode", True))
-        self.assertEqual(claude.provider, "Claude Code")
-        self.assertTrue(claude.typing_indicator)
-        self.assertFalse(claude.route_enabled)
-        self.assertEqual((muse.wake, muse.muse), ("muse", "/opt/muse/bin/muse"))
-        self.assertEqual((muse.fallback, muse.fallback_model), ("openrouter", "minimax/MiniMax-M3.1-Flash"))
-        for key in sorted(C.SEAT_KEYS_LEGACY):
+        for seat, wake in ((claude, "claude"), (muse, "muse")):
+            with self.subTest(seat=seat.seat):
+                self.assertEqual(seat.config_problems, [retired(seat.seat, wake)])
+                self.assertEqual((seat.wake, seat.mode, seat.routine), ("inbox", "capture", None))
+                # Nothing the retired runtimes read reaches the seat:  SeatConfig has no field for it.
+                for field in RUNTIME_KEYS:
+                    self.assertFalse(hasattr(seat, field), field)
+        for key in RUNTIME_KEYS:
             with self.subTest(key=key):
                 named = [w for w in cfg.warnings if ("seat.CLAUDE.%s " % key) in w or ("seat.MM.%s " % key) in w]
                 self.assertTrue(named, (key, cfg.warnings))
                 for warning in named:
-                    self.assertIn("is deprecated", warning)
+                    self.assertIn(
+                        "is left over from the retired claude, muse and openrouter wake types and is "
+                        "ignored;  it can be deleted",
+                        warning,
+                    )
+        # `claude` still loads with a deprecation warning;  a retired `wake` value is refused by its
+        # own error and gets no "deprecated" warning beside it, while an http or inbox `wake` does.
+        named = [w for w in cfg.warnings if "seat.CLAUDE.claude " in w]
+        self.assertTrue(named, cfg.warnings)
+        for warning in named:
+            self.assertIn("is deprecated", warning)
+        for seat in ("CLAUDE", "MM"):
+            self.assertFalse([w for w in cfg.warnings if "seat.%s.wake " % seat in w], cfg.warnings)
+        routine = load(ROUTINE_SEAT % "")
+        self.assertTrue(
+            [w for w in routine.warnings if w.startswith("seat.JET.wake is deprecated")],
+            routine.warnings,
+        )
+
+    def test_the_claude_path_is_still_read_for_the_liveness_check(self) -> None:
+        # Daemon.agent_kinds asks this binary whether a live Claude Code session is interactive.
+        seat = load(ROUTINE_SEAT % 'claude = "/opt/claude/bin/claude"').seats["JET"]
+        self.assertEqual((seat.wake, seat.claude), ("http", "/opt/claude/bin/claude"))
+        cfg = load(ROUTINE_SEAT % 'claude = "relative/claude"')
+        self.assertEqual(cfg.seats["JET"].config_problems, ["seat.JET.claude must be an absolute path"])
+        self.assertIsNone(cfg.seats["JET"].claude, "a path that is not absolute is never kept")
+
+    def test_a_seat_whose_wake_is_downgraded_keeps_a_valid_claude_path(self) -> None:
+        # The liveness check reads `claude` whatever the wake, so a downgrade to inbox keeps it.
+        refused = load(
+            '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nclaude = "/opt/claude/bin/claude"\n'
+        ).seats["CLAUDE"]
+        self.assertEqual(refused.wake, "inbox")
+        self.assertEqual(refused.config_problems, [retired("CLAUDE", "claude")])
+        self.assertEqual(refused.claude, "/opt/claude/bin/claude")
+        budget = load(
+            ROUTINE_SEAT % 'claude = "/opt/claude/bin/claude"\nbudget = { nonsense = 1 }'
+        ).seats["JET"]
+        self.assertEqual(budget.wake, "inbox")
+        self.assertEqual(budget.config_problems, ["seat.JET.budget.nonsense is not a known budget"])
+        self.assertEqual(budget.claude, "/opt/claude/bin/claude")
 
     def test_the_new_and_legacy_lists_do_not_overlap_and_cover_what_the_parser_reads(self) -> None:
         self.assertEqual(C.SEAT_KEYS & C.SEAT_KEYS_LEGACY, frozenset())
@@ -153,30 +209,36 @@ class SeatKeySchema(unittest.TestCase):
             self.assertIn(key, C.SEAT_KEYS)
         self.assertNotIn("muse_bridge", C.SEAT_KEYS, "the Muse inbox bridge was deleted (Nov 10, 2026)")
         self.assertIn("muse_bridge", C.SEAT_KEYS_LEFTOVER)
-        for key in ("wake", "model", "claude", "muse", "mcode", "mcode_model", "provider", "fallback",
-                    "fallback_model", "fallback_uncontained_ok", "typing_indicator", "route_enabled"):
-            self.assertIn(key, C.SEAT_KEYS_LEGACY)
+        self.assertEqual(C.SEAT_KEYS_LEGACY, frozenset({"wake", "claude"}))
+        for key in RUNTIME_KEYS:
+            self.assertIn(key, C.SEAT_KEYS_LEFTOVER)
+            self.assertEqual(
+                C.SEAT_KEYS_LEFTOVER[key], "the retired claude, muse and openrouter wake types"
+            )
+        self.assertEqual(C.KNOWN_WAKES, ("inbox", "http"))
+        self.assertEqual(C.RETIRED_WAKES, ("claude", "muse", "openrouter"))
+        self.assertEqual(C.WORKER_WAKES, ("http",), "the routine seat keeps its wake worker")
 
     def test_the_leftover_bridge_key_warns_once_and_changes_nothing(self) -> None:
         # A live config written before the Muse inbox bridge was deleted still names it per seat.
-        plain = load(LEGACY_CLAUDE_SEAT)
+        plain = load(ROUTINE_SEAT % "")
         for value in ("false", "true", '"yes"'):
             with self.subTest(value=value):
-                leftover = load(LEGACY_CLAUDE_SEAT + "muse_bridge = %s\n" % value)
+                leftover = load(ROUTINE_SEAT % ("muse_bridge = %s" % value))
                 self.assertEqual(leftover.errors, [])
-                self.assertEqual(shape(leftover.seats["CLAUDE"]), shape(plain.seats["CLAUDE"]))
+                self.assertEqual(shape(leftover.seats["JET"]), shape(plain.seats["JET"]))
                 extra = [w for w in leftover.warnings if w not in plain.warnings]
                 self.assertEqual(len(extra), 1, extra)
-                self.assertIn("seat.CLAUDE.muse_bridge is left over", extra[0])
+                self.assertIn("seat.JET.muse_bridge is left over", extra[0])
                 self.assertIn("it can be deleted", extra[0])
 
     def test_an_unknown_key_warns_and_changes_nothing(self) -> None:
-        plain = load(LEGACY_CLAUDE_SEAT)
-        stray = load(LEGACY_CLAUDE_SEAT + 'frobnicate = 1\n')
+        plain = load(ROUTINE_SEAT % "")
+        stray = load(ROUTINE_SEAT % "frobnicate = 1")
         self.assertEqual(stray.errors, [])
-        self.assertIn("seat.CLAUDE.frobnicate is not a known seat setting and is ignored", stray.warnings)
-        self.assertEqual(shape(stray.seats["CLAUDE"]), shape(plain.seats["CLAUDE"]))
-        self.assertEqual(stray.seats["CLAUDE"].wake, "claude", "a stray key never downgrades the seat")
+        self.assertIn("seat.JET.frobnicate is not a known seat setting and is ignored", stray.warnings)
+        self.assertEqual(shape(stray.seats["JET"]), shape(plain.seats["JET"]))
+        self.assertEqual(stray.seats["JET"].wake, "http", "a stray key never downgrades the seat")
 
     def test_an_unknown_key_beside_a_valid_routine_keeps_the_routine_and_the_http_mode(self) -> None:
         plain = load(ROUTINE_SEAT % "")
@@ -193,11 +255,13 @@ class SeatKeySchema(unittest.TestCase):
         self.assertTrue(any("seat.JET.frobnicate " in w for w in stray.warnings))
         self.assertTrue(any("seat.JET.routin " in w for w in stray.warnings))
 
-    def test_a_seat_level_routes_key_is_deprecated_not_unknown(self) -> None:
+    def test_a_seat_level_routes_key_is_a_leftover_not_unknown(self) -> None:
         cfg = load('[seat.CODEX]\nbot = "Codex"\nroutes_per_day = 4\n')
         self.assertEqual(cfg.errors, [])
         self.assertEqual(len(cfg.warnings), 1)
-        self.assertIn("seat.CODEX.routes_per_day is deprecated", cfg.warnings[0])
+        self.assertIn(
+            "seat.CODEX.routes_per_day is left over from the retired wake types", cfg.warnings[0]
+        )
 
     def test_legacy_budget_keys_and_usd_warn_but_the_wake_caps_do_not(self) -> None:
         cfg = load(
@@ -211,8 +275,8 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(
             cfg.warnings,
             [
-                "seat.CODEX.budget.%s is deprecated:  it still works as before, and goes away with the "
-                "wake types it belongs to" % key
+                "seat.CODEX.budget.%s is left over from the retired wake types (board filing and route "
+                "suggestions) and is ignored;  it can be deleted" % key
                 for key in ("board_per_day", "route_topic_minutes", "routes_per_day", "routes_per_hour")
             ]
             + [
@@ -270,12 +334,19 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(cfg.warnings, [])
 
     def test_warnings_never_become_errors_or_wake_problems_and_come_in_a_stable_order(self) -> None:
-        cfg = load(LEGACY_CLAUDE_SEAT + 'zzz = 1\naaa = 2\n')
+        # A routine seat that still carries every retired runtime key, two stray keys and a claude
+        # path:  all warnings, none an error, and the seat keeps waking through its routine.
+        extra = 'zzz = 1\naaa = 2\nclaude = "/opt/claude/bin/claude"\n' + "".join(
+            "%s = true\n" % key for key in RUNTIME_KEYS
+        )
+        cfg = load(ROUTINE_SEAT % extra)
         self.assertTrue(cfg.ok, cfg.errors)
-        self.assertEqual(cfg.seats["CLAUDE"].config_problems, [])
+        self.assertEqual(cfg.seats["JET"].config_problems, [])
+        self.assertEqual(cfg.seats["JET"].mode, "routine")
         keys = [w.split(" ")[0] for w in cfg.warnings]
         self.assertEqual(keys, sorted(keys))
-        self.assertEqual(load(LEGACY_CLAUDE_SEAT + 'zzz = 1\naaa = 2\n').warnings, cfg.warnings)
+        self.assertEqual(len(keys), len(RUNTIME_KEYS) + 4, cfg.warnings)
+        self.assertEqual(load(ROUTINE_SEAT % extra).warnings, cfg.warnings)
 
     def test_a_seat_the_credentials_refuse_still_reports_its_key_warnings(self) -> None:
         cfg = load('[seat.CODEX]\nbot = "not a bot!"\nfrobnicate = 1\n')
@@ -312,7 +383,7 @@ class SeatMode(unittest.TestCase):
             ("claude", None, "capture"),
         ):
             with self.subTest(wake=wake, routine=bool(given)):
-                seat = C.SeatConfig("X", "X", wake, "sonnet", {}, {}, None, routine=given)
+                seat = C.SeatConfig("X", "X", wake, {}, {}, None, routine=given)
                 self.assertEqual(seat.mode, want)
 
     def test_for_every_seat_the_config_can_produce_a_routine_and_wake_http_agree(self) -> None:
@@ -357,28 +428,28 @@ class WakeCapsHaveNoDefault(unittest.TestCase):
 
     def test_a_budget_key_with_no_default_is_kept_when_a_config_sets_it(self) -> None:
         budget = load(
-            LEGACY_CLAUDE_SEAT
-            + "budget = { usd_per_day = 3.5, routes_per_hour = 1, routes_per_day = 2, route_topic_minutes = 15 }\n"
-        ).seats["CLAUDE"].budget
+            ROUTINE_SEAT
+            % "budget = { usd_per_day = 3.5, routes_per_hour = 1, routes_per_day = 2, route_topic_minutes = 15 }"
+        ).seats["JET"].budget
         self.assertEqual(
             (budget["usd_per_day"], budget["routes_per_hour"], budget["routes_per_day"], budget["route_topic_minutes"]),
             (3.5, 1, 2, 15),
         )
 
     def test_a_seat_with_no_budget_table_has_no_caps(self) -> None:
-        cfg = load(LEGACY_CLAUDE_SEAT)
-        budget = cfg.seats["CLAUDE"].budget
+        cfg = load(ROUTINE_SEAT % "")
+        budget = cfg.seats["JET"].budget
         for key in C.WAKE_CAP_KEYS:
             self.assertNotIn(key, budget)
         self.assertEqual(budget, dict(C.BUDGET_DEFAULTS))
         self.assertEqual(cfg.errors, [])
 
     def test_an_empty_budget_table_is_the_same_as_none(self) -> None:
-        self.assertEqual(load(LEGACY_CLAUDE_SEAT + "budget = {}\n").seats["CLAUDE"].budget, dict(C.BUDGET_DEFAULTS))
+        self.assertEqual(load(ROUTINE_SEAT % "budget = {}").seats["JET"].budget, dict(C.BUDGET_DEFAULTS))
 
     def test_a_cap_the_seat_sets_is_kept_and_only_that_one(self) -> None:
-        budget = load(LEGACY_CLAUDE_SEAT + "budget = { wakes_per_day = 9, owner_per_day = 0 }\n").seats[
-            "CLAUDE"
+        budget = load(ROUTINE_SEAT % "budget = { wakes_per_day = 9, owner_per_day = 0 }").seats[
+            "JET"
         ].budget
         self.assertEqual((budget["wakes_per_day"], budget["owner_per_day"]), (9, 0))
         for key in ("wakes_per_hour", "per_topic_per_hour", "owner_per_topic_per_hour"):
@@ -387,9 +458,10 @@ class WakeCapsHaveNoDefault(unittest.TestCase):
     def test_a_bad_cap_or_an_unknown_budget_key_is_still_a_wake_problem(self) -> None:
         for given in ("wakes_per_hour = -1", "wakes_per_hour = true", 'wakes_per_hour = "6"', "nonsense = 1"):
             with self.subTest(given=given):
-                cfg = load(LEGACY_CLAUDE_SEAT + "budget = { %s }\n" % given)
+                cfg = load(ROUTINE_SEAT % ("budget = { %s }" % given))
                 self.assertTrue(cfg.errors)
-                self.assertEqual(cfg.seats["CLAUDE"].wake, "inbox", "the existing downgrade is unchanged")
+                self.assertEqual(cfg.seats["JET"].wake, "inbox", "the existing downgrade is unchanged")
+                self.assertIn("seat.JET.budget", cfg.seats["JET"].config_problems[0])
 
 
 def views(
@@ -464,8 +536,6 @@ class WakeBudgetCaps(unittest.TestCase):
         self.assertFalse(W.at_cap(2, {"x": 3}, "x"))
         self.assertTrue(W.at_cap(3, {"x": 3}, "x"))
 
-    def test_the_board_cap_keeps_its_default(self) -> None:
-        self.assertEqual(W.board_block({}, dict(C.BUDGET_DEFAULTS), self.now), "board_per_day")
 
 
 class LiveOwnerCap(unittest.TestCase):

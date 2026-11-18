@@ -153,6 +153,9 @@ class WatcherTests(AttachHarness):
 
 
 class DaemonCapableTests(DaemonHarness):
+    # A capture seat:  a seat with a routine never hands a mention to a session.
+    default_wake = "inbox"
+
     def set_flags(self, text: str) -> None:
         self.write_config()
         path = self.state_dir / "listener.toml"
