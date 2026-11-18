@@ -174,7 +174,7 @@ class AdapterTests(unittest.TestCase):
         env = w.infisical_environment(
             {
                 w.INFISICAL_TOKEN_ENV: "st.wise-purpose-token-fixture",
-                "INFISICAL_TOKEN": "st.ambient-generic-token-fixture",
+                "INFISICAL_TOKEN": "st.ambient-test-token",
                 "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
                 "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
             }
@@ -203,7 +203,7 @@ class AdapterTests(unittest.TestCase):
                     "projectId": PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": w.FOLDER}],
-                    "expiresAt": None,
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, {
                 "secrets": [
@@ -237,7 +237,7 @@ class AdapterTests(unittest.TestCase):
                 "projectId": PROJECT,
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/wrong"}],
-                "expiresAt": None,
+                "expiresAt": "2099-01-01T00:00:00Z",
             }
 
         with mock.patch.object(w.scoped_secrets, "_api_json", api):

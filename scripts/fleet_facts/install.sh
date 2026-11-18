@@ -41,7 +41,7 @@ link="$link_dir/fleet-facts"
 
 for need in "$scripts_dir/fleet-facts" "$here/mac-facts-publish" "$here/cli.py" \
             "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$scripts_dir/fleet_knobs/knobs.py" \
-            "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py"; do
+            "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py" "$scripts_dir/fleet_infisical.py"; do
   [ -f "$need" ] || { echo "install.sh: missing $need (run this from a full checkout)" >&2; exit 1; }
 done
 
@@ -63,6 +63,8 @@ if [ "$apply" -eq 1 ]; then
   cp "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$stage/simple_tools/"
   cp "$scripts_dir"/fleet_knobs/*.py "$stage/fleet_knobs/"
   cp "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py" "$stage/fleet_secrets/"
+  cp "$scripts_dir/fleet_infisical.py" "$stage/fleet_infisical.py"
+  chmod 644 "$stage/fleet_infisical.py"
   : > "$stage/simple_tools/__init__.py"
   chmod 755 "$stage/fleet-facts" "$stage/mac-facts-publish"
   chmod 644 "$stage"/fleet_facts/*.py "$stage"/simple_tools/*.py "$stage"/fleet_knobs/*.py "$stage"/fleet_secrets/*.py

@@ -96,7 +96,7 @@ class ScopedReadAPI:
                         "workspace": fake.project,
                         "scopes": [{"environment": "prod", "secretPath": fake.path}],
                         "permissions": ["read"],
-                        "expiresAt": None,
+                        "expiresAt": "2099-01-01T00:00:00Z",
                     }
                     payload.update(fake.metadata_override)
                 elif parsed.path.startswith("/api/v3/secrets/raw/") and query == {
