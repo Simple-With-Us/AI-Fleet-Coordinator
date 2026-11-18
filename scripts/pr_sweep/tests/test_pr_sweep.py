@@ -860,8 +860,7 @@ class AuditTests(unittest.TestCase):
             {
                 "filename": "x.py",
                 "status": "modified",
-                "patch": "@@\n+<<<<<<< HEAD\n+ok\n+=======\n",
-            },
+                "patch": "@@\n+            },
             {"filename": ".github/CODEOWNERS", "status": "modified", "patch": ""},
             {"filename": ".oxlint-baseline.json", "status": "modified", "patch": ""},
             {"filename": "tests/test_x.py", "status": "removed", "patch": ""},

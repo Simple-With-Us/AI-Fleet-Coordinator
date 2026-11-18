@@ -10,8 +10,7 @@ Checks (each a violation with evidence; `--since` limits the event checks to the
       is any commit on the PR after the thread opened; this errs toward NOT flagging.
   V4  a PR merged while a human CHANGES_REQUESTED review, a pending human review request or an unresolved
       thread is still on it
-  V5  conflict markers (<<<<<<< , >>>>>>> , a bare =======) on lines the merge commit added to the default branch
-  V6  a lint or test baseline file changed, or a test file deleted, by the merge commit (warning)
+  V5  conflict markers (  V6  a lint or test baseline file changed, or a test file deleted, by the merge commit (warning)
   V7  the merge commit changed CODEOWNERS or a merge-gate or auto-merge workflow (warning: those need the owner)
   V8  a PR comment by a person asking Codex or an autofix bot to FIX something (an `@codex review` is fine)
 
@@ -55,8 +54,7 @@ DEFAULT_ALLOWED_DISMISSERS = ("jaywedgeworth22",)
 # a username would be a User actor and is not.
 DEFAULT_ALLOWED_APP_DISMISSERS = seat_app_slugs()
 KODY = ("kody-ai", "kody-ai[bot]")
-_MARKER = re.compile(r"^\+(?:<<<<<<< |>>>>>>> |<<<<<<<$|>>>>>>>$|=======$)")
-_BASELINE = re.compile(r"(?i)(baseline|\.oxlint|eslint-baseline|lint-baseline|\.snap$)")
+_MARKER = re.compile(r"^\+(?:_BASELINE = re.compile(r"(?i)(baseline|\.oxlint|eslint-baseline|lint-baseline|\.snap$)")
 _TEST = re.compile(r"(?i)(^|/)(tests?|__tests__|spec)(/|$)|[._-](test|spec)\.[a-z]+$")
 _SAFETY = re.compile(
     r"(?i)(^|/)CODEOWNERS$|^\.github/workflows/[^/]*(merge-gate|auto-?merge|automerge)[^/]*\.ya?ml$"

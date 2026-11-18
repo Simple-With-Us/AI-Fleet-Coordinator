@@ -197,6 +197,9 @@ REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
+        # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
+        "scripts/simple_tools/thread_registry_export.test.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained

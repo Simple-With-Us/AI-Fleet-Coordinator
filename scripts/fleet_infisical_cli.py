@@ -9,15 +9,11 @@
         any NAME is absent;  nothing is printed then.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
-  set NAME [--path /] [--state-dir ABS] [--purpose SLUG]
-        [--request-id UUID --request-created-at EPOCH_MS] [--reconcile]
-        create or update one allowlisted secret in Fleet-OPS prod using its own scoped writer.
-        The value comes from stdin, with one trailing newline removed.  Output is a JSON receipt
-        with nonsecret recovery identity.  CLI and login sync share the declared protected state
-        root, default ~/.local/state/fleet-infisical-writes, across purposes.  An uncertain write
-        blocks fresh attempts.  Reconcile requires the original identity, reads no stdin and
-        never retries a provider mutation.  A separate store or external writer is outside this
-        local coordination guarantee.
+  set NAME [--path /]
+        create or update one secret in Fleet-OPS prod.  The value is read from standard input (one
+        trailing newline removed), never from an argument.  Needs a separately bound scoped writer token.  Only names on the
+        built-in allowlist in core.WRITE_ALLOWLIST (now CACHE_* under /linear) are accepted;  everything
+        else exits 2.
   doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]
         booleans and counts only, never a value.  An explicit project or path checks only that route.
 
@@ -32,7 +28,6 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import TextIO
 
 if __name__ == "__main__":
@@ -42,17 +37,12 @@ if __name__ == "__main__":
 import fleet_infisical as core
 from fleet_infisical import SecretsError, UsageError
 
-# The total named-response budget must not exceed the existing folder-response budget.
-MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
-
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
-    "       fleet-secrets set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
-    "           [--request-id UUID --request-created-at EPOCH_MS] [--reconcile]\n"
-    "           (value on standard input; reconcile reads no value)\n"
+    "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
 )
 
@@ -104,13 +94,9 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
 def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
-    names = list(
-        dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip())
-    )
+    names = [core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()]
     if not names:
         raise UsageError("--only needs at least one key name")
-    if len(names) > MAX_RUN_NAMES:
-        raise UsageError(f"--only accepts at most {MAX_RUN_NAMES} distinct key names")
     return names
 
 
@@ -169,142 +155,20 @@ def cmd_get_verified(args: Sequence[str], env: Mapping[str, str], out: TextIO) -
     return 0
 
 
-def write_intent_for_cli(
-    env: Mapping[str, str],
-    purpose: str,
-    request_id: str | None = None,
-    created_at_ms: int | None = None,
-    state_dir: str | Path | None = None,
-) -> core.WriteIntent:
-    """One caller-declared state root for CLI and login sync; allocation performs no I/O."""
-    directory = (
-        core.home_dir(env) / ".local/state/fleet-infisical-writes"
-        if state_dir is None
-        else Path(state_dir)
-    )
-    if (request_id is None) != (created_at_ms is None):
-        raise UsageError("write-intent-identity-pair-required")
-    if request_id is None:
-        return core.new_write_intent(directory, purpose)
-    return core.WriteIntent(directory, purpose, request_id, created_at_ms)
-
-
-def _write_options(args: Sequence[str]) -> dict[str, object]:
-    """Strict set-only options; malformed input is refused before stdin or state access."""
-    options: dict[str, object] = {"path": "/", "purpose": "fleet-infisical-cli", "reconcile": False}
-    names = []
-    seen = set()
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "--reconcile":
-            key, value = "reconcile", True
-        elif arg.startswith("--"):
-            key, separator, value = arg[2:].partition("=")
-            if key not in {"path", "purpose", "state-dir", "request-id", "request-created-at"}:
-                raise UsageError("write-option-invalid")
-            if not separator:
-                i += 1
-                if i >= len(args):
-                    raise UsageError("write-option-value-required")
-                value = args[i]
-            if not value:
-                raise UsageError("write-option-value-required")
-        elif arg.startswith("-"):
-            raise UsageError("write-option-invalid")
-        else:
-            names.append(arg)
-            i += 1
-            continue
-        if key in seen:
-            raise UsageError("write-option-duplicate")
-        seen.add(key)
-        options[key] = value
-        i += 1
-    if len(names) != 1:
-        raise UsageError("wrong number of arguments")
-    options["name"] = core.check_name(names[0])
-    options["path"] = core.check_path(str(options["path"]))
-    core.check_writable(options["name"], options["path"])
-    if "request-created-at" in options:
-        raw = options["request-created-at"]
-        if not str(raw).isascii() or not str(raw).isdecimal() or len(str(raw)) > 20:
-            raise UsageError("write-intent-time-invalid")
-        options["request-created-at"] = int(raw)
-    if options["reconcile"] and "request-id" not in options:
-        raise UsageError("reconcile requires the original request identity")
-    return options
-
-
-def _write_report(result, name: str, path: str, intent: core.WriteIntent) -> dict[str, object]:
-    """Only fixed outcomes and nonsecret recovery identity cross the command boundary."""
-    if not isinstance(result, core.WriteError) and (
-        not isinstance(result, core.WriteReceipt)
-        or result.outcome != "ok"
-        or result.request_id != intent.request_id
-        or result.created_at_ms != intent.created_at_ms
-        or result.result not in ("created", "updated")
-        or type(result.replayed) is not bool
-    ):
-        raise SecretsError("write-receipt-invalid")
-    report = {
-        "request_id": result.request_id,
-        "created_at_ms": result.created_at_ms,
-        "purpose": getattr(result, "purpose", intent.purpose),
-        "name": getattr(result, "name", None) or name,
-        "path": path,
-        "outcome": result.outcome,
-    }
-    if isinstance(result, core.WriteError):
-        report.update(
-            provider_status=result.provider_status,
-            retryable=result.retryable,
-            request_may_have_been_sent=result.request_may_have_been_sent,
-        )
-    else:
-        report.update(result=result.result, replayed=result.replayed)
-    return report
-
-
 def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: TextIO) -> int:
-    opts = _write_options(args)
-    name, path = opts["name"], opts["path"]
-    intent = write_intent_for_cli(
-        env,
-        opts["purpose"],
-        request_id=opts.get("request-id"),
-        created_at_ms=opts.get("request-created-at"),
-        state_dir=opts.get("state-dir"),
-    )
-    if opts["reconcile"]:
-        try:
-            result = core.reconcile_secret(name, path, env, intent=intent)
-        except core.WriteError as exc:
-            out.write(json.dumps(_write_report(exc, name, path, intent), sort_keys=True) + "\n")
-            out.flush()
-            raise
-        out.write(json.dumps(_write_report(result, name, path, intent), sort_keys=True) + "\n")
-        out.flush()
-        return 0
+    opts = _parse(args, False, 1)
+    name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
+    path = core.check_path(str(opts["path"]))
+    core.check_writable(name, path)  # refuse before reading the value or touching auth
     value = stdin.read(core.MAX_VALUE_BYTES + 1)
     value = value.removesuffix("\n")
-    try:
-        size = len(value.encode("utf-8"))
-    except UnicodeError:
-        raise UsageError("set value must be UTF-8") from None
-    if size > core.MAX_VALUE_BYTES:
-        raise UsageError("set value exceeds the maximum size")
     if not value:
         raise UsageError("set reads the value from standard input and it was empty")
     try:
-        result = core.put_secret(name, path, value, env, intent=intent)
-    except core.WriteError as exc:
-        out.write(json.dumps(_write_report(exc, name, path, intent), sort_keys=True) + "\n")
-        out.flush()
-        raise
+        result = core.put_secret(name, path, value, env)
     finally:
         value = ""
-    out.write(json.dumps(_write_report(result, name, path, intent), sort_keys=True) + "\n")
+    out.write(f"{result} {name} at {path}\n")
     out.flush()
     return 0
 
@@ -337,16 +201,13 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
                 f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
                 "variables are never injected);  read it with `get` if you really need the value"
             )
-    path = core.check_path(str(opts["path"]))
+    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if only is not None:
-        project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
-        secrets = core.fetch_project(project, path, env, names=tuple(only))
         for name in only:
             if name not in secrets:
                 raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
         chosen = {n: secrets[n] for n in only}
     else:
-        secrets = core.fetch_all(path, env)
         chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
     core.reject_unresolved(chosen)
     child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
@@ -371,7 +232,11 @@ def doctor_report(
     primary_project = core.DEFAULT_PROJECT if project is None else project
     if primary_project not in core.PROJECT_SOURCES:
         raise UsageError("unknown Infisical project")
-    path = core.check_path("/" if path is None else path)
+    if path is None:
+        # A selected non-default project defaults to its own declared folder:  its scoped
+        # token cannot read the primary root (the unqualified probe below uses /fleetlink).
+        path = "/" if primary_project == core.DEFAULT_PROJECT else "/fleetlink"
+    path = core.check_path(path)
     rep: dict[str, object] = {}
     rep["environment_ok"] = core.environment_refusal(env) is None
     cli = core.find_cli(env)
@@ -394,18 +259,12 @@ def doctor_report(
     rep["unresolved_reference_count"] = 0
     rep["failure_reason"] = None
     try:
-        secrets = core.fetch_all(path, env, primary_project)
+        secrets = core.fetch_all(path, env, primary_project, allow_unresolved=True)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
         rep["unresolved_reference_count"] = sum(
             1 for v in secrets.values() if core.REF_RE.search(v)
         )
-    except core.UnresolvedReferenceError as exc:
-        # The shared strict reader validated every row before refusing unresolved values.
-        rep["fetch_names_ok"] = True
-        rep["names_count"] = exc.names_count
-        rep["unresolved_reference_count"] = exc.unresolved_reference_count
-        rep["failure_reason"] = "unresolved-reference"
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
     # The unqualified legacy doctor also probes the read-only FleetLink folder.

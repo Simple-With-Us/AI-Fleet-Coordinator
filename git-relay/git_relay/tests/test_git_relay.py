@@ -1495,6 +1495,7 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
             sys.path.remove(scripts)
 
         project = str(uuid.uuid4())
+        project = "00000000-0000-4000-8000-000000000001"
         binding = "st.synthetic-" + uuid.uuid4().hex
 
         def fake_fetch(project_id, path, env, *, names):

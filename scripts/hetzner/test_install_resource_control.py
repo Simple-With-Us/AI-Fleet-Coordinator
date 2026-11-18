@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -46,7 +47,7 @@ class InstallerTests(unittest.TestCase):
             mock.patch.object(self.module.os, "fsync"),
             mock.patch.object(self.module.sys, "platform", "linux"),
         ):
-            self.module.install(source)
+            return self.module.install(source)
 
     def test_fixed_payload_modes_isolated_imports_and_preserved_state(self):
         credential = self.home / ".config/fleet-tools/resource-policy-token"
@@ -65,10 +66,8 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
-<<<<<<< HEAD
             "fleet_infisical_cli.py",
-=======
->>>>>>> origin/main
+            "fleet_infisical_cli.py",
             "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
@@ -205,6 +204,188 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.install(source)
 
+    REPOSITORY_FROM = (False, "the repository")
+
+    @staticmethod
+    def usable(value, **extra):
+        """An installed allowlist the settings editor would accept, with this switch."""
+        doc = {"schemaVersion": 1, "applyEnabled": value, "seat": {}, "tables": {}}
+        doc.update(extra)
+        return json.dumps(doc)
+
+    def test_a_fresh_install_takes_the_repositorys_apply_enabled(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.assertIs(json.loads(repository)["applyEnabled"], False)
+        self.assertEqual(self.install(), self.REPOSITORY_FROM)
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        self.assertEqual(installed.read_bytes(), repository)
+
+    def test_an_update_keeps_the_owners_apply_enabled_and_every_other_byte(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        # The owner turned apply on after the first install.
+        turned_on = repository.replace(b'"applyEnabled": false', b'"applyEnabled": true', 1)
+        self.assertNotEqual(turned_on, repository)
+        installed.write_bytes(turned_on)
+        self.assertEqual(self.install(), (True, "the installed copy"))
+        self.assertEqual(installed.read_bytes(), turned_on)
+        self.assertIs(json.loads(installed.read_bytes())["applyEnabled"], True)
+        self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o644)
+        # An installed false stays false, with the repository's bytes.
+        installed.write_bytes(repository)
+        self.assertEqual(self.install(), (False, "the installed copy"))
+        self.assertEqual(installed.read_bytes(), repository)
+
+    LEGACY_FROM = "the root-owned copy in /usr/local/lib/fleet-resource-control"
+
+    def make_legacy(self, value, file_mode=0o644, folder_mode=0o755, text=None):
+        """The root-owned install the move replaces, owned here by the test account."""
+        self.module.LEGACY_OWNER_UID = os.getuid()
+        shutil.rmtree(self.root / "usr", ignore_errors=True)
+        legacy = self.root / "usr/local/lib/fleet-resource-control"
+        legacy.mkdir(parents=True)
+        self.root.chmod(0o755)
+        for folder in (
+            self.root / "usr",
+            self.root / "usr/local",
+            self.root / "usr/local/lib",
+            legacy,
+        ):
+            folder.chmod(folder_mode)
+        settings = legacy / "fleet-ops-eavesdropper-settings.json"
+        settings.write_text(self.usable(value) if text is None else text)
+        settings.chmod(file_mode)
+        return legacy
+
+    def test_the_move_from_the_root_owned_install_keeps_its_apply_enabled(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.make_legacy(True)
+        self.assertEqual(self.install(), (True, self.LEGACY_FROM))
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        expected = repository.replace(b'"applyEnabled": false', b'"applyEnabled": true', 1)
+        self.assertEqual(installed.read_bytes(), expected)
+        # The root-owned copy is only read, never changed, and nothing is written beside it.
+        legacy = (
+            self.root / "usr/local/lib/fleet-resource-control/fleet-ops-eavesdropper-settings.json"
+        )
+        self.assertEqual(legacy.read_text(), self.usable(True))
+        self.assertEqual(os.listdir(legacy.parent), ["fleet-ops-eavesdropper-settings.json"])
+
+    def test_a_new_installed_copy_outranks_the_root_owned_one(self):
+        self.install()
+        self.make_legacy(True)
+        self.assertEqual(self.install(), (False, "the installed copy"))
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        self.assertIs(json.loads(installed.read_text())["applyEnabled"], False)
+
+    def test_an_untrusted_or_unusable_root_owned_copy_is_never_kept(self):
+        def group_writable_file():
+            self.make_legacy(True, file_mode=0o664)
+
+        def group_writable_folder():
+            self.make_legacy(True, folder_mode=0o775)
+
+        def another_owner():
+            self.make_legacy(True)
+            self.module.LEGACY_OWNER_UID = os.getuid() + 1
+
+        def linked_folder():
+            elsewhere = self.make_legacy(True)
+            target = self.root / "elsewhere"
+            shutil.rmtree(target, ignore_errors=True)
+            elsewhere.rename(target)
+            (self.root / "usr/local/lib/fleet-resource-control").symlink_to(target)
+
+        def linked_file():
+            legacy = self.make_legacy(True)
+            target = self.root / "elsewhere.json"
+            (legacy / "fleet-ops-eavesdropper-settings.json").rename(target)
+            (legacy / "fleet-ops-eavesdropper-settings.json").symlink_to(target)
+
+        def refused_by_the_editor():
+            self.make_legacy(True, text=json.dumps({"applyEnabled": True}))
+
+        cases = (
+            group_writable_file,
+            group_writable_folder,
+            another_owner,
+            linked_folder,
+            linked_file,
+            refused_by_the_editor,
+        )
+        for arrange in cases:
+            with self.subTest(case=arrange.__name__):
+                shutil.rmtree(self.home / ".local", ignore_errors=True)
+                arrange()
+                self.assertEqual(self.install(), self.REPOSITORY_FROM)
+                installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+                self.assertIs(json.loads(installed.read_text())["applyEnabled"], False)
+
+    def test_an_update_keeps_the_value_when_the_key_text_is_not_unique(self):
+        # Two "applyEnabled" keys in the text:  the installer rewrites the parsed document
+        # instead of editing text, and still sets only the top-level switch.
+        source = self.minimal_source()
+        doubled = {"applyEnabled": False, "example": {"applyEnabled": False}}
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(json.dumps(doubled))
+        self.install(source)
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.write_text(self.usable(True))
+        self.assertEqual(self.install(source), (True, "the installed copy"))
+        self.assertEqual(
+            json.loads(installed.read_text()),
+            {"applyEnabled": True, "example": {"applyEnabled": False}},
+        )
+
+    def test_an_unusable_installed_copy_takes_the_repositorys_value(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        too_large = self.usable(True, notes=["x" * (64 * 1024)]).encode()
+        for unusable in (
+            b"not json",
+            b"[]",
+            b"{}",
+            self.usable("yes").encode(),
+            # The settings editor refuses these whole, so their switch never took effect.
+            json.dumps({"applyEnabled": True}).encode(),
+            self.usable(True, schemaVersion=2).encode(),
+            self.usable(True, unknown=1).encode(),
+            self.usable(True, tables={"seat": {}}).encode(),
+            too_large,
+        ):
+            with self.subTest(unusable=unusable[:60]):
+                installed.write_bytes(unusable)
+                self.assertEqual(self.install(), self.REPOSITORY_FROM)
+                self.assertEqual(installed.read_bytes(), repository)
+
+    def test_a_linked_or_writable_installed_copy_fails_the_installation(self):
+        # A copy owned by another account fails the same way (write_file's owner check), but a
+        # test account cannot make one without root, so it is not arranged here.
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.chmod(0o664)
+        with self.assertRaises(RuntimeError):
+            self.install()
+        installed.unlink()
+        outside = self.root / "outside.json"
+        outside.write_text(self.usable(True))
+        installed.symlink_to(outside)
+        with self.assertRaises(RuntimeError):
+            self.install()
+        self.assertEqual(outside.read_text(), self.usable(True))
+
+    def test_a_copy_in_the_install_folder_stops_the_root_owned_one_from_being_read(self):
+        # Once the install folder has a settings file, the move is over:  an unusable one takes
+        # the repository's value, never a stale root-owned one.
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        self.make_legacy(True)
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.write_bytes(b"not json")
+        self.assertEqual(self.install(), self.REPOSITORY_FROM)
+        self.assertEqual(installed.read_bytes(), repository)
+
     def test_symlink_installed_file_refused_without_touching_target(self):
         self.destination.mkdir(parents=True)
         outside = self.root / "outside"
@@ -224,10 +405,8 @@ class InstallerTests(unittest.TestCase):
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
-<<<<<<< HEAD
             "fleet_infisical_cli.py",
-=======
->>>>>>> origin/main
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -248,10 +427,8 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "muster_approval.py",
             "fleet_infisical.py",
-<<<<<<< HEAD
             "fleet_infisical_cli.py",
-=======
->>>>>>> origin/main
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -310,10 +487,8 @@ class InstallerTests(unittest.TestCase):
             "reduced_status.py",
             "muster_approval.py",
             "fleet_infisical.py",
-<<<<<<< HEAD
             "fleet_infisical_cli.py",
-=======
->>>>>>> origin/main
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
@@ -424,7 +599,25 @@ class InstallerTests(unittest.TestCase):
         text = (HERE / "install-resource-control.sh").read_text()
         self.assertIn("pwd.getpwuid(uid).pw_dir", text)
         self.assertNotIn("environ", text)
-        self.assertNotIn("usr', 'local', 'lib', 'fleet-resource-control", text)
+        self.assertIn("DESTINATION = ('.local', 'lib', 'fleet-resource-control')", text)
+        # The root-owned folder is named once, as the move's read-only source, and every line that
+        # uses it reads:  nothing is ever installed there.
+        legacy = "('usr', 'local', 'lib', 'fleet-resource-control')"
+        self.assertEqual(text.count(legacy), 1)
+        self.assertIn("LEGACY_DESTINATION = " + legacy, text)
+        uses = [
+            line.strip()
+            for line in text.splitlines()
+            if "LEGACY_DESTINATION" in line and not line.startswith("LEGACY_DESTINATION = ")
+        ]
+        self.assertEqual(
+            uses,
+            [
+                "Only the fixed LEGACY_DESTINATION is read.  Every folder from ROOT down is opened without",
+                "for component in LEGACY_DESTINATION:",
+                "kept_from = 'the root-owned copy in /' + '/'.join(LEGACY_DESTINATION)",
+            ],
+        )
 
 
 if __name__ == "__main__":
