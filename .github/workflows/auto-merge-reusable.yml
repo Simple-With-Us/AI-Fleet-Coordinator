@@ -148,18 +148,6 @@ on:
         description: Delete the head branch after merge.
         type: boolean
         default: true
-    secrets:
-      wise_infisical_token:
-        description: Dedicated read-only service token for Fleet-OPS prod /gr-front/wise-st
-        required: false
-      wise_infisical_project_id:
-        description: Independently configured expected Fleet-OPS project UUID for the Wise reader
-        required: false
-      merge_token:
-        description: >-
-          PAT or GitHub App installation token with contents + pull-requests
-          write.  Probed before use; absent means a loud no-op.
-        required: false
       rearm_pr_number:
         description: >-
           Opt-in re-arm mode: when set, classify fetches this PR by number
@@ -172,6 +160,19 @@ on:
           is the normal operation for every existing caller.
         required: false
         default: ""
+
+    secrets:
+      wise_infisical_token:
+        description: Dedicated read-only service token for Fleet-OPS prod /gr-front/wise-st
+        required: false
+      wise_infisical_project_id:
+        description: Independently configured expected Fleet-OPS project UUID for the Wise reader
+        required: false
+      merge_token:
+        description: >-
+          PAT or GitHub App installation token with contents + pull-requests
+          write.  Probed before use; absent means a loud no-op.
+        required: false
 
 permissions:
   contents: read
