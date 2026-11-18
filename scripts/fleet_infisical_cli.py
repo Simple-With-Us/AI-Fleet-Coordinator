@@ -262,7 +262,9 @@ def doctor_report(
         secrets = core.fetch_all(path, env, primary_project, allow_unresolved=True)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
-        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.search(v))
+        rep["unresolved_reference_count"] = sum(
+            1 for v in secrets.values() if core.REF_RE.search(v)
+        )
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
     # The unqualified legacy doctor also probes the read-only FleetLink folder.
