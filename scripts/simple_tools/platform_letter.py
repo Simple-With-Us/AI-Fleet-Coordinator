@@ -2811,7 +2811,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     announce = bool(note.pop("announce", False))
     title = None
     answer: dict[str, Any] = {}
-    text = "" if note.get("titled") else lettered_topic(_first_title(note, current, data.get("prompt")))
+    text = (
+        ""
+        if note.get("titled")
+        else lettered_topic(_first_title(note, current, data.get("prompt")))
+    )
     if announce and not text and not note.get("titled"):
         # A letter that came on a prompt with no words (a bare slash command):  the "??" goes now, the words later.
         title = compose(note["label"], "")
