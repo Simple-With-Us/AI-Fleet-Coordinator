@@ -273,6 +273,9 @@ REGISTRY_UNAVAILABLE = "registry-unavailable"
 UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+#: The name the note carries when a registry error names no setting:  the configuration
+#: source an operator has to fix, never the error's own words.
+REGISTRY_ENV_SOURCE = "operator-registry-env"
 #: How much of a registry answer's own words a delivery note carries:  a variable name and a
 #: reason, and never a value.  A note crosses to another host, whose readers keep only 80
 #: characters of it, so the source shapes it to that length rather than the reader cutting it.
@@ -1855,20 +1858,33 @@ def registry_trouble(answer: object) -> str:
     return REGISTRY_UNAVAILABLE
 
 
-def safe_note(text: object) -> str:
-    """A local failure as a token the transport keeps.
+def registry_loader_holds(env: Mapping[str, str]) -> bool:
+    """Whether this host's loader file holds the registry's settings.
 
-    The note crosses between hosts and is read back through a whitelist that admits only
-    letters, digits, colon, underscore and dash, so the text is reduced to that shape:  the
-    words are kept and everything else becomes a separator.  It is for a local failure, whose
-    text this host wrote, never for the registry's own answer.
+    The Mac reads the registry's address and key from the shared loader file, and the
+    loader's own reader swallows a read that fails:  a mapping without an address cannot
+    say whether the loader holds none or could not be read.  This says which, from the
+    file's own words and never a value:  a loader that assigns a registry setting holds
+    one, so a mapping without an address means the read failed.
 
-    A message that carries something secret-shaped is withheld whole.  A receipt is read by
-    anyone who can read a wake, and the house scanner says what must not be written on one."""
-    raw = text if isinstance(text, str) else ""
-    if secretscan.scan(raw):
-        return ""
-    return re.sub(r"[^A-Za-z0-9:_-]", "_", raw).strip("_")[:NOTE_CHARS]
+    A host with no loader file at all is not configured, and `registry_failure` answers
+    that one."""
+    from . import platform_letter as PL
+
+    home = str(env.get("HOME") or "")
+    if not home:
+        return False
+    try:
+        with open(
+            os.path.join(home, PL.REGISTRY_ENV_SUBPATH), "r", encoding="utf-8", errors="replace"
+        ) as handle:
+            text = handle.read()
+    except OSError:
+        return False
+    for name in (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV):
+        if re.search(r"(?m)^\s*(?:export\s+)?%s\s*=" % re.escape(name), text):
+            return True
+    return False
 
 
 def registry_note(text: object) -> str:
@@ -1884,7 +1900,7 @@ def registry_note(text: object) -> str:
     raw = text if isinstance(text, str) else ""
     for name in (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV):
         if re.search(r"\b%s\b" % re.escape(name), raw):
-            return name
+            return name[:NOTE_CHARS]
     return ""
 
 
@@ -1910,14 +1926,14 @@ def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> D
     The configuration is read with the registry API's own readers, so the answer names the
     same variable the registry itself names.  A configuration that cannot be read at all
     fails closed too:  the host's configuration is unverifiable and nothing is delivered
-    under it.  Its note names the setting when the error names one, and the failure itself
-    otherwise, in a token the transport keeps."""
+    under it.  Its note names the setting when the error names one, and the configuration
+    source otherwise, in a token the transport keeps."""
     try:
         answer = registry_api.configuration(env)
     except Exception as exc:  # noqa: BLE001 - a configuration nobody can read fails closed
-        # The note is never empty:  the setting when the error names one, the failure itself
-        # when it may be carried, and the failure's kind when neither may be.
-        note = registry_note(str(exc)) or safe_note(str(exc)) or type(exc).__name__
+        # The note carries the registry's own setting names and nothing else:  the error's
+        # words may hold a secret, and a receipt is read by anyone who can read a wake.
+        note = registry_note(str(exc)) or REGISTRY_ENV_SOURCE
         return Delivery("failed", route, code=NOT_CONFIGURED, note=note)
     configured = bool(answer.get("configured"))
     reason = str(answer.get("reason") or "")

@@ -5422,18 +5422,51 @@ class RegistryNotConfigured(Base):
         self.assertLessEqual(len(delivery.note), 80)
         self.assertLessEqual(len(WR.registry_note("A" * 200)), 80)
 
-    def test_a_note_that_may_not_carry_the_failure_carries_its_kind(self) -> None:
-        """A failure whose message carries something secret-shaped is withheld whole, and the
-        receipt says the failure's kind instead."""
+    def test_a_note_that_may_not_carry_the_failure_names_the_source(self) -> None:
+        """The error's own words never reach a receipt:  they may hold a secret, and a
+        receipt is read by anyone who can read a wake.  The note names the configuration
+        source instead."""
         with mock.patch.object(
             WR.registry_api, "configuration", side_effect=OSError("MY_API_KEY = ABCDEFGHIJKLMNOP")
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
-        self.assertEqual(delivery.note, "OSError")
+        self.assertEqual(delivery.note, WR.REGISTRY_ENV_SOURCE)
         self.assertNotIn("ABCDEFGHIJKLMNOP", delivery.note)
-        self.assertEqual(WR.safe_note("MY_API_KEY = ABCDEFGHIJKLMNOP"), "")
-        self.assertEqual(WR.safe_note("cannot read the settings"), "cannot_read_the_settings")
+        self.assertNotIn("MY_API_KEY", delivery.note)
+        # The setting's own name is carried when the error names one.
+        with mock.patch.object(
+            WR.registry_api,
+            "configuration",
+            side_effect=OSError("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY is not set"),
+        ):
+            named = WR.registry_failure({"HOME": self.tmp})
+        self.assertEqual(named.note, WR.registry_api.KEY_VAR)
+
+    def test_the_loader_that_holds_the_settings_is_told_from_its_words(self) -> None:
+        """The Mac reads the registry's address and key from the shared loader file, and the
+        loader's own reader swallows a read that fails:  a mapping without an address cannot
+        say whether the loader holds none or could not be read.  This says which, from the
+        file's own words and never a value."""
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        env = {"HOME": home}
+        # No loader file at all:  the host is not configured.
+        self.assertFalse(WR.registry_loader_holds(env))
+        # A loader that assigns a registry setting holds one.
+        path = os.path.join(home, os.path.join(".local", "bin", "operator-registry-env"))
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("# a loader\nexport %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        self.assertTrue(WR.registry_loader_holds(env))
+        # A loader that holds no registry setting holds none.
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("# a loader with nothing of the registry in it\n")
+        self.assertFalse(WR.registry_loader_holds(env))
+        # The value never reaches the answer:  only the file's own words are read.
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        self.assertTrue(WR.registry_loader_holds(env))
 
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
         """The error text is the registry's, so a free run of capitals in it must not reach
@@ -5452,14 +5485,16 @@ class RegistryNotConfigured(Base):
 
     def test_a_configuration_that_cannot_be_read_fails_closed(self) -> None:
         """A host whose configuration nobody can read is not delivered under it:  it is a
-        terminal failure, and the note carries what the error said."""
+        terminal failure, and the note names the configuration source, never the error's
+        own words, which may hold a secret."""
         with mock.patch.object(
             WR.registry_api, "configuration", side_effect=OSError("no settings here")
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
-        # The note names the failure, in the shape the transport keeps.
-        self.assertIn("no_settings_here", delivery.note)
+        # The note names the source, in the shape the transport keeps.
+        self.assertEqual(delivery.note, WR.REGISTRY_ENV_SOURCE)
+        self.assertNotIn("no_settings_here", delivery.note)
         self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
 
     def test_a_pick_stage_failure_names_the_variable_that_is_missing(self) -> None:

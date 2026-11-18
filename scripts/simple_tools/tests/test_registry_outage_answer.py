@@ -12,12 +12,15 @@ import tempfile
 import unittest
 from unittest import mock
 
+import os
+
 from simple_tools import antigravity_wake as AGW
 from simple_tools import claude_wake as CW
 from simple_tools import codex_wake as CXW
 from simple_tools import grok_wake as GW
 from simple_tools import minimax_wake as MMW
 from simple_tools import muse_wake as MW
+from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
 from simple_tools import zcode_wake as ZCW
 
@@ -122,27 +125,80 @@ class RegistryOutageAnswer(unittest.TestCase):
     def test_an_unreadable_registry_env_is_answered_on_the_hosts_configuration(self) -> None:
         """A registry env that cannot be read is answered on the host's own configuration:
         a host that is configured answers the outage and spends no attempt, and a host with
-        no address or key fails closed and names the variable."""
-        def boom(_env):
+        no address or key fails closed and names the variable.  The classification uses the
+        same mapping the call uses, so a host that reads its settings from the knobs or the
+        shared file is judged on them."""
+        def boom(*_args, **_kwargs):
             raise OSError("the env file cannot be read")
 
-        with mock.patch.object(CW, "_registry_env", side_effect=boom):
-            claude = CW._recheck(self.env, self.target)
-        with mock.patch.object(MW, "_registry_env", side_effect=boom):
-            muse = MW._recheck(self.env, self.target, lambda _env, _letter: {})
+        def no_registry(*_args, **_kwargs):
+            raise OSError("the registry did not answer")
+
+        with mock.patch.object(PL, "with_registry_env", side_effect=boom):
+            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                claude = CW._recheck(self.env, self.target)
+        with mock.patch.object(PL, "with_registry_env", side_effect=boom):
+            muse = MW._recheck(self.env, self.target, no_registry)
         for name, delivery in (("claude", claude), ("muse", muse)):
             with self.subTest(platform=name, env="configured"):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
-        with mock.patch.object(CW, "_registry_env", side_effect=boom):
-            bare = CW._recheck(self.bare_env, self.target)
-        with mock.patch.object(MW, "_registry_env", side_effect=boom):
-            muse_bare = MW._recheck(self.bare_env, self.target, lambda _env, _letter: {})
+        with mock.patch.object(PL, "with_registry_env", side_effect=boom):
+            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                bare = CW._recheck(self.bare_env, self.target)
+        with mock.patch.object(PL, "with_registry_env", side_effect=boom):
+            muse_bare = MW._recheck(self.bare_env, self.target, no_registry)
         for name, delivery in (("claude", bare), ("muse", muse_bare)):
             with self.subTest(platform=name, env="unconfigured"):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
                 self.assertIn(WR.registry_api.URL_ENV, delivery.note)
+
+    def test_the_classification_uses_the_registry_environment_the_call_used(self) -> None:
+        """A host that reads its registry settings from the shared loader is judged on
+        them:  the loader's values are the configuration, and a call that raises on them is
+        an outage, not a deployment fault."""
+        loaded = {
+            "HOME": self.tmp,
+            WR.registry_api.URL_ENV: "https://registry.example/api",
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
+
+        def no_registry(*_args, **_kwargs):
+            raise OSError("the registry did not answer")
+
+        with mock.patch.object(PL, "with_registry_env", return_value=loaded):
+            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                claude = CW._recheck(self.bare_env, self.target)
+                muse = MW._recheck(self.bare_env, self.target, no_registry)
+        for name, delivery in (("claude", claude), ("muse", muse)):
+            with self.subTest(platform=name):
+                self.assertIsNotNone(delivery)
+                self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
+
+    def test_a_loader_that_could_not_be_read_spends_no_attempt(self) -> None:
+        """The loader holds the registry's settings and could not be read:  this host cannot
+        show its configuration, and it may well be configured.  The wake waits for it and
+        spends no attempt, in every platform."""
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        path = os.path.join(home, os.path.join(".local", "bin", "operator-registry-env"))
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        env = {"HOME": home}
+
+        def no_registry(*_args, **_kwargs):
+            raise OSError("the registry did not answer")
+
+        with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
+            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                claude = CW._recheck(env, self.target)
+                muse = MW._recheck(env, self.target, no_registry)
+        for name, delivery in (("claude", claude), ("muse", muse)):
+            with self.subTest(platform=name):
+                self.assertIsNotNone(delivery)
+                self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
         """An answer that is not a mapping is malformed data:  `failed`, with the house code,

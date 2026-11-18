@@ -233,15 +233,26 @@ def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """`env` with the registry's address and key:  a forced ssh command has no login profile."""
+    """`env` with the registry's address and key:  a forced ssh command has no login profile.
+
+    The loader is read once and the mapping it gives is the one every call and every
+    classification uses, so the host is judged on the configuration it really has.  A loader
+    that cannot be read leaves the environment's own values in place."""
     from . import platform_letter as PL
 
-    return PL.with_registry_env(dict(env))
+    merged = dict(env)
+    try:
+        merged = PL.with_registry_env(merged)
+    except Exception:  # noqa: BLE001 - the host's own configuration still decides
+        pass
+    return merged
 
 
-def _resolve(env: Mapping[str, str], letter: str) -> Any:
+def _resolve(registry_env: Mapping[str, str], letter: str) -> Any:
+    """The registry's answer for one letter, made on the registry environment the caller
+    built."""
     return WR.registry_api.call(
-        _registry_env(env),
+        registry_env,
         "resolve",
         {"platform": PLATFORM, "letter": letter},
         timeout=WR.REGISTRY_TIMEOUT,
@@ -252,16 +263,20 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run
     yet, so a registry that cannot be read is `busy` and is tried again without spending an
     attempt."""
+    # The registry environment is the one the call uses and the one the host is judged on:
+    # the shared loader file on the Mac, the knobs on the server.  One mapping, built once,
+    # so a call and the classification that follows it are made on the same configuration.
+    registry_env = _registry_env(env)
+    if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
+        # The loader holds the registry's settings and could not be read:  this host cannot
+        # show its configuration, and it may well be configured.  The wake waits for it and
+        # spends no attempt.
+        return WR.registry_outage()
     try:
-        registry_env = _registry_env(env)
-    except Exception:  # noqa: BLE001 - no delivery without a readable registry env
+        answer = resolve(registry_env, target.letter)
+    except Exception:  # noqa: BLE001 - no delivery without a readable answer
         # The host's own configuration decides:  a host with no address or key fails
         # closed, and a host that is configured answers the outage and spends no attempt.
-        return WR.registry_failure(env)
-    try:
-        answer = resolve(env, target.letter)
-    except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        # A host with no registry address or key is a deployment fault, not an outage.
         return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
         return WR.registry_delivery(answer)
