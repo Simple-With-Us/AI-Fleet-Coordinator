@@ -403,6 +403,25 @@ final class RouterSeatRowTests: XCTestCase {
         XCTAssertEqual(rows.filter(\.canTest).map(\.seat), ["AG", "CLAUDE", "CODEX"])
     }
 
+    /// A wake still on its way has no outcome:  the newest finished wake is said, and a wake in
+    /// progress only when it is all the record has.
+    func test_a_wake_still_in_progress_does_not_hide_the_last_outcome() throws {
+        func rows(_ recent: [OperatorWake]) throws -> String? {
+            let document = OperatorWakesDocument(
+                totals: OperatorWakeTotals(recent: recent.count),
+                seats: [OperatorWakeSeat(seat: "CLAUDE", recentTotal: recent.count, recent: recent)],
+                unreadable: []
+            )
+            return RouterPresentation.seatRows(health: try answering(), wakes: .read(document), now: now)
+                .first { $0.seat == "CLAUDE" }?.lastWake
+        }
+        XCTAssertEqual(try rows([
+            OperatorWake(wakeID: "a", state: "delivered", at: at(600)),
+            OperatorWake(wakeID: "b", state: "pending", at: at(30)),
+        ]), "Delivered, 10m ago")
+        XCTAssertEqual(try rows([OperatorWake(wakeID: "b", state: "pending", at: at(120))]), "Pending (still in progress), 2m ago")
+    }
+
     func test_the_last_wake_says_the_newest_outcome_or_why_there_is_none() throws {
         let rows = RouterPresentation.seatRows(health: try answering(), wakes: wakes(), now: now)
         let byseat = Dictionary(uniqueKeysWithValues: rows.map { ($0.seat, $0.lastWake) })
@@ -452,7 +471,8 @@ final class RouterTestWakeTests: XCTestCase {
         XCTAssertEqual(summary.headline, "The dry run did not pass")
         XCTAssertEqual(summary.tone, .warning)
         XCTAssertEqual(summary.lines.first, "The router answered and found no chat to wake.\u{00A0} Why: no live chat is registered for the seat.")
-        XCTAssertEqual(summary.lines.last, RouterPresentation.dryRunNote)
+        XCTAssertEqual(summary.lines.last, RouterPresentation.dryRunNothingDeliveredNote)
+        XCTAssertFalse(summary.lines.contains(RouterPresentation.dryRunNote), "no chat was picked, so the note must not say one was")
     }
 
     func test_a_dry_run_that_picked_another_chat_than_the_addressed_one_says_so() throws {
@@ -475,8 +495,26 @@ final class RouterTestWakeTests: XCTestCase {
             let summary = RouterPresentation.summary(.report(try report(text)))
             XCTAssertEqual(summary.lines.first, sentence, code)
             XCTAssertFalse(summary.lines.joined().contains("_"), code)
-            XCTAssertEqual(summary.lines.last, RouterPresentation.dryRunNote)
+            // Nothing was sent, so there is no dry-run note to say anything about a pick.
+            XCTAssertFalse(summary.lines.contains(RouterPresentation.dryRunNote), code)
+            XCTAssertFalse(summary.lines.contains(RouterPresentation.dryRunNothingDeliveredNote), code)
         }
+    }
+
+    /// A dry run that reached the router and failed says only that nothing was delivered.
+    func test_a_failed_dry_run_that_reached_the_router_says_only_that_nothing_was_delivered() throws {
+        let text = testWakeAnswer(passed: false, addressed: "false")
+        let summary = RouterPresentation.summary(.report(try report(text)))
+        XCTAssertEqual(summary.lines.last, RouterPresentation.dryRunNothingDeliveredNote)
+        XCTAssertEqual(RouterPresentation.dryRunNothingDeliveredNote, "This was a dry run, so nothing was delivered.")
+    }
+
+    /// An unlisted helper detail is said as a sentence, like the health decoder's.
+    func test_an_unlisted_helper_detail_is_said_as_a_sentence() {
+        XCTAssertEqual(
+            RouterTestWakeDecoder.cause(errorCode: "other", detail: "the seat is not a valid seat tag"),
+            "The seat is not a valid seat tag."
+        )
     }
 
     func test_a_dry_run_that_did_not_run_gives_the_cause_and_no_dry_run_claim() {
@@ -495,7 +533,7 @@ final class RouterTestWakeTests: XCTestCase {
     }
 
     func test_every_error_code_the_helper_answers_has_a_sentence_and_no_raw_word() {
-        for code in ["docker_unavailable", "timeout", "container_not_running", "seat_unknown", "too_large", "not_json", "read_failed", "newer"] {
+        for code in ["docker_unavailable", "timeout", "container_not_running", "seat_not_testable", "too_large", "not_json", "read_failed", "newer"] {
             let text = #"{"ok": false, "verb": "server router-test-wake", "result": "unavailable", "errorCode": "\#(code)"}"#
             guard case .unavailable(let why) = RouterTestWakeDecoder.reading(result(text, exit: 1), seat: "CLAUDE") else { return XCTFail(code) }
             XCTAssertFalse(why.contains("_"), why)
@@ -609,11 +647,11 @@ final class RouterCopyTests: XCTestCase {
     /// Shipped copy keeps a real U+00A0 and a space between sentences, never two plain spaces, and
     /// never says successfully or shows a raw exception or a raw code word.
     func test_router_copy_has_the_sentence_gap_and_no_forbidden_words() throws {
-        var copy: [String] = [RouterPresentation.heading, RouterPresentation.dryRunNote]
+        var copy: [String] = [RouterPresentation.heading, RouterPresentation.dryRunNote, RouterPresentation.dryRunNothingDeliveredNote]
         for code in ["router_not_running", "timeout", "bad_status", "too_large", "not_json", "read_failed", "nope"] {
             copy.append(RouterHealthDecoder.cause(errorCode: code, detail: nil))
         }
-        for code in ["docker_unavailable", "timeout", "container_not_running", "seat_unknown", "too_large", "read_failed", "nope"] {
+        for code in ["docker_unavailable", "timeout", "container_not_running", "seat_not_testable", "too_large", "read_failed", "nope"] {
             copy.append(RouterTestWakeDecoder.cause(errorCode: code, detail: nil))
         }
         let readings: [RouterHealthReading] = [

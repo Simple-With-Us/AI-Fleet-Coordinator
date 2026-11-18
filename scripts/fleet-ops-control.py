@@ -602,7 +602,7 @@ ROUTER_TEST_WAKE_UNAVAILABLE = {
     "read_failed": "the router test could not be run",
     "too_large": "the router test report is larger than the allowed size",
     "not_json": "the router test report is not a JSON object",
-    "seat_unknown": "the Eavesdropper does not hold that seat",
+    "seat_not_testable": "the Eavesdropper holds no wake route to test for that seat",
 }
 ROUTER_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 ROUTER_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.:\[\]-]{0,79}")
@@ -2591,7 +2591,7 @@ def router_test_wake_read(ctx, target, mode):
     if status == 124:
         return unavailable("timeout")
     if status == 2:
-        return unavailable("seat_unknown")
+        return unavailable("seat_not_testable")
     if status not in (0, 1):
         return unavailable(_docker_failure(err))
     try:

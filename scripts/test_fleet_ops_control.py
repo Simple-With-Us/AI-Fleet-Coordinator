@@ -6184,7 +6184,7 @@ class RouterUnitAndTestWakeTests(Base):
         cases = (
             ("docker missing", StatusReader(status=127), "docker_unavailable"),
             ("timeout", StatusReader(status=124), "timeout"),
-            ("usage refusal", StatusReader(status=2, out=b"{}"), "seat_unknown"),
+            ("usage refusal", StatusReader(status=2, out=b"{}"), "seat_not_testable"),
             (
                 "container down",
                 StatusReader(status=1, err=b"Error: No such container: eavesdropper"),

@@ -154,7 +154,7 @@ targets:
       - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
-      - path: Muster/Model/ListenerStatus.swift
+      - path: Muster/Model/OperatorVoiceReading.swift
       # The server eavesdropper's reduced status, read over `server eavesdropper-status`
       # (ServerEavesdropperStatusTests).
       - path: Muster/Model/ServerEavesdropperStatus.swift
@@ -171,7 +171,6 @@ targets:
       # What a server seat's row shows from the server eavesdropper's reading (ServerSeatRowTests).
       - path: Muster/Model/ServerSeatRow.swift
       - path: Muster/Model/FleetViewStore.swift
-      - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
       - path: Muster/FleetServices/ControlAPI.swift

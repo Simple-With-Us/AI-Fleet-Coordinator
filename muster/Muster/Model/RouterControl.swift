@@ -472,8 +472,8 @@ enum RouterTestWakeDecoder {
             return "The dry run took too long, so the server gave up."
         case "container_not_running"?:
             return "The Eavesdropper is not running on the server, so the dry run did not run."
-        case "seat_unknown"?:
-            return "The Eavesdropper does not hold this seat, so there is nothing to test."
+        case "seat_not_testable"?:
+            return "The Eavesdropper holds no wake route to test for this seat, so there is nothing to test."
         case "too_large"?, "not_json"?:
             return "The dry run's answer is not in a form the server can read."
         case "read_failed"?:
@@ -483,7 +483,7 @@ enum RouterTestWakeDecoder {
             if said.contains("unknown server verb") || said.contains("not in the allowlist") {
                 return "The server's control helper does not have the dry run yet."
             }
-            if let detail, !detail.isEmpty { return detail }
+            if let detail, !detail.isEmpty { return RouterHealthDecoder.sentence(detail) }
             return "The server could not run the dry run, and did not say why."
         }
     }
@@ -588,7 +588,7 @@ struct RouterSeatRow: Equatable, Identifiable {
     let seat: String
     let state: OperatorCell
     let delivery: OperatorCell
-    /// The newest wake of the seat in the wake record, in words, or why there is none.
+    /// The newest wake of the seat in the wake record that has an outcome, in words, or why there is none.
     let lastWake: String
     /// Whether a dry run can be asked for:  the seat's module is installed on the router.
     let canTest: Bool
@@ -604,7 +604,10 @@ struct RouterTestWakeSummary: Equatable {
 enum RouterPresentation {
     static let gap = OperatorPanelText.gap
     static let heading = "Wake Router"
+    /// Said under a dry run that passed:  the router did pick a chat.
     static let dryRunNote = "This was a dry run, so the router picked a chat and delivered nothing."
+    /// Said under a dry run that did not pass but reached the router:  it claims no pick.
+    static let dryRunNothingDeliveredNote = "This was a dry run, so nothing was delivered."
 
     // MARK: The card
 
@@ -723,19 +726,30 @@ enum RouterPresentation {
         }
     }
 
-    /// The newest wake of a seat in the wake record, in words.
+    /// The newest wake of a seat in the wake record that has an outcome, in words.
     static func lastWake(seat: String, wakes: OperatorReading<OperatorWakesDocument>?, now: Date) -> String {
         guard let wakes else { return "Not read yet" }
         guard let document = wakes.value else { return "Not read" }
         guard let entry = document.seats.first(where: { $0.seat == seat }) else {
             return document.unreadable.contains(seat) ? "Not read" : "None in 24 hours"
         }
-        let newest = entry.recent.max { ($0.at ?? .distantPast) < ($1.at ?? .distantPast) }
+        // The newest wake that has an outcome:  a wake still on its way has none yet, so it is
+        // shown only when the seat has nothing else in the record, and then as still in progress.
+        func newer(_ left: OperatorWake, _ right: OperatorWake) -> Bool {
+            (left.at ?? .distantPast) < (right.at ?? .distantPast)
+        }
+        let finished = entry.recent.filter { !inProgressStates.contains($0.state ?? "") }
+        let newest = finished.max(by: newer) ?? entry.recent.max(by: newer)
         guard let newest else { return "None in 24 hours" }
+        let inProgress = inProgressStates.contains(newest.state ?? "")
         let state = newest.state.map(OperatorPanelText.humanized) ?? "State not reported"
-        guard let at = newest.at else { return state }
-        return "\(state), \(OperatorPanelText.relative(at, now: now))"
+        let said = inProgress ? "\(state) (still in progress)" : state
+        guard let at = newest.at else { return said }
+        return "\(said), \(OperatorPanelText.relative(at, now: now))"
     }
+
+    /// The wake record's states of a wake that has not reached an outcome yet.
+    private static let inProgressStates: Set<String> = ["pending", "dispatching", "queued"]
 
     /// The seats the router reports, one row each, in the router's own order.  Empty while the
     /// router has not answered:  without its answer there is no seat to name.
@@ -803,12 +817,17 @@ enum RouterPresentation {
                 lines.append(dryRunNote)
                 return RouterTestWakeSummary(headline: "The dry run passed", tone: .good, lines: lines)
             }
+            // When nothing was sent the router never saw a wake, so no dry-run note is added.
+            var reachedRouter = true
             switch report.error {
             case "not_the_router"?:
+                reachedRouter = false
                 lines.append("This seat's wake route does not point at the wake router, so nothing was sent.")
             case "router_unreachable"?:
+                reachedRouter = false
                 lines.append("The router did not answer, so nothing was sent.")
             case "routine_not_configured"?:
+                reachedRouter = false
                 lines.append("This seat has no wake route configured on the server, so nothing was sent.")
             case _? where report.dryRun != true:
                 lines.append("The router did not accept the dry run.")
@@ -826,7 +845,7 @@ enum RouterPresentation {
             if report.routerHealth?.delivery == false {
                 lines.append("Delivery is off for this seat, so a real wake would be held.")
             }
-            lines.append(dryRunNote)
+            if reachedRouter, report.dryRun == true { lines.append(dryRunNothingDeliveredNote) }
             return RouterTestWakeSummary(headline: "The dry run did not pass", tone: .warning, lines: lines)
         }
     }

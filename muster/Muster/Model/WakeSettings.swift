@@ -305,37 +305,3 @@ struct ListenerPartition: Equatable {
         return scalars.allSatisfy { isAlphanumeric($0) || $0 == "_" || $0 == "-" }
     }
 }
-
-// MARK: - The settings
-
-/// How much of a seat's budget it has used,  plus deferred and failed wakes in the last day.
-struct WakeUsage: Equatable {
-    /// Wakes counted in the last hour,  not from the owner.
-    var wakesThisHour: Int = 0
-    /// Wakes counted in the last day,  not from the owner.
-    var wakesThisDay: Int = 0
-    /// Owner wakes counted in the last day.
-    var ownerThisDay: Int = 0
-    /// The busiest topic's wakes in the last hour.
-    var worstTopicThisHour: Int = 0
-    /// The busiest owner topic's wakes in the last hour.
-    var worstOwnerTopicThisHour: Int = 0
-    /// Wakes held back in the last day.
-    var heldBackThisDay: Int = 0
-    /// Wakes dropped in the last day.
-    var droppedThisDay: Int = 0
-    /// Wakes skipped in the last day.
-    var skippedThisDay: Int = 0
-    /// Wakes that failed in the last day.
-    var failedThisDay: Int = 0
-    /// Wakes that expired in the last day.
-    var expiredThisDay: Int = 0
-    /// True when the counts are a floor:  a row inside the window could not be read, or the read
-    /// kept only the end of a ledger too large to read whole and that end does not reach back a day.
-    var atLeast: Bool = false
-
-    /// Total deferred / suppressed wakes in the last day.
-    var deferredTotalThisDay: Int {
-        heldBackThisDay + droppedThisDay + skippedThisDay + expiredThisDay
-    }
-}
