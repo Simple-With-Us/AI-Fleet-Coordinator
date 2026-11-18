@@ -346,10 +346,13 @@ def _reject_surrogates(node):
             continue
         nodes += 1
         if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
-            raise RelayGitHubError(0, "github response exceeded structure bound")
+            raise RelayGitHubError(0, "github response exceeded structure bound", code="response_too_large")
         if isinstance(item, str):
-            if any("\ud800" <= c <= "\udfff" for c in item):
-                raise RelayGitHubError(0, "github response carried invalid unicode")
+            if not item.isascii():
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise RelayGitHubError(0, "github response carried invalid unicode") from exc
         elif isinstance(item, list):
             stack.append((iter(item), depth + 1))
         elif isinstance(item, dict):

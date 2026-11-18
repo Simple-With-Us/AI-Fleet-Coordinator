@@ -76,6 +76,19 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
                     _reject_surrogates(value)
                 self.assertEqual(raised.exception.status, 0)
 
+    def test_structure_refusal_has_explicit_size_code(self):
+        with self.assertRaises(RelayGitHubError) as raised:
+            _reject_surrogates([0] * MAX_RESPONSE_NODES)
+        self.assertEqual(raised.exception.code, "response_too_large")
+        self.assertEqual(raised.exception.status, 0)
+
+    def test_ascii_and_valid_nonascii_strings_preserved(self):
+        for value in ["a" * 1000000, "\u00e9" * 10000, "\U0001f600", {"\u00e9": "ok"}]:
+            _reject_surrogates(value)
+        for value in ["ok\ud800", "\udfff", {"\ud800": "value"}]:
+            with self.assertRaises(RelayGitHubError):
+                _reject_surrogates(value)
+
     def test_empty_completion_still_works(self):
         self.assertEqual(self.call(b""), {})
 
