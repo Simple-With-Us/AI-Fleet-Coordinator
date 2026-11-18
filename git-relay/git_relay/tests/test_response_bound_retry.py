@@ -58,6 +58,17 @@ class ResponseBoundRetryTests(unittest.TestCase):
         self.assertEqual(payload["github_code"], "response_too_large")
         self.assertNotIn("outcome", payload)
 
+    def test_invalid_unicode_read_is_terminal_but_write_stays_unknown(self):
+        status, payload = self.handle("wf_pr_get", "response_invalid_unicode")
+        self.assertEqual(status, 502)
+        self.assertIs(payload["retryable"], False)
+        self.assertEqual(payload["github_code"], "response_invalid_unicode")
+        self.assertNotIn("outcome", payload)
+        status, payload = self.handle("open_pr", "response_invalid_unicode")
+        self.assertEqual(status, 502)
+        self.assertIs(payload["retryable"], False)
+        self.assertEqual(payload["outcome"], "unknown")
+
     def test_transient_read_remains_retryable(self):
         status, payload = self.handle("wf_pr_get", None)
         self.assertEqual(status, 502)

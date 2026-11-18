@@ -89,6 +89,12 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
             with self.assertRaises(RelayGitHubError):
                 _reject_surrogates(value)
 
+    def test_invalid_unicode_has_distinct_terminal_code(self):
+        with self.assertRaises(RelayGitHubError) as raised:
+            _reject_surrogates(chr(0xD800))
+        self.assertEqual(raised.exception.code, "response_invalid_unicode")
+        self.assertEqual(raised.exception.status, 0)
+
     def test_empty_completion_still_works(self):
         self.assertEqual(self.call(b""), {})
 

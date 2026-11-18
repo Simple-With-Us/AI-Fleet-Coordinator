@@ -354,7 +354,11 @@ def _reject_surrogates(node):
                 try:
                     item.encode("utf-8")
                 except UnicodeEncodeError as exc:
-                    raise RelayGitHubError(0, "github response carried invalid unicode") from exc
+                    raise RelayGitHubError(
+                        0,
+                        "github response carried invalid unicode",
+                        code="response_invalid_unicode",
+                    ) from exc
         elif isinstance(item, list):
             stack.append((iter(item), depth + 1))
         elif isinstance(item, dict):
