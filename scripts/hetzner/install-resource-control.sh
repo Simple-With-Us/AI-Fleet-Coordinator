@@ -26,6 +26,11 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 SETTINGS = 'fleet-ops-eavesdropper-settings.json'
 APPLY_ENABLED = re.compile(r'("applyEnabled"\s*:\s*)(true|false)')
+# The root-owned install this one replaces (docs/rollouts/2026-11-12-helper-to-jay.md).  Its
+# settings file is read once, to carry the owner's applyEnabled across the move, and only when it
+# and every folder above it are root's and writable by no one else.
+LEGACY_DESTINATION = ('usr', 'local', 'lib', 'fleet-resource-control')
+LEGACY_OWNER_UID = 0
 
 
 def home_components(uid):
@@ -139,6 +144,31 @@ def installed_apply_enabled(parent, owner):
     return None
 
 
+def legacy_apply_enabled():
+    """The root-owned install's applyEnabled, or None when that copy is absent or not trusted.
+
+    Only the fixed LEGACY_DESTINATION is read.  Every folder from ROOT down is opened without
+    following a link and must be root's and writable by neither group nor others, and the file must
+    be root's under the same rule.  Anything else gives None:  nothing is followed, chowned or
+    trusted to make it pass.
+    """
+    descriptors = []
+    try:
+        fd = os.open(ROOT, DIRECTORY_FLAGS)
+        descriptors.append(fd)
+        if not protected(os.fstat(fd), (LEGACY_OWNER_UID,)):
+            return None
+        for component in LEGACY_DESTINATION:
+            fd = open_existing_directory(fd, component, (LEGACY_OWNER_UID,))
+            descriptors.append(fd)
+        return installed_apply_enabled(fd, LEGACY_OWNER_UID)
+    except (OSError, RuntimeError):
+        return None
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
 def with_apply_enabled(data, value):
     """The settings file with applyEnabled set to value, every other byte as the repository has it."""
     text = data.decode('utf-8')
@@ -232,8 +262,13 @@ def install(source_directory):
             packages[name] = open_directory(parent, name, owner)
             stack.callback(os.close, packages[name])
             os.fchmod(packages[name], 0o755)
-        # An update keeps the owner's applyEnabled;  a fresh install takes the repository's (false).
+        # An update keeps the owner's applyEnabled, and so does the move from the root-owned
+        # install;  a fresh install takes the repository's (false).
         kept = installed_apply_enabled(parent, owner)
+        kept_from = 'the installed copy'
+        if kept is None:
+            kept = legacy_apply_enabled()
+            kept_from = 'the root-owned copy in /' + '/'.join(LEGACY_DESTINATION)
         if kept is not None and kept != settings['applyEnabled']:
             payload[SETTINGS] = with_apply_enabled(payload[SETTINGS], kept)
         for relative, data in payload.items():
@@ -244,7 +279,7 @@ def install(source_directory):
     other = muster_agent_copy()
     if other is not None and other != payload['muster_trust_files.py']:
         raise RuntimeError('the installed copies of muster_trust_files.py differ')
-    return kept
+    return None if kept is None else (kept, kept_from)
 
 
 if __name__ == '__main__':
@@ -254,6 +289,8 @@ if __name__ == '__main__':
         print('Resource control installation failed; verify reviewed source and protected destination paths.', file=sys.stderr)
         raise SystemExit(1)
     print('Resource control code installed; credentials, keys and runtime state were untouched.')
-    if kept is not None:
-        print('The installed settings allowlist kept applyEnabled %s.' % ('true' if kept else 'false'))
+    if kept is None:
+        print('The settings allowlist took the repository\'s applyEnabled (no usable installed copy).')
+    else:
+        print('The settings allowlist kept applyEnabled %s from %s.' % ('true' if kept[0] else 'false', kept[1]))
 PY
