@@ -3005,7 +3005,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "047940614c9be9a939ad83faa53473ef37aa63475985b75258170df91d7f1a26"
+            "sha256": "c0d7a51e6cfbbae349db450f120650b0223f741a76036bce32677db70393665d"
           },
           "id": "zc-instructions-lane-map",
           "kind": "instructions",

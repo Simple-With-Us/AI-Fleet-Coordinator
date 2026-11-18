@@ -81,6 +81,22 @@ class RemoteRead(unittest.TestCase):
                 self.assertIn("ok text", out)
                 self.assertNotIn(BEARER, out + err)
 
+    def test_show_maps_to_the_hosted_full_message_read(self):
+        code, out, err, calls = self.run_cli(["show", "--id", "42"], reply({"seat": "ZC"}))
+        self.assertEqual(code, 0, err)
+        url, headers, msg = calls[0]
+        self.assertEqual(url, "https://agents.simplewithus.com/mcp")
+        self.assertEqual(headers["Authorization"], "Bearer " + BEARER)
+        self.assertEqual(
+            msg["params"],
+            {
+                "name": "zulip_get_message",
+                "arguments": {"message_id": 42, "full": True},
+            },
+        )
+        self.assertIn("ok text", out)
+        self.assertNotIn(BEARER, out + err)
+
     def test_identity_flags_and_local_only_options_are_refused_without_a_call(self):
         for argv in (
             ["--as", "ECHO", "whoami"],
