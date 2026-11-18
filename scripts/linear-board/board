@@ -6599,6 +6599,15 @@ def _remote_write_identity() -> str:
     return who
 
 
+def _remote_refused(message: str, code: int) -> "NoReturn":
+    """A proven pre-send or definitive HTTP rejection, still a CLI SystemExit."""
+    try:
+        die(message, code)
+    except SystemExit as exc:
+        exc.remote_definitive = True
+        raise
+
+
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent.
 
@@ -6609,7 +6618,7 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
-        die(f"refused before sending: {hit}", EXIT_USAGE)
+        _remote_refused(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -6636,9 +6645,11 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
             )
         )
     except _TransportError as exc:
+        if not exc.sent:
+            _remote_refused(_remote_failure(exc, write), EXIT_ERROR)
         die(_remote_failure(exc, write), EXIT_ERROR)
     if status in (401, 403):
-        die(_remote_status_message(status, write), EXIT_AUTH)
+        _remote_refused(_remote_status_message(status, write), EXIT_AUTH)
     if status != 200:
         die(_remote_status_message(status, write), EXIT_ERROR)
     result, parts, problem = _remote_answer(ctype, raw, tool, write)
@@ -6700,21 +6711,29 @@ def remote_resolution(args: dict, comment: dict, binding: str) -> dict:
             result = row["data"]
             continue
         if verdict == "busy":
-            die(f"resolution {stage} is in flight; retry the identical command shortly", EXIT_RATE_LIMIT)
+            die(
+                f"resolution {stage} is in flight; retry the identical command shortly",
+                EXIT_RATE_LIMIT,
+            )
         if verdict != "send":
             die(
                 f"resolution {stage} outcome is unknown; inspect the issue before retrying. "
-                "Do not repeat the completed state change; no write was replayed.",
+                "The prior stage may or may not have applied; no write was replayed.",
                 EXIT_ERROR,
             )
         try:
             result = remote_call(tool, payload, write=True)
-        except BaseException:
-            store.unknown()
+        except BaseException as exc:
+            if getattr(exc, "remote_definitive", False):
+                store.drop()
+            else:
+                store.unknown()
             if stage == "resolution comment":
-                warn("state change completed; resolution comment failed or is unknown. "
-                     "Inspect comments before posting only the missing resolution; do not repeat the state change. "
-                     "Receipts last 24 hours; after expiry inspect before running this compound command again.")
+                warn(
+                    "state change completed; resolution comment failed or is unknown. "
+                    "Inspect comments before posting only the missing resolution; do not repeat the state change. "
+                    "Receipts last 24 hours; after expiry inspect before running this compound command again."
+                )
             raise
         # Keep only minimal success markers: hosted text may echo user content.
         store.finish({"structured": {"completed": True, "stage": stage}, "text": ""})
