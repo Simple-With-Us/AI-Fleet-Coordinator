@@ -70,7 +70,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 TOOL = "fleet-api-health"
 COLLECTOR = "api"
@@ -110,9 +110,7 @@ FETCH_ERROR_CODES = ("timeout", "unreachable", "unparseable", "refused_url")
 
 def utc_stamp(epoch=None):
     """An ISO 8601 UTC stamp in the spelling every collector uses."""
-    moment = datetime.fromtimestamp(
-        time.time() if epoch is None else epoch, timezone.utc
-    )
+    moment = datetime.fromtimestamp(time.time() if epoch is None else epoch, UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -132,7 +130,7 @@ def parse_iso(raw):
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
