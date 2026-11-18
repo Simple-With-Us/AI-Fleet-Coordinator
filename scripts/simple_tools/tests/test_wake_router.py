@@ -5422,6 +5422,30 @@ class RegistryNotConfigured(Base):
         self.assertLessEqual(len(delivery.note), 80)
         self.assertLessEqual(len(WR.registry_note("A" * 200)), 80)
 
+    def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
+        """The error text is the registry's, so a free run of capitals in it must not reach
+        a receipt, which anyone who can read a wake can read."""
+        for text in (
+            "HMAC key ABCDEF0123 rejected",
+            "the bearer AKSIAIOSFODNN7EXAMPLE is wrong",
+            "URL https://EXAMPLE-REGISTRY-TOKEN is wrong",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(WR.registry_note(text), "")
+        self.assertEqual(
+            WR.registry_note("the registry key is not set (SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY)"),
+            WR.registry_api.KEY_VAR,
+        )
+
+    def test_a_configuration_that_cannot_be_read_fails_closed(self) -> None:
+        """A host whose configuration nobody can read is not delivered under it:  it is a
+        terminal failure, and the note carries what the error said."""
+        with mock.patch.object(
+            WR.registry_api, "configuration", side_effect=OSError("no settings here")
+        ):
+            delivery = WR.registry_failure({"HOME": self.tmp})
+        self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+
     def test_a_pick_stage_failure_names_the_variable_that_is_missing(self) -> None:
         """A host with no registry address or key fails at the pick:  the receipt says which
         variable is missing, and the wake ends dead."""

@@ -1856,18 +1856,19 @@ def registry_trouble(answer: object) -> str:
 
 
 def registry_note(text: object) -> str:
-    """The name of the variable a registry error names, as a token the transport keeps.
+    """The name of the setting a registry error names, as a token the transport keeps.
 
     The note crosses between hosts and is read back through a whitelist that admits only
     letters, digits, colon, underscore and dash, so free text is thrown away exactly when it
-    is meant to help.  The variable's own name is what an operator needs, and it survives."""
+    is meant to help.  The setting's own name is what an operator needs, and it survives.
+
+    Only the registry's own setting names are ever carried.  The text is the registry's
+    answer, so a free run of capitals in it is whatever the registry put there, and a receipt
+    is read by anyone who can read a wake:  nothing else may reach one."""
     raw = text if isinstance(text, str) else ""
-    names = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", raw)
-    named = [name for name in names if "_" in name]
-    if named:
-        return named[0][:NOTE_CHARS]
-    if names:
-        return max(names, key=len)[:NOTE_CHARS]
+    for name in (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV):
+        if re.search(r"\b%s\b" % re.escape(name), raw):
+            return name
     return ""
 
 
@@ -1891,14 +1892,15 @@ def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> D
     the wake waits for the registry to come back.
 
     The configuration is read with the registry API's own readers, so the answer names the
-    same variable the registry itself names.  A configuration that cannot be read at all is
-    answered as an outage, because a fault in reading it is not a fault in it."""
+    same variable the registry itself names.  A configuration that cannot be read at all
+    fails closed too:  the host's configuration is unverifiable, nothing is delivered under
+    it, and the note carries what the error said."""
     try:
         answer = registry_api.configuration(env)
-        configured = bool(answer.get("configured"))
-        reason = str(answer.get("reason") or "")
-    except Exception:  # noqa: BLE001 - an unreadable configuration is an outage, never a crash
-        configured, reason = True, ""
+    except Exception as exc:  # noqa: BLE001 - a configuration nobody can read fails closed
+        return Delivery("failed", route, code=NOT_CONFIGURED, note=registry_note(str(exc)))
+    configured = bool(answer.get("configured"))
+    reason = str(answer.get("reason") or "")
     if not configured:
         return Delivery("failed", route, code=NOT_CONFIGURED, note=registry_note(reason))
     return registry_outage(route)

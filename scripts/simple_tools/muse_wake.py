@@ -252,11 +252,14 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run
     yet, so a registry that cannot be read is `busy` and is tried again without spending an
     attempt."""
-    registry_env = _registry_env(env)
+    try:
+        registry_env = _registry_env(env)
+    except Exception:  # noqa: BLE001 - an unreadable registry env is an outage, not a fault
+        return WR.registry_outage()
     try:
         answer = resolve(env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        # A host that cannot reach the registry at all is a deployment fault, not an outage.
+        # A host with no registry address or key is a deployment fault, not an outage.
         return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
         return WR.registry_delivery(answer)
