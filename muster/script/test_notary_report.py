@@ -180,7 +180,9 @@ class FailureTests(unittest.TestCase):
     def test_the_cap_is_on_bytes(self):
         # Multi-byte text is cut on its encoded bytes, so the cap holds whatever the characters.
         wide = "é" * report.MAX_BYTES
-        name, _sentence, status = report.classify_failure(wide + " HTTP status code: 403. forbidden")
+        name, _sentence, status = report.classify_failure(
+            wide + " HTTP status code: 403. forbidden"
+        )
         self.assertEqual((name, status), ("unknown", None), "nothing past the cap is read")
         near = "é" * ((report.MAX_BYTES - 64) // 2) + " HTTP status code: 403. forbidden"
         self.assertEqual(report.classify_failure(near)[::2], ("forbidden", "403"))
