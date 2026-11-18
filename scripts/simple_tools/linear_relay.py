@@ -1063,13 +1063,59 @@ class _CatchUp:
         self.recorded: set[int] = {int(mid) for mid in recorded if int(mid) > self.start}
 
 
-def _by_id(messages: Iterable[Any]) -> list[Mapping[str, Any]]:
-    """The messages a history reader returned that carry an integer id, once each, oldest first."""
-    found: dict[int, Mapping[str, Any]] = {}
+# The text fields of a history message the worker reads, besides its id and its timestamp.
+_HISTORY_TEXT_FIELDS = ("sender_email", "sender_full_name", "content")
+# The latest timestamp a history message may carry: the last second of 9999 UTC, well inside
+# what time.gmtime renders.  A larger one (or NaN, an infinity) made the append raise.
+MAX_TIMESTAMP = 253402300799
+
+
+def _checked_message(message: Any) -> dict[str, Any] | None:
+    """One message of a history read, rebuilt from the fields the worker reads, each checked
+    against the shape Zulip's messages API gives it, or None when any is missing or of the wrong
+    type: id an integer, sender_email, sender_full_name and content strings, and timestamp whole
+    seconds since the epoch, no later than MAX_TIMESTAMP."""
+    if not isinstance(message, Mapping) or not _is_int(message.get("id")):
+        return None
+    if not all(isinstance(message.get(name), str) for name in _HISTORY_TEXT_FIELDS):
+        return None
+    stamp = message.get("timestamp")
+    if not _is_int(stamp) or not 0 <= stamp <= MAX_TIMESTAMP:
+        return None
+    checked = {name: message[name] for name in _HISTORY_TEXT_FIELDS}
+    return {"id": int(message["id"]), "timestamp": int(stamp), **checked}
+
+
+def _by_id(messages: Any) -> tuple[list[dict[str, Any]], int]:
+    """The messages a history reader returned, once each by id, oldest first, and how many of
+    them were malformed (AFC-821).
+
+    An answer that is not a list (or a tuple) fails the read with ValueError, None and an
+    empty mapping or string included: read as no messages, any of them would settle a
+    catch-up with its gap still open, or restore an archived entry without its history and
+    rewrite its standing comment down to the live message.  Each message is checked
+    (_checked_message) and rebuilt from its checked fields, so nothing downstream reads a field
+    that was not checked.
+
+    A malformed message is skipped and counted, not failed: a failed read is tried again from
+    the same point, so one message that never parses would hold its topic's catch-up open, or
+    keep an archived comment from being restored, for good.  One whose id is good keeps its
+    place as {"id": id, "malformed": True}, which _append_history never records, so the read
+    still shows how far it went and _judge still sees a read that stopped at its cap.  One
+    without an integer id has no place in the topic and is left out."""
+    if not isinstance(messages, (list, tuple)):
+        raise ValueError("a topic history read must answer a list of messages")
+    found: dict[int, dict[str, Any]] = {}
+    malformed = 0
     for message in messages:
-        if isinstance(message, Mapping) and _is_int(message.get("id")):
-            found.setdefault(int(message["id"]), message)
-    return [found[mid] for mid in sorted(found)]
+        checked = _checked_message(message)
+        if checked is None:
+            malformed += 1
+            if not (isinstance(message, Mapping) and _is_int(message.get("id"))):
+                continue
+            checked = {"id": int(message["id"]), "malformed": True}
+        found.setdefault(checked["id"], checked)
+    return [found[mid] for mid in sorted(found)], malformed
 
 
 class RelayWorker:
@@ -1086,7 +1132,7 @@ class RelayWorker:
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
         history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
-        history_since: Callable[[int, str, int], Iterable[Mapping[str, Any]]] | None = None,
+        history_since: Callable[[int, str, int], list[Mapping[str, Any]]] | None = None,
         byline: str = "the relay",
     ) -> None:
         self.realm = zulip_realm
@@ -1099,7 +1145,8 @@ class RelayWorker:
         self.log = log or (lambda m: print(m, file=sys.stderr, flush=True))
         # A topic-history reader, given by the Operator hosting (operator_linear.py): called
         # with (stream id, topic) when a first mention creates an entry, or a message restores
-        # an archived one, so the topic's earlier messages join the comment.  None in the
+        # an archived one, so the topic's earlier messages join the comment.  Each reader
+        # answers a list (anything else fails the read: _by_id) or raises.  None in the
         # standalone process: no backfill there.
         self.history = history
         # A second reader, given by the same hosting: called with (stream id, topic, after id)
@@ -1642,10 +1689,22 @@ class RelayWorker:
         cache_key = (stream_id, topic)
         if cache_key not in cache:
             try:
-                cache[cache_key] = (_by_id(self.history(stream_id, topic) or []), "")
+                read, malformed = _by_id(self.history(stream_id, topic))
             except Exception as exc:  # noqa: BLE001 - history must never stop a record
                 cache[cache_key] = (None, type(exc).__name__)
+            else:
+                cache[cache_key] = (read, "")
+                self._log_malformed(malformed)
         return cache[cache_key]
+
+    def _log_malformed(self, count: int) -> None:
+        """Say how many malformed messages a history read answered (_by_id): the count alone,
+        since their fields are unchecked Zulip text."""
+        if count:
+            self.log(
+                "a topic history read answered %d malformed message(s); they are left out of "
+                "the comment" % count
+            )
 
     def _enter(
         self,
@@ -1725,18 +1784,19 @@ class RelayWorker:
         return entry
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
-        """Record one message read from Zulip's history as the live path would have recorded
-        it: the writer's own posts are skipped, and the message keeps its own timestamp."""
-        if str(message.get("sender_email", "")).lower() == self.own_email:
+        """Record one message read from Zulip's history, as _by_id checked it, the way the live
+        path would have recorded it: the writer's own posts are skipped, a malformed message is
+        never recorded, and the message keeps its own timestamp."""
+        if message.get("malformed") is True:
             return False
-        stamp = message.get("timestamp")
-        when = float(stamp) if _is_number(stamp) else self.clock()
+        if message["sender_email"].lower() == self.own_email:
+            return False
         return self._append(
             entry,
-            int(message["id"]),
-            str(message.get("sender_full_name", "someone")),
-            str(message.get("content", "")),
-            when,
+            message["id"],
+            message["sender_full_name"],
+            message["content"],
+            float(message["timestamp"]),
         )
 
     def _restore(
@@ -1808,7 +1868,7 @@ class RelayWorker:
             return
         oldest = min(state.start for _key, _entry, state in waiting)
         try:
-            found = _by_id(self.history_since(stream_id, topic, oldest) or [])
+            found, malformed = _by_id(self.history_since(stream_id, topic, oldest))
         except Exception as exc:  # noqa: BLE001 - a catch-up must never stop a record
             for key, _entry, _state in waiting:
                 self._read_retry[key] = now + CATCH_UP_RETRY
@@ -1818,6 +1878,7 @@ class RelayWorker:
                 % (type(exc).__name__, CATCH_UP_RETRY)
             )
             return
+        self._log_malformed(malformed)
         for key, entry, state in waiting:
             self._read_retry.pop(key, None)
             added = 0

@@ -1809,6 +1809,210 @@ class CatchUpTests(WorkerCase):
         self.assertEqual(self.topic.since_calls, [(5, "deploy thread", 0)])
         self.assertTrue(any("fills in the rest" in line for line in self.logs))
 
+    # -- the shape of what a history reader answers (Kody, PR 2298) ------------------------
+    def test_a_malformed_message_in_a_catch_up_read_is_skipped_and_the_rest_recorded(
+        self,
+    ) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        no_time = {name: value for name, value in past(5, "x").items() if name != "timestamp"}
+        self.topic.messages = [
+            past(1, "hello"),
+            {**past(2, "x"), "content": None},
+            {**past(3, "x"), "sender_full_name": ["a list, not a name"]},
+            {**past(4, "x"), "sender_email": 7},
+            no_time,
+            {**past(6, "x"), "timestamp": "906"},
+            {**past(7, "x"), "timestamp": True},
+            "not a message",
+            {"id": "8", "content": "an id that is not an integer"},
+            past(9, "missed"),
+            past(10, "live"),
+        ]
+        # The reader hands every item back as it came, the ones without an integer id too.
+        self.topic.sloppy = True
+        second = self.restart()
+        self.t[0] += 3600
+        second.handle_event(message(10, "AFC-1 relay", "live"))
+        entry = self.entry()
+        # The well-formed ones are recorded, in id order; no malformed one reaches the comment.
+        self.assertEqual(entry["seen"], [1, 9, 10])
+        self.assertEqual(entry["count"], 3)
+        body = self.lin.updated[-1][1]
+        self.assertIn("near/9", body)
+        for mid in range(2, 8):
+            self.assertNotIn("near/%d)" % mid, body)
+        self.assertNotIn("a list, not a name", body)
+        # Counted in the log, and no field of a malformed message is written there.
+        self.assertIn(
+            "a topic history read answered 8 malformed message(s); they are left out of the "
+            "comment",
+            self.logs,
+        )
+        for text in ("a list, not a name", "not a message", "an id that is not an integer"):
+            self.assertFalse(any(text in line for line in self.logs))
+        # Settled: a malformed message does not hold the catch-up open, so the next message
+        # reads nothing.
+        second.handle_event(message(11, "AFC-1 relay", "and on"))
+        self.assertEqual(len(self.topic.since_calls), 1)
+        self.assertEqual(entry["seen"], [1, 9, 10, 11])
+
+    def test_a_message_whose_time_cannot_be_rendered_does_not_stop_the_topic(self) -> None:
+        # Before the check, such a timestamp raised in the append, the live message went
+        # unrecorded, and the same read raised again at every later message in the topic.
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.topic.messages = [
+            past(1, "hello"),
+            {**past(2, "x"), "timestamp": 10**30},
+            {**past(3, "x"), "timestamp": 10**18},
+            {**past(4, "x"), "timestamp": float("inf")},
+            {**past(5, "x"), "timestamp": float("nan")},
+            {**past(6, "x"), "timestamp": -1},
+            {**past(7, "x"), "timestamp": 253402300800},  # a second past the end of 9999
+            past(8, "missed"),
+            past(9, "live"),
+        ]
+        second = self.restart()
+        second.handle_event(message(9, "AFC-1 relay", "live"))
+        self.assertEqual(self.entry()["seen"], [1, 8, 9])
+        self.assertIn(
+            "a topic history read answered 6 malformed message(s); they are left out of the "
+            "comment",
+            self.logs,
+        )
+
+    def test_a_malformed_message_in_a_backfill_is_skipped_and_the_rest_recorded(self) -> None:
+        worker = self.restart()
+        self.topic.messages = [
+            past(1, "m1"),
+            {**past(2, "x"), "timestamp": 10**30},
+            {**past(3, "x"), "content": {"not": "text"}},
+            past(4, "m4"),
+            past(5, "this is AFC-1"),
+        ]
+        worker.handle_event(message(5, "deploy thread", "this is AFC-1"))
+        self.assertEqual(self.entry("AFC-1", "deploy thread")["seen"], [1, 4, 5])
+        self.assertIn(
+            "a topic history read answered 2 malformed message(s); they are left out of the "
+            "comment",
+            self.logs,
+        )
+
+    def test_a_malformed_message_does_not_hold_an_archived_comment_back(self) -> None:
+        # Were it to fail the whole read, the restore would wait for a read that succeeds, and
+        # one that answers the same message every time never does.
+        first = self.restart()
+        self.topic.messages = [past(1, "this is AFC-1")]
+        first.handle_event(message(1, "AFC-1 relay", "this is AFC-1"))
+        self.prune()
+        self.topic.messages += [{**past(2, "x"), "sender_email": None}, past(3, "m3")]
+        second = self.restart()
+        self.t[0] += 86400
+        second.handle_event(message(3, "AFC-1 relay", "m3"))
+        self.assertEqual(self.entry()["seen"], [1, 3])  # restored at once, without the bad one
+        self.assertEqual(self.lin.create_calls, 1)  # the standing comment, not a second one
+
+    def test_a_malformed_message_keeps_its_place_in_a_read_cut_short_at_its_cap(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 9)]
+        self.topic.messages[2] = {**past(3, "x"), "content": None}
+        self.topic.cap = 3
+        second = self.restart()
+        with mock.patch.object(lr, "MAX_BACKFILL", 3):
+            second.handle_event(message(8, "AFC-1 relay", "m8"))
+            for mid in (9, 10, 11):
+                self.topic.messages.append(past(mid, "m%d" % mid))
+                second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        # The first read answered its cap, the malformed message among them, so it still reads
+        # as cut short and the catch-up goes on past it: nothing after it is dropped.
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 4, 7])
+        self.assertEqual(self.entry()["seen"], [1, 2, 4, 5, 6, 7, 8, 9, 10, 11])
+
+    def test_a_read_that_is_not_a_list_of_messages_fails(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.topic.messages = [past(1, "hello"), past(2, "missed"), past(3, "live")]
+        # A mapping would otherwise be iterated as its keys, read as no messages, and settle
+        # the catch-up with the gap still open.
+        second = self.worker(
+            history=self.topic.whole,
+            history_since=lambda *_args: {"messages": list(self.topic.messages)},
+        )
+        second.handle_event(message(3, "AFC-1 relay", "live"))
+        self.assertEqual(self.entry()["seen"], [1, 3])  # the live message is recorded
+        failed = [line for line in self.logs if "could not be read" in line]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("(ValueError)", failed[0])
+
+    def test_a_catch_up_read_that_answers_no_list_at_all_fails_and_is_tried_again(self) -> None:
+        # None, an empty mapping or an empty string used to become an empty list before the
+        # check saw it, so the catch-up settled with message 2 lost for good, and nothing was
+        # logged (the review check of Kody's findings, PR 2298).
+        answers = [None, {}, "", b"", bytearray(), 0]
+        first = self.restart()
+        for n in range(len(answers)):
+            topic = "AFC-1 case %d" % n
+            self.topic.topics[topic] = [past(10 * n + 1, "hello")]
+            first.handle_event(message(10 * n + 1, topic, "hello"))
+        bad: list = []
+
+        def since(stream_id: int, topic: str, after_id: int) -> object:
+            return bad[0] if bad else self.topic.since(stream_id, topic, after_id)
+
+        second = self.worker(history=self.topic.whole, history_since=since)
+        for n, answer in enumerate(answers):
+            topic = "AFC-1 case %d" % n
+            ids = [10 * n + k for k in (1, 2, 3, 4)]
+            with self.subTest(answer=answer):
+                self.topic.topics[topic] += [past(ids[1], "missed"), past(ids[2], "live")]
+                bad[:] = [answer]
+                self.logs.clear()
+                second.handle_event(message(ids[2], topic, "live"))
+                self.assertEqual(self.entry("AFC-1", topic)["seen"], [ids[0], ids[2]])
+                failed = [line for line in self.logs if "could not be read" in line]
+                self.assertEqual(len(failed), 1)
+                self.assertIn("(ValueError)", failed[0])
+                # Not settled: once the reader answers, a later message fills the gap in.
+                bad.clear()
+                self.topic.topics[topic].append(past(ids[3], "on"))
+                self.t[0] += lr.CATCH_UP_RETRY + 1
+                second.handle_event(message(ids[3], topic, "on"))
+                self.assertEqual(self.entry("AFC-1", topic)["seen"], ids)
+
+    def test_a_restore_whose_read_answers_no_list_leaves_the_comment_as_it_is(self) -> None:
+        # Read as no messages, None restored the entry from the live message alone, and the
+        # next edit rewrote the standing comment down to that one message.
+        first = self.restart()
+        self.topic.messages = [past(1, "this is AFC-1"), past(2, "m2")]
+        first.handle_event(message(1, "AFC-1 relay", "this is AFC-1"))
+        first.handle_event(message(2, "AFC-1 relay", "m2"))
+        key = self.key("AFC-1", 5, "AFC-1 relay")
+        self.prune()
+        whole: list = [None]
+        second = self.worker(
+            history=lambda *args: whole[0] if whole else self.topic.whole(*args),
+            history_since=self.topic.since,
+        )
+        self.topic.messages.append(past(3, "m3"))
+        self.t[0] += 86400
+        second.handle_event(message(3, "AFC-1 relay", "m3"))
+        second.tick()
+        self.assertEqual(list(self.led.archive), [key])  # held, not restored
+        self.assertEqual(self.led.entries, {})
+        self.assertEqual(self.lin.updated, [])
+        failed = [line for line in self.logs if "its archived comment is left as it is" in line]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("(ValueError)", failed[0])
+        # With the read answering again, the next message restores the whole topic.
+        whole.clear()
+        self.topic.messages.append(past(4, "m4"))
+        self.t[0] += lr.CATCH_UP_RETRY + 1
+        second.handle_event(message(4, "AFC-1 relay", "m4"))
+        self.assertEqual(self.led.entries[key]["seen"], [1, 2, 3, 4])
+        self.assertEqual(self.lin.create_calls, 1)
+
     def test_a_queue_that_registers_again_reopens_the_catch_up(self) -> None:
         worker = self.restart()
         self.topic.messages = [past(1, "m1")]

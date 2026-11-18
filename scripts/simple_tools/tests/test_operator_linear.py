@@ -292,11 +292,18 @@ class WorkerHistoryTests(unittest.TestCase):
 
 
 class FakeZulip:
-    """Answers the streams call and pages a scripted topic history."""
+    """Answers the streams call and pages a scripted topic history as Zulip does:  an integer
+    anchor is a place in the topic, not a message the page must find, so an id no message in
+    the topic carries still pages on from where it would be, and "oldest" is the place before
+    the first message.  The messages call raises messages_error while it is set.  Each
+    (after_id, item) in junk puts an item that is not a well-formed message into the pages,
+    just after message after_id, where it counts toward num_after as a message would."""
 
     def __init__(self, topic_messages=(), streams_error=None) -> None:
         self.topic_messages = sorted(topic_messages, key=lambda m: m["id"])
         self.streams_error = streams_error
+        self.messages_error: Exception | None = None
+        self.junk: list[tuple[int, object]] = []
         self.message_calls: list[dict] = []
         self.message_options: list[dict] = []  # the keyword options of each messages call
 
@@ -314,15 +321,28 @@ class FakeZulip:
         if path == "messages":
             self.message_calls.append(dict(params))
             self.message_options.append(dict(options))
+            if self.messages_error is not None:
+                raise self.messages_error
             anchor = params.get("anchor")
-            start = 0
-            if isinstance(anchor, int):
-                start = next(
-                    (i + 1 for i, m in enumerate(self.topic_messages) if m["id"] == anchor),
-                    len(self.topic_messages),
-                )
+            if anchor == "oldest":
+                start = 0  # the server reads "oldest" as 0, before every message id
+            elif isinstance(anchor, int) and not isinstance(anchor, bool):
+                start = anchor
+            else:
+                raise AssertionError("unexpected anchor %r" % (anchor,))
+            inclusive = params.get("include_anchor") is True
+            # Each item at its place in the topic:  a message at its id, junk just after one.
+            items = [(m["id"], m) for m in self.topic_messages]
+            items += [(after_id + 0.5, item) for after_id, item in self.junk]
+            items.sort(key=lambda pair: pair[0])
+            after = [
+                item
+                for place, item in items
+                if place > start or (inclusive and place == start)
+            ]
             count = int(params.get("num_after") or 0)
-            return {"messages": [dict(m) for m in self.topic_messages[start : start + count]]}
+            page = [dict(m) if isinstance(m, dict) else m for m in after[:count]]
+            return {"messages": page}
         raise AssertionError("unexpected path %s" % path)
 
 
@@ -373,6 +393,145 @@ class EngineTests(unittest.TestCase):
         zulip.message_calls.clear()
         self.assertEqual(opl.fetch_topic_history(zulip, 5, "thread")[0]["id"], 1)
         self.assertEqual(zulip.message_calls[0]["anchor"], "oldest")
+
+    def test_history_after_an_id_below_one_reads_from_the_topics_oldest_message(self) -> None:
+        # The worker's catch-up of a topic whose first read failed starts after 0 (Kody, PR
+        # 2298).  No message has that id, so the read asks for the topic's start by the API's
+        # own name, and include_anchor staying false does not skip the first message.
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 6)])
+        for after in (0, -4):
+            zulip.message_calls.clear()
+            with mock.patch.object(opl, "PAGE", 2):
+                got = opl.fetch_topic_history(zulip, 5, "thread", after_id=after)
+            self.assertEqual([m["id"] for m in got], [1, 2, 3, 4, 5])
+            self.assertEqual(zulip.message_calls[0]["anchor"], "oldest")
+            self.assertIs(zulip.message_calls[0]["include_anchor"], False)
+
+    def test_history_after_an_id_no_longer_in_the_topic_reads_on_from_its_place(self) -> None:
+        # Message 3 was moved out of the topic (or deleted) after the entry recorded it.
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in (1, 2, 4, 5)])
+        got = opl.fetch_topic_history(zulip, 5, "thread", after_id=3)
+        self.assertEqual([m["id"] for m in got], [4, 5])
+        self.assertEqual(zulip.message_calls[0]["anchor"], 3)
+
+    def test_engine_fills_in_an_entry_whose_first_read_failed_from_the_topics_start(
+        self,
+    ) -> None:
+        zulip = FakeZulip(
+            [api_message(1, "m1"), api_message(2, "m2"), api_message(3, "this is AFC-1")]
+        )
+        eng = self.engine(zulip)
+        zulip.messages_error = OSError("zulip is down")
+        eng.feed_message(zulip, event_message(3, "thread", "this is AFC-1"))
+        self.assertEqual(len(self.lin.created), 1)  # a create is never held for history
+        entry = next(iter(eng.worker.ledger.entries.values()))
+        self.assertEqual(entry["seen"], [3])
+        zulip.messages_error = None
+        zulip.topic_messages.append(api_message(4, "m4"))
+        zulip.message_calls.clear()
+        self.t[0] += 3600
+        eng.feed_message(zulip, event_message(4, "thread", "m4"))
+        # The catch-up read the topic from its first message, not from a message 0.
+        self.assertEqual([call["anchor"] for call in zulip.message_calls], ["oldest"])
+        self.assertEqual(entry["seen"], [1, 2, 3, 4])
+
+    # -- an item a page carries that is not a message (the review check, PR 2298) -----------
+    def test_history_leaves_out_an_item_it_cannot_place_and_pages_on(self) -> None:
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 6)])
+        zulip.junk = [
+            (1, "not a message"),
+            (2, {"id": "3", "content": "an id that is not an integer"}),
+            (3, {"id": True, "content": "a bool is not an id"}),
+            (4, None),
+        ]
+        with mock.patch.object(opl, "PAGE", 2):
+            got = opl.fetch_topic_history(zulip, 5, "thread")
+        self.assertEqual([m["id"] for m in got], [1, 2, 3, 4, 5])
+        self.assertGreaterEqual(len(zulip.message_calls), 5)  # it paged on past each one
+        # A message with an integer id is passed on as it came, for the worker to check.
+        bad = dict(api_message(6, "x"), content=None)
+        zulip.topic_messages.append(bad)
+        self.assertEqual(opl.fetch_topic_history(zulip, 5, "thread")[-1], bad)
+
+    def test_a_read_stopped_at_its_cap_answers_the_cap_with_such_items_left_out(self) -> None:
+        # The worker tells a read cut short at its cap by its length:  were an item it cannot
+        # place to count, the read would end one short and look like the topic's end.
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 9)])
+        zulip.junk = [(1, {"id": "2b", "content": "an id that is not an integer"})]
+        got = opl.fetch_topic_history(zulip, 5, "thread", max_messages=3)
+        self.assertEqual([m["id"] for m in got], [1, 2, 3])
+        self.assertEqual([call["num_after"] for call in zulip.message_calls], [3, 1])
+
+    def test_history_fails_on_a_full_page_with_no_message_to_page_on_from(self) -> None:
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in (1, 2)])
+        zulip.junk = [(0, "not a message"), (0, {"id": None})]
+        with mock.patch.object(opl, "PAGE", 2):
+            with self.assertRaises(ValueError):
+                opl.fetch_topic_history(zulip, 5, "thread")
+        # A short page of such items is the topic's end:  the read answers what came before.
+        zulip = FakeZulip([api_message(1, "m1")])
+        zulip.junk = [(1, "not a message")]
+        with mock.patch.object(opl, "PAGE", 2):
+            got = opl.fetch_topic_history(zulip, 5, "thread")
+        self.assertEqual([m["id"] for m in got], [1])
+        # And an answer that is not a list of messages still fails the read.
+        for answer in ({"messages": None}, {"messages": {"id": 1}}, None, [api_message(1, "m")]):
+            with self.subTest(answer=answer):
+                client = mock.Mock()
+                client.get.return_value = answer
+                with self.assertRaises(ValueError):
+                    opl.fetch_topic_history(client, 5, "thread")
+
+    def test_engine_catch_up_reads_past_an_item_that_is_not_a_message(self) -> None:
+        # One such item used to fail the whole read, at every later message, from the same
+        # point:  message 3 was never recorded.
+        zulip = FakeZulip([api_message(1, "this is AFC-1")])
+        eng = self.engine(zulip)
+        eng.feed_message(zulip, event_message(1, "thread", "this is AFC-1"))
+        zulip.topic_messages += [
+            dict(api_message(2, "x"), content=None),
+            api_message(3, "missed"),
+            api_message(4, "live"),
+        ]
+        zulip.junk = [(1, "not a message"), (2, {"id": "x"})]
+        eng.queue_registered()
+        zulip.message_calls.clear()
+        eng.feed_message(zulip, event_message(4, "thread", "live"))
+        entry = next(iter(eng.worker.ledger.entries.values()))
+        self.assertEqual(entry["seen"], [1, 3, 4])
+        self.assertEqual([call["anchor"] for call in zulip.message_calls], [1])
+        self.assertFalse(any("could not be read" in line for line in self.logs))
+        self.assertIn(
+            "a topic history read answered 1 malformed message(s); they are left out of the "
+            "comment",
+            self.logs,
+        )
+        # Settled:  the next message reads nothing.
+        zulip.topic_messages.append(api_message(5, "and on"))
+        eng.feed_message(zulip, event_message(5, "thread", "and on"))
+        self.assertEqual(len(zulip.message_calls), 1)
+        self.assertEqual(entry["seen"], [1, 3, 4, 5])
+
+    def test_engine_restores_an_archived_comment_past_an_item_that_is_not_a_message(
+        self,
+    ) -> None:
+        # One such item used to fail the restore's read every time, so the archived comment
+        # was never restored and every later message of its topic was dropped.
+        zulip = FakeZulip([api_message(1, "this is AFC-1")])
+        eng = self.engine(zulip)
+        eng.feed_message(zulip, event_message(1, "thread", "this is AFC-1"))
+        led = eng.worker.ledger
+        with mock.patch.object(lr, "MAX_ENTRIES", 0):
+            led.save()  # pruned exactly as the entry bound prunes it
+        self.assertEqual((len(led.entries), len(led.archive)), (0, 1))
+        zulip.topic_messages += [api_message(2, "m2"), api_message(3, "m3")]
+        zulip.junk = [(1, "not a message")]
+        self.t[0] += 86400
+        eng.feed_message(zulip, event_message(3, "thread", "m3"))
+        self.assertEqual((len(led.entries), len(led.archive)), (1, 0))
+        entry = next(iter(led.entries.values()))
+        self.assertEqual(entry["seen"], [1, 2, 3])
+        self.assertEqual(self.lin.create_calls, 1)  # the standing comment, not a second one
 
     def test_engine_catches_up_after_a_restart(self) -> None:
         zulip = FakeZulip([api_message(1, "this is AFC-1")])

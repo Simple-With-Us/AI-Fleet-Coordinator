@@ -104,6 +104,15 @@ Eavesdropper, and it hosts the mirror.
   as it is.
   Each history read has one 30-second deadline for all its pages, because it runs on
   the routing thread.
+  Every message a read answers is checked against the shape Zulip's messages API gives
+  it before anything reads it:  a malformed one is skipped and counted in the log (the
+  count alone, never its text), so one bad message never holds a catch-up or a restore
+  open.  An item with no integer id has no place in the topic and is left out where the
+  read pages (`fetch_topic_history`), where it does not count toward the 1000-message
+  cap either.  A read fails, and is tried again later, when its answer is not a list of
+  messages (None and an empty mapping or string included) or when a full page carries no
+  message id to page on from.  A catch-up whose first read failed starts at the topic's
+  oldest message.
 - **State:** the hosted ledger is the same format at
   `<state root>/operator/linear-comments.json` (server:  `/data/operator/linear-comments.json`),
   beside the session registry.  The marker line is deliberately unchanged
@@ -176,7 +185,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (51 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (59 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -186,9 +195,13 @@ writer's own posts, orders links oldest first, shares one fetch across the issue
 message names, and never blocks a create when the history read fails;  a topic-title
 mention backfills from the first routed message;  tracked topics take every later
 message, untracked topics take none;  history paging and narrow shape, after a message
-id too, with one deadline per read;  a reader with no client fails rather than answering
-empty;  the engine end-to-end, across a restart, catching up after a restart and after a
-seat's queue registers again;  the daemon's backfill telling the engine a queue
+id too (below 1 from the topic's oldest message, and on from the place of one no longer
+in the topic), with one deadline per read;  a page item that is not a message left out
+and paged past, never counted toward the cap, and a full page of them failing the read;
+a reader with no client fails rather than answering empty;  the engine end-to-end,
+across a restart, catching up after a restart, after a first read that failed, and after
+a seat's queue registers again, and catching up or restoring an archived comment past a
+page item that is not a message;  the daemon's backfill telling the engine a queue
 registered;  silence until the public-stream set loads;  private
 streams never commented;  dry run writes nothing;  the ledger path;  the
 `[linear_comments]` config parsing (including `infisical_token_file`);  the credential
@@ -199,8 +212,9 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 119 tests) covers the worker, the whole-topic continuation
-above, and the AFC-821 archive and catch-up.
+(`test_linear_relay.py`, 127 tests) covers the worker, the whole-topic continuation
+above, and the AFC-821 archive and catch-up, malformed history messages and reads that
+answer no list at all included.
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 

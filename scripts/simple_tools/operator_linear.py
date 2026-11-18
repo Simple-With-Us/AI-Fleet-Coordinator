@@ -348,6 +348,15 @@ def state_path(root: str | Path, env: Mapping[str, str], dry_run: bool) -> Path:
     return live
 
 
+def _page_message_id(item: Any) -> int | None:
+    """The id one item of a Zulip message page is placed in its topic by, or None when it has
+    none:  not a mapping, or an id that is not an integer (a bool is not one)."""
+    if not isinstance(item, Mapping):
+        return None
+    ident = item.get("id")
+    return ident if isinstance(ident, int) and not isinstance(ident, bool) else None
+
+
 def fetch_topic_history(
     client: ZulipClient,
     stream_id: int,
@@ -359,50 +368,66 @@ def fetch_topic_history(
 ) -> list[dict[str, Any]]:
     """Every message in one public stream topic, oldest first, up to max_messages.  With
     after_id, only the messages after that message id (the worker's catch-up after a
-    restart reads from the newest message it has recorded).  With deadline (a
-    time.monotonic() value), every page and every retry share it, and a read that runs
-    past it raises.
+    restart reads from the newest message it has recorded); an after_id below 1 reads from
+    the topic's start, as no after_id does.  With deadline (a time.monotonic() value), every
+    page and every retry share it, and a read that runs past it raises.
 
     Pages forward from the topic's start, or from after_id, with the messages API, the
-    same narrow shape the daemon's own backfill uses.  A page that is not a list of
-    messages raises ValueError:  the caller (the worker's backfill or catch-up) treats any
-    failure as "no history" and logs it, so a malformed answer can never half-fill a
-    comment."""
+    same narrow shape the daemon's own backfill uses.  An answer that is not a list of
+    messages raises ValueError, and so does a full page with no message the read can page
+    on from:  the caller (the worker's backfill or catch-up) treats any failure as "no
+    history" and logs it, so a malformed answer can never half-fill a comment.
+
+    One bad item does not fail the read (Kody, PR 2298):  a failed read is tried again
+    from the same point, so an item that never parses would hold the topic's catch-up, or
+    an archived comment's restore, open for good.  A mapping with an integer id is passed
+    on as it came, for the worker to check (linear_relay._by_id skips and counts one that
+    is malformed);  an item without one (not a mapping, or no integer id) has no place in
+    the topic, and is left out here.  Only the messages passed on count toward
+    max_messages, so a read stopped at its cap still answers max_messages of them."""
     narrow = [
         {"operator": "channel", "operand": int(stream_id)},
         {"operator": "topic", "operand": topic},
     ]
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
-    # An id anchors the first page at that message, and include_anchor is false below, so
-    # the page starts with the message after it.
-    anchor: Any = "oldest" if after_id is None else int(after_id)
+    # An id anchors the first page at that message's place, and include_anchor is false below,
+    # so the page starts with the message after it.  No id, or one below 1 (no message has
+    # one: a catch-up whose first read failed starts after 0), asks for the topic's start by
+    # the API's own name for it, never for a message 0.
+    anchor: Any = "oldest" if after_id is None or int(after_id) < 1 else int(after_id)
     limits: dict[str, Any] = {} if deadline is None else {"deadline": deadline}
     while len(out) < max_messages:
+        wanted = min(PAGE, max_messages - len(out))
         result = client.get(
             "messages",
             {
                 "narrow": narrow,
                 "anchor": anchor,
                 "num_before": 0,
-                "num_after": min(PAGE, max_messages - len(out)),
+                "num_after": wanted,
                 "include_anchor": False,
                 "apply_markdown": False,
             },
             **limits,
         )
         page = result.get("messages") if isinstance(result, Mapping) else None
-        if not isinstance(page, list) or not all(isinstance(m, Mapping) for m in page):
+        if not isinstance(page, list):
             raise ValueError("a Zulip message page must be a list of messages")
+        placed = [m for m in page if _page_message_id(m) is not None]
+        if len(page) >= wanted and not placed:
+            # A full page gives no id to anchor the next one on, and ending the read here
+            # would answer the topic as ending here too.
+            raise ValueError("a full Zulip message page carried no message id to page on from")
         # Only ids never seen count:  a page the API repeats (an anchor it did not
         # honour) must neither duplicate messages into the comment nor page forever.
-        fresh = [m for m in page if isinstance(m.get("id"), int) and int(m["id"]) not in seen]
+        fresh = [m for m in placed if int(m["id"]) not in seen]
         if not fresh:
             break
         seen.update(int(m["id"]) for m in fresh)
         out.extend(dict(m) for m in fresh)
-        if len(page) < PAGE:
-            break
+        if len(page) < wanted:
+            break  # fewer than asked for:  the topic ends here
         new_anchor = max(int(m["id"]) for m in fresh)
         if new_anchor == anchor:
             break  # the anchor failed to advance:  the next page would repeat this one
