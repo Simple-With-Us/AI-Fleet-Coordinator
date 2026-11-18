@@ -158,6 +158,7 @@ on:
           boundary run identically; the only difference is where the PR
           context comes from.  Empty (the default) keeps the event path and
           is the normal operation for every existing caller.
+        type: string
         required: false
         default: ""
 
