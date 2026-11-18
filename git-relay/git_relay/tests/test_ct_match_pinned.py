@@ -190,34 +190,35 @@ class DurableReviewTests(unittest.TestCase):
 
 
 class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
-    """The Usage-Monitor upgrade-reviewed-hub.py v3 candidate: exact digest, exact one-match census."""
+    """The Usage-Monitor upgrade-reviewed-hub.py v3 candidate: exact digest, exact one-match census.
 
-    key = (
-        "Simple-With-Us/Usage-Monitor",
-        "upgrade-reviewed-hub.py",
-        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
-    )
-    census = frozenset({("assigned secret", 8115, 8143, 8123, 8143)})
+    The key and census are read from the durable review record so this fixture
+    embeds no repository identifier of its own.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[3]
+        cls.record = json.loads(
+            (
+                root
+                / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json"
+            ).read_text()
+        )
+        doc = cls.record["reviewed_file"]
+        cls.key = (doc["repository"], doc["path"], doc["sha256"])
+        cls.census = frozenset(tuple(row) for row in doc["effective_matches"])
 
     def test_registry_pins_exact_census(self):
         self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
         self.assertNotIn(self.key, relay._REVIEWED_GENERIC_FIXTURES)
 
     def test_durable_record_binds_registry(self):
-        root = Path(__file__).resolve().parents[3]
-        record = json.loads(
-            (
-                root
-                / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json"
-            ).read_text()
-        )
-        doc = record["reviewed_file"]
-        self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
-        self.assertEqual(frozenset(tuple(row) for row in doc["effective_matches"]), self.census)
+        doc = self.record["reviewed_file"]
         self.assertEqual(doc["bytes"], 36664)
         self.assertEqual(doc["lines"], 814)
         self.assertEqual(
-            record["provenance_source"]["sha256"],
+            self.record["provenance_source"]["sha256"],
             "e98aaf3f5c7141bd2e80ab2b310ebe216c8ec4b43480ac6e5178a61b47407fea",
         )
 
@@ -233,14 +234,17 @@ class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
             self.assertIsNone(relay.scan_file(key[0], key[1], body))
         self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
 
-    def test_loaded_credential_and_dedicated_pattern_stay_absolute(self):
-        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {self.key: self.census}):
+    def test_loaded_credential_stays_absolute_on_the_admission_path(self):
+        body = "prefix " + "KnownCredentialValue123"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
             self.assertEqual(
-                relay.scan_file(
-                    self.key[0],
-                    self.key[1],
-                    "prefix " + "KnownCredentialValue123",
-                    known=("KnownCredentialValue123",),
-                ),
+                relay.scan_file(key[0], key[1], body, known=("KnownCredentialValue123",)),
                 "a loaded credential",
             )
+
+    def test_dedicated_pattern_stays_absolute_on_the_admission_path(self):
+        body = "token = ghp_" + "A" * 30
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
+            self.assertEqual(relay.scan_file(key[0], key[1], body), "GitHub token")
