@@ -1164,6 +1164,8 @@ class RequestProtocolTests(Case):
         cases = [b"not-json", b'{"protocol":"a","protocol":"b"}',
                  json.dumps({**envelope, "extra": self.writer}).encode(),
                  json.dumps({**envelope, "request": {"action": "get"}}).encode(),
+                 b'{"protocol":"operator-settings-bootstrap/1","request":{"action":"save"},"bootstrap":' + (b"[" * 20) + (b"]" * 20) + b"}",
+                 json.dumps({**envelope, "dense": list(range(M.BOOTSTRAP_MAX_NODES + 5))}).encode(),
                  b"x" * (M.BOOTSTRAP_MAX_BYTES + 1)]
         for raw in cases:
             with self.subTest(raw_length=len(raw)), mock.patch.dict(os.environ, {

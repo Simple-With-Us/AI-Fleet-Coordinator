@@ -196,6 +196,24 @@ export function listenerReceipt(value) {
   };
 }
 
+/** The keys of the status view's `wake_outcomes_24h` (listener_records.status_view, from
+ * wakes.outcome_counts, AFC-824):  the router's outcomes among the last day's wakes, then
+ * `awaiting`, the wakes of any age that went to the router and have no outcome yet. */
+export const WAKE_OUTCOME_KEYS = Object.freeze(["delivered", "undelivered", "unknown", "awaiting"]);
+
+/** The listener's wake outcome counts, re-admitted key by key (AFC-843):  only the four known keys,
+ * in that order, and each only when its count is a non-negative safe integer.  Any other key or
+ * value is dropped, never turned into 0, so every count shown is one the listener sent.  A value
+ * that is not a plain object is null, and the answer then carries no `wake_outcomes_24h`. */
+export function listenerWakeOutcomes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const key of WAKE_OUTCOME_KEYS) {
+    if (Object.hasOwn(value, key) && isInt(value[key]) && value[key] >= 0) out[key] = value[key];
+  }
+  return out;
+}
+
 export const EAVESDROPPER_METHODS = {
   requireListener() {
     if (this.listener) return this.listener;
@@ -231,7 +249,11 @@ export const EAVESDROPPER_METHODS = {
       paused: view.paused === true,
     };
     const byState = Object.fromEntries(Object.entries(view.wakes_by_state ?? {}).filter(([k, v]) => /^[a-z_]{1,32}$/.test(k) && isInt(v)));
-    const text = { seat: this.seat, ...structured, inbox_cursor: count(view.inbox_cursor), held_back_lost: count(view.held_back_lost), wakes_by_state: byState, nudges_pending: count(view.nudges_pending), paused_wakes: view.paused_wakes === true };
+    // Additive, in the text only like the stdio server's (structuredContent keeps to the shared
+    // outputSchema):  a listener from before AFC-824 sends no wake_outcomes_24h, and then the
+    // answer is the one it gave before, with none invented.
+    const outcomes = listenerWakeOutcomes(view.wake_outcomes_24h);
+    const text = { seat: this.seat, ...structured, inbox_cursor: count(view.inbox_cursor), held_back_lost: count(view.held_back_lost), wakes_by_state: byState, ...(outcomes ? { wake_outcomes_24h: outcomes } : {}), nudges_pending: count(view.nudges_pending), paused_wakes: view.paused_wakes === true };
     return okResult(JSON.stringify(text), structured);
   },
 

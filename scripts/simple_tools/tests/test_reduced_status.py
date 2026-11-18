@@ -1795,7 +1795,8 @@ class FromRealDaemonStatusTests(DaemonHarness):
             self.assertNotIn(private, text)
 
     def test_a_real_routine_with_no_url_or_key_reduces_to_not_configured(self) -> None:
-        written, seat, text = self.reduced_routine()
+        # The harness sets the default routine's variables, so this seat's are taken away.
+        written, seat, text = self.reduced_routine(CLAUDE_ROUTINE_URL=None, CLAUDE_ROUTINE_KEY=None)
         self.assertIn("CLAUDE_ROUTINE_URL", written["detail"])
         self.assertEqual(
             seat["routine"], {"ready": False, "auth": "bearer", "why": "routine_not_configured"}
@@ -1815,6 +1816,7 @@ class FromRealDaemonStatusTests(DaemonHarness):
             self.assertNotIn(private, text)
 
     def test_a_real_seat_that_does_not_wake_through_the_router_has_no_routine(self) -> None:
+        self.write_config(wake="inbox")  # the harness default seat has a routine
         document = self.written_status()
         self.assertIsNone(document["seats"]["CLAUDE"]["routine"])
         out = RS.reduce_status(document, document["updated"] + 1, "server")
@@ -1853,14 +1855,16 @@ class FromRealDaemonStatusTests(DaemonHarness):
             "operator_settings_revision", "operator_settings_snapshot_revision", "channel_names",
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
+        # The retired wake types' keys (pinned, pin, claude, muse, model, fallback, provider, quota,
+        # routes_24h, route_enabled) are no longer written (owner ruling, Nov 10, 2026:  the
+        # listener starts no model);  the fixtures above still carry them, as a document from an
+        # older listener would, and the reducer still reads such a document.
         seat_keys = {
             # The bracket-recipient wake switch is read through the settings allowlist
             # route; the reducer deliberately does not read it.
             "bracket_recipient_wakes",
             "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
-            "routine",
-            "pinned", "pin", "claude", "muse", "model", "fallback", "provider", "quota",
-            "wakes_24h", "routes_24h", "route_enabled", "budget", "live", "jobs", "running",
+            "routine", "wakes_24h", "budget", "live", "jobs", "running",
             "paused", "wakes_paused", "held_back", "leases", "red", "chat_nudges",
         }  # fmt: skip
         self.assertEqual(set(document["seats"]["CLAUDE"]), seat_keys)

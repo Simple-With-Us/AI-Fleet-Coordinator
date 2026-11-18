@@ -487,7 +487,7 @@ final class ServerListenerSettingsTests: XCTestCase {
                        .success(ServerListenerSettingsRequest(set: ["seat.AMP.bracket_recipient_wakes": .bool(true)])))
         // Anything but On or Off is refused, and one bad value sinks the whole request.
         XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "maybe"], rows: rows),
-                       .failure(.notAValue("Bracket Recipient Wakes must be on or off.")))
+                       .failure(.notAValue("invalid_settings: seat.AMP.bracket_recipient_wakes must be on or off.")))
         let mixed = ServerSettingsBuilder.request(
             edits: ["seat.AMP.bracket_recipient_wakes": "On", "seat.AMP.enabled": "maybe"], rows: rows)
         guard case .failure(.notAValue) = mixed else { return XCTFail("\(mixed)") }
