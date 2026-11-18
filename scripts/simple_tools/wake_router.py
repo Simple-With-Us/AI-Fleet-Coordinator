@@ -378,6 +378,51 @@ class Wake:
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
 
 
+def workspace_root(configured: object) -> str:
+    """The host's workspace root, as a normalized absolute path, or "" when there is none.
+
+    The deployment names the root where this seat's chats live.  It is a root and not one
+    directory, because a seat works in several projects at once:  a chat in another project
+    under the root is the seat's own work, and a chat outside the root is not.
+
+    The path is normalized and not resolved, so a symlinked lane is inside the root it was
+    named under, and a `..` cannot climb out of the root it was named under."""
+    if not isinstance(configured, str):
+        return ""
+    text = configured.strip()
+    if not text or text.startswith("-"):
+        return ""
+    if not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def workspace_allowed(recorded: object, configured: object) -> bool:
+    """Whether the selected session's own workspace is inside the host's workspace root.
+
+    The delivery runs in the session's own directory, so the session's own row is the
+    binding and the configured root is the bound:  a chat under the root is the seat's own
+    work, and a chat outside it is a wrong-chat delivery, so it is refused before anything
+    runs.
+
+    A host that has named no root has no bound, so nothing is allowed:  a delivery into an
+    unknown directory is not one."""
+    root = workspace_root(configured)
+    if not root:
+        return False
+    if not isinstance(recorded, str):
+        return False
+    path = recorded.strip()
+    if not path or path.startswith("-"):
+        return False
+    if not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if path == root:
+        return True
+    return path.startswith(root + os.sep)
+
+
 @dataclass(frozen=True)
 class Delivery:
     """What a platform's `deliver` did.  See the module docstring for the outcomes."""

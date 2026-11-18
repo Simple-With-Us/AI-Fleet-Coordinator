@@ -71,6 +71,47 @@ def seatless(sid: str, letter: str, title: str, **over) -> dict:
 NOT_CLAUDE = (None, "", 7, ["CLAUDE"], "CODEX", "CLAUDE ", "CL AUDE", "сLAUDE")
 
 
+class WorkspaceRootTests(unittest.TestCase):
+    """The host's workspace root is the bound, and it is a root and not one directory."""
+
+    def test_a_chat_in_another_project_under_the_root_is_the_seats_own_work(self) -> None:
+        """A seat works in several projects at once, and a chat in another project under the
+        root is its own work, so it is not a wrong-chat delivery."""
+        root = "/srv/fleet/Code"
+        self.assertEqual(WR.workspace_root(root), "/srv/fleet/Code")
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/BotFleet", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/BotFleet/src", root))
+        # A sibling with the same beginning is not inside the root.
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Codex", root))
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Other", root))
+
+    def test_a_dot_dot_cannot_climb_out_of_the_root(self) -> None:
+        """The paths are normalized and not resolved, so a `..` in the recorded directory cannot
+        carry it out of the root it was named under."""
+        root = "/srv/fleet/Code"
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/../Other", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/../Code/BotFleet", root))
+
+    def test_a_host_with_no_root_has_no_bound(self) -> None:
+        """A delivery into an unknown directory is not one, so nothing is allowed when no root
+        is named."""
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/BotFleet", ""))
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/BotFleet", None))
+        # A relative path is not a root, and a path that begins with a dash is refused, so it
+        # can never be read as an option.
+        self.assertEqual(WR.workspace_root("fleet/Code"), "")
+        self.assertEqual(WR.workspace_root("-rf"), "")
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code", "fleet/Code"))
+        self.assertFalse(WR.workspace_allowed("-rf", "/srv/fleet/Code"))
+
+    def test_a_symlinked_lane_is_inside_the_root_it_was_named_under(self) -> None:
+        """A lane is a symlink to another volume, and the root names it as it is written, so a
+        chat in a lane is inside the root."""
+        root = "/Users/jay/Code"
+        self.assertTrue(WR.workspace_allowed("/Users/jay/Code/Repo/lane", root))
+
+
 class FakeRegistry:
     """Stands in for registry_api.call."""
 

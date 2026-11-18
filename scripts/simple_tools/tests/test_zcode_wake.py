@@ -326,6 +326,17 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "session-cwd-gone")
 
+    def test_a_chat_in_another_project_under_the_root_is_delivered(self):
+        """The bound is the host's workspace root, so a seat that works in several projects is
+        woken in the project its chat is in."""
+        project = self.workspace / "BotFleet"
+        project.mkdir(mode=0o700)
+        self._session_directory(SID, str(project))
+        delivery = self._deliver_local(config={"workspace": str(self.workspace)})
+        self.assertEqual(delivery.outcome, "sent")
+        argv = self.calls[0]
+        self.assertEqual(argv[argv.index("--cwd") + 1], str(project))
+
     def test_workspace_mismatch_refuses(self):
         self._session_directory(SID, "/elsewhere")
         delivery = self._deliver_local(config={"workspace": str(self.workspace)})

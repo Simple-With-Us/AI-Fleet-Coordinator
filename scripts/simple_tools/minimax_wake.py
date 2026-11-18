@@ -10,8 +10,10 @@ The two routes, and the rule between them.  A MiniMax chat is woken through the 
 CLI:  `mcode exec --session <session_id> --cwd <workspace> --model <provider/model> --input -`
 runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
 workspace, the binary and the model come from the local settings file, where the deployment
-names them (this file carries no private path literal), and the workspace is also the binding,
-because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
+names them (this file carries no private path literal), and the workspace is the bound, because
+a wake into a directory outside this seat's own workspace root is a wrong-chat delivery.  It is
+a root and not one directory:  a seat works in several projects at once, and a chat in another
+project under the root is the seat's own work.  A chat on this host
 delivers locally under a per-session file lock in `state_dir(env) / "locks"`, re-reading
 MiniMax Code's own session store once the lock is acquired.  A session the store does not know
 refuses (`session-not-found`);  one whose recorded workspace is gone refuses
@@ -577,7 +579,7 @@ def deliver_local(
                 return WR.Delivery("refused", "wake", code="session-cwd-gone")
             if not os.path.isdir(recorded):
                 return WR.Delivery("refused", "wake", code="session-cwd-gone")
-            if os.path.realpath(recorded) != os.path.realpath(workspace):
+            if not WR.workspace_allowed(recorded, workspace):
                 return WR.Delivery("refused", "wake", code="workspace-mismatch")
 
             child_env = _child_env(env)

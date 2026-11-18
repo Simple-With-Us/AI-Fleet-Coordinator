@@ -14,7 +14,7 @@ file lock in `state_dir(env) / "locks"`, re-reading zcode's own stores once the 
 acquired.  The tasks index (`~/.zcode/v2/tasks-index.sqlite`) says whether a session is
 running, and the session's own store row (`~/.zcode/cli/db/db.sqlite`) is the binding:  it
 carries the exact session id and the directory the session reports about itself, and both
-are compared with the requested session and the workspace the deployment names.  The index is
+are compared with the requested session and the workspace root the deployment names.  The index is
 a derived view and never authorizes a delivery.  A session the index does not know refuses
 (`session-not-found`);  one whose reported directory is gone refuses (`session-cwd-gone`);
 one marked `running` in the index is `busy` and retried;  a sub-agent child in the CLI store
@@ -454,7 +454,7 @@ def exclude_non_interactive(
             conn.close()
         seen = {str(r[0]) for r in rows}
         excluded |= set(local_ids) - seen
-        want = os.path.realpath(workspace) if workspace else ""
+        want = WR.workspace_root(workspace)
         # The same binding authority as the delivery:  the session's own reported directory.
         for session_id in sorted(seen):
             status, binding = _session_binding(env, session_id)
@@ -465,8 +465,8 @@ def exclude_non_interactive(
             if (
                 not isinstance(directory, str)
                 or not directory
-                or want
-                and os.path.realpath(directory) != want
+                or (want or workspace)
+                and not WR.workspace_allowed(directory, workspace)
             ):
                 excluded.add(session_id)
         return excluded
@@ -601,7 +601,7 @@ def deliver_local(
                 # A path that begins with a dash would be read as an option by the CLI, so it
                 # is refused before it can become one.
                 return WR.Delivery("refused", "resume", code="invalid-workspace")
-            if os.path.realpath(recorded) != os.path.realpath(workspace):
+            if not WR.workspace_allowed(recorded, workspace):
                 return WR.Delivery("refused", "resume", code="workspace-mismatch")
             if not os.path.isdir(recorded):
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
