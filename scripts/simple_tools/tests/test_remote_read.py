@@ -68,6 +68,10 @@ class RemoteRead(unittest.TestCase):
                 "zulip_read_topic",
                 {"channel": "sandbox", "topic": "t1", "limit": 4, "since_id": 9},
             ),
+            (
+                ["read", "--topic", "t1", "--channel", "sandbox", "--full"],
+                "zulip_read_topic",
+                {"channel": "sandbox", "topic": "t1", "limit": 20, "full": True},            ),
             (["inbox", "--peek", "--limit", "3"], "zulip_inbox", {"limit": 3}),
         ]
         for argv, tool, args in cases:
