@@ -1410,6 +1410,23 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _observe_linear_reconnect(self, runner: SeatRunner) -> None:
+        """A seat's event queue registered again:  its backfill replays only part of what
+        the realm got while the old queue was gone, so the living comments read each
+        standing topic's missed messages at that topic's next message (AFC-821).
+        Best-effort, like the message path."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            return
+        try:
+            engine.queue_registered()
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -2014,13 +2031,18 @@ class Daemon:
                 if kind == "message" and isinstance(event.get("message"), dict):
                     self.route_message(runner, event["message"])
                 elif kind == "update_message":
-                    self.handle_update(runner, event)
+                    # The living comments see the event first, and on their own (each observer
+                    # logs its own failure), as route_message has them see a message:  a
+                    # failure in the daemon's own rename handling must not leave a standing
+                    # comment's entry, or its archived record, under the old topic name (Kody,
+                    # PR 2298), nor a stream event leave them on a stale public-stream set.
                     self._observe_linear_event(runner, event)
+                    self.handle_update(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
                 elif kind == "stream":
-                    self.handle_stream_event(runner, event)
                     self._observe_linear_stream_event(runner, event)
+                    self.handle_stream_event(runner, event)
                 elif kind == "subscription":
                     self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":
@@ -2108,6 +2130,7 @@ class Daemon:
                 runner.streams.pop(sub.get("stream_id"), None)
 
     def route_backfill(self, runner: SeatRunner, messages: list[dict[str, Any]]) -> None:
+        self._observe_linear_reconnect(runner)
         for message in sorted(messages, key=lambda m: m.get("id", 0)):
             self.route_message(runner, message)
         for gap in getattr(runner, "gaps", []):
