@@ -91,8 +91,10 @@ SessionEnd carry `subagentType`, and it fires no SessionStart) find it out of sc
 or SubagentStop hook is installed.
 
 Closing.  SessionEnd arrives with `reason: shutdown` for a quit, and nothing says an end is final (a quit chat is
-resumed with `--resume`), so no end closes a registration: the reason is kept in the note, and the library's 36 hour
-sweep frees the pair of a chat nobody came back to.
+resumed with `--resume`), so no end closes a registration: the reason is kept in the note.  Only the assigner's stale
+sweep frees the pair, after 36 hours and only when a newer chat of the seat has replaced it, so the last Grok chat
+used keeps its row open for good and the wake router keeps picking it while no TUI has it open (`grok_wake`:
+`tui-not-attached`).
 
 Not covered.  Chats the ACP runtime (`grok-acp-runtime/start.sh`, `--no-leader serve`) and Conductor start use their own
 GROK_HOME, so they never load `~/.grok/hooks`; they are driven by agents, not typed to by the owner.  `--fork-session`
@@ -533,7 +535,7 @@ SPEC = PL.PlatformSpec(
         "SessionEnd": "end",
     },
     # No end closes: SessionEnd always has a reason (`shutdown`), and a main chat is resumed after a quit, so its
-    # letter is freed by the 36 hour sweep.
+    # letter is freed only by the stale sweep (36 hours, and only once a newer chat of the seat replaces it).
     close_reasons=(),
     title_writer=grok_rename,
     locations=("mac",),

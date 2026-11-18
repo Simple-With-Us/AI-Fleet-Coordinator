@@ -247,17 +247,32 @@ class GrokWake(unittest.TestCase):
                 self.assertEqual(answer["delivery"]["code"], "turn-" + state)
                 self.assertIsNone(drive.prompted())
 
-    def test_a_chat_that_is_not_live_is_refused_before_a_prompt(self) -> None:
+    def test_a_quit_chat_is_refused_as_tui_not_attached_before_a_prompt(self) -> None:
+        # The registry holds the chat open, but grok-drive lists it with live false:  no Grok
+        # TUI has it open (active_sessions.json does not name it).  The reason says so.
         drive, answer = self.deliver(drive=Drive([row(live=False)]))
         self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                         ("refused", "not-live"))
+                         ("refused", "tui-not-attached"))
         self.assertIsNone(drive.prompted())
-        self.assertIn("not-live", GW.NEVER_RAN)
+        self.assertIn("tui-not-attached", GW.NEVER_RAN)
 
-    def test_a_missing_chat_on_a_complete_list_is_not_live(self) -> None:
+    def test_a_chat_missing_from_a_complete_list_is_not_listed(self) -> None:
         drive, answer = self.deliver(drive=Drive([]))
-        self.assertEqual(answer["delivery"]["code"], "not-live")
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "chat-not-listed")
+        self.assertIn("chat-not-listed", GW.NEVER_RAN)
         self.assertEqual(len(drive.calls), 1)
+
+    def test_no_refusal_still_says_the_vague_not_live(self) -> None:
+        for sessions in ([row(live=False)], [], [row(live="yes")]):
+            with self.subTest(sessions=len(sessions)):
+                _drive, answer = self.deliver(drive=Drive(sessions))
+                self.assertNotEqual(answer["delivery"]["code"], "not-live")
+                self.assertIn(answer["delivery"]["code"], GW.NEVER_RAN)
+
+    def test_an_updated_router_still_reads_the_old_code_as_never_ran(self) -> None:
+        # A Mac that has not been updated answers `not-live`;  that must stay delivered:  false.
+        self.assertIn("not-live", GW.NEVER_RAN)
 
     def test_an_incomplete_list_without_the_chat_is_retried(self) -> None:
         drive = Drive([])

@@ -6,6 +6,26 @@ Mac.  It re-checks the registry, then asks `grok-drive` about that one chat.  A 
 is not idle is `busy` and is not prompted.  The prompt is wake metadata, never a Zulip
 message body.  This module does not arm delivery.
 
+What "live" means here.  The registry's row for a GROK chat is open from the chat's first hook
+until the server's stale sweeper ends it, and that sweeper ends only a chat that is stale AND
+replaced by a newer chat of the same seat:  the last Grok chat the owner used stays open for
+good.  `grok-drive list` says `live: true` for a chat only while a Grok TUI has it open
+(`~/.grok/active_sessions.json`, which Grok writes while a tab is open and clears when it
+closes or Grok quits).  The two disagree for every chat that was quit and not resumed, and the
+router, which only reads the registry, keeps picking it.  Such a wake is refused before any
+prompt, with one of two precise codes (it used to be one code, `not-live`, for both):
+
+    tui-not-attached   the chat is in grok-drive's list and no Grok TUI has it open.  The
+                       owner must reopen it (`grok --resume <session id>`), or open a new Grok
+                       chat, which registers and is picked from then on.  Nothing is queued
+                       here:  the Zulip message is still in the seat's inbox.
+    chat-not-listed    the chat is in neither the leader's list nor the TUI registry, so
+                       nothing on this Mac knows it (its store was deleted, or this is
+                       another Mac's chat).
+
+Neither is retried:  nothing the router can do on its own makes a Grok TUI appear, and a
+headless resume of a quit chat is not done, because it would run tools with nobody watching.
+
 Python 3.11+, standard library only, plus the router's own modules.
 """
 
@@ -33,6 +53,9 @@ SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TURN_CODE_RE = re.compile(r"[a-z0-9-]{1,40}")
 NOT_IDLE = frozenset({"working", "needs-input"})
+# Why a chat the registry holds open cannot be prompted (module docstring, What "live" means).
+NOT_ATTACHED = "tui-not-attached"
+NOT_LISTED = "chat-not-listed"
 LIST_TIMEOUT = 30.0
 PROMPT_TIMEOUT = 40.0
 FROM_NAME = "wake-router"
@@ -44,6 +67,9 @@ NEVER_RAN = frozenset(
     {
         "unknown-host",
         "bad-request",
+        "tui-not-attached",
+        "chat-not-listed",
+        # What a Mac that has not been updated yet still answers for both of the above.
         "not-live",
         "no-cwd",
         "bad-cwd",
@@ -277,13 +303,13 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
     # An incomplete list is not proof the chat is gone.
     if payload.get("ok") is not True or payload.get("partial") is True:
         return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
-    return WR.Delivery("refused", "grok-drive", code="not-live")
+    return WR.Delivery("refused", "grok-drive", code=NOT_LISTED)
 
 
 def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
     """The chat's cwd when a prompt may be sent, else the outcome and no prompt."""
     if row.get("live") is not True:
-        return WR.Delivery("refused", "grok-drive", code="not-live")
+        return WR.Delivery("refused", "grok-drive", code=NOT_ATTACHED)
     if row.get("turnState") != "idle":
         return WR.Delivery("busy", "grok-drive", code=_turn_code(row.get("turnState")))
     cwd = row.get("cwd")
