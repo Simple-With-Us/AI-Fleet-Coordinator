@@ -285,6 +285,7 @@ class ReleaseTests(unittest.TestCase):
     def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
         self.assertIn("scripts/fleet_infisical.py", release.TOOL_REQUIRED)
         self.assertNotIn("scripts/fleet_infisical.py", release.BASE_REQUIRED)
+<<<<<<< HEAD
         ledger = "scripts/simple_tools/operator_github_state.py"
         self.assertIn(ledger, release.TOOL_REQUIRED)
         self.assertNotIn(ledger, release.BASE_REQUIRED)
@@ -293,6 +294,8 @@ class ReleaseTests(unittest.TestCase):
         bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(bundle).encode())
+=======
+>>>>>>> origin/main
         for name in ("__init__", "core"):
             path = "scripts/fleet_secrets/%s.py" % name
             self.assertTrue(release.allowed_path(path), path)
