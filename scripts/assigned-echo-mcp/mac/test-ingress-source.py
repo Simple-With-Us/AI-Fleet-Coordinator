@@ -19,6 +19,9 @@ for forbidden in ("lookup(", "SecKeychainFind", "SecKeychainItemModify", "SecKey
     assert forbidden not in body, forbidden
 assert body.count("SecKeychainItemCreateFromContent(") == 1
 preamble = r"""
+#define _POSIX_C_SOURCE 200809L
+#include <unistd.h>
+#include "mac-input.c"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,13 +65,45 @@ int main(int argc, char **argv) {
     return 0;
 }
 """
+def run_fixture():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = pathlib.Path(tmp) / "ingress.c"
+        exe = pathlib.Path(tmp) / "ingress"
+        c.write_text(preamble + body + main)
+        subprocess.run(
+            ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-I", str(HERE), str(c), "-o", str(exe)], check=True, timeout=30
+        )
+        for outcome in (0, -25299, -25293, -1):
+            subprocess.run([str(exe), str(outcome)], input=b"x", check=True, timeout=10)
+
+try:
+    run_fixture()
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+except FileNotFoundError:
+    raise SystemExit(127)
+
+# Stalled writers must refuse within the local deadline, not wait for SIGALRM.
 with tempfile.TemporaryDirectory() as tmp:
-    c = pathlib.Path(tmp) / "ingress.c"
-    exe = pathlib.Path(tmp) / "ingress"
-    c.write_text(preamble + body + main)
-    subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True
-    )
-    for outcome in (0, -25299, -25293, -1):
-        subprocess.run([str(exe), str(outcome)], input=b"x", check=True)
+    c = pathlib.Path(tmp)/"stall.c"
+    exe = pathlib.Path(tmp)/"stall"
+    stall = "int main(void) { int rc=ingress(NULL); return rc==3 && attempts==0 && wipes==1 ? 0 : 1; }"
+    c.write_text(preamble + body + stall)
+    try:
+        subprocess.run(["cc","-std=c99","-Wall","-Wextra","-Werror","-I",str(HERE),str(c),"-o",str(exe)],check=True,timeout=30)
+        child=subprocess.Popen([str(exe)],stdin=subprocess.PIPE)
+        try:
+            child.stdin.write(b"x")
+            child.stdin.flush()
+            assert child.wait(timeout=7)==0
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
+            child.stdin.close()
+    except subprocess.TimeoutExpired:
+        raise SystemExit(124)
+    except FileNotFoundError:
+        raise SystemExit(127)
+
 print("PASS: exact ingress body, one create, duplicate/error refusal, cleanup; stubs only")

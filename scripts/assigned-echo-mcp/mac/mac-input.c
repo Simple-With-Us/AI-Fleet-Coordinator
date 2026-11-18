@@ -64,8 +64,9 @@ void mp_input_reset(void) {
 long mp_read_frame(int fd, unsigned char *buf, size_t cap,
                    const struct timespec *deadline) {
     if (mp_input_eof && !mp_carry_len) return -1;
+    size_t scanned = 0;
     for (;;) {
-        for (size_t i = 0; i < mp_carry_len; ++i) {
+        for (size_t i = scanned; i < mp_carry_len; ++i) {
             if (mp_carry[i] == '\n') {
                 size_t len = i;
                 if (len && mp_carry[len - 1] == '\r') --len;  /* CRLF:  the CR is framing */
@@ -82,6 +83,7 @@ long mp_read_frame(int fd, unsigned char *buf, size_t cap,
                 return (long)len;
             }
         }
+        scanned = mp_carry_len;
         if (mp_input_eof) {
             /* Final line without LF:  within the limit it is a frame, over it a refusal. */
             if (!mp_carry_len) return -1;

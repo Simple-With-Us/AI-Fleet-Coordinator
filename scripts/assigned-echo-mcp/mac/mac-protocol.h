@@ -17,6 +17,8 @@
 #endif
 
 #include <stddef.h>
+#include <stdlib.h>
+#include <regex.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +27,7 @@
 #define MP_MAX_FILE_FRAME (MP_MAX_FILE_ARGS + 65536u)
 #define MP_MAX_SESSION 256u
 #define MP_MAX_PROTOCOL 128u
+#define MP_MAX_JSON_NODES 16384u
 #define MP_FIXED_IDENTITY "ECHO"
 #define MP_ENDPOINT "https://agents.simplewithus.com/mcp"
 
@@ -95,8 +98,8 @@ static int mp_js_number(const unsigned char *t, size_t n, size_t *p) {
     return *p > s;
 }
 
-static int mp_js_value(const unsigned char *t, size_t n, size_t *p, int depth) {
-    if (depth > 64) return 0;
+static int mp_js_value_b(const unsigned char *t, size_t n, size_t *p, int depth, size_t *nodes) {
+    if (depth > 64 || ++*nodes > MP_MAX_JSON_NODES) return 0;
     mp_js_ws(t, n, p);
     if (*p >= n) return 0;
     unsigned char c = t[*p];
@@ -109,7 +112,7 @@ static int mp_js_value(const unsigned char *t, size_t n, size_t *p, int depth) {
         ++*p; mp_js_ws(t, n, p);
         if (*p < n && t[*p] == ']') { ++*p; return 1; }
         for (;;) {
-            if (!mp_js_value(t, n, p, depth + 1)) return 0;
+            if (!mp_js_value_b(t, n, p, depth + 1, nodes)) return 0;
             mp_js_ws(t, n, p);
             if (*p < n && t[*p] == ',') { ++*p; continue; }
             if (*p < n && t[*p] == ']') { ++*p; return 1; }
@@ -125,7 +128,7 @@ static int mp_js_value(const unsigned char *t, size_t n, size_t *p, int depth) {
             mp_js_ws(t, n, p);
             if (*p >= n || t[*p] != ':') return 0;
             ++*p;
-            if (!mp_js_value(t, n, p, depth + 1)) return 0;
+            if (!mp_js_value_b(t, n, p, depth + 1, nodes)) return 0;
             mp_js_ws(t, n, p);
             if (*p < n && t[*p] == ',') { ++*p; continue; }
             if (*p < n && t[*p] == '}') { ++*p; return 1; }
@@ -133,6 +136,11 @@ static int mp_js_value(const unsigned char *t, size_t n, size_t *p, int depth) {
         }
     }
     return 0;
+}
+
+static int mp_js_value(const unsigned char *t, size_t n, size_t *p, int depth) {
+    size_t nodes = 0;
+    return mp_js_value_b(t, n, p, depth, &nodes);
 }
 
 /* Canonical strictness:  no duplicate DECODED object keys anywhere (a server or caller must
@@ -216,7 +224,7 @@ static long mp_key_decode(const unsigned char *t, size_t span, size_t slen,
     return (long)n;
 }
 
-static int mp_js_value_c(const unsigned char *t, size_t n, size_t *p, int depth);
+static int mp_js_value_cb(const unsigned char *t, size_t n, size_t *p, int depth, size_t *nodes);
 
 /* 64-bit FNV-1a over a decoded key:  narrows duplicate candidates;  equality is always
  * confirmed byte-exact, so a collision can only cost work, never a wrong verdict. */
@@ -226,7 +234,7 @@ static unsigned long long mp_key_hash(const unsigned char *p, size_t n) {
     return h;
 }
 
-static int mp_js_object_c(const unsigned char *t, size_t n, size_t *p, int depth) {
+static int mp_js_object_c(const unsigned char *t, size_t n, size_t *p, int depth, size_t *nodes) {
     ++*p;  /* at '{' */
     mp_js_ws(t, n, p);
     if (*p < n && t[*p] == '}') { ++*p; return 1; }
@@ -258,7 +266,7 @@ static int mp_js_object_c(const unsigned char *t, size_t n, size_t *p, int depth
         mp_js_ws(t, n, p);
         if (*p >= n || t[*p] != ':') return 0;
         ++*p;
-        if (!mp_js_value_c(t, n, p, depth + 1)) return 0;
+        if (!mp_js_value_cb(t, n, p, depth + 1, nodes)) return 0;
         mp_js_ws(t, n, p);
         if (*p < n && t[*p] == ',') { ++*p; continue; }
         if (*p < n && t[*p] == '}') { ++*p; return 1; }
@@ -266,17 +274,17 @@ static int mp_js_object_c(const unsigned char *t, size_t n, size_t *p, int depth
     }
 }
 
-static int mp_js_value_c(const unsigned char *t, size_t n, size_t *p, int depth) {
-    if (depth > 64) return 0;
+static int mp_js_value_cb(const unsigned char *t, size_t n, size_t *p, int depth, size_t *nodes) {
+    if (depth > 64 || ++*nodes > MP_MAX_JSON_NODES) return 0;
     mp_js_ws(t, n, p);
     if (*p >= n) return 0;
     unsigned char c = t[*p];
-    if (c == '{') return mp_js_object_c(t, n, p, depth);
+    if (c == '{') return mp_js_object_c(t, n, p, depth, nodes);
     if (c == '[') {
         ++*p; mp_js_ws(t, n, p);
         if (*p < n && t[*p] == ']') { ++*p; return 1; }
         for (;;) {
-            if (!mp_js_value_c(t, n, p, depth + 1)) return 0;
+            if (!mp_js_value_cb(t, n, p, depth + 1, nodes)) return 0;
             mp_js_ws(t, n, p);
             if (*p < n && t[*p] == ',') { ++*p; continue; }
             if (*p < n && t[*p] == ']') { ++*p; return 1; }
@@ -294,7 +302,8 @@ static int mp_js_value_c(const unsigned char *t, size_t n, size_t *p, int depth)
 /* Validate the whole buffer is exactly one canonical JSON value (no duplicate decoded keys). */
 static int mp_js_canonical(const unsigned char *t, size_t n) {
     size_t p = 0;
-    if (!mp_js_value_c(t, n, &p, 0)) return 0;
+    size_t nodes = 0;
+    if (!mp_js_value_cb(t, n, &p, 0, &nodes)) return 0;
     mp_js_ws(t, n, &p);
     return p == n;
 }
@@ -389,7 +398,14 @@ static size_t mp_failure(unsigned char *out, size_t cap, const unsigned char *id
     static const char identity_msg[] = "That identity is not assigned to this connection.";
     static const char transport_msg[] =
         "Assigned hosted transport unavailable; no automatic retry.";
-    const char *message = code ? (code[0] == 'i' ? identity_msg : unknown_msg) : transport_msg;
+    static const char credential_msg[] = "Credential-shaped request content refused; request was not sent.";
+    static const char rejected_msg[] = "The server rejected this request; no automatic retry.";
+    static const char invalid_msg[] = "Invalid request shape; request was not sent.";
+    const char *message = !code ? transport_msg :
+        !strcmp(code, "identity_not_allowed") ? identity_msg :
+        !strcmp(code, "invalid_request") ? invalid_msg :
+        !strcmp(code, "credential_refused") ? credential_msg :
+        !strcmp(code, "request_rejected") ? rejected_msg : unknown_msg;
     if (is_call) {
         /* {"jsonrpc":"2.0","id":<id>,"result":{"isError":true,"content":[{"type":"text",
          *  "text":"{\"code\":\"<code>\",\"retryable\":false,\"message\":\"...\"}"}]}} */
@@ -496,6 +512,38 @@ static int mp_js_decode(const unsigned char *t, size_t span, size_t slen,
     return 1;
 }
 
+/* Scan decoded JSON strings before the external boundary, including escaped values.
+ * Pattern families match the hosted front's credential refusal contract. The scratch
+ * allocation is bounded by the already-validated frame, wiped on every path, never logged.
+ * This is signature detection, not proof that arbitrary high-entropy text is nonsecret. */
+static int mp_credentials_present(const unsigned char *frame, size_t len) {
+    static const char pattern[] =
+        "github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|"
+        "sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|"
+        "xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|st\\.[A-Za-z0-9]{20,}|"
+        "sbt_[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----";
+    regex_t rx;
+    if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return 1;
+    unsigned char *decoded = malloc(len + 4);
+    if (!decoded) { regfree(&rx); return 1; }
+    int found = 0;
+    for (size_t p = 0; p < len && !found;) {
+        if (frame[p] != '"') { ++p; continue; }
+        size_t start = p;
+        if (!mp_js_string(frame, len, &p)) { found = 1; break; }
+        long n = mp_key_decode(frame, start, p - start, decoded, len);
+        if (n < 0 || memchr(decoded, 0, (size_t)n)) { found = 1; break; }
+        decoded[n] = 0;
+        int rc = regexec(&rx, (const char *)decoded, 0, NULL, 0);
+        if (rc != REG_NOMATCH) found = 1; /* match or scanner failure */
+        mp_wipe(decoded, (size_t)n + 1);
+    }
+    mp_wipe(decoded, len + 4);
+    free(decoded);
+    regfree(&rx);
+    return found;
+}
+
 /* One input frame -> one optional output line.  Returns the output length, 0 when the
  * protocol owes no line (notifications), with the line written into out (cap bytes).
  * scratch (scratch_cap) is workspace for an identity-bound frame rebuild. */
@@ -528,14 +576,18 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
      * genuine refusal, never sent, and no selector exists. */
     const unsigned char *wire = frame;
     size_t wire_len = len;
-    if (is_call && mp_js_find(frame, len, 0, "params", &ps, &pl) && frame[ps] == '{') {
+    if (is_call && (!mp_js_find(frame, len, 0, "params", &ps, &pl) || frame[ps] != '{'))
+        MP_FAIL("invalid_request");
+    if (is_call) {
         size_t ns, nl;
         int named_identities =
             mp_js_find(frame, len, ps, "name", &ns, &nl) &&
             mp_js_str_eq(frame, ns, nl, "identities");
         if (!named_identities) {
             size_t as, al;
-            if (mp_js_find(frame, len, ps, "arguments", &as, &al) && frame[as] == '{') {
+            int has_arguments = mp_js_find(frame, len, ps, "arguments", &as, &al);
+            if (has_arguments && frame[as] != '{') MP_FAIL("invalid_request");
+            if (has_arguments) {
                 size_t is, il;
                 if (mp_js_find(frame, len, as, "identity", &is, &il)) {
                     if (!mp_js_str_eq(frame, is, il, MP_FIXED_IDENTITY)) {
@@ -579,6 +631,8 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
         }
     }
 
+    if (mp_credentials_present(wire, wire_len)) MP_FAIL("credential_refused");
+
     mp_headers headers;
     memcpy(headers.authorization, "Bearer ", 7);
     memcpy(headers.authorization + 7, token, token_len);
@@ -593,6 +647,9 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
     if (transport_failed)
         MP_FAIL(NULL);
     if (response.status == 202 && !has_id) return 0;
+    if (response.status >= 400 && response.status < 500 &&
+        response.status != 408 && response.status != 429)
+        MP_FAIL("request_rejected");
     if (response.status != 200)
         MP_FAIL(NULL);
 

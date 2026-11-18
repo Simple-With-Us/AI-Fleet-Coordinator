@@ -188,11 +188,15 @@ static unsigned char response_body[MP_MAX_BYTES + 1];
         /* Malformed or overlong headers are a failed response, not silent absence. */
         int failed = state.failed || state.overflow || !state.status;
         if (!failed && state.sessionId &&
-            [state.sessionId lengthOfBytesUsingEncoding:NSUTF8StringEncoding]
-                > MP_MAX_SESSION) failed = 1;
+            (![state.sessionId lengthOfBytesUsingEncoding:NSUTF8StringEncoding] ||
+             [state.sessionId lengthOfBytesUsingEncoding:NSUTF8StringEncoding]
+                > MP_MAX_SESSION)) failed = 1;
         if (!failed && state.contentType &&
             [state.contentType lengthOfBytesUsingEncoding:NSUTF8StringEncoding]
                 >= sizeof(content_type)) failed = 1;
+        if (!failed && state.status == 200 &&
+            !([state.contentType isEqualToString:@"application/json"] ||
+              [state.contentType isEqualToString:@"text/event-stream"])) failed = 1;
         if (!failed) {
             out->status = state.status;
             if (state.sessionId) {

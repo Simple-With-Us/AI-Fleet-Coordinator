@@ -237,6 +237,22 @@ int main(void) {
             CHECK("overlong session header refused", rc != 0);
         }
 
+        stub_reset();
+        stub_headers = @{@"Content-Type": @"application/json", @"Mcp-Session-Id": @""};
+        stub_body = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+        CHECK("empty session header refused", post(frame) != 0);
+        stub_reset();
+        stub_body = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+        CHECK("missing success content type refused", post(frame) != 0);
+        stub_headers = @{@"Content-Type": @"text/html"};
+        CHECK("unsupported success content type refused", post(frame) != 0);
+        stub_headers = @{@"Content-Type": @"application/jsonx"};
+        CHECK("near-match success content type refused", post(frame) != 0);
+        stub_status = 202;
+        stub_headers = nil;
+        stub_body = nil;
+        CHECK("202 may omit content type", post(frame) == 0);
+
         /* 7. timeout:  never-completing stub, deadline 12s => 2s in-flight budget;
          *    session dies, cancel barrier observed, second post never reaches the stub */
         stub_reset();

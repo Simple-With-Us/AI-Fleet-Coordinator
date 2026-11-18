@@ -19,21 +19,24 @@ static struct { unsigned char frame[MP_MAX_FILE_FRAME + 64]; size_t len; char au
                 const char *session; const char *protocol; int calls; } captured;
 static mp_http_response script[MAX_REQ];
 static int script_len, script_at, transport_fail_at = -1;
+static size_t script_body_used;
 static unsigned char script_body[MP_MAX_BYTES + 65536];
 
 static void script_reset(void) {
     memset(&captured, 0, sizeof(captured));
-    script_len = script_at = 0; transport_fail_at = -1;
+    script_len = script_at = 0; script_body_used = 0; transport_fail_at = -1;
 }
 
 static void script_push(long status, const char *session, const char *type, const char *body) {
+    size_t n = strlen(body);
+    assert(script_len < MAX_REQ && n <= sizeof(script_body) - script_body_used);
     mp_http_response *r = &script[script_len++];
     r->status = status;
     r->session_header = session;
     r->content_type = type;
-    size_t n = strlen(body);
-    memcpy(script_body, body, n);
-    r->body = script_body;
+    memcpy(script_body + script_body_used, body, n);
+    r->body = script_body + script_body_used;
+    script_body_used += n;
     r->body_len = n;
 }
 
@@ -47,6 +50,7 @@ static int fake_post(void *ctx, const unsigned char *frame, size_t len,
     captured.session = headers->session;
     captured.protocol = headers->protocol;
     if (transport_fail_at >= 0 && captured.calls == transport_fail_at) return 1;
+    if (!script_len) return 1;
     *out = script[script_at < script_len ? script_at++ : script_len - 1];
     return 0;
 }
@@ -81,6 +85,64 @@ static size_t handle(const char *frame) {
 }
 
 int main(void) {
+    script_reset();
+    size_t no_script = handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+    CHECK("empty script is transport failure", no_script && strstr((char *)out, "unavailable"));
+    script_push(200, NULL, "application/json", "first");
+    script_push(200, NULL, "application/json", "second");
+    CHECK("script bodies remain independent", script[0].body_len == 5 && !memcmp(script[0].body,"first",5) && !memcmp(script[1].body,"second",6));
+    /* Both strict parsers bound total nodes, not merely bytes and depth. */
+    {
+        size_t count = MP_MAX_JSON_NODES;
+        unsigned char *wide = malloc(count * 2 + 3);
+        assert(wide);
+        wide[0] = '[';
+        for (size_t j=0;j<count;++j) {wide[1+j*2]='0';wide[2+j*2]=',';}
+        wide[count*2]=']';
+        CHECK("over-limit canonical nodes refused", !mp_js_canonical(wide,count*2+1));
+        CHECK("over-limit strict nodes refused", !mp_js_valid(wide,count*2+1));
+        wide[(count-1)*2]=']';
+        CHECK("node boundary canonical accepted", mp_js_canonical(wide,(count-1)*2+1));
+        CHECK("node boundary strict accepted", mp_js_valid(wide,(count-1)*2+1));
+        free(wide);
+    }
+    {
+        const char *bad[] = {
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\"}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":null}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":[]}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":1}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"arguments\":null}}"
+        };
+        for(size_t j=0;j<sizeof(bad)/sizeof(bad[0]);++j) {
+            script_reset();
+            size_t refused=handle(bad[j]);
+            CHECK("bad call params refuse before post", refused && !captured.calls);
+        }
+    }
+    {
+        const long statuses[]={400,401,403,404,405,413,415,422,408,429,500};
+        for(size_t j=0;j<sizeof(statuses)/sizeof(statuses[0]);++j) {
+            script_reset();script_push(statuses[j],NULL,NULL,"");
+            size_t failed=handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{}}");
+            int permanent=statuses[j]<500 && statuses[j]!=408 && statuses[j]!=429;
+            CHECK("HTTP failure classification, no retry", failed && captured.calls==1 &&
+                strstr((char *)out,permanent ? "request_rejected" : "outcome_unknown"));
+        }
+    }
+    {
+        const char *prefixes[]={"ghp_","github_pat_","sk-proj-","sk_live_","xoxb-","st.","sbt_echo_"};
+        for(size_t j=0;j<sizeof(prefixes)/sizeof(prefixes[0]);++j) {
+            char request[1024],value[200];
+            snprintf(value,sizeof(value),"%s%s",prefixes[j],"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            snprintf(request,sizeof(request),"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"text\":\"%s\"}}}",value);
+            script_reset();size_t refused=handle(request);
+            CHECK("credential family refuses without post or echo", refused && !captured.calls && strstr((char *)out,"credential_refused") && !strstr((char *)out,value));
+        }
+        script_reset();
+        size_t refused=handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"text\":\"ghp_\\u0041AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}}");
+        CHECK("escaped credential signature refuses before post",refused && !captured.calls && strstr((char *)out,"credential_refused"));
+    }
     /* Linear token search: bounded patterns, overlapping prefixes and large responses. */
     CHECK("token at start", mp_token_echo((const unsigned char *)"abczzz", 6, "abc", 3));
     CHECK("token at end", mp_token_echo((const unsigned char *)"zzzabc", 6, "abc", 3));

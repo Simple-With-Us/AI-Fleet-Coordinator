@@ -8,12 +8,12 @@ trap 'rm -rf "$tmp"' EXIT
 SAN='-fsanitize=address,undefined'
 # Exact ingress body with fake Security functions only; never a Keychain call.
 python3 "$here/test-ingress-source.py"
-# Pure-C protocol core: behavioral fixture (42 checks), plain and sanitized.
+# Pure-C protocol core: behavioral fixture (115 checks), plain and sanitized.
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror -I"$here" "$here/mac-fixture.c" -o "$tmp/mac-fixture"
 "$tmp/mac-fixture"
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror $SAN -I"$here" "$here/mac-fixture.c" -o "$tmp/mac-fixture-san"
 "$tmp/mac-fixture-san"
-# Pure-C deadline-aware framing: synthetic-input fixture (22 checks), plain and sanitized.
+# Pure-C deadline-aware framing: synthetic-input fixture (29 checks), plain and sanitized.
 /usr/bin/clang -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -I"$here" \
     "$here/mac-input-fixture.c" "$here/mac-input.c" -o "$tmp/mac-input-fixture"
 "$tmp/mac-input-fixture"
@@ -26,7 +26,7 @@ python3 "$here/test-ingress-source.py"
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror "$here/mac-alarm-fixture-driver.c" -o "$tmp/mac-alarm-driver"
 "$tmp/mac-alarm-driver" "$tmp/mac-alarm-fixture"
 # ObjC transport harness:  the NSURLProtocol stub intercepts every request, so no network
-# is reachable.  Test hooks are compiled into the fixture build only (28 checks).
+# is reachable.  Test hooks are compiled into the fixture build only (33 checks).
 /usr/bin/clang -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations \
     -DMP_TRANSPORT_TEST_HOOKS -framework Foundation -I"$here" \
     "$here/mac-transport-fixture.m" "$here/mac-transport.m" -o "$tmp/mac-transport-fixture"

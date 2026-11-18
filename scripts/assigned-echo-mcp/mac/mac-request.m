@@ -92,8 +92,21 @@ static int ingress(SecKeychainRef keychain) {
      * ingress; never update, delete, or retry an existing item, including an ACL denial. */
     OSStatus status;
     unsigned char secret[257] = {0};
-    size_t size = fread(secret, 1, sizeof(secret), stdin);
-    if (ferror(stdin) || size > 256) { mp_wipe(secret, sizeof(secret)); return 3; }
+    size_t size = 0;
+    struct timespec ingress_deadline;
+    clock_gettime(CLOCK_MONOTONIC, &ingress_deadline);
+    ingress_deadline.tv_sec += 5;
+    /* Require EOF, never commit a prefix merely because the pipe briefly went quiet. */
+    for (;;) {
+        if (!mp_fd_readable(STDIN_FILENO, &ingress_deadline)) {
+            mp_wipe(secret, sizeof(secret)); return 3;
+        }
+        ssize_t got = read(STDIN_FILENO, secret + size, sizeof(secret) - size);
+        if (got < 0) { mp_wipe(secret, sizeof(secret)); return 3; }
+        if (!got) break;
+        size += (size_t)got;
+        if (size > 256) { mp_wipe(secret, sizeof(secret)); return 3; }
+    }
     size_t start = 0;
     while (start < size && isspace((unsigned char)secret[start])) ++start;
     while (size > start && isspace((unsigned char)secret[size - 1])) --size;
@@ -194,7 +207,12 @@ int main(int argc, char **argv) {
         while (!result) {
             long len = mp_read_frame(STDIN_FILENO, frame, MP_MAX_FILE_FRAME,
                                      &deadline);
-            if (len == -1 || len == -2) break;  /* EOF or session deadline */
+            if (len == -1) break;  /* clean EOF only */
+            if (len == -2) {
+                fputs("mac-request: session input deadline or read failure; no automatic retry\n", stderr);
+                result = 3;
+                break;
+            }
             if (len == -3) {  /* oversized frame, drained:  refuse with the fixed shape */
                 size_t refused = mp_line_error(out, MP_MAX_BYTES + 4096,
                                                -32600, "Input frame too large.");

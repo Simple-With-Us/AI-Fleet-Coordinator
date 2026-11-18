@@ -9,8 +9,8 @@ and reads the same hello + answer lines, so the ingress framing is preserved.
 
 Current gate status:  source and synthetic behavior only.  On the actual Mac, strict
 clang -Wall -Wextra -Werror compiles of the core, framing, transport and wrapper pass,
-and the nonsensitive fixtures pass under ASan/UBSan:  mac-fixture 66 checks,
-mac-input-fixture 29 checks, mac-transport-fixture 28 checks with an NSURLProtocol
+and the nonsensitive fixtures pass under ASan/UBSan:  mac-fixture 115 checks,
+mac-input-fixture 29 checks, mac-transport-fixture 33 checks with an NSURLProtocol
 stub that intercepts every request so no network is reachable.  compile-only.sh
 reproduces exactly that, including the sanitizer runs.  The hard process bound is
 qualified, not assumed:  input reads and in-flight requests hold the 180s deadline,
@@ -34,7 +34,7 @@ disabled, token shape validated, buffers wiped.  Redirects are never followed;  
 credential is never forwarded to one.
 
 Ingress preservation (SOURCE ONLY, never executed until owner approval):  the retired
-helper's owner-mode ingress contract is implemented verbatim in mac-request.m as the
+helper's owner-mode ingress contract is preserved with bounded EOF/deadline input in mac-request.m as the
 "ingress" argv mode - private stdin read, refusal of ANY existing item,
 generic-password creation with a trusted-app ACL containing only the fixed helper
 itself (SecTrustedApplicationCreateFromPath(NULL) is self), buffer cleared on every
@@ -73,3 +73,11 @@ The current main branch removed the native simple-git custody selection in PR
 This draft does not revive, select, sign or install a native credential route.
 The helper remains isolated source and synthetic fixtures. Existing owner
 storage/signing and runtime qualification gates are unchanged.
+
+## Current-head review repair, November 18
+
+Scripted responses have independent bounded storage and an empty script fails without indexing. Input LF scanning resumes after the already-scanned prefix. Both JSON parsers enforce a 16,384 total-value-node budget in addition to bytes and depth. Tools calls require object params and object arguments when present before any transport call. Decoded request strings are scanned for credential signatures before external transport, including Unicode-escaped signatures; scratch is bounded, wiped, and never printed. This does not prove arbitrary text is nonsecret.
+
+Ordinary HTTP 4xx is reported as a nonretryable request rejection; 408, 429, transport loss and 5xx keep outcome uncertainty with no retry. Success payloads require an exact supported media type (charset parameters normalized at ingress); present empty session headers refuse. Notifications may have a bodyless 202 without Content-Type. Owner token input requires EOF within five seconds and refuses stalled or oversized input without creating anything. Session input deadline/read failure exits nonzero rather than clean EOF. The extracted ingress fixture has bounded compile/run timeouts, distinct 124/127 error statuses, and a synthetic writer-open refusal test.
+
+The exact source was compiled and the no-network fixtures executed on the actual Mac, plain and ASan/UBSan, including Foundation transport tests. Production helper and ACL fixture were compile-only. No Developer ID signing, install, real Keychain/ACL, token provisioning or provider effect occurred. SSH wrapper cleanup later returned a detached-child status; the harness itself reached its final success line.
