@@ -611,6 +611,38 @@ class EngineTests(unittest.TestCase):
         entry = next(iter(eng.worker.ledger.entries.values()))
         self.assertEqual(entry["seen"], [1, 2, 3])
 
+    def test_engine_carries_the_live_entry_and_the_archived_record_over_renames(self) -> None:
+        # The rename path the daemon feeds (feed_event) re-keys a live entry and an archived
+        # record alike, so the topic's next message under the newest name edits the one
+        # comment (Kody, PR 2298).
+        def rename(old: str, new: str) -> dict:
+            return {
+                "type": "update_message",
+                "stream_id": 5,
+                "orig_subject": old,
+                "subject": new,
+                "propagate_mode": "change_all",
+                "message_ids": [1],
+            }
+
+        zulip = FakeZulip([api_message(1, "this is AFC-1")])
+        eng = self.engine(zulip)
+        led = eng.worker.ledger
+        eng.feed_message(zulip, event_message(1, "thread", "this is AFC-1"))
+        eng.feed_event(zulip, rename("thread", "thread two"))
+        self.assertEqual(list(led.entries), [lr.ledger_key("AFC-1", 5, "thread two")])
+        with mock.patch.object(lr, "MAX_ENTRIES", 0):
+            led.save()  # pruned exactly as the entry bound prunes it
+        eng.feed_event(zulip, rename("thread two", "thread three"))
+        self.assertEqual(list(led.archive), [lr.ledger_key("AFC-1", 5, "thread three")])
+        zulip.topic_messages.append(api_message(2, "more"))
+        self.t[0] += 86400
+        eng.feed_message(zulip, event_message(2, "thread three", "more"))
+        self.assertEqual(self.lin.create_calls, 1)  # no second comment under a new name
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        self.assertEqual(list(led.entries), [lr.ledger_key("AFC-1", 5, "thread three")])
+        self.assertEqual(led.archive, {})
+
     def test_engine_end_to_end_and_across_a_restart(self) -> None:
         history = [api_message(1, "first"), api_message(2, "second")]
         zulip = FakeZulip(history)
@@ -1096,6 +1128,65 @@ class DaemonReconnectTests(unittest.TestCase):
         D.Daemon.route_backfill(stub, runner, [])
         self.assertEqual(calls, ["flushed"])
         self.assertEqual(stub.log.kinds(), ["linear-comments-error"])
+
+
+class DaemonEventOrderTests(unittest.TestCase):
+    """The daemon's handle_events, driven on a stub self:  the living comments see a rename,
+    and a stream event, even when the daemon's own handling of that event fails (Kody, PR
+    2298).  Both used to run after it in one try, so a failure there skipped the comments, and
+    the standing comment's entry, or its archived record, stayed under the old topic name."""
+
+    def test_the_comments_see_the_event_when_the_daemons_own_handling_fails(self) -> None:
+        import types
+
+        from simple_tools import daemon as D
+
+        calls: list = []
+        engine = types.SimpleNamespace(
+            feed_event=lambda client, event: calls.append(("comments", event["type"])),
+            reload_streams=lambda client: calls.append(("comments", "reload")),
+        )
+        stub = types.SimpleNamespace(linear_comments=engine, log=_StubLog(), scrub=lambda t: t)
+        stub._observe_linear_event = lambda runner, event: D.Daemon._observe_linear_event(
+            stub, runner, event
+        )
+        stub._observe_linear_stream_event = (
+            lambda runner, event: D.Daemon._observe_linear_stream_event(stub, runner, event)
+        )
+
+        def broken(runner, event) -> None:
+            calls.append(("daemon", event["type"]))
+            raise OSError("a lease file could not be written")
+
+        stub.handle_update = broken
+        stub.handle_stream_event = broken
+        runner = types.SimpleNamespace(
+            seat="CLAUDE", client=None, flush_cursor=lambda force=False: calls.append("flushed")
+        )
+        rename = {
+            "type": "update_message",
+            "id": 3,
+            "stream_id": 5,
+            "orig_subject": "thread",
+            "subject": "thread two",
+            "propagate_mode": "change_all",
+            "message_ids": [1],
+        }
+        private = {"type": "stream", "id": 4, "op": "update", "property": "invite_only",
+                   "value": True, "stream_id": 5}
+        D.Daemon.handle_events(stub, runner, [rename, private])
+        self.assertEqual(
+            calls,
+            [
+                ("comments", "update_message"),
+                ("daemon", "update_message"),
+                ("comments", "reload"),
+                ("daemon", "stream"),
+                "flushed",
+            ],
+        )
+        # Each failure is the daemon's own logged event error, and stops nothing after it.
+        self.assertEqual(stub.log.kinds(), ["event-error", "event-error"])
 
 
 class LinearCommentsConfigTests(unittest.TestCase):

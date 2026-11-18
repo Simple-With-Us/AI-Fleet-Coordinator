@@ -2104,13 +2104,18 @@ class Daemon:
                 if kind == "message" and isinstance(event.get("message"), dict):
                     self.route_message(runner, event["message"])
                 elif kind == "update_message":
-                    self.handle_update(runner, event)
+                    # The living comments see the event first, and on their own (each observer
+                    # logs its own failure), as route_message has them see a message:  a
+                    # failure in the daemon's own rename handling must not leave a standing
+                    # comment's entry, or its archived record, under the old topic name (Kody,
+                    # PR 2298), nor a stream event leave them on a stale public-stream set.
                     self._observe_linear_event(runner, event)
+                    self.handle_update(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
                 elif kind == "stream":
-                    self.handle_stream_event(runner, event)
                     self._observe_linear_stream_event(runner, event)
+                    self.handle_stream_event(runner, event)
                 elif kind == "subscription":
                     self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":

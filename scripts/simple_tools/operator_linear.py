@@ -52,9 +52,11 @@ rulings (2026-10-21 and 2026-10-23), with the keying stated exactly as the owner
     standing comment's topic after a restart, after the daemon reports a queue
     registered again (queue_registered), or after a message of the topic was dropped
     while the stream set was unloaded, reads the topic's messages newer than the newest
-    one the comment has recorded, and records the missed ones before the live one.  A
-    read cut short at its 1000-message cap, or one that shows the live message was a
-    replayed older one, is continued by the topic's next message.  NOT guaranteed:  a
+    one the comment has recorded, and records the missed ones before the live one.  Only
+    a read that reaches the live message settles the topic:  a read cut short of it (at
+    its 1000-message cap, or by a page Zulip repeated), or one that shows the live
+    message was a replayed older one, is continued by the topic's next message, and
+    three reads in a row that bring nothing new settle it, in the log.  NOT guaranteed:  a
     topic is caught up only when its next message arrives, so a topic that stays silent
     keeps its gap until then;  a read that fails is logged and tried again a minute or
     more later, from a point kept in memory only, so a restart before then loses that

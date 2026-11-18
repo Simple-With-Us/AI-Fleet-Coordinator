@@ -95,9 +95,11 @@ Eavesdropper, and it hosts the mirror.
   (`history_since`:  the same messages API, paged on after a message id).  The first
   message that reaches a standing entry after a restart, after a seat's queue registers
   again, or after a message of its topic was dropped while the stream set was unloaded
-  reads what the topic got in between and records it before the live message;  a read
-  cut short at its 1000-message cap, or one showing the live message was a replayed
-  older one, is continued by the topic's next message, and a failed read is retried a
+  reads what the topic got in between and records it before the live message;  only a
+  read that reaches the live message settles the topic.  A read cut short of it (at its
+  1000-message cap, or by a page Zulip repeated), or one showing the live message was a
+  replayed older one, is continued by the topic's next message;  three reads in a row
+  that bring nothing new settle it, in the log;  a failed read is retried a
   minute or more later.  A pruned entry leaves its comment in the ledger's archive
   (above), and the topic's next message restores it through half (a), reading the
   whole topic first;  when that read fails, the record waits and the comment is left
@@ -107,10 +109,14 @@ Eavesdropper, and it hosts the mirror.
   Every message a read answers is checked against the shape Zulip's messages API gives
   it before anything reads it:  a malformed one is skipped and counted in the log (the
   count alone, never its text), so one bad message never holds a catch-up or a restore
-  open.  An item with no integer id has no place in the topic and is left out where the
-  read pages (`fetch_topic_history`), where it does not count toward the 1000-message
-  cap either.  A read fails, and is tried again later, when its answer is not a list of
-  messages (None and an empty mapping or string included) or when a full page carries no
+  open.  So is one with a text field over 64 KiB (Zulip itself refuses a message
+  over 10,000 characters), and a read is taken at 1000 messages at most.  A
+  credential-shaped field of a message a read records is withheld whole, and logged by
+  field name, as on the live path.  An item with no integer id has no place in the topic
+  and is left out where the read pages (`fetch_topic_history`), where it does not count
+  toward the 1000-message cap either.  A read fails, and is tried again
+  later, when its answer is not a list of messages (None and an empty mapping or string
+  included) or when a full page carries no
   message id to page on from.  A catch-up whose first read failed starts at the topic's
   oldest message.
 - **State:** the hosted ledger is the same format at

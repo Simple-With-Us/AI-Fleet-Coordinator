@@ -72,9 +72,13 @@ message that reaches an entry after a restart, after the host reports a queue re
 (reopen_catch_up), or after its topic lost a message to an unloaded set, reads the topic's
 messages newer than the newest one the entry has seen, and records the missed ones before the
 live one.  An entry is settled only by a read that reaches the live message: a read cut short
-at its MAX_BACKFILL cap, or one that shows the live message is not the topic's newest (the host
-replaying an older one), is continued from where it stopped by the topic's next message, and
-the whole-topic read of a new or restored entry is judged the same way.  A read that fails is
+of it (at its MAX_BACKFILL cap, or by a reader that stopped early), or one that shows the live
+message is not the topic's newest (the host replaying an older one), is continued from where it
+stopped by the topic's next message, and the whole-topic read of a new or restored entry is
+judged the same way.  A read that brings nothing new MAX_SHORT_READS times in a row (a live
+message that left its topic after it was routed) settles the entry, in the log.  Each read is
+taken at MAX_BACKFILL messages at most, and a history message with a text field over
+MAX_HISTORY_FIELD_BYTES is skipped and counted as a malformed one is.  A read that fails is
 logged and tried again by a message at least CATCH_UP_RETRY seconds later; the same message fed
 again for another seat costs no second read.  Still NOT guaranteed: a topic is caught up only
 when its next message arrives, so a topic that stays silent keeps its gap until then; the point
@@ -171,6 +175,10 @@ MAX_LINKS_SHOWN = 20
 MAX_SEEN = 200  # message ids remembered per comment, for idempotency
 MAX_BACKFILL = 1000  # topic messages pulled into a new entry (whole-topic scope, owner 2026-11-03)
 CATCH_UP_RETRY = 60.0  # seconds before a history read that failed is tried again for an entry
+MAX_SHORT_READS = 3  # reads in a row that bring nothing past where they began, then a catch-up ends
+# One text field of a history message, in UTF-8 bytes.  Zulip refuses a message over 10,000
+# characters, so a field past this bound is not one Zulip sent as it is.
+MAX_HISTORY_FIELD_BYTES = 64 * 1024
 MAX_ISSUES_PER_MESSAGE = 5
 QUOTE_CHARS = 280
 LINEAR_URL = "https://api.linear.app/graphql"
@@ -1052,15 +1060,17 @@ def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
 
 class _CatchUp:
     """An entry whose catch-up is still open (AFC-821), in memory only.  What its topic got after
-    `start` is unknown to the entry, except the ids in `recorded`: the next read starts there."""
+    `start` is unknown to the entry, except the ids in `recorded`: the next read starts there.
+    `short` counts the reads in a row that brought nothing past where they began (_judge)."""
 
-    __slots__ = ("recorded", "start")
+    __slots__ = ("recorded", "short", "start")
 
-    def __init__(self, start: int, recorded: Iterable[int] = ()) -> None:
+    def __init__(self, start: int, recorded: Iterable[int] = (), short: int = 0) -> None:
         self.start = int(start)
         # The ids after `start` the entry has recorded since, so a later read never counts one
         # twice, even once it has left the entry's bounded `seen` list.
         self.recorded: set[int] = {int(mid) for mid in recorded if int(mid) > self.start}
+        self.short = int(short)
 
 
 # The text fields of a history message the worker reads, besides its id and its timestamp.
@@ -1070,14 +1080,27 @@ _HISTORY_TEXT_FIELDS = ("sender_email", "sender_full_name", "content")
 MAX_TIMESTAMP = 253402300799
 
 
+def _too_long(text: str) -> bool:
+    """True when one text field of a history message is over MAX_HISTORY_FIELD_BYTES in UTF-8.
+    The length in characters is looked at first, so a field far past the bound is refused
+    without being encoded; a lone surrogate, which JSON can carry, is measured, never raised on."""
+    if len(text) > MAX_HISTORY_FIELD_BYTES:
+        return True
+    return len(text.encode("utf-8", "surrogatepass")) > MAX_HISTORY_FIELD_BYTES
+
+
 def _checked_message(message: Any) -> dict[str, Any] | None:
     """One message of a history read, rebuilt from the fields the worker reads, each checked
     against the shape Zulip's messages API gives it, or None when any is missing or of the wrong
-    type: id an integer, sender_email, sender_full_name and content strings, and timestamp whole
-    seconds since the epoch, no later than MAX_TIMESTAMP."""
+    type: id an integer, sender_email, sender_full_name and content strings of at most
+    MAX_HISTORY_FIELD_BYTES each, and timestamp whole seconds since the epoch, no later than
+    MAX_TIMESTAMP.  The size bound comes before any scan of the text, so an oversized field
+    costs no credential scan, no quote and no ledger space (Kody, PR 2298)."""
     if not isinstance(message, Mapping) or not _is_int(message.get("id")):
         return None
     if not all(isinstance(message.get(name), str) for name in _HISTORY_TEXT_FIELDS):
+        return None
+    if any(_too_long(message[name]) for name in _HISTORY_TEXT_FIELDS):
         return None
     stamp = message.get("timestamp")
     if not _is_int(stamp) or not 0 <= stamp <= MAX_TIMESTAMP:
@@ -1086,9 +1109,9 @@ def _checked_message(message: Any) -> dict[str, Any] | None:
     return {"id": int(message["id"]), "timestamp": int(stamp), **checked}
 
 
-def _by_id(messages: Any) -> tuple[list[dict[str, Any]], int]:
-    """The messages a history reader returned, once each by id, oldest first, and how many of
-    them were malformed (AFC-821).
+def _by_id(messages: Any) -> tuple[list[dict[str, Any]], int, int]:
+    """The messages a history reader returned, once each by id, oldest first, how many of them
+    were malformed, and how many past the read's bound were left for a later read (AFC-821).
 
     An answer that is not a list (or a tuple) fails the read with ValueError, None and an
     empty mapping or string included: read as no messages, any of them would settle a
@@ -1102,12 +1125,18 @@ def _by_id(messages: Any) -> tuple[list[dict[str, Any]], int]:
     keep an archived comment from being restored, for good.  One whose id is good keeps its
     place as {"id": id, "malformed": True}, which _append_history never records, so the read
     still shows how far it went and _judge still sees a read that stopped at its cap.  One
-    without an integer id has no place in the topic and is left out."""
+    without an integer id has no place in the topic and is left out.
+
+    A read is taken at MAX_BACKFILL items at most, the most a reader is ever asked for (Kody, PR
+    2298): the items past it are not looked at, and are counted, not failed, for the reason a
+    malformed message is.  Readers answer oldest first, so the items kept are the oldest, and
+    _judge has the topic's next message read on from the newest of them."""
     if not isinstance(messages, (list, tuple)):
         raise ValueError("a topic history read must answer a list of messages")
+    over = max(0, len(messages) - MAX_BACKFILL)
     found: dict[int, dict[str, Any]] = {}
     malformed = 0
-    for message in messages:
+    for message in messages[:MAX_BACKFILL]:
         checked = _checked_message(message)
         if checked is None:
             malformed += 1
@@ -1115,7 +1144,7 @@ def _by_id(messages: Any) -> tuple[list[dict[str, Any]], int]:
                 continue
             checked = {"id": int(message["id"]), "malformed": True}
         found.setdefault(checked["id"], checked)
-    return [found[mid] for mid in sorted(found)], malformed
+    return [found[mid] for mid in sorted(found)], malformed, over
 
 
 class RelayWorker:
@@ -1318,17 +1347,9 @@ class RelayWorker:
                 ids.append(issue)
         if not ids:
             return
-        withheld = [
-            name
-            for name, value in (("topic", topic), ("content", content), ("sender", sender))
-            if has_secret(value)
-        ]
-        if withheld:
-            # The field names and the message id only: the text itself never reaches the log.
-            self.log(
-                "message %s: withheld %s (credential-shaped text)"
-                % (int(msg.get("id", 0)), ", ".join(withheld))
-            )
+        self._log_withheld(
+            int(msg.get("id", 0)), (("topic", topic), ("content", content), ("sender", sender))
+        )
         self._record(
             ids,
             int(sid),
@@ -1338,6 +1359,16 @@ class RelayWorker:
             sender,
             content,
         )
+
+    def _log_withheld(self, mid: int, fields: Iterable[tuple[str, str]]) -> None:
+        """Say which fields of one message carry credential-shaped text, and so show WITHHELD in
+        the comment (_append withholds each such field whole, on the live path and the history
+        path alike).  The field names and the message id only: the text never reaches the log."""
+        withheld = [name for name, value in fields if has_secret(value)]
+        if withheld:
+            self.log(
+                "message %d: withheld %s (credential-shaped text)" % (mid, ", ".join(withheld))
+            )
 
     def _stream_name(self, sid: int, event: Mapping[str, Any] | None = None) -> str | None:
         """A stream's display name from the loaded set, by id.  An update_message event's
@@ -1689,21 +1720,27 @@ class RelayWorker:
         cache_key = (stream_id, topic)
         if cache_key not in cache:
             try:
-                read, malformed = _by_id(self.history(stream_id, topic))
+                read, malformed, over = _by_id(self.history(stream_id, topic))
             except Exception as exc:  # noqa: BLE001 - history must never stop a record
                 cache[cache_key] = (None, type(exc).__name__)
             else:
                 cache[cache_key] = (read, "")
-                self._log_malformed(malformed)
+                self._log_malformed(malformed, over)
         return cache[cache_key]
 
-    def _log_malformed(self, count: int) -> None:
-        """Say how many malformed messages a history read answered (_by_id): the count alone,
-        since their fields are unchecked Zulip text."""
+    def _log_malformed(self, count: int, over: int = 0) -> None:
+        """Say how many malformed messages a history read answered, and how many past its bound
+        it left for a later read (_by_id): the counts alone, since their fields are unchecked
+        Zulip text."""
         if count:
             self.log(
                 "a topic history read answered %d malformed message(s); they are left out of "
                 "the comment" % count
+            )
+        if over:
+            self.log(
+                "a topic history read answered %d message(s) past the %d it takes; a later read "
+                "goes on from the newest one taken" % (over, MAX_BACKFILL)
             )
 
     def _enter(
@@ -1786,18 +1823,26 @@ class RelayWorker:
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live
         path would have recorded it: the writer's own posts are skipped, a malformed message is
-        never recorded, and the message keeps its own timestamp."""
+        never recorded, the message keeps its own timestamp, and a credential-shaped field is
+        withheld whole by _append, with the same log line the live path writes (Kody, PR
+        2298)."""
         if message.get("malformed") is True:
             return False
         if message["sender_email"].lower() == self.own_email:
             return False
-        return self._append(
+        added = self._append(
             entry,
             message["id"],
             message["sender_full_name"],
             message["content"],
             float(message["timestamp"]),
         )
+        if added:
+            self._log_withheld(
+                message["id"],
+                (("content", message["content"]), ("sender", message["sender_full_name"])),
+            )
+        return added
 
     def _restore(
         self, key: str, issue: str, stream_id: int, stream: str, topic: str
@@ -1838,9 +1883,10 @@ class RelayWorker:
         oldest point any of them needs, and each entry takes only what is newer than its own
         point and not recorded already.
 
-        _judge settles the entry, or moves its point to where the next read starts: a read
-        cut short at its cap, or one that shows the live message is not the topic's newest
-        (the host replaying an older one), does not settle it.  A read that fails is logged,
+        _judge settles the entry, or moves its point to where the next read starts: only a
+        read that reaches the live message settles it, and one cut short of it (at its cap,
+        or by a reader that stopped early) or one that shows the live message is not the
+        topic's newest (the host replaying an older one) does not.  A read that fails is logged,
         does not stop the record, and is not tried again for CATCH_UP_RETRY seconds.  A live
         message no newer than the entry's point, or one the entry has recorded already (the
         same message fed again for another seat), shows nothing new about the gap and costs
@@ -1868,7 +1914,7 @@ class RelayWorker:
             return
         oldest = min(state.start for _key, _entry, state in waiting)
         try:
-            found, malformed = _by_id(self.history_since(stream_id, topic, oldest))
+            found, malformed, over = _by_id(self.history_since(stream_id, topic, oldest))
         except Exception as exc:  # noqa: BLE001 - a catch-up must never stop a record
             for key, _entry, _state in waiting:
                 self._read_retry[key] = now + CATCH_UP_RETRY
@@ -1878,7 +1924,7 @@ class RelayWorker:
                 % (type(exc).__name__, CATCH_UP_RETRY)
             )
             return
-        self._log_malformed(malformed)
+        self._log_malformed(malformed, over)
         for key, entry, state in waiting:
             self._read_retry.pop(key, None)
             added = 0
@@ -1898,30 +1944,59 @@ class RelayWorker:
                 entry["seen"].sort()
                 entry["links"].sort(key=lambda item: int(item["mid"]))
                 self.log("caught up %d missed message(s) for %s" % (added, self._label(entry)))
-            self._judge(key, found, state.start, mid)
+            self._judge(key, found, state.start, mid, origin=oldest)
 
-    def _judge(self, key: str, found: list[Mapping[str, Any]], start: int, mid: int) -> None:
+    def _judge(
+        self,
+        key: str,
+        found: list[Mapping[str, Any]],
+        start: int,
+        mid: int,
+        *,
+        origin: int | None = None,
+    ) -> None:
         """Settle an entry's catch-up, or say where its next read starts, after a read of its
-        topic (`found`, oldest first) that began after `start`, on the way to recording the
-        live message `mid`.  A read that went past `mid` shows `mid` is not the topic's newest
-        (the host replaying an older message): once `mid` is recorded the entry holds the
-        topic up to it, and the next read starts there.  A read that stopped at its cap
-        (MAX_BACKFILL messages) short of `mid` shows nothing about what lies beyond its newest
-        message, so the next read starts there.  Any other read reached the end of the topic,
-        and the entry is caught up."""
+        topic (`found`, oldest first) made after `origin` (the entry's own point `start`, unless
+        one read served several entries), on the way to recording the live message `mid`.
+
+        Only a read that reached `mid` settles the entry.  One that went past `mid` shows `mid`
+        is not the topic's newest (the host replaying an older message): once `mid` is recorded
+        the entry holds the topic up to it, and the next read starts there.  One that stopped
+        short of `mid` did not reach the live message, though `mid` was routed in this topic:
+        it stopped at its cap (MAX_BACKFILL), or the reader stopped early (a page the API
+        repeated, an anchor that would not move), or `mid` left the topic after it was routed.
+        So nothing is known past its newest message, and the next read starts there (Kody, PR
+        2298: such a read used to settle the entry, and the messages between its newest and
+        `mid` were never read).  A read that brought nothing past `origin` cannot be continued
+        from anywhere new: after MAX_SHORT_READS of those in a row the entry is settled and the
+        log says so, so a live message that is no longer in its topic never keeps the topic
+        reading at every message.  With no catch-up reader nothing can continue a read, and
+        the entry is settled."""
         newest = int(found[-1]["id"]) if found else None
         state = self._catching.get(key)
         recorded = state.recorded if state is not None else ()
-        if newest is not None and newest > mid:
+        if self.history_since is None or newest == mid:
+            self._mark_caught_up(key)
+        elif newest is not None and newest > mid:
             self._open(key, mid, recorded)
-        elif newest is not None and newest < mid and len(found) >= MAX_BACKFILL:
+        elif newest is not None and newest > (start if origin is None else origin):
             self._open(key, max(start, newest), recorded)
         else:
+            short = (state.short if state is not None else 0) + 1
+            if short < MAX_SHORT_READS:
+                self._open(key, start, recorded, short)
+                return
             self._mark_caught_up(key)
+            self.log(
+                "gave up catching up %s: %d reads in a row stopped short of the live message "
+                "and brought nothing new; what lies between stays missing"
+                % (self._label(self.ledger.entries.get(key) or {}), short)
+            )
 
-    def _open(self, key: str, start: int, recorded: Iterable[int]) -> _CatchUp:
-        """Open (or move) an entry's catch-up: the next read for it starts after `start`."""
-        state = _CatchUp(start, recorded)
+    def _open(self, key: str, start: int, recorded: Iterable[int], short: int = 0) -> _CatchUp:
+        """Open (or move) an entry's catch-up: the next read for it starts after `start`.
+        `short` carries the count of reads in a row that brought nothing new (_judge)."""
+        state = _CatchUp(start, recorded, short)
         self._catching[key] = state
         self._caught_up.discard(key)
         return state

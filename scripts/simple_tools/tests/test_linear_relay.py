@@ -1762,6 +1762,128 @@ class CatchUpTests(WorkerCase):
         self.assertEqual(self.entry()["seen"], list(range(1, 9)))
         self.assertEqual(self.entry()["count"], 8)
 
+    # -- a read that ends short of the live message (Kody, PR 2298) -------------------------
+    def test_a_read_that_stops_short_of_the_live_message_is_continued(self) -> None:
+        # The reader stopped early (a page the API repeated, say), below its cap and below the
+        # live message.  Such a read used to settle the entry, so 4 and 5 were never read.
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 7)]
+        stops = [3]  # the next read stops after this message, once
+
+        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
+            got = self.topic.since(stream_id, topic, after_id)
+            if stops:
+                limit = stops.pop()
+                got = [item for item in got if item["id"] <= limit]
+            return got
+
+        second = self.worker(history=self.topic.whole, history_since=since)
+        second.handle_event(message(6, "AFC-1 relay", "m6"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 6])
+        self.topic.messages.append(past(7, "m7"))
+        second.handle_event(message(7, "AFC-1 relay", "m7"))
+        # The next read went on from where the short one stopped, and reached the live message.
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 3])
+        self.assertEqual(self.entry()["seen"], list(range(1, 8)))
+        self.assertEqual(self.entry()["count"], 7)
+        self.topic.messages.append(past(8, "m8"))
+        second.handle_event(message(8, "AFC-1 relay", "m8"))
+        self.assertEqual(len(self.topic.since_calls), 2)  # settled: no third read
+
+    def test_reads_that_never_reach_the_live_message_give_up_and_say_so(self) -> None:
+        # The reader answers nothing past the entry's point, however many live messages come
+        # (each left the topic after it was routed, say).  Three such reads in a row settle the
+        # entry, so the topic does not read again at every message.
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        self.topic.messages = [past(1, "m1")]
+        second = self.restart()
+        for mid in (2, 3, 4):
+            second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 1, 1])
+        gave_up = [line for line in self.logs if "gave up catching up" in line]
+        self.assertEqual(gave_up, ["gave up catching up AFC-1 (conversation 1): 3 reads in a row "
+                                   "stopped short of the live message and brought nothing new; "
+                                   "what lies between stays missing"])
+        second.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(len(self.topic.since_calls), 3)  # settled: no fourth read
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])  # every live one recorded
+
+    # -- the bounds on what a read answers (Kody, PR 2298) -------------------------------------
+    def test_a_read_past_its_bound_is_cut_and_read_on_from(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 9)]
+        second = self.restart()
+        with mock.patch.object(lr, "MAX_BACKFILL", 3):
+            # The reader answers 2 to 8, seven messages, where three is the most a read takes.
+            second.handle_event(message(8, "AFC-1 relay", "m8"))
+            self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 8])
+            self.assertIn(
+                "a topic history read answered 4 message(s) past the 3 it takes; a later read "
+                "goes on from the newest one taken",
+                self.logs,
+            )
+            for mid in (9, 10):
+                self.topic.messages.append(past(mid, "m%d" % mid))
+                second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 4, 7])
+        self.assertEqual(self.entry()["seen"], list(range(1, 11)))
+        self.assertEqual(self.entry()["count"], 10)
+
+    def test_a_history_message_with_an_oversized_field_is_skipped_and_counted(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        bound = lr.MAX_HISTORY_FIELD_BYTES
+        long = "x" * (bound + 1)
+        wide = "é" * (bound // 2 + 1)  # inside the bound in characters, past it in UTF-8
+        self.topic.messages = [
+            past(1, "hello"),
+            past(2, long),
+            {**past(3, "x"), "sender_full_name": wide},
+            {**past(4, "x"), "sender_email": long},
+            past(5, "y" * bound),  # exactly the bound is taken
+            past(6, "live"),
+        ]
+        second = self.restart()
+        second.handle_event(message(6, "AFC-1 relay", "live"))
+        self.assertEqual(self.entry()["seen"], [1, 5, 6])
+        self.assertIn(
+            "a topic history read answered 3 malformed message(s); they are left out of the "
+            "comment",
+            self.logs,
+        )
+        # A lone surrogate, which JSON can carry, is measured, not raised on.
+        self.assertIsNotNone(lr._checked_message(past(7, "a \ud800 b")))
+
+    def test_a_credential_in_a_missed_message_is_withheld_whole_and_logged(self) -> None:
+        # A missed message is recorded as the live path records one: a field the detector flags
+        # is withheld whole, and the log names the fields as the live path's does.  The detector
+        # is stubbed so that a plain marker stands in for a credential;  has_secret's own tests
+        # cover what it matches.
+        marker = "PLAIN-MARKER-NOT-A-CREDENTIAL"
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.topic.messages = [
+            past(1, "hello"),
+            {**past(2, "the key is " + marker), "sender_full_name": "Al " + marker},
+            past(3, "live"),
+        ]
+        second = self.restart()
+        self.t[0] += 3600
+        with mock.patch.object(lr, "has_secret", side_effect=lambda value: marker in value):
+            second.handle_event(message(3, "AFC-1 relay", "live"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3])
+        body = self.lin.updated[-1][1]
+        self.assertIn("near/2", body)
+        self.assertNotIn(marker, body)
+        self.assertGreaterEqual(body.count(lr.WITHHELD), 2)  # the quote and the sender
+        self.assertIn("message 2: withheld content, sender (credential-shaped text)", self.logs)
+        self.assertFalse(any(marker in line for line in self.logs))
+        self.led.save()
+        self.assertNotIn(marker, self.led.path.read_text("utf-8"))
+
     def test_an_entry_made_by_a_replayed_older_message_reads_on_from_it(self) -> None:
         worker = self.restart()
         # The host replays message 2 (an owner post, say) after 3 and 4 were posted, and the
@@ -2057,8 +2179,9 @@ class CatchUpTests(WorkerCase):
     def test_a_replayed_older_message_does_not_settle_the_catch_up(self) -> None:
         first = self.restart()
         for mid in (1, 2, 3):
+            self.topic.messages.append(past(mid, "m%d" % mid))  # in the topic when routed
             first.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
-        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4, 5)]
+        self.topic.messages += [past(4, "m4"), past(5, "m5")]
         second = self.restart()
         # After its own restart the host replays a message the entry already has.  It proves
         # nothing about what came after the entry's newest, so it costs no read and settles
@@ -2087,31 +2210,38 @@ class CatchUpTests(WorkerCase):
 
     def test_several_issues_in_one_topic_are_caught_up_with_one_read(self) -> None:
         first = self.restart()
-        first.handle_event(message(1, "deploy thread", "this is AFC-1"))
-        first.handle_event(message(2, "deploy thread", "and OPS-9 too"))
-        first.handle_event(message(3, "deploy thread", "more"))
+        for mid, content in ((1, "this is AFC-1"), (2, "and OPS-9 too"), (3, "more")):
+            self.topic.messages.append(past(mid, content))  # in the topic when routed
+            first.handle_event(message(mid, "deploy thread", content))
         afc, ops = self.entry("AFC-1", "deploy thread"), self.entry("OPS-9", "deploy thread")
-        self.assertEqual((afc["seen"], ops["seen"]), ([1, 2, 3], [2, 3]))
+        self.assertEqual((afc["seen"], ops["seen"]), ([1, 2, 3], [1, 2, 3]))
+        self.assertEqual(self.topic.since_calls, [])
         # Make the two entries stop at different messages, to show what one read serves.
-        ops["seen"], ops["links"], ops["count"] = [2], ops["links"][:1], 1
-        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4, 5, 6)]
+        ops["seen"], ops["links"], ops["count"] = [1, 2], ops["links"][:2], 2
+        self.topic.messages += [past(mid, "m%d" % mid) for mid in (4, 5, 6)]
         second = self.restart()
         second.handle_event(message(6, "deploy thread", "live"))
         # One read for the topic, from the older of the two points; each entry takes only what
         # is newer than its own.
         self.assertEqual(self.topic.since_calls, [(5, "deploy thread", 2)])
         self.assertEqual((afc["seen"], afc["count"]), ([1, 2, 3, 4, 5, 6], 6))
-        self.assertEqual((ops["seen"], ops["count"]), ([2, 3, 4, 5, 6], 5))
+        self.assertEqual((ops["seen"], ops["count"]), ([1, 2, 3, 4, 5, 6], 6))
         second.handle_event(message(7, "deploy thread", "and on"))
         self.assertEqual(len(self.topic.since_calls), 1)
 
     def test_an_entry_made_or_restored_in_this_process_is_not_read_for(self) -> None:
         worker = self.restart()
+        # Each message is in the topic when it is routed, as in Zulip: a whole-topic read that
+        # does not reach the message it was made for no longer settles the entry.
+        self.topic.messages = [past(1, "hello")]
         worker.handle_event(message(1, "AFC-1 relay", "hello"))  # brand-new: backfilled whole
+        self.topic.messages.append(past(2, "again"))
         worker.handle_event(message(2, "AFC-1 relay", "again"))
         self.prune()
         self.t[0] += 86400
+        self.topic.messages.append(past(3, "back"))
         worker.handle_event(message(3, "AFC-1 relay", "back"))  # restored: backfilled whole
+        self.topic.messages.append(past(4, "more"))
         worker.handle_event(message(4, "AFC-1 relay", "more"))
         self.assertEqual(self.topic.since_calls, [])
         self.assertEqual(self.topic.whole_calls, 2)
