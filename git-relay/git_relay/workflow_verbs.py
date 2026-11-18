@@ -810,12 +810,24 @@ def _validate_read(action, result):
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
         "wf_repo_teams": {
-            "teams": lambda v: seq(v, lambda x: fields(x, {
-                "id": positive, "slug": text, "name": text,
-                "permission": lambda x: x in ("pull", "triage", "push", "maintain", "admin"),
-                "privacy": lambda x: x is None or x in ("closed", "secret"),
-            }), 50),
-            "page": positive, "has_more": boolean,
+            "teams": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "slug": text,
+                        "name": text,
+                        "permission": lambda x: (
+                            x in ("pull", "triage", "push", "maintain", "admin")
+                        ),
+                        "privacy": lambda x: x is None or x in ("closed", "secret"),
+                    },
+                ),
+                50,
+            ),
+            "page": positive,
+            "has_more": boolean,
         },
         "wf_repo_hooks": {
             "hooks": lambda v: seq(
@@ -1894,12 +1906,22 @@ class WorkflowVerbs:
             if not isinstance(item, dict):
                 raise RelayGitHubError(502, "team metadata unverifiable")
             ident, slug, name = item.get("id"), item.get("slug"), item.get("name")
-            if (type(ident) is not int or ident <= 0 or ident in seen or
-                not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", slug) or
-                not isinstance(name, str) or not name.strip() or len(name.encode("utf-8")) > 256 or
-                any(ord(c) < 32 or ord(c) == 127 for c in name) or
-                item.get("permission") not in ("pull", "triage", "push", "maintain", "admin") or
-                (item.get("privacy") is not None and item.get("privacy") not in ("closed", "secret"))):
+            if (
+                type(ident) is not int
+                or ident <= 0
+                or ident in seen
+                or not isinstance(slug, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", slug)
+                or not isinstance(name, str)
+                or not name.strip()
+                or len(name.encode("utf-8")) > 256
+                or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                or item.get("permission") not in ("pull", "triage", "push", "maintain", "admin")
+                or (
+                    item.get("privacy") is not None
+                    and item.get("privacy") not in ("closed", "secret")
+                )
+            ):
                 raise RelayGitHubError(502, "team metadata unverifiable")
             self._metadata_name(slug, 100)
             self._metadata_name(name, 256)
