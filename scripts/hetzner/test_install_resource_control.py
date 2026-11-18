@@ -44,7 +44,7 @@ class InstallerTests(unittest.TestCase):
             mock.patch.object(self.module.os, "fsync"),
             mock.patch.object(self.module.sys, "platform", "linux"),
         ):
-            self.module.install(source)
+            return self.module.install(source)
 
     def test_fixed_payload_modes_isolated_imports_and_preserved_state(self):
         credential = self.home / ".config/fleet-tools/resource-policy-token"
@@ -188,6 +188,55 @@ class InstallerTests(unittest.TestCase):
         (source / "fleet-ops-eavesdropper-settings.json").write_text(json.dumps({"settings": []}))
         with self.assertRaises(RuntimeError):
             self.install(source)
+
+    def test_a_fresh_install_takes_the_repositorys_apply_enabled(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.assertIs(json.loads(repository)["applyEnabled"], False)
+        self.assertIsNone(self.install())
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        self.assertEqual(installed.read_bytes(), repository)
+
+    def test_an_update_keeps_the_owners_apply_enabled_and_every_other_byte(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        # The owner turned apply on after the first install.
+        turned_on = repository.replace(b'"applyEnabled": false', b'"applyEnabled": true', 1)
+        self.assertNotEqual(turned_on, repository)
+        installed.write_bytes(turned_on)
+        self.assertIs(self.install(), True)
+        self.assertEqual(installed.read_bytes(), turned_on)
+        self.assertIs(json.loads(installed.read_bytes())["applyEnabled"], True)
+        self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o644)
+        # An installed false stays false, with the repository's bytes.
+        installed.write_bytes(repository)
+        self.assertIs(self.install(), False)
+        self.assertEqual(installed.read_bytes(), repository)
+
+    def test_an_update_keeps_the_value_when_the_key_text_is_not_unique(self):
+        # Two "applyEnabled" keys in the text:  the installer rewrites the parsed document
+        # instead of editing text, and still sets only the top-level switch.
+        source = self.minimal_source()
+        doubled = {"applyEnabled": False, "example": {"applyEnabled": False}}
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(json.dumps(doubled))
+        self.install(source)
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.write_text(json.dumps({"applyEnabled": True}))
+        self.assertIs(self.install(source), True)
+        self.assertEqual(
+            json.loads(installed.read_text()),
+            {"applyEnabled": True, "example": {"applyEnabled": False}},
+        )
+
+    def test_an_unusable_installed_copy_takes_the_repositorys_value(self):
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        for unusable in (b"not json", b"[]", b'{"applyEnabled": "yes"}', b"{}"):
+            with self.subTest(unusable=unusable):
+                installed.write_bytes(unusable)
+                self.assertIsNone(self.install())
+                self.assertEqual(installed.read_bytes(), repository)
 
     def test_symlink_installed_file_refused_without_touching_target(self):
         self.destination.mkdir(parents=True)

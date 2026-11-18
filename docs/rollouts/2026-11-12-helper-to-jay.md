@@ -34,6 +34,7 @@ Two commands keep root, each one fixed argv the helper builds itself:  the `flee
 ## What Changed
 
 - `scripts/hetzner/install-resource-control.sh` refuses root and installs as the account that runs it, under `~/.local/lib/fleet-resource-control` of that account (the home folder from the account database, never `$HOME`).  Every folder on the way must be root's or that account's and writable by neither group nor others;  the folders it makes and every file it writes are that account's, 0755 and 0644.  It now also installs `fleet-ops-eavesdropper-settings.json`, which had been copied by hand.
+- On an update, the installer keeps the installed `fleet-ops-eavesdropper-settings.json`'s `applyEnabled`, the owner's switch, and changes only the rest of the file.  A fresh install, or an installed copy the helper could not use (missing, linked, foreign, writable or malformed), takes the repository's `false`.  The installer says which value it kept.
 - `scripts/fleet-ops-control.py` changes no behaviour.  Its module rule already accepts a folder that is the calling account's own, with the account's files and no group or other write bit, which is what the new install is.  Its comment now says so.
 - `scripts/fleet-server-status.py` reports the broker's files from the new folder.
 - The docs name the new path.

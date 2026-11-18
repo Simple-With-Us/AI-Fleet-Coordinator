@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import pwd
+import re
 import secrets
 import stat
 import sys
@@ -23,6 +24,8 @@ ROOT = '/'
 ROOT_UID = 0
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+SETTINGS = 'fleet-ops-eavesdropper-settings.json'
+APPLY_ENABLED = re.compile(r'("applyEnabled"\s*:\s*)(true|false)')
 
 
 def home_components(uid):
@@ -109,6 +112,48 @@ def write_file(parent, name, data, owner):
             os.unlink(temporary, dir_fd=parent)
 
 
+def installed_apply_enabled(parent, owner):
+    """The installed settings allowlist's applyEnabled, or None when there is no usable copy.
+
+    The repository's file ships applyEnabled false, and an update that wrote it over an installed
+    true would silently take the owner's permission away.  So an update keeps the installed value.
+    A missing, linked, foreign, writable, oversized or malformed installed file gives None, and the
+    repository's value stands:  the helper would not honour such a file's switch either.
+    """
+    try:
+        fd = os.open(SETTINGS, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as installed:
+        info = os.fstat(installed.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022
+                or info.st_size > MAX_SOURCE_BYTES):
+            return None
+        data = installed.read(MAX_SOURCE_BYTES + 1)
+    try:
+        doc = json.loads(data)
+    except ValueError:
+        return None
+    if isinstance(doc, dict) and isinstance(doc.get('applyEnabled'), bool):
+        return doc['applyEnabled']
+    return None
+
+
+def with_apply_enabled(data, value):
+    """The settings file with applyEnabled set to value, every other byte as the repository has it."""
+    text = data.decode('utf-8')
+    if len(APPLY_ENABLED.findall(text)) == 1:
+        text = APPLY_ENABLED.sub(lambda match: match.group(1) + ('true' if value else 'false'), text)
+    else:
+        doc = json.loads(text)
+        doc['applyEnabled'] = value
+        text = json.dumps(doc, indent=2) + '\n'
+    out = text.encode('utf-8')
+    if json.loads(out).get('applyEnabled') is not value:
+        raise RuntimeError('the kept applyEnabled value could not be written')
+    return out
+
+
 def muster_agent_copy():
     """The bytes of muster-agent's installed copy of the shared reader, or None when it is absent."""
     descriptors = []
@@ -187,6 +232,10 @@ def install(source_directory):
             packages[name] = open_directory(parent, name, owner)
             stack.callback(os.close, packages[name])
             os.fchmod(packages[name], 0o755)
+        # An update keeps the owner's applyEnabled;  a fresh install takes the repository's (false).
+        kept = installed_apply_enabled(parent, owner)
+        if kept is not None and kept != settings['applyEnabled']:
+            payload[SETTINGS] = with_apply_enabled(payload[SETTINGS], kept)
         for relative, data in payload.items():
             parts = relative.split('/')
             write_file(parent if len(parts) == 1 else packages[parts[0]], parts[-1], data, owner)
@@ -195,13 +244,16 @@ def install(source_directory):
     other = muster_agent_copy()
     if other is not None and other != payload['muster_trust_files.py']:
         raise RuntimeError('the installed copies of muster_trust_files.py differ')
+    return kept
 
 
 if __name__ == '__main__':
     try:
-        install(sys.argv[1])
+        kept = install(sys.argv[1])
     except (OSError, RuntimeError, ValueError, SyntaxError, KeyError):
         print('Resource control installation failed; verify reviewed source and protected destination paths.', file=sys.stderr)
         raise SystemExit(1)
     print('Resource control code installed; credentials, keys and runtime state were untouched.')
+    if kept is not None:
+        print('The installed settings allowlist kept applyEnabled %s.' % ('true' if kept else 'false'))
 PY
