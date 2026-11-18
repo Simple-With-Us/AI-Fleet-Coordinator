@@ -5447,29 +5447,55 @@ class RegistryNotConfigured(Base):
     def test_the_loader_that_holds_the_settings_is_told_from_its_words(self) -> None:
         """The Mac reads the registry's address and key from the shared loader file, and the
         loader's own reader swallows a read that fails:  a mapping without an address cannot
-        say whether the loader holds none or could not be read.  This says which, from the
-        file's own words and never a value."""
+        say whether the loader holds none or could not be read.  This says which the file
+        holds, from its own words and never a value."""
         home = pathlib.Path(self.tmp) / "home"
         home.mkdir(mode=0o700, exist_ok=True)
         env = {"HOME": str(home)}
-        # No loader file at all:  the host is not configured.
-        self.assertFalse(WR.registry_loader_holds(env))
-        # A loader that assigns a registry setting holds one.
+        # No loader file at all:  the host holds none.
+        self.assertEqual(WR.registry_loader_settings(env), set())
+        # A loader that assigns the registry's settings holds them.
         path = home / os.path.join(".local", "bin", "operator-registry-env")
         for directory in (path.parent.parent, path.parent):
             if directory.is_symlink():
                 raise RuntimeError("refusing a symlinked directory: %s" % directory)
             directory.mkdir(mode=0o700, exist_ok=True)
         path.write_text(
-            "# a loader\nexport %s=https://registry.example/api\n" % WR.registry_api.URL_ENV
+            "# a loader\nexport %s=https://registry.example/api\nexport %s=registry-0000\n"
+            % (WR.registry_api.URL_ENV, WR.registry_api.KEY_VAR)
         )
-        self.assertTrue(WR.registry_loader_holds(env))
+        self.assertEqual(
+            WR.registry_loader_settings(env),
+            {WR.registry_api.URL_ENV, WR.registry_api.KEY_VAR},
+        )
         # A loader that holds no registry setting holds none.
         path.write_text("# a loader with nothing of the registry in it\n")
-        self.assertFalse(WR.registry_loader_holds(env))
-        # The value never reaches the answer:  only the file's own words are read.
+        self.assertEqual(WR.registry_loader_settings(env), set())
+
+    def test_the_read_that_lost_the_address_is_told_from_the_one_that_never_had_it(self) -> None:
+        """A loader that holds the address and a mapping without it lost it on the way:  the
+        read failed.  A loader that holds no address is a host that is not configured, and the
+        missing variable is named instead."""
+        home = pathlib.Path(self.tmp) / "home"
+        home.mkdir(mode=0o700, exist_ok=True)
+        env = {"HOME": str(home)}
+        path = home / os.path.join(".local", "bin", "operator-registry-env")
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise RuntimeError("refusing a symlinked directory: %s" % directory)
+            directory.mkdir(mode=0o700, exist_ok=True)
         path.write_text("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
-        self.assertTrue(WR.registry_loader_holds(env))
+        # The loader holds the address and the mapping lost it:  the read failed.
+        self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
+        # The mapping carries the address:  nothing was lost.
+        self.assertFalse(
+            WR.registry_loader_lost(
+                env, {"HOME": str(home), WR.registry_api.URL_ENV: "https://registry.example/api"}
+            )
+        )
+        # The loader holds no address:  the host is not configured, and the variable is named.
+        path.write_text("# a loader with nothing of the registry in it\n")
+        self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
 
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
         """The error text is the registry's, so a free run of capitals in it must not reach

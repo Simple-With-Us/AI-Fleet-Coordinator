@@ -847,10 +847,12 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     # the shared loader file on the Mac, the knobs on the server.  One mapping, built once,
     # so a call and the classification that follows it are made on the same configuration.
     registry_env = _registry_env(env)
-    if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
-        # The loader holds the registry's settings and could not be read:  the registry's
-        # identity is unverifiable here, so the delivery fails closed and the note names
-        # the source that could not be read.  A registry that was configured and later
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
         return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
     try:
@@ -917,10 +919,12 @@ def _module_delivery(
     if not callable(handler):
         return _answer(request, WR.Delivery("refused", code=WR.HANDLER_MISSING))
     registry_env = _registry_env(env)
-    if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
-        # The loader holds the registry's settings and could not be read:  the registry's
-        # identity is unverifiable here, so the delivery fails closed and the note names
-        # the source that could not be read.  A registry that was configured and later
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
         return _answer(
             request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)

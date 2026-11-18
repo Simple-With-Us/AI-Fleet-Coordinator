@@ -178,10 +178,10 @@ class RegistryOutageAnswer(unittest.TestCase):
                 self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
 
     def test_a_loader_that_could_not_be_read_fails_closed(self) -> None:
-        """The loader holds the registry's settings and could not be read:  the registry's
-        identity is unverifiable here, so the delivery fails closed and the note names the
-        source that could not be read.  A registry that was configured and later became
-        unreachable is the outage, and it is `busy`."""
+        """The loader holds the registry's address and the mapping lost it:  the read failed,
+        so the registry's identity is unverifiable here, the delivery fails closed and the
+        note names the source that could not be read.  A registry that was configured and
+        later became unreachable is the outage, and it is `busy`."""
         home = pathlib.Path(self.tmp) / "home"
         home.mkdir(mode=0o700, exist_ok=True)
         path = home / os.path.join(".local", "bin", "operator-registry-env")
@@ -205,6 +205,33 @@ class RegistryOutageAnswer(unittest.TestCase):
                 self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
                 self.assertIn(WR.REGISTRY_ENV_SOURCE, delivery.note)
                 self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
+
+    def test_a_loader_that_holds_no_address_names_the_variable_that_is_missing(self) -> None:
+        """The loader was read and holds no address:  the host is not configured, and the note
+        names the variable that is missing, not the source that could not be read."""
+        home = pathlib.Path(self.tmp) / "home"
+        home.mkdir(mode=0o700, exist_ok=True)
+        path = home / os.path.join(".local", "bin", "operator-registry-env")
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise RuntimeError("refusing a symlinked directory: %s" % directory)
+            directory.mkdir(mode=0o700, exist_ok=True)
+        path.write_text("# a loader with nothing of the registry in it\n")
+        env = {"HOME": str(home)}
+
+        def no_registry(*_args, **_kwargs):
+            raise OSError("the registry did not answer")
+
+        with mock.patch.object(PL, "with_registry_env", side_effect=no_registry):
+            with mock.patch.object(WR.registry_api, "call", side_effect=no_registry):
+                claude = CW._recheck(env, self.target)
+                muse = MW._recheck(env, self.target, no_registry)
+        for name, delivery in (("claude", claude), ("muse", muse)):
+            with self.subTest(platform=name):
+                self.assertIsNotNone(delivery)
+                self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+                self.assertIn(WR.registry_api.URL_ENV, delivery.note)
+                self.assertNotIn(WR.REGISTRY_ENV_SOURCE, delivery.note)
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
         """An answer that is not a mapping is malformed data:  `failed`, with the house code,
