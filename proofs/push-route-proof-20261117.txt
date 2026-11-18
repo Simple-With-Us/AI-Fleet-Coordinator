@@ -1,0 +1,2 @@
+Combined push-client first-class push proof, 2026-11-17 21:52 CST.
+Client implementation 67462bec (f17794b5 baseline + 2120 push section).
