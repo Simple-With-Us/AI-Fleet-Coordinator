@@ -66,7 +66,8 @@ jobs:
   gates, so tripping one also disables an already-armed merge, and every API
   lookup fails closed.  The check-run name is the `kody_check_name` input
   (default `Kody Code Review`).  Re-arming happens on the next pull_request
-  event after the review or run settles.
+  event after the review or run settles, or immediately through the opt-in
+  rearm mode below when a caller fires it.
 - Gate lookups use `merge_token` when the caller passes it, falling back to
   `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
   caller's permissions, so a caller that wants the fallback to work also
@@ -166,6 +167,58 @@ expected head with `gh pr merge --match-head-commit` (verified against the
 installed CLI's help), closing the seconds between the boundary check and the
 arm command; GitHub refuses the arm if the head moved.
 
+## Re-arming without a pull_request event (opt-in rearm mode)
+
+An autofix lane settling, or a merge queue dropping an entry, can leave a
+verified-ready PR disarmed with no pull_request event coming to re-run the
+gate (observed 2026-11-10: ST PRs sat BLOCKED ~24h with green CI until a
+manual re-arm).  Callers that want immediate re-arming pass
+`rearm_pr_number` to the reusable from a `workflow_dispatch` trigger and
+fire that dispatch when an autofix run for the PR completes or when
+GitHub disables the auto-merge request:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled,
+            ready_for_review, auto_merge_enabled, auto_merge_disabled]
+  workflow_dispatch:
+    inputs:
+      rearm_pr_number:
+        description: "PR to re-run the auto-merge gate for"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  auto-merge:
+    uses: OWNER/REPO/.github/workflows/auto-merge-reusable.yml@PIN
+    with:
+      rearm_pr_number: ${{ inputs.rearm_pr_number || '' }}
+      # ...every other input exactly as in the pull_request path
+    secrets:
+      merge_token: ${{ secrets.GH_PAT || secrets.SHEPHERD_TOKEN }}
+```
+
+In rearm mode classify fetches the PR by number and validates the same
+preconditions the event path guarantees (open, not a draft, head in this
+repository) before any gate logic runs; every lookup fails closed, and
+every other rule above - hold labels, the owner 2026-10-21 in-flight
+gate, review gates, the arming boundary - runs identically.  Two
+hardening notes: the gate-script checkout pins the repository's declared
+default branch from the event payload (the dispatch ref is
+caller-chosen and must never supply the gate), and the rearm fetch uses
+only the repository token (no personal-credential fallback for a
+re-arm).  Defaults are unchanged: callers that never set the input keep
+the documented event path.
+
+Loop safety: the re-arm dispatch fires only from lane-completion and
+queue-drop transitions; arming itself does not subscribe the caller to
+any event it fires (arm is idempotent and `gh pr merge --disable-auto`
+on an already-off PR is a no-op that exits clean), and a skipped
+classification while an autofix run is still in flight leaves the PR
+unarmed until the next transition, which is the designed behavior.
+
 ## Merge queues
 
 GitHub refuses `--delete-branch` when a repository has a merge queue enabled:
@@ -181,6 +234,20 @@ control — so that setting must be enabled for a merged head branch to
 disappear; the armer never sets it, so a queue repo has to have it on
 already.  A caller can also turn the flag off directly with the `delete_branch`
 input, which is what Socratic-Trade does (ST-4566).
+
+Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
+own shell against a fake `gh`, so the retry is exercised rather than
+described.
+
+## Merge queues
+
+GitHub refuses `--delete-branch` when a repository has a merge queue enabled:
+the flag flips the repository's delete-branch-on-merge setting, and a queue
+cannot have both.  The armer arms again without the flag when the queue is
+what refused it, so a repo that turns a queue on keeps arming without a
+caller change.  The queue's own "delete head branches" setting owns branch
+cleanup from that point on.  A caller can also turn the flag off directly
+with the `delete_branch` input, which is what Socratic-Trade does (ST-4566).
 
 Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
 own shell against a fake `gh`, so the retry is exercised rather than

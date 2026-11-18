@@ -110,7 +110,7 @@ mode_word() {
 
 install_files() {
   local missing=0
-  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_secrets/__init__.py fleet_secrets/core.py linear-board/board simple_tools/secretscan.py; do
+  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_infisical.py fleet_secrets/__init__.py fleet_secrets/core.py linear-board/board simple_tools/secretscan.py; do
     if [[ ! -e "$SRC/$f" ]]; then
       say "MISSING $SRC/$f (this checkout is incomplete; the install would fail)"
       missing=1
@@ -134,6 +134,8 @@ install_files() {
   rm -rf "$DST/fleet_secrets"
   mkdir -p "$DST/fleet_secrets"
   cp "$SRC/fleet_secrets/__init__.py" "$SRC/fleet_secrets/core.py" "$DST/fleet_secrets/"
+  cp "$SRC/fleet_infisical.py" "$DST/fleet_infisical.py"
+  chmod 644 "$DST/fleet_infisical.py"
   chmod 644 "$DST/fleet_secrets/__init__.py" "$DST/fleet_secrets/core.py"
   # fleet_rag.linear_board loads the board CLI from ../linear-board, and recall's remote mode loads
   # ../simple_tools/secretscan.py;  both are code the installed copy needs (AFC-677).
@@ -147,18 +149,18 @@ install_files() {
   cp -p "$SRC/fleet-recall-mcp.py" "$DST/fleet-recall-mcp.py"
   cp -p "$SRC/fleet-rag.py" "$DST/fleet-rag.py"
   chmod +x "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
-  say "installed $DST (fleet_rag/, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
+  say "installed $DST (fleet_rag/, fleet_secrets/, fleet_infisical.py, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
   note "$DST" "installed"
 }
 
 uninstall_files() {
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: remove $DST/fleet_rag/, fleet_secrets/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
+    say "plan: remove $DST/fleet_rag/, fleet_secrets/, fleet_infisical.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
     note "$DST" "planned-remove"
     return 0
   fi
   if [[ -d "$DST" ]]; then
-    rm -rf "$DST/fleet_rag" "$DST/fleet_secrets" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
+    rm -rf "$DST/fleet_rag" "$DST/fleet_secrets" "$DST/fleet_infisical.py" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
     say "removed code from $DST (state/ cache/ logs/ kept; delete by hand if unwanted)"
     note "$DST" "removed"
   else

@@ -248,7 +248,7 @@ class OverrideTests(unittest.TestCase):
             seen.append(path)
             if path == "/v2/service-token":
                 return 200, {"workspace": "proj-1234", "permissions": ["read"],
-                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}
+                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}
             name = path.split("?", 1)[0].rsplit("/", 1)[-1]
             if name != "TEI_RERANK_URL":
                 return 404, {}
@@ -348,7 +348,7 @@ class ReadTokenFileTests(unittest.TestCase):
 
     def test_environment_variable_wins_and_no_file_is_none(self) -> None:
         self.assertIsNone(self.binding())
-        self.write(self.default, "FLEET_RECALL_INFISICAL_TOKEN=st.fromfile0000000000000\n")
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={SERVICE_TOKEN}\n")
         self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN=self.TOKEN), self.TOKEN)
 
     def test_no_home_means_no_default_file(self) -> None:

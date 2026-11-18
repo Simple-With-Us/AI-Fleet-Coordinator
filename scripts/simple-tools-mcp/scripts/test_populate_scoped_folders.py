@@ -16,20 +16,27 @@ import pathlib
 import secrets
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from fleet_secrets import core as fleet_secrets_core
-
-os.environ.setdefault("INFISICAL_FLEET_OPS_PROJECT_ID", "00000000-0000-4000-8000-000000000099")
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
 )
 psf = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(psf)
+with (
+    tempfile.TemporaryDirectory() as fixture_home,
+    mock.patch.object(pathlib.Path, "home", return_value=pathlib.Path(fixture_home)),
+    mock.patch.dict(
+        os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+    ),
+):
+    spec.loader.exec_module(psf)
 
 DEST_PATHS = {(psf.ENV, p) for _, _, _, p, _ in psf.MAPPING}
 
@@ -86,7 +93,7 @@ class FakeInfisical:
             "projectId": project,
             "permissions": permissions,
             "scopes": scopes,
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
 
     def _err(self, url, code, body="server message"):

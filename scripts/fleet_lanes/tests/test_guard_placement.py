@@ -28,6 +28,51 @@ def ctx(mode: str = "detect", *, env: dict | None = None, rows: tuple = (), host
     return made
 
 
+def fallback_ctx(mode: str = "detect", *, env: dict | None = None, rows: tuple = (), host: str = "mac") -> G.GuardContext:
+    """A context whose registry could not be read, so the guard holds the extras alone (AFC-811).
+
+    The registry file is named and missing, so the fallback is the one the guard really takes when
+    a host cannot read it, not a registry row built here to look like one."""
+    full = {
+        "HOME": HOME,
+        "TMPDIR": "/tmp",
+        "AGENT_SEAT": "CLAUDE",
+        P.ENV_MODE_FILE: "/nonexistent",
+        L.ENV_APPS_JSON: "/nonexistent/fleet-apps.json",
+        **(env or {}),
+    }
+    made = G.make_context(full, home=HOME, case_insensitive=True)
+    made.mode = P.parse_mode(mode)
+    made.exceptions = rows
+    made.host = host
+    return made
+
+
+def empty_registry_ctx(mode: str = "detect", *, env: dict | None = None, host: str = "mac") -> G.GuardContext:
+    """A context whose registry was read and holds no owner apps of its own (AFC-811).
+
+    The file is a real, readable fleet-apps.json with no apps in it, so the registry answers no
+    membership question either.  The guard must not read that as a clearance."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = f"{tmp}/fleet-apps.json"
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write('{"owner": "Simple-With-Us", "apps": []}')
+        full = {
+            "HOME": HOME,
+            "TMPDIR": "/tmp",
+            "AGENT_SEAT": "CLAUDE",
+            P.ENV_MODE_FILE: "/nonexistent",
+            L.ENV_APPS_JSON: target,
+            **(env or {}),
+        }
+        made = G.make_context(full, home=HOME, case_insensitive=True)
+    made.mode = P.parse_mode(mode)
+    made.host = host
+    return made
+
+
 def payload(command: str, cwd: str = f"{HOME}/Code/BotFleet", tool: str = "Bash") -> dict:
     return {"tool_name": tool, "tool_input": {"command": command}, "cwd": cwd}
 
@@ -226,6 +271,89 @@ class Isolation(unittest.TestCase):
         c = ctx("isolation block")
         self.assertEqual(G.evaluate(self.spawn(self.LANE, isolation="worktree"), c).action, G.ALLOW)
         self.assertEqual(G.evaluate(self.spawn(self.LANE, "EnterWorktree"), c).action, G.ALLOW)
+
+    def test_an_unreadable_registry_fails_the_membership_question_closed(self) -> None:
+        # The registry says which repositories are fleet repositories.  When it cannot be read the
+        # guard holds the extras alone, so it cannot say that a repo is nobody's:  the worktree is
+        # refused until the registry names it (AFC-811).
+        c = fallback_ctx("isolation block")
+        self.assertEqual(c.registry.source, "fallback")
+        self.assertTrue(c.registry_fallback)
+        d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+        self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_ISOLATION))
+        self.assertIn("FLEET_APPS_JSON", d.reason)
+
+    def test_detect_mode_only_names_the_fallback_instead_of_blocking_it(self) -> None:
+        # Detect mode reports, block mode refuses.  A host whose registry cannot be read is no
+        # different from any other host in detect:  the worktree is named, not refused.
+        c = fallback_ctx("isolation detect")
+        self.assertTrue(c.registry_fallback)
+        d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+        self.assertEqual((d.action, d.detected), (G.ALLOW, "isolation"))
+        self.assertNotEqual(d.rule_id, G.RULE_ISOLATION)
+
+    def test_a_registry_with_no_owner_apps_fails_the_membership_question_closed(self) -> None:
+        # A registry that was read and holds nothing but the extras answers no membership
+        # question, so the answer is unknown, and an unknown answer is not a clearance.
+        c = empty_registry_ctx("isolation block")
+        self.assertNotEqual(c.registry.source, "fallback")
+        self.assertTrue(c.registry_fallback)
+        d = G.evaluate(self.spawn(self.CODE, isolation="worktree"), c)
+        self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_ISOLATION))
+
+    def test_the_refusal_names_the_registry_file(self) -> None:
+        # The refusal has to tell the agent what to read, and the file is fleet-apps.json.  The
+        # unreadable case and the read-but-empty case are different faults with different fixes,
+        # so the refusal says which one it is.
+        unreadable = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), fallback_ctx("isolation block")
+        )
+        self.assertIn("fleet-apps.json", unreadable.reason)
+        self.assertIn("FLEET_APPS_JSON", unreadable.reason)
+        self.assertIn("could not read", unreadable.reason)
+
+        empty = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), empty_registry_ctx("isolation block")
+        )
+        self.assertIn("fleet-apps.json", empty.reason)
+        self.assertIn("holds no app rows", empty.reason)
+        self.assertIn("Add BotFleet to fleet-apps.json", empty.reason)
+        self.assertNotIn("could not read", empty.reason)
+
+    def test_the_detection_says_whether_the_registry_was_read(self) -> None:
+        # The detection carries whether the registry was read, so a regression that inverts the
+        # flag is caught here instead of shipping.
+        fallback = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), fallback_ctx("isolation detect")
+        )
+        self.assertEqual(fallback.detected, "isolation")
+        self.assertFalse(fallback.detected_detail["registry_read"])
+
+        empty = G.evaluate(
+            self.spawn(self.CODE, isolation="worktree"), empty_registry_ctx("isolation detect")
+        )
+        self.assertEqual(empty.detected, "isolation")
+        self.assertTrue(empty.detected_detail["registry_read"])
+
+    def test_a_readable_registry_still_clears_a_repo_it_does_not_hold(self) -> None:
+        # The refusal is narrow:  a registry that was read answers the question, and a repo it does
+        # not hold is still someone's own.
+        c = ctx("isolation block")
+        d = G.evaluate(self.spawn(f"{HOME}/Code/SomeOtherRepo", isolation="worktree"), c)
+        self.assertEqual(d.action, G.ALLOW)
+
+    def test_the_fallback_still_answers_what_the_owner_set_says(self) -> None:
+        # Only the membership question fails closed.  The owner set is built in, so a fleet owner's
+        # clone into temp is still denied on a host whose registry cannot be read.
+        c = fallback_ctx("block")
+        self.assertEqual(
+            G.evaluate(payload("gh repo clone Simple-With-Us/HogHunter /tmp/hh"), c).action,
+            G.DENY,
+        )
+        self.assertEqual(
+            G.evaluate(payload("git -C ~/Code/BotFleet worktree add /tmp/bf"), c).action,
+            G.DENY,
+        )
 
     def test_a_plain_spawn_is_no_request(self) -> None:
         c = ctx("isolation block")

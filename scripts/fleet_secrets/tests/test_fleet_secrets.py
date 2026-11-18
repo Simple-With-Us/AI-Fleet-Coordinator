@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -21,8 +22,8 @@ OTHER_PROJECT = (
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
-CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
-ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
+CLIENT_SECRET = str(uuid.uuid4())
+ACCESS_TOKEN = str(uuid.uuid4())
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
 KEYCHAIN_FULL = {"infisical-client-id": CLIENT_ID, "infisical-client-secret": CLIENT_SECRET}
 
@@ -50,7 +51,16 @@ class World:
         self.export_cwds = []
 
     def fetch_project(
-        self, project, path, env, *, token=None, writer=False, names=None, timeout=None
+        self,
+        project,
+        path,
+        env,
+        *,
+        token=None,
+        writer=False,
+        names=None,
+        allow_unresolved=False,
+        timeout=None,
     ):
         refusal = core.environment_refusal(env)
         if refusal:
@@ -60,13 +70,32 @@ class World:
             raise core.SecretsError(message)
         project_name = core.project_name_for_id(project, env)
         token = token or core.resolve_token(env, writer=writer, project_name=project_name)
-        self.fetches.append((project, path, dict(env), token, writer, names, timeout))
+        self.fetches.append(
+            (project, path, dict(env), token, writer, names, allow_unresolved, timeout)
+        )
         if self.export_stdout is not None:
             try:
                 return core._pairs(json.loads(self.export_stdout.decode("utf-8")))
             except (ValueError, UnicodeDecodeError):
                 raise core.SecretsError("fetch-failed: bad-output") from None
         return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
+
+    def list_names(self, project, path, env, *, token=None, timeout=None):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, False, (), timeout))
+        if self.export_stdout is not None:
+            try:
+                json.loads(self.export_stdout.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+        return tuple(sorted(key for key in self.secrets if core.NAME_RE.fullmatch(key)))
 
     def run(self, argv, **kw):
         argv = list(argv)
@@ -154,6 +183,9 @@ class Base(unittest.TestCase):
         fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
         fetch.start()
         self.addCleanup(fetch.stop)
+        names = mock.patch.object(core, "list_project_names", world.list_names)
+        names.start()
+        self.addCleanup(names.stop)
         return world
 
     def call(self, *argv, env=None):
@@ -169,9 +201,10 @@ class Base(unittest.TestCase):
 
 class GetTests(Base):
     def test_get_prints_exact_value_without_newline(self):
-        self.use(World())
+        world = self.use(World())
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
 
     def test_get_several_names_prints_one_json_object(self):
         w = self.use(World())
@@ -308,24 +341,7 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_keeps_the_manual_cli_session_route(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-
-    def test_interactive_export_runs_in_an_owned_workdir(self):
+    def test_interactive_get_requires_its_own_scoped_token_before_any_read(self):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
@@ -340,263 +356,11 @@ class RunTests(Base):
             mock.patch.object(cli.sys, "stderr", TTY()),
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        self.assertTrue(world.export_cwds)
-        self.assertNotIn("/", world.export_cwds)
-        for cwd in world.export_cwds:
-            self.assertEqual(cwd, str(workdir))
-        self.assertEqual(oct(workdir.stat().st_mode & 0o777), "0o700")
-        # The intermediate base must be owner-only too: mkdir's mode applies
-        # only to the leaf, so without an explicit base chmod the per-project
-        # directory names (Infisical project ids) are enumerable by local users.
-        base = self.home / ".config" / "fleet-secrets" / "cli-session"
-        self.assertEqual(oct(base.stat().st_mode & 0o777), "0o700")
-        config = workdir / ".infisical.json"
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
-
-    def test_cli_session_refuses_a_symlinked_workdir(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        elsewhere = self.home / "elsewhere"
-        elsewhere.mkdir()
-        link_parent = self.home / ".config" / "fleet-secrets"
-        link_parent.mkdir(parents=True)
-        (link_parent / "cli-session").symlink_to(elsewhere, target_is_directory=True)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("cli-session-workdir-symlink", err)
-        self.assertEqual(oct(elsewhere.stat().st_mode & 0o777), "0o755")
-
-    def test_cli_session_replaces_a_symlinked_project_file_without_touching_target(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        target = self.home / "sensitive.txt"
-        target.write_text("keep-me")
-        (workdir / ".infisical.json").symlink_to(target)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        self.assertEqual(target.read_text(), "keep-me")
-        config = workdir / ".infisical.json"
-        self.assertFalse(config.is_symlink())
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
-
-    def test_cli_session_enforces_0600_on_a_preexisting_project_file(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        config = workdir / ".infisical.json"
-        config.write_text("{}")
-        config.chmod(0o644)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
-
-    def test_cli_session_maps_oserror_to_a_clean_secrets_error(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        parent = self.home / ".config" / "fleet-secrets"
-        parent.mkdir(parents=True)
-        (parent / "cli-session").write_text("not a directory")
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("fleet-secrets: cli-session-workdir-unavailable", err)
-        self.assertNotIn("Traceback", err)
-
-    def test_cli_session_uses_unique_temp_names_and_leaves_none(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        seen = []
-        real_mkstemp = core.tempfile.mkstemp
-
-        def spy(*args, **kwargs):
-            fd, name = real_mkstemp(*args, **kwargs)
-            seen.append(name)
-            return fd, name
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.tempfile, "mkstemp", side_effect=spy),
-        ):
-            code1, out1, _ = self.call("get", "ALPHA", env=env)
-            code2, out2, _ = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code1, out1, code2, out2), (0, VAL_A, 0, VAL_A))
-        self.assertEqual(len(seen), 2)
-        self.assertNotEqual(seen[0], seen[1])
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        leftovers = [p.name for p in workdir.iterdir() if p.name.endswith(".tmp")]
-        self.assertEqual(leftovers, [])
-
-    def test_cli_session_tolerates_dir_fsync_einval(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        real_fsync = core.os.fsync
-        import errno as _errno
-        import stat as _stat
-
-        def picky(fd):
-            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
-                raise OSError(_errno.EINVAL, "fsync not supported on directory")
-            return real_fsync(fd)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.os, "fsync", side_effect=picky),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        self.assertTrue((workdir / ".infisical.json").exists())
-
-    def test_cli_session_uses_a_separate_workdir_per_project(self):
-        world = self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, _ = self.call("get", "ALPHA", env=env)
-            self.assertEqual((code, out), (0, VAL_A))
-            code, out, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator", env=env)
-            self.assertEqual((code, out), (0, VAL_A))
-        ops_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        afc_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / OTHER_PROJECT
-        self.assertTrue((afc_dir / ".infisical.json").exists())
-        self.assertTrue((ops_dir / ".infisical.json").exists())
-        self.assertNotEqual(str(afc_dir), str(ops_dir))
-        # Each directory holds only its own project file: a concurrent export
-        # for one project can never overwrite the other's resolved config.
-        self.assertEqual(
-            json.loads((afc_dir / ".infisical.json").read_text())["workspaceId"], OTHER_PROJECT
-        )
-        self.assertEqual(
-            json.loads((ops_dir / ".infisical.json").read_text())["workspaceId"], PROJECT
-        )
-
-    def test_cli_session_propagates_non_einval_dir_fsync_errors(self):
-        self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        real_fsync = core.os.fsync
-        import errno as _errno
-        import stat as _stat
-
-        def picky(fd):
-            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
-                raise OSError(_errno.EIO, "simulated durability failure")
-            return real_fsync(fd)
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-            mock.patch.object(core.os, "fsync", side_effect=picky),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual(out, "")
-        self.assertNotEqual(code, 0)
-        self.assertIn("cli-session-workdir-unavailable", err)
-
-    def test_interactive_export_refreshes_a_stale_project_file(self):
-        world = self.use(World())
-        env = dict(self.env)
-        env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
-        workdir.mkdir(parents=True)
-        config = workdir / ".infisical.json"
-        config.write_text('{"workspaceId": "stale", "defaultEnvironment": "dev", "extra": 1}')
-
-        class TTY:
-            def isatty(self):
-                return True
-
-        with (
-            mock.patch.object(cli.sys, "stdin", TTY()),
-            mock.patch.object(cli.sys, "stderr", TTY()),
-        ):
-            code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
-        payload = json.loads(config.read_text())
-        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn(core.ENV_TOKEN, err)
+        self.assertEqual(world.fetches, [])
+        self.assertEqual(world.calls, [])
+        self.assertEqual(self.exec_calls, [])
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
@@ -721,6 +485,18 @@ class RunTests(Base):
 
 
 class NamesTests(Base):
+    def test_names_never_exports_secret_values(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_project", side_effect=AssertionError("value export")):
+            code, out, err = self.call("names", "--path", "/metadata")
+        self.assertEqual((code, out, err), (0, "ALPHA\nBETA\n", ""))
+        self.assertEqual((world.fetches[0][1], world.fetches[0][5]), ("/metadata", ()))
+
+    def test_legacy_import_uses_the_shared_command_implementation(self):
+        import fleet_infisical_cli
+
+        self.assertIs(cli, fleet_infisical_cli)
+
     def test_names_sorted_one_per_line_and_no_values(self):
         self.use(World(secrets={"ZED": VAL_B, "ALPHA": VAL_A}))
         code, out, err = self.call("names")
@@ -826,18 +602,83 @@ class ConfigTests(Base):
 
 class DoctorTests(Base):
     def test_doctor_checks_the_second_project_with_its_scoped_token(self):
-        self.use(World())
+        world = World()
+        self.use(world)
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
         self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+        self.assertEqual(
+            [(row[0], row[1]) for row in world.fetches],
+            [(PROJECT, "/"), (OTHER_PROJECT, "/fleetlink")],
+        )
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertFalse(rep["ok"])
+
+    def test_selected_doctor_reads_only_the_default_project_root(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
+        self.assertNoSentinel(out, err)
+
+    def test_selected_doctor_uses_only_the_selected_project_and_path(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.ENV_TOKEN)
+        code, out, err = self.call(
+            "doctor", "--json", "--project=ai-fleet-coordinator", "--path=/catalog"
+        )
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["auth_mode"], "token")
+        self.assertTrue(rep["reader_configured"])
+        self.assertFalse(rep["writer_configured"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertNoSentinel(out, err)
+
+    def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
+        world = World()
+        self.use(world)
+        rep = cli.doctor_report(self.env, path="/catalog")
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/catalog")])
+
+    def test_selected_doctor_validates_the_route_before_fetching(self):
+        world = World()
+        self.use(world)
+        for args in (("--project=unknown",), ("--project=fleet-ops", "--path=/../private")):
+            with self.subTest(args=args):
+                code, out, _ = self.call("doctor", "--json", *args)
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(world.fetches, [])
+
+    def test_selected_doctor_preserves_value_validation_without_returning_values(self):
+        world = World(secrets={"ALPHA": "${UNRESOLVED_EXAMPLE}"})
+        self.use(world)
+        code, out, err = self.call("doctor", "--json", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(rep["names_count"], 1)
+        self.assertEqual(rep["unresolved_reference_count"], 1)
+        self.assertFalse(rep["ok"])
+        self.assertNotIn("UNRESOLVED_EXAMPLE", out + err)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
 
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
@@ -1136,6 +977,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return status, answer
 
@@ -1237,6 +1079,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, None
 
@@ -1262,6 +1105,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, {"secret": self._secret()}
 
