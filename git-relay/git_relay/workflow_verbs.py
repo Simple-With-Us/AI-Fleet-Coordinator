@@ -8382,20 +8382,24 @@ class WorkflowVerbs:
         raise Refused("PR creation requires owner-only open_pr")
 
     def wf_pr_edit(self, repo, args):
-        # Edit title/body of an OPEN same-repo PR. expected_head_sha pins the head
-        # and expected_base_ref pins the base at pre-read time (non-atomic, caught
-        # later only by the receipt); a fork or deleted head repo is refused.
-        _only(args, ("repo", "number", "title", "body", "expected_head_sha", "expected_base_ref"))
+        # Edit title/body of an OPEN same-repo PR, or retarget its base branch
+        # via the explicit base field. expected_head_sha pins the head and
+        # expected_base_ref pins the CURRENT base at pre-read time (non-atomic,
+        # caught later only by the receipt); a fork or deleted head repo is
+        # refused. The receipt must show the requested final base.
+        _only(args, ("repo", "number", "title", "body", "base", "expected_head_sha", "expected_base_ref"))
         number, head = _int(args, "number"), _sha(args, "expected_head_sha")
         expected_base = _ref(args, "expected_base_ref")
-        if "title" not in args and "body" not in args:
+        new_base = _ref(args, "base") if "base" in args else None
+        if "title" not in args and "body" not in args and new_base is None:
             raise Refused("nothing to edit")
         payload = {}
         if "title" in args:
             payload["title"] = self._pr_text_field(args, "title", 256)
         if "body" in args:
             payload["body"] = self._pr_text_field(args, "body", 65536)
-        pr = self._pr_expected_head(repo, number, head)
+        if new_base is not None:
+            payload["base"] = new_base        pr = self._pr_expected_head(repo, number, head)
         head_repo = pr["head"].get("repo")
         if pr["state"] != "open":
             raise Refused("PR not open")
@@ -8403,7 +8407,7 @@ class WorkflowVerbs:
             raise Refused("PR base not matched")
         if not isinstance(head_repo, dict) or head_repo.get("full_name") != repo:
             raise Refused("PR head repo not matched")
-        result = self.client._call(
+        final_base = new_base if new_base is not None else expected_base        result = self.client._call(
             "PATCH", f"/repos/{repo}/pulls/{number}", payload, bearer=self.bearer
         )
         if (
@@ -8416,20 +8420,20 @@ class WorkflowVerbs:
             or not isinstance(result["head"].get("repo"), dict)
             or result["head"]["repo"].get("full_name") != repo
             or not isinstance(result.get("base"), dict)
-            or result["base"].get("ref") != expected_base
+            or result["base"].get("ref") != final_base
             or "title" in payload
             and result.get("title") != payload["title"]
             or "body" in payload
             and result.get("body") != payload["body"]
         ):
             raise RelayGitHubError(502, "PR edit receipt unconfirmed; write may have occurred")
-        # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite or close, and it supplies no authority for the action by itself.
+        # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite, retarget or close, and it supplies no authority for the action by itself.
         return {
             "pull": {
                 "number": number,
                 "state": "open",
                 "head_sha": head,
-                "base_ref": expected_base,
+                "base_ref": final_base,
                 "head_repo": repo,
                 "title": result.get("title"),
                 "body": result.get("body"),
