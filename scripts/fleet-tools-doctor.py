@@ -536,6 +536,9 @@ SHIPPED_REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter node test: mirrors the release REPO_ONLY
+        # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
+        "scripts/simple_tools/thread_registry_export.test.mjs",
     }
 )
 
