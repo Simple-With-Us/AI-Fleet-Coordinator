@@ -467,6 +467,21 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_worker_health -v
+    # AFC-398:  the ST and CT health collector (`scripts/fleet-api-health.py`):  the pinned
+    # mapping contract, fail-closed fetches, and the 0600 store Muster reads.
+    - name: API health collector tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_fleet_api_health -v
+    # The same tests on the real Python 3.9 set up for fleet_view above:  the LaunchAgent runs
+    # this collector under the Mac's /usr/bin/python3, so a 3.11-only spelling must fail here.
+    - name: API health collector tests on Python 3.9
+      timeout-minutes: 10
+      env:
+        PY39: ${{ steps.fleet-view-py39.outputs.python-path }}
+      run: |
+        "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
+        cd scripts && "$PY39" -m unittest test_fleet_api_health -v
     # The MiniMax model id the autofix bots dispatch: the trusted policy, every
     # reusable workflow default, and the reference doc all name one id, and a
     # retired spelling may appear in a comment but never as a value.
@@ -716,6 +731,11 @@ jobs:
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
       run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
+    # thread-registry-export drain (Operator thread registry): thrown errors are bounded at
+    # 500 chars and redact credential material; failure-path tests, no network.
+    - name: thread-registry-export tests
+      timeout-minutes: 5
+      run: node --test scripts/simple_tools/thread_registry_export.test.mjs
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs

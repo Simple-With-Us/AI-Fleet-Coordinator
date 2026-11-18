@@ -320,7 +320,7 @@ class OwnerAllFanoutDedupTests(DaemonHarness):
             site=self.fake.url,
         )
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "http"\nroutine = {}\n\n'
             '[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
         )
         daemon = self.started(env=self.env(SIMPLE_TOOLS_PARTITION=self.two_seat_partition()))
@@ -402,19 +402,43 @@ class NonOwnerAllChatNudgeTests(DaemonHarness):
         offer.assert_not_called()
 
 
-class RouteModeMuseTests(unittest.TestCase):
-    def test_muse_wake_is_headless_not_inbox_only(self) -> None:
+class RouteModeTests(unittest.TestCase):
+    """How a seat hears an `@all` page (`Daemon.route_mode`, the `@all` path).  A seat has a routine
+    or only captures (owner ruling, Nov 10, 2026):  there is no headless wake any more."""
+
+    def daemon(self, wake: str, *, leases: list | None = None, partition: dict | None = None):
         from types import SimpleNamespace
 
         from simple_tools.daemon import Daemon
 
         daemon = Daemon.__new__(Daemon)
-        cfg = SimpleNamespace(wake="muse")
+        cfg = SimpleNamespace(wake=wake)
         daemon.config = SimpleNamespace(seats={"MM": cfg}, instance="mac")
-        daemon.partition = {"MM": "mac"}
+        daemon.partition = {"MM": "mac", "GROK": "server"} if partition is None else partition
         daemon.seats = {"MM": SimpleNamespace(cfg=cfg)}
-        daemon.lease_views = lambda _runner: []
-        self.assertEqual(daemon.route_mode("MM"), ("headless wake", None))
+        daemon.lease_views = lambda _runner: list(leases or [])
+        return daemon
+
+    def test_a_routine_seat_is_woken_through_its_routine(self) -> None:
+        self.assertEqual(self.daemon("http").route_mode("MM"), ("routine wake", None))
+
+    def test_a_capture_seat_is_inbox_only(self) -> None:
+        self.assertEqual(self.daemon("inbox").route_mode("MM"), ("inbox only", None))
+
+    def test_a_retired_wake_value_is_inbox_only(self) -> None:
+        # The config never lets one through (it is refused and the seat captures);  route_mode
+        # still answers inbox only for it, never a headless wake.
+        for wake in ("claude", "muse", "openrouter"):
+            with self.subTest(wake=wake):
+                self.assertEqual(self.daemon(wake).route_mode("MM"), ("inbox only", None))
+
+    def test_a_live_lease_is_a_live_session(self) -> None:
+        self.assertEqual(
+            self.daemon("http", leases=[object()]).route_mode("MM"), ("live session", None)
+        )
+
+    def test_a_seat_the_other_instance_holds_is_that_listener(self) -> None:
+        self.assertEqual(self.daemon("inbox").route_mode("GROK"), ("server listener", None))
 
 
 class OwnerTopicBroadcastTests(unittest.TestCase):
@@ -564,7 +588,7 @@ class PeerBroadcastDaemonTests(DaemonHarness):
             site=self.fake.url,
         )
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "http"\nroutine = {}\n\n'
             '[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
         )
         daemon = self.started(env=self.env(SIMPLE_TOOLS_PARTITION=self.two_seat_partition()))
