@@ -502,8 +502,8 @@ def parent_from_mac(
     fails asks nothing), ssh may not prompt, shares no connection and forwards nothing (SSH_OPTIONS), and the
     round trip is cut at `timeout` (MAC_START_TIMEOUT_SECONDS at the chat's own start, MAC_TIMEOUT_SECONDS
     after it).  An answer that arrived whole before the cut still counts.  Any failure, a timeout with no
-    answer, or an answer that is not a session id is no parent.  "" never proves that nobody started the chat:
-    the Mac's verb prints nothing for a chat it has no record of, too (`claude_title_advice`)."""
+    answer, or an answer that is not a session id is no parent.  An empty answer never proves that nobody
+    started the chat:  the Mac's verb prints nothing for a chat it has no record of, too (`claude_title_advice`)."""
     dest = PL.mac_ssh(env)
     sid = _session_id(sid)
     if not dest or not sid:
