@@ -268,10 +268,11 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
     # so a call and the classification that follows it are made on the same configuration.
     registry_env = _registry_env(env)
     if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
-        # The loader holds the registry's settings and could not be read:  this host cannot
-        # show its configuration, and it may well be configured.  The wake waits for it and
-        # spends no attempt.
-        return WR.registry_outage()
+        # The loader holds the registry's settings and could not be read:  the registry's
+        # identity is unverifiable here, so the delivery fails closed and the note names
+        # the source that could not be read.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
     try:
         answer = resolve(registry_env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer

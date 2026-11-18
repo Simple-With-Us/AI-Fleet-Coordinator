@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import pathlib
 import re
 import secrets
 import shutil
@@ -5448,24 +5449,26 @@ class RegistryNotConfigured(Base):
         loader's own reader swallows a read that fails:  a mapping without an address cannot
         say whether the loader holds none or could not be read.  This says which, from the
         file's own words and never a value."""
-        home = os.path.join(self.tmp, "home")
-        os.makedirs(home)
-        env = {"HOME": home}
+        home = pathlib.Path(self.tmp) / "home"
+        home.mkdir(mode=0o700, exist_ok=True)
+        env = {"HOME": str(home)}
         # No loader file at all:  the host is not configured.
         self.assertFalse(WR.registry_loader_holds(env))
         # A loader that assigns a registry setting holds one.
-        path = os.path.join(home, os.path.join(".local", "bin", "operator-registry-env"))
-        os.makedirs(os.path.dirname(path))
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("# a loader\nexport %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        path = home / os.path.join(".local", "bin", "operator-registry-env")
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise RuntimeError("refusing a symlinked directory: %s" % directory)
+            directory.mkdir(mode=0o700, exist_ok=True)
+        path.write_text(
+            "# a loader\nexport %s=https://registry.example/api\n" % WR.registry_api.URL_ENV
+        )
         self.assertTrue(WR.registry_loader_holds(env))
         # A loader that holds no registry setting holds none.
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("# a loader with nothing of the registry in it\n")
+        path.write_text("# a loader with nothing of the registry in it\n")
         self.assertFalse(WR.registry_loader_holds(env))
         # The value never reaches the answer:  only the file's own words are read.
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        path.write_text("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
         self.assertTrue(WR.registry_loader_holds(env))
 
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:

@@ -274,8 +274,12 @@ UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
 #: The name the note carries when a registry error names no setting:  the configuration
-#: source an operator has to fix, never the error's own words.
-REGISTRY_ENV_SOURCE = "operator-registry-env"
+#: source an operator has to fix, never the error's own words.  The Mac reads the shared
+#: loader file and the server's router reads its own environment, so the note names the
+#: source this host reads.  It is a token the transport keeps, so it carries no space.
+REGISTRY_ENV_SOURCE = (
+    "operator-registry-env" if sys.platform == "darwin" else "router-environment"
+)
 #: How much of a registry answer's own words a delivery note carries:  a variable name and a
 #: reason, and never a value.  A note crosses to another host, whose readers keep only 80
 #: characters of it, so the source shapes it to that length rather than the reader cutting it.

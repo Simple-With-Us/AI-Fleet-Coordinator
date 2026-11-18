@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import os
+import pathlib
 
 from simple_tools import antigravity_wake as AGW
 from simple_tools import claude_wake as CW
@@ -176,17 +177,20 @@ class RegistryOutageAnswer(unittest.TestCase):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
 
-    def test_a_loader_that_could_not_be_read_spends_no_attempt(self) -> None:
-        """The loader holds the registry's settings and could not be read:  this host cannot
-        show its configuration, and it may well be configured.  The wake waits for it and
-        spends no attempt, in every platform."""
-        home = os.path.join(self.tmp, "home")
-        os.makedirs(home)
-        path = os.path.join(home, os.path.join(".local", "bin", "operator-registry-env"))
-        os.makedirs(os.path.dirname(path))
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
-        env = {"HOME": home}
+    def test_a_loader_that_could_not_be_read_fails_closed(self) -> None:
+        """The loader holds the registry's settings and could not be read:  the registry's
+        identity is unverifiable here, so the delivery fails closed and the note names the
+        source that could not be read.  A registry that was configured and later became
+        unreachable is the outage, and it is `busy`."""
+        home = pathlib.Path(self.tmp) / "home"
+        home.mkdir(mode=0o700, exist_ok=True)
+        path = home / os.path.join(".local", "bin", "operator-registry-env")
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise RuntimeError("refusing a symlinked directory: %s" % directory)
+            directory.mkdir(mode=0o700, exist_ok=True)
+        path.write_text("export %s=https://registry.example/api\n" % WR.registry_api.URL_ENV)
+        env = {"HOME": str(home)}
 
         def no_registry(*_args, **_kwargs):
             raise OSError("the registry did not answer")
@@ -198,7 +202,9 @@ class RegistryOutageAnswer(unittest.TestCase):
         for name, delivery in (("claude", claude), ("muse", muse)):
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
-                self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
+                self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+                self.assertIn(WR.REGISTRY_ENV_SOURCE, delivery.note)
+                self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
         """An answer that is not a mapping is malformed data:  `failed`, with the house code,

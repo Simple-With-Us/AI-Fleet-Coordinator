@@ -848,10 +848,11 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     # so a call and the classification that follows it are made on the same configuration.
     registry_env = _registry_env(env)
     if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
-        # The loader holds the registry's settings and could not be read:  this host cannot
-        # show its configuration, and it may well be configured.  The wake waits for it and
-        # spends no attempt.
-        return WR.registry_outage()
+        # The loader holds the registry's settings and could not be read:  the registry's
+        # identity is unverifiable here, so the delivery fails closed and the note names
+        # the source that could not be read.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
     try:
         answer = WR.registry_api.call(
             registry_env,
@@ -917,10 +918,11 @@ def _module_delivery(
         return _answer(request, WR.Delivery("refused", code=WR.HANDLER_MISSING))
     registry_env = _registry_env(env)
     if not WR.registry_api.base_url(registry_env) and WR.registry_loader_holds(env):
-        # The loader holds the registry's settings and could not be read:  this host cannot
-        # show its configuration, and it may well be configured.  The wake waits for it and
-        # spends no attempt.
-        return _answer(request, WR.registry_outage())
+        # The loader holds the registry's settings and could not be read:  the registry's
+        # identity is unverifiable here, so the delivery fails closed and the note names
+        # the source that could not be read.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return _answer(request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE))
     try:
         answer = handler(request, env=registry_env)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
