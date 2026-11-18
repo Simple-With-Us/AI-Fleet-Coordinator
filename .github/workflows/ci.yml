@@ -764,11 +764,15 @@ jobs:
       run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
     # The Operator registry -> Sheets drain (OPS-1037):  the exporter, the Google Sheets
     # transport and the drain runner (pass loop, run deadline, stop signal, write pacing
-    # and HTTP 429 back-off).  No network:  fetch, the registry bridge and the clock are
-    # injected, and nothing sleeps for real.
+    # and HTTP 429 back-off), and the Zulip Threads sync the same run does (AFC-823)
+    # with its module, thread_registry_export.mjs.  No network:  fetch, the registry
+    # bridge and the clock are injected, and nothing sleeps for real.
     - name: Operator Sheets drain tests
       timeout-minutes: 10
-      run: node --test scripts/test_operator_sheets_export.mjs scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
+      run: >-
+        node --test scripts/test_operator_sheets_export.mjs
+        scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
+        scripts/test_thread_registry_export.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests

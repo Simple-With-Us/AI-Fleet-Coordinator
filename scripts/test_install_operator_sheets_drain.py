@@ -37,15 +37,25 @@ FAKE_SA = json.dumps(
         "private_key": PEM_BEGIN + "\nfixture-key-body\n" + PEM_END + "\n",
     }
 )
-MODULES = ("operator_sheets_export.mjs", "operator_sheets_google.mjs", "operator_sheets_drain.mjs")
+MODULES = (
+    "operator_sheets_export.mjs",
+    "operator_sheets_google.mjs",
+    "operator_sheets_drain.mjs",
+    "thread_registry_export.mjs",
+)
 REVIEWED_DRAIN = "export function pacedAdapter() {}\nexport const RUN_DEADLINE_MS = 1;\n"
 REVIEWED_TIMER = "[Timer]\nOnUnitInactiveSec=5min\n"
 
+# The thread rows payload (thread_registry export-rows) is an object, so its default sits in a
+# variable:  braces inside ${VAR-default} would end the expansion early.
 DOCKER_STUB = """#!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
+threads_default='{"tab": "Zulip Threads", "rows": [["10:fixture topic"]]}'
 case "$*" in
   *pending-outbox*) printf '%s\\n' "${STUB_PENDING_OUT-[]}"; exit "${STUB_PENDING_EXIT:-0}" ;;
   *export-attempts*) printf '%s\\n' "${STUB_ATTEMPTS_OUT-[]}"; exit "${STUB_ATTEMPTS_EXIT:-0}" ;;
+  *thread_registry*)
+    printf '%s\\n' "${STUB_THREADS_OUT-$threads_default}"; exit "${STUB_THREADS_EXIT:-0}" ;;
 esac
 exit 0
 """
@@ -160,6 +170,7 @@ class ShellTests(unittest.TestCase):
         self.assertIn("OPERATOR_SHEETS_EVENTS_SHEET_ID=1449318075", out)
         self.assertIn("pending-outbox", out)
         self.assertIn("export-attempts", out)
+        self.assertIn("thread_registry export-rows", out)
         self.assertRegex(
             out, r"(would install|unchanged) /etc/systemd/system/operator-sheets-drain.timer"
         )
@@ -298,6 +309,15 @@ class StubbedInstallTests(unittest.TestCase):
         calls = self.calls()
         self.assertTrue(any("pending-outbox" in c and "--limit 1" in c for c in calls))
         self.assertTrue(any("export-attempts" in c and "--limit 1" in c for c in calls))
+        self.assertIn(
+            "docker exec -w /app/scripts eavesdropper python3 -m simple_tools.thread_registry"
+            " export-rows",
+            calls,
+        )
+        self.assertIn(
+            "preflight ok: thread_registry export-rows returned 1 thread row(s)", result.stdout
+        )
+        self.assertNotIn("fixture topic", result.stdout + result.stderr)  # counts, never rows
         self.assertIn("systemctl daemon-reload", calls)
         self.assertFalse(any(c.startswith(("systemctl enable", "systemctl start")) for c in calls))
         self.assertIn("test mode: skipped the Infisical read", result.stdout)
@@ -352,6 +372,24 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertIn("pending-outbox", result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         self.assertFalse((self.units / "operator-sheets-drain.service").exists())
+
+    def test_a_failing_thread_preflight_warns_and_still_installs(self):
+        # AFC-823:  the Zulip Threads read is not something the Sessions and Events drain needs,
+        # so an image without it, or an unreadable answer, is a warning and the install goes on.
+        for env in (
+            {"STUB_THREADS_OUT": "usage: thread_registry: bad choice", "STUB_THREADS_EXIT": "2"},
+            {"STUB_THREADS_OUT": "[1, 2, 3]"},  # JSON, but not the payload object
+        ):
+            with self.subTest(env=env):
+                result = self.run_install(STUB_TIMER_ACTIVE="1", **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("warning: thread_registry export-rows", result.stderr)
+                self.assertIn("the Sessions and Events drain is not affected", result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertTrue((self.units / "operator-sheets-drain.service").is_file())
+                self.assertTrue((self.lib / "thread_registry_export.mjs").is_file())
+                # The timer it stopped is started again, as on any successful install.
+                self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
 
     def test_a_dirty_checkout_is_refused_before_any_change(self):
         (self.repo / "scripts" / "simple_tools" / "operator_sheets_google.mjs").write_text("edit\n")
