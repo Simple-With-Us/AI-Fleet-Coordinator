@@ -646,6 +646,12 @@ class ReceiptRecoveryTests(ReceiptHarness):
         }))
         self.answer(recent, self.receipt(recent))
         self.answer(old, self.receipt(old, status="dead", delivered=False, code="not-live"))
+        # Those reads are guesses that the wake went to the router, so the status does not count
+        # them as awaiting its receipt (wakes.outcome_counts).
+        self.assertEqual(sorted(daemon.seats["CLAUDE"].receipt_waits), sorted([recent, old, lost]))
+        self.assertEqual(
+            LR.status_view(self.root, "CLAUDE", now=now)["wake_outcomes_24h"]["awaiting"], 0
+        )
         self.pass_at(daemon, 15)
         self.assertEqual(
             sorted(self.receipt_gets()),
@@ -735,6 +741,59 @@ class ReceiptRecoveryTests(ReceiptHarness):
         self.assertEqual(
             [(r["wake_id"], r["state"]) for r in self.outcomes()], [(wake_id, "delivered")]
         )
+
+    def off_router_restart(self, wake_id: str, url: str) -> Any:
+        """After the first listener shut down:  move CLAUDE off the router in the config and start
+        again, with the router's bearer still set and CLAUDE_ROUTINE_URL holding `url`."""
+        self.write_config(
+            seats=router_seat("CLAUDE", "Claude", key_env="CLAUDE_ROUTINE_KEY", auth="hmac-sha256")
+        )
+        second = self.daemon(env=self.env(**{
+            C.ROUTER_BEARER_ENV: self.router_key,
+            "CLAUDE_ROUTINE_URL": url,
+            "CLAUDE_ROUTINE_KEY": "k" * 40,
+        }))
+        self.assertFalse(C.routes_to_router(second.seats["CLAUDE"].cfg.routine))
+        self.assertIn(wake_id, second.seats["CLAUDE"].receipt_waits)
+        return second
+
+    def test_a_restart_after_the_seat_moved_off_the_router_still_reads_what_it_sent(self) -> None:
+        # The `done` row records the routine the wake went by (`receipt_routine`), so a restart
+        # whose config no longer sends the seat to the router reads the receipt with it, instead
+        # of never reading it and recording `unknown` at the deadline.
+        first = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        wake_id = self.wake(first)
+        self.assertEqual(
+            self.done_row(wake_id).get("receipt_routine", {}).get("url_env"), "CLAUDE_ROUTINE_URL"
+        )
+        self.assertNotIn(self.url(), json.dumps(self.done_row(wake_id)), "the row holds the URL")
+        first.shutdown()
+        second = self.off_router_restart(wake_id, self.url())
+        self.answer(wake_id, self.receipt(wake_id))
+        self.pass_at(second, 31)
+        seen = [r for r in self.routine.health_requests if "/receipt/" in r.path]
+        self.assertEqual(len(seen), 1, "the restart did not read with the routine the wake went by")
+        self.assertEqual(seen[0].header("Authorization"), "Bearer " + self.router_key)
+        self.assertEqual(
+            [(r["wake_id"], r["state"]) for r in self.outcomes()], [(wake_id, "delivered")]
+        )
+
+    def test_a_restored_routine_is_not_read_once_its_variable_names_another_host(self) -> None:
+        # The router's bearer goes only where the wake went:  when the recorded URL variable now
+        # names another host or port, the restart does not read with the restored routine.
+        first = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        wake_id = self.wake(first)
+        first.shutdown()
+        other = FakeRoutine()
+        other.start()
+        self.addCleanup(other.stop)
+        other.health["/receipt/CLAUDE/%s" % wake_id] = (200, self.receipt(wake_id))
+        second = self.off_router_restart(wake_id, other.url + "/wake/CLAUDE")
+        self.pass_at(second, 31)
+        self.assertEqual(
+            [r.path for r in other.health_requests], [], "the router's bearer went to another host"
+        )
+        self.assertEqual((self.receipt_gets(), self.outcomes()), ([], []))
 
 
 class ReceiptDurabilityTests(ReceiptHarness):

@@ -1166,7 +1166,12 @@ def _router_stored(view: Mapping[str, Any]) -> bool:
 
 def outcome_counts(views: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     """How many of these merged views are at each router outcome, plus `awaiting`:  a `done` wake
-    still waiting on the router's receipt."""
+    whose row says it went to the router (`receipt_awaited`) and has no outcome yet.  A `done`
+    wake from before the listener read receipts, which a start may still read
+    (awaiting_receipts with `backfill`), is not counted:  nothing on its row says it went to the
+    router, and the ledger cannot show whether it is still read (a start takes one up only while
+    the seat routes to the router and the wake is younger than RECEIPT_BACKFILL, and one whose
+    reads end unclaimed gets no row, Daemon._receipt_final)."""
     counts = {state: 0 for state in OUTCOME_STATES}
     counts["awaiting"] = 0
     for view in views:

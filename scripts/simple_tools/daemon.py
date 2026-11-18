@@ -5246,9 +5246,18 @@ class Daemon:
             )
             # The one wake router's 2xx says only that it stored the wake (AFC-824):  the row says
             # a receipt is awaited, and the receipt pass appends the outcome once the router has it.
-            router = C.routes_to_router(runner.cfg.routine)
+            # It also records the routine it was sent with (variable and header names, timeout,
+            # and the host and port, never the URL), so a restart reads with it (_sent_routine).
+            sent = runner.cfg.routine
+            router = C.routes_to_router(sent)
             if router:
                 worker["receipt_awaited"] = True
+                worker["receipt_routine"] = {
+                    "url_env": sent.url_env,
+                    "header": sent.header,
+                    "timeout": sent.timeout,
+                    "origin": target.origin,
+                }
             runner.ledger.append(
                 pending.row(
                     "done",
@@ -5267,7 +5276,7 @@ class Daemon:
                 )
             )
             if router:
-                self._await_receipt(runner, pending.wake_id, done, runner.cfg.routine)
+                self._await_receipt(runner, pending.wake_id, done, sent)
             if surfaced:
                 self._surface(runner, pending, listed, lost, done)
             elif (
@@ -6313,8 +6322,10 @@ class Daemon:
         """Note that this wake's router receipt is to be read, counting from its 2xx (`done_at`).
         `routine` is the routine the wake was sent with, so a reload that moves the seat off the
         router does not stop its reads:  the environment that holds the router's URL and bearer
-        is the same until a restart.  A wait with no routine (one _recover_receipts found while
-        its seat was not the router's) reads with the seat's routine at the time of the read."""
+        is the same until a restart, and after one the `done` row's `receipt_routine` restores
+        it (_sent_routine).  A wait with no routine (one _recover_receipts found with no routine
+        to restore while its seat was not the router's) reads with the seat's routine at the
+        time of the read."""
         with self._receipt_lock:
             runner.receipt_waits.setdefault(
                 wake_id,
@@ -6336,24 +6347,45 @@ class Daemon:
         for as long as the router keeps a receipt (W.RECEIPT_BACKFILL).  Nothing on such a row
         says which routine answered it, so its wait is `inferred`:  only a terminal receipt that
         names it settles it, and with none by its deadline it is left as it was (_receipt_final).
-        The ledger is read under _receipt_lock, the lock _receipt_settle appends under, so an
-        outcome an earlier runner of the seat was writing is either in the ledger read here or
-        never written (that runner is no longer the seat's)."""
+        A wake whose row says it went to the router is read with the routine it was sent with,
+        as _await_receipt keeps it, so a seat moved off the router before the restart still
+        reads it (_sent_routine);  without one, with the seat's routine while that is the
+        router's.  The ledger is read under _receipt_lock, the lock _receipt_settle appends
+        under, so an outcome an earlier runner of the seat was writing is either in the ledger
+        read here or never written (that runner is no longer the seat's)."""
         routine = runner.cfg.routine if C.routes_to_router(runner.cfg.routine) else None
         with self._receipt_lock:
             views = runner.ledger.wakes()
             found = W.awaiting_receipts(views, backfill=routine is not None, now=self.clock.time())
             for wake_id, done_at in found.items():
+                awaited = views[wake_id].get("receipt_awaited") is True
+                sent = self._sent_routine(runner, views[wake_id]) if awaited else None
                 runner.receipt_waits.setdefault(
                     wake_id,
                     {
                         "done_at": float(done_at),
                         "read_at": None,
                         "last": None,
-                        "routine": routine,
-                        "inferred": views[wake_id].get("receipt_awaited") is not True,
+                        "routine": sent or routine,
+                        "inferred": not awaited,
                     },
                 )
+
+    def _sent_routine(
+        self, runner: SeatRunner, view: Mapping[str, Any]
+    ) -> C.RoutineConfig | None:
+        """The router routine a wake was sent with, rebuilt from its `done` row's
+        `receipt_routine` (C.router_routine), or None:  for a row with none, and when the
+        variable it names no longer resolves, from the environment the daemon started with, to
+        the host and port the wake went to, so the router's bearer is never sent anywhere else."""
+        sent = view.get("receipt_routine")
+        routine = C.router_routine(runner.seat, sent)
+        if routine is None:
+            return None
+        target, _why, _detail = A.resolve_routine(routine, self.env)
+        if target is None or target.origin != sent.get("origin"):
+            return None
+        return routine
 
     def _maybe_start_receipt_pass(self, now: float) -> None:
         """Start a receipt pass on its own thread, at most every RECEIPT_TICK_SECONDS and only

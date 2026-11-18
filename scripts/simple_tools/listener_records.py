@@ -520,9 +520,11 @@ def wakes_view(
     by_state: dict[str, int] = {}
     for view in rows:
         by_state[str(view.get("state"))] = by_state.get(str(view.get("state")), 0) + 1
-    # The wake router's outcomes among these wakes (AFC-824).  `awaiting` counts every wake still
-    # waiting on its receipt, however old:  its reads run until wakes.RECEIPT_DEADLINE after the
-    # 2xx, past a 24-hour window, and a wake leaves the count once its outcome is written.
+    # The wake router's outcomes among these wakes (AFC-824).  `awaiting` counts every wake whose
+    # `done` row says it went to the router (`receipt_awaited`) and that has no outcome yet,
+    # however old:  its reads run until wakes.RECEIPT_DEADLINE after the 2xx, past a 24-hour
+    # window, and a wake leaves the count once its outcome is written.  A `done` wake from before
+    # the listener read receipts is not counted, though a start may read it (wakes.outcome_counts).
     outcomes = W.outcome_counts(rows)
     outcomes["awaiting"] = W.outcome_counts(views.values())["awaiting"]
     return {
@@ -681,7 +683,8 @@ def status_view(root: str, seat: str, *, now: float | None = None) -> dict[str, 
         # What the wake router did with the wakes that ran in the last 24 hours (AFC-824):  a
         # `done` wake is only stored there, so these say how many it delivered, did not deliver
         # or could not tell, counted by the time each wake ran (an outcome row does not move it),
-        # and how many wakes of any age still await its receipt.
+        # and how many wakes of any age whose `done` row says they went to the router
+        # (`receipt_awaited`) still await its receipt (wakes.outcome_counts).
         "wake_outcomes_24h": wakes["outcomes"],
         "leases": leases,
         "nudges_pending": sum(

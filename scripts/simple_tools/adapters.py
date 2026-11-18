@@ -699,7 +699,8 @@ _ROUTER_WAKE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 class RoutineTarget:
     """A resolved routine:  the URL and key read from the environment, and how to send them.
-    It is never logged and never written anywhere; `host` is the only part that is."""
+    The URL and key are never logged or written anywhere.  `host` is logged, and `origin`
+    (host and port) is written in a router wake's `done` row as `receipt_routine.origin`."""
 
     def __init__(self, url: str, key: str, cfg: RoutineConfig) -> None:
         self.url = url
@@ -716,6 +717,15 @@ class RoutineTarget:
     @property
     def host(self) -> str:
         return (urllib.parse.urlsplit(self.url).hostname or "").lower()
+
+    @property
+    def origin(self) -> str:
+        """`host:port`, the port empty when the URL names none:  where the key goes, without the
+        path or query, which may hold a token.  A daemon restart checks it before it reads a
+        receipt with a routine rebuilt from the ledger (daemon._sent_routine).  The URL passed
+        routine_url_problem, so its port parses."""
+        port = urllib.parse.urlsplit(self.url).port
+        return "%s:%s" % (self.host, "" if port is None else port)
 
     def header_value(self, body: bytes) -> str:
         """The auth header for these exact body bytes:  the key itself, `Bearer <key>`, or the
