@@ -2,10 +2,13 @@
 that has one tool/process for all platforms").  The library (`platform_letter`) does the registering, the note, the
 retries, the "??" title, the end-of-turn report and the install;  this file is only what is MiniMax Code's own.
 
-- The hooks are Claude Code shaped, in `~/.minimax/hooks.json`:  SessionStart starts and Stop ends a turn (the turn
-  end also puts the letter back on a title MiniMax Code regenerated without it).  A SessionStart hook's plain stdout
-  is the context the model reads (`output="text"`).  MiniMax Code has no end event, so no hook closes a
-  registration:  the assigner's own sweep frees the letter of a chat nobody came back to.
+- The hooks are Claude Code shaped, in `~/.minimax/hooks.json`:  SessionStart starts, UserPromptSubmit names the
+  chat from its first message, SubagentStart gives a subagent its own letter and Stop ends a turn (the turn end
+  also puts the letter back on a title MiniMax Code regenerated without it).  A SessionStart hook's plain stdout is
+  the context the model reads (`output="text"`).  A subagent takes the pair after its parent's (parent CC, child
+  CD, the next CE), and MiniMax Code sends the PARENT's session id for a subagent event, so the child's own id is
+  read from `childSessionId`.  MiniMax Code has no end event, so no hook closes a registration:  the assigner's own
+  sweep frees the letter of a chat nobody came back to.
 - The session id is the payload's `session_id` (__MAVIS_RUNTIME_SESSION_ID in the chat's own shell).
 - The session store is MiniMax Code's own SQLite table, `local_runtime_sessions` in
   `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`):  a `conversation` or `task` row
@@ -42,7 +45,7 @@ PLATFORM = "minimax"
 SEAT = "MM"
 SOURCE = "minimax-letter-hook"
 DISPLAY = "MiniMax"
-EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
+EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SubagentStart": "start", "SubagentStop": "turn", "Stop": "turn"}
 #: The timeouts of the two hook entries, in seconds.  MiniMax Code's runtime takes a command hook's
 #: timeout from 1 to 10 seconds and refuses anything longer with HOOK_SCHEMA_INVALID, so an entry over 10
 #: is never run at all:  the hook file reads as installed and no letter note is written and no title is
@@ -52,7 +55,7 @@ EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
 #: makes at most three registry calls (the parent, the chat, the title), and the shared call timeout is
 #: three seconds, so the chain's worst case is nine seconds and the hook finishes before the runtime
 #: stops it.
-HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
+HOOK_TIMEOUTS = {"SessionStart": 10, "UserPromptSubmit": 10, "SubagentStart": 10, "SubagentStop": 10, "Stop": 10}
 #: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
@@ -100,11 +103,40 @@ def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     return dict(row) if row is not None else {}
 
 
-def _sid(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+#: The payload keys the runtime may carry a subagent's OWN session id under.  MiniMax Code sends the
+#: PARENT's id in `session_id` for a subagent event, so the child's id has to come from its own key.
+CHILD_ID_KEYS = ("childSessionId", "child_session_id", "agentId", "agent_id")
+
+
+def _event(payload: Mapping[str, Any]) -> str:
+    """The runtime event name, whichever key the payload carries it under."""
+    return str(payload.get("hook_event_name") or payload.get("event") or "")
+
+
+def _is_subagent_event(payload: Mapping[str, Any]) -> bool:
+    """True for the two events the runtime fires around a subagent."""
+    return _event(payload) in ("SubagentStart", "SubagentStop")
+
+
+def minimax_session_id(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    """The chat's own session id:  the payload's for an ordinary chat, and the CHILD's for a subagent
+    event, because MiniMax Code sends the parent's id there."""
+    if _is_subagent_event(payload):
+        for key in CHILD_ID_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
     return PL.from_payload("session_id")(payload, env)
 
 
+def _sid(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    return minimax_session_id(payload, env)
+
+
 def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    if _is_subagent_event(payload):
+        return "subagent"
     row = _row(env, _sid(payload, env))
     if not row:
         return "chat"
@@ -114,6 +146,9 @@ def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    if _is_subagent_event(payload):
+        # The runtime sends the parent's id as the payload's own session id for a subagent event.
+        return str(PL.from_payload("session_id")(payload, env) or "")
     return str(_row(env, _sid(payload, env)).get("parent_session_id") or "")
 
 
@@ -121,8 +156,33 @@ def minimax_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     return str(_row(env, _sid(payload, env)).get("title") or "")
 
 
+def _columns(conn: sqlite3.Connection) -> set[str]:
+    """The session table's own column names, so a store without the extra data column still works."""
+    try:
+        return {str(row[1]) for row in conn.execute("PRAGMA table_info(local_runtime_sessions)")}
+    except sqlite3.Error:
+        return set()
+
+
+def _extra(raw: object) -> dict[str, Any]:
+    """The session row's extra data as a dict, or an empty one when it is not readable JSON."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw else {}
+    except ValueError:
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+
 def minimax_rename(request: PL.TitleRequest) -> bool:
-    """Write the title into the session store's row.  True when the row now carries it."""
+    """Write the title into the session store's row, and mark the title as the hook's own.
+
+    Two things happen in one write.  MiniMax Code's own title service auto-titles a chat whose
+    `titleSource` is still `default` and puts its title back over the lettered one, so the row is
+    written with `titleSource` `manual` as well:  the runtime leaves a title that is not `default`
+    alone.  And a title a person chose is never overwritten:  the runtime marks a name a person set
+    as `manual` too, so a `manual` title that is not the one the hook last put on the chat is left
+    exactly as it is.
+    """
     path = store_file(request.env)
     if not request.session_id or not os.path.isfile(path):
         return False
@@ -130,10 +190,35 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
         conn = sqlite3.connect(path, timeout=4)
         try:
             with conn:
-                cur = conn.execute(
-                    "UPDATE local_runtime_sessions SET title = ? WHERE session_id = ?",
-                    (request.title, request.session_id),
-                )
+                columns = _columns(conn)
+                extra_column = "extra_data_json" in columns
+                selected = "title" + (", extra_data_json" if extra_column else "")
+                row = conn.execute(
+                    f"SELECT {selected} FROM local_runtime_sessions WHERE session_id = ?",
+                    (request.session_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                current = str(row[0] or "")
+                extra = _extra(row[1]) if extra_column else {}
+                if (
+                    extra.get("titleSource") == "manual"
+                    and current
+                    and current != str(getattr(request, "shown", "") or "")
+                ):
+                    return True  # a person named this chat:  their words stay
+                if extra_column:
+                    extra["titleSource"] = "manual"
+                    cur = conn.execute(
+                        "UPDATE local_runtime_sessions SET title = ?, extra_data_json = ?"
+                        " WHERE session_id = ?",
+                        (request.title, json.dumps(extra, separators=(",", ":")), request.session_id),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE local_runtime_sessions SET title = ? WHERE session_id = ?",
+                        (request.title, request.session_id),
+                    )
             return cur.rowcount == 1
         finally:
             conn.close()
@@ -224,7 +309,7 @@ SPEC = PL.PlatformSpec(
     seat=SEAT,
     source=SOURCE,
     display=DISPLAY,
-    session_id=PL.from_payload("session_id"),
+    session_id=minimax_session_id,
     parent_id=minimax_parent,
     kind=minimax_kind,
     current_title=minimax_title,

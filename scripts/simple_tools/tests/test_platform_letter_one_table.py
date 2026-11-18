@@ -162,6 +162,34 @@ class MiniMaxRow(Base):
         self.assertIs(PL.load_spec("minimax"), PM.SPEC)
         self.assertEqual((PM.SPEC.seat, PM.SPEC.output, PM.SPEC.events["Stop"]), ("MM", "text", "turn"))
 
+    def test_the_prompt_event_names_the_chat_from_its_first_message(self) -> None:
+        # The placeholder lasts "until its first prompt":  without this event the chat keeps "New Chat" forever,
+        # because a brand-new chat has no title when SessionStart runs.
+        self.add("m-0001")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"})
+        label = self.note("MM", "m-0001")["label"]
+        self.assertEqual(self.title("m-0001"), "%s: New Chat" % label)
+        self.run_hook(PM.SPEC, {"hook_event_name": "UserPromptSubmit", "session_id": "m-0001",
+                                "prompt": "Coordinate P-BF-6 completion via Zulip"})
+        title = self.title("m-0001")
+        self.assertTrue(title.startswith(label + ": "), title)
+        self.assertNotIn("New Chat", title)
+        self.assertIn("P-BF-6", title)
+
+    def test_a_subagent_takes_its_own_letter_and_title(self) -> None:
+        # MiniMax Code sends the PARENT's session id for a subagent event, so the child's own id has to be read
+        # from the payload, and the child takes the pair after its parent's.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        self.add("m-0201", kind="task", parent="m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStart", "session_id": "m-0200",
+                                "childSessionId": "m-0201"})
+        child = self.note("MM", "m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertNotEqual(child["label"], parent["label"])
+        self.assertTrue(self.title("m-0201").startswith(child["label"] + ": "), self.title("m-0201"))
+
     def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
         # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
         # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
@@ -440,13 +468,14 @@ class MiniMaxRetiredClient(Base):
         code, answer = self.install("--check")
         self.assertEqual((code, answer["retired"]["hooks"]), (1, ["PreToolUse"]))
         code, answer = self.install()
-        self.assertEqual((code, sorted(answer["changed"])), (0, ["PreToolUse", "SessionStart", "Stop"]))
+        self.assertEqual((code, sorted(answer["changed"])),
+                         (0, ["PreToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]))
         with open(self.hooks_file(), encoding="utf-8") as fh:
             hooks = json.load(fh)["hooks"]
         self.assertNotIn("mm-session-letter", json.dumps(hooks))
         self.assertEqual(hooks["PreToolUse"], [{"matcher": "Write", "hooks": [{"type": "command",
                                                                               "command": "another-tool guard"}]}])
-        for event in ("SessionStart", "Stop"):
+        for event in ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop"):
             commands = [h["command"] for group in hooks[event] for h in group["hooks"]]
             self.assertEqual(len(commands), 1, event)
             self.assertTrue(commands[0].endswith("platform-letter hook --platform minimax"), commands[0])
@@ -817,3 +846,58 @@ class RequestCommand(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MiniMaxTitleSource(Base):
+    """The real runtime's store shape:  it carries the extra data column the title source lives in."""
+
+    DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+           " parent_session_id TEXT, extra_data_json TEXT)")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(self.store))
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(self.DDL)
+        conn.close()
+
+    def add(self, sid: str, title: str = "", extra: object = None) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?)",
+                         (sid, title, "conversation", None, json.dumps(extra) if extra is not None else None))
+        conn.close()
+
+    def row(self, sid: str):
+        conn = sqlite3.connect(self.store)
+        row = conn.execute("SELECT title, extra_data_json FROM local_runtime_sessions WHERE session_id = ?",
+                            (sid,)).fetchone()
+        conn.close()
+        return row
+
+    def request(self, sid: str, title: str, shown: str = "") -> PL.TitleRequest:
+        return PL.TitleRequest(platform="minimax", session_id=sid, label="YY", title=title, words="",
+                                current="", reason="start", data={}, env=self.home_env(), shown=shown, held=())
+
+    def home_env(self) -> dict:
+        return {"HOME": self.home}
+
+    def test_the_rename_marks_the_title_as_the_hook_own(self) -> None:
+        # The runtime only auto-titles a chat whose titleSource is still "default", and it put its own title over
+        # the lettered one:  the hook's write carries the source, so the runtime leaves the lettered title alone.
+        self.add("m-0100")
+        self.assertTrue(PM.minimax_rename(self.request("m-0100", "YY: Work")))
+        title, extra = self.row("m-0100")
+        self.assertEqual(title, "YY: Work")
+        self.assertEqual(json.loads(extra)["titleSource"], "manual")
+
+    def test_a_title_a_person_chose_is_left_alone(self) -> None:
+        # The runtime marks a name a person set as "manual" too, so a manual title that is not the hook's own is
+        # the person's words, and the hook never overwrites them.
+        self.add("m-0101", "YY: My Own Name", {"titleSource": "manual", "effectiveModel": "m-1"})
+        self.assertTrue(PM.minimax_rename(self.request("m-0101", "YY: New Chat", shown="YY: New Chat")))
+        title, extra = self.row("m-0101")
+        self.assertEqual(title, "YY: My Own Name")
+        self.assertEqual(json.loads(extra)["effectiveModel"], "m-1")
