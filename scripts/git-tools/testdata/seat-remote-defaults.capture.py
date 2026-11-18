@@ -1,4 +1,4 @@
-# Seat-scoped fleet CLI defaults for a shared host (simple-chat, simple-board, recall).
+# Seat-scoped fleet CLI defaults for a shared host (simple-chat, simple-board, simple-git, recall).
 # No credential values are stored here:  the bearer is read at run time from the declared
 # seat's own private file, and an undeclared process gets no bearer and no remote mode.
 #
@@ -30,6 +30,7 @@ COMMANDS = {
     "simple-chat": {"mode": "SIMPLE_CHAT_REMOTE", "native": "SIMPLE_CHAT_NATIVE_ECHO"},
     "simple-board": {"mode": "SIMPLE_BOARD_REMOTE", "native": "SIMPLE_BOARD_NATIVE_ECHO"},
     "recall": {"mode": "SIMPLE_RECALL_REMOTE", "native": None},
+    "simple-git": {"mode": "SIMPLE_GIT_REMOTE", "native": "SIMPLE_GIT_NATIVE_ECHO"},
 }
 # Options that carry their own identity or connection:  the caller chose, so this helper stays out.
 IDENTITY_OPTIONS = ("--as", "--rc", "--default-seat")

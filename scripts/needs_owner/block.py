@@ -15,12 +15,13 @@ It sits in a fenced code block, because Linear re-serializes Markdown (it escape
     Context: none
     ```
 
-`Version`, `Again of` and `Mirror of` lines appear only when they apply.  Every value is one line
+`Version`, `Again of`, `Mirror of` and `Why owner` lines appear only when they apply.  Every value is one line
 (`text.clean_text`), so a value can neither start a new field nor close the fence.  `render_block`
 writes it;  `parse_block` is the strict reader (unknown or repeated keys, gaps in the option numbers,
 a bad uid or a seat that is not a token are all errors).  An item with no valid block is "unadopted".
 There is no "default if no answer" action anywhere in it:  nothing happens until Jay answers.
 """
+
 from __future__ import annotations
 
 import re
@@ -38,8 +39,21 @@ _OPTION_KEY = re.compile(r"option (?P<n>[1-9])(?: \((?P<mark>low-stakes)\))?")
 _SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{0,31}")
 _PARENT_RE = re.compile(r"[A-Z]{1,8}-[0-9]{1,9}")
 _AGAIN_RE = re.compile(r"[A-Z]{1,8}-[0-9]{1,9}(?: msg [0-9]{1,12})?")
-SINGLE_KEYS = ("format", "uid", "question", "recommendation", "parent", "filed by", "context", "version", "again of",
-               "mirror of")
+# A reason class as stored:  the shape, not the list (bar.py holds the list).
+WHY_RE = re.compile(r"[a-z][a-z-]{0,23}")
+SINGLE_KEYS = (
+    "format",
+    "uid",
+    "question",
+    "recommendation",
+    "parent",
+    "filed by",
+    "context",
+    "version",
+    "again of",
+    "mirror of",
+    "why owner",
+)
 
 
 class BlockError(ValueError):
@@ -59,6 +73,8 @@ class Block:
     version: int = 1
     again_of: str | None = None  # "AFC-12 msg 456":  the earlier item this one re-asks
     mirror_of: str | None = None  # the Zulip topic link of a Grok Bot request this item mirrors
+    # The reason class (bar.py) the filer named;  not part of the request, so same_request ignores it.
+    why_owner: str | None = None
 
     @property
     def scope(self) -> str:
@@ -68,7 +84,7 @@ class Block:
 
     @property
     def for_seat(self) -> str | None:
-        """`for GB-PLUMBER` at the start of the context marks an item CLAUDE mirrored for a persona."""
+        """`for GB-PLUMBER` at the start of the context marks an item CLAUDE mirrored for a bot."""
         match = re.match(r"for (GB-[A-Z0-9-]+)", self.context or "")
         return match.group(1) if match else None
 
@@ -81,16 +97,20 @@ class Block:
     def hash_matches_uid(self) -> bool:
         """False when the question or options were edited after filing (the uid hash no longer fits)."""
         match = T.UID_RE.fullmatch(self.uid)
-        return bool(match) and match.group(2) == T.uid_hash(self.question, self.options, version=self.version,
-                                                            mirror_msg=self.mirror_message())
+        return bool(match) and match.group(2) == T.uid_hash(
+            self.question, self.options, version=self.version, mirror_msg=self.mirror_message()
+        )
 
-    def same_request(self, other: "Block") -> bool:
+    def same_request(self, other: Block) -> bool:
         """Every field a request can set, compared without case or spacing differences."""
-        return (T.normalize(self.question) == T.normalize(other.question)
-                and [T.normalize(o) for o in self.options] == [T.normalize(o) for o in other.options]
-                and self.low_stakes == other.low_stakes and self.recommend == other.recommend
-                and T.normalize(self.context or "") == T.normalize(other.context or "")
-                and self.parent == other.parent)
+        return (
+            T.normalize(self.question) == T.normalize(other.question)
+            and [T.normalize(o) for o in self.options] == [T.normalize(o) for o in other.options]
+            and self.low_stakes == other.low_stakes
+            and self.recommend == other.recommend
+            and T.normalize(self.context or "") == T.normalize(other.context or "")
+            and self.parent == other.parent
+        )
 
 
 def render_block(b: Block) -> str:
@@ -101,6 +121,8 @@ def render_block(b: Block) -> str:
     lines.append("Parent: " + (b.parent or "none"))
     lines.append("Filed by: " + b.filed_by)
     lines.append("Context: " + (b.context or "none"))
+    if b.why_owner:
+        lines.append("Why owner: " + b.why_owner)
     if b.version > 1:
         lines.append("Version: %d" % b.version)
     if b.again_of:
@@ -113,15 +135,18 @@ def render_block(b: Block) -> str:
 
 def render_description(b: Block) -> str:
     """The issue description:  one plain sentence, the block, and where to answer."""
-    return "\n".join([
-        "A decision that needs Jay, filed by %s.  Nothing is decided or done until Jay answers." % b.filed_by,
-        "",
-        render_block(b),
-        "",
-        "Answer in the OWNER topic in Zulip (tap the emoji of a low-stakes option, or type a reply) or as a comment on this "
-        "issue.  The filing seat closes this item after it acts on the answer.",
-        "",
-    ])
+    return "\n".join(
+        [
+            "A decision that needs Jay, filed by %s.  Nothing is decided or done until Jay answers."
+            % b.filed_by,
+            "",
+            render_block(b),
+            "",
+            "Answer in the OWNER topic in Zulip (tap the emoji of a low-stakes option, or type a reply) or as a comment on this "
+            "issue.  The filing seat closes this item after it acts on the answer.",
+            "",
+        ]
+    )
 
 
 def find_fence(text: str) -> str | None:
@@ -138,7 +163,7 @@ def find_fence(text: str) -> str | None:
                 j += 1
             if j >= len(lines):
                 return None  # never closed
-            body = lines[i + 1:j]
+            body = lines[i + 1 : j]
             first = next((line for line in body if line.strip()), "")
             if _FORMAT_LINE.match(first.strip()):
                 return "\n".join(body)
@@ -185,13 +210,19 @@ def parse_block(text: str) -> Block:
             raise BlockError("%s is missing" % needed)
     if singles.get("format", FORMAT) != FORMAT:
         raise BlockError("an unknown block format")
-    if not options or sorted(options) != list(range(1, len(options) + 1)) or len(options) > T.MAX_OPTIONS:
+    if (
+        not options
+        or sorted(options) != list(range(1, len(options) + 1))
+        or len(options) > T.MAX_OPTIONS
+    ):
         raise BlockError("the options must be numbered 1 to n, with n from 1 to %d" % T.MAX_OPTIONS)
     if not T.UID_RE.fullmatch(singles["uid"]):
         raise BlockError("the uid is not needs-owner:<scope>:<sha8>")
     if not _SEAT_RE.fullmatch(singles["filed by"]):
         raise BlockError("'Filed by' is not a seat tag")
-    if len(singles["question"]) > T.QUESTION_MAX or any(len(v) > T.OPTION_MAX for v in options.values()):
+    if len(singles["question"]) > T.QUESTION_MAX or any(
+        len(v) > T.OPTION_MAX for v in options.values()
+    ):
         raise BlockError("a field is longer than its cap")
     recommend = None
     rec = singles.get("recommendation", "none")
@@ -219,8 +250,24 @@ def parse_block(text: str) -> Block:
     if again is not None and not _AGAIN_RE.fullmatch(again):
         raise BlockError("'Again of' is not an identifier with an optional message id")
     mirror = singles.get("mirror of")
-    if mirror is not None and not (mirror.startswith("https://") and re.search(r"/near/[0-9]+$", mirror)):
+    if mirror is not None and not (
+        mirror.startswith("https://") and re.search(r"/near/[0-9]+$", mirror)
+    ):
         raise BlockError("'Mirror of' is not a Zulip message link")
-    return Block(uid=singles["uid"], question=singles["question"], options=[options[n] for n in sorted(options)],
-                 low_stakes=sorted(low), recommend=recommend, parent=parent, filed_by=singles["filed by"],
-                 context=context, version=version, again_of=again, mirror_of=mirror)
+    why = singles.get("why owner")
+    if why is not None and not WHY_RE.fullmatch(why):
+        raise BlockError("'Why owner' is not a class word")
+    return Block(
+        uid=singles["uid"],
+        question=singles["question"],
+        options=[options[n] for n in sorted(options)],
+        low_stakes=sorted(low),
+        recommend=recommend,
+        parent=parent,
+        filed_by=singles["filed by"],
+        context=context,
+        version=version,
+        again_of=again,
+        mirror_of=mirror,
+        why_owner=why,
+    )

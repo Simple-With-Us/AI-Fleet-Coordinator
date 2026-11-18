@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Linear project codes as linkifiers (AFC-565):  from Linear to Zulip and the repo files.
 
-When a Linear Project is created or updated, the Operator listener receives a Linear
+When a Linear Project is created or updated, the Operator eavesdropper receives a Linear
 webhook at /linear/v1/projects, verifies it, and reconciles Linear project codes into
 (a) live Zulip realm linkifiers and (b) the repo files scripts/zulip_linkifiers.py TARGET
 and scripts/apple-notes-coding.sh PROJECT_PATHS, via a GitHub pull request.
@@ -11,7 +11,7 @@ slugId is 12 lowercase hex chars (Linear opens these regardless of the project n
 A project's code is Linear GraphQL Project.identifier, e.g. "P-BF-6".
 
 Settings come only from Infisical or constants (owner rule):  the constants below have
-no environment overrides.  The only bootstrap from the environment is the listener's
+no environment overrides.  The only bootstrap from the environment is the eavesdropper's
 OPERATOR_LINKIFIERS_INFISICAL_TOKEN (a Coolify runtime-only variable);  the CLI takes
 --token-file instead.  Nothing else is read from the environment.  Secrets are never
 printed or logged.

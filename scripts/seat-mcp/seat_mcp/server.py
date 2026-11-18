@@ -17,11 +17,23 @@ from urllib.parse import urlparse
 from . import __version__
 from .auth import access_authenticated, bearer_ok, load_token, origin_ok
 from .config import BIND_HOST, BIND_PORT, MCP_PATH
-from .recall_bridge import recall_contribute, recall_search, recall_stats
+from .recall_bridge import (
+    recall_contribute,
+    recall_correct,
+    recall_retract,
+    recall_search,
+    recall_stats,
+)
 from .seats import SeatError
 from .tools import TOOL_IMPL, tool_schemas
 
-RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute")
+RECALL_PATHS = (
+    "/recall/stats",
+    "/recall/search",
+    "/recall/contribute",
+    "/recall/correct",
+    "/recall/retract",
+)
 # Largest request body any path reads:  JSON-RPC, /recall/* and the /hooks/ pass-through (AFC-359).
 MAX_BODY_BYTES = 2_000_000
 # /hooks/ body read timeout (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.
@@ -79,7 +91,7 @@ def _dispatch(method: str, params: JsonDict) -> JsonDict:
                 "For live Grok TUI chats:  grok_sessions_list, then "
                 "grok_session_prompt (seat grok-tui) or seat_launch with "
                 "seat=grok-tui and opts.sessionId.  Fleet RAG: MCP tools "
-                "recall_search / recall_stats / recall_contribute on this "
+                "recall_search / recall_stats / recall_contribute / recall_correct / recall_retract on this "
                 "same /mcp, or REST GET /recall/stats, POST /recall/search, "
                 "POST /recall/contribute.  Public hop is "
                 "https://agents.jays.services (Access + Bearer). "
@@ -263,8 +275,12 @@ class SeatHandler(BaseHTTPRequestHandler):
                 data = recall_stats(arguments)
             elif kind == "search":
                 data = recall_search(arguments)
-            else:
+            elif kind == "contribute":
                 data = recall_contribute(arguments)
+            elif kind == "correct":
+                data = recall_correct(arguments)
+            else:
+                data = recall_retract(arguments)
         except SeatError as exc:
             self._send(400, _json_bytes({"ok": False, "error": str(exc)}), "application/json")
             return
@@ -351,7 +367,7 @@ class SeatHandler(BaseHTTPRequestHandler):
         if path.startswith("/hooks/"):
             self._proxy_to_webhook_ingress()
             return
-        if path in {"/recall/search", "/recall/contribute", "/recall/stats"}:
+        if path in set(RECALL_PATHS):
             if not self._auth_ok():
                 self._unauthorized()
                 return

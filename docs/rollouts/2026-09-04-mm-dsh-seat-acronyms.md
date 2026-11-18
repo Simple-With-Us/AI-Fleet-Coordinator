@@ -15,7 +15,7 @@ DeepSeek *model* running inside Cursor (that spawn stays `[CURSOR]`).
 - `fleet-apps.json` seat tags: `MINIMAX` → `MM`, `DEEPSEEK` → `DSH`.  Notes names:
   `MiniMax`, `DeepSeek Harness`.  Branch prefixes stay `minimax/` and `deepseek/`.
   Worktree suffixes stay `minimax` and `deepseek`.
-- `AGENT-SYNC.md` (repo + live `~/apps/AGENT-SYNC.md`) seat table, availability list,
+- `FLEET-PROTOCOL.md` (repo + live `~/apps/FLEET-PROTOCOL.md`) seat table, availability list,
   and fleet-skills home dirs.
 - Skill identity (`scripts/fleet_skill_identity.py`) and Monet catalog
   (`docs/fleet-skills/fleet-coordination/SKILL.md`).  `python3 scripts/install-fleet-skills.py`

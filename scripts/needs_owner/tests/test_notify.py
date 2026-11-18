@@ -54,7 +54,7 @@ class Reader:
         self.rows = rows
         self.calls: list = []
 
-    def agent_sync(self, *args: str, stdin=None) -> Result:
+    def simple_tools(self, *args: str, stdin=None) -> Result:
         self.calls.append(args)
         return Result(0, "\n".join(json.dumps(r) if isinstance(r, dict) else r for r in self.rows) + "\n")
 
@@ -83,7 +83,7 @@ class Stub:
         self.board_calls.append(args[0])
         return self.result
 
-    def agent_sync(self, *args: str, stdin=None) -> Result:
+    def simple_tools(self, *args: str, stdin=None) -> Result:
         self.sends.append(args)
         return Result(0, json.dumps({"id": self.msg_id}) + "\n")
 
@@ -164,7 +164,7 @@ class FindNoticeTests(unittest.TestCase):
 
     def test_a_failed_read_finds_nothing(self) -> None:
         class Broken(Reader):
-            def agent_sync(self, *args, stdin=None):
+            def simple_tools(self, *args, stdin=None):
                 return Result(5, "", "boom")
 
         self.assertIsNone(notifymod.find_notice(Broken("CLAUDE", []), "t", UID))
@@ -215,10 +215,10 @@ class NoticeTests(unittest.TestCase):
             self.assertEqual(got["state"], "notify_pending", mode)
         self.assertEqual(self.w.run("list", "--json").json()[0]["notified_msg_id"], None)
 
-    def test_no_agent_sync_is_pending(self) -> None:
+    def test_no_simple_tools_is_pending(self) -> None:
         self.w.remove_tool("simple-chat")
         got = self.w.file(Q, "Yes", "No").json()
-        self.assertEqual((got["state"], got["reason"]), ("notify_pending", "no_agent_sync"))
+        self.assertEqual((got["state"], got["reason"]), ("notify_pending", "no_simple_tools"))
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
 
     # ---- maybe sent --------------------------------------------------------------------------
@@ -353,7 +353,7 @@ class NoticeTests(unittest.TestCase):
             return [json.loads(line) for line in ran.stdout.splitlines()]
 
         shown = read()[0]
-        code = ("import json, sys; sys.path.insert(0, %r)\nfrom agent_sync import cli as C\n"
+        code = ("import json, sys; sys.path.insert(0, %r)\nfrom simple_tools import cli as C\n"
                 "class Probe(C.Agent):\n    def __init__(self): pass\n    def sender_is_bot(self, m): return True\n"
                 "    def sender_seat(self, m, b): return ('CLAUDE', None)\n    def is_sibling(self, m): return False\n"
                 "    def is_mention(self, m): return False\n"
@@ -380,7 +380,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual((got["state"], got["notified_msg_id"], got["linkback"]), ("notified", 777, "ok"))
         self.assertEqual(got["topic"], "OWNER AFC-9 Plumber needs a key")
         sends = self.w.calls("simple-chat")
-        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the persona's topic is the notice")
+        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the bot's topic is the notice")
         self.assertEqual(sends[0]["argv"], ["reply", "--as", "CLAUDE", "--session", "needsown", "--json", "--id", "777", "--", "-"])
         self.assertIn("Filed in Linear as AFC-300", sends[0]["stdin"])
         self.assertIn("https://linear.app/test-fleet/issue/AFC-300", sends[0]["stdin"])
@@ -690,9 +690,9 @@ class BoardWriteTests(unittest.TestCase):
         self.assertIn("request_id=req-abc12345", message)
 
     def test_the_channel_comes_from_the_runner_and_not_from_the_process(self) -> None:
-        # An ambient AGENT_SYNC_CHANNEL must not decide where the notice goes:  the
+        # An ambient SIMPLE_TOOLS_CHANNEL must not decide where the notice goes:  the
         # runner's own environment does.
-        with mock.patch.dict(os.environ, {"AGENT_SYNC_CHANNEL": "ambient-channel"}):
+        with mock.patch.dict(os.environ, {"SIMPLE_TOOLS_CHANNEL": "ambient-channel"}):
             runner = self.stub(Result(0, "commented"))
             notifymod.notify(runner, self.item)
         channels = [args[args.index("--channel") + 1] for args in runner.sends if "--channel" in args]

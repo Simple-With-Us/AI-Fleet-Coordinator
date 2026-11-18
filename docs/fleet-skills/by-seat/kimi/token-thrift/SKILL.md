@@ -5,7 +5,7 @@ description: Use before any automated, scheduled, webhook or sweep turn, before 
 
 # Token Thrift (KIMI)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Most waste happens before real work starts, in replayed history, no-op wakes, long waits and output no verdict needed.  Cut those first and save the model for work only a model can do.

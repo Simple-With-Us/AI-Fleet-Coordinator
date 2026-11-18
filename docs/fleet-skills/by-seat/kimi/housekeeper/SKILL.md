@@ -5,7 +5,9 @@ description: Mac and Hetzner disk/RAM/CPU housekeeping.  Run safe cleanup scrip
 
 # Housekeeper (disk, RAM, CPU)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 **Ownership split (2026-09-01).**  BF-Housekeeper (BotFleet) owns **this Mac**.  GB-HOUSEKEEPER (Grok Bot) owns the **Hetzner/Coolify host**.  Neither crosses.  During the Grok-Bot → BotFleet transition both must work, so they de-conflict through a shared lock rather than a schedule.
@@ -72,15 +74,15 @@ The snippet also fails closed when `HOUSEKEEPER_LOCK` is unset.  A placeholder 
 df -h / /System/Volumes/Data
 sysctl vm.swapusage
 uptime
-bash /Users/jay/apps/mac-status.sh
-python3 /Users/jay/apps/mac-resource-watch.py --once
+bash ~/apps/mac-status.sh
+python3 ~/apps/mac-resource-watch.py --once
 ```
 
 Safe reclaim (idempotent):
 
 ```bash
-python3 /Users/jay/apps/mac-resource-watch.py --once --no-webhook   # no --clean
-bash /Users/jay/apps/mac-auto-cleanup.sh --pressure
+python3 ~/apps/mac-resource-watch.py --once --no-webhook   # no --clean
+bash ~/apps/mac-auto-cleanup.sh --pressure
 bash "<the janitor script path>"   # exact path: the operator's private inventory on that Mac
 cleanmymac clean --force
 ```
@@ -106,7 +108,7 @@ These are the live defaults for the resource-watch job (every 5 min):
 
 These are the live defaults in the resource-watch script: `RESOURCE_DISK_WARN_GB`, `RESOURCE_DISK_CRIT_GB`, `RESOURCE_DISK_DROP_GB`, `RESOURCE_SWAP_USED_PCT`, `RESOURCE_SWAP_USED_GB`, `RESOURCE_LOAD1`.  They were retuned down deliberately: the old 80G warn line ran `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three runs ended with **less** free disk than they started.  The reclaim engine's bands are separate and live in the reclaim engine's own policy file (its path is in the operator's private inventory on that Mac): healthy at 80G free, acute below 40G, critical below 25G.
 
-The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 4h for the webhook, 2h between cleanup runs, 30m when the disk is critical.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook`: read the process environment first when it already holds the value, and `fleet-secrets get` only as the fallback, never print either one.
+The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 4h for the webhook, 2h between cleanup runs, 30m when the disk is critical.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook`: read the process environment first when it already holds the value, then the consumer's own scoped service token (the Mac login keychain item `infisical-service-token` / `mac-resource-watch-ro`), and never print either one.  There is no `fleet-secrets` fallback on that path: a missing item, a locked keychain, or a refused read means no webhook at all, and never another credential.  `service-tokens` carries the token's lifecycle, and the registry row says which grant this is.
 
 ## BotFleet Housekeeper
 
@@ -131,7 +133,7 @@ python3 ~/apps/grok-acp-runtime/grok-drive.py --help
 
 Or hop via the fleet MCP gateway (`drive-grok-tui` skill; URL in `docs/RECALL-ACCESS-CHECK.md`) and inject:
 
-`Run python3 /Users/jay/apps/mac-resource-watch.py --once then report disk free, swap, load, and what cleanup did.`
+`Run python3 ~/apps/mac-resource-watch.py --once then report disk free, swap, load, and what cleanup did.`
 
 Do not skip that hop and invent a cloud-side `du`.
 

@@ -45,8 +45,9 @@ the acting seat from the authenticated gateway connection, never tool arguments.
 - Token/bot/account/admin management, team mutations and skill installation are
   not exposed through the fleet gateway. Fleet-bearer mode refuses these rather
   than borrowing provider/admin credentials. An explicit human/operator session
-  remains a separate path. Without the new option, legacy behavior is unchanged;
-  runtime launchers have not been switched by this PR.
+  remains a separate path. Off a Mac, that option later became the default:  a caller's notes action
+  now always runs as the calling bot's own bearer (the explicit file, else that seat's own
+  conventional file), and the shared service credential is backend-only.
 
 ## Coordinated release gates
 

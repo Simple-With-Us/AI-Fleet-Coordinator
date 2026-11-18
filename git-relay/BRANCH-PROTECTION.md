@@ -1,3 +1,5 @@
+> Design proposal only, not implemented or deployed. These verb names are not grants. Current source intentionally keeps them out of seat policy until typed implementations, exact-scope minting and tests exist. Generic administration write-token minting stays forbidden.
+
 # Classic branch protection GitHub commands
 
 Default-off own-App classic branch protection read, full-replace update and

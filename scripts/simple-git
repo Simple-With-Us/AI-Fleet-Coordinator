@@ -26,12 +26,13 @@ if not os.path.isfile(IMPL):
     sys.stderr.write("git tools CLI: %s is missing\n" % IMPL)
     sys.exit(1)
 
-# simple-git never runs the host seat-remote-defaults helper.  Every CLI user supplies their OWN bearer
-# (SIMPLE_TOOLS_BEARER for automation, or the implementation's hidden terminal prompt), and the server
-# decides identity and permissions from that bearer - there is no seat credential here to place, gate or
-# read.  A declared AGENT_SEAT / AGENT_TAG / launcher seat still passes through untouched:  the
-# implementation asserts it against the seat the server reports for the user's own bearer and refuses a
-# mismatch.  The helper stays installed for the other fleet tools that use it.
+# This entry file never runs the host seat-remote-defaults helper and has no seat credential to place, gate
+# or read.  Every CLI user still supplies their OWN bearer (SIMPLE_TOOLS_BEARER for automation, or the
+# implementation's hidden terminal prompt), and the server decides identity and permissions from it.  On a
+# host that has the helper, the managed `simple-git` command wrapper (scripts/fleet-cli-release.py,
+# HELPER_COMMANDS) runs the helper BEFORE this file:  a process that declares a seat gets that seat's own
+# bearer there, an undeclared one gets nothing.  A declared AGENT_SEAT / AGENT_TAG / launcher seat is then
+# asserted by the implementation against the seat the server reports for the bearer, and a mismatch is refused.
 with open(IMPL, "rb") as handle:
     code = compile(handle.read(), IMPL, "exec")
 exec(code, {"__name__": "__main__", "__file__": IMPL})

@@ -1,20 +1,60 @@
+import AppKit
 import SwiftUI
 
 @main
 struct MusterApp: App {
+    @NSApplicationDelegateAdaptor(AppIconFollower.self) private var appIconFollower
     @StateObject private var store: FleetStore
     @StateObject private var monitor: DriftMonitor
     @StateObject private var admin: FleetAdmin
+    @StateObject private var router: ServiceActionRouter
+    @StateObject private var reconciler: ServiceReconciler
+    @StateObject private var watch: PlaceWatch
 
+    @MainActor
     init() {
+        // Before the window opens:  forget any split-view column frame saved taller than its
+        // window.  Older builds most likely saved such frames while the window overflowed
+        // (AFC-616);  they were most likely a consequence, not the cause, and this only
+        // clears them
+        // (MusterWindowLayout.oversizedSplitViewFrameKeys).
+        MusterWindowLayout.forgetOversizedSplitViewFrames(
+            in: .standard, screenHeight: NSScreen.screens.map(\.frame.height).max())
         // The owner is asked once,  here,  whether this app may notify them.  An
         // apply that asked on its own path would hold its result until the
         // prompt was answered.
         SystemApplyNotifier.requestPermissionOnce()
+        // The Seats panel reads Zulip only as the Operator (AFC-654):  a seat saved by an
+        // older build is not read,  and is removed so it cannot look like a choice.
+        MusterSettings.removeRetiredZulipSeat()
         let store = FleetStore()
+        // The monitor starts here and not with a window:  the menu bar item has to know the
+        // Mac before any window has appeared,  and the store's first run is still in flight
+        // at this point,  so the monitor hears it land.
+        let monitor = DriftMonitor(grid: store)
+        monitor.start()
+        // The owner's stops are kept in a file,  so Muster never starts a service the owner
+        // stopped,  even after Muster quits and comes back.
+        let admin = FleetAdmin(ownerStopStore: OwnerStopFile())
         _store = StateObject(wrappedValue: store)
-        _monitor = StateObject(wrappedValue: DriftMonitor(grid: store))
-        _admin = StateObject(wrappedValue: FleetAdmin())
+        _monitor = StateObject(wrappedValue: monitor)
+        _admin = StateObject(wrappedValue: admin)
+        let router = ServiceActionRouter(admin: admin, confirm: { request in
+            confirmFleetAction(request)
+        })
+        _router = StateObject(wrappedValue: router)
+        // Updates arrive through Sparkle,  and the install waits while any action runs.
+        AppUpdater.shared.start(router: router, admin: admin)
+        // Muster starts the Mac's services again when they stop,  only while it runs,  and the
+        // setting above turns it off.
+        let reconciler = ServiceReconciler.live(admin: admin, router: router, controller: OpsController.shared)
+        _reconciler = StateObject(wrappedValue: reconciler)
+        _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
+            Task { await admin.refresh() }
+            // The engine's run after a wake belongs to the drift monitor (GRID-33):  it waits
+            // DriftMonitor.wakeRunDelay for the network,  skips the run when one after the wake
+            // already covers it,  and never starts a second run while one is in flight.
+        }))
     }
 
     var body: some Scene {
@@ -23,93 +63,146 @@ struct MusterApp: App {
                 .environmentObject(store)
                 .environmentObject(monitor)
                 .environmentObject(admin)
-                .task { monitor.start() }
+                .environmentObject(router)
+                // The window reads the same places the menu does,  so the two cannot disagree.
+                .environmentObject(watch)
         }
-        .defaultSize(width: 1080, height: 820)
+        .defaultSize(width: 1160, height: 760)
+        // The window may be as small as the root's minimum and no smaller.  This is a
+        // WindowGroup's default, written out so it is visible.  The root's own min/max frame
+        // (musterWindowSize) sets that minimum, whatever the panel inside it asks for.
+        .windowResizability(.contentMinSize)
+        // One window:  the menu brings it forward,  and a second copy would show every
+        // plan sheet twice.
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
+            GoCommands()
+        }
 
+        // Settings keeps Apple's default, `.contentSize`, so the window should be the size of
+        // its fixed-size panes and not resizable (not measured on a real Mac;  a source
+        // guard in MusterSettingsLayoutTests keeps this scene free of `windowResizability`).
         Settings {
             MusterSettingsView()
                 .environmentObject(store)
         }
-        .windowResizability(.contentMinSize)
 
-        // The menubar item carries the red count,  so the owner sees how many cells
-        // are red without opening the window.
+        // The menu bar item names both places,  so the owner sees what needs attention and
+        // where without opening the window.
         MenuBarExtra {
             DriftMenuBarContent()
                 .environmentObject(store)
                 .environmentObject(monitor)
                 .environmentObject(admin)
+                .environmentObject(watch)
+                .environmentObject(router)
         } label: {
             DriftMenuBarLabel()
                 .environmentObject(monitor)
+                .environmentObject(admin)
+                .environmentObject(watch)
+                .environmentObject(router)
         }
     }
 }
 
-/// The app's Settings scene: the places on disk and the seat it reads Zulip as.
-struct MusterSettingsView: View {
-    @EnvironmentObject private var store: FleetStore
-    @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
-    @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
-    @AppStorage(MusterSettings.zulipSeatDefaultsKey) private var zulipSeat = MusterSettings.defaultZulipSeat
-    @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
-    @State private var pickingRepoRoot = false
-    @State private var pickingScriptsDir = false
+/// The Go menu:  Quick Open with Command-K, and each panel with its Command-digit.
+///
+/// A panel is chosen by writing the saved place, which the window follows, as the menu bar
+/// item does, so the menu works with the window closed.
+struct GoCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @FocusedBinding(\.quickOpenShown) private var quickOpenShown: Bool?
 
-    private var seatChoices: [String] {
-        var seats = store.roster
-        for seat in [zulipSeat, MusterSettings.defaultZulipSeat] where !seat.isEmpty && !seats.contains(seat) {
-            seats.append(seat)
+    var body: some Commands {
+        CommandMenu("Go") {
+            Button("Quick Open\u{2026}") {
+                // A window takes one sheet at a time, so Command-K waits for the one that is up.
+                guard !MusterWindow.hasSheet else { return }
+                quickOpenShown = true
+            }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(quickOpenShown == nil)
+            Divider()
+            ForEach(MusterDestination.allCases) { destination in
+                GoMenuItem(destination: destination, openWindow: openWindow)
+            }
         }
-        return seats.isEmpty ? [MusterSettings.defaultZulipSeat] : seats
     }
+}
+
+/// One panel in the Go menu, with its shortcut when it has one.
+private struct GoMenuItem: View {
+    let destination: MusterDestination
+    let openWindow: OpenWindowAction
 
     var body: some View {
-        Form {
-            Section("Fleet-Config Repository") {
-                HStack {
-                    TextField("Repository Root", text: $repoRoot)
-                        .font(.system(size: 11, design: .monospaced))
-                    Button("Choose\u{2026}") { pickingRepoRoot = true }
-                }
-                Text("Saved as \(MusterSettings.repoRootDefaultsKey), the key FleetConfigLocation reads.\u{00A0} The MUSTER_REPO_ROOT environment variable is read only when nothing is saved.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Scripts Directory") {
-                HStack {
-                    TextField("Scripts Directory", text: $scriptsDir)
-                        .font(.system(size: 11, design: .monospaced))
-                    Button("Choose\u{2026}") { pickingScriptsDir = true }
-                }
-                Text("Saved as \(MusterSettings.scriptsDirectoryDefaultsKey).\u{00A0} MUSTER_SCRIPTS_DIR, when set, still wins over the saved folder.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Zulip") {
-                Picker("Seat To Read As", selection: $zulipSeat) {
-                    ForEach(seatChoices, id: \.self) { seat in Text(seat).tag(seat) }
-                }
-                Text("Saved as \(MusterSettings.zulipSeatDefaultsKey).\u{00A0} MUSTER_ZULIP_SEAT, when set, still wins over the saved seat.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Appearance") {
-                Picker("Theme", selection: $theme) {
-                    ForEach(ThemeChoice.allCases) { choice in Text(choice.title).tag(choice) }
-                }
-                .pickerStyle(.segmented)
-            }
+        if let digit = destination.shortcutDigit {
+            button.keyboardShortcut(KeyEquivalent(Character("\(digit)")), modifiers: .command)
+        } else {
+            button
         }
-        .formStyle(.grouped)
-        // The Settings window follows the same stored theme as the main
-        // window;  without this it stayed on the system scheme while Dark
-        // was chosen (AFC-592).
+    }
+
+    private var button: some View {
+        Button(destination.title) {
+            // The sheet guard is in MusterWindow.show, so this menu and the menu bar item agree.
+            MusterWindow.show(destination, openWindow: openWindow)
+        }
+    }
+}
+
+/// The app's Settings scene:  four panes of one fixed size,  so the window (which Settings
+/// sizes to its content) fits a short screen and nothing hides below an unseen scroller.
+/// Zulip has no seat to choose:  the Seats panel reads only as the Operator (AFC-654).
+struct MusterSettingsView: View {
+    @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
+    @AppStorage(MusterSettings.shortMenuBarTextDefaultsKey) private var shortMenuBarText = false
+    @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
+
+    var body: some View {
+        TabView {
+            MusterFoldersTab()
+                .tabItem { Label("Folders", systemImage: "folder") }
+            MusterZulipServicesPane(keepServicesRunning: $keepServicesRunning)
+                .tabItem { Label("Zulip And Services", systemImage: "bubble.left.and.text.bubble.right") }
+            MusterAppearancePane(theme: $theme, shortMenuBarText: $shortMenuBarText)
+                .tabItem { Label("Appearance", systemImage: "paintbrush") }
+            MusterSettingsPane { BuildIdentitySettingsSection() }
+                .tabItem { Label("This Build", systemImage: "info.circle") }
+        }
+        // The Settings window follows the same stored theme as the main window (AFC-592).
         .preferredColorScheme(theme.colorScheme)
-        .frame(width: 520)
-        .fileImporter(isPresented: $pickingRepoRoot, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { repoRoot = url.path }
-        }
-        .fileImporter(isPresented: $pickingScriptsDir, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { scriptsDir = url.path }
-        }
+    }
+}
+
+/// The Folders tab.  It is its own view, with no store, so a store refresh never runs the
+/// folder checks again:  they run when the tab is built and when a folder setting changes.
+/// The checks are a few file-existence stats on the local disk.
+struct MusterFoldersTab: View {
+    @AppStorage(MusterSettings.repoRootDefaultsKey) private var repoRoot = ""
+    @AppStorage(MusterSettings.scriptsDirectoryDefaultsKey) private var scriptsDir = ""
+
+    var body: some View {
+        // Read here so the tab is rebuilt when a folder is chosen or reset:  the resolvers
+        // below read the same defaults these properties write.
+        let _ = (repoRoot, scriptsDir)
+        MusterFoldersPane(
+            checkout: SettingsCopy.checkoutRow(FleetConfigLocation.resolveWithSource(),
+                                               engineRoot: EngineLocator.locate()?.root),
+            scripts: SettingsCopy.scriptsRow(FleetViewService.resolveScripts()),
+            choose: { folder, path in
+                switch folder {
+                case .checkout: repoRoot = path
+                case .scripts: scriptsDir = path
+                }
+            },
+            useDefault: { folder in
+                switch folder {
+                case .checkout: repoRoot = ""
+                case .scripts: scriptsDir = ""
+                }
+            })
     }
 }

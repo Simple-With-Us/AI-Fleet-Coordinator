@@ -1,5 +1,6 @@
 """Release only reviewed alert Workers after successful exact-main CI."""
 
+import datetime
 import glob
 import importlib.util
 import json
@@ -8,6 +9,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -15,57 +17,57 @@ import urllib.request
 spec = importlib.util.spec_from_file_location("mapped", "scripts/deploy-mapped-worker.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+# scripts/worker-targets.json is the one mapping; a Worker belongs to one pipeline.
 TARGETS = {
-    "alert-ingress": {
-        "root": "workers/alert-ingress/",
-        "config": "workers/alert-ingress/wrangler.toml",
-        "health": "https://alert-ingress.jays-services.workers.dev/health",
-        "ok": True,
-    },
-    "pr-conflict-watch": {
-        "root": "workers/pr-conflict-watch/zulip-cutover/",
-        "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
-        "health": "https://pr-conflict-watch.jays-services.workers.dev/health",
-        "text": "ok",
-    },
+    name: target
+    for name, target in m.TARGETS.items()
+    if target["deployer"] == "alert-workers-deploy"
 }
 
+# A commit in these needs a qualified review before a target release may ship it.
+# They do not by themselves make a target change: that is each target's own "paths".
 RELEASE_PATHS = [
     "scripts/deploy-alert-workers.py",
     "scripts/deploy-mapped-worker.py",
     "scripts/worker-targets.json",
     "scripts/infisical-fetch.mjs",
-    "scripts/agent-sync-mcp/package.json",
-    "scripts/agent-sync-mcp/package-lock.json",
+    "scripts/simple-tools-mcp/package.json",
+    "scripts/simple-tools-mcp/package-lock.json",
     ".github/workflows/alert-workers-deploy.yml",
     "docs/releases/alert-credentials-qualified.json",
 ]
 
+# What a credential qualification actually proved: how the workflow delivers the
+# credential and reads with it.  The rest of the release source (a lockfile, an
+# action bump, a target list) has no bearing on that proof and is covered by the
+# per-commit review gate instead, so it must not void a receipt.
+CREDENTIAL_WORKFLOW = ".github/workflows/alert-workers-deploy.yml"
+CREDENTIAL_STEPS = (
+    "Load existing scoped release credential",
+    "Qualify existing credential delivery without deployment",
+)
+CREDENTIAL_PATHS = ["scripts/infisical-fetch.mjs"]
+# Bumped when the receipt's meaning changes, so an older receipt cannot arm a release.
+RECEIPT_GATE = 2
+
+# Paths whose merge must still be Kody-qualified before an alert-worker release. The
+# deploy tooling's package.json and lockfile stay in: `wrangler deploy` runs from the
+# lockfile installed on the workflow head, so dependency bumps need the same review.
+RELEASE_REVIEW_PATHS = [
+    path for path in RELEASE_PATHS if path != "docs/releases/alert-credentials-qualified.json"
+]
+
+KODY_CHECK_NAME = "Kody Code Review"
+KODY_APP_SLUG = "kody-ai"
+# Stable numeric id behind the slug (slugs can be renamed, ids cannot), matching
+# the auto-merge receipt contract's kody_app_id default.
+KODY_APP_ID = 413034
+KODY_CHECK_TITLE = "Code Review Complete"
+KODY_CHECK_SUMMARY_PREFIX = "Review finished successfully"
+
 
 def git(*args):
     return subprocess.check_output(["git", *args], text=True, timeout=30).strip()
-
-
-def cutover_receipt():
-    path = pathlib.Path("docs/releases/pr-conflict-zulip-verified.json")
-    if not path.exists():
-        return False
-    receipt = json.loads(path.read_text())
-    if receipt.get("sender_id") != 1212033 or receipt.get("channel_id") != 642233:
-        raise RuntimeError("Wrong cutover sender or audience")
-    if not re.fullmatch(r"[0-9a-f]{40}", receipt.get("source_sha", "")) or not receipt.get(
-        "version_id"
-    ):
-        raise RuntimeError("Missing exact cutover release receipt")
-    if (
-        not isinstance(receipt.get("message_id"), int)
-        or receipt["message_id"] <= 0
-        or not receipt.get("message_url", "").startswith("https://simplewithus.zulipchat.com/")
-    ):
-        raise RuntimeError("Missing verified first real Zulip delivery")
-    if receipt.get("real_conflict_event") is not True:
-        raise RuntimeError("Synthetic alerts cannot qualify the cutover")
-    return True
 
 
 def preflight_config(target, settings):
@@ -84,6 +86,9 @@ def preflight_config(target, settings):
             raise RuntimeError("Durable Object binding change requires manual reconciliation")
     if config.get("routes") or config.get("route"):
         raise RuntimeError("Route configuration is outside this code-only release")
+    dropped = m.dropped_limits(settings.get("limits"), config.get("limits"))
+    if dropped:
+        raise RuntimeError("Release would drop live limits: " + ", ".join(dropped))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -91,7 +96,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request_json(url, token, data=None):
+def request_json(url, token, data=None, timeout=30):
     req = urllib.request.Request(
         url,
         data=data,
@@ -102,20 +107,53 @@ def request_json(url, token, data=None):
             "User-Agent": m.USER_AGENT,
         },
     )
-    with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
-        if 300 <= response.status < 400:
-            raise RuntimeError("Redirect not allowed")
-        return json.load(response)
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
+            if 300 <= response.status < 400:
+                raise RuntimeError("Redirect not allowed")
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        # Shared by GitHub and Cloudflare calls; name the URL, not a provider.
+        raise RuntimeError("HTTP " + str(exc.code) + " for " + url) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Request failed for " + url + ": " + str(exc.reason)) from exc
 
 
-def github(path):
+def github(path, timeout=30):
     body = request_json(
         "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
         os.environ["GH_TOKEN"],
+        timeout=timeout,
     )
     if isinstance(body, dict) and "message" in body:
         raise RuntimeError("GitHub read rejected")
     return body
+
+
+# A page shorter than the page size is the last one; the cap keeps the
+# evidence bounded so an endless stream still fails closed instead of
+# hanging the gate.
+def github_paginated(path, message, cap_pages=10, budget_seconds=60):
+    items = []
+    separator = "&" if "?" in path else "?"
+    page = 1
+    # One absolute deadline for the whole walk: every page shares it, so a
+    # slow or endless stream still exhausts the budget and fails closed
+    # instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + budget_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(message)
+        body = github(path + separator + "per_page=100&page=" + str(page), timeout=remaining)
+        if not isinstance(body, list):
+            raise RuntimeError("Unexpected GitHub list evidence")
+        items.extend(body)
+        if len(body) < 100:
+            return items
+        page += 1
+        if page > cap_pages:
+            raise RuntimeError(message)
 
 
 def cloudflare(path):
@@ -133,21 +171,202 @@ def current_main():
 
 
 def deployed_tag(name):
-    deployments = cloudflare("/workers/scripts/" + name + "/deployments")["deployments"]
-    if not deployments:
+    return m.deployed_tag(name, cloudflare)
+
+
+def guard_tripped(name):
+    return m.guard_tripped(name, cloudflare)
+
+
+# Canonical trigger shape, mirrored from .github/workflows/auto-merge-reusable.yml:
+# tabs and repeated spaces between the mention and the verb still count as requests.
+REVIEW_REQUEST_PATTERN = r"^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)"
+
+# One check-run fetch per head per gate run: reviewed() can ask for the same
+# head through several candidate PRs, and each fetch is an authenticated call.
+_check_run_cache = {}
+
+# Same for review-request history: reviewed() consults it for the
+# review-object branch and kody_check_receipt() for the check-run receipt.
+_review_request_cache = {}
+
+
+def _epoch(value):
+    """Parse a GitHub timestamp to epoch seconds, or None for a missing or invalid value.
+
+    Lexical string comparison misorders fractional seconds ("...:00.5Z" sorts
+    before "...:00Z"), so every freshness and ordering comparison parses first.
+    """
+    if not isinstance(value, str):
         return None
-    versions = deployments[0].get("versions", [])
-    if len(versions) != 1 or versions[0].get("percentage") != 100:
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
         return None
-    version = cloudflare("/workers/scripts/" + name + "/versions/" + versions[0]["version_id"])
-    return (version.get("annotations") or {}).get("workers/tag")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.timestamp()
+
+
+def _kody_run_pending(runs, head_sha):
+    """Any Kody-owned run still queued or in progress on the head.
+
+    The mirrored auto-merge contract blocks qualification while any such run
+    exists, regardless of when it started, so both acceptance routes consult
+    this before qualifying.
+    """
+    return any(
+        isinstance(run, dict)
+        and run.get("name") == KODY_CHECK_NAME
+        and isinstance(run.get("app"), dict)
+        and run["app"].get("id") == KODY_APP_ID
+        and run.get("head_sha") == head_sha
+        and run.get("status") in ("queued", "in_progress")
+        for run in runs
+    )
+
+
+def _check_runs_for(head_sha):
+    """Kody-named check runs on the head, or None when evidence is unavailable.
+
+    The mirrored auto-merge contract filters server-side by check name and
+    paginates: an unfiltered first page can truncate the Kody runs out of a
+    busy commit's listing.  Any lookup or evidence failure for one head is no
+    evidence for that head - it fails the head closed on both acceptance
+    routes, without aborting qualification of the commit's other candidate
+    PRs.
+    """
+    if head_sha in _check_run_cache:
+        return _check_run_cache[head_sha]
+    runs = []
+    page = 1
+    # One absolute deadline for the whole walk, matching github_paginated:
+    # every page shares the remaining budget, so a slow or endless stream
+    # fails closed instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + 60
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
+            body = github(
+                "/commits/"
+                + head_sha
+                + "/check-runs?per_page=100&check_name="
+                + urllib.parse.quote(KODY_CHECK_NAME)
+                + "&page="
+                + str(page),
+                timeout=remaining,
+            )
+            if not isinstance(body, dict):
+                raise RuntimeError("check-runs evidence is not an object")
+            batch = body.get("check_runs")
+            if not isinstance(batch, list) or not all(
+                isinstance(run, dict) for run in batch
+            ):
+                raise RuntimeError("check-runs evidence is not shaped entries")
+            runs.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 10:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
+    except (RuntimeError, OSError, ValueError):
+        # A failed, malformed, non-JSON or oversized lookup proves nothing
+        # about pending runs: the head cannot qualify on either route, but
+        # the release gate's other candidate PRs are unaffected.
+        _check_run_cache[head_sha] = None
+        return None
+    _check_run_cache[head_sha] = runs
+    return runs
+
+
+def _newest_review_request(number):
+    """Newest manual review-request timestamp on the PR, or None in auto mode."""
+    if number in _review_request_cache:
+        return _review_request_cache[number]
+    comments = github_paginated(
+        "/issues/" + str(number) + "/comments",
+        "Review-request history exceeds bounded page limit",
+    )
+    newest = None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise RuntimeError("Invalid review-request evidence")
+        # Canonical parity: the auto-merge receipt contract counts EVERY issue
+        # comment carrying the invocation on its own line, with no author
+        # filter (.github/workflows/auto-merge-reusable.yml request flag), so
+        # this script applies none either. A spurious match only resets
+        # freshness and delays qualification - the fail-safe direction.
+        body = comment.get("body")
+        created = comment.get("created_at")
+        # Only a line whose stripped form STARTS with the invocation counts as
+        # a request: quoted or mid-sentence mentions must not reset freshness,
+        # while a legitimate invocation on its own line still matches
+        # case-insensitively.
+        if isinstance(body, str) and any(
+            re.match(REVIEW_REQUEST_PATTERN, line.strip(), re.IGNORECASE)
+            for line in body.split("\n")
+        ):
+            epoch = _epoch(created)
+            if epoch is None:
+                raise RuntimeError("Invalid review-request evidence")
+            if newest is None or epoch > newest:
+                newest = epoch
+    _review_request_cache[number] = newest
+    return newest
+
+
+def kody_check_receipt(head_sha, number=None):
+    """A completed Kody check on the PR head, when manual mode leaves no PR review object.
+
+    Freshness follows the auto-merge receipt contract: the numeric app id (not
+    only the renamable slug) must own the check, and after a manual review
+    request the check must have started at or after the newest request, so a
+    stale success cannot qualify a head whose re-review is queued or failed.
+    """
+    runs = _check_runs_for(head_sha)
+    if runs is None:
+        return False
+    # A Kody-owned run still queued or in progress on this head supersedes any
+    # completed success, whenever it started; qualification waits for it.
+    if _kody_run_pending(runs, head_sha):
+        return False
+    requested = _newest_review_request(number) if number is not None else None
+    for run in runs:
+        app = run.get("app") if isinstance(run.get("app"), dict) else {}
+        output = run.get("output") if isinstance(run.get("output"), dict) else {}
+        title = output.get("title") or ""
+        summary = output.get("summary") or ""
+        started = _epoch(run.get("started_at"))
+        completed = _epoch(run.get("completed_at"))
+        if (
+            run.get("name") == KODY_CHECK_NAME
+            and app.get("slug") == KODY_APP_SLUG
+            and app.get("id") == KODY_APP_ID
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and title == KODY_CHECK_TITLE
+            and summary.startswith(KODY_CHECK_SUMMARY_PREFIX)
+            and run.get("head_sha") == head_sha
+            and started is not None
+            and completed is not None
+            and completed >= started
+            and (requested is None or started >= requested)
+        ):
+            return True
+    return False
 
 
 def outstanding_requests(reviews):
     # COMMENTED does not clear a formal request. Only a later decisive review
     # by that same reviewer supersedes its prior decision; never mutate history.
     decisions = {}
-    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    decisive = [
+        r
+        for r in reviews
+        if isinstance(r, dict) and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
+    ]
     if any(type(r.get("id")) is not int for r in decisive):
         raise RuntimeError("Missing formal review sequence")
     for review in sorted(decisive, key=lambda r: r["id"]):
@@ -163,32 +382,60 @@ def outstanding_requests(reviews):
 
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
-    prs = github("/commits/" + sha + "/pulls")
-    if len(prs) >= 30:
-        raise RuntimeError("Incomplete commit PR association evidence")
+    prs = github_paginated(
+        "/commits/" + sha + "/pulls", "Commit PR association evidence exceeds bounded page limit"
+    )
     for pr in prs:
         if not pr.get("merged_at") or pr.get("draft") or pr.get("merge_commit_sha") != sha:
             continue
         number = str(pr["number"])
-        reviews = github("/pulls/" + number + "/reviews?per_page=100")
-        if len(reviews) >= 100:
-            raise RuntimeError("Review pagination needs explicit resolution")
+        reviews = github_paginated(
+            "/pulls/" + number + "/reviews", "Review evidence exceeds bounded page limit"
+        )
         if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
-        qualified = [
+        head = pr.get("head", {}).get("sha")
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            continue
+        # Only fully shaped review objects are evidence: a malformed entry is
+        # not a candidate (and never crashes the gate), while well-formed
+        # candidates are unaffected.
+        candidates = [
             r
             for r in reviews
-            if isinstance(r.get("user"), dict)
-            and r["user"].get("login") == "kody-ai[bot]"
+            if isinstance(r, dict)
+            and type(r.get("id")) is int
+            and isinstance(r.get("user"), dict)
+            and type(r["user"].get("id")) is int
+            and r["user"].get("login") == KODY_APP_SLUG + "[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
+            and isinstance(r.get("commit_id"), str)
         ]
-        # COMMENTED is a completed substantive Kody review, not an issue comment.
-        # The owner permits reviewed source with findings appropriately resolved.
-        # Review must cover the actual composition, not any older review on the PR.
-        if not qualified:
-            continue
-        head = pr["head"]["sha"]
-        if not any(r.get("commit_id") == head for r in qualified):
+        matching = [r for r in candidates if r["commit_id"] == head]
+        if matching:
+            # A review predating the newest review request is stale: only
+            # reviews submitted at or after it qualify, matching the
+            # freshness rule in the check-run receipt branch.
+            requested = _newest_review_request(number)
+            fresh = [
+                r
+                for r in matching
+                if requested is None
+                or (
+                    _epoch(r.get("submitted_at")) is not None
+                    and _epoch(r.get("submitted_at")) >= requested
+                )
+            ]
+            # The review-object path is blocked by a pending Kody run exactly
+            # like the receipt path; an unavailable check-run list proves
+            # nothing, so it cannot qualify either.
+            runs = _check_runs_for(head)
+            kody_qualified = (
+                bool(fresh) and runs is not None and not _kody_run_pending(runs, head)
+            ) or kody_check_receipt(head, number)
+        else:
+            kody_qualified = kody_check_receipt(head, number)
+        if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.
         owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
@@ -206,7 +453,7 @@ def reviewed(sha):
         if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"]):
             raise RuntimeError("Unresolved or incomplete review thread evidence")
         return
-    raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR")
+    raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR: " + sha)
 
 
 def probe(target):
@@ -230,13 +477,62 @@ def qualify_credentials():
         raise RuntimeError("Existing release credential delivery missing")
     current_main()
     for name, target in TARGETS.items():
+        # A receipt is accepted as proof the credential reads the live targets, so this read
+        # must succeed for a stopped Worker too.
         settings = cloudflare("/workers/scripts/" + name + "/settings")
-        preflight_config(target, settings)
-        tag = deployed_tag(name)
-        if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
-            raise RuntimeError("Missing qualified live version baseline")
+        stopped = guard_tripped(name)
+        # This step runs before the release step on every trigger, so failing here stops the
+        # other target's release as well.  A stopped Worker is not released, so its release
+        # preconditions cannot do that, and it fails its probe by design.  The release step
+        # still refuses it and fails the run.
+        try:
+            preflight_config(target, settings)
+            tag = deployed_tag(name)
+            if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
+                raise RuntimeError("Missing qualified live version baseline")
+            # Bounded live-state evidence for release review: the exact
+            # deployed ref per target - worker name and commit sha only, the
+            # same value a real release prints in its verification line.
+            print("Baseline: " + name + " " + tag)
+        except (RuntimeError, OSError, KeyError, ValueError):
+            if not stopped:
+                raise
+            print("Stopped by the budget guard; release preconditions unproven: " + name)
+            continue
+        if stopped:
+            print("Stopped by the budget guard; probe skipped: " + name)
+            continue
         probe(target)
     print("Existing credential delivery and scoped live reads qualified; no deployment")
+
+
+def workflow_credential_steps(text):
+    """The text of the workflow steps that deliver and qualify the credential."""
+    lines = text.splitlines()
+    blocks = []
+    for name in CREDENTIAL_STEPS:
+        starts = [i for i, line in enumerate(lines) if line.strip() == "- name: " + name]
+        if len(starts) != 1:
+            raise RuntimeError("Credential step not found: " + name)
+        indent = len(lines[starts[0]]) - len(lines[starts[0]].lstrip())
+        block = [lines[starts[0]]]
+        for line in lines[starts[0] + 1 :]:
+            depth = len(line) - len(line.lstrip())
+            if line.strip() and depth <= indent:
+                break
+            block.append(line)
+        blocks.append("\n".join(block).rstrip())
+    return blocks
+
+
+def credential_source_changed(source):
+    # A credential-unrelated edit keeps the proof; a change to how the credential is
+    # fetched, scoped or qualified voids it until a new nondeployment run is recorded.
+    if git("diff", "--name-only", source, "HEAD", "--", *CREDENTIAL_PATHS):
+        return True
+    qualified = git("show", source + ":" + CREDENTIAL_WORKFLOW)
+    current = git("show", "HEAD:" + CREDENTIAL_WORKFLOW)
+    return workflow_credential_steps(qualified) != workflow_credential_steps(current)
 
 
 def credential_receipt():
@@ -248,6 +544,8 @@ def credential_receipt():
     source = receipt.get("source_sha", "")
     if type(run_id) is not int or run_id <= 0 or not re.fullmatch(r"[0-9a-f]{40}", source):
         raise RuntimeError("Invalid credential qualification receipt")
+    if receipt.get("gate") != RECEIPT_GATE:
+        raise RuntimeError("Credential qualification receipt predates this gate; record a new one")
     run = github("/actions/runs/" + str(run_id))
     if (
         receipt.get("nondeployment") is not True
@@ -281,26 +579,22 @@ def credential_receipt():
         or release[0].get("conclusion") != "skipped"
     ):
         raise RuntimeError("Run did not prove nondeployment qualification")
-    # Receipt itself arrives in a separately reviewed follow-up; executable source must match.
-    if git(
-        "diff",
-        "--name-only",
-        source,
-        "HEAD",
-        "--",
-        *[p for p in RELEASE_PATHS if p != "docs/releases/alert-credentials-qualified.json"],
-    ):
+    # Receipt itself arrives in a separately reviewed follow-up; the source that
+    # delivers the credential must still match what the receipt qualified.
+    if credential_source_changed(source):
         raise RuntimeError("Credential qualification source changed")
     return True
 
 
 def main():
-    if not credential_receipt():
-        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
     if current_main() != sha:
+        # A superseded run has nothing to deploy; it must exit cleanly even when
+        # the checkout predates a valid credential receipt.
         print("Superseded")
         return
+    if not credential_receipt():
+        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     runs = github(
         "/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100"
     )["workflow_runs"]
@@ -309,31 +603,20 @@ def main():
         for r in runs
     ):
         raise RuntimeError("Exact-main CI has not passed")
+    tripped = []
     for name, target in TARGETS.items():
-        # An uncut-over target must not block the independent ingress release.
-        if name == "pr-conflict-watch" and not cutover_receipt():
-            print("Awaiting first verified real Zulip delivery; skipping " + name)
+        # Never reconcile over the budget guard, and let the other target proceed.
+        if guard_tripped(name):
+            print("Stopped by the budget guard; re-arm by hand: " + name)
+            tripped.append(name)
             continue
         live = deployed_tag(name)
         if not isinstance(live, str) or not re.fullmatch(r"[0-9a-f]{40}", live):
             raise RuntimeError("No exact release baseline for " + name)
         subprocess.run(["git", "cat-file", "-e", live + "^{commit}"], check=True, timeout=300)
-        changed = subprocess.check_output(
-            [
-                "git",
-                "diff",
-                "--name-only",
-                live,
-                sha,
-                "--",
-                target["root"],
-                *RELEASE_PATHS,
-                "docs/releases/pr-conflict-zulip-verified.json",
-            ],
-            text=True,
-            timeout=30,
-        ).splitlines()
-        if not changed:
+        # Only this Worker's own files make it a release: a redeploy restarts its
+        # Durable Object, so an unrelated merge must leave it alone.
+        if not m.worker_changed(live, sha, target):
             probe(target)
             continue
         subprocess.run(["git", "merge-base", "--is-ancestor", live, sha], check=True, timeout=300)
@@ -347,8 +630,7 @@ def main():
                 live + ".." + sha,
                 "--",
                 target["root"],
-                *RELEASE_PATHS,
-                "docs/releases/pr-conflict-zulip-verified.json",
+                *RELEASE_REVIEW_PATHS,
             ],
             text=True,
             timeout=30,
@@ -359,49 +641,24 @@ def main():
             raise RuntimeError("Release range exceeds bounded review limit")
         for commit in commits:
             reviewed(commit)
-        # Initial cutover is manual and verified first. Automated code releases
-        # cannot provision delivery credentials or reintroduce Slack.
+        # Automated code releases cannot provision bindings: see preflight_config.
         settings = cloudflare("/workers/scripts/" + name + "/settings")
         preflight_config(target, settings)
-        if name == "pr-conflict-watch":
-            names = {b["name"] for b in settings.get("bindings", [])}
-            required = {
-                "GITHUB_WEBHOOK_SECRET",
-                "GITHUB_TOKEN",
-                "PR_STATE",
-                "ZULIP_SITE",
-                "ZULIP_BOT_EMAIL",
-                "ZULIP_BOT_API_KEY",
-            }
-            if not required <= names or "SLACK_BOT_TOKEN" in names:
-                raise RuntimeError("Verified Zulip cutover prerequisite not met")
-            subprocess.run(
-                ["npm", "ci", "--ignore-scripts", "--prefix", target["root"]],
-                check=True,
-                timeout=300,
-            )
-            subprocess.run(
-                [
-                    "node",
-                    "--test",
-                    target["root"] + "body.test.js",
-                    target["root"] + "index.test.js",
-                ],
-                check=True,
-                timeout=300,
-            )
-        else:
-            tests = glob.glob(target["root"] + "src/*.test.js")
-            if not tests:
-                raise RuntimeError("Missing enforced target tests")
-            subprocess.run(["node", "--test", *tests], check=True, timeout=300)
+        tests = glob.glob(target["root"] + "src/*.test.js")
+        if not tests:
+            raise RuntimeError("Missing enforced target tests")
+        subprocess.run(["node", "--test", *tests], check=True, timeout=300)
         probe(target)
         if current_main() != sha:
             print("Superseded before release")
             return
+        if guard_tripped(name):
+            print("Stopped by the budget guard; re-arm by hand: " + name)
+            tripped.append(name)
+            continue
         subprocess.run(
             [
-                "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+                "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
                 "deploy",
                 "--config",
                 target["config"],
@@ -428,6 +685,8 @@ def main():
             raise RuntimeError("Wrong version receipt")
         probe(target)
         print("Verified exact release: " + name + " " + sha)
+    if tripped:
+        raise RuntimeError("Release refused, budget guard tripped: " + ", ".join(tripped))
 
 
 if __name__ == "__main__":

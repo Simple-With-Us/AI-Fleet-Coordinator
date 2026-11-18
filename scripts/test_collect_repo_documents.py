@@ -75,6 +75,26 @@ class CollectorTests(unittest.TestCase):
     ) -> RepositoryFixture:
         return RepositoryFixture(self.code, folder, name, owner)
 
+    def test_plural_backup_and_archive_names_are_scratch_paths(self) -> None:
+        for name in (
+            "backups",
+            "backups-2026",
+            "backups_2026",
+            "archives",
+            "archives-2026",
+            "archives_2026",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(collector.repo_catalog.is_scratch_dir_name(name))
+                self.assertTrue(collector.repo_catalog.is_scratch_path(f"docs/{name}/guide.md"))
+                self.assertFalse(collector._is_human_document(f"docs/{name}/guide.md"))
+                self.assertFalse(
+                    collector.repo_catalog.is_linkable_evidence(f"docs/{name}/proof.csv")
+                )
+
+        scratch_repo = self.make_repo(folder="backups_2026", name="ExampleRepo")
+        self.assertIsNone(collector._repo_info(scratch_repo.path))
+
     def test_collection_uses_published_default_ref_and_only_tracked_human_docs(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "# Published README\n")
@@ -123,7 +143,9 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse((mirror / "documents/docs/link.md").exists())
         self.assertFalse((mirror / "documents/docs/.secrets/internal.md").exists())
         self.assertFalse((mirror / "documents/.env.production").exists())
-        self.assertFalse((mirror / "documents/src/README.md").exists())
+        self.assertEqual(
+            (mirror / "documents/src/README.md").read_text(), "not a root README or docs path"
+        )
         self.assertFalse((mirror / "documents/docs/private/owner.md").exists())
         self.assertFalse((mirror / "documents/docs/private-audits/internal.md").exists())
         self.assertEqual((mirror / "documents/REVIEW.md").read_text(), "Root-level review note")
@@ -133,7 +155,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(manifest["source_ref"], "origin/main")
         self.assertEqual(manifest["source_commit"], published)
         self.assertEqual(manifest["files"]["documents/docs/guide.md"]["source_commit"], published)
-        self.assertTrue((mirror / "reports" / published / "README.md").is_file())
+        version_key = collector._manifest_version_key(manifest)
+        self.assertTrue((mirror / "reports" / version_key / "README.md").is_file())
+        self.assertEqual(manifest["collection_policy_id"], "human-docs-v3")
+        self.assertTrue((mirror / "catalog.json").is_file())
         self.assertIn(
             {"source_path": "docs/reports/receipt.md", "target_path": "docs/reports/missing.jsonl"},
             manifest["missing_local_links"],
@@ -172,6 +197,137 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("work-copy", skipped)
         self.assertIn("DifferentOwnerCopy", skipped)
         self.assertIn("AnotherCollision", skipped)
+
+    def test_owner_transition_uses_previous_owner_for_guards_and_preserves_history(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Old owner source.\n")
+        repo.write("docs/guide.md", "First published revision.\n")
+        old_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest_bytes = (mirror / "manifest.json").read_bytes()
+        old_manifest = json.loads(old_manifest_bytes)
+        old_version_key = collector._manifest_version_key(old_manifest)
+        old_report = mirror / "reports" / old_version_key
+        old_versioned_manifest_bytes = (old_report / "manifest.json").read_bytes()
+        old_versioned_readme_bytes = (old_report / "README.md").read_bytes()
+        old_catalog_bytes = (mirror / "catalog.json").read_bytes()
+        old_versioned_catalog_bytes = (old_report / "catalog.json").read_bytes()
+        old_repo_readme_bytes = (mirror / "README.md").read_bytes()
+
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        repo.write("README.md", "New owner source.\n")
+        repo.write("docs/guide.md", "Second published revision.\n")
+        new_commit = repo.commit_published()
+        self.assertNotEqual(old_commit, new_commit)
+
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "manifest.json").read_bytes(), old_manifest_bytes)
+        self.assertEqual((mirror / "README.md").read_bytes(), old_repo_readme_bytes)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog_bytes)
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
+
+        collector.collect(self.code, self.output)
+        new_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(new_manifest["owner_repo"], "new-owner/ExampleRepo")
+        self.assertEqual(new_manifest["source_commit"], new_commit)
+        self.assertIn("new-owner/ExampleRepo", (mirror / "README.md").read_text())
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
+
+    def test_same_commit_owner_transition_gets_exact_identity_version_key(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Stable source.\n")
+        repo.write("docs/guide.md", "Stable guide.\n")
+        source_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        old_key = collector._manifest_version_key(old_manifest)
+        old_immutable = {
+            relative: (mirror / relative).read_bytes()
+            for relative in (
+                f"reports/{old_key}/manifest.json",
+                f"reports/{old_key}/README.md",
+                f"reports/{old_key}/catalog.json",
+            )
+        }
+        old_catalog = (mirror / "catalog.json").read_bytes()
+        old_readme = (mirror / "README.md").read_bytes()
+
+        new_owner_repo = "new-owner/ExampleRepo"
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "README.md").read_bytes(), old_readme)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog)
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        collector.collect(self.code, self.output)
+        current = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(current["source_commit"], source_commit)
+        self.assertEqual(current["owner_repo"], new_owner_repo)
+        self.assertEqual(current["collection_identity_version"], 1)
+        new_key = collector._manifest_version_key(current)
+        expected_hash = hashlib.sha256(new_owner_repo.encode("utf-8")).hexdigest()[:12]
+        self.assertTrue(new_key.endswith(f"-identity-{expected_hash}"))
+        self.assertNotEqual(new_key, old_key)
+        case_variant = {
+            **current,
+            "owner_repo": "NEW-OWNER/ExampleRepo",
+        }
+        self.assertNotEqual(new_key, collector._manifest_version_key(case_variant))
+        self.assertEqual(current["catalog_version_path"], f"reports/{new_key}/catalog.json")
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        for invalid in (None, True, 0, 2, "1"):
+            with (
+                self.subTest(identity_version=invalid),
+                self.assertRaisesRegex(
+                    collector.CollectionError, "unsupported collection identity version"
+                ),
+            ):
+                collector._manifest_version_key({**current, "collection_identity_version": invalid})
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
 
     def test_check_is_read_only_and_second_collection_is_idempotent(self) -> None:
         repo = self.make_repo()
@@ -216,6 +372,299 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(
             collector.preview_report_indexes([collector._repo_info(repo.path)], preview), []
         )
+
+    def test_catalog_covers_tracked_tree_and_explains_policy_exclusions(self) -> None:
+        repo = self.make_repo()
+        repo.write("AGENTS.md", "Repository instructions.\n")
+        repo.write("INFISICAL.md", "Configuration key names only.\n")
+        repo.write("DEPLOY.md", "Deployment notes.\n")
+        repo.write("handbook/operations.md", "Operations handbook.\n")
+        repo.write("clients/ios/README.md", "Client documentation.\n")
+        repo.write("docs/guides/brief.docx", b"office document bytes")
+        repo.write("docs/guides/workbook.xlsx", b"spreadsheet bytes")
+        repo.write("docs/guides/analysis.ipynb", b"notebook bytes")
+        repo.write("workbook.xlsx", b"unscoped spreadsheet bytes")
+        repo.write("scratch.md", "Scratch.")
+        repo.write("tmp-notes.md", "Temporary notes.")
+        repo.write("docs/scratch/draft.md", "Draft.")
+        repo.write("docs/scratch/draft.svg", "<svg></svg>")
+        repo.write("docs/archive/old.md", "Archived draft.")
+        repo.write("docs/archive/evidence.csv", "secret,archived\n")
+        repo.write("docs/backups/old.md", "Archived source tree.")
+        repo.write("docs/backups-2026/old.md", "Old backup tree.")
+        repo.write("docs/archives_current/old.md", "Old archive tree.")
+        repo.write("docs/guides/backups-2026/linked.md", "Linked backup document.")
+        repo.write("docs/guides/archives_current/results.csv", "private,result\nfoo,bar\n")
+        repo.write("docs/guides/backups_current/diagram.svg", "<svg></svg>")
+        repo.write(
+            "docs/guides/setup.adoc",
+            "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n",
+        )
+        repo.write(
+            "docs/guides/index.html",
+            '<a href="/docs/guides/setup.adoc">guide</a>'
+            '<img src="/docs/guides/images/topology.svg">'
+            '<img src="/vendor/docs/upstream.svg">'
+            '<img src="/build/docs/generated.svg">'
+            '<img src="/tests/fixtures/example.svg">'
+            '<img src="/docs/scratch/draft.svg">'
+            '<a href="/docs/archive/evidence.csv">archived evidence</a>'
+            '<a href="/docs/guides/backups-2026/linked.md">backup document</a>'
+            '<a href="/docs/guides/archives_current/results.csv">archive evidence</a>'
+            '<img src="/docs/guides/backups_current/diagram.svg">\n',
+        )
+        repo.write("docs/guides/images/topology.svg", "<svg></svg>")
+        repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
+        repo.write("vendor/docs/upstream.md", "Third party.\n")
+        repo.write("vendor/docs/upstream.svg", "<svg></svg>")
+        repo.write("build/docs/generated.md", "Generated.\n")
+        repo.write("build/docs/generated.svg", "<svg></svg>")
+        repo.write("tests/fixtures/example.md", "Fixture.\n")
+        repo.write("tests/fixtures/example.svg", "<svg></svg>")
+        repo.write("credentials/token.md", "Never copy.\n")
+        repo.write("infra/main.tf", 'resource "x" "y" {}\n')
+        repo.commit_published()
+
+        collector.collect(self.code, self.output)
+        mirror = self.output / "ExampleRepo"
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        rows = {entry["path"]: entry for entry in catalog["files"]}
+
+        self.assertEqual(catalog["repository_profile"], "single-application")
+        self.assertIn("clients", catalog["structural_inventory"]["application_roots"])
+        self.assertIn("infra", catalog["structural_inventory"]["deployment_roots"])
+        self.assertIn("infra", catalog["structural_inventory"]["top_level_entries"])
+        self.assertEqual(catalog["tracked_entry_count"], len(rows))
+        self.assertEqual(
+            catalog["copied_entry_count"],
+            sum(bool(entry["copied_to_documents"]) for entry in rows.values()),
+        )
+        for path in (
+            "AGENTS.md",
+            "INFISICAL.md",
+            "DEPLOY.md",
+            "handbook/operations.md",
+            "clients/ios/README.md",
+            "docs/guides/brief.docx",
+            "docs/guides/workbook.xlsx",
+            "docs/guides/analysis.ipynb",
+            "docs/guides/setup.adoc",
+            "docs/guides/index.html",
+            "docs/guides/images/topology.svg",
+            "docs/guides/evidence/results.csv",
+        ):
+            self.assertIn(path, rows)
+            self.assertTrue(rows[path]["copied_to_documents"], path)
+            self.assertIn("object_id", rows[path])
+            self.assertIsInstance(rows[path]["size_bytes"], int)
+            self.assertEqual(rows[path]["object_type"], "blob")
+        self.assertEqual(rows["credentials/token.md"]["role"], "credential-store")
+        self.assertEqual(
+            rows["credentials/token.md"]["exclusion_reason"],
+            "sensitive path or credential-shaped filename",
+        )
+        self.assertEqual(rows["vendor/docs/upstream.md"]["role"], "third-party-vendor")
+        self.assertEqual(rows["build/docs/generated.md"]["role"], "generated-output")
+        self.assertEqual(rows["tests/fixtures/example.md"]["role"], "test-fixture")
+        self.assertEqual(rows["infra/main.tf"]["role"], "deployment-config")
+        self.assertEqual(rows["workbook.xlsx"]["role"], "ambiguous-document-data")
+        for path in (
+            "scratch.md",
+            "tmp-notes.md",
+            "docs/scratch/draft.md",
+            "docs/scratch/draft.svg",
+            "docs/archive/old.md",
+            "docs/archive/evidence.csv",
+            "docs/backups/old.md",
+            "docs/backups-2026/old.md",
+            "docs/archives_current/old.md",
+            "docs/guides/backups-2026/linked.md",
+            "docs/guides/archives_current/results.csv",
+            "docs/guides/backups_current/diagram.svg",
+        ):
+            self.assertEqual(rows[path]["role"], "scratch-or-archive")
+            self.assertEqual(
+                rows[path]["exclusion_reason"], "scratch, temporary, backup, or archive path"
+            )
+        manifest = json.loads((mirror / "manifest.json").read_text())
+        for path in (
+            "vendor/docs/upstream.md",
+            "vendor/docs/upstream.svg",
+            "build/docs/generated.md",
+            "build/docs/generated.svg",
+            "tests/fixtures/example.md",
+            "tests/fixtures/example.svg",
+            "workbook.xlsx",
+            "scratch.md",
+            "tmp-notes.md",
+            "docs/scratch/draft.md",
+            "docs/scratch/draft.svg",
+            "docs/archive/old.md",
+            "docs/archive/evidence.csv",
+            "docs/backups/old.md",
+            "docs/backups-2026/old.md",
+            "docs/archives_current/old.md",
+            "docs/guides/backups-2026/linked.md",
+            "docs/guides/archives_current/results.csv",
+            "docs/guides/backups_current/diagram.svg",
+            "credentials/token.md",
+        ):
+            self.assertFalse(rows[path]["copied_to_documents"], path)
+            self.assertFalse((mirror / "documents" / path).exists(), path)
+            self.assertFalse(
+                any(item["target_path"] == path for item in manifest["missing_local_links"]), path
+            )
+
+    def test_promised_excluded_blob_stays_unknown_without_lazy_fetch(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "eligible published guide")
+        repo.write("vendor/excluded.md", "excluded blob whose size is unknown")
+        commit = repo.commit_published()
+        excluded_oid = git(repo.path, "rev-parse", f"{commit}:vendor/excluded.md")
+        excluded_object = repo.path / ".git" / "objects" / excluded_oid[:2] / excluded_oid[2:]
+        self.assertTrue(excluded_object.is_file())
+        excluded_object.unlink()
+        git(repo.path, "config", "remote.origin.promisor", "true")
+        git(repo.path, "config", "remote.origin.partialclonefilter", "blob:none")
+        git(repo.path, "remote", "set-url", "origin", "test::offline")
+        git(repo.path, "config", "protocol.test.allow", "always")
+
+        helper_bin = self.base / "git-helper-bin"
+        helper_bin.mkdir()
+        helper_called = self.base / "lazy-fetch-helper-called"
+        helper = helper_bin / "git-remote-test"
+        helper.write_text(
+            f"#!/bin/sh\nprintf called > '{helper_called}'\nexit 1\n", encoding="utf-8"
+        )
+        helper.chmod(0o700)
+
+        with (
+            patch.dict(os.environ, {"PATH": f"{helper_bin}:{os.environ['PATH']}"}),
+            patch.object(
+                collector, "_github_owner_repo", return_value=("fixture-owner", "ExampleRepo")
+            ),
+        ):
+            collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        self.assertEqual(
+            (mirror / "documents/docs/guide.md").read_text(), "eligible published guide"
+        )
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        excluded = next(row for row in catalog["files"] if row["path"] == "vendor/excluded.md")
+        self.assertEqual(excluded["object_id"], excluded_oid)
+        self.assertEqual(excluded["size_bytes"], None)
+        self.assertEqual(
+            excluded["size_unavailable_reason"],
+            "blob size is unavailable locally; lazy fetch is disabled",
+        )
+        self.assertEqual(excluded["role"], "third-party-vendor")
+        self.assertFalse(excluded["copied_to_documents"])
+        self.assertFalse(helper_called.exists())
+        self.assertFalse(excluded_object.exists())
+
+    def test_missing_selected_blob_fails_without_lazy_fetch_or_output_write(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "eligible guide whose object will be absent")
+        commit = repo.commit_published()
+        guide_oid = git(repo.path, "rev-parse", f"{commit}:docs/guide.md")
+        guide_object = repo.path / ".git" / "objects" / guide_oid[:2] / guide_oid[2:]
+        self.assertTrue(guide_object.is_file())
+        guide_object.unlink()
+        git(repo.path, "config", "remote.origin.promisor", "true")
+        git(repo.path, "config", "remote.origin.partialclonefilter", "blob:none")
+        git(repo.path, "remote", "set-url", "origin", "test::offline")
+        git(repo.path, "config", "protocol.test.allow", "always")
+
+        helper_bin = self.base / "selected-git-helper-bin"
+        helper_bin.mkdir()
+        helper_called = self.base / "selected-lazy-fetch-helper-called"
+        helper = helper_bin / "git-remote-test"
+        helper.write_text(
+            f"#!/bin/sh\nprintf called > '{helper_called}'\nexit 1\n", encoding="utf-8"
+        )
+        helper.chmod(0o700)
+
+        with (
+            patch.dict(os.environ, {"PATH": f"{helper_bin}:{os.environ['PATH']}"}),
+            patch.object(
+                collector, "_github_owner_repo", return_value=("fixture-owner", "ExampleRepo")
+            ),
+            self.assertRaisesRegex(collector.CollectionError, "Git metadata or object read failed"),
+        ):
+            collector.collect(self.code, self.output)
+
+        self.assertFalse(helper_called.exists())
+        self.assertFalse(guide_object.exists())
+        self.assertFalse((self.output / "ExampleRepo").exists())
+
+    def test_v1_manifest_remains_readable_and_immutable_during_policy_migration(self) -> None:
+        repo = self.make_repo()
+        repo.write("README.md", "Root readme.\n")
+        repo.write("docs/guide.md", "Guide.\n")
+        commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        manifest_path = mirror / "manifest.json"
+        current = json.loads(manifest_path.read_text())
+        legacy = {
+            key: value
+            for key, value in current.items()
+            if key
+            not in {
+                "collection_policy_id",
+                "catalog_policy_id",
+                "catalog_path",
+                "catalog_sha256",
+                "catalog_version_path",
+            }
+        }
+        legacy["schema_version"] = 1
+        legacy["files"] = {
+            key: value
+            for key, value in current["files"].items()
+            if key in {"documents/README.md", "documents/docs/guide.md"}
+        }
+        legacy_readme = collector._legacy_repo_readme(
+            collector.RepoInfo(repo.path, "fixture-owner", "ExampleRepo", "origin/main", commit),
+            legacy,
+        )
+        legacy_version_readme = collector._legacy_version_readme(
+            collector.RepoInfo(repo.path, "fixture-owner", "ExampleRepo", "origin/main", commit),
+            legacy,
+        )
+        legacy_bytes = collector._json_bytes(legacy)
+        legacy_version = mirror / "reports" / commit
+        legacy_version.mkdir(parents=True, exist_ok=True)
+        legacy_version.chmod(0o700)
+        (legacy_version / "manifest.json").write_bytes(legacy_bytes)
+        (legacy_version / "README.md").write_bytes(legacy_version_readme)
+        (legacy_version / "manifest.json").chmod(0o600)
+        (legacy_version / "README.md").chmod(0o600)
+        manifest_path.write_bytes(legacy_bytes)
+        (mirror / "README.md").write_bytes(legacy_readme)
+        manifest_path.chmod(0o600)
+        (mirror / "README.md").chmod(0o600)
+        (mirror / "catalog.json").unlink()
+
+        new_manifest, _ = collector.collect_repository(collector._repo_info(repo.path), self.output)
+        self.assertEqual(
+            collector._load_previous_manifest(manifest_path, "ExampleRepo")["schema_version"], 2
+        )
+        self.assertEqual((legacy_version / "manifest.json").read_bytes(), legacy_bytes)
+        self.assertEqual((legacy_version / "README.md").read_bytes(), legacy_version_readme)
+        self.assertNotEqual(
+            collector._manifest_version_key(legacy),
+            collector._manifest_version_key(new_manifest),
+        )
+        new_version = mirror / "reports" / collector._manifest_version_key(new_manifest)
+        self.assertTrue((new_version / "manifest.json").is_file())
+        self.assertEqual(new_manifest["collection_policy_id"], "human-docs-v3")
+        prior_policy = {**new_manifest, "collection_policy_id": "human-docs-v1"}
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        readme = collector._repo_readme(collector._repo_info(repo.path), prior_policy, catalog)
+        self.assertIn("collection policy `human-docs-v1`", readme.decode("utf-8"))
 
     def test_second_process_cannot_recover_a_live_writer_transaction(self) -> None:
         repo = self.make_repo()
@@ -295,7 +744,13 @@ class CollectorTests(unittest.TestCase):
 
         collector.collect(self.code, self.output)
 
-        report = self.output / "ExampleRepo/reports" / commit / "README.md"
+        manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
+        report = (
+            self.output
+            / "ExampleRepo/reports"
+            / collector._manifest_version_key(manifest)
+            / "README.md"
+        )
         self.assertIn("- No eligible tracked documents were found.", report.read_text())
 
     def test_relative_output_roots_work_for_check_apply_and_repository_helper(self) -> None:
@@ -610,8 +1065,10 @@ class CollectorTests(unittest.TestCase):
     def test_deleted_source_documents_are_retained_and_versioned(self) -> None:
         repo = self.make_repo()
         repo.write("docs/old.md", "old source")
-        first_commit = repo.commit_published()
+        repo.commit_published()
         collector.collect(self.code, self.output)
+        first_manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
+        first_key = collector._manifest_version_key(first_manifest)
         (repo.path / "docs/old.md").unlink()
         git(repo.path, "add", "--all")
         git(repo.path, "commit", "--quiet", "-m", "remove old document")
@@ -623,8 +1080,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual((mirror / "documents/docs/old.md").read_text(), "old source")
         manifest = json.loads((mirror / "manifest.json").read_text())
         self.assertTrue(manifest["files"]["documents/docs/old.md"]["retained"])
-        self.assertTrue((mirror / "reports" / first_commit / "README.md").is_file())
-        self.assertTrue((mirror / "reports" / second_commit / "README.md").is_file())
+        second_manifest = json.loads((mirror / "manifest.json").read_text())
+        second_key = collector._manifest_version_key(second_manifest)
+        self.assertTrue((mirror / "reports" / first_key / "README.md").is_file())
+        self.assertTrue((mirror / "reports" / second_key / "README.md").is_file())
 
     def test_unowned_collision_and_output_symlink_are_rejected_without_overwrite(self) -> None:
         repo = self.make_repo()
@@ -697,12 +1156,13 @@ class CollectorTests(unittest.TestCase):
     ) -> None:
         repo = self.make_repo()
         repo.write("docs/reports/report.md", "Report")
-        published = repo.commit_published()
+        repo.commit_published()
         prior_umask = os.umask(0)
         try:
             collector.collect(self.code, self.output)
         finally:
             os.umask(prior_umask)
+        manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
 
         for directory in (
             self.output,
@@ -710,7 +1170,7 @@ class CollectorTests(unittest.TestCase):
             self.output / "ExampleRepo/documents",
             self.output / "ExampleRepo/documents/docs",
             self.output / "ExampleRepo/reports",
-            self.output / "ExampleRepo/reports" / published,
+            self.output / "ExampleRepo/reports" / collector._manifest_version_key(manifest),
         ):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
         for output in self.output.rglob("*"):
@@ -802,6 +1262,351 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(manifest["private_docs_opt_in"], "fixture-owner/Fleet-OPS")
         with self.assertRaisesRegex(collector.CollectionError, "same explicit opt-in"):
             collector.collect(self.code, output, repo_paths=[repo.path])
+
+    def test_verified_private_kodus_repository_accepts_exact_owner_opt_in(self) -> None:
+        repo = self.make_repo(name="Kodus-Config", owner="Simple-With-Us")
+        repo.write("README.md", "Private repository instructions.")
+        repo.write("docs/rule-curation.md", "Private rules guide.")
+        repo.commit_published()
+        output = self.base / "kodus-private-central"
+
+        collector.collect(
+            self.code,
+            output,
+            repo_paths=[repo.path],
+            private_docs_repo="Simple-With-Us/Kodus-Config",
+        )
+
+        mirror = output / "Kodus-Config"
+        self.assertEqual(
+            (mirror / "documents/docs/rule-curation.md").read_text(), "Private rules guide."
+        )
+        manifest = json.loads((mirror / "manifest.json").read_text())
+        self.assertEqual(manifest["private_docs_opt_in"], "Simple-With-Us/Kodus-Config")
+
+    def test_private_owner_transfer_refuses_new_opt_in_without_mutating_private_history(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-central"
+        verified_identities = {
+            "old-owner/private-repo",
+            "new-owner/private-repo",
+        }
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertTrue(
+                any(path.startswith("documents/docs/private-audits/") for path in before)
+            )
+            self.assertTrue(any(path.startswith("reports/") for path in before))
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "Private-document consent for old-owner/Private-Repo cannot transfer to "
+                "new-owner/Private-Repo",
+            ):
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="new-owner/Private-Repo",
+                )
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
+            public_repo = self.make_repo(
+                folder="Selected-Public-Repo",
+                name="Selected-Public-Repo",
+                owner="public-owner",
+            )
+            public_repo.write("README.md", "Selected public README.\n")
+            public_repo.write("docs/public-guide.md", "Selected public documentation.\n")
+            public_repo.commit_published()
+
+            with redirect_stdout(StringIO()):
+                status = collector.main(
+                    [
+                        "--code-root",
+                        str(self.code),
+                        "--output-root",
+                        str(output),
+                        "--repo",
+                        "Selected-Public-Repo",
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            public_mirror = output / "Selected-Public-Repo"
+            self.assertEqual(
+                (public_mirror / "documents/docs/public-guide.md").read_text(),
+                "Selected public documentation.\n",
+            )
+            after_public_collection = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after_public_collection, before)
+
+    def test_public_collection_after_private_owner_transfer_uses_generic_opt_in_error(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-public-central"
+        verified_identities = {"old-owner/private-repo", "new-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "An existing private-document collection requires the same explicit opt-in",
+            ):
+                collector.collect(self.code, output, repo_paths=[repo.path])
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
+    def test_case_only_private_owner_casing_refresh_preserves_private_report_history(self) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Original README.\n")
+        repo.write("docs/private-audits/evidence.md", "Original private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-case-central"
+        verified_identities = {"old-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            report_history = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
+            }
+            self.assertTrue(report_history)
+            initial_manifest = json.loads((mirror / "manifest.json").read_text())
+            initial_commit = initial_manifest["source_commit"]
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/OLD-OWNER/Private-Repo.git",
+            )
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
+            case_only_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(case_only_manifest["source_commit"], initial_commit)
+            self.assertEqual(case_only_manifest["private_docs_opt_in"], "OLD-OWNER/Private-Repo")
+
+            repo.write("README.md", "Case-varied README.\n")
+            repo.write("docs/private-audits/evidence.md", "Case-varied private evidence.\n")
+            updated_commit = repo.commit_published()
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
+
+            updated_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(updated_manifest["source_commit"], updated_commit)
+            self.assertEqual(
+                (mirror / "documents/docs/private-audits/evidence.md").read_text(),
+                "Case-varied private evidence.\n",
+            )
+            current_report_history = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
+            }
+            for name, snapshot in report_history.items():
+                self.assertEqual(current_report_history[name], snapshot)
+
+    def test_malformed_persisted_or_current_private_consent_fails_without_mutating_storage(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Private README.\n")
+        repo.write("docs/private-audits/evidence.md", "Private evidence.\n")
+        repo.commit_published()
+        verified_identities = {"old-owner/private-repo", "different-owner/private-repo"}
+
+        def snapshot(path: Path) -> dict[str, tuple[str, bytes | int, int]]:
+            entries = [path, *path.rglob("*")]
+            result: dict[str, tuple[str, bytes | int, int]] = {}
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                relative = entry.relative_to(path).as_posix() or "."
+                mode = stat.S_IMODE(entry.stat().st_mode)
+                if entry.is_dir():
+                    result[relative] = ("directory", mode, 0)
+                elif entry.is_file():
+                    result[relative] = ("file", entry.read_bytes(), mode)
+            return result
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            malformed_persisted_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, malformed_value in enumerate(malformed_persisted_values):
+                output = self.base / f"private-bad-persisted-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                mirror = output / "Private-Repo"
+                manifest_path = mirror / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["private_docs_opt_in"] = malformed_value
+                manifest_path.write_bytes(collector._json_bytes(manifest))
+                before = snapshot(output)
+                repo_info = collector._repo_info(repo.path)
+                self.assertIsNotNone(repo_info)
+
+                with self.subTest(kind="persisted", value=repr(malformed_value)):
+                    with self.assertRaisesRegex(
+                        collector.CollectionError,
+                        "same explicit opt-in",
+                    ):
+                        collector.collect_repository(
+                            repo_info,
+                            output,
+                            private_docs_opt_in="old-owner/Private-Repo",
+                        )
+                    self.assertEqual(snapshot(output), before)
+
+            invalid_current_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, invalid_value in enumerate(invalid_current_values):
+                output = self.base / f"private-bad-current-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                before = snapshot(output)
+
+                with self.subTest(kind="current", value=repr(invalid_value)):
+                    with self.assertRaises(collector.CollectionError):
+                        collector.collect(
+                            self.code,
+                            output,
+                            repo_paths=[repo.path],
+                            private_docs_repo=invalid_value,
+                        )
+                    self.assertEqual(snapshot(output), before)
 
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()

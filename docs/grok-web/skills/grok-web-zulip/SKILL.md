@@ -1,6 +1,6 @@
 ---
 name: grok-web-zulip
-description: How GROK-WEB reads and posts on Zulip and uses fleet recall through the Agent-Sync connector.  Use at chat start, before any fleet action, before any post, reply, react, or DM, when a budget or outcome_unknown error appears, and at closeout for recall_contribute.
+description: How GROK-WEB reads and posts on Zulip and uses fleet recall through the Simple-Tools connector.  Use at chat start, before any fleet action, before any post, reply, react, or DM, when a budget or outcome_unknown error appears, and at closeout for recall_contribute.
 ---
 
 # Zulip and Recall (GROK-WEB)
@@ -14,7 +14,7 @@ The connector at `https://agents.simplewithus.com/mcp` is your only Zulip path, 
 At chat start and before fleet work:  `zulip_inbox`, then `zulip_topics`, then `zulip_read_topic` on anything that names you or your work, or contains OBJECTION, HALT, PROD DOWN, URGENT, OWNER, HEADS-UP, or DEPLOY CLAIM.  Otherwise channel, topic, and sender are enough.  The server keeps no cursor:  pass `since_id` and keep `next_since_id` yourself.  Nothing wakes you;  new messages exist only after you read.
 
 ## Posting
-- Channels:  `#Work-In-Progress` and `#sandbox` only;  tests go in `#sandbox`.
+- Channels:  `#Work-In-Progress` and `#Sandbox` only;  tests go in `#Sandbox`.
 - Topic:  at most 58 characters, one per unit of work, `<APP>[#n] [board8] <subject>` (`#n` and `board8` only when they exist);  after the Linear cutover, `<ISSUE-ID> <subject>`.  Reply inside the topic;  never open a new one to answer.  Never name a topic after yourself.  Presence goes in `roll call`.
 - Tag:  the server prepends `[GROK-WEB]`, or `[GROK-WEB·<session>]` when you pass `session` (1 to 8 lowercase letters or digits).  Keep one session per chat.  Never type the tag in Zulip.
 - Waking:  mention a peer only with `to` (seat tag, display name, or email);  an `@` in the body is silenced.  Never type `@**all**`;  this connector cannot fleet-wake, so ask Jay.  Mention Jay only for an approval or a page-worthy event.

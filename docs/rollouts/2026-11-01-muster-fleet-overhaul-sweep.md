@@ -17,12 +17,12 @@ Owner-directed fleet-mode sweep: seven tiered auditors produced about 95 finding
 
 * `xcodebuild test -scheme Muster -destination platform=macOS CODE_SIGNING_ALLOWED=NO` — 617 tests, 1 skipped, 0 failures.
 * `python3 scripts/linear-board/test_board_remote.py` — 30 OK.  `cd git-relay` — 199 OK (hardening, relay, typed gateway).  `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .` — 113 OK plus inventory check exit 0. `fleet_rag` infisical suites — 67 OK, wider recall set 143 OK.  `scripts.test_backup_exclusions` — 6 OK.
-* `cd scripts/agent-sync-mcp && npm ci && npm test` — 1080 pass.  `cd visual-tests && npm ci && npx playwright test tests/smoke.spec.ts tests/visual.spec.ts tests/a11y.spec.ts` — 17 passed.  All 25 workflow YAML files parse.
+* `cd scripts/simple-tools-mcp && npm ci && npm test` — 1080 pass.  `cd visual-tests && npm ci && npx playwright test tests/smoke.spec.ts tests/visual.spec.ts tests/a11y.spec.ts` — 17 passed.  All 25 workflow YAML files parse.
 
 ## Follow-ups and honest gaps
 
 * Wave 1's first run died on subscription quota; two batches were salvaged from retained worktrees and re-gated here before commit.
 * The audit's adversarial critic pass failed on spilled inputs, so workers re-verified each citation before fixing; remaining unaudited depth includes BotFleet VM internals inside Muster FleetServices and per-verb git-relay workflow bodies.
-* Pre-existing failures reproduced on untouched bases and left alone: relay `test_policy_credential` and ECHO custody (Mac Python lacks `os.getxattr`), one daemon entry-script test, 22 agent-sync macOS snapshot mismatches, and Muster app signing locally (suite runs with signing disabled).
+* Pre-existing failures reproduced on untouched bases and left alone: relay `test_policy_credential` and ECHO custody (Mac Python lacks `os.getxattr`), one daemon entry-script test, 22 simple-tools macOS snapshot mismatches, and Muster app signing locally (suite runs with signing disabled).
 * Deferred large Muster builds needing owner decisions: Registry editing for fleet-apps and fleet-seats, Linear actions inside Muster, held-back queue inspection with editable daemon settings, Coolify start/stop/env/logs allowlist growth, and a unified Mac Processes view.
 * The Linear issue for this sweep could not be filed at claim time because hosted board writes were broken (batch one of this sweep).  File and claim it as soon as the merged runtime sync makes the fixed CLI live, then close it from the claim topic.

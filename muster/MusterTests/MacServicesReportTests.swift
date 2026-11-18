@@ -116,4 +116,189 @@ final class MacServicesReportTests: XCTestCase {
         XCTAssertNil(reading.problem)
         XCTAssertEqual(reading.state, .unknown)
     }
+
+    func test_displayed_evidence_expires_without_another_file_read() throws {
+        let reading = try readText(try fixture("mac_services_current", "json"))
+        let expired = reading.aged(at: generated.addingTimeInterval(16 * 60))
+        XCTAssertFalse(expired.isCurrent)
+        XCTAssertEqual(expired.state, .unknown)
+        XCTAssertNotEqual(expired.age, reading.age)
+    }
+
+    func test_missing_report_names_its_path_and_safe_recovery() {
+        let url = URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/mac-services.json")
+        let reading = MacServicesReportReader.read(at: url)
+        XCTAssertTrue(reading.problem?.contains(url.path) == true)
+        XCTAssertTrue(reading.problem?.contains("Read The Mac's Agents") == true)
+        XCTAssertFalse(reading.isCurrent)
+    }
+}
+
+final class OperationsRefreshRequestTests: XCTestCase {
+    func test_agent_refresh_during_cheap_metadata_read_is_retained() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        requests.beginMetadataRead()
+        requests.request(collectAgents: true)
+        XCTAssertTrue(requests.metadataRequested)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        XCTAssertFalse(requests.agentsRequested)
+    }
+
+    func test_server_refresh_keeps_pending_agent_request_without_inventing_a_rescan() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: true)
+        requests.beginMetadataRead()
+        requests.request(collectAgents: false)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        requests.request(collectAgents: false)
+        XCTAssertFalse(requests.agentsRequested)
+    }
+
+    func test_continuous_metadata_requests_cannot_starve_a_pending_agent_snapshot() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        var passes = 0
+        repeat {
+            requests.beginMetadataRead()
+            passes += 1
+            for _ in 0..<20 {
+                requests.request(collectAgents: true)
+            }
+        } while requests.shouldRepeatMetadataRead(completedPasses: passes)
+        XCTAssertEqual(passes, 2)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        XCTAssertFalse(requests.agentsRequested)
+    }
+
+    func test_request_during_final_metadata_pass_gets_one_followup_without_a_new_request() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        requests.beginMetadataRead()
+        requests.request(collectAgents: false)
+        XCTAssertTrue(requests.shouldRepeatMetadataRead(completedPasses: 1))
+        requests.beginMetadataRead()
+        requests.request(collectAgents: true)
+        XCTAssertFalse(requests.shouldRepeatMetadataRead(completedPasses: 2))
+        requests.beginAgentRead()
+        XCTAssertTrue(requests.metadataRequested)
+        XCTAssertTrue(requests.scheduleMetadataDrainIfNeeded())
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
+        requests.beginScheduledMetadataDrain()
+        XCTAssertFalse(requests.agentsRequested)
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
+    }
+
+    func test_obsolete_scheduled_drain_does_not_manufacture_metadata_or_agent_demand() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        XCTAssertTrue(requests.scheduleMetadataDrainIfNeeded())
+        requests.beginMetadataRead()
+        requests.beginScheduledMetadataDrain()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertFalse(requests.agentsRequested)
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
+    }
+}
+
+private struct MacCollectorRunner: OpsRunning {
+    let result: OpsProcessResult
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult { result }
+}
+
+final class MacServicesCollectorTests: XCTestCase {
+    private func withCollector(_ body: (MacServicesCollector) async throws -> Void) async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let scripts = root.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scripts.path)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = scripts.appendingPathComponent("fleet-mac-services.py")
+        try Data("# test fixture\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: script.path)
+        try await body(MacServicesCollector(repoRoot: root, home: root.appendingPathComponent("home")))
+    }
+
+    func test_collector_uses_pinned_isolated_read_only_route() async throws {
+        try await withCollector { collector in
+            let invocation = try collector.invocation()
+            XCTAssertEqual(invocation.executable, "/usr/bin/python3")
+            XCTAssertEqual(invocation.arguments, [
+                "-I", URL(fileURLWithPath: invocation.workingDirectory).appendingPathComponent("scripts/fleet-mac-services.py").path,
+                "--dry-run", "--agents-dir", collector.home.appendingPathComponent("Library/LaunchAgents").path,
+            ])
+            XCTAssertEqual(invocation.environment, ["HOME": collector.home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+            XCTAssertFalse(invocation.arguments.contains("--write"))
+        }
+    }
+
+    func test_missing_or_writable_collector_refuses_before_launch() async throws {
+        let missing = MacServicesCollector(repoRoot: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)"))
+        XCTAssertThrowsError(try missing.invocation())
+        try await withCollector { collector in
+            let script = collector.repoRoot.appendingPathComponent("scripts/fleet-mac-services.py")
+            try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: script.path)
+            XCTAssertThrowsError(try collector.invocation())
+        }
+    }
+
+    func test_symlink_or_writable_checkout_directory_refuses_before_launch() async throws {
+        try await withCollector { collector in
+            let scripts = collector.repoRoot.appendingPathComponent("scripts")
+            let script = scripts.appendingPathComponent("fleet-mac-services.py")
+            let actual = scripts.appendingPathComponent("actual.py")
+            try FileManager.default.moveItem(at: script, to: actual)
+            try FileManager.default.createSymbolicLink(at: script, withDestinationURL: actual)
+            XCTAssertThrowsError(try collector.invocation())
+            try FileManager.default.removeItem(at: script)
+            try FileManager.default.moveItem(at: actual, to: script)
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: scripts.path)
+            XCTAssertThrowsError(try collector.invocation())
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scripts.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: collector.repoRoot.path)
+            XCTAssertThrowsError(try collector.invocation())
+        }
+    }
+
+    func test_repository_alias_executes_the_same_canonical_tree_that_was_checked() async throws {
+        try await withCollector { original in
+            let alias = original.repoRoot.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: original.repoRoot)
+            defer { try? FileManager.default.removeItem(at: alias) }
+            var collector = original
+            collector.repoRoot = alias
+            let invocation = try collector.invocation()
+            XCTAssertNotEqual(invocation.workingDirectory, alias.path)
+            XCTAssertEqual(invocation.arguments[1], invocation.workingDirectory + "/scripts/fleet-mac-services.py")
+            XCTAssertFalse(invocation.arguments[1].hasPrefix(alias.path + "/"))
+        }
+    }
+
+    func test_live_answer_works_without_saved_report_and_failed_refresh_is_unknown() async throws {
+        let now = FleetTime.parse("2026-10-28T15:02:00Z")!
+        let json = try fixture("mac_services_current", "json")
+        try await withCollector { original in
+            var collector = original
+            collector.runner = MacCollectorRunner(result: OpsProcessResult(exitCode: 0, stdout: json, stderr: ""))
+            let reading = await collector.collect(now: now)
+            XCTAssertNil(reading.problem)
+            XCTAssertTrue(reading.isCurrent)
+            XCTAssertEqual(reading.agents.count, 5)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: MacServicesReportReader.reportURL(home: collector.home).path))
+            collector.runner = MacCollectorRunner(result: OpsProcessResult(exitCode: 1, stdout: json, stderr: "failure"))
+            let failed = await collector.collect(now: now)
+            XCTAssertFalse(failed.isCurrent)
+            XCTAssertTrue(failed.agents.isEmpty)
+            XCTAssertNotNil(failed.problem)
+        }
+    }
 }

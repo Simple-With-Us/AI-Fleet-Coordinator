@@ -8,7 +8,7 @@
 # Flow per record:  receiver -> memory_limiter -> filter (drop hook noise, logs
 # only) -> transform (vendor attrs -> OTel gen_ai semconv, plus resource attrs
 # platform/seat/lane/repo passthrough and signal=agent) -> redaction (secret
-# patterns transcribed from scripts/agent_sync/secretscan.py; prompts and
+# patterns transcribed from scripts/simple_tools/secretscan.py; prompts and
 # responses stay, secrets do not) -> batch -> exporters.
 #
 # Sinks:  traces + logs -> Sentry fleet-infra OTLP; metrics + turn records ->
@@ -262,7 +262,7 @@ processors:
           - set(attributes["platform"], "hook-shim") where attributes["platform"] == nil
 
   # Secret scrubbing that keeps prompts: every blocked_values entry is a
-  # transcription of a scripts/agent_sync/secretscan.py pattern into RE2 (no
+  # transcription of a scripts/simple_tools/secretscan.py pattern into RE2 (no
   # lookarounds; the Zulip-shaped heuristic needs code and is documented there
   # instead).  A parity test pins the two lists together.  Attribute values that
   # match are replaced with [REDACTED]; prompt/response text without secrets

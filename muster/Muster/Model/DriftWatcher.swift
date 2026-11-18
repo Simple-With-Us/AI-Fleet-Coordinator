@@ -8,13 +8,29 @@ import Foundation
 /// file's contents and no fast timer behind it,  so an app that is waiting for a
 /// change costs nothing.
 protocol DriftWatching: AnyObject {
-    /// Watch the list,  and call back with the paths that changed.
+    /// Add a stream for each of these watches,  and call back with the paths that changed.
+    ///
+    /// The streams the watcher already holds are left running:  a watch it holds already
+    /// counts as armed and is not started again,  so no event on it is dropped.  The
+    /// callback replaces the one an earlier call gave,  for every stream.
     ///
     /// The callback runs on the watcher's own queue,  not on the main one,  and it
     /// must not block:  the file system daemon is delivering events here.
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void)
+    ///
+    /// - Returns:  The watches that hold a stream now,  in the order given.  A watch whose
+    ///   stream could not be made is left out,  and the caller asks for it again later.
+    @discardableResult
+    func arm(_ watches: [DriftWatchList.Watch], onChange: @escaping ([URL]) -> Void) -> [DriftWatchList.Watch]
+    /// Stop and release the streams of these watches,  and leave every other stream running.
+    func disarm(_ watches: [DriftWatchList.Watch])
     /// Stop watching and release every stream.
     func stop()
+    /// The watches whose stream is running now,  in the order they were armed (GRID-37).
+    ///
+    /// Only a stream that started counts:  a stream that could not be made,  or whose start
+    /// failed,  is not here,  so a count of these is what is actually watched and never what
+    /// was asked for.
+    var startedWatches: [DriftWatchList.Watch] { get }
 }
 
 /// The watcher built on FSEvents.
@@ -28,40 +44,87 @@ final class FSEventsDriftWatcher: DriftWatching {
     /// single write:  a file that is written three times in a row is one change.
     static let latency: CFTimeInterval = 0.5
 
-    private var streams: [FSEventStreamRef] = []
+    /// A stream the watcher holds,  with the watch it stands for.
+    private struct ArmedStream {
+        let watch: DriftWatchList.Watch
+        let stream: FSEventStreamRef
+    }
+
+    private var streams: [ArmedStream] = []
     private var context: WatchContext?
     private let queue: DispatchQueue
+    /// Starts a stream,  and says whether it started.  The app calls `FSEventStreamStart`;  a
+    /// test hands in its own to make a start fail.
+    private let startStream: (FSEventStreamRef) -> Bool
 
-    init(queue: DispatchQueue = DispatchQueue(label: "muster.drift.fsevents", qos: .utility)) {
+    init(
+        queue: DispatchQueue = DispatchQueue(label: "muster.drift.fsevents", qos: .utility),
+        startStream: @escaping (FSEventStreamRef) -> Bool = { FSEventStreamStart($0) }
+    ) {
         self.queue = queue
+        self.startStream = startStream
     }
+
+    /// The watches whose stream started and is running now.
+    var startedWatches: [DriftWatchList.Watch] { streams.map { $0.watch } }
+
+    /// How many streams started and are running now.
+    var startedStreamCount: Int { streams.count }
 
     deinit {
         stop()
     }
 
-    func start(_ list: DriftWatchList, onChange: @escaping ([URL]) -> Void) {
-        stop()
-        guard !list.watches.isEmpty else { return }
-        let context = WatchContext()
-        context.deliver = onChange
+    @discardableResult
+    func arm(
+        _ watches: [DriftWatchList.Watch],
+        onChange: @escaping ([URL]) -> Void
+    ) -> [DriftWatchList.Watch] {
+        let context = self.context ?? WatchContext()
         self.context = context
-        for watch in list.watches {
+        context.setHandler(onChange)
+        var armed: [DriftWatchList.Watch] = []
+        for watch in watches {
+            if streams.contains(where: { $0.watch == watch }) {
+                armed.append(watch)
+                continue
+            }
             guard let stream = makeStream(for: watch, context: context) else { continue }
             context.set(watch, for: stream)
-            streams.append(stream)
+            streams.append(ArmedStream(watch: watch, stream: stream))
+            armed.append(watch)
         }
+        return armed
+    }
+
+    func disarm(_ watches: [DriftWatchList.Watch]) {
+        guard !watches.isEmpty else { return }
+        var kept: [ArmedStream] = []
+        for entry in streams {
+            if watches.contains(entry.watch) {
+                context?.remove(entry.stream)
+                release(entry.stream)
+            } else {
+                kept.append(entry)
+            }
+        }
+        streams = kept
     }
 
     func stop() {
-        for stream in streams {
-            FSEventStreamStop(stream)
-            FSEventStreamInvalidate(stream)
-            FSEventStreamRelease(stream)
+        for entry in streams {
+            release(entry.stream)
         }
         streams.removeAll()
         context?.clear()
         context = nil
+    }
+
+    /// Stop one stream and let it go.
+    private func release(_ stream: FSEventStreamRef) {
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
     }
 
     /// One stream,  watching one path.
@@ -92,7 +155,14 @@ final class FSEventsDriftWatcher: DriftWatching {
         )
         guard let stream else { return nil }
         FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
+        // A stream whose start fails watches nothing.  It is let go here and left out of the
+        // armed list,  so it is counted as failed and asked for again after the next run,
+        // never counted as watching.  It never started,  so it is not stopped first.
+        guard startStream(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return nil
+        }
         return stream
     }
 
@@ -126,10 +196,35 @@ final class FSEventsDriftWatcher: DriftWatching {
 /// hand a change on.
 final class WatchContext {
     /// The handler the monitor gave the watcher.
-    var deliver: ([URL]) -> Void = { _ in }
+    ///
+    /// It is set on the main thread and read on the watcher's queue,  so it is held
+    /// under the lock.
+    private var handler: ([URL]) -> Void = { _ in }
     /// The watches,  by the stream that is speaking.
     private let lock = NSLock()
     private var watches: [UInt: DriftWatchList.Watch] = [:]
+
+    /// Set the handler a change is handed to.
+    func setHandler(_ handler: @escaping ([URL]) -> Void) {
+        lock.lock()
+        self.handler = handler
+        lock.unlock()
+    }
+
+    /// Hand a change on.  The handler is called outside the lock.
+    func deliver(_ paths: [URL]) {
+        lock.lock()
+        let handler = self.handler
+        lock.unlock()
+        handler(paths)
+    }
+
+    /// Forget the watch behind a stream that is let go.
+    func remove(_ stream: FSEventStreamRef) {
+        lock.lock()
+        watches[UInt(bitPattern: stream)] = nil
+        lock.unlock()
+    }
     /// The watch behind a stream.
     func watch(for stream: FSEventStreamRef) -> DriftWatchList.Watch? {
         lock.lock()

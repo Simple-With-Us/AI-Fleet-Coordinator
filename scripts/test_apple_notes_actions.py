@@ -583,7 +583,7 @@ class ActionLogTests(ActionsTestCase):
         #  the links dict used to be stringified and cut at 80 chars, losing the newer kinds.  It
         #  now survives the sanitizer as a dict, so every count reaches the reader.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from agent_sync.notes import clean_log_entry
+        from simple_tools.notes import clean_log_entry
 
         p = self.run_script(
             "--update",

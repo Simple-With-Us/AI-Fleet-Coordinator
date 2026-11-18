@@ -6,12 +6,17 @@
 
 What a job can rely on:
 
-  * One Infisical fetch per process, on the first read.  A failed fetch is not retried in
-    the same process (``refresh()`` forces it for a long-running one).  An export that holds
-    none of the registered names counts as a failed fetch (reason ``empty``) while a usable
-    copy still has knobs, so a blank answer cannot erase a pause.
+  * One Infisical fetch per folder per process, on the first read of a knob in that folder
+    (``Spec.folder``, "/" unless the registry says otherwise), and no fetch of a folder the
+    process never reads.  So a job reading only root knobs fetches "/" exactly as before, and
+    the wake router fetches only /wake-router, which its narrow token allows.  A failed fetch
+    is not retried in the same process (``refresh()`` forces it for a long-running one).  An
+    export that holds none of a folder's registered names counts as a failed fetch (reason
+    ``empty``) while a usable copy of that folder still has knobs, so a blank answer cannot
+    erase a pause.
   * A failed fetch leaves a 60 second marker beside the copy (lkg.py), and other processes
-    skip their own fetch inside that window, so a broken auth path is paid for once.
+    skip their own fetch of that folder inside that window, so a broken auth path is paid for
+    once.  Each folder has its own copy and its own marker.
   * Non-secret knobs fall back, in order, to the on-disk last-known-good copy (marked
     stale) and then to the registry default.  A read never raises for a non-secret knob.
   * A secret has no default and no disk copy:  if it cannot be fetched, ``get()`` raises
@@ -30,11 +35,17 @@ import threading
 from typing import Any
 
 from . import lkg, source, values
-from .registry import BY_NAME, REGISTRY, Spec
+from .registry import BY_NAME, REGISTRY, ROOT_FOLDER, Spec, names_in
 
 log = logging.getLogger("fleet_knobs")
 
 _UNSET = object()
+
+# Failures that belong to this one process, not to Infisical or the network:  a process with
+# no reader token of its own (Muster's Controls tab runs the engine without one) or no reader
+# helper.  They cost no wait, and recording them would make every sibling that does hold a
+# token skip its own fetch for the marker's 60 seconds, so they leave no marker.
+PROCESS_LOCAL_REASONS = frozenset({"service-token-required", "scoped-reader-unavailable"})
 
 
 class KnobError(Exception):
@@ -87,17 +98,31 @@ class Knob:
         return out
 
 
-class _State:
-    def __init__(self) -> None:
-        self.lock = threading.RLock()
+class _Folder:
+    """What this process learned about one Infisical folder."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
         self.loaded = False
         self.fetch = "not-attempted"  # ok, failed or not-attempted
         self.reason: str | None = None
         self.live: dict[str, str] = {}
         self.lkg: dict | None = None
         self.lkg_note = "not-read"
+
+
+class _State:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.folders: dict[str, _Folder] = {}
         self.answers: dict[str, Knob] = {}
         self.force = False  # refresh():  fetch even inside the negative cache
+
+    def folder(self, path: str) -> _Folder:
+        found = self.folders.get(path)
+        if found is None:
+            found = self.folders[path] = _Folder(path)
+        return found
 
 
 _state = _State()
@@ -127,69 +152,75 @@ def _spec(name: str, kind: str | None) -> Spec:
     return spec
 
 
-def _load() -> None:
+def _load(path: str = ROOT_FOLDER) -> _Folder:
+    """Fetch one folder, once per process, and answer what was learned about it."""
     st = _state
     with st.lock:
-        if st.loaded:
-            return
-        st.loaded = True
+        fo = st.folder(path)
+        if fo.loaded:
+            return fo
+        fo.loaded = True
         refusal = source.environment_refusal()
         if refusal:
-            st.loaded = False
+            fo.loaded = False
             raise KnobError(refusal)
-        previous, previous_note = lkg.read()
-        recent = None if st.force else _recent_failure()
+        previous, previous_note = lkg.read(folder=path)
+        recent = None if st.force else _recent_failure(path)
         if recent is not None:
             # A sibling process failed moments ago:  skip the fetch (fail fast) and use the copy.
-            st.fetch = "failed"
-            st.reason = "recent-" + recent
-            st.lkg, st.lkg_note = previous, previous_note
+            fo.fetch = "failed"
+            fo.reason = "recent-" + recent
+            fo.lkg, fo.lkg_note = previous, previous_note
             log.info(
-                "fleet_knobs: skipping the Infisical fetch, which failed %s seconds ago or "
-                "less (%s)",
+                "fleet_knobs: skipping the Infisical fetch of %s, which failed %s seconds ago "
+                "or less (%s)",
+                path,
                 int(lkg.FAILURE_TTL_SECONDS),
                 recent,
             )
-            return
+            return fo
         try:
-            live = source.fetch_named(
-                [s.name for s in REGISTRY], project_id=source.PROJECT_ID, path="/"
-            )
+            live = source.fetch_named(names_in(path), project_id=source.PROJECT_ID, path=path)
             _refuse_empty_export(live, previous)
-            st.live = live
-            st.fetch = "ok"
-            st.lkg, st.lkg_note = previous, previous_note
+            fo.live = live
+            fo.fetch = "ok"
+            fo.lkg, fo.lkg_note = previous, previous_note
         except Exception as exc:  # noqa: BLE001 - a read must not crash a job
-            st.fetch = "failed"
-            st.reason = (
+            fo.fetch = "failed"
+            fo.reason = (
                 exc.reason if isinstance(exc, source.FetchFailed) else "error-" + type(exc).__name__
             )
             log.warning(
-                "fleet_knobs: Infisical fetch failed (%s);  using the last-known-good "
+                "fleet_knobs: Infisical fetch of %s failed (%s);  using the last-known-good "
                 "copy where there is one",
-                st.reason,
+                path,
+                fo.reason,
             )
-            st.lkg, st.lkg_note = previous, previous_note
-            try:
-                lkg.record_failure(st.reason)
-            except Exception:  # noqa: BLE001 - the marker is a convenience
-                pass
-            return
+            fo.lkg, fo.lkg_note = previous, previous_note
+            if fo.reason not in PROCESS_LOCAL_REASONS:
+                try:
+                    lkg.record_failure(fo.reason, folder=path)
+                except Exception:  # noqa: BLE001 - the marker is a convenience
+                    pass
+            return fo
         try:
-            lkg.clear_failure()
+            lkg.clear_failure(folder=path)
         except Exception:  # noqa: BLE001 - the marker is a convenience
             pass
         try:
-            _save_lkg(st)
+            _save_lkg(fo)
         except Exception as exc:  # noqa: BLE001 - the copy is a convenience
             log.warning(
-                "fleet_knobs: could not update the last-known-good copy (%s)", type(exc).__name__
+                "fleet_knobs: could not update the last-known-good copy of %s (%s)",
+                path,
+                type(exc).__name__,
             )
+        return fo
 
 
-def _recent_failure() -> str | None:
+def _recent_failure(path: str) -> str | None:
     try:
-        return lkg.recent_failure()
+        return lkg.recent_failure(folder=path)
     except Exception:  # noqa: BLE001 - an unreadable marker is ignored
         return None
 
@@ -211,14 +242,15 @@ def _refuse_empty_export(live: dict[str, str], previous: dict | None) -> None:
         raise source.FetchFailed("empty")
 
 
-def _save_lkg(st: _State) -> None:
-    """After a good fetch, refresh the on-disk copy with the non-secret knobs."""
-    previous, _note = lkg.read()
+def _save_lkg(fo: _Folder) -> None:
+    """After a good fetch of one folder, refresh that folder's copy with its non-secret knobs."""
+    previous, _note = lkg.read(folder=fo.path)
+    specs = [s for s in REGISTRY if s.folder == fo.path]
     fresh: dict[str, str] = {}
-    for spec in REGISTRY:
+    for spec in specs:
         if spec.secret:
             continue
-        raw = st.live.get(spec.name)
+        raw = fo.live.get(spec.name)
         if raw is None or not raw.strip():
             continue  # unset in Infisical:  drop it
         ok, _typed = values.lenient(spec, raw)
@@ -230,9 +262,15 @@ def _save_lkg(st: _State) -> None:
     unchanged = previous is not None and previous["knobs"] == fresh
     if unchanged and lkg.age_seconds(previous) < lkg.REFRESH_SECONDS:
         return
-    secrets = [st.live[s.name] for s in REGISTRY if s.secret and s.name in st.live]
+    # Every secret this process holds, from any folder, so none can land in this copy.
+    secrets = [
+        f.live[s.name]
+        for f in _state.folders.values()
+        for s in REGISTRY
+        if s.secret and s.name in f.live
+    ]
     try:
-        lkg.write(fresh, secrets)
+        lkg.write(fresh, secrets, folder=fo.path)
     except (OSError, ValueError) as exc:
         offender = next(
             (
@@ -285,19 +323,18 @@ def resolve(
         return _resolve_secret(spec)
     base_default = _coerce_default(spec, default)
     st = _state
-    _load()
+    fo = _load(spec.folder)
     with st.lock:
-        knob = _from_sources(spec, base_default)
+        knob = _from_sources(spec, fo, base_default)
         if local is not None or stop:
             knob = _apply_local(spec, knob, local, stop)
         st.answers[name] = knob
         return knob
 
 
-def _from_sources(spec: Spec, base_default: Any) -> Knob:
-    st = _state
-    if st.fetch == "ok":
-        raw = st.live.get(spec.name)
+def _from_sources(spec: Spec, fo: _Folder, base_default: Any) -> Knob:
+    if fo.fetch == "ok":
+        raw = fo.live.get(spec.name)
         if raw is None or not raw.strip():
             return Knob(spec.name, base_default, "default", reason="unset")
         ok, typed = values.lenient(spec, raw)
@@ -305,14 +342,14 @@ def _from_sources(spec: Spec, base_default: Any) -> Knob:
             return Knob(spec.name, typed, "infisical")
         return Knob(spec.name, base_default, "default", reason="invalid")
     # Infisical could not be read, so no answer below is confirmed live:  all are stale.
-    reason = f"unreachable:{st.reason}"
-    if st.lkg is not None:
-        ok, typed = values.lenient(spec, st.lkg["knobs"].get(spec.name))
+    reason = f"unreachable:{fo.reason}"
+    if fo.lkg is not None:
+        ok, typed = values.lenient(spec, fo.lkg["knobs"].get(spec.name))
         if ok:
             return Knob(spec.name, typed, "lkg", stale=True, reason=reason)
         return Knob(spec.name, base_default, "default", stale=True, reason=reason)
     return Knob(
-        spec.name, base_default, "default", stale=True, reason=f"{reason},lkg-{st.lkg_note}"
+        spec.name, base_default, "default", stale=True, reason=f"{reason},lkg-{fo.lkg_note}"
     )
 
 
@@ -338,11 +375,11 @@ def _apply_local(spec: Spec, knob: Knob, local: Any, stop: bool) -> Knob:
 
 def _resolve_secret(spec: Spec) -> Knob:
     st = _state
-    _load()
+    fo = _load(spec.folder)
     with st.lock:
-        if st.fetch != "ok":
-            raise SecretUnavailable(spec.name, f"unreachable:{st.reason}")
-        raw = st.live.get(spec.name)
+        if fo.fetch != "ok":
+            raise SecretUnavailable(spec.name, f"unreachable:{fo.reason}")
+        raw = fo.live.get(spec.name)
         if raw is None or not raw.strip():
             raise SecretUnavailable(spec.name, "unset")
         ok, typed = values.lenient(spec, raw)
@@ -370,23 +407,55 @@ def get(
     return resolve(name, default, kind, local=local, stop=stop).value
 
 
+def _describe_folder(fo: _Folder) -> dict[str, Any]:
+    out: dict[str, Any] = {"fetch": fo.fetch}
+    if fo.reason:
+        out["fetch_reason"] = fo.reason
+    if fo.lkg is not None:
+        out["lkg_age_seconds"] = lkg.age_seconds(fo.lkg)
+    elif fo.fetch == "failed":
+        out["lkg"] = fo.lkg_note
+    return out
+
+
+def folder_status(path: str) -> dict[str, Any]:
+    """What this process learned about one folder:  ``fetch`` (ok, failed or not-attempted),
+    with ``fetch_reason`` when there is one.  It reads memory only and never fetches, so a
+    reader whose knobs share one folder can ask whether that folder's fetch worked."""
+    st = _state
+    with st.lock:
+        found = st.folders.get(path)
+        return _describe_folder(found) if found is not None else {"fetch": "not-attempted"}
+
+
 def report() -> dict[str, Any]:
     """What this process learned, for a job's report:  names, sources and the stale flag.
 
     ``stale`` is true when any answer came from the last-known-good copy.  It carries no
-    values, so it is safe to write into a report, a log or a digest."""
+    values, so it is safe to write into a report, a log or a digest.
+
+    ``fetch`` is ``ok`` only when every folder this process fetched was read, ``failed`` when
+    any was not, and ``fetch_reason`` and the copy's age are those of the first folder that
+    failed (the root first).  A process that read only root knobs gets the same report as
+    before folders existed;  one that read another folder also gets ``folders``, each folder's
+    own fetch, reason and copy."""
     st = _state
     with st.lock:
+        tried = [st.folders[p] for p in sorted(st.folders, key=lambda p: (p != ROOT_FOLDER, p))]
+        tried = [f for f in tried if f.fetch != "not-attempted"]
+        failed = [f for f in tried if f.fetch == "failed"]
+        lead = failed[0] if failed else (tried[0] if tried else None)
         out: dict[str, Any] = {
             "schema": 1,
-            "fetch": st.fetch,
+            "fetch": "failed" if failed else ("ok" if tried else "not-attempted"),
             "stale": any(k.stale for k in st.answers.values()),
             "knobs": {n: k.describe() for n, k in sorted(st.answers.items())},
         }
-        if st.reason:
-            out["fetch_reason"] = st.reason
-        if st.lkg is not None:
-            out["lkg_age_seconds"] = lkg.age_seconds(st.lkg)
-        elif st.fetch == "failed":
-            out["lkg"] = st.lkg_note
+        if lead is not None:
+            lead_view = _describe_folder(lead)
+            for key in ("fetch_reason", "lkg_age_seconds", "lkg"):
+                if key in lead_view:
+                    out[key] = lead_view[key]
+        if any(f.path != ROOT_FOLDER for f in tried):
+            out["folders"] = {f.path: _describe_folder(f) for f in tried}
         return out

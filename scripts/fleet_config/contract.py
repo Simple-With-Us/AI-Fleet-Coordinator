@@ -36,6 +36,7 @@ __all__ = [
     "build_status_envelope",
     "expected_to_dict",
     "is_failing",
+    "is_not_applicable",
     "observed_to_dict",
     "overall_verdict",
     "result_to_dict",
@@ -68,11 +69,30 @@ def is_failing(result: CheckResult) -> bool:
     return result.reason_code in FAILING_REASON_CODES
 
 
+def is_not_applicable(result: CheckResult) -> bool:
+    """True when a result says its rule asks for nothing to be proven here.
+
+    A seat with no hook mechanism has a rule that pins the absence of a hook.  That
+    result is ``UNSUPPORTED`` with the reason code ``not-applicable``.  It is not a
+    pass, because no guard was proven, and it is not a hole in the proof either:  there
+    is nothing there to prove.
+    """
+    if result.state is not CheckState.UNSUPPORTED:
+        return False
+    return result.reason_code is ReasonCode.NOT_APPLICABLE
+
+
 def overall_verdict(results: tuple[CheckResult, ...]) -> OverallVerdict:
-    """The verdict for a set of results.  An empty run is ``UNKNOWN``, never ``PASS``."""
+    """The verdict for a set of results.  An empty run is ``UNKNOWN``, never ``PASS``.
+
+    ``PASS`` means every check the rules ask for was proven.  A result that is not
+    applicable asks for nothing, so it neither fails the run nor counts as proof:  a
+    run of nothing but such results is ``UNKNOWN``.
+    """
     if any(is_failing(result) for result in results):
         return OverallVerdict.FAIL
-    if results and all(result.state is CheckState.PASS for result in results):
+    asked = tuple(result for result in results if not is_not_applicable(result))
+    if asked and all(result.state is CheckState.PASS for result in asked):
         return OverallVerdict.PASS
     return OverallVerdict.UNKNOWN
 
@@ -102,6 +122,8 @@ def expected_to_dict(expected: ExpectedState) -> dict[str, object]:
         out["mode"] = expected.mode
     if expected.timeout_seconds is not None:
         out["timeoutSeconds"] = expected.timeout_seconds
+    if expected.guards:
+        out["guards"] = list(expected.guards)
     return out
 
 

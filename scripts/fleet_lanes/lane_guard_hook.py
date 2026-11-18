@@ -70,16 +70,21 @@ def _parse_args(argv: Sequence[str]) -> tuple[str, bool]:
     return fmt, exit2 or fmt in EXIT2_FORMATS
 
 
+_CURSOR_SHORT = (
+    ("inside the ~/Code integration tree", "Blocked a fleet-repo checkout in the integration tree"),
+    ("in temp directories", "Blocked a fleet-repo checkout in a temp directory"),
+    ("outside the lanes folder", "Blocked a fleet-repo checkout outside the lanes folder"),
+    ("as full clones in a lane folder", "Blocked a full clone of a fleet repo in a lane folder"),
+    ("harness worktree", "Blocked a harness worktree in the integration tree"),
+)
+
+
 def render(reason: str, fmt: str, destination: str = "") -> str:
     """The deny JSON for one platform, as one line."""
     if fmt in ("grok", "antigravity"):
         body: dict = {"decision": "deny", "reason": reason}
     elif fmt == "cursor":
-        short = (
-            "Blocked a fleet-repo checkout in the integration tree"
-            if "inside the ~/Code integration tree" in reason
-            else "Blocked a fleet-repo checkout in a temp directory"
-        )
+        short = next((text for mark, text in _CURSOR_SHORT if mark in reason), "Blocked a fleet-repo checkout")
         short += f": {destination}." if destination else "."
         body = {"permission": "deny", "user_message": short, "agent_message": reason}
     else:  # claude, codex, muse
@@ -115,6 +120,23 @@ def _read_stdin(stdin: IO) -> str:
     return stdin.read()
 
 
+def record_detection(decision) -> None:
+    """Log a placement rule that would have denied under block.  Never raises and never changes the answer."""
+    detail = getattr(decision, "detected_detail", None)
+    if not detail:
+        return
+    try:
+        from fleet_lanes import placement
+
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        placement.log_event(
+            home,
+            {"via": "hook", "action": "detect", "seat": os.environ.get("AGENT_SEAT", ""), **detail},
+        )
+    except Exception:
+        pass
+
+
 def main(
     argv: Sequence[str] | None = None,
     stdin: IO | None = None,
@@ -140,6 +162,7 @@ def main(
             pass
         return 0
     if decision.action != guard.DENY or not decision.reason:
+        record_detection(decision)
         return 0
     return emit_deny(decision.reason, fmt, decision.destination, exit2, stdout, stderr)
 

@@ -8,7 +8,7 @@
 # LaunchAgent and shell script without its secrets.  Re-run this after the package changes.
 #
 # It writes no secret and no project id.  The Fleet-OPS project id is read at run time from
-# INFISICAL_FLEET_OPS_PROJECT_ID or ~/.agent-sync/fleet-ops-project-id (see INFISICAL.md).
+# INFISICAL_FLEET_OPS_PROJECT_ID or ~/.simple-tools/fleet-ops-project-id (see INFISICAL.md).
 set -euo pipefail
 
 if ! declare -F _fleet_secrets_uname_s >/dev/null 2>&1; then
@@ -57,6 +57,8 @@ install_fleet_secrets_main() {
   for f in "$here"/fleet_secrets/*.py; do
     install -m 0644 "$f" "$dest/fleet_secrets/$(basename "$f")"
   done
+  install -m 0644 "$here/fleet_infisical.py" "$dest/fleet_infisical.py"
+  install -m 0644 "$here/fleet_infisical_cli.py" "$dest/fleet_infisical_cli.py"
   install -m 0755 "$here/fleet-secrets" "$dest/fleet-secrets"
   launcher="$dest/fleet-secrets"
   if [ "$linux_bootstrap" -eq 1 ]; then

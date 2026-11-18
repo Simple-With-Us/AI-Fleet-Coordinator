@@ -57,10 +57,183 @@ class Reply:
         return json.dumps(self.data).encode()
 
 
+def assert_public_artifact_boundary(root: Path, names: tuple[str, ...]) -> None:
+    allowed = {repo.casefold() for repo in PUBLIC_REPOS} | set(
+        HISTORICAL_PUBLIC_REPO_ALIASES.keys()
+    )
+    for name in names:
+        body = (root / name).read_text()
+        # RFC 5545 line folding can split a URL across CRLF + space.
+        body = re.sub(r"\r?\n[ \t]", "", body)
+        linked_repos = re.findall(
+            r"https://github\.com/Simple-With-Us/([^/\s?#)\"<>]+)", body, re.IGNORECASE
+        )
+        if not all(repo.casefold() in allowed for repo in linked_repos):
+            raise AssertionError(f"disallowed repository link in {name}")
+        if "### Effort board" in body or "<h3>Effort board</h3>" in body:
+            raise AssertionError(f"effort section in {name}")
+
+
 class PublicActivityTests(unittest.TestCase):
-    def test_checked_in_public_artifacts_contain_only_allowlisted_links(self) -> None:
+    def test_current_public_surfaces_keep_visibility_checks(self) -> None:
+        def api(request: object, timeout: int) -> Reply:
+            repo = request.full_url.rsplit("/", 1)[-1]  # type: ignore[attr-defined]
+            return Reply(
+                {
+                    "private": repo == "FleetLink",
+                    "visibility": "private" if repo == "FleetLink" else "public",
+                    "owner": {"login": "Simple-With-Us"},
+                }
+            )
+
+        with patch("public_activity_repos.urllib.request.urlopen", side_effect=api) as get:
+            selected = select_public_repos(
+                "Simple-With-Us",
+                ["FleetLink", "Simple-With-Us", "Fleet-OPS", "fleetlink-legacy"],
+                "fixture",
+            )
+        self.assertEqual(selected, ["Simple-With-Us"])
+        # Private inventory is rejected before even querying its visibility.
+        self.assertEqual(get.call_count, 2)
+
+    def test_workflows_use_shared_repository_defaults(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        names = (
+        for name in ("fleet-activity-site.yml", "agent-calendar.yml"):
+            workflow = (root / ".github" / "workflows" / name).read_text()
+            self.assertNotIn("FLEET_REPOS:", workflow)
+        self.assertEqual(digest.DEFAULT_REPOS, PUBLIC_REPOS)
+        self.assertEqual(agent_calendar.DEFAULT_REPOS, PUBLIC_REPOS)
+
+    def test_live_seats_render_attribution_without_missing_marks(self) -> None:
+        registry = json.loads((Path(__file__).resolve().parents[1] / "fleet-apps.json").read_text())
+        for seat in registry["seats"]:
+            if seat.get("retired"):
+                continue
+            with self.subTest(seat=seat["tag"]):
+                agents, clean = digest.extract_agents_and_clean(
+                    f"[{seat['tag']}] Refresh public feed"
+                )
+                self.assertTrue(agents)
+                self.assertEqual(clean, "Refresh public feed")
+                rendered = digest.agent_icons_html(agents)
+                for filename in re.findall(r'agent-logos/([^"<>]+)', rendered):
+                    self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
+
+    def test_new_platforms_and_current_envelopes(self) -> None:
+        cases = {
+            "[OPENCODE/ZC] Refresh public feed": ["opencode", "zcode"],
+            "[ECHO/WISE] Refresh public feed": ["instinct"],
+            "[BF-ENGINEER/GB-FIXER] Refresh public feed": ["app-bf", "grok-bot"],
+            "[JET-CHAT] Refresh public feed": ["chatgpt"],
+            "[MiniMax Code/Muse Code/Kimi Code/Z Code] Refresh public feed": [
+                "minimax",
+                "muse",
+                "kimi",
+                "zcode",
+            ],
+            "[OPENCODE:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC] Refresh public feed": [
+                "opencode"
+            ],
+            "👀[CODEX:\u200a\u200a\u200aHH.1.S] Refresh public feed": ["codex"],
+            "👀[ECHO\u200a\u200a📁\u200aAFC] Refresh public feed": ["instinct"],
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                agents, clean = digest.extract_agents_and_clean(title)
+                self.assertEqual(agents, expected)
+                self.assertEqual(clean, "Refresh public feed")
+        fallback = digest.agent_icons_html(["opencode"])
+        self.assertIn("OpenCode</span>", fallback)
+        self.assertNotIn("<img", fallback)
+        for title in (
+            "Fix Clutch connection settings",
+            "Clutch remote sessions",
+            "Support OpenCode and ChatGPT clients",
+        ):
+            self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
+
+    def test_historical_chained_envelopes_are_cleaned_as_one_header(self) -> None:
+        for header in (
+            "[OPENCODE/ZC: HH.1.S]",
+            "[OPENCODE/ZC: HH.1.S 📁AFC]",
+            "👀[OPENCODE/ZC:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC]",
+            "[OPENCODE/ZC\u200a\u200a📁\u200aAFC]",
+        ):
+            with self.subTest(header=header):
+                agents, clean = digest.extract_agents_and_clean(f"{header} Refresh public feed")
+                self.assertEqual(agents, ["opencode", "zcode"])
+                self.assertEqual(clean, "Refresh public feed")
+
+    def test_numeric_bot_family_issue_refs_are_not_agent_attribution(self) -> None:
+        for issue in ("BF-2419", "GB-123456"):
+            for title in (
+                f"Fix {issue} runtime",
+                f"[{issue}] Refresh public feed",
+                f"{issue}: Refresh public feed",
+                f"Fix {issue}-followup runtime",
+            ):
+                with self.subTest(title=title):
+                    self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
+            title = f"Fix {issue} runtime"
+            self.assertEqual(
+                digest.extract_agents_and_clean(f"[CODEX] {title}"), (["codex"], title)
+            )
+
+    def test_legend_and_favicon_use_current_public_sources(self) -> None:
+        rendered = digest.build_html(
+            [],
+            datetime(2026, 11, 13, tzinfo=UTC),
+            ZoneInfo("America/Chicago"),
+            "https://example.com",
+        )
+        self.assertIn("Muster / AI Fleet Coordinator", rendered)
+        self.assertIn("FleetLink", rendered)
+        self.assertIn("Simple With Us", rendered)
+        self.assertIn("--swu: #4b5563;", rendered)
+        self.assertIn(".repo-swu { background: var(--swu); }", rendered)
+        self.assertIn('<span class="repo repo-swu">SWU</span>', rendered)
+        self.assertIn('href="agent-logos/app-afc.png"', rendered)
+        self.assertIn(
+            'href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)"', rendered
+        )
+        self.assertNotIn("app-fleet.", rendered)
+        self.assertNotIn("app-swu.", rendered)
+        for filename in re.findall(r'(?:src|href)="agent-logos/([^"<>]+)"', rendered):
+            self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
+
+        fixture_path = (
+            Path(__file__).resolve().parent.parent
+            / "visual-tests"
+            / "tests"
+            / "fixtures"
+            / "digest-2day.html"
+        )
+        fixture_html = fixture_path.read_text(encoding="utf-8")
+        self.assertIn("--swu: #4b5563;", fixture_html)
+        self.assertIn(".repo-swu { background: var(--swu); }", fixture_html)
+        self.assertIn(
+            '<span class="repo repo-swu">SWU</span><span class="legend-label">Simple With Us</span>',
+            fixture_html,
+        )
+        self.assertIn('href="agent-logos/app-afc.png"', fixture_html)
+        self.assertNotIn("app-fleet.", fixture_html)
+        self.assertNotIn("app-swu.", fixture_html)
+
+    def test_built_public_artifacts_contain_only_allowlisted_links(self) -> None:
+        """Published snapshots live on published/fleet-activity, not stale main copies."""
+        day = date(2026, 9, 26)
+        pr = {
+            "repo": "BotFleet",
+            "number": 123,
+            "title": "Fix onboarding",
+            "url": "https://github.com/Simple-With-Us/BotFleet/pull/123",
+            "user": "jay",
+        }
+        commit = {
+            "sha": "a" * 40,
+            "commit": {"message": "feat: fixture", "author": {"date": "2026-09-26T12:00:00Z"}},
+        }
+        artifact_names = (
             "site/index.html",
             "site/digest.md",
             "calendar/daily-digest.ics",
@@ -68,23 +241,39 @@ class PublicActivityTests(unittest.TestCase):
             "site/calendar/daily-digest.ics",
             "site/calendar/agent-activity.ics",
         )
-        allowed = {repo.casefold() for repo in PUBLIC_REPOS} | set(
-            HISTORICAL_PUBLIC_REPO_ALIASES.keys()
-        )
-        for name in names:
-            body = (root / name).read_text()
-            # RFC 5545 line folding can split a URL across CRLF + space.
-            body = re.sub(r"\r?\n[ \t]", "", body)
-            with self.subTest(name=name):
-                linked_repos = re.findall(
-                    r"https://github\.com/Simple-With-Us/([^/\s?#)\"<>]+)", body, re.IGNORECASE
-                )
-                self.assertTrue(
-                    all(repo.casefold() in allowed for repo in linked_repos),
-                    f"disallowed repository link in {name}",
-                )
-                self.assertFalse("### Effort board" in body, f"effort section in {name}")
-                self.assertFalse("<h3>Effort board</h3>" in body, f"effort section in {name}")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS", "GITHUB_TOKEN"}
+            }
+            env.update(
+                {
+                    "SITE_OUT": str(root / "site"),
+                    "ICS_OUT": str(root / "calendar" / "daily-digest.ics"),
+                    "CALENDAR_OUT": str(root / "calendar" / "agent-activity.ics"),
+                    "GITHUB_TOKEN": "fixture",
+                }
+            )
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(digest, "token", return_value="fixture"),
+                    patch.object(digest, "select_public_repos", return_value=["BotFleet"]),
+                    patch.object(digest, "fetch_merged_prs", return_value=[(day, pr)]),
+                    patch.object(digest, "fetch_issue_churn", return_value=([], [])),
+                    patch.object(agent_calendar, "select_public_repos", return_value=["BotFleet"]),
+                    patch.object(agent_calendar, "list_commits", return_value=[commit]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(agent_calendar.main(), 0)
+                    self.assertEqual(digest.main(), 0)
+            finally:
+                os.chdir(cwd)
+            assert_public_artifact_boundary(root, artifact_names)
 
     def test_private_and_unlisted_repos_never_enter_feed(self) -> None:
         def api(request: object, timeout: int) -> Reply:
@@ -189,7 +378,7 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("prefers-color-scheme: dark", rendered)
         self.assertNotIn("text-decoration: none", rendered)
 
-    def test_main_copies_only_referenced_logo_basenames(self) -> None:
+    def test_build_output_only_referenced_logo_basenames(self) -> None:
         day = date(2026, 9, 26)
         pr = {
             "repo": "BotFleet",
@@ -226,6 +415,8 @@ class PublicActivityTests(unittest.TestCase):
             self.assertIn("codex.svg", copied)
             # the legend references every repo icon, so app-dd.png ships too
             self.assertIn("app-dd.png", copied)
+            self.assertIn("app-afc.png", copied)
+            self.assertIn("app-afc-dark.webp", copied)
             # non-image extras and unused seat marks stay out of the published tree
             self.assertNotIn("README.md", copied)
             self.assertNotIn("badges", copied)
@@ -247,11 +438,11 @@ class PublicActivityTests(unittest.TestCase):
         )
         palette = dict(
             re.findall(
-                r"--(st|ct|um|dd|ps|ar|cl|shared|fleet|bf|hh|clutch|cc):\s*(#[0-9a-fA-F]{6})",
+                r"--(st|ct|um|dd|ps|ar|cl|shared|fleet|bf|hh|clutch|cc|fl|swu):\s*(#[0-9a-fA-F]{6})",
                 rendered,
             )
         )
-        self.assertEqual(len(palette), 13)
+        self.assertEqual(len(palette), 15)
         white = lum("#ffffff")
         for name, bg in sorted(palette.items()):
             ratio = (white + 0.05) / (lum(bg) + 0.05)
@@ -267,7 +458,7 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("overflow-wrap", rendered)
 
     def test_default_owner_is_the_org_and_never_the_retired_pages_host(self) -> None:
-        """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit jaywedgeworth22.github.io."""
+        """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit simple-with-us.github.io."""
         self.assertEqual(DEFAULT_FLEET_OWNER, "Simple-With-Us")
         day = date(2026, 9, 26)
         pr = {

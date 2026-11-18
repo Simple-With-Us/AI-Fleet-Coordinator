@@ -5,27 +5,34 @@ import Darwin
 import Glibc
 #endif
 
-// Reading the Seat Activity panel's four sources.
+// Reading the Seat Activity panel's sources.
 //
-// Two of them are read from the fleet chat CLI (`simple-chat`),  and two come from the
-// listener's own published state.  The CLI is asked three things,  and this file is the
-// only place that asks it anything:
+// Three are local files on the Mac:  the Mac eavesdropper's own published state,  its
+// configuration file and the seat partition.  The last post comes from the fleet chat CLI's
+// read-only Operator service (`simple-chat muster-service`),  which is asked two things,  and
+// this file is the only place that asks it anything:
 //
 //   * `users`       one call,  which resolves every seat's bot in one request
-//   * `presence`    one call per seat
-//   * `search`      one call per seat,  for that seat's last post
+//   * `last-post`   one call per seat,  for that seat's last public post
 //
-// Every one of those verbs reads.  `ChatCLI` refuses any other verb before a process
-// exists,  so no call site can turn this panel into a writer,  and there is no path here
-// that posts,  replies,  reacts  or sets a status.
+// The panel no longer asks for Zulip presence.  Zulip refuses presence for bot users
+// (`Presence is not supported for bot users`,  HTTP 400),  and every seat is a bot,  so the
+// call could only ever answer Unknown.
 //
-// The app holds no credential of its own.  The CLI resolves the credential of the seat
-// named in `--as`,  and the child environment this file builds carries only HOME and
-// PATH:  no key,  no token,  no zuliprc,  and nothing the app could print.
+// Both subcommands read.  `ChatCLI` refuses any other before a process exists,  so no call
+// site can turn this panel into a writer,  and there is no path here that posts,  replies,
+// reacts  or sets a status.
+//
+// The panel reads Zulip only as the Operator service bot (owner ruling,  AFC-654),  never as
+// an agent seat and never as Jay.  There is no seat to choose and no fallback:  when the
+// Operator read is unavailable,  the panel says so and reads nothing else.  The app holds no
+// credential of its own.  The service reads the Operator's credential itself,  and the child
+// environment this file builds carries only HOME and PATH:  no key,  no token,  no zuliprc,
+// and nothing the app could print.
 
 // MARK: - The shapes the CLI prints
 
-/// One user the realm knows,  as `users --json` prints it.
+/// One user the realm knows,  as `muster-service users` prints it (the `users --json` shape).
 struct ChatBot: Decodable, Equatable, Sendable {
     /// The user's id.
     var userID: Int?
@@ -58,33 +65,17 @@ struct ChatBot: Decodable, Equatable, Sendable {
         seat = try? container.decodeIfPresent(String.self, forKey: .seat)
     }
 
-    /// The name to hand the CLI,  which is the address when there is one.
+    /// The name to hand the Operator service:  the address,  and only the address.
     ///
-    /// The address is exact:  two bots can share a display name,  and the CLI refuses an
-    /// ambiguous one,  so the address is the better name to ask for.
+    /// The address is exact,  where two bots can share a display name,  and the service's
+    /// `last-post` takes nothing else.
     var lookupName: String? {
-        if let email, !email.isEmpty { return email }
-        if let fullName, !fullName.isEmpty { return fullName }
+        if let email, email.contains("@") { return email }
         return nil
     }
 }
 
-/// One presence answer,  as `presence --json` prints it.
-struct ChatPresenceAnswer: Decodable, Equatable, Sendable {
-    /// Whose presence this is.
-    var userID: Int?
-    /// Zulip's own word for it:  `active`,  `idle` or `offline`.
-    var status: String?
-    /// When the newest client was seen,  when there ever was one.
-    var timestamp: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case userID = "user_id"
-        case status, timestamp
-    }
-}
-
-/// One message,  as `search --json` prints it.
+/// One message,  as `muster-service last-post` prints it (the `search --json` shape).
 struct ChatMessage: Decodable, Equatable, Sendable {
     /// The message's id.
     var id: Int?
@@ -110,17 +101,21 @@ struct ChatMessage: Decodable, Equatable, Sendable {
 
 // MARK: - One call
 
-/// One call to the fleet chat CLI.
+/// One call to the fleet chat CLI's Operator service.
 ///
-/// The verb is the first argument,  and the runner refuses any verb that is not on the
-/// read-only list.  Nothing here can post.
+/// The verb is the service's subcommand and the first argument,  and the runner refuses any
+/// verb that is not on the read-only list.  The runner puts `muster-service` in front of
+/// it,  so a call can never reach an ordinary `simple-chat` verb.  Nothing here can post.
 struct ChatInvocation: Equatable, Sendable {
-    /// The arguments,  verb first.
+    /// The `simple-chat` mode every call runs under:  the read-only Operator service.
+    static let serviceMode = "muster-service"
+
+    /// The arguments after the mode,  subcommand first.
     var arguments: [String]
     /// How long the call may take.
     var timeout: TimeInterval
 
-    /// The calls this panel makes are short:  a lookup,  a presence check and a search.
+    /// The calls this panel makes are short:  a lookup and a search.
     static let defaultTimeout: TimeInterval = 30
 
     /// How long a child that was asked to stop may take before it is killed.
@@ -136,35 +131,30 @@ struct ChatInvocation: Equatable, Sendable {
         arguments.first ?? ""
     }
 
-    /// The only verbs this panel may run.
+    /// The only subcommands this panel may run.
     ///
-    /// Every one of them reads.  The runner refuses anything else,  so a new call site
-    /// cannot make this panel write to Zulip by accident.
-    static let readOnlyVerbs: Set<String> = ["users", "presence", "search"]
+    /// Both read,  and the service itself has no other.  The runner refuses anything
+    /// else,  so a new call site cannot make this panel write to Zulip by accident.
+    static let readOnlyVerbs: Set<String> = ["users", "last-post"]
 
-    /// `users --json --inactive --limit N`:  every user in the realm,  deactivated ones
+    /// `muster-service users --limit N`:  every user in the realm,  deactivated ones
     /// included,  which resolves every seat's bot in one request.
     ///
-    /// `--inactive` is what lets a deactivated bot read as deactivated:  without it the
-    /// CLI drops the account (`zulip_ops.find_users`),  and the seat would read as a seat
-    /// the realm knows no bot for.
+    /// The service always includes deactivated accounts,  so a deactivated bot reads as
+    /// deactivated and not as a seat the realm knows no bot for.
     static func users(limit: Int = 500) -> ChatInvocation {
-        ChatInvocation(["users", "--json", "--inactive", "--limit", String(limit)])
+        ChatInvocation(["users", "--limit", String(limit)])
     }
 
-    /// `presence --json NAME`:  whether one user is active,  idle or offline.
-    static func presence(name: String) throws -> ChatInvocation {
-        ChatInvocation(["presence", "--json", try ChatInvocation.checked(name)])
-    }
-
-    /// `search --json --sender NAME --limit 1`:  the seat's last post.
-    ///
-    /// The CLI fetches the newest `limit` messages of a narrow (`anchor=newest`) and
-    /// prints them oldest first,  so a limit of one is the last post and not the first.
+    /// `muster-service last-post --sender ADDRESS`:  the seat's newest post in a public
+    /// channel,  one record,  or nothing when it has none.
     static func lastPost(sender: String) throws -> ChatInvocation {
-        ChatInvocation([
-            "search", "--json", "--sender", try ChatInvocation.checked(sender), "--limit", "1",
-        ])
+        ChatInvocation(["last-post", "--sender", try ChatInvocation.checked(sender)])
+    }
+
+    /// Everything the child process is given:  the service mode,  then the arguments.
+    var processArguments: [String] {
+        [ChatInvocation.serviceMode] + arguments
     }
 
     /// A value that could be read as a flag,  or that carries whitespace or a control
@@ -208,10 +198,75 @@ struct ChatCLIResult: Equatable, Sendable {
     }
 }
 
+/// Why the Operator read was unavailable,  from the service's own fixed refusal line.
+///
+/// The service prints exactly `muster-service: refused (CODE)` and nothing else on a
+/// failure,  never provider text or a credential,  so the code is all there is to explain.
+enum OperatorReadRefusal {
+    /// The refusal code on a failed call's stderr,  or nil when the output is not one.
+    static func code(in stderr: String) -> String? {
+        let prefix = "muster-service: refused ("
+        for line in stderr.split(whereSeparator: \.isNewline).reversed() {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            guard text.hasPrefix(prefix), text.hasSuffix(")") else { continue }
+            let code = String(text.dropFirst(prefix.count).dropLast())
+            guard !code.isEmpty,
+                  code.unicodeScalars.allSatisfy({ CharacterSet.lowercaseLetters.contains($0) || $0 == "-" })
+            else { return nil }
+            return code
+        }
+        return nil
+    }
+
+    /// The plain reason for one refusal code.
+    static func reason(for code: String) -> String {
+        switch code {
+        case "pins-missing":
+            return "this Mac has not pinned the Operator.  The service needs the Operator bot's user id and "
+                + "address and the owner's user id:  operator_user_id,  operator_email and owner_user_id under "
+                + "[daemon] in ~/.simple-tools/listener.toml (or OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL)."
+        case "pins-unreadable":
+            return "the Operator pins in ~/.simple-tools/listener.toml could not be read or are not valid."
+        case "credential-unreadable":
+            return "the Operator's credential could not be read from Fleet-OPS /zulip_operator on this Mac."
+        case "realm-mismatch", "realm-invalid":
+            return "the Operator's stored realm is not the realm Muster reads."
+        case "identity-mismatch":
+            return "the credential did not authenticate as the pinned Operator bot owned by the pinned owner."
+        case "credential-rejected":
+            return "Zulip rejected the Operator's credential."
+        case "zulip-unreachable":
+            return "Zulip could not be reached in time."
+        case "zulip-error", "malformed-response":
+            return "Zulip's answer could not be used."
+        case "launched-or-remote":
+            return "the service refuses to run for a launched seat or in remote mode."
+        case "bad-request":
+            return "the service refused the request,  so the installed simple-chat may not match this Muster."
+        default:
+            return "the service refused the read."
+        }
+    }
+
+    /// One failed call,  in words:  the service's reason when it gave one,  else the exit
+    /// code and the bounded stderr tail (an older simple-chat with no Operator service).
+    static func describe(_ result: ChatCLIResult) -> String {
+        if let code = code(in: result.stderr) {
+            return reason(for: code)
+        }
+        let tail = result.stderrTail
+        return "simple-chat did not run its Operator service (exit \(result.exitCode)),  "
+            + "so the installed simple-chat may predate it." + (tail.isEmpty ? "" : "  \(tail)")
+    }
+}
+
 /// Why a call to the fleet chat CLI could not be made or could not be read.
 enum ChatCLIError: Error, Equatable, LocalizedError {
     case invalidArgument(String)
+    /// The command is not at the path that was found for it.
     case commandNotFound(String)
+    /// No place Muster looks holds the command.
+    case notInstalled
     case launchFailed(String)
     case timedOut(Int)
     case outputTooLarge
@@ -222,7 +277,10 @@ enum ChatCLIError: Error, Equatable, LocalizedError {
         case .invalidArgument(let value):
             return "The \(value) value is not a plain token,  so nothing was run."
         case .commandNotFound(let path):
-            return "The fleet chat command line was not found at \(path)."
+            return "simple-chat was not found at \(path)."
+        case .notInstalled:
+            return "Muster could not find simple-chat on this Mac.  "
+                + "It looks in ~/.local/bin,  the managed fleet runtime and the fleet checkout."
         case .launchFailed(let detail):
             return "The fleet chat command line could not be started:  \(detail)"
         case .timedOut(let seconds):
@@ -230,7 +288,7 @@ enum ChatCLIError: Error, Equatable, LocalizedError {
         case .outputTooLarge:
             return "The fleet chat command line produced more output than Muster will read."
         case .writeVerbRefused(let verb):
-            return "The \(verb) verb is not one this panel may run,  so nothing was run."
+            return "The \(verb) subcommand is not one this panel may run,  so nothing was run."
         }
     }
 }
@@ -253,21 +311,12 @@ enum ChatLocator {
     /// The override a lane or a developer build may set.
     static let overrideVariable = "MUSTER_CHAT_CLI"
 
-    /// The seat the panel reads Zulip as,  when nothing says otherwise.
-    static let defaultSeat = "CLAUDE"
-
-    /// The seat the panel reads Zulip as.
-    ///
-    /// The panel never reads as Jay:  the CLI resolves the credential of the seat named
-    /// here,  and Jay's own account is not a seat.  A launcher that started the app
-    /// cannot change this,  because the child environment carries neither
-    /// `AGENT_LAUNCHER` nor `AGENT_LAUNCH_SEAT`.
-    static func readingSeat(
-        defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> String {
-        MusterSettings.zulipSeat(defaults: defaults, environment: environment)
-    }
+    /// Who the panel reads Zulip as:  always the Operator service bot,  through
+    /// `simple-chat muster-service`.  There is no setting for it and no fallback.  The panel
+    /// never reads as an agent seat and never as Jay,  and a launcher that started the app
+    /// cannot change this,  because the child environment carries neither `AGENT_LAUNCHER`
+    /// nor `AGENT_LAUNCH_SEAT`.
+    static let readingIdentity = "Operator"
 
     /// The CLI,  or nil when it is not on this Mac.
     ///
@@ -286,7 +335,7 @@ enum ChatLocator {
         candidates.append(home.appendingPathComponent(".local/bin/simple-chat"))
         candidates.append(
             home.appendingPathComponent(
-                "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat"
+                "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat"
             )
         )
         if let engine = EngineLocator.locate(environment: environment, home: home) {
@@ -305,34 +354,29 @@ enum ChatLocator {
 ///
 /// The child environment is explicit and small:  HOME and PATH,  and nothing else.  That
 /// is deliberate.  The app never reads a Zulip key,  so there is nothing to leak,  and
-/// the CLI resolves the seat's own credential the way it does for a person at a
-/// terminal.
+/// the Operator service reads the Operator's own credential and the host's pins itself.
 struct ChatCLI: ChatRunning {
     /// The largest output this app will read.
     static let maximumOutputBytes = 8 * 1024 * 1024
 
     /// Where the CLI lives.
     var location: @Sendable () -> ChatLocation?
-    /// The seat the calls read as.
-    var seat: String
-    /// The home directory the CLI resolves its credential under.
+    /// The home directory the service reads the host's pins and the vault reader under.
     var home: URL
 
     init(
         location: @escaping @Sendable () -> ChatLocation? = { ChatLocator.locate() },
-        seat: String = ChatLocator.readingSeat(),
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.location = location
-        self.seat = seat
         self.home = home
     }
 
     /// The environment every call sees.
     ///
-    /// HOME stays,  because the seat's credential lives under it.  Everything else the
-    /// app happens to have in its own environment is dropped:  a variable that pointed
-    /// the CLI at another seat,  another realm or another checkout would make the panel
+    /// HOME stays,  because the host's pins and the vault reader live under it.  Everything
+    /// else the app happens to have in its own environment is dropped:  a variable that
+    /// pointed the CLI at a seat,  another realm or another checkout would make the panel
     /// read something other than what it says it reads.
     static func childEnvironment(home: URL) -> [String: String] {
         [
@@ -354,7 +398,7 @@ struct ChatCLI: ChatRunning {
             throw ChatCLIError.writeVerbRefused(invocation.verb)
         }
         guard let resolved = location() else {
-            throw ChatCLIError.commandNotFound("the fleet chat command line")
+            throw ChatCLIError.notInstalled
         }
         let command = resolved.command
         guard FileManager.default.isExecutableFile(atPath: command.path) else {
@@ -366,7 +410,6 @@ struct ChatCLI: ChatRunning {
                     let result = try Self.runBlocking(
                         invocation,
                         command: command,
-                        seat: seat,
                         home: home
                     )
                     continuation.resume(returning: result)
@@ -387,13 +430,8 @@ struct ChatCLI: ChatRunning {
     private static func runBlocking(
         _ invocation: ChatInvocation,
         command: URL,
-        seat: String,
         home: URL
     ) throws -> ChatCLIResult {
-        // The seat is joined to its flag as one argument,  and it is checked like any
-        // other value before anything exists:  a `MUSTER_ZULIP_SEAT` that starts with `-`
-        // can never be read as a flag of its own.
-        let seatArgument = "--as=" + (try ChatInvocation.checked(seat))
         let fileManager = FileManager.default
         // Output goes to files,  not pipes:  nothing can deadlock on a full pipe,  and a
         // child that outlives the app never takes a SIGPIPE when it prints its last line.
@@ -413,7 +451,8 @@ struct ChatCLI: ChatRunning {
 
         let process = Process()
         process.executableURL = command
-        process.arguments = [seatArgument] + invocation.arguments
+        // No `--as`:  the Operator service reads as the Operator and nothing else.
+        process.arguments = invocation.processArguments
         process.currentDirectoryURL = scratch
         process.environment = childEnvironment(home: home)
         process.standardInput = FileHandle.nullDevice
@@ -476,6 +515,206 @@ struct ChatCLI: ChatRunning {
     }
 }
 
+// MARK: - The panel's own roster
+
+/// The seats the Seats panel shows.
+///
+/// This list is the panel's own,  and it is wider than the compliance grid's on purpose:  the
+/// grid shows the seats the engine checks on this Mac,  and this panel shows every seat the
+/// fleet runs,  wherever its eavesdropper is.  The grid's roster is never changed by it.
+///
+/// The seats come from five places,  each seat once,  in this order:
+///
+///   * the grid's roster,  as the app already holds it,  so a Mac seat keeps today's row
+///   * the registry's live seats (`fleet-apps.json` `seats`,  less retired names and aliases)
+///   * the registry's extra seats (`seatApps.extraSeats`),  real seats with no row in `seats`
+///   * the family seats a pattern names role by role (`BF-<ROLE>`,  `GB-<ROLE>`)
+///   * every seat the seat partition gives to an eavesdropper (`mac` or `server`)
+///
+/// Beyond the grid's own seats,  a seat the partition marks `none` is never a row:  the
+/// partition keeps only retired names there.  When the partition was read,  an extra seat or a
+/// family seat it does not list is not a row either:  the partition never leaves a live seat
+/// with no holder,  so such a name is another login of a listed seat (`JET-CHAT` is Jet's
+/// second login,  one bot with two seats),  not a seat of its own.  The Operator (`OPERATOR`)
+/// is a service,  not a seat with a queue:  its health is the Operator's voice in Wake &
+/// Listener and the Operator Eavesdropper's row in Services,  so it is never a row here.  A tag
+/// that names a group (`GROK-BOT`),  holds a `*`,  or is not a seat name the eavesdropper
+/// accepts is never a row.
+enum SeatActivityRoster {
+    /// Tags that are never a Seats row:  the Operator,  which is a service and holds no queue.
+    static let notSeatRows: Set<String> = [OperatorOptions.seatTag]
+
+    /// The roster,  from what was read.
+    static func seats(
+        gridRoster: [String],
+        registry: FleetRegistryDocument?,
+        partition: ListenerPartition?
+    ) -> [String] {
+        var roster: [String] = []
+        var seen: Set<String> = []
+        let retired = registry?.retiredTags ?? []
+        let held = partition?.seats
+
+        // The grid's seats are added as they are,  so their rows read exactly as before.
+        for tag in gridRoster {
+            let key = tag.uppercased()
+            guard !tag.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            roster.append(tag)
+        }
+
+        // Every other seat is added by its upper-cased tag,  the name the eavesdropper and the
+        // partition use for it.  `mustBeHeld` asks that a partition that was read gives the
+        // seat to an eavesdropper.
+        func add(_ tag: String, mustBeHeld: Bool = false) {
+            let key = tag.trimmingCharacters(in: .whitespaces).uppercased()
+            guard !key.isEmpty,
+                  !seen.contains(key),
+                  !key.contains("*"),
+                  !NotASeat.contains(key),
+                  !notSeatRows.contains(key),
+                  !retired.contains(key),
+                  ListenerPartition.isSeatName(key),
+                  held?[key] != "none"
+            else { return }
+            if mustBeHeld, let held, held[key] == nil { return }
+            seen.insert(key)
+            roster.append(key)
+        }
+
+        for seat in registry?.liveSeats ?? [] where seat.aliasOf == nil {
+            add(seat.tag)
+        }
+        for tag in (registry?.seatApps?.extraSeats ?? [:]).keys.sorted() {
+            add(tag, mustBeHeld: true)
+        }
+        for tag in registry?.familySeats ?? [] {
+            add(tag, mustBeHeld: true)
+        }
+        if let held {
+            for tag in held.keys.sorted() {
+                add(tag)
+            }
+        }
+        return roster
+    }
+
+    /// The roster from the files the fleet checkout holds:  the registry and the seat
+    /// partition beside it.  A file that cannot be read adds nothing,  and the grid's seats
+    /// are always there.  The panel asks for this on every refresh,  so the two files come
+    /// through `cache`,  which reads and decodes a file again only when it has changed.
+    static func current(
+        gridRoster: [String],
+        engine: EngineLocation? = EngineLocator.locate(),
+        cache: SeatRosterFileCache = .shared
+    ) -> [String] {
+        let registry = engine.flatMap { cache.registry(at: $0.registryURL) }
+        let partitionURL = engine?.root.appendingPathComponent(ListenerPartition.relativePath)
+        let partition = cache.partition(at: partitionURL)
+        return seats(gridRoster: gridRoster, registry: registry, partition: partition)
+    }
+}
+
+// MARK: - The roster's files
+
+/// The registry and the seat partition the Seats roster is made from,  kept by path,  so a
+/// file whose size and modification time have not changed is not read or decoded again.
+///
+/// The panel's view asks for the roster on every refresh,  from the main thread,  so the
+/// cache holds a lock.  A file's size and modification time are read before the file is,  so
+/// a file that changes during a read is kept under its older stamp and read again next time,
+/// never kept as the old text under the new stamp.
+final class SeatRosterFileCache: @unchecked Sendable {
+    /// The cache the app's own reads share.
+    static let shared = SeatRosterFileCache()
+
+    private struct RegistryEntry {
+        let stamp: LedgerParseCache.Stamp
+        let registry: FleetRegistryDocument?
+    }
+
+    private struct PartitionEntry {
+        let stamp: LedgerParseCache.Stamp
+        let partition: ListenerPartition
+    }
+
+    private let lock = NSLock()
+    private var registries: [String: RegistryEntry] = [:]
+    private var partitions: [String: PartitionEntry] = [:]
+    private var registryReadCount = 0
+    private var partitionReadCount = 0
+
+    init() {}
+
+    /// How many times a registry file was read and decoded.
+    var registryReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return registryReadCount
+    }
+
+    /// How many times a partition file was read and parsed.
+    var partitionReads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return partitionReadCount
+    }
+
+    /// The registry at `url`,  or nil when it is missing,  too large or cannot be decoded.
+    func registry(at url: URL) -> FleetRegistryDocument? {
+        let path = url.path
+        guard let stamp = LedgerParseCache.stamp(of: url) else {
+            lock.lock()
+            registries[path] = nil
+            lock.unlock()
+            return nil
+        }
+        lock.lock()
+        if let entry = registries[path], entry.stamp == stamp {
+            lock.unlock()
+            return entry.registry
+        }
+        lock.unlock()
+
+        var registry: FleetRegistryDocument?
+        if stamp.size <= UInt64(WakeSettingsReader.maximumFileBytes),
+           let data = try? Data(contentsOf: url),
+           data.count <= WakeSettingsReader.maximumFileBytes {
+            registry = try? JSONDecoder().decode(FleetRegistryDocument.self, from: data)
+        }
+        lock.lock()
+        registryReadCount += 1
+        registries[path] = RegistryEntry(stamp: stamp, registry: registry)
+        lock.unlock()
+        return registry
+    }
+
+    /// The seat partition at `url`,  read as `ListenerPartition.load` reads it.
+    func partition(at url: URL?) -> ListenerPartition {
+        guard let url else { return ListenerPartition.load(from: nil) }
+        let path = url.path
+        guard let stamp = LedgerParseCache.stamp(of: url) else {
+            lock.lock()
+            partitions[path] = nil
+            lock.unlock()
+            return ListenerPartition.load(from: url)
+        }
+        lock.lock()
+        if let entry = partitions[path], entry.stamp == stamp {
+            lock.unlock()
+            return entry.partition
+        }
+        lock.unlock()
+
+        let partition = ListenerPartition.load(from: url)
+        lock.lock()
+        partitionReadCount += 1
+        partitions[path] = PartitionEntry(stamp: stamp, partition: partition)
+        lock.unlock()
+        return partition
+    }
+}
+
 // MARK: - The gate
 
 /// A counting gate:  a refresh never opens more child processes than it says it will.
@@ -519,11 +758,10 @@ actor SeatActivityGate {
 
 /// Reads the Seat Activity panel's sources.
 ///
-/// The reader makes at most one `users` call,  one `presence` call per seat  and one
-/// `search` call per seat,  and it counts every call it makes:  the ceiling is written
-/// down in `requestCeiling(forSeats:)`  and the panel shows both numbers.
+/// The reader makes at most one `users` call and one `last-post` call per seat,  and it
+/// counts every call it makes:  the ceiling is written down in `requestCeiling(forSeats:)`.
 struct SeatActivityReader {
-    /// Where the listener's state lives.
+    /// Where the eavesdropper's state lives.
     var location: ListenerStateLocation
     /// The fleet chat CLI.
     var runner: ChatRunning
@@ -531,10 +769,11 @@ struct SeatActivityReader {
     var now: () -> Date
     /// How many calls may run at once.
     var maximumConcurrentCalls: Int
-    /// The oldest listener state the panel still believes.
+    /// The oldest eavesdropper state the panel still believes.
     var maximumListenerAge: TimeInterval
-    /// The seat the panel reads Zulip as,  which the panel shows.
-    var readingSeat: String
+    /// The seat partition in Muster's own checkout,  used when the Mac's eavesdropper does
+    /// not name the copy it goes by.
+    var partitionURL: URL?
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
@@ -542,18 +781,25 @@ struct SeatActivityReader {
         now: @escaping () -> Date = { Date() },
         maximumConcurrentCalls: Int = 8,
         maximumListenerAge: TimeInterval = SeatActivityReader.defaultMaximumListenerAge,
-        readingSeat: String = ChatLocator.readingSeat()
+        partitionURL: URL? = ListenerPartition.defaultURL()
     ) {
         self.location = location
-        self.runner = runner ?? ChatCLI(seat: readingSeat)
+        self.runner = runner ?? ChatCLI()
         self.now = now
         self.maximumConcurrentCalls = maximumConcurrentCalls
         self.maximumListenerAge = maximumListenerAge
-        self.readingSeat = readingSeat
+        self.partitionURL = partitionURL
     }
 
-    /// The listener rewrites its state every few seconds while it runs
-    /// (`daemon.write_status`),  so a file a minute old belongs to a listener that has
+    /// What the panel says when the Operator read is unavailable.  It names the reason and
+    /// says plainly that no agent seat is read instead.
+    static func operatorUnavailable(_ reason: String) -> String {
+        "Muster reads Zulip only as the Operator,  and the Operator read is unavailable:  "
+            + reason + "  No agent seat is read instead,  so every last post is unknown."
+    }
+
+    /// The eavesdropper rewrites its state every few seconds while it runs
+    /// (`daemon.write_status`),  so a file a minute old belongs to an eavesdropper that has
     /// stopped or hung,  and what it says about seats is no longer true.
     static let defaultMaximumListenerAge: TimeInterval = 60
 
@@ -562,32 +808,40 @@ struct SeatActivityReader {
     /// The refresh asks the fleet chat CLI for at most:
     ///
     ///   * one `users` call,  which resolves every seat's bot in one request
-    ///   * one `presence` call per seat
-    ///   * one `search` call per seat,  and only for a seat the `users` call found
+    ///   * one `last-post` call per seat,  and only for a seat the `users` call found
     ///
-    /// so the ceiling is `1 + 2 * seats`.  Nothing else may run,  and the reader counts
-    /// what it did run  so the panel can show the two numbers beside each other.
+    /// so the ceiling is `1 + seats`,  and nothing at all for an empty roster.  Nothing
+    /// else may run,  and the reader counts what it did run.
     static func requestCeiling(forSeats seats: Int) -> Int {
-        1 + 2 * max(0, seats)
+        seats > 0 ? 1 + seats : 0
     }
+
+    /// Why the panel shows no seat,  when the app has no seat list.
+    static let noRosterReason = "Muster has no seat list,  so no seat is shown.  "
+        + "The list comes from the fleet checkout's seat registry and seat manifest,  and neither gave a seat."
 
     /// Read everything the panel shows.
     func read(roster: [String]) async -> SeatActivityModel {
         var sources = SeatActivityBuilder.Sources()
         sources.roster = roster
         sources.readAt = now()
-        sources.readingSeat = readingSeat
+        sources.readingSeat = ChatLocator.readingIdentity
         sources.listenerPath = location.statusURL.path
         sources.requestCeiling = SeatActivityReader.requestCeiling(forSeats: roster.count)
 
-        // The listener's own state:  one local file,  no call.
+        // The eavesdropper's own state:  one local file,  no call.
         readListenerState(into: &sources)
+        // Who holds each seat:  the partition the eavesdropper says it goes by,  else the copy
+        // in Muster's own checkout,  and the seat sections of the Mac's own file.
+        readPartition(into: &sources)
 
-        // The fleet chat CLI:  one `users` call,  then two calls per seat.
+        // The fleet chat CLI:  one `users` call,  then one call per seat.
         var requests = 0
         var bots: [String: ChatBot] = [:]
         guard !roster.isEmpty else {
-            // An empty roster needs no user list:  there is no seat to ask about.
+            // An empty roster needs no user list:  there is no seat to ask about.  It is
+            // never shown as an idle fleet:  the panel says it has no seat list.
+            sources.rosterProblem = SeatActivityReader.noRosterReason
             sources.requestsMade = requests
             return SeatActivityBuilder.build(sources)
         }
@@ -595,21 +849,22 @@ struct SeatActivityReader {
             let result = try await runner.run(ChatInvocation.users())
             requests += 1
             guard result.exitCode == 0 else {
-                sources.userProblem = "The fleet chat command line refused the user list "
-                    + "(exit \(result.exitCode)):  \(result.stderrTail)"
+                sources.userProblem = SeatActivityReader.operatorUnavailable(
+                    OperatorReadRefusal.describe(result)
+                )
                 sources.requestsMade = requests
                 return SeatActivityBuilder.build(sources)
             }
             guard let decoded = SeatActivityReader.decodeBots(result.stdout) else {
                 sources.userProblem = "The user list could not be read:  "
-                    + "the fleet chat command line printed a line that is not a user record."
+                    + "the Operator service printed a line that is not a user record."
                 sources.requestsMade = requests
                 return SeatActivityBuilder.build(sources)
             }
             bots = decoded
         } catch {
             requests += 1
-            sources.userProblem = "The user list could not be read:  \(error.localizedDescription)"
+            sources.userProblem = SeatActivityReader.operatorUnavailable(error.localizedDescription)
             sources.requestsMade = requests
             return SeatActivityBuilder.build(sources)
         }
@@ -630,6 +885,15 @@ struct SeatActivityReader {
             for (seat, bot) in seatsWithBots {
                 group.addTask { [runner, gate] in
                     await gate.acquire()
+                    // A read that was stopped starts no more processes:  a seat still
+                    // waiting for a slot costs nothing and says why it was not read.
+                    guard !Task.isCancelled else {
+                        await gate.release()
+                        return (seat, SeatFacts(
+                            lastPost: .unknown("The read was stopped before this seat's last post was read."),
+                            calls: 0
+                        ))
+                    }
                     let read = await SeatActivityReader.readFacts(for: seat, bot: bot, runner: runner)
                     await gate.release()
                     return (seat, read)
@@ -647,13 +911,10 @@ struct SeatActivityReader {
 
         for seat in roster {
             if let read = facts[seat] {
-                sources.presence[seat] = read.presence
                 sources.lastPosts[seat] = read.lastPost
             } else {
                 // The seat was never asked about,  and the row says why.
-                let reason = SeatActivityReader.notAskedReason(for: bots[seat])
-                sources.presence[seat] = .unknown(reason)
-                sources.lastPosts[seat] = .unknown(reason)
+                sources.lastPosts[seat] = .unknown(SeatActivityReader.notAskedReason(for: bots[seat]))
             }
         }
         sources.requestsMade = requests
@@ -663,41 +924,80 @@ struct SeatActivityReader {
     /// Why a seat was never asked about Zulip.
     static func notAskedReason(for bot: ChatBot?) -> String {
         guard let bot else {
-            return "The realm knows no bot for this seat,  so its presence and its last post are unknown."
+            return "The realm knows no bot for this seat,  so its last post is unknown."
         }
         if bot.isActive == false {
-            return "This seat's bot account is deactivated,  so its presence and its last post are unknown."
+            return "This seat's bot account is deactivated,  so its last post is unknown."
         }
         return "The realm's record of this seat's bot names no user to ask about,  "
-            + "so its presence and its last post are unknown."
+            + "so its last post is unknown."
     }
 
-    /// The listener's own published state,  read from one local file.
+    /// Who holds each seat.
+    ///
+    /// The Mac's eavesdropper names the partition it goes by,  and that copy is the one that
+    /// decides what it runs,  so it wins over the copy in Muster's own checkout.  The Mac's
+    /// own file is read too:  a seat section there that names the server is refused by the
+    /// Mac's eavesdropper,  whatever the partition says.
+    private func readPartition(into sources: inout SeatActivityBuilder.Sources) {
+        var url = partitionURL
+        if let named = sources.listener?.partitionFile, !named.isEmpty {
+            url = URL(fileURLWithPath: named)
+        }
+        // A file named by another file is not read whole when it is far larger than any real one.
+        if let url,
+           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? Int,
+           size > WakeSettingsReader.maximumFileBytes {
+            sources.partition = ListenerPartition(unreadable: "The file at \(url.path) is larger than Muster reads.")
+        } else {
+            sources.partition = ListenerPartition.load(from: url)
+        }
+        sources.partitionPath = url?.path ?? ""
+        let configPath = location.configURL.path
+        if let data = try? Data(contentsOf: location.configURL),
+           data.count <= WakeSettingsReader.maximumFileBytes {
+            sources.config = ListenerConfigDocument(text: String(decoding: data, as: UTF8.self))
+        } else if FileManager.default.fileExists(atPath: configPath) {
+            // No file is normal:  the eavesdropper then has no seat sections to refuse.  A
+            // file that is there and cannot be read could hide a seat the Mac refuses.
+            sources.configProblem = "The Mac eavesdropper's configuration at \(configPath) could not be read,  "
+                + "so a seat it refuses because its section names the server may show under the Mac."
+        }
+    }
+
+    /// The eavesdropper's own published state,  read from one local file.
     private func readListenerState(into sources: inout SeatActivityBuilder.Sources) {
         let url = location.statusURL
+        let consequence = "so the state,  sessions and quota of every seat the Mac holds are unknown."
         guard let data = try? Data(contentsOf: url) else {
-            sources.listenerProblem = "The listener's state at \(url.path) could not be read,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) could not be read,  " + consequence
             return
         }
         guard let document = try? JSONDecoder().decode(ListenerStateDocument.self, from: data) else {
-            sources.listenerProblem = "The listener's state at \(url.path) could not be read,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) could not be read,  " + consequence
             return
         }
-        // A listener that stopped leaves its last file behind,  and every lease in it
-        // still says alive.  The file is only believed while the listener is still
+        // An eavesdropper that stopped leaves its last file behind,  and every lease in it
+        // still says alive.  The file is only believed while the eavesdropper is still
         // writing it.
         guard let published = document.publishedAt else {
-            sources.listenerProblem = "The listener's state at \(url.path) does not say when it was written,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) does not say when it was written,  "
+                + consequence
             return
         }
         let age = now().timeIntervalSince(published)
         guard abs(age) <= maximumListenerAge else {
-            sources.listenerProblem = "The listener's state at \(url.path) was last written "
-                + SeatActivityReader.ageText(age) + ",  so the listener may have stopped,  "
-                + "and the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) was last written "
+                + SeatActivityReader.ageText(age) + ",  so the eavesdropper may have stopped,  and "
+                + String(consequence.dropFirst(3))
+            return
+        }
+        // The file names the instance that wrote it.  Only the Mac's own eavesdropper is
+        // read here,  so a file another instance wrote is not taken as the Mac's.
+        if let instance = document.instance, instance != ListenerPartition.thisInstance {
+            sources.listenerProblem = "The eavesdropper's state at \(url.path) says it was written by the "
+                + "\(SeatActivityText.label(instance)) instance,  not the Mac's,  " + consequence
             return
         }
         sources.listener = document
@@ -715,60 +1015,27 @@ struct SeatActivityReader {
         return "\(hours / 24) days ago"
     }
 
-    /// One seat's two answers.
+    /// One seat's answer.
     private struct SeatFacts: Sendable {
-        var presence: SeatFact<SeatPresence>
         var lastPost: SeatFact<SeatLastPost>
         /// How many calls this seat actually cost.
         var calls: Int
     }
 
-    /// The two calls for one seat.
+    /// The one call for one seat.
     private static func readFacts(
         for seat: String,
         bot: ChatBot,
         runner: ChatRunning
     ) async -> SeatFacts {
-        var facts = SeatFacts(
-            presence: .unknown("The seat's presence was not read."),
-            lastPost: .unknown("The seat's last post was not read."),
-            calls: 0
-        )
         guard let name = bot.lookupName else {
-            facts.presence = .unknown("The realm's record of this seat's bot names no user to ask about.")
-            facts.lastPost = .unknown("The realm's record of this seat's bot names no user to ask about.")
-            return facts
+            return SeatFacts(
+                lastPost: .unknown("The realm's record of this seat's bot names no user to ask about."),
+                calls: 0
+            )
         }
-        let presence = await readPresence(name: name, runner: runner)
         let lastPost = await readLastPost(name: name, runner: runner)
-        facts.presence = presence.fact
-        facts.lastPost = lastPost.fact
-        facts.calls = presence.calls + lastPost.calls
-        return facts
-    }
-
-    /// One seat's presence,  and what it cost.
-    private static func readPresence(
-        name: String,
-        runner: ChatRunning
-    ) async -> (fact: SeatFact<SeatPresence>, calls: Int) {
-        let invocation: ChatInvocation
-        do {
-            invocation = try ChatInvocation.presence(name: name)
-        } catch {
-            return (.unknown("The presence call could not be prepared:  \(error.localizedDescription)"), 0)
-        }
-        do {
-            let result = try await runner.run(invocation)
-            guard result.exitCode == 0 else {
-                return (.unknown(
-                    "The presence call failed (exit \(result.exitCode)):  \(result.stderrTail)"
-                ), 1)
-            }
-            return (decodePresence(result.stdout), 1)
-        } catch {
-            return (.unknown("The presence call could not be run:  \(error.localizedDescription)"), 1)
-        }
+        return SeatFacts(lastPost: lastPost.fact, calls: lastPost.calls)
     }
 
     /// One seat's last post,  and what it cost.
@@ -786,7 +1053,7 @@ struct SeatActivityReader {
             let result = try await runner.run(invocation)
             guard result.exitCode == 0 else {
                 return (.unknown(
-                    "The last post call failed (exit \(result.exitCode)):  \(result.stderrTail)"
+                    "The Operator could not read the last post:  " + OperatorReadRefusal.describe(result)
                 ), 1)
             }
             return (decodeLastPost(result.stdout), 1)
@@ -840,31 +1107,6 @@ struct SeatActivityReader {
         return bots
     }
 
-    /// One presence answer.
-    ///
-    /// A presence record that carries no timestamp is not an answer:  Zulip holds no
-    /// record of this user being anywhere,  and that is unknown,  not offline.  Only a
-    /// record with a time behind it can say active,  idle or offline.
-    static func decodePresence(_ text: String) -> SeatFact<SeatPresence> {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
-              let answer = try? JSONDecoder().decode(ChatPresenceAnswer.self, from: data) else {
-            return .unknown("The presence answer could not be read.")
-        }
-        guard answer.timestamp != nil else {
-            return .unknown("Zulip holds no presence record for this seat.")
-        }
-        switch answer.status {
-        case "active": return .known(.active)
-        case "idle": return .known(.idle)
-        case "offline": return .known(.offline)
-        case .some(let other):
-            return .unknown("Zulip reported a presence this app does not read:  \(other)")
-        case nil:
-            return .unknown("The presence answer carried no state.")
-        }
-    }
-
     /// One seat's last post.
     ///
     /// The body is read and never shown:  it is untrusted text,  and the panel shows
@@ -887,8 +1129,8 @@ struct SeatActivityReader {
             }
             messages.append(message)
         }
-        // The CLI prints oldest first (`zulip_ops.search`,  `fetch` sorts by id),  so the
-        // last line is the newest post.
+        // The service prints one record,  the newest.  Should a line ever come back with
+        // more,  the CLI's order is oldest first,  so the last line is the newest post.
         guard let message = messages.last else {
             return .unknown("The last post could not be read.")
         }

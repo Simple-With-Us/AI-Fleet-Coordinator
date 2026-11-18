@@ -15,6 +15,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+  checks: read
+  actions: read
 
 jobs:
   auto-merge:
@@ -67,7 +70,9 @@ jobs:
 - Gate lookups use `merge_token` when the caller passes it, falling back to
   `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
   caller's permissions, so a caller that wants the fallback to work also
-  grants its workflow `checks: read`, `actions: read` and `issues: read`.
+  grants its workflow `checks: read`, `actions: read` and `issues: read`. 
+  `issues: write` lets the reusable workflow create a missing fleet hold label
+  (`do-not-automerge`, `do-not-auto-merge`, `do-not-merge`, `needs-human-merge`).  A caller that does not grant it still auto-merges: the job warns and changes nothing.
 
 - Review gates.  `require_current_approval` (default `true`) keeps the legacy
   strict contract: the fleet reviewer must have an APPROVED review on the
@@ -119,6 +124,17 @@ jobs:
   Callers pin the reusable by SHA, so the gate reaches a repo when its pin is
   bumped.
 
+A seat can read the receipt fields itself in one `gr_wf_checks` call on the exact
+head sha (relay action `wf_checks`; `git-relay/CHECK-RUN-PAGES.md` has the full
+contract).  Each row carries `app_id`, `app_slug`, `name`, `conclusion`, `title` (cut
+to 255 characters), `summary` (cut to 500, so "starts with" still holds) and
+`started_at` (ISO 8601 text, or null when the provider sent no valid instant).  A row
+with `output_withheld` true, or with a null `title` or `summary`, gives no readable
+verdict and is not a receipt.  `latest_per_name: true` keeps the newest run per app
+and check name, and is the latest for the commit only when `complete` is true.  This
+read helps a seat decide whether to request or retry a review; the gate above still
+does its own lookups.
+
 ## Arming boundary
 
 Classification and arming are separate moments.  The arm job's first step
@@ -165,6 +181,20 @@ control — so that setting must be enabled for a merged head branch to
 disappear; the armer never sets it, so a queue repo has to have it on
 already.  A caller can also turn the flag off directly with the `delete_branch`
 input, which is what Socratic-Trade does (ST-4566).
+
+Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
+own shell against a fake `gh`, so the retry is exercised rather than
+described.
+
+## Merge queues
+
+GitHub refuses `--delete-branch` when a repository has a merge queue enabled:
+the flag flips the repository's delete-branch-on-merge setting, and a queue
+cannot have both.  The armer arms again without the flag when the queue is
+what refused it, so a repo that turns a queue on keeps arming without a
+caller change.  The queue's own "delete head branches" setting owns branch
+cleanup from that point on.  A caller can also turn the flag off directly
+with the `delete_branch` input, which is what Socratic-Trade does (ST-4566).
 
 Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
 own shell against a fake `gh`, so the retry is exercised rather than

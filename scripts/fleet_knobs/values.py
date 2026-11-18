@@ -7,6 +7,7 @@ Narrowing is the whole safety story for local files:  ``narrow()`` returns the n
 the Infisical-side value and a local one, so a local file can lower a cap, shrink an
 allowlist or force a mode down, and it can never raise, grow or enable anything.
 """
+
 from __future__ import annotations
 
 import json
@@ -183,9 +184,49 @@ def narrow(spec: Spec, base: Any, local: Any) -> Tuple[Any, bool, bool]:
                 elif val > out[key]:
                     ignored = True
             else:
-                out[key] = val      # base sets no cap here, so any local cap is narrower
+                out[key] = val  # base sets no cap here, so any local cap is narrower
         return out, out != base, ignored
-    return base, False, local != base      # str
+    return base, False, local != base  # str
+
+
+def direction(spec: Spec, old: Any, new: Any) -> str:
+    """Which way a change from `old` to `new` moves the knob, from the registry's own order.
+
+    ``same``, ``narrower`` (the fleet does less), ``wider`` (the fleet does more), ``mixed`` (a
+    list or caps change that does both) or ``none`` (a str, which has no order).  Both are typed
+    values;  an `old` of None (nothing could be read) answers ``unknown``."""
+    if old is None or new is None:
+        return "unknown"
+    if old == new:
+        return "same"
+    if spec.kind == "str":
+        return "none"
+    if spec.kind == "bool":
+        return "narrower" if new == spec.safe else "wider"
+    if spec.kind == "enum":
+        return "narrower" if spec.choices.index(new) < spec.choices.index(old) else "wider"
+    if spec.kind == "int":
+        lower = new < old
+        return "narrower" if lower == (spec.narrower == "min") else "wider"
+    if spec.kind == "list":
+        added = any(x not in old for x in new)
+        removed = any(x not in new for x in old)
+        if added and removed:
+            return "mixed"
+        return "wider" if added else "narrower"
+    if spec.kind == "caps":
+        moves = set()
+        for key in set(old) | set(new):
+            if key not in new:
+                moves.add("mixed")  # the reader falls back to its own number for a dropped name
+            elif key not in old:
+                moves.add("narrower")  # a new cap where there was none
+            elif new[key] < old[key]:
+                moves.add("narrower")
+            elif new[key] > old[key]:
+                moves.add("wider")
+        return moves.pop() if len(moves) == 1 else "mixed"
+    return "none"
 
 
 def most_conservative(spec: Spec, base: Any) -> Any:
