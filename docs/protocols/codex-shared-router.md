@@ -117,25 +117,82 @@ facts, and the delivery reads them from there:  one file, one place the deployme
 them, and the same file the service reads.  The file is read once per change of that file,
 so a delivery attempt never costs a parse of the deployment's configuration.
 
-## The cutover, and what is not switched yet
+## The cutover
 
-The sample `scripts/simple_tools/server/listener.toml` still routes CODEX through its inbox.
-That is deliberate:  a seat moves to the router only after its own path is deployed and
-verified live, and the working path is never removed before the replacement has answered a
-real wake.
+The cutover was done in this order, and the sample
+`scripts/simple_tools/server/listener.toml` now routes CODEX at the one router with the one
+bearer the router checks.  A seat moves to the router only after the replacement has been
+reviewed, is live, and has been verified with a real wake, and the working legacy binding
+is kept until all three of those hold.
 
-The cutover, when it is done, is these four steps, in this order.
+The three gates, and what each of them answered on the day of the cutover.
+
+- Reviewed:  the platform module landed on main in pull request #2284 (squash commit
+  `e4cde609b`) after Kody's code review, and every finding on it was answered, fixed and
+  resolved before the merge.
+- Live:  the router's release on the server carries `codex_wake.py`, `/health/CODEX`
+  answers `healthy` with `delivery` on, and CODEX is in `WAKE_ROUTER_DELIVERY_SEATS`.
+- Verified with a real wake:  a canary wake posted to the router's front with the
+  router's own bearer was picked by its letter, and the seat's own path answered it over
+  the ssh route (`route: ssh:codex-desktop`).
+
+The legacy binding that the sample's change removed was the seat's inbox capture on the
+server, and it had delivered nothing:  the server's wake ledger holds no wake for the seat
+at all, so nothing that worked was removed with it.  That is a recorded result too:  on the
+server, `docker exec eavesdropper /app/scripts/simple-chat wakes --as CODEX` answered
+`no wakes for CODEX` on Nov 17, 2026.  The live block is moved to the sample's block by the
+apply, and that apply is the cutover:  it writes the sample's block for every seat it manages,
+this seat and ZC among them, so the first apply after the image carries the new sample moves
+both seats to the router whatever the operator meant to move.  Both seats' three gates are
+therefore checked before that apply runs and not after it, and each seat stays on the binding
+it has for as long as no apply has moved it.
+
+One apply moves both seats, so each seat's own gates are the ones that authorize it, and one
+seat's evidence is never the other's:  this seat's three gates are the ones above, and ZC's
+three gates are the ones in `docs/protocols/zcode-wakes.md`, where the ZC seat's own review,
+its own live answer and its own real wake are recorded.  Neither seat's legacy binding had
+delivered anything when the apply replaced it:  the server's wake ledger holds no wake for
+this seat at all (`docker exec eavesdropper /app/scripts/simple-chat wakes --as CODEX` answered
+`no wakes for CODEX` on Nov 17, 2026), and the legacy bridge's own ledger on the server holds
+52 wakes for ZC and not one of them was delivered (the command that produced that count and
+its recorded result are in `docs/protocols/zcode-wakes.md`), so no path that worked was removed
+before a replacement had answered one.
+
+The steps, in this order.
 
 1.  Write the pinned profile and the pinned owner account into the local settings file, as
-    above.
+    above.  Before the live listener's block is changed, mint `CODEX_ROUTINE_URL` in
+    AFC prod `/zulip` with the value `https://<server tailnet host>:8795/wake/CODEX`, the
+    router's front for this seat.  The container is restarted after step 3 has changed
+    the block, so the new name and the new binding are in force together:  the environment
+    is read once at the container's start, so a reload alone would leave the routine
+    without its URL and every wake routine-unready.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
-3.  Change the live listener's `[seat.CODEX]` block to `wake = "http"` with
-    `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
+3.  Only then deploy the image that carries the new sample and run
+    `apply_live_config.py --apply`, which is the step that performs the cutover.  The apply
+    reads the sample from the image's own copy of it, so an image that still carries the old
+    sample writes the old block, and the image comes first.  The sample declares the binding
+    this seat takes:  `wake = "http"` with
+    `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    and the apply writes the sample's block into the live file for every seat it manages, this
+    seat and ZC among them, so one apply moves both of them to the router.  A hand edit of the
+    live file is not the way to do it:  the next apply writes the sample's block over it.  The
+    container is restarted with the apply:  the restart carries the name minted in step 1 and
+    the new binding together, and a reload alone would keep the old value.
 4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
     (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
     unsettled outcome.
+
+What the cutover proved, on the day it was done.  The canary wake was picked by its
+letter, and the delivery took the ssh route to the Mac (`route: ssh:codex-desktop`), where
+the Mac-side handler answered it.  What the delivery proves next depends on the target:
+a chat the store does not show as an
+interactive chat is refused with `not-interactive-chat` before anything is enqueued, and that
+refusal is the platform's own contract, not a routing failure.  A chat that the Codex
+Desktop app has loaded is the only target that can take the wake, so the delivery proof
+needs that app running with the chat open.
 
 ## The bounded JSON
 
