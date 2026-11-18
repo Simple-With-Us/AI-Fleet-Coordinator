@@ -675,8 +675,9 @@ class WriteIntentTests(unittest.TestCase):
             '{"request_id": "abc", "created_at_ms": true, "purpose": "sync"}',
             '{"request_id": 123, "created_at_ms": 1000, "purpose": "sync"}',
         ):
-            with self.subTest(raw=raw), self.assertRaisesRegex(
-                core.SecretsError, "write-identity-unavailable"
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(core.SecretsError, "write-identity-unavailable"),
             ):
                 core._check_recovery_identity(raw, self.intent)
 
