@@ -349,19 +349,38 @@ def transcript_path(env: Mapping[str, str], session_id: str) -> Path | None:
     return found[0] if found else None
 
 
+def _record_cwd(record: object) -> str:
+    """The working directory a transcript record asserts, or "" when it asserts none.  Claude
+    Code writes it as a top-level `cwd` string:  a `cwd` anywhere else (nested message data,
+    tool output, quoted chat text) is content, never an assertion, and so is one that is not an
+    absolute path, which would resolve against the deliverer's own folder."""
+    if not isinstance(record, dict):
+        return ""
+    cwd = record.get("cwd")
+    if isinstance(cwd, str) and cwd and os.path.isabs(cwd):
+        return cwd
+    return ""
+
+
 def transcript_cwd(path: Path) -> str:
-    """The chat's working directory, from the first transcript line that names one:  a resume has
-    to run there, because Claude Code files a chat under its project folder."""
+    """The chat's working directory, from the first transcript record that asserts one, or ""
+    when none does.  A resume has to run there:  Claude Code files a chat under the project
+    folder of the directory it was opened in and keeps it there when a later record names
+    another directory, so the first assertion wins, not the newest (a Muse chat differs,
+    muse_wake._session_cwd).  The scan runs forward from the top, where Claude Code records
+    it, and stops at that record, so no tail window decides it;  proving none exists still
+    reads the whole file."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if '"cwd"' not in line:
                     continue
                 try:
-                    cwd = json.loads(line).get("cwd")
-                except (ValueError, AttributeError):
+                    record = json.loads(line)
+                except ValueError:
                     continue
-                if isinstance(cwd, str) and cwd:
+                cwd = _record_cwd(record)
+                if cwd:
                     return cwd
     except OSError:
         pass

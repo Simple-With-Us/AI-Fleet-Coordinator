@@ -4261,6 +4261,53 @@ class Resume(ClaudeBase):
         shutil.rmtree(self.work)
         self.assertEqual(self.deliver().code, "session-cwd-gone")
 
+    def write_records(self, *records: dict) -> None:
+        path = self.project / (SID_A + ".jsonl")
+        path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    def test_a_cwd_recorded_before_a_large_tail_is_still_found(self) -> None:
+        transcript = self.transcript()
+        with open(transcript, "a", encoding="utf-8") as fh:
+            fh.write("{}\n" * 400000)
+        self.assertGreater(transcript.stat().st_size, 2 * CW.TAIL_BYTES)
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.route), ("completed", "resume"))
+        self.assertEqual(self.runs[0][1]["cwd"], str(self.work))
+
+    def test_the_folder_the_chat_was_opened_in_wins_over_a_later_one(self) -> None:
+        # Claude Code keeps a chat under the project folder it was opened in, even when later
+        # records name another directory, so the first assertion is the one a resume needs.
+        later = Path(self.tmp) / "later"
+        later.mkdir()
+        self.write_records(
+            {"type": "user", "cwd": str(self.work)}, {"type": "user", "cwd": str(later)}
+        )
+        self.deliver()
+        self.assertEqual(self.runs[0][1]["cwd"], str(self.work))
+
+    def test_a_relative_cwd_is_not_an_assertion(self) -> None:
+        # "." is a folder wherever the deliverer runs, so taking it would resume the chat there.
+        self.write_records({"type": "user", "cwd": "."})
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("refused", "session-cwd-gone"))
+        self.assertEqual(self.runs, [])
+
+    def test_a_relative_cwd_gives_way_to_a_later_absolute_one(self) -> None:
+        self.write_records({"type": "user", "cwd": "."}, {"type": "user", "cwd": str(self.work)})
+        self.deliver()
+        self.assertEqual(self.runs[0][1]["cwd"], str(self.work))
+
+    def test_a_cwd_inside_record_content_is_not_an_assertion(self) -> None:
+        elsewhere = Path(self.tmp) / "elsewhere"
+        elsewhere.mkdir()
+        self.write_records(
+            {"type": "user", "message": {"content": 'saw "cwd": "%s" in output' % elsewhere}},
+            {"type": "assistant", "message": {"cwd": str(elsewhere)}},
+            {"type": "user", "cwd": str(self.work)},
+        )
+        self.deliver()
+        self.assertEqual(self.runs[0][1]["cwd"], str(self.work))
+
     def test_a_crafted_session_id_is_refused(self) -> None:
         result = CW.deliver_local(self.env, self.cfg, "--help", self.w, runner=self.runner)
         self.assertEqual((result.outcome, result.code), ("refused", "bad-session-id"))
