@@ -1,5 +1,6 @@
 # Muster failure banner PR (#1323), first commit:  a made-up value in the scrubber's test table was read as a curl
 # auth header.  The line is reworded from the next commit on, and the PR is squash-merged, so it never reaches main.
+ad3a8095ecaf8c6f286698c5fb7c0775fadc416c:scripts/build-push-client-release.py:generic-api-key:15
 dedf2890342441357894a7f057c27cb4674b2097:muster/MusterTests/FleetViewCollectorTests.swift:curl-auth-header:124
 # Same PR, scrubber leak fixes:  a piece of a vendor's published example value was read as a generic API key, because the
 # variable's name held "Key".  The variable is renamed from the next commit on, and fingerprints are per commit.
@@ -125,4 +126,3 @@ ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTest
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:24
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:45
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:66
-ad3a8095ecaf8c6f286698c5fb7c0775fadc416c:scripts/build-push-client-release.py:generic-api-key:15
