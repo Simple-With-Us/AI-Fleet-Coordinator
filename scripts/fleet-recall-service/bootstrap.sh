@@ -49,7 +49,7 @@ else:
     print(f"bootstrap: reusing {tarball}", flush=True)
 
 wanted = ("fleet_rag/", "fleet-recall-service/")
-verifier_files = ("fleet_secrets/__init__.py", "fleet_secrets/core.py")
+verifier_files = ("fleet_infisical.py", "fleet_secrets/__init__.py", "fleet_secrets/core.py")
 n = 0
 os.makedirs(app, exist_ok=True)
 with tarfile.open(tarball, "r:gz") as t:

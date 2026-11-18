@@ -32,6 +32,7 @@ from simple_tools import config as C
 from simple_tools import launchd
 from simple_tools import live as L
 from simple_tools import service_identity as S
+from simple_tools import wake_service as WS
 from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
 from simple_tools.tests.listener_harness import ListenerHarness, SYNTHETIC_STREAM_ID
@@ -53,12 +54,14 @@ CLOUD_SEATS = {
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
 # The Mac CLI seats, held by the server listener since the one-listener cutover (owner, Tue,
-# Nov 10).  GROK and AMP are disabled there:  GROK's Infisical pair has the ZULIP_GROK_BUILD_*
-# stem, and AMP has no ZULIP_AMP_* pair.
+# Nov 10).  Only AMP is disabled, because it has no ZULIP_AMP_* pair.
 MAC_CLI_SEATS = [
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
 ]
-MAC_CLI_DISABLED = ["AMP", "GROK"]
+MAC_CLI_DISABLED = ["AMP"]
+# The seats the one wake router serves:  the platform table (the one table on both hosts) says
+# which seats have a platform module here, and the router can serve only those.
+ROUTER_SEATS = WS.installed_seats()
 # A lone seat (ZC) naming the router's bearer in another role (OPS-1048):  its error and reason.
 LONE_BEARER_ERROR = (
     "environment variable WAKE_ROUTER_KEY is the wake router's bearer and may be named only as a "
@@ -1589,7 +1592,7 @@ class PartitionTests(ServerHarness):
         self.assertEqual(
             sorted(server.disabled),
             MAC_CLI_DISABLED,
-            "only GROK and AMP are disabled, for want of a loadable Zulip pair (owner, Tue, Nov 10)",
+            "only AMP is disabled for want of a loadable Zulip pair",
         )
         self.assertEqual(
             sorted(server.seats),
@@ -1605,7 +1608,26 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            if seat == "ZC":
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is not None and routine.key_env == C.ROUTER_BEARER_ENV:
+                # A seat the sample routes at the router names the router's front and the one
+                # bearer the router checks.  A seat that has a platform module is not routed at
+                # the router yet, though:  it moves there only after its own path is deployed and
+                # verified live, and until then it keeps the binding it has.
+                self.assertIn(
+                    seat, ROUTER_SEATS, "%s is routed at the router with no module" % seat
+                )
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "%s wakes at the one router" % seat,
+                )
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("%s_ROUTINE_URL" % seat, C.ROUTER_BEARER_ENV, "bearer", "Authorization", "POST"),
+                    "%s names the router's front and the router's bearer" % seat,
+                )
+            elif seat == "ZC":
                 # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
                 # bearer, so it is the one Mac CLI seat with a routine.
                 self.assertEqual(
@@ -2139,7 +2161,7 @@ class ContainerTests(unittest.TestCase):
         lines = [
             l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
-        self.assertEqual(lines[0], "FROM python:3.14-slim")
+        self.assertEqual(lines[0], "FROM python:3.15-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["simpletools"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
