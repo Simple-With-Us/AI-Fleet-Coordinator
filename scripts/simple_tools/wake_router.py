@@ -1861,8 +1861,13 @@ def safe_note(text: object) -> str:
     The note crosses between hosts and is read back through a whitelist that admits only
     letters, digits, colon, underscore and dash, so the text is reduced to that shape:  the
     words are kept and everything else becomes a separator.  It is for a local failure, whose
-    text this host wrote, never for the registry's own answer."""
+    text this host wrote, never for the registry's own answer.
+
+    A message that carries something secret-shaped is withheld whole.  A receipt is read by
+    anyone who can read a wake, and the house scanner says what must not be written on one."""
     raw = text if isinstance(text, str) else ""
+    if secretscan.scan(raw):
+        return ""
     return re.sub(r"[^A-Za-z0-9:_-]", "_", raw).strip("_")[:NOTE_CHARS]
 
 
@@ -1910,7 +1915,9 @@ def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> D
     try:
         answer = registry_api.configuration(env)
     except Exception as exc:  # noqa: BLE001 - a configuration nobody can read fails closed
-        note = registry_note(str(exc)) or safe_note(str(exc))
+        # The note is never empty:  the setting when the error names one, the failure itself
+        # when it may be carried, and the failure's kind when neither may be.
+        note = registry_note(str(exc)) or safe_note(str(exc)) or type(exc).__name__
         return Delivery("failed", route, code=NOT_CONFIGURED, note=note)
     configured = bool(answer.get("configured"))
     reason = str(answer.get("reason") or "")

@@ -5422,6 +5422,19 @@ class RegistryNotConfigured(Base):
         self.assertLessEqual(len(delivery.note), 80)
         self.assertLessEqual(len(WR.registry_note("A" * 200)), 80)
 
+    def test_a_note_that_may_not_carry_the_failure_carries_its_kind(self) -> None:
+        """A failure whose message carries something secret-shaped is withheld whole, and the
+        receipt says the failure's kind instead."""
+        with mock.patch.object(
+            WR.registry_api, "configuration", side_effect=OSError("MY_API_KEY = ABCDEFGHIJKLMNOP")
+        ):
+            delivery = WR.registry_failure({"HOME": self.tmp})
+        self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+        self.assertEqual(delivery.note, "OSError")
+        self.assertNotIn("ABCDEFGHIJKLMNOP", delivery.note)
+        self.assertEqual(WR.safe_note("MY_API_KEY = ABCDEFGHIJKLMNOP"), "")
+        self.assertEqual(WR.safe_note("cannot read the settings"), "cannot_read_the_settings")
+
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
         """The error text is the registry's, so a free run of capitals in it must not reach
         a receipt, which anyone who can read a wake can read."""
