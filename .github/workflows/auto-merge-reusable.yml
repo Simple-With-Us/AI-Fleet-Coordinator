@@ -241,7 +241,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
-          PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.repository, inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number) }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -294,6 +294,7 @@ jobs:
             HEAD_REF="$(jq -r '.head.ref' <<< "$rearm_json")"
             TITLE="$(jq -r '.title' <<< "$rearm_json")"
             LABELS_JSON="$(jq -c '[.labels[].name]' <<< "$rearm_json")"
+            PR_URL="https://github.com/$REPO/pull/$REARM_PR_NUMBER"
             echo "::notice::rearm gate for PR #$PR_NUMBER at $HEAD"
           fi
 
