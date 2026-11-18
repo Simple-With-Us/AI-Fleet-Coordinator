@@ -82,7 +82,7 @@ class RemoteRead(unittest.TestCase):
                 self.assertNotIn(BEARER, out + err)
 
     def test_show_maps_to_the_hosted_full_message_read(self):
-        code, out, err, calls = self.run_cli(["show", "--id", "641458397"], reply({"seat": "ZC"}))
+        code, out, err, calls = self.run_cli(["show", "--id", "42"], reply({"seat": "ZC"}))
         self.assertEqual(code, 0, err)
         url, headers, msg = calls[0]
         self.assertEqual(url, "https://agents.simplewithus.com/mcp")
@@ -91,7 +91,7 @@ class RemoteRead(unittest.TestCase):
             msg["params"],
             {
                 "name": "zulip_get_message",
-                "arguments": {"message_id": 641458397, "full": True},
+                "arguments": {"message_id": 42, "full": True},
             },
         )
         self.assertIn("ok text", out)
