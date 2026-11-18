@@ -2776,6 +2776,8 @@ class CredentialTests(Base):
         # Source lanes may intentionally be group-writable.  Exercise the unchanged custody
         # guard against an actual private copied reader, rather than relaxing that guard.
         reader_dir = self.home / "reader-payload"
+        if reader_dir.is_symlink():
+            raise ValueError(f"refusing symlink: {reader_dir}")
         reader_dir.mkdir(mode=0o700)
         reader_file = reader_dir / "fleet_infisical.py"
         reader_file.write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
@@ -2883,7 +2885,9 @@ class CredentialTests(Base):
 
     def test_process_binding_and_existing_project_metadata_file_are_supported(self):
         coordinate = self.home / ".simple-tools" / "fleet-ops-project-id"
-        coordinate.parent.mkdir()
+        if coordinate.parent.is_symlink():
+            raise ValueError(f"refusing symlink: {coordinate.parent}")
+        coordinate.parent.mkdir(mode=0o700)
         coordinate.write_text(self.project + "\n")
         env = self.env()
         env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
@@ -6164,6 +6168,7 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.home = self.root / "home/control"
         self.home.mkdir(parents=True, mode=0o700)
+        (self.root / "home").chmod(0o755)
         self.root.chmod(0o700)
         self.uid = os.getuid()
         self.enterContext(

@@ -43,7 +43,29 @@ SEAT = "MM"
 SOURCE = "minimax-letter-hook"
 DISPLAY = "MiniMax"
 EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
-HOOK_TIMEOUTS = {"SessionStart": 20, "Stop": 15}
+#: The timeouts of the two hook entries, in seconds.  MiniMax Code's runtime takes a command hook's
+#: timeout from 1 to 10 seconds and refuses anything longer with HOOK_SCHEMA_INVALID, so an entry over 10
+#: is never run at all:  the hook file reads as installed and no letter note is written and no title is
+#: renamed.  The retired client's own entries used 10, 8 and 8, which is why they ran.
+#:
+#: The budget is the runtime's whole ceiling, so the register chain has to fit inside it:  a register
+#: makes at most three registry calls (the parent, the chat, the title), and the shared call timeout is
+#: three seconds, so the chain's worst case is nine seconds and the hook finishes before the runtime
+#: stops it.
+HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
+#: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
+#: refuses to write a longer one and `--check` reports a longer installed one as not current.
+HOOK_TIMEOUT_CAP = 10
+#: How long one registry call from this platform's hook may take, in seconds.  The runtime's ceiling is
+#: ten seconds and the chain that has to fit inside it is the chat's own three calls, so the chat's
+#: calls are given two seconds each:  three times two is six seconds, and the ancestor walk may spend
+#: the four that are left of the ceiling.  Every other platform keeps the shared deadline, which is
+#: longer.
+CALL_TIMEOUT = 2
+PARENT_CALL_TIMEOUT = 1
+#: How many seconds this row's hook has before the runtime stops it.  The chat's own chain (three
+#: calls at two seconds) is six of them, and the ancestor walk may spend the four that are left.
+HOOK_BUDGET = 10
 CLOSE_REASONS: tuple[str, ...] = ()
 # The retired client's letter cache (`minimax_retired_note`):  the most of one file that is read, and the most
 # project scopes looked through for it.
@@ -216,6 +238,11 @@ SPEC = PL.PlatformSpec(
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
+    call_timeout=CALL_TIMEOUT,
+    parent_call_timeout=PARENT_CALL_TIMEOUT,
+    hook_budget=HOOK_BUDGET,
 )
 
-INSTALL = PL.JsonHookInstaller(path=os.path.join(".minimax", "hooks.json"), events=HOOK_TIMEOUTS)
+INSTALL = PL.JsonHookInstaller(
+    path=os.path.join(".minimax", "hooks.json"), events=HOOK_TIMEOUTS, timeout_cap=HOOK_TIMEOUT_CAP
+)

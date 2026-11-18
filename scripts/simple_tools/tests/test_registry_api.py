@@ -385,6 +385,107 @@ class OperatorCliTests(ApiBase):
         self.assertEqual(drained.get("items"), [])
         self.assertFalse(os.path.exists(self.local_db))
 
+    def test_session_write_verbs_refuse_local_db_without_api(self) -> None:
+        OR.SessionRegistry(self.local_db).close_db()
+        cases = [
+            [
+                "register",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--location",
+                "mac",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-local-1",
+                "--seat",
+                "MM",
+                "--source",
+                "test",
+            ],
+            [
+                "relabel",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--location",
+                "mac",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-local-1",
+                "--seat",
+                "MM",
+                "--source",
+                "test",
+            ],
+            [
+                "update",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--location",
+                "mac",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-local-1",
+                "--title",
+                "X",
+            ],
+            [
+                "close",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--location",
+                "mac",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-local-1",
+            ],
+            [
+                "touch",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--location",
+                "mac",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-local-1",
+            ],
+            [
+                "sweep",
+                "--db",
+                self.local_db,
+                "--platform",
+                "minimax",
+                "--seat",
+                "MM",
+            ],
+            [
+                "reopen",
+                "--db",
+                self.local_db,
+                "--record-id",
+                "rec-1",
+            ],
+        ]
+        for argv in cases:
+            with self.subTest(verb=argv[0]):
+                code, answer = self.run_cli(argv, env={})
+                self.assertEqual(code, 2)
+                self.assertEqual(answer.get("code"), "not_configured")
+
 
 class PlatformLetterTests(ApiBase):
     def registry(

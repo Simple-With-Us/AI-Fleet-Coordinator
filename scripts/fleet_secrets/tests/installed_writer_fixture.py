@@ -8,13 +8,35 @@ import sys
 def run_fixture(args, *, cwd, env, timeout=10):
     """Keep fixture failures distinct without exposing partial child output."""
     try:
-        return subprocess.run(
-            args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(args, 124, "", "fixture-timeout")
     except FileNotFoundError:
         return subprocess.CompletedProcess(args, 127, "", "fixture-executable-missing")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        return subprocess.CompletedProcess(args, 124, "", "fixture-timeout")
+    except BaseException:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 
 
 def assert_installed_writer(test, installed, root):
