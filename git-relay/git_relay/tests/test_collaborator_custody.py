@@ -148,9 +148,8 @@ class CustodyTests(unittest.TestCase):
 
     def test_handler_exception_still_attempts_cleanup(self):
         minter, calls = self.minter()
-        with self.assertRaisesRegex(RuntimeError, "handler failed"):
-            with self.lease(minter):
-                raise RuntimeError("handler failed")
+        with self.assertRaisesRegex(RuntimeError, "handler failed"), self.lease(minter):
+            raise RuntimeError("handler failed")
         self.assertEqual(calls[-1][0], "DELETE")
 
     def test_identity_installation_and_scope_fail_closed(self):
