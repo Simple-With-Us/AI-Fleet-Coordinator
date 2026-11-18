@@ -439,7 +439,7 @@ These are the owner's rulings that the code on `main` does not do yet.
 - **Remove the other wake types.**  `wake = "claude"`, `"muse"` and `"openrouter"` and their fallbacks still load with a deprecation warning.  A seat set to one still starts a headless model, whose reply is dropped.
 - **The Operator never DMs.**  The escalation note, the `@all` reminder and the status message are still direct messages.  They belong in Side-Chats.
 - **Muster writes the Eavesdropper's settings.**  The owner ruled it on Nov 11, through the `fleet-ops-ctl` forced-command route.  `scripts/fleet-ops-control.py` has only the read verb `server eavesdropper-status`, so no write verb exists.
-- **Test Wake in Muster.**  `simple-chat daemon test-wake` sends the router's dry run (section 8).  Muster's Test Wake button is still off and nothing in Muster runs the command, and a seat that only captures has no dry run.
+- **Test Wake in Muster.**  `simple-chat daemon test-wake` sends the router's dry run (section 8).  Muster's Operator panel runs it through the control helper's `server test-wake SEAT.LETTER.GEN.HOST` (AFC-825):  a Test Wake button on one live chat of a seat the router serves, then Show Plan and Touch ID.  The helper confirms that exact chat in the letter registry before anything is sent, passes `--letter`, and fails the test when the router picks any other chat.  A seat that only captures has no dry run, and nothing in Muster sends a test wake without the owner's press.
 
 ## Decisions
 
