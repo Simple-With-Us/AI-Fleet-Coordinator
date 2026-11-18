@@ -37,13 +37,13 @@ AFC-441 discipline, applied throughout:
 The mapping contract (Jet's sign-off for AFC-398, 2026-10-23) is pinned
 in ``map_st_live`` and ``map_ct_health``:
 
-  * ST ``/api/live`` is liveness only.  Green (``ok``) requires
-    ``mango.reachable`` to be exactly true AND the last observation to be
-    fresh (age at most ``ST_OBSERVATION_MAX_AGE_SECONDS``).  HTTP 200 and
+  * ST ``/api/proxy-use`` reports the cached Mango reachability probe.  Green (``ok``) requires
+    ``mango.reachable`` to be exactly true AND the last reachability probe to be
+    fresh by ``mango.checkedAt`` (age at most ``ST_OBSERVATION_MAX_AGE_SECONDS``).  HTTP 200 and
     the body's ``ok`` flag alone never make ST green.
   * CT keeps its upstream aggregate and its components.  A direct
     ``senate_efd`` failure does not mean ingestion stopped:  while the
-    ``ingestion`` component is observed alive, a failing non-ingestion
+    all three chamber polls are observed alive, a failing non-ingestion
     component degrades CT to ``warn``, never to ``fail``.
   * A missing optional check is ``unknown``, never zero and never green:
     a component the upstream did not report keeps state ``unknown``, and
@@ -82,7 +82,7 @@ USER_AGENT = "fleet-api-health/1 (AI-Fleet-Coordinator; AFC-398)"
 
 # The only destinations this collector may ever fetch.  The path is part
 # of the pin:  another route on the same host is still another route.
-ST_LIVE_URL = "https://socratictrade.com/api/live"
+ST_LIVE_URL = "https://socratictrade.com/api/proxy-use"
 CT_HEALTH_URL = "https://congress.trade/api/health"
 ALLOWED_URLS = frozenset({ST_LIVE_URL, CT_HEALTH_URL})
 
@@ -201,32 +201,26 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
 
 
 def _observation_age(payload, now):
-    """ST's observation age in seconds, or None when unproved.
+    """Age of the source-native Mango probe; missing is never guessed.
 
-    The observation stamp is read from the first of these the payload
-    carries:  ``mango.observedAt``, ``observedAt``,
-    ``lastObservationAt``, or an explicit ``observationAgeSeconds`` /
-    ``mango.observationAgeSeconds`` number.  A future stamp is not fresh:
-    it yields a negative age, which the caller treats as unproved.
+    The public proxy-use route emits mango.checkedAt. Other observation
+    timestamps describe a different contract and cannot make it green.
     """
     mango = payload.get("mango") if isinstance(payload.get("mango"), dict) else {}
-    for stamp in (
-        mango.get("observedAt"),
-        payload.get("observedAt"),
-        payload.get("lastObservationAt"),
-        payload.get("observation_at"),
-    ):
-        epoch = parse_iso(stamp)
-        if epoch is not None:
-            return int(now - epoch)
-    for age in (payload.get("observationAgeSeconds"), mango.get("observationAgeSeconds")):
-        if isinstance(age, (int, float)) and not isinstance(age, bool):
-            return int(age)
-    return None
+    raw = mango.get("checkedAt")
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return int(now - parsed.timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def map_st_live(payload, http_status, now):
-    """Map one ST /api/live answer to its store row (minus provenance).
+    """Map one ST /api/proxy-use answer to its store row (minus provenance).
 
     Green is the conjunction, and only the conjunction:  the route
     answered 200, Mango is explicitly reachable, and the observation is
@@ -298,13 +292,55 @@ def _component_state(value):
             return "ok"
         if word in ("warn", "warning", "degraded"):
             return "warn"
-        if word in ("fail", "failed", "down", "error", "unhealthy", "critical"):
+        if word in ("fail", "failed", "down", "error", "unhealthy", "critical", "stalled"):
             return "fail"
     return "unknown"
 
 
+def _ct_pipeline_components(payload):
+    """Source-native CT checks, without conflating backlog and liveness.
+
+    All three chamber polls must explicitly be current to prove ingestion
+    alive.  A failed poll proves that lane stopped.  An empty outbox does
+    not prove any poll ran.  The separate senate_efd canary is not Senate
+    polling: a canary failure alone never declares ingestion stopped.
+    Duplicate IDs are ambiguous and therefore unknown, never first-wins.
+    """
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, dict) or "checks" not in pipeline:
+        return None
+    checks = pipeline.get("checks")
+    if not isinstance(checks, list):
+        return {}
+    by_id = {}
+    for entry in checks:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        name = entry["id"]
+        by_id[name] = "unknown" if name in by_id else _component_state(entry.get("status"))
+    found = {}
+    for target, source in (("house", "polling_house"), ("oge", "polling_executive"),
+                           ("senate_efd", "senate_efd")):
+        if source in by_id:
+            found[target] = by_id[source]
+    polls = [by_id.get(name, "unknown") for name in
+             ("polling_house", "polling_senate", "polling_executive")]
+    if "fail" in polls:
+        found["ingestion"] = "fail"
+    elif all(state == "ok" for state in polls):
+        found["ingestion"] = "ok"
+    elif all(state in ("ok", "warn") for state in polls):
+        found["ingestion"] = "warn"
+    else:
+        found["ingestion"] = "unknown"
+    return found
+
+
 def _ct_components(payload):
     """CT's components as {name: raw value}, from wherever upstream puts them."""
+    native = _ct_pipeline_components(payload)
+    if native is not None:
+        return native
     found = {}
     for container_key in ("components", "checks", "upstreams"):
         container = payload.get(container_key)
@@ -400,6 +436,13 @@ def map_ct_health(payload, http_status, now):
     if warning:
         row["state"] = "warn"
         row["reason"] = "components_degraded:%s" % ",".join(warning)
+        return row
+    aggregate = _component_state(row["upstreamStatus"])
+    if aggregate != "ok":
+        # Other source checks may degrade the aggregate even when the
+        # displayed subset is current. Never hide an upstream warning.
+        row["state"] = "warn" if aggregate in ("warn", "fail") else "unknown"
+        row["reason"] = "upstream_aggregate_not_ok"
         return row
     row["state"] = "ok"
     row["reason"] = "all_components_ok"

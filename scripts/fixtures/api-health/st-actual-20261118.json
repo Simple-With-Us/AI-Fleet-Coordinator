@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "mango": {
+    "reachable": true,
+    "checkedAt": "2026-11-18T17:22:45.512Z",
+    "attempts": 1,
+    "failureKind": null
+  }
+}
