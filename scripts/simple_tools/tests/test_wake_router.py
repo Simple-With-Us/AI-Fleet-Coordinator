@@ -5511,8 +5511,10 @@ class RegistryNotConfigured(Base):
             raise RuntimeError("refusing a symlinked directory: %s" % home)
         home.mkdir(mode=0o700, exist_ok=True)
         env = {"HOME": str(home)}
-        # No loader file at all:  the host holds none of the registry's settings.
-        self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
+        # No loader file at all:  the host holds none of the registry's settings.  The probe is
+        # asked on any host, so the missing file is really read and not skipped by the guard.
+        with mock.patch.object(WR, "REGISTRY_LOADER_HOST", True):
+            self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
         # A directory in the loader's place:  the file is there and cannot be read, which is
         # the read that lost the address.
         path = home / os.path.join(".local", "bin", "operator-registry-env")
