@@ -34,8 +34,13 @@ chat's registry `issues` (newest `seen_at` first) or, for a record with no `issu
 then the topic's words in a chat's title;  then recency.  A tie within a step goes to the most
 recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
 recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
-and an unreadable registry do not deliver, and both are bounded retries, because a chat may register
-or the registry come back before `max_attempts` or `max_age_seconds` runs out.  The receiving chat
+and an unreadable registry do not deliver.  `no-live-session` is a bounded retry, because a chat
+may register before `max_attempts` runs out;  a registry that could not be read, on a host that is
+configured to reach it, is not counted against the wake's attempts at all, because the registry may
+come back long after `max_attempts` would have been spent, and it is bounded by `max_age_seconds`
+alone.  An answer that is not an answer is malformed data rather than an outage, so it keeps the
+bounded attempts, and so does a host with no registry address or key, which is a deployment fault
+and not an outage.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
@@ -100,6 +105,8 @@ It returns a `Delivery` whose `outcome` is one of:
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
     failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
     refused      it can never work, or a retry could run the turn twice;  no retry
+    unknown      it may have run the wake and nobody can tell;  it is not retried (a retry could
+                 run the turn twice) and not recorded as delivered;  the receipt keeps it visible
 
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
@@ -246,16 +253,44 @@ DONE_KEEP_SECONDS = 30 * 86400
 REQUEST_TIMEOUT = 30
 # What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
 STOP_MARGIN_SECONDS = 5.0
-OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
+OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused", "unknown")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
 # A live registry row the check before delivery cannot read as a chat of this seat.
 UNREADABLE_ROW = "registry-row-unreadable"
-# The registry has no address or no key on this host:  a bounded retry, as an outage is.
+# The registry has no address or no key on this host:  a deployment fault, and not an outage.
+# It is answered `failed`, so the retry is counted and the wake ends with the code that says so,
+# and the note names the variable that is missing.
 NOT_CONFIGURED = "registry-not-configured"
+# The registry could not be read at all:  an outage, and not a deployment fault.  Every platform
+# answers it the same way, and the router retries it without spending one of the wake's five
+# attempts, so an outage cannot kill a wake the registry would have carried.
+REGISTRY_UNAVAILABLE = "registry-unavailable"
+# The registry answered with something that is not an answer:  malformed external data, and not
+# an outage.  It is answered `failed` as well, so the wake ends after the bounded attempts
+# instead of waiting on a registry that is broken rather than down.
+UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+#: The name the note carries when the shared loader file itself could not be read:  the loader
+#: file is the one source a loader read can fail on, and it carries the same name on every host.
+#: It is a token the transport keeps.
+REGISTRY_LOADER_SOURCE = "operator-registry-env"
+#: The name the note carries when the registry's own configuration cannot be read and the error
+#: names no setting:  the source this host reads its configuration from, which is the shared
+#: loader file on the Mac and the router's own environment on the server.  It is a token the
+#: transport keeps, so it carries no space.
+REGISTRY_HOST_SOURCE = "operator-registry-env" if sys.platform == "darwin" else "router-environment"
+#: Whether this host reads its registry configuration from the shared loader file.  The Mac's
+#: `wake-deliver` keeps that file, and the server's router reads the knobs it fetched, so the
+#: loader probe is asked only where the loader file is this host's source.  It is a module
+#: constant, so a test can ask the probe on any host.
+REGISTRY_LOADER_HOST = sys.platform == "darwin"
+#: How much of a registry answer's own words a delivery note carries:  a variable name and a
+#: reason, and never a value.  A note crosses to another host, whose readers keep only 80
+#: characters of it, so the source shapes it to that length rather than the reader cutting it.
+NOTE_CHARS = 80
 # A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
 # code for every platform, not one per platform, so it sits in NEVER_RAN here.
 HANDLER_MISSING = "platform-handler-missing"
@@ -418,12 +453,69 @@ class Pick:
     link_note: str = ""
     # The seat tag on the addressed letter's open row when it is another seat's, else "".
     letter_other_seat: str = ""
+    # What the registry said, as a transport-safe token:  the variable that is missing.
+    note: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
     """Zulip-authored text as it may be kept:  one line, bounded, and withheld if secret-shaped."""
     text = " ".join(str(value or "").split())[:limit]
     return secretscan.WITHHELD if secretscan.scan(text) else text
+
+
+#: The bounds an untrusted JSON value is held to:  how deep it may nest and how many nodes it
+#: may carry.  A byte cap alone does not bound the work the parser and the walker do.
+MAX_JSON_DEPTH = 16
+MAX_JSON_NODES = 1000
+
+
+def bounded_json(
+    value: object, max_depth: int = MAX_JSON_DEPTH, max_nodes: int = MAX_JSON_NODES
+) -> bool:
+    """Whether a parsed JSON value is within the depth and the node bounds.
+
+    The walk is iterative, so a deeply nested value cannot exhaust the interpreter's stack, and
+    a cycle is refused rather than followed.  A value that is not JSON at all (a set, an object
+    from a caller's own code) is refused too, so the helper is safe for a parsed value and for
+    one handed to it directly."""
+    pending: list[tuple[object, int, bool]] = [(value, 1, False)]
+    active: set[int] = set()
+    nodes = 0
+    while pending:
+        item, depth, leaving = pending.pop()
+        if leaving:
+            active.remove(id(item))
+            continue
+        nodes += 1
+        if nodes > max_nodes or depth > max_depth:
+            return False
+        if isinstance(item, dict):
+            identity = id(item)
+            if identity in active or any(not isinstance(key, str) for key in item):
+                return False
+            if nodes + len(item) > max_nodes or (item and depth >= max_depth):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item.values())
+        elif isinstance(item, list):
+            identity = id(item)
+            if identity in active:
+                return False
+            if nodes + len(item) > max_nodes or (item and depth >= max_depth):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item)
+        elif (
+            item is None
+            or type(item) in (str, bool, int)
+            or (type(item) is float and math.isfinite(item))
+        ):
+            continue
+        else:
+            return False
+    return True
 
 
 def letter_of(payload: Mapping[str, Any], mention: str) -> str:
@@ -707,13 +799,36 @@ def fragments_in(text: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _sender_seat(sender_part: str) -> str:
+    """The seat tag a sender header opens with, or "".  Names the header's seat -- never the woken
+    seat -- because only the sender's own quoted tags are stripped from the addressing, and a
+    woken-seat filter would erase another chat's legitimate tag."""
+    found = re.match(r"^[\U0001F440\s]*\[?\s*([A-Z][A-Z0-9_-]*)", sender_part or "")
+    return found.group(1) if found else ""
+
+
+def _drop_own_seat_quotes(addressing: str, seat: str) -> str:
+    """`addressing` without bracket spans of the sender's own seat.  A quoted span of the sender's
+    own seat is the sender writing about itself, and its interior fragment would pick the sender's
+    own chat, which is never the target.  The span -- only the span -- goes, so another address on
+    the same line survives;  it is matched anywhere in the line, so a mid-line self-quote is caught
+    too;  and spans of other seats stay, because those are addresses.  Same-seat cross-session
+    addressing goes by letter, and a wake with no sender header keeps the residual noted in the
+    picking docs, bounded by the delivery loop guard."""
+    if not seat:
+        return addressing
+    return re.sub(r"\[" + re.escape(seat) + r"[^\]\n]{0,512}\]", "", addressing)
+
+
 def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
     message_id = payload.get("message_id")
     excerpt = str(payload.get("excerpt") or "")
+    seat = str(payload.get("seat") or "")
     sender_part, addressing = split_excerpt(excerpt)
+    addressing = _drop_own_seat_quotes(addressing, _sender_seat(sender_part))
     return Wake(
         wake_id=str(payload.get("wake_id") or ""),
-        seat=str(payload.get("seat") or ""),
+        seat=seat,
         message_id=message_id if type(message_id) is int else 0,
         channel=clean(payload.get("channel")),
         topic=clean(payload.get("topic")),
@@ -1020,7 +1135,11 @@ class Router:
             found = answer.get("found") if isinstance(answer, Mapping) else None
             if type(found) is not bool or "error" in answer:
                 # Unreadable, so not a dead letter:  falling back would wake a chat not addressed.
-                return Pick(reason=registry_trouble(answer), retry=True)
+                return Pick(
+                    reason=registry_trouble(answer),
+                    retry=True,
+                    note=registry_note(answer.get("error")) if isinstance(answer, Mapping) else "",
+                )
             live = found and not _closed(answer)
             target = self._valid(answer) if live else None
             if target is not None:
@@ -1045,7 +1164,10 @@ class Router:
         if not isinstance(answer, Mapping) or "error" in answer:
             # The letter was read before the outage, so what it said still goes on the receipt.
             return Pick(
-                reason=registry_trouble(answer), retry=True, letter_other_seat=letter_other_seat
+                reason=registry_trouble(answer),
+                retry=True,
+                letter_other_seat=letter_other_seat,
+                note=registry_note(answer.get("error")) if isinstance(answer, Mapping) else "",
             )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
@@ -1410,7 +1532,17 @@ class Router:
         if entry["pick"] is None:
             pick = self.pick(wake)
             if pick.retry:
-                self._retry(entry, counted=True, code=pick.reason, pick=pick)
+                if pick.reason == REGISTRY_UNAVAILABLE:
+                    # A registry that cannot be read is an outage, not a failed delivery.
+                    self._retry_outage(entry, pick=pick)
+                    return
+                self._retry(
+                    entry,
+                    counted=True,
+                    code=pick.reason,
+                    pick=pick,
+                    result=Delivery("failed", code=pick.reason, note=pick.note),
+                )
                 return
             entry["pick"] = asdict(pick)
             self._save(entry)
@@ -1439,12 +1571,22 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale = self._stale(pick.target)
+            stale, stale_note = self._stale(pick.target)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
             if stale:
-                self._retry(entry, counted=True, code=stale, pick=pick)
+                if stale == REGISTRY_UNAVAILABLE:
+                    # The check before delivery could not read the registry:  an outage.
+                    self._retry_outage(entry, pick=pick)
+                    return
+                self._retry(
+                    entry,
+                    counted=True,
+                    code=stale,
+                    pick=pick,
+                    result=Delivery("failed", code=stale, note=stale_note),
+                )
                 return
             entry["attempts"] += 1
             entry["in_flight"] = True
@@ -1467,10 +1609,14 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target) -> str:
-        """Empty when the registry still has this letter on this session at the generation picked,
-        else why not:  `RELEASED` when it says so, or the code of a bounded retry when it cannot be
-        read or its row cannot be read as a chat of this seat.  Neither of those is a yes or a no."""
+    def _stale(self, target: Target) -> tuple[str, str]:
+        """The reason this chat must not be delivered to, and the note that says why.
+
+        The reason is empty when the registry still has this letter on this session at the
+        generation picked, else `RELEASED` when it says so, or the code of a bounded retry when
+        it cannot be read or its row cannot be read as a chat of this seat.  Neither of those
+        is a yes or a no.  The note names the variable that is missing, when the registry named
+        one, so the receipt of the failure says what to fix."""
         answer = registry_api.call(
             self.env,
             "resolve",
@@ -1478,11 +1624,12 @@ class Router:
             timeout=REGISTRY_TIMEOUT,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return registry_trouble(answer)
+            note = registry_note(answer.get("error")) if isinstance(answer, Mapping) else ""
+            return registry_trouble(answer), note
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
-            return UNREADABLE_ROW
-        return "" if held else RELEASED
+            return UNREADABLE_ROW, ""
+        return (RELEASED, "") if not held else ("", "")
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1501,6 +1648,12 @@ class Router:
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
+        if result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused"):
+            # A registry that cannot be read is an outage, not a failed delivery, whichever
+            # platform answered it:  it spends none of the wake's attempts.  An `unknown`
+            # answer stays final, because the delivery may have run and nobody can tell.
+            self._retry_outage(entry, result=result, pick=pick)
+            return
         if outcome in ("sent", "completed"):
             # A hand-over with no proof is recorded as unknown (null), never as delivered.
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
@@ -1510,8 +1663,43 @@ class Router:
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
+        elif outcome == "unknown":
+            # The delivery may have run the wake and nobody can tell:  it is not recorded as
+            # delivered, and it is not retried, because a retry could run the turn twice.  The
+            # receipt keeps it visible, so an operator can see what is not settled.
+            self._finish(entry, pick, status="unknown", delivered=None, result=result)
         else:
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
+
+    def _retry_outage(
+        self,
+        entry: dict[str, Any],
+        result: Delivery | None = None,
+        pick: Pick | None = None,
+    ) -> None:
+        """Requeue a wake whose registry could not be read.
+
+        An outage is not a failed delivery:  it spends none of the wake's five attempts, so a
+        registry that is down for twenty minutes cannot kill a wake it would have carried.
+        The wait grows like a failed delivery's backoff, because an outage may last hours and
+        every try costs a call to a service that is down;  the wake's age still bounds it.
+
+        `result` is the answer that said so, when there is one:  the platform's own delivery
+        answer keeps its route and its note.  The answer this builds for itself is the outage
+        answer, never a failure:  a wake that ends while the registry is down says the registry
+        was down, and does not blame malformed data."""
+        self._log(REGISTRY_UNAVAILABLE, entry["wake"]["wake_id"])
+        outages = int(entry.get("outages", 0)) + 1
+        entry["outages"] = outages
+        backoff = self.config["retry_backoff"]
+        self._retry(
+            entry,
+            counted=False,
+            code=REGISTRY_UNAVAILABLE,
+            pick=pick,
+            result=result or registry_outage(),
+            wait=backoff[min(outages - 1, len(backoff) - 1)],
+        )
 
     def _retry(
         self,
@@ -1521,7 +1709,13 @@ class Router:
         code: str,
         pick: Pick | None = None,
         result: Delivery | None = None,
+        wait: float | None = None,
     ) -> None:
+        """Requeue a wake.
+
+        `counted` says whether this try spends one of the wake's attempts:  a failed delivery
+        does, and a dependency that is merely unavailable does not.  `wait` is for the caller
+        that knows better than the defaults:  a counted retry uses the backoff."""
         now = self.clock()
         if counted:
             entry["failures"] += 1
@@ -1536,10 +1730,12 @@ class Router:
         if counted:
             backoff = self.config["retry_backoff"]
             wait = backoff[min(entry["failures"] - 1, len(backoff) - 1)]
-        elif result is not None and result.outcome == "busy":
-            wait = self.config["busy_retry_seconds"]
-        else:
-            wait = self.config["unreachable_retry_seconds"]
+        elif wait is None:
+            wait = (
+                self.config["busy_retry_seconds"]
+                if result is not None and result.outcome == "busy"
+                else self.config["unreachable_retry_seconds"]
+            )
         entry["next_at"] = now + wait
         entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
@@ -1671,12 +1867,165 @@ def registry_configured(env: Mapping[str, str]) -> bool:
 
 
 def registry_trouble(answer: object) -> str:
-    """The retry code for a registry answer that is not a reading:  `registry-not-configured`
-    when this host has no registry address or key (registry_api's `not_configured`), else
-    `registry-unavailable`.  Either way nothing is delivered on it."""
-    if isinstance(answer, Mapping) and answer.get("code") == "not_configured":
+    """The code for a registry answer that is not a usable reading.
+
+    `registry-not-configured` when this host has no registry address or key (registry_api's
+    `not_configured`);  `registry-unavailable` when the registry could not be read, which is an
+    outage and spends no attempt;  `registry-answer-unreadable` when the answer is not a
+    reading at all, which is malformed external data and not an outage.  Nothing is delivered on
+    any of them, and the shape of the answer is checked here, before any other code reads a
+    field of it.
+
+    The shape is the whole shape:  an error that is not a non-empty string, or a code that is
+    not a string, is not an answer the registry speaks, so it is malformed data rather than a
+    trouble to retry."""
+    if not isinstance(answer, Mapping):
+        return UNREADABLE_ANSWER
+    error = answer.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return UNREADABLE_ANSWER
+    code = answer.get("code")
+    if code is not None and not isinstance(code, str):
+        return UNREADABLE_ANSWER
+    if code == "not_configured":
         return NOT_CONFIGURED
-    return "registry-unavailable"
+    return REGISTRY_UNAVAILABLE
+
+
+def registry_loader_settings(env: Mapping[str, str]) -> set[str]:
+    """The registry settings this host's shared loader file assigns, by name.
+
+    The Mac reads the registry's address and key from the shared loader file, and the
+    loader's own reader swallows a read that fails:  a mapping without an address cannot
+    say whether the loader holds none or could not be read.  This says which the file
+    holds, from its own words and never a value:  a loader that assigns a setting holds
+    one.
+
+    The file is read a line at a time and every line is dropped after it is matched, so a
+    value it holds is never kept.  A host with no loader file at all holds none, and
+    `registry_failure` answers that one.  A loader that is there and cannot be read raises,
+    so the caller can tell a host with no loader from a read that failed."""
+    from . import platform_letter as PL
+
+    home = str(env.get("HOME") or "")
+    if not home:
+        return set()
+    names = (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV)
+    found: set[str] = set()
+    try:
+        with open(
+            os.path.join(home, PL.REGISTRY_ENV_SUBPATH), "r", encoding="utf-8", errors="replace"
+        ) as handle:
+            for line in handle:
+                for name in names:
+                    if re.match(r"\s*(?:export\s+)?%s\s*=" % re.escape(name), line):
+                        found.add(name)
+    except FileNotFoundError:
+        # No loader file at all:  the host holds none of the registry's settings.
+        return found
+    return found
+
+
+def registry_loader_lost(env: Mapping[str, str], registry_env: Mapping[str, str]) -> bool:
+    """Whether the shared loader holds the registry's address and the mapping does not carry it.
+
+    That is the read that failed:  the file says which settings it holds, and a mapping
+    without the address the file holds lost it on the way.  A loader that is there and cannot
+    be read lost it the same way.  A loader that was read and holds no address is a host that
+    is not configured, and `registry_failure` answers that one with the variable that is
+    missing.
+
+    The probe is the Mac's, because the shared loader file is the Mac's source.  A host that
+    reads its configuration elsewhere never lost the loader's address, so it never answers
+    with the loader's name:  that host's own source is named instead."""
+    if not REGISTRY_LOADER_HOST:
+        return False  # the loader file is not this host's source, so it cannot have lost anything
+    if registry_api.base_url(registry_env):
+        return False
+    try:
+        held = registry_loader_settings(env)
+    except OSError:
+        # The loader is there and could not be read:  the read lost the address, and the
+        # source that could not be read is named.
+        return True
+    return registry_api.URL_ENV in held
+
+
+def registry_note(text: object) -> str:
+    """The name of the setting a registry error names, as a token the transport keeps.
+
+    The note crosses between hosts and is read back through a whitelist that admits only
+    letters, digits, colon, underscore and dash, so free text is thrown away exactly when it
+    is meant to help.  The setting's own name is what an operator needs, and it survives.
+
+    Only the registry's own setting names are ever carried.  The text is the registry's
+    answer, so a free run of capitals in it is whatever the registry put there, and a receipt
+    is read by anyone who can read a wake:  nothing else may reach one."""
+    raw = text if isinstance(text, str) else ""
+    for name in (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV):
+        if re.search(r"\b%s\b" % re.escape(name), raw):
+            return name[:NOTE_CHARS]
+    return ""
+
+
+def registry_outage(route: str = "") -> Delivery:
+    """The answer for a registry that could not be reached at all.
+
+    Nothing ran and nothing is the chat's fault, so the router retries the wake without
+    spending one of its five attempts, and the wake waits for the registry to come back.
+    A host that is not configured to reach the registry is not an outage:  `registry_failure`
+    answers that one, and it fails closed."""
+    return Delivery("busy", route, code=REGISTRY_UNAVAILABLE)
+
+
+def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> Delivery:
+    """The answer for a registry call that raised.
+
+    A host that is not configured to reach the registry at all has no address and no key.
+    That is a deployment fault, which no retry can repair, so it fails closed:  `failed`, one
+    of the wake's attempts spent, and the note names the variable that is missing.  Every
+    other raise is a reachability failure, which is an outage:  `busy`, no attempt spent, and
+    the wake waits for the registry to come back.
+
+    The configuration is read with the registry API's own readers, so the answer names the
+    same variable the registry itself names.  A configuration that cannot be read at all
+    fails closed too:  the host's configuration is unverifiable and nothing is delivered
+    under it.  Its note names the setting when the error names one, and this host's own
+    configuration source otherwise, in a token the transport keeps."""
+    try:
+        answer = registry_api.configuration(env)
+    except Exception as exc:  # noqa: BLE001 - a configuration nobody can read fails closed
+        # The note carries the registry's own setting names and nothing else:  the error's
+        # words may hold a secret, and a receipt is read by anyone who can read a wake.
+        note = registry_note(str(exc)) or REGISTRY_HOST_SOURCE
+        return Delivery("failed", route, code=NOT_CONFIGURED, note=note)
+    configured = bool(answer.get("configured"))
+    reason = str(answer.get("reason") or "")
+    if not configured:
+        return Delivery("failed", route, code=NOT_CONFIGURED, note=registry_note(reason))
+    return registry_outage(route)
+
+
+def registry_delivery(answer: object, route: str = "") -> Delivery:
+    """The answer every platform gives when the registry answered something that is not a
+    usable reading.
+
+    The shape of the answer is checked before any field of it is read.  An answer that is not
+    a mapping is malformed external data:  it is `failed` with the code that names it, so the
+    wake ends after the bounded attempts instead of waiting on a registry that is broken
+    rather than down.
+
+    An answer that carries an error is a trouble.  A host with no registry address or key is
+    `failed`, because a retry does not fix a deployment fault, and the note names the variable
+    that is missing.  Anything else is an outage:  it is `busy`, it spends none of the wake's
+    attempts, and it waits for the registry."""
+    code = registry_trouble(answer)
+    if code == REGISTRY_UNAVAILABLE:
+        return Delivery("busy", route, code=code)
+    note = ""
+    if isinstance(answer, Mapping):
+        note = registry_note(answer.get("error"))
+    return Delivery("failed", route, code=code, note=note)
 
 
 def _closed(row: Mapping[str, Any]) -> bool:

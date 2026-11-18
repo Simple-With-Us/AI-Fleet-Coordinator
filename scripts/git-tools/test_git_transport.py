@@ -382,13 +382,57 @@ class Publish(unittest.TestCase):
             self.publish_unmocked(specs)
         self.assertEqual(self.sent, [])
 
-    def test_a_workflow_path_is_refused_before_any_commit(self):
+    def test_narrow_workflow_release_builder_regressions(self):
+        # CI already executes this module. Keep the release-builder safety suite
+        # on that exact route without requiring a workflow edit to repair itself.
+        path = HERE.parent / "test_workflow_client_release.py"
+        spec = importlib.util.spec_from_file_location("workflow_release_tests", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromModule(module).run(result)
+        self.assertEqual(result.testsRun, 6)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+
+    def test_workflow_file_uses_the_same_fenced_hosted_batch(self):
         good = self.file("good", 10)
-        bad = self.file("wf", 10)
-        specs = [f"{good}=ok.txt", f"{bad}=.github/workflows/x.yml"]
+        workflow = self.file("wf", 10)
+        specs = [f"{good}=ok.txt", f"{workflow}=.github/workflows/x.yml"]
+        self.assertEqual(self.publish(specs), 0)
+        self.assertEqual([n for n, _, _ in self.sent], ["gr_wf_branch_get", "gr_wf_files_put"])
+        put = self.puts()[0]
+        self.assertEqual(put["identity"], "CLAUDE")
+        self.assertEqual(put["expected_head_sha"], "a" * 40)
+        self.assertEqual([f["path"] for f in put["files"]], ["ok.txt", ".github/workflows/x.yml"])
+        self.assertEqual(
+            base64.b64decode(put["files"][1]["content_b64"]), Path(workflow).read_bytes()
+        )
+
+    def test_later_workflow_batch_refused_before_any_write(self):
+        specs = [f"{self.file(f'ordinary{i}', 10)}=ordinary{i}" for i in range(20)]
+        specs.append(f"{self.file('later-workflow', 10)}=.github/workflows/ci.yml")
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            self.publish_unmocked(specs)
+            self.publish(specs, base="main")
         self.assertEqual(self.sent, [])
+
+    def test_oversize_workflow_publish_refused_before_any_write(self):
+        specs = [f"{self.file(f'large{i}', 1024 * 1024)}=large{i}" for i in range(4)]
+        specs.append(f"{self.file('workflow-large', 10)}=.github/workflows/ci.yml")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.publish(specs)
+        self.assertEqual(self.sent, [])
+
+    def test_workflow_directories_still_refused_before_any_commit(self):
+        for path in (".github", ".github/workflows"):
+            with self.subTest(path=path):
+                specs = [
+                    f"{self.file('good-dir', 10)}=ok.txt",
+                    f"{self.file('bad-dir', 10)}={path}",
+                ]
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    self.publish_unmocked(specs)
+                self.assertEqual(self.sent, [])
 
     def test_a_local_path_containing_an_equals_sign(self):
         folder = self.root / "build=2"
