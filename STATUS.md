@@ -1,5 +1,9 @@
 # Status
 
+## 2026-11-16 — fleet-health-recover probes /api/live and waits for ST strategy runs ([ST-4635](https://linear.app/simple-with-us/issue/ST-4635))
+
+`fleet-health-recover@socratic-app` now probes `/api/live` instead of `/api/health`, with the same 12s limit and the same 2-failure threshold.  A new opt-in run guard (`RUN_GUARD_DB`) defers a due restart while a strategy run or an unexpired run lease is in the DB, for at most 15 minutes, then restarts as before.  `usage-monitor` is unchanged.  The host was applied 2026-11-16 6:30pm CT, with backups under `/root/backups/fleet-health-recover-st4635-20261117T003012Z/`.  Rollout: `docs/rollouts/2026-11-16-fleet-health-recover-live-run-guard.md`.
+
 ## 2026-11-12 CURSOR — Agent config reconcile ([AFC-370](https://linear.app/simple-with-us/issue/AFC-370))
 
 One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lane Map blocks, guard hooks and MCP config on a host with this checkout.  Check is the default and exits 1 on managed drift.  `--apply` calls the existing installers.  `~/.claude/CLAUDE.md` and `~/AGENTS.md` stay report-only.  The doctor grows an `agent-config` row from the same check and does not apply.  Hosts are not reconciled by this change.  Rollout: `docs/rollouts/2026-11-12-afc-370-agent-config-reconcile.md`.
