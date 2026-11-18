@@ -308,8 +308,12 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
 
 def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
     """The chat's cwd when a prompt may be sent, else the outcome and no prompt."""
-    if row.get("live") is not True:
+    live = row.get("live")
+    if live is False:
         return WR.Delivery("refused", "grok-drive", code=NOT_ATTACHED)
+    if live is not True:
+        # A missing or malformed field does not show that no TUI has the chat open.
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
     if row.get("turnState") != "idle":
         return WR.Delivery("busy", "grok-drive", code=_turn_code(row.get("turnState")))
     cwd = row.get("cwd")

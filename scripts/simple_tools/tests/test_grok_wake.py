@@ -264,11 +264,21 @@ class GrokWake(unittest.TestCase):
         self.assertEqual(len(drive.calls), 1)
 
     def test_no_refusal_still_says_the_vague_not_live(self) -> None:
-        for sessions in ([row(live=False)], [], [row(live="yes")]):
+        for sessions in ([row(live=False)], []):
             with self.subTest(sessions=len(sessions)):
                 _drive, answer = self.deliver(drive=Drive(sessions))
                 self.assertNotEqual(answer["delivery"]["code"], "not-live")
                 self.assertIn(answer["delivery"]["code"], GW.NEVER_RAN)
+
+    def test_a_malformed_live_field_is_unreadable_and_retried(self) -> None:
+        for value in ("yes", None, 1):
+            with self.subTest(live=value):
+                drive, answer = self.deliver(drive=Drive([row(live=value)]))
+                self.assertEqual(
+                    (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                    ("failed", "drive-list-unreadable"),
+                )
+                self.assertIsNone(drive.prompted())
 
     def test_an_updated_router_still_reads_the_old_code_as_never_ran(self) -> None:
         # A Mac that has not been updated answers `not-live`;  that must stay delivered:  false.

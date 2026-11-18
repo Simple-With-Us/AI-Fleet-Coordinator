@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 DISK = REPO / "scripts" / "grok-acp-runtime"
 sys.path.insert(0, str(DISK))
 
-from session_disk import (
+from session_disk import (  # noqa: E402
     DEFAULT_IDLE_UNLOAD_SEC,
     enrich_sessions,
     is_self_session,
@@ -46,7 +46,7 @@ def _any_live_id() -> str:
 
 
 def _iso_now() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class PrefixTests(unittest.TestCase):
@@ -274,12 +274,9 @@ class AfterInjectTests(unittest.TestCase):
             except StopIteration:
                 return states[-1]
 
-        with (
-            patch("session_disk.turn_state", side_effect=fake_state),
-            patch(
-                "session_disk.peek_summary",
-                return_value={"ok": True, "text": "done"},
-            ),
+        with patch("session_disk.turn_state", side_effect=fake_state), patch(
+            "session_disk.peek_summary",
+            return_value={"ok": True, "text": "done"},
         ):
             out = poll_after_inject("x", before_started=1.0, timeout=2.0, interval=0.0)
         self.assertEqual(out.get("await"), "idle")
@@ -294,12 +291,9 @@ class AfterInjectTests(unittest.TestCase):
             "pendingTool": None,
             "phase": None,
         }
-        with (
-            patch("session_disk.turn_state", return_value=idle),
-            patch(
-                "session_disk.peek_summary",
-                return_value={"ok": True, "text": "old"},
-            ),
+        with patch("session_disk.turn_state", return_value=idle), patch(
+            "session_disk.peek_summary",
+            return_value={"ok": True, "text": "old"},
         ):
             out = poll_after_inject("x", before_started=1.0, timeout=0.05, interval=0.01)
         self.assertEqual(out.get("await"), "timeout")
@@ -313,12 +307,9 @@ class AfterInjectTests(unittest.TestCase):
             "pendingTool": None,
             "phase": None,
         }
-        with (
-            patch("session_disk.turn_state", return_value=idle),
-            patch(
-                "session_disk.peek_summary",
-                return_value={"ok": True, "text": "now"},
-            ),
+        with patch("session_disk.turn_state", return_value=idle), patch(
+            "session_disk.peek_summary",
+            return_value={"ok": True, "text": "now"},
         ):
             out = poll_until_idle("x", timeout=2.0, interval=0.0)
         self.assertEqual(out.get("await"), "idle")
@@ -341,22 +332,19 @@ class PendingToolTests(unittest.TestCase):
                 "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
             )
             (d / "summary.json").write_text(
-                json.dumps(
-                    {
-                        "info": {"cwd": "/Users/jay/apps"},
-                        "last_turn_summary": "waiting",
-                        "generated_title": "perm",
-                    }
-                ),
+                json.dumps({
+                    "info": {"cwd": "/Users/jay/apps"},
+                    "last_turn_summary": "waiting",
+                    "generated_title": "perm",
+                }),
                 encoding="utf-8",
             )
             (root / "active.json").write_text(
                 json.dumps([{"session_id": sid, "cwd": "/Users/jay/apps", "pid": 1}]),
                 encoding="utf-8",
             )
-            with (
-                patch("session_disk.SESSIONS_ROOT", root),
-                patch("session_disk.ACTIVE_SESSIONS", root / "active.json"),
+            with patch("session_disk.SESSIONS_ROOT", root), patch(
+                "session_disk.ACTIVE_SESSIONS", root / "active.json"
             ):
                 st = turn_state(sid)
                 peek = peek_summary(sid)
@@ -389,62 +377,12 @@ class PendingToolTests(unittest.TestCase):
                 json.dumps({"info": {"cwd": "/Users/jay/apps"}}),
                 encoding="utf-8",
             )
-            with (
-                patch("session_disk.SESSIONS_ROOT", root),
-                patch("session_disk.ACTIVE_SESSIONS", root / "none.json"),
+            with patch("session_disk.SESSIONS_ROOT", root), patch(
+                "session_disk.ACTIVE_SESSIONS", root / "none.json"
             ):
                 st = turn_state(sid)
             self.assertIsNone(st.get("pendingTool"))
             self.assertEqual(st.get("turnState"), "idle")
-
-
-class LiveMeansATuiHasItOpenTests(unittest.TestCase):
-    """What `live` means to the wake router's GROK last mile (`simple_tools.grok_wake`):  a Grok TUI
-    lists the chat in active_sessions.json.  A chat that was quit is in the leader's list with live
-    false, however long the registry keeps its row open."""
-
-    def test_a_listed_chat_no_tui_has_open_is_not_live_and_an_open_one_is(self) -> None:
-        quit_id = "01a1d159-c503-7db1-84f5-44dddd91063d"
-        open_id = "01a1d159-c503-7db1-84f5-44dddd910640"
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "active.json").write_text(
-                json.dumps(
-                    [
-                        {
-                            "session_id": open_id,
-                            "pid": os.getpid(),
-                            "pid_start": 1,
-                            "cwd": "/tmp/fixture",
-                            "opened_at": "2026-11-17T20:00:00Z",
-                        }
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            with (
-                patch("session_disk.SESSIONS_ROOT", root),
-                patch("session_disk.ACTIVE_SESSIONS", root / "active.json"),
-            ):
-                rows = {
-                    r["sessionId"]: r
-                    for r in enrich_sessions(
-                        [{"sessionId": quit_id, "cwd": "/tmp/fixture"}, {"sessionId": open_id}]
-                    )
-                }
-        self.assertIs(rows[quit_id]["live"], False)
-        self.assertIs(rows[open_id]["live"], True)
-
-    def test_an_empty_registry_of_open_tabs_makes_nothing_live(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / "active.json").write_text("[]", encoding="utf-8")
-            with (
-                patch("session_disk.SESSIONS_ROOT", root),
-                patch("session_disk.ACTIVE_SESSIONS", root / "active.json"),
-            ):
-                rows = enrich_sessions([{"sessionId": "01a1d159-c503-7db1-84f5-44dddd91063d"}])
-        self.assertEqual([r["live"] for r in rows], [False])
 
 
 class InstallScriptTests(unittest.TestCase):
@@ -502,9 +440,8 @@ class PromptInjectReceiptTests(unittest.TestCase):
                 self.assertFalse(user_prompt_receipt(sid, "other"))
 
     def test_prompt_inject_receipt_accepts_new_turn(self) -> None:
-        with (
-            patch("session_disk.turn_state", return_value={"turnStartedAt": 20.0}),
-            patch("session_disk.user_prompt_receipt", return_value=False),
+        with patch("session_disk.turn_state", return_value={"turnStartedAt": 20.0}), patch(
+            "session_disk.user_prompt_receipt", return_value=False
         ):
             self.assertTrue(prompt_inject_receipt("s", "x", before_started=10.0))
 

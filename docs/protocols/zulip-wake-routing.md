@@ -148,7 +148,7 @@ GROK is delivered by `simple_tools/grok_wake.py`:  the router picks a chat from 
 - `drive-list-unavailable`, `drive-list-timeout`, `drive-list-unreadable`:  the list could not be trusted (retried).
 - `turn-working`, `turn-needs-input`:  the chat is busy (retried).
 
-Both refusals are final and `delivered: false`.  A quit chat is never resumed headless, because that would run tools with nobody watching.  The Zulip message stays in the seat's inbox.  Before November 17, 2026 both refusals read `not-live`.
+Both refusals are final and `delivered: false`.  A quit chat is never resumed headless, because that would run tools with nobody watching.  The Zulip message stays in the seat's inbox.  Until the Mac and the server both run this change, a refusal can still read `not-live`.  Deploy the server before the Mac.  The server router builds its never-ran set from its own copy of grok_wake, so a Mac that answers with the new codes before the server is updated is recorded as delivered: null rather than false.  The order the other way round is covered, because the old code stays in the set.
 
 ## Single-Threaded Platforms (The Grok Bots GB-*, MA, JET, WISE, ECHO)
 
