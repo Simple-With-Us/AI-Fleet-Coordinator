@@ -390,3 +390,68 @@ test("a gate that cannot answer is a 503 with Retry-After, never a 200 refusal",
   const answer = await verifyCall(ID, "a".repeat(64), gates);
   assert.deepEqual([answer.status, answer.retryAfter, answer.body], [503, "30", { ok: false, reason: "unavailable" }]);
 });
+
+// AFC-844:  every refusal is one diagnostics row, so the relay's bearer_rejected or
+// verifier_unavailable has a readable cause.  The seat is named only when the
+// presented bearer's hash matched the seat's own, so a guess cannot spread rows
+// across identities.
+test("every refusal records one gr_bearer diagnostics row, naming the seat only for its holder", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const expiredStore = memStore();
+  await S.gbBearerMint(expiredStore, { hash, by: "t", expiresAt: Date.now() - 1000 });
+  const row = (reason, status, seat = null) => ({ kind: "gr_bearer", reason, seat, status });
+  const run = async (label, h, gates, options, answer, expected) => {
+    const diagnostics = [];
+    const got = await verifyCall(ID, h, gates, { ...options, recordRefusal: async (r) => void diagnostics.push(r) });
+    assert.equal(got.body.reason, answer, `${label}:  the relay-facing reason is unchanged`);
+    assert.deepEqual(diagnostics, expected === null ? [] : [expected], label);
+  };
+  await run("live", hash, fakeGates(store), {}, undefined, null);
+  await run("mismatch", "0".repeat(64), fakeGates(store), {}, "mismatch", row("mismatch", 200));
+  await run("no bearer", hash, fakeGates(memStore()), {}, "none", row("none", 200));
+  await run("expired", hash, fakeGates(expiredStore), {}, "expired", row("expired", 200, ID));
+  await run("paused", hash, fakeGates(store, { paused: true }), {}, "paused", row("paused", 200, ID));
+  await run("events only", hash, fakeGates(store, { paused: false }), { eventsOnlySeats: [ID] }, "events_only", row("events_only", 200, ID));
+  const down = () => ({ gbBearerCheck: async () => { throw new Error("gate down"); } });
+  await run("gate down", hash, down, {}, "unavailable", row("unavailable", 503));
+  await run("no verify key", hash, fakeGates(store), { resolveKey: async () => "" }, "not_configured", row("not_configured", 404));
+  // A bad route signature names no seat, though the body claims one.
+  const { bytes } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash, sent_at: Math.floor(Date.now() / 1000) });
+  const forged = new Request("https://x.test/internal/gr-bearer-verify", { method: "POST", headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: "b".repeat(64) }, body: bytes });
+  const diagnostics = [];
+  const resp = await serveGrBearerVerify(forged, {}, fakeGates(store), { resolveKey: async () => KEY, recordRefusal: async (r) => void diagnostics.push(r) });
+  assert.equal(resp.status, 401);
+  assert.deepEqual(diagnostics, [row("bad_signature", 401)]);
+  // The route's own refusals before the signature:  a GET and an oversized body.
+  const direct = async (init) => {
+    const rows = [];
+    const answer = await serveGrBearerVerify(new Request("https://x.test/internal/gr-bearer-verify", init), {}, fakeGates(store), { resolveKey: async () => KEY, recordRefusal: async (r) => void rows.push(r) });
+    return { status: answer.status, reason: (await answer.json()).reason, rows };
+  };
+  assert.deepEqual(await direct({ method: "GET" }), { status: 405, reason: "method_not_allowed", rows: [row("method_not_allowed", 405)] });
+  assert.deepEqual(
+    await direct({ method: "POST", headers: { "Content-Type": "application/json", "Content-Length": "5000" }, body: "x".repeat(5000) }),
+    { status: 413, reason: "too_large", rows: [row("too_large", 413)] },
+  );
+});
+
+test("a verify key that cannot be read stays the route error it was, and leaves a row", async () => {
+  const diagnostics = [];
+  const outage = async () => { throw new Error("infisical down"); };
+  await assert.rejects(verifyCall(ID, "a".repeat(64), fakeGates(memStore()), { resolveKey: outage, recordRefusal: async (r) => void diagnostics.push(r) }), /infisical down/);
+  assert.deepEqual(diagnostics, [{ kind: "gr_bearer", reason: "key_unavailable", seat: null, status: 500 }]);
+});
+
+test("a failing diagnostics log never changes the bearer verify answer", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const recordRefusal = async () => { throw new Error("diagnostics storage down"); };
+  assert.deepEqual((await verifyCall(ID, "0".repeat(64), fakeGates(store), { recordRefusal })).body, { ok: false, reason: "mismatch" });
+  const down = () => ({ gbBearerCheck: async () => { throw new Error("gate down"); } });
+  const unavailable = await verifyCall(ID, hash, down, { recordRefusal });
+  assert.deepEqual([unavailable.status, unavailable.retryAfter, unavailable.body], [503, "30", { ok: false, reason: "unavailable" }]);
+  assert.equal((await verifyCall(ID, hash, fakeGates(store), { recordRefusal })).body.ok, true);
+});

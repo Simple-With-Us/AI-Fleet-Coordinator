@@ -65,7 +65,7 @@ function fakeGates(store, { audits = [] } = {}) {
   });
 }
 
-async function call(token, { store, audits = [], hostedSeats = ["CODEX"], eventsOnlySeats = [], signKey = SIGN_KEY, key = KEY, method = "POST", body, grantExists = async () => true } = {}) {
+async function call(token, { store, audits = [], diagnostics = [], recordRefusal, resolveKey, resolveSignKey, hostedSeats = ["CODEX"], eventsOnlySeats = [], signKey = SIGN_KEY, key = KEY, method = "POST", body, grantExists = async () => true } = {}) {
   const gateStore0 = store ?? await gateStore();
   const { bytes, signature } = body ?? await bodyFor(token);
   const req = new Request("https://worker.example/internal/gr-assert-verify", {
@@ -75,11 +75,12 @@ async function call(token, { store, audits = [], hostedSeats = ["CODEX"], events
   });
   const gates = fakeGates(gateStore0, { audits });
   return serveGrAssertVerify(req, {}, gates, {
-    resolveKey: async () => key,
-    resolveSignKey: async () => signKey,
+    resolveKey: resolveKey ?? (async () => key),
+    resolveSignKey: resolveSignKey ?? (async () => signKey),
     hostedSeats,
     eventsOnlySeats,
     grantExists,
+    recordRefusal: recordRefusal ?? (async (row) => void diagnostics.push(row)),
   });
 }
 
@@ -194,6 +195,89 @@ test("an events-only seat and an unlisted seat refuse", async () => {
   const token = await mint();
   assert.equal((await (await call(token, { eventsOnlySeats: ["CODEX"] })).json()).reason, "events_only");
   assert.equal((await (await call(token, { hostedSeats: ["ECHO"] })).json()).reason, "bad_seat");
+});
+
+// AFC-844:  every refusal is one diagnostics row, so a bearer_rejected the relay reports
+// has a readable cause.  The seat is named only past the assertion's own signature;
+// before it, nothing in the token can be trusted.
+test("every refusal records one gr_assert diagnostics row with its reason, status and trusted seat", async () => {
+  const row = (reason, status, seat = null) => ({ kind: "gr_assert", reason, seat, status });
+  const cases = [];
+  const run = async (label, token, options, answer, expected) => {
+    const diagnostics = [];
+    const resp = await call(token, { ...options, diagnostics });
+    const body = await resp.json();
+    assert.equal(body.reason, answer, `${label}:  the relay-facing reason is unchanged`);
+    assert.equal(body.ok, false, label);
+    assert.deepEqual(diagnostics, [expected], label);
+    cases.push(label);
+  };
+  const token = await mint();
+  const good = await bodyFor(token);
+  // Before the assertion's signature:  no seat is named.
+  await run("route signature", token, { body: { bytes: good.bytes, signature: "b".repeat(64) } }, "bad_signature", row("bad_signature", 401));
+  await run("stale route call", token, { body: await bodyFor(token, { sent_at: Math.floor(Date.now() / 1000) - 400 }) }, "stale", row("stale", 401));
+  await run("bad contract", token, { body: await bodyFor(token, { contract: "other/9" }) }, "bad_contract", row("bad_contract", 400));
+  await run("GET", token, { method: "GET" }, "method_not_allowed", row("method_not_allowed", 405));
+  await run("oversized", token, { body: await bodyFor("x".repeat(5000)) }, "too_large", row("too_large", 413));
+  await run("no channel key", token, { key: "" }, "not_configured", row("not_configured", 404));
+  // The assertion's own checks share three codes with the route's:  their rows say
+  // `assertion:`, so junk route signatures cannot hide a mint-key fault.
+  await run("not an assertion", "sbt_codex_" + "a".repeat(43), {}, "bad_token", row("assertion:bad_token", 200));
+  await run("unreadable assertion", "gra2_bad_" + "0".repeat(64), {}, "bad_token", row("assertion:bad_token", 200));
+  await run("wrong mint key", token, { signKey: "z".repeat(48) }, "bad_signature", row("assertion:bad_signature", 200));
+  await run("no mint key", token, { signKey: "" }, "not_configured", row("assertion:not_configured", 200));
+  // Past it:  the Worker's own claims name the seat.
+  await run("wrong action", token, { body: await bodyFor(token, { action: "merge_pr" }) }, "action_mismatch", row("action_mismatch", 200, "CODEX"));
+  await run("wrong body", token, { body: await bodyFor(token, { body_sha256: "0".repeat(64) }) }, "body_mismatch", row("body_mismatch", 200, "CODEX"));
+  await run("expired", await mint({ now: Date.now() - 300_000, ttlS: 90 }), {}, "expired", row("expired", 200, "CODEX"));
+  await run("future", await mint({ now: Date.now() + 120_000 }), {}, "future", row("future", 200, "CODEX"));
+  await run("unlisted seat", token, { hostedSeats: ["ECHO"] }, "bad_seat", row("bad_seat", 200, "CODEX"));
+  await run("events only", token, { eventsOnlySeats: ["CODEX"] }, "events_only", row("events_only", 200, "CODEX"));
+  // grant_invalid keeps its relay-facing reason and records which check refused.
+  await run("no live grant", token, { grantExists: async () => false }, "grant_invalid", row("grant_invalid:no_live_grant", 200, "CODEX"));
+  const bumped = await gateStore();
+  await bumped.put("epoch", 8);
+  await run("epoch bump", token, { store: bumped }, "grant_invalid", row("grant_invalid:stale_epoch", 200, "CODEX"));
+  const paused = await gateStore();
+  await paused.put("paused", true);
+  await run("paused", token, { store: paused }, "paused", row("paused", 200, "CODEX"));
+  assert.equal(cases.length, 19);
+});
+
+test("a key that cannot be read stays the route error it was, and leaves a row", async () => {
+  const token = await mint();
+  const outage = async () => { throw new Error("infisical down"); };
+  const diagnostics = [];
+  await assert.rejects(call(token, { diagnostics, resolveKey: outage }), /infisical down/);
+  assert.deepEqual(diagnostics, [{ kind: "gr_assert", reason: "key_unavailable", seat: null, status: 500 }]);
+  const signDiagnostics = [];
+  await assert.rejects(call(token, { diagnostics: signDiagnostics, resolveSignKey: outage }), /infisical down/);
+  assert.deepEqual(signDiagnostics, [{ kind: "gr_assert", reason: "sign_key_unavailable", seat: null, status: 500 }]);
+});
+
+test("a replay keeps its audit row and also records its diagnostics row", async () => {
+  const store = await gateStore();
+  const audits = [];
+  const diagnostics = [];
+  const token = await mint();
+  assert.equal((await (await call(token, { store, audits, diagnostics })).json()).ok, true);
+  assert.deepEqual(diagnostics, [], "a verified assertion records nothing");
+  assert.equal((await (await call(token, { store, audits, diagnostics })).json()).reason, "replayed");
+  assert.deepEqual(audits, [{ seat: "CODEX", event: "gr_assert_refused", reason: "replayed", via: "gr-assert-verify" }]);
+  assert.deepEqual(diagnostics, [{ kind: "gr_assert", reason: "replayed", seat: "CODEX", status: 200 }]);
+});
+
+test("a failing diagnostics log never changes the answer", async () => {
+  const recordRefusal = async () => { throw new Error("diagnostics storage down"); };
+  const token = await mint();
+  const refused = await call(token, { recordRefusal, grantExists: async () => false });
+  assert.equal(refused.status, 200);
+  assert.deepEqual(await refused.json(), { ok: false, reason: "grant_invalid" });
+  const badSig = await call(token, { recordRefusal, body: { bytes: (await bodyFor(token)).bytes, signature: "b".repeat(64) } });
+  assert.equal(badSig.status, 401);
+  assert.deepEqual(await badSig.json(), { ok: false, reason: "bad_signature" });
+  assert.deepEqual(await (await call(token, { recordRefusal })).json(), { ok: true, seat: "CODEX" });
 });
 
 // grantSummaryIsLive pins the provider's actual representation
