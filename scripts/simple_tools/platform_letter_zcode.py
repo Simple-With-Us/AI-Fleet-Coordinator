@@ -201,6 +201,45 @@ def zcode_chat_payload(sid: str) -> Mapping[str, Any]:
     }
 
 
+# The repair pass (`platform_letter.repair_unlettered`) asks for the interactive sessions still showing the "??: "
+# placeholder:  at most this many, only ones old enough that their own start hook has finished (a brand-new "??"
+# can be its start in flight), never an archived or deleted one, and none older than a week.
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's interactive sessions whose title still carries the "??: " placeholder, newest first, for the
+    repair a session's start sets off (`platform_letter.repair_after_start`).  Read only, a short wait for a lock,
+    and any doubt (no store, a locked one, a store without the columns this reads) answers None:  no pass this
+    time.  Each session's title is read again in its own replayed start before anything changes."""
+    path = store_file(env)
+    if not os.path.isfile(path):
+        return None
+    now_ms = int(time.time() * 1000)
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT id FROM session WHERE title LIKE '??: %' AND task_type = 'interactive'"
+            " AND time_archived IS NULL AND time_deleted IS NULL"
+            " AND time_created >= ? AND time_created <= ? ORDER BY time_created DESC LIMIT ?",
+            (
+                now_ms - UNLETTERED_MAX_AGE_SECONDS * 1000,
+                now_ms - UNLETTERED_MIN_AGE_SECONDS * 1000,
+                UNLETTERED_SCAN,
+            ),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [row[0] for row in rows if isinstance(row[0], str) and row[0]]
+
+
 def zcode_rename(request: Any) -> bool:
     """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `custom`.
 
@@ -328,6 +367,7 @@ SPEC = PL.PlatformSpec(
     close_reasons=CLOSE_REASONS,
     quiet_events=("Stop",),
     chat_payload=zcode_chat_payload,
+    unlettered_sessions=zcode_unlettered_sessions,
     title_writer=zcode_rename,
     locations=("mac", "server"),
     # The wrapper the retired ZCode client left on a host:  `install --check` names it while it is there.

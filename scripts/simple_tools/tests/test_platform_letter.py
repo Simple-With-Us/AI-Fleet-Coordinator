@@ -2437,10 +2437,10 @@ class HookTests(Base):
             self.start("s-0001")
             code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0001"))
             self.assertEqual((code, line), (0, "letter %s: Codex chat s-0001\n" % self.label("s-0001")))
-            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0404"))  # no note:  never registered
-            self.assertEqual(code, 1)
-            self.assertIn("pass --session-id", line)
-        self.assertIsNone(self.lookup("s-0404"))
+            # No note yet:  the platform's own session id names the chat, and its start runs now (AFC-694).
+            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0404"))
+            self.assertEqual((code, line), (0, "letter %s: Codex chat s-0404\n" % self.label("s-0404")))
+        self.assertIsNotNone(self.lookup("s-0404"))
         code, line = self.request("--session-id", "s-0999")
         self.assertEqual(code, 1)
         self.assertIn("no chat with the session id s-0999", line)
@@ -2449,8 +2449,8 @@ class HookTests(Base):
 
 class UnletteredRepairTests(Base):
     """Chats that still show "??: " (an app-driven chat's hook never runs, so a letter lost between the assigner
-    and the note would stay lost):  the hosts' scheduled carriers replay the start of each, at most once a
-    window, and a chat's own start never pays for the pass."""
+    and the note would stay lost):  a detached run that a chat's start sets off replays the start of each, at
+    most once a window, and a chat's own start never pays for the pass."""
 
     def setUp(self) -> None:
         super().setUp()

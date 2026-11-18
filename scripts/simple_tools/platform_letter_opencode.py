@@ -134,6 +134,10 @@ SPEC = PL.PlatformSpec(
     output="json",
     title_in_output=True,
     session_env=("OPENCODE_SESSION_ID",),
+    unlettered_feed=(
+        "hook-only:  the plugin inside OpenCode hears every chat's own events and the adapter reads no OpenCode store,"
+        " so there is no list of chats to ask;  a chat with no letter asks again at its next prompt"
+    ),
 )
 
 

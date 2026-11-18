@@ -56,7 +56,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -376,6 +378,70 @@ def antigravity_rename(request: PL.TitleRequest) -> bool:
     return wrote
 
 
+# The repair pass (`platform_letter.repair_unlettered`) asks for the conversations still showing the "??: "
+# placeholder:  at most this many, only ones whose last change is old enough that their own start hook has finished
+# (a brand-new "??" can be its start in flight), never a killed one, and none untouched for over a week.
+UNLETTERED_SCAN = 20
+UNLETTERED_ROWS = (
+    200  # the rows one store read takes, newest first, before the age window is applied
+)
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def _stored_time(value: object) -> float | None:
+    """A `last_modified_time` as the store writes it ("2026-11-12 02:02:54.017305+00:00"), in seconds, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        when = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return when.timestamp()
+
+
+def antigravity_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's conversations whose title still carries the "??: " placeholder, newest first, for the repair a
+    conversation's start sets off (`platform_letter.repair_after_start`).  Read from each summaries database the
+    host keeps (`candidate_dbs`), read only with a short wait for a lock;  a store that cannot be read, or a time
+    that cannot be parsed, leaves its conversations out, and no store at all answers None.  Each conversation's
+    title is read again in its own replayed start before anything changes."""
+    dbs = candidate_dbs({}, env)
+    if not dbs:
+        return None
+    now = time.time()
+    found: list[tuple[float, str]] = []
+    for db in dbs:
+        try:
+            conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
+            try:
+                rows = conn.execute(
+                    "SELECT conversation_id, last_modified_time FROM conversation_summaries"
+                    " WHERE title LIKE '??: %' AND killed = 0"
+                    " ORDER BY last_modified_time DESC LIMIT ?",
+                    (UNLETTERED_ROWS,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError):
+            continue
+        for cid, modified in rows:
+            when = _stored_time(modified)
+            if not isinstance(cid, str) or not _SAFE_CID_RE.fullmatch(cid) or when is None:
+                continue
+            if UNLETTERED_MIN_AGE_SECONDS <= now - when <= UNLETTERED_MAX_AGE_SECONDS:
+                found.append((when, cid))
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, cid in sorted(found, reverse=True):
+        if cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out[:UNLETTERED_SCAN]
+
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -391,6 +457,7 @@ SPEC = PL.PlatformSpec(
     events={"SessionStart": "start", "PreInvocation": "prompt"},
     close_reasons=(),
     chat_payload=antigravity_chat_payload,
+    unlettered_sessions=antigravity_unlettered_sessions,
     title_writer=antigravity_rename,
     output="json",
     locations=("mac", "server"),
