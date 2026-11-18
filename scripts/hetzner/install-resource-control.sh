@@ -166,6 +166,17 @@ def installed_apply_enabled(parent, owner):
     return doc['applyEnabled'] if usable_allowlist(doc) else None
 
 
+def settings_present(parent):
+    """Whether the install folder holds anything named SETTINGS, usable or not, without following it."""
+    try:
+        os.stat(SETTINGS, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def legacy_apply_enabled():
     """The root-owned install's applyEnabled, or None when that copy is absent or not trusted.
 
@@ -289,7 +300,9 @@ def install(source_directory):
         # install;  a fresh install takes the repository's (false).
         kept = installed_apply_enabled(parent, owner)
         kept_from = 'the installed copy'
-        if kept is None:
+        if kept is None and not settings_present(parent):
+            # Only the move, where the install folder has no copy at all, reads the root-owned one.
+            # A copy here that is not usable takes the repository's value instead.
             kept = legacy_apply_enabled()
             kept_from = 'the root-owned copy in /' + '/'.join(LEGACY_DESTINATION)
         if kept is not None and kept != settings['applyEnabled']:

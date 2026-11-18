@@ -347,12 +347,32 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(self.install(), self.REPOSITORY_FROM)
                 self.assertEqual(installed.read_bytes(), repository)
 
-    def test_a_linked_foreign_or_writable_installed_copy_fails_the_installation(self):
+    def test_a_linked_or_writable_installed_copy_fails_the_installation(self):
+        # A copy owned by another account fails the same way (write_file's owner check), but a
+        # test account cannot make one without root, so it is not arranged here.
         self.install()
         installed = self.destination / "fleet-ops-eavesdropper-settings.json"
         installed.chmod(0o664)
         with self.assertRaises(RuntimeError):
             self.install()
+        installed.unlink()
+        outside = self.root / "outside.json"
+        outside.write_text(self.usable(True))
+        installed.symlink_to(outside)
+        with self.assertRaises(RuntimeError):
+            self.install()
+        self.assertEqual(outside.read_text(), self.usable(True))
+
+    def test_a_copy_in_the_install_folder_stops_the_root_owned_one_from_being_read(self):
+        # Once the install folder has a settings file, the move is over:  an unusable one takes
+        # the repository's value, never a stale root-owned one.
+        repository = (SCRIPTS / "fleet-ops-eavesdropper-settings.json").read_bytes()
+        self.install()
+        self.make_legacy(True)
+        installed = self.destination / "fleet-ops-eavesdropper-settings.json"
+        installed.write_bytes(b"not json")
+        self.assertEqual(self.install(), self.REPOSITORY_FROM)
+        self.assertEqual(installed.read_bytes(), repository)
 
     def test_symlink_installed_file_refused_without_touching_target(self):
         self.destination.mkdir(parents=True)
