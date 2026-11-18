@@ -26,6 +26,12 @@ name: Auto-merge reusable (fleet)
 #
 # The event context in a reusable workflow is the caller's, so
 # github.event.pull_request below is the caller's PR.
+#
+# Rearm mode (rearm_pr_number input, default empty): a caller fired from
+# workflow_dispatch (or another event without PR context) passes a PR number;
+# classify then fetches that PR and validates the same preconditions the
+# event path guarantees, and every gate, the arming boundary and disarm run
+# identically.  Defaults keep the documented event path for existing callers.
 
 on:
   workflow_call:
@@ -154,6 +160,18 @@ on:
           PAT or GitHub App installation token with contents + pull-requests
           write.  Probed before use; absent means a loud no-op.
         required: false
+      rearm_pr_number:
+        description: >-
+          Opt-in re-arm mode: when set, classify fetches this PR by number
+          instead of reading it from the pull_request event, so a caller can
+          re-run the gate from events the PR context does not reach (a
+          workflow_dispatch fired when an autofix run settles, or a
+          merge-queue drop).  Every classification rule, gate and the arming
+          boundary run identically; the only difference is where the PR
+          context comes from.  Empty (the default) keeps the event path and
+          is the normal operation for every existing caller.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -195,11 +213,15 @@ jobs:
   classify:
     runs-on: ubuntu-latest
     if: >
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      inputs.rearm_pr_number != '' ||
+      (
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       reason: ${{ steps.check.outputs.reason }}
+      pr_url: ${{ steps.check.outputs.pr_url }}
       head: ${{ steps.check.outputs.head }}
       newest_request: ${{ steps.check.outputs.newest_request }}
       receipt_id: ${{ steps.check.outputs.receipt_id }}
@@ -209,19 +231,23 @@ jobs:
         if: inputs.require_codeowners_gate
         with:
           # The gate script and CODEOWNERS come from the base branch, never the
-          # PR head: an old or hostile branch cannot weaken the gate.
-          ref: ${{ github.event.pull_request.base.ref }}
+          # PR head: an old or hostile branch cannot weaken the gate.  In rearm
+          # mode the dispatch ref is caller-chosen and must never supply the
+          # gate, so the checkout pins the repository's declared default
+          # branch (the base for this fleet's PRs) from the event payload.
+          ref: ${{ inputs.rearm_pr_number != '' && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
           fetch-depth: 1
       - name: Classify PR for auto-merge eligibility
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
+          PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.repository, inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number) }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           TITLE: ${{ github.event.pull_request.title }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           KODY_CHECK_NAME: ${{ inputs.kody_check_name }}
           KODY_APP_SLUG: ${{ inputs.kody_app_slug }}
           KODY_APP_ID: ${{ inputs.kody_app_id }}
@@ -230,6 +256,7 @@ jobs:
           REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
           APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
           MERGE_TOKEN: ${{ secrets.merge_token }}
+          REARM_PR_NUMBER: ${{ inputs.rearm_pr_number }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           SELF_GUARD: ${{ inputs.self_guard_paths }}
           HOLD_LABELS: ${{ inputs.hold_labels }}
@@ -238,8 +265,38 @@ jobs:
           GATE_SCRIPT: ${{ inputs.gate_script }}
         run: |
           set -euo pipefail
-          skip() { echo "skip=true" >> "$GITHUB_OUTPUT"; echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "::notice::not arming auto-merge: $1"; exit 0; }
+          : "${REARM_PR_NUMBER:=}"
+          # PR identity for this run comes from the step env: the event path
+          # reads github.event.pull_request; rearm mode (REARM_PR_NUMBER set)
+          # passes the number through the same env names and the block below
+          # fills the rest from the API after validating the same
+          # preconditions, so every gate below is shared.
+          skip() { echo "skip=true" >> "$GITHUB_OUTPUT"; echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"; echo "::notice::not arming auto-merge: $1"; exit 0; }
           trap 'skip "classifier failed - fail closed"' ERR
+          # Written on every path (pass or skip): arm, disarm and the wise
+          # relay consume it, and a passing classification must not leave it
+          # empty (Kody #2267).
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$REARM_PR_NUMBER" ]; then
+            # Fetch and validate the rearm PR.  Repository-token reads only
+            # (no personal-credential fallback for a re-arm), fails closed on
+            # any drift from the preconditions the event path guarantees
+            # (open, ready, this repository), and nothing about the PR is
+            # persisted to disk - the JSON stays in a shell variable.
+            if ! rearm_json="$(gh api "repos/$REPO/pulls/$REARM_PR_NUMBER")"; then
+              skip "rearm PR fetch failed - fail closed"
+            fi
+            [ "$(jq -r '.state' <<< "$rearm_json")" = "open" ] || skip "rearm PR is not open"
+            [ "$(jq -r '.draft' <<< "$rearm_json")" = "false" ] || skip "rearm PR is a draft"
+            [ "$(jq -r '.head.repo.full_name' <<< "$rearm_json")" = "$REPO" ] || skip "rearm PR head repo mismatch"
+            BASE="$(jq -r '.base.sha' <<< "$rearm_json")"
+            HEAD="$(jq -r '.head.sha' <<< "$rearm_json")"
+            HEAD_REF="$(jq -r '.head.ref' <<< "$rearm_json")"
+            TITLE="$(jq -r '.title' <<< "$rearm_json")"
+            LABELS_JSON="$(jq -c '[.labels[].name]' <<< "$rearm_json")"
+            echo "::notice::rearm gate for PR #$PR_NUMBER at $HEAD"
+          fi
 
           # Hold labels
           IFS=',' read -ra holds <<< "$HOLD_LABELS"
@@ -593,8 +650,8 @@ jobs:
           GH_TOKEN: ${{ secrets.merge_token }}
           FALLBACK_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
+          PR_URL: ${{ needs.classify.outputs.pr_url }}
           CLASSIFIED_HEAD: ${{ needs.classify.outputs.head }}
           CLASSIFIED_REQUEST: ${{ needs.classify.outputs.newest_request }}
           CLASSIFIED_RECEIPT: ${{ needs.classify.outputs.receipt_id }}
@@ -821,7 +878,7 @@ jobs:
           INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID || secrets.wise_infisical_project_id }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_URL: ${{ needs.classify.outputs.pr_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}
         run: |
           set -euo pipefail
@@ -1201,7 +1258,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.merge_token }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_URL: ${{ needs.classify.outputs.pr_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}
         run: |
           set -euo pipefail
@@ -1254,7 +1311,7 @@ jobs:
       - name: Disable any armed auto-merge (inline port of disable-pr-automerge.sh)
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_URL: ${{ needs.classify.outputs.pr_url }}
           REASON: ${{ needs.classify.outputs.skip == 'true' && needs.classify.outputs.reason || 'arm job failed after a pass - clearing any prior arm' }}
         run: |
           set -euo pipefail

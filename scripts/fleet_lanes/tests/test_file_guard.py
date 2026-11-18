@@ -109,6 +109,49 @@ class CoreTests(unittest.TestCase):
             "codex",
         )
 
+    def test_trusted_seat_accepts_a_chat_tag_when_no_seat_is_set(self):
+        # A Z Code chat session declares its chat tag (installed rules: chat tag `[ZC]`)
+        # instead of AGENT_SEAT, which a session must never write.  The tag names the seat.
+        registry = self.ctx().registry
+        seated = fg.trusted_seat({"AGENT_TAG": "ZC"}, registry)
+        self.assertIsNotNone(seated)
+        self.assertEqual(seated.suffix.lower(), "zc")
+        # a launcher's no-seat decision still wins over a declared tag
+        self.assertIsNone(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "x"}, registry)
+        )
+        # a real launcher assignment beats the tag
+        self.assertEqual(
+            fg.trusted_seat(
+                {"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "BotFleet", "AGENT_LAUNCH_SEAT": "CODEX"},
+                registry,
+            ).suffix.lower(),
+            "codex",
+        )
+        # an unknown tag names no seat
+        self.assertIsNone(fg.trusted_seat({"AGENT_TAG": "NOPE"}, registry))
+
+    def test_trusted_seat_tag_ranks_below_the_launcher_decision(self):
+        registry = self.ctx().registry
+        # a launcher present without an assigned seat still names no fleet identity,
+        # tag or not (the launcher contract)
+        self.assertIsNone(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "x"}, registry)
+        )
+        # a launcher assignment beats the tag
+        self.assertEqual(
+            fg.trusted_seat(
+                {"AGENT_TAG": "ZC", "AGENT_LAUNCHER": "BotFleet", "AGENT_LAUNCH_SEAT": "CODEX"},
+                registry,
+            ).suffix.lower(),
+            "codex",
+        )
+        # an ambient AGENT_SEAT beats the tag
+        self.assertEqual(
+            fg.trusted_seat({"AGENT_TAG": "ZC", "AGENT_SEAT": "CLAUDE"}, registry).suffix.lower(),
+            "claude",
+        )
+
     def test_registered_suffix_and_legacy_alias_have_the_same_owner(self):
         for suffix in ("zc", "zcode"):
             path = "apps/lanes/BotFleet/%s-work/file.py" % suffix
@@ -224,10 +267,22 @@ class ClaudeAdapterTests(unittest.TestCase):
                 "Edit": "write",
                 "MultiEdit": "write",
                 "NotebookEdit": "write",
+                "ApplyPatch": "write",
             },
         )
         self.assertIn("notebook_path", claude.CLAUDE_FILE_TOOLS.path_fields)
         self.assertFalse(claude.CLAUDE_FILE_POLICY.deny_integration_reads)
+
+    def test_apply_patch_is_judged_as_a_write(self):
+        """ApplyPatch is the tool name Z Code delivers for a Write or an Edit (AFC-813).
+
+        The Z Code file-guard group matches it,  so a payload that names it has to be judged:  a tool
+        name the map does not know is not a file operation,  and it would be allowed unchecked.
+        """
+        self.assertIn("secret-bearing", self.decide("ApplyPatch", ".secrets/x"))
+        self.assertIn("integration tree", self.decide("ApplyPatch", "Code/BotFleet/src/file.py"))
+        self.assertIn("another seat", self.decide("ApplyPatch", "apps/lanes/BotFleet/codex-work/f.py"))
+        self.assertIsNone(self.decide("ApplyPatch", "apps/lanes/BotFleet/claude-work/f.py"))
 
     def test_every_file_tool_refuses_the_secrets(self):
         for tool in ("Read", "Write", "Edit", "MultiEdit"):
