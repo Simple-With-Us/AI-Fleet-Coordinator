@@ -24,6 +24,16 @@ to `claude_wake.deliver_remote` over ssh, specifying `platform="antigravity"`.  
 `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before calling local
 delivery, ensuring the letter was not released or reassigned.
 
+A resume without a browser (AFC-838).  `agy` has no flag or variable that only turns off its
+browser sign-in:  its print mode falls back to the browser whenever stdin is a character device or
+`/dev/tty` opens (printmode.go:390-397, 425-433;  browser.go:79-80).  So the resume runs with an
+empty pipe on stdin, in a session of its own.  Its stderr goes into a pipe that a thread drains,
+keeping only the last `OUTPUT_SCAN_CAP` bytes in memory.  The last line the CLI wrote that says
+how a failed run ended maps to a fixed code:  `resume-quota-exhausted`, `resume-signin-required`
+or `resume-signin-interactive`;  anything else keeps `resume-exit-N`.  An exit 0 that the CLI
+moved to a new chat answers `resume-new-chat`.  All of them are final, and none of them changes
+what happens to a later wake.
+
 Python 3.11+, standard library only.
 """
 
@@ -37,6 +47,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -72,6 +83,13 @@ NEVER_RAN: frozenset[str] = frozenset(
         "conversation-killed",
         "session-cwd-gone",
         "agy-not-found",
+        # A sign-in failure ends inside printmode.waitForAuth, the one place that writes these
+        # lines (printmode.go:403-493;  the fast exit at 428, the browser branch at 440 and
+        # 473-488), which runs at printmode.go:286, before session.start (351) and runTurn
+        # (365):  no turn ran (AFC-838).  A quota failure comes after runTurn started, and a turn
+        # the CLI moved to a new chat did run, so neither of those codes is here.
+        "resume-signin-interactive",
+        "resume-signin-required",
         "unknown-host",
         "unknown-platform",
         "platform-handler-missing",
@@ -307,6 +325,129 @@ def _find_agy_binary(child_env: Mapping[str, str]) -> str | None:
     return None
 
 
+#: How much of the CLI's stderr is kept:  its last bytes, in memory only, never logged or written
+#: to disk.  Only the fixed code a line maps to reaches a receipt (AFC-838).
+OUTPUT_SCAN_CAP = 8192
+#: How long a finished run's stderr pipe gets to end.  A process the CLI left holding the pipe is
+#: not waited for:  the drain thread keeps reading it, within the cap, until it lets go.
+OUTPUT_WAIT_SECONDS = 2.0
+QUOTA_EXHAUSTED = "resume-quota-exhausted"
+SIGNIN_REQUIRED = "resume-signin-required"
+SIGNIN_INTERACTIVE = "resume-signin-interactive"
+NEW_CHAT = "resume-new-chat"
+#: Lines the compiled agy writes itself, each from one place in printmode.waitForAuth.  The fast
+#: exit when no terminal was found, so no browser was tried (printmode.go:426-429):
+SIGNIN_REQUIRED_RE = re.compile(
+    r"Error: authentication required\. Run '.*' to log in, then retry\."
+)
+#: Endings reached only after the browser path was taken:  printmode.go:440, after
+#: StartOAuthProcess (433) gave no URL, and 473, 483 and 488.  One of these means the headless
+#: stdio did not hold.
+SIGNIN_BROWSER_RE = re.compile(r"Error: authentication required\. Run '.*' to log in\.")
+SIGNIN_INTERACTIVE_MARKS = (
+    "Error: authentication interrupted.",
+    "Error: authentication timed out.",
+    "Error: authentication failed:",
+)
+#: The CLI's own error lines:  `error: %v` and `AGY_ERROR: {json}` (emitter.go:126-130,
+#: printmode.go:681-710).  Quota is matched on these lines only, by the API's status words and the
+#: CLI's own quota and credit messages.
+ERROR_LINE_MARKS = ("AGY_ERROR:", "error:")
+QUOTA_RE = re.compile(
+    r"RESOURCE_?EXHAUSTED|\b429\b|too many requests|individual quota|exhausted your quota"
+    r"|credits balance is too low",
+    re.IGNORECASE,
+)
+#: The warning agy prints when it cannot find the `--conversation` id and starts a new chat
+#: instead (projectresolve.go:74-78), on its saved stderr or os.Stderr (common.go:165,
+#: termio.go:53-56).
+NEW_CHAT_RE = re.compile(r'warning: conversation ".*" not found')
+
+
+class _StderrTail:
+    """The CLI's stderr through a pipe that a daemon thread drains to its end, keeping only the
+    last `cap` bytes in memory (AFC-838):  nothing reaches disk, and nothing grows with output."""
+
+    __slots__ = ("_buf", "_cap", "_cut", "_done", "_lock", "_read_fd", "write_fd")
+
+    def __init__(self, cap: int) -> None:
+        self._buf = bytearray()
+        self._cap = cap
+        self._cut = False
+        self._done = threading.Event()
+        self._lock = threading.Lock()
+        self._read_fd, self.write_fd = os.pipe()
+        try:
+            threading.Thread(target=self._drain, name="agy-stderr", daemon=True).start()
+        except BaseException:
+            os.close(self._read_fd)
+            os.close(self.write_fd)
+            raise
+
+    def _drain(self) -> None:
+        try:
+            while chunk := os.read(self._read_fd, 65536):
+                with self._lock:
+                    self._buf += chunk
+                    extra = len(self._buf) - self._cap
+                    if extra > 0:
+                        del self._buf[:extra]
+                        self._cut = True
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
+            self._done.set()
+
+    def finish(self, wait: float) -> None:
+        """Close this process's write end, then give the pipe up to `wait` seconds to end.  Only
+        the first call waits."""
+        if self.write_fd < 0:
+            return
+        try:
+            os.close(self.write_fd)
+        except OSError:
+            pass
+        self.write_fd = -1
+        self._done.wait(wait)
+
+    def text(self) -> str:
+        """What is kept, as text for matching only.  A first line the cap cut is dropped."""
+        with self._lock:
+            data, cut = bytes(self._buf), self._cut
+        text = data.decode("utf-8", "replace")
+        return text.partition("\n")[2] if cut else text
+
+
+def _line_code(line: str) -> str:
+    """The fixed code one of the CLI's own stderr lines names, or ""."""
+    if line.startswith(SIGNIN_INTERACTIVE_MARKS) or SIGNIN_BROWSER_RE.fullmatch(line):
+        return SIGNIN_INTERACTIVE
+    if SIGNIN_REQUIRED_RE.fullmatch(line):
+        return SIGNIN_REQUIRED
+    if line.startswith(ERROR_LINE_MARKS) and QUOTA_RE.search(line):
+        return QUOTA_EXHAUSTED
+    return ""
+
+
+def _ended_with(tail: str) -> str:
+    """The fixed code for how a failed resume ended, or "" when no line says.  The last line that
+    names one decides, since the CLI writes how it ended last;  an earlier line is never it."""
+    for line in reversed(tail.splitlines()):
+        code = _line_code(line.strip())
+        if code:
+            return code
+    return ""
+
+
+def _moved_to_new_chat(tail: str) -> bool:
+    """Whether agy said it could not find the chat and started a new one."""
+    return any(NEW_CHAT_RE.fullmatch(line.strip()) for line in tail.splitlines())
+
+
 def deliver_local(
     env: Mapping[str, str],
     config: Mapping[str, Any],
@@ -383,27 +524,54 @@ def deliver_local(
 
             argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
+            # agy's stderr goes into a pipe drained in memory.  Nothing has run yet, so failing
+            # to make the pipe or its thread is safe to retry.
             try:
-                proc = runner(
-                    argv,
-                    cwd=cwd,
-                    env=child_env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=timeout_seconds,
-                    check=False,
+                tail = _StderrTail(OUTPUT_SCAN_CAP)
+            except (OSError, RuntimeError) as exc:
+                return WR.Delivery(
+                    "failed", "resume", code="resume-capture-%s" % type(exc).__name__
                 )
-            except subprocess.TimeoutExpired:
-                return WR.Delivery("refused", "resume", code="resume-timeout")
-            except OSError as exc:
-                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
-            except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-                return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
+            try:
+                try:
+                    # No browser (AFC-838):  stdin is an empty pipe, not /dev/null (a character
+                    # device), and the child runs in its own session, so it has no /dev/tty.  The
+                    # compiled sign-in then exits fast (printmode.go:390-397, 425-429) and never
+                    # reaches browser.go:79-80.
+                    proc = runner(
+                        argv,
+                        cwd=cwd,
+                        env=child_env,
+                        input=b"",
+                        stdout=subprocess.DEVNULL,
+                        stderr=tail.write_fd,
+                        timeout=timeout_seconds,
+                        check=False,
+                        start_new_session=True,
+                    )
+                except subprocess.TimeoutExpired:
+                    return WR.Delivery("refused", "resume", code="resume-timeout")
+                except OSError as exc:
+                    return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+                except Exception as exc:  # noqa: BLE001 - may have started, so it is final
+                    return WR.Delivery(
+                        "refused", "resume", code="resume-error-%s" % type(exc).__name__
+                    )
 
-            if proc.returncode == 0:
-                return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
-            return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+                tail.finish(OUTPUT_WAIT_SECONDS)
+                if proc.returncode == 0:
+                    # Named after the fact only:  the turn ran, in a chat that is not the target.
+                    if _moved_to_new_chat(tail.text()):
+                        return WR.Delivery("refused", "resume", code=NEW_CHAT, note="agy-exit-0")
+                    return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
+                ended = _ended_with(tail.text())
+                if ended:
+                    return WR.Delivery(
+                        "refused", "resume", code=ended, note="agy-exit-%d" % proc.returncode
+                    )
+                return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+            finally:
+                tail.finish(OUTPUT_WAIT_SECONDS)
         finally:
             if bridge_lock is not None:
                 bridge_lock.close()
