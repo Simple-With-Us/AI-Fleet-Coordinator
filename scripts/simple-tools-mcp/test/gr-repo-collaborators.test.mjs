@@ -17,3 +17,13 @@ test('receipt strict projection and request correlation',()=>{
  for(const change of [{page:2},{has_more:true},{affiliation:'outside'},{collaborators:[row,row]}])assert.ok(!validWfV1Response(action,{...receipt,...change},{repo}));
  assert.ok(validWfV1Response(action,{...receipt,has_more:true},{repo,per_page:1}));
 });
+
+test('permission read binds one exact username and projects only effective role',()=>{
+ const a='wf_collaborator_permission',args={repo,username:'fixture-user'};
+ const body={user:{id:1,login:'FIXTURE-USER',type:'User'},permission:'read',role_name:'custom'};
+ assert.ok(WF_V1_READ_ACTIONS.includes(a));assert.ok(validWfV1Args(a,args));
+ assert.ok(validWfV1Args(a,{repo,username:'helper[bot]'}));assert.ok(validWfV1Response(a,body,args));
+ for(const username of ['../other','bad/name','',true])assert.ok(!validWfV1Args(a,{repo,username}));
+ assert.ok(!validWfV1Response(a,{...body,user:{...body.user,login:'other'}},args));
+ assert.ok(!validWfV1Response(a,{...body,permission:'maintain'},args));
+});

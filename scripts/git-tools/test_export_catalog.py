@@ -17,6 +17,7 @@ class ExportCatalogTests(unittest.TestCase):
         for name in [
             "gr_wf_installation_metadata",
             "gr_wf_git_blob_binary_get",
+            "gr_wf_collaborator_permission",
             "gr_wf_repo_collaborators",
             "gr_wf_repo_teams",
         ]:
@@ -39,6 +40,7 @@ class ExportCatalogTests(unittest.TestCase):
             for n in [
                 "gr_wf_installation_metadata",
                 "gr_wf_git_blob_binary_get",
+                "gr_wf_collaborator_permission",
                 "gr_wf_repo_collaborators",
                 "gr_wf_repo_teams",
                 "gr_workflow_dispatch",
@@ -55,6 +57,7 @@ class ExportCatalogTests(unittest.TestCase):
         for name in [
             "gr_wf_installation_metadata",
             "gr_wf_git_blob_binary_get",
+            "gr_wf_collaborator_permission",
             "gr_wf_repo_collaborators",
             "gr_wf_repo_teams",
         ]:

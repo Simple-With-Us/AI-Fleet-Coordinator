@@ -312,6 +312,7 @@ SPECS = {
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_repo_hooks": ({"repository_hooks": "read"}, False),
+    "wf_collaborator_permission": ({"metadata": "read"}, False),
     "wf_repo_collaborators": ({"metadata": "read"}, False),
     "wf_repo_teams": ({"administration": "read"}, False),
     "wf_deploy_keys": ({"administration": "read"}, False),
@@ -650,6 +651,7 @@ _NEW_READS = frozenset(
         "wf_run_get",
         "wf_run_artifacts",
         "wf_repo_hooks",
+        "wf_collaborator_permission",
         "wf_repo_collaborators",
         "wf_repo_teams",
         "wf_deploy_keys",
@@ -811,6 +813,18 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_collaborator_permission": {
+            "user": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "login": text,
+                    "type": lambda x: x in ("User", "Bot", "Organization"),
+                },
+            ),
+            "permission": lambda x: x in ("admin", "write", "read", "none"),
+            "role_name": text,
+        },
         "wf_repo_collaborators": {
             "collaborators": lambda v: seq(
                 v,
@@ -1914,6 +1928,36 @@ class WorkflowVerbs:
         if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
+
+    def wf_collaborator_permission(self, repo, args):
+        """Highest effective role, not proof of the source of a grant."""
+        _only(args, ("repo", "username"))
+        username = args.get("username")
+        if not isinstance(username, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", username
+        ):
+            raise Refused("invalid username")
+        self._metadata_name(username, 105)
+        data = self._get(f"/repos/{repo}/collaborators/{quote(username, safe='')}/permission")
+        user = data.get("user") if isinstance(data, dict) else None
+        if (
+            not isinstance(user, dict)
+            or type(user.get("id")) is not int
+            or not 1 <= user["id"] <= 9007199254740991
+            or not isinstance(user.get("login"), str)
+            or user["login"].casefold() != username.casefold()
+            or user.get("type") not in ("User", "Bot", "Organization")
+            or data.get("permission") not in ("admin", "write", "read", "none")
+            or not isinstance(data.get("role_name"), str)
+            or not data["role_name"].strip()
+        ):
+            raise RelayGitHubError(502, "collaborator permission unverifiable")
+        self._metadata_name(data["role_name"], 100)
+        return {
+            "user": {k: user[k] for k in ("id", "login", "type")},
+            "permission": data["permission"],
+            "role_name": data["role_name"],
+        }
 
     def wf_repo_collaborators(self, repo, args):
         """One visible page. Grant sources and complete access are not inferred."""

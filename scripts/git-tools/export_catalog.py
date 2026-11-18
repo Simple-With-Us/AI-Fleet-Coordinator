@@ -105,6 +105,7 @@ WF_V1_READ_ACTIONS = [
     "wf_repo_list",
     "wf_pr_search",
     "wf_repo_hooks",
+    "wf_collaborator_permission",
     "wf_repo_collaborators",
     "wf_repo_teams",
     "wf_deploy_keys",

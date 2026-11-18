@@ -118,3 +118,53 @@ class CollaboratorTests(unittest.TestCase):
         with patch("git_relay.workflow_verbs.find_secret", return_value="fixture category"):
             with self.assertRaises(Refused):
                 self.run_action([row])
+
+
+class CollaboratorPermissionTests(unittest.TestCase):
+    def invoke(self, data, username="fixture-user"):
+        client, minter = Client(data), Minter()
+        h = WorkflowVerbs.for_action(
+            client,
+            Policy({"metadata": "read"}),
+            minter,
+            "swu-wise",
+            "wf_collaborator_permission",
+            REPO,
+        )
+        return (
+            h.run("wf_collaborator_permission", {"repo": REPO, "username": username}),
+            client,
+            minter,
+        )
+
+    def test_projection_exact_username_and_scope(self):
+        data = {"user": ROW, "permission": "read", "role_name": "custom reviewer"}
+        out, client, minter = self.invoke(data, "FIXTURE-USER")
+        self.assertEqual(out["user"], {k: ROW[k] for k in ("id", "login", "type")})
+        self.assertEqual(
+            client.calls[0][1], "/repos/" + REPO + "/collaborators/FIXTURE-USER/permission"
+        )
+        self.assertEqual(minter.calls[0][2], {"metadata": "read"})
+        data["user"] = dict(ROW, login="fixture-helper[bot]", type="Bot")
+        self.assertIn(
+            "fixture-helper%5Bbot%5D", self.invoke(data, "fixture-helper[bot]")[1].calls[0][1]
+        )
+
+    def test_unbound_or_malformed_user_and_role_refused(self):
+        good = {"user": ROW, "permission": "read", "role_name": "custom"}
+        for change in [
+            {"user": dict(ROW, login="other")},
+            {"user": dict(ROW, id=True)},
+            {"user": dict(ROW, id=9007199254740992)},
+            {"user": None},
+            {"permission": "maintain"},
+            {"role_name": " "},
+            {"role_name": "a" * 101},
+        ]:
+            with self.subTest(change=change), self.assertRaises(RelayGitHubError):
+                self.invoke(dict(good, **change))
+        for username in [None, True, "../other", "bad/name", ""]:
+            with self.subTest(username=username), self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(
+                    "wf_collaborator_permission", {"repo": REPO, "username": username}, REPO
+                )

@@ -344,6 +344,7 @@ class SeatPolicy:
         "wf_review_thread_comments",
         "wf_review_threads",
         "wf_repo_hooks",
+        "wf_collaborator_permission",
         "wf_repo_collaborators",
         "wf_repo_teams",
         "wf_deploy_keys",
