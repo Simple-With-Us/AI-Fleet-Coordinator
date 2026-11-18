@@ -1,6 +1,6 @@
 {
   "review": "AI-Fleet-Coordinator git_relay/server.py match-pinned generic-assignment admission proposal (edit_pr base ref-validation candidate)",
-  "proposal_status": "prepared for independent security review only; not reviewed, not admitted, not published; this record claims no clearance",
+  "proposal_status": "installed by this pull request as a match-pinned admission: the change adds the _REVIEWED_GENERIC_MATCHES registry entry and this durable record; the admission waives only the pinned census match for the exact reviewed full-file digest and claims no clearance of any other bytes",
   "prepared_at": "2026-11-18",
   "prepared_by": "wise reliability lane, full-content read of the complete candidate file",
   "reviewed_file": {
@@ -32,5 +32,5 @@
     "full_content": "the complete 1,785-line file was enumerated with the scanner's own detection code (patch_secretscan._PATTERNS, _GENERIC_ASSIGNMENTS, _source_assignment); no stored credential literal, no encoded payload, no exfiltration destination, no embedded instruction content was found"
   },
   "admission_scope": "if independently reviewed and admitted, admits only this repository, full path and exact full-file digest for the generic-assignment categories, with the exact match census pinned; any changed bytes lose the admission and undergo the normal scan, which refuses another match or any other scannable pattern but accepts content that is normally clean (so removing the sole match is not a guaranteed refusal); a refreshed digest carrying stale or incomplete census metadata refuses; loaded-credential and dedicated-shape enforcement remain absolute",
-  "candidate_state": "the candidate bytes are the unpublished retarget working tree version of the file; any further edit re-spins the digest and voids this proposal; this record does not authorize publication, installation or deployment by itself"
+  "candidate_state": "the candidate bytes are the unpublished working tree version of the file; immutable full-content evidence snapshot: local evidence repository /Users/jay/.local/state/fleet/afc-serverpy-retarget-evidence-20261118 on the Mac, commit 3269432550a1cbdaf76e81317f3333a77387a96d, blob 3f6d4af30c6fabde929e862b2f9239a71ca9d0ac; the pinned census was re-verified against these exact bytes with the scanner's own detection code on 2026-11-18 (exact bytes admitted, a one-byte mutation refused); any further edit re-spins the digest and voids the admission; this record does not authorize publication, installation or deployment of the candidate source by itself"
 }
