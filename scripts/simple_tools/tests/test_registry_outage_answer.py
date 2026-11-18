@@ -110,28 +110,19 @@ class RegistryOutageAnswer(unittest.TestCase):
 
     def test_a_raised_call_on_an_unconfigured_host_fails_closed(self) -> None:
         """A host with no registry address or key cannot be retried into working, so every
-        platform answers `failed` with the house code, and the note names the variable.
-
-        Codex is the one exception, and on purpose:  its lookup may resolve the registry
-        settings from another mapping, so a raise there says nothing about this host's
-        configuration and is answered as an outage.  The host with no key is caught on
-        Codex's answered path instead, where the registry names the variable."""
+        platform answers `failed` with the house code, and the note names the variable."""
         answers = self._answers(None, env=self.bare_env)
         self.assertEqual(len(answers), 7)
         for name, delivery in answers.items():
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
-                if name == "codex":
-                    self.assertEqual(
-                        (delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE)
-                    )
-                    continue
                 self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
                 self.assertIn(WR.registry_api.URL_ENV, delivery.note)
 
-    def test_an_unreadable_registry_env_is_an_outage(self) -> None:
-        """A registry env that cannot be read is not proof that the host has no address or
-        key, so it is an outage:  retried, and no attempt spent."""
+    def test_an_unreadable_registry_env_is_answered_on_the_hosts_configuration(self) -> None:
+        """A registry env that cannot be read is answered on the host's own configuration:
+        a host that is configured answers the outage and spends no attempt, and a host with
+        no address or key fails closed and names the variable."""
         def boom(_env):
             raise OSError("the env file cannot be read")
 
@@ -140,9 +131,18 @@ class RegistryOutageAnswer(unittest.TestCase):
         with mock.patch.object(MW, "_registry_env", side_effect=boom):
             muse = MW._recheck(self.env, self.target, lambda _env, _letter: {})
         for name, delivery in (("claude", claude), ("muse", muse)):
-            with self.subTest(platform=name):
+            with self.subTest(platform=name, env="configured"):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("busy", WR.REGISTRY_UNAVAILABLE))
+        with mock.patch.object(CW, "_registry_env", side_effect=boom):
+            bare = CW._recheck(self.bare_env, self.target)
+        with mock.patch.object(MW, "_registry_env", side_effect=boom):
+            muse_bare = MW._recheck(self.bare_env, self.target, lambda _env, _letter: {})
+        for name, delivery in (("claude", bare), ("muse", muse_bare)):
+            with self.subTest(platform=name, env="unconfigured"):
+                self.assertIsNotNone(delivery)
+                self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+                self.assertIn(WR.registry_api.URL_ENV, delivery.note)
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
         """An answer that is not a mapping is malformed data:  `failed`, with the house code,

@@ -364,10 +364,10 @@ class CodexDelivery:
         try:
             current = self.registry_lookup(self.env, target.letter)
         except Exception:  # noqa: BLE001 - no enqueue without a readable identity check
-            # The lookup may resolve its settings from another mapping, so a raise here says
-            # nothing about this host's configuration:  it is an outage, and the host with no
-            # address or key is caught on the answered path, where the registry names it.
-            return WR.registry_outage(route="codex-desktop")
+            # The host's own configuration decides, as it does in every other platform:  a
+            # host with no address or key fails closed and names the variable, and a host
+            # that is configured answers the outage and spends no attempt.
+            return WR.registry_failure(self.env, route="codex-desktop")
         if not isinstance(current, Mapping) or "error" in current:
             return WR.registry_delivery(current, route="codex-desktop")
         found = current.get("found")

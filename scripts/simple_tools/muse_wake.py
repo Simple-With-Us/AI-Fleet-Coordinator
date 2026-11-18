@@ -254,8 +254,10 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
     attempt."""
     try:
         registry_env = _registry_env(env)
-    except Exception:  # noqa: BLE001 - an unreadable registry env is an outage, not a fault
-        return WR.registry_outage()
+    except Exception:  # noqa: BLE001 - no delivery without a readable registry env
+        # The host's own configuration decides:  a host with no address or key fails
+        # closed, and a host that is configured answers the outage and spends no attempt.
+        return WR.registry_failure(env)
     try:
         answer = resolve(env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer

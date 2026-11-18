@@ -5445,6 +5445,9 @@ class RegistryNotConfigured(Base):
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+        # The note names the failure, in the shape the transport keeps.
+        self.assertIn("no_settings_here", delivery.note)
+        self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
 
     def test_a_pick_stage_failure_names_the_variable_that_is_missing(self) -> None:
         """A host with no registry address or key fails at the pick:  the receipt says which

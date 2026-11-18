@@ -1855,6 +1855,17 @@ def registry_trouble(answer: object) -> str:
     return REGISTRY_UNAVAILABLE
 
 
+def safe_note(text: object) -> str:
+    """A local failure as a token the transport keeps.
+
+    The note crosses between hosts and is read back through a whitelist that admits only
+    letters, digits, colon, underscore and dash, so the text is reduced to that shape:  the
+    words are kept and everything else becomes a separator.  It is for a local failure, whose
+    text this host wrote, never for the registry's own answer."""
+    raw = text if isinstance(text, str) else ""
+    return re.sub(r"[^A-Za-z0-9:_-]", "_", raw).strip("_")[:NOTE_CHARS]
+
+
 def registry_note(text: object) -> str:
     """The name of the setting a registry error names, as a token the transport keeps.
 
@@ -1893,12 +1904,14 @@ def registry_failure(env: Mapping[str, str] | None = None, route: str = "") -> D
 
     The configuration is read with the registry API's own readers, so the answer names the
     same variable the registry itself names.  A configuration that cannot be read at all
-    fails closed too:  the host's configuration is unverifiable, nothing is delivered under
-    it, and the note carries what the error said."""
+    fails closed too:  the host's configuration is unverifiable and nothing is delivered
+    under it.  Its note names the setting when the error names one, and the failure itself
+    otherwise, in a token the transport keeps."""
     try:
         answer = registry_api.configuration(env)
     except Exception as exc:  # noqa: BLE001 - a configuration nobody can read fails closed
-        return Delivery("failed", route, code=NOT_CONFIGURED, note=registry_note(str(exc)))
+        note = registry_note(str(exc)) or safe_note(str(exc))
+        return Delivery("failed", route, code=NOT_CONFIGURED, note=note)
     configured = bool(answer.get("configured"))
     reason = str(answer.get("reason") or "")
     if not configured:
