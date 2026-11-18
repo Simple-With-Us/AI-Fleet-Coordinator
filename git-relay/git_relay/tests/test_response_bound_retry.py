@@ -1,4 +1,5 @@
 """Deterministic read bounds are terminal; uncertain writes remain fenced."""
+
 import json
 import os
 import tempfile
@@ -14,16 +15,40 @@ from git_relay.server import Relay
 class ResponseBoundRetryTests(unittest.TestCase):
     def handle(self, action, error_code):
         credential = "fixture-auth-value-for-tests"
-        policy = SeatPolicy(json.dumps({"swu-echo": {
-            "token": credential, "actions": ["wf_pr_get", "open_pr"],
-            "repos": ["example/fixture"], "app_slug": "swu-echo",
-            "mint_permissions": {"pull_requests": "write", "metadata": "read"},
-        }}))
-        args = {"repo": "example/fixture", "number": 1} if action == "wf_pr_get" else {
-            "repo": "example/fixture", "base": "main", "head": "fixture", "title": "fixture", "body": "fixture"}
+        policy = SeatPolicy(
+            json.dumps(
+                {
+                    "swu-echo": {
+                        "token": credential,
+                        "actions": ["wf_pr_get", "open_pr"],
+                        "repos": ["example/fixture"],
+                        "app_slug": "swu-echo",
+                        "mint_permissions": {"pull_requests": "write", "metadata": "read"},
+                    }
+                }
+            )
+        )
+        args = (
+            {"repo": "example/fixture", "number": 1}
+            if action == "wf_pr_get"
+            else {
+                "repo": "example/fixture",
+                "base": "main",
+                "head": "fixture",
+                "title": "fixture",
+                "body": "fixture",
+            }
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            relay = Relay(policy, object(), AuditLog(os.path.join(tmp, "audit.jsonl")), workflow_verbs_enabled=True)
-            with patch.object(relay, "_dispatch", side_effect=RelayGitHubError(0, "fixture", code=error_code)):
+            relay = Relay(
+                policy,
+                object(),
+                AuditLog(os.path.join(tmp, "audit.jsonl")),
+                workflow_verbs_enabled=True,
+            )
+            with patch.object(
+                relay, "_dispatch", side_effect=RelayGitHubError(0, "fixture", code=error_code)
+            ):
                 return relay.handle(credential, action, args)
 
     def test_bounded_read_is_explicit_nonretryable_502(self):

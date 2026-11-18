@@ -346,7 +346,9 @@ def _reject_surrogates(node):
             continue
         nodes += 1
         if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
-            raise RelayGitHubError(0, "github response exceeded structure bound", code="response_too_large")
+            raise RelayGitHubError(
+                0, "github response exceeded structure bound", code="response_too_large"
+            )
         if isinstance(item, str):
             if not item.isascii():
                 try:
