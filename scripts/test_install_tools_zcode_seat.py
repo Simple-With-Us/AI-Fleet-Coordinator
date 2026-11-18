@@ -4,7 +4,6 @@ and a symlinked profile is a named gap, not a failure.  Covers the AFC-839 revie
 source review plus the Sentry findings) on apply/verify_zcode_seat_default."""
 
 import os
-import stat
 import tempfile
 import unittest
 
@@ -59,11 +58,7 @@ class ZcodeBashrcClassifyTests(unittest.TestCase):
             "# --- end fleet: Z Code session seat declaration",
         ]
         text = "\n".join(
-            ["# profile"]
-            + managed[: head + 3]
-            + hand
-            + managed[head + 3 :]
-            + ["# tail"]
+            ["# profile"] + managed[: head + 3] + hand + managed[head + 3 :] + ["# tail"]
         )
         with self.assertRaises(Refused):
             _zcode_bashrc_classify(text)
@@ -134,7 +129,11 @@ class ApplyZcodeSeatDefaultTests(unittest.TestCase):
         self.assertEqual(result.status, "refused", result.detail)
         seat_bin = os.path.join(self.home, ".fleet-zcode-seat-bin")
         self.assertEqual(
-            [n for n in os.listdir(seat_bin) if n in ("simple-chat", "simple-board", "recall", "simple-git")],
+            [
+                n
+                for n in os.listdir(seat_bin)
+                if n in ("simple-chat", "simple-board", "recall", "simple-git")
+            ],
             [],
             "no seat shims on a refused profile",
         )
@@ -175,7 +174,9 @@ class VerifyZcodeSeatDefaultTests(unittest.TestCase):
 
     def test_a_fresh_install_verifies_clean(self):
         checks = verify_zcode_seat_default(self.paths)
-        self.assertEqual([c.status for c in checks], ["PASS"] * len(checks), [c.detail for c in checks])
+        self.assertEqual(
+            [c.status for c in checks], ["PASS"] * len(checks), [c.detail for c in checks]
+        )
 
     def test_a_symlinked_bashrc_is_a_named_warn_not_a_fail(self):
         # Sentry: a symlinked profile read as a permanent FAIL while apply refuses it by design.
@@ -197,7 +198,10 @@ class VerifyZcodeSeatDefaultTests(unittest.TestCase):
 
     def test_shim_render_is_byte_stable(self):
         target = "/usr/bin/env"
-        self.assertEqual(render_zcode_seat_shim("simple-chat", target), render_zcode_seat_shim("simple-chat", target))
+        self.assertEqual(
+            render_zcode_seat_shim("simple-chat", target),
+            render_zcode_seat_shim("simple-chat", target),
+        )
 
 
 if __name__ == "__main__":
