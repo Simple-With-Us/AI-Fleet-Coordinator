@@ -613,6 +613,62 @@ class Remote(unittest.TestCase):
             )
             self.assertEqual((code, calls), (2, []))
 
+    def test_resolution_definitive_rejections_allow_retry_without_repeating_state(self):
+        for stage in ("state", "comment"):
+            for status in (401, 403):
+                with (
+                    self.subTest(stage=stage, status=status),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    argv = [
+                        "status",
+                        "AFC-8",
+                        "completed",
+                        "--resolution",
+                        "Fixed the defect",
+                    ]
+                    first = [rpc(self.IDANS)]
+                    if stage == "comment":
+                        first.append(rpc({"ok": True}))
+                    first.append((status, "application/json", b"{}"))
+                    code, _, err, _ = self.run_writes(
+                        argv, first, {"LINEAR_BOARD_CACHE_DIR": tmp}
+                    )
+                    self.assertNotEqual(code, 0)
+                    retry = [rpc(self.IDANS), rpc({"ok": True})]
+                    if stage == "state":
+                        retry.append(rpc({"ok": True}))
+                    code, _, err, calls = self.run_writes(
+                        argv, retry, {"LINEAR_BOARD_CACHE_DIR": tmp}
+                    )
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(
+                        [c["name"] for c in calls],
+                        (
+                            ["identities", "linear_status", "linear_comment"]
+                            if stage == "state"
+                            else ["identities", "linear_comment"]
+                        ),
+                    )
+
+    def test_resolution_unknown_state_retry_does_not_claim_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-8", "completed", "--resolution", "Fixed the defect"]
+            for status in (408, 422, 429, 503):
+                with tempfile.TemporaryDirectory() as cache:
+                    self.run_writes(
+                        argv,
+                        [rpc(self.IDANS), (status, "application/json", b"{}")],
+                        {"LINEAR_BOARD_CACHE_DIR": cache},
+                    )
+                    code, _, err, calls = self.run_writes(
+                        argv, [rpc(self.IDANS)], {"LINEAR_BOARD_CACHE_DIR": cache}
+                    )
+                    self.assertNotEqual(code, 0)
+                    self.assertIn("may or may not have applied", err)
+                    self.assertNotIn("completed state change", err)
+                    self.assertEqual([c["name"] for c in calls], ["identities"])
+
     def test_resolution_journal_never_keeps_hosted_echoed_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, _, err, _ = self.run_writes(
