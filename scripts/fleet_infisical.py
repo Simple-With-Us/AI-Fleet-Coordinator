@@ -305,10 +305,13 @@ def fetch_all(
     token: str | None = None,
     allow_session: bool = False,
     writer: bool = False,
+    allow_unresolved: bool = False,
 ) -> dict[str, str]:
     """Read one declared folder with a scoped token; allow_session is a retired compatibility flag."""
     project = infisical_project_id(env, home_dir(env), project_name)
-    return fetch_project(project, path, env, token=token, writer=writer)
+    return fetch_project(
+        project, path, env, token=token, writer=writer, allow_unresolved=allow_unresolved
+    )
 
 
 def project_token_name(project_name: str) -> str:
@@ -483,6 +486,7 @@ def fetch_project(
     writer: bool = False,
     names: Iterable[str] | None = None,
     timeout: float = EXPORT_TIMEOUT,
+    allow_unresolved: bool = False,
 ) -> dict[str, str]:
     """Explicit project route shared with standalone recall and knobs consumers."""
     check_path(path)
@@ -565,7 +569,8 @@ def fetch_project(
             if key in found:
                 raise SecretsError("unverified-source")
             found[key] = value
-    reject_unresolved(found)
+    if not allow_unresolved:
+        reject_unresolved(found)
     return found
 
 
@@ -938,6 +943,16 @@ def resolve_token(
     return check_service_token(token)
 
 
+def write_failure_kind(status: int) -> str:
+    """Retry class for a failed secret write:  a 0, 408 or 5xx answer may still have landed, so the
+    outcome is unknown and a blind retry is unsafe;  a definite 429 is retryable later;  the rest is refused."""
+    if status == 0 or status == 408 or status >= 500:
+        return "outcome-unknown"
+    if status == 429:
+        return "write-retryable"
+    return "write-refused"
+
+
 def put_secret(
     name: str, path: str, value: str, env: Mapping[str, str], token: str | None = None
 ) -> str:
@@ -988,7 +1003,7 @@ def put_secret(
             status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
             if status in (200, 201):
                 return "created"
-        raise SecretsError(f"write-failed:  http-{status}")
+        raise SecretsError(f"{write_failure_kind(status)}:  http-{status}")
     finally:
         body = {}
         token = ""

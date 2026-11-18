@@ -130,6 +130,7 @@ EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/fleet_infisical.py",
+        "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
@@ -196,6 +197,9 @@ REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
+        # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
+        "scripts/simple_tools/thread_registry_export.test.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
