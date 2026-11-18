@@ -35,7 +35,7 @@ APPLY_ENABLED = re.compile(r'("applyEnabled"\s*:\s*)(true|false)')
 # in fleet-ops-control.py), and the settings editor accepts only these top-level fields
 # (validate_allowlist in simple_tools/server/eavesdropper_settings_edit.py).
 SETTINGS_MAX_BYTES = 64 * 1024
-SETTINGS_FIELDS = {'schemaVersion', 'applyEnabled', 'seat', 'tables', 'notes'}
+SETTINGS_FIELDS = {'schemaVersion', 'applyEnabled', 'seat', 'tables', 'notes', 'canonicalHome'}
 # The root-owned install this one replaces (docs/rollouts/2026-11-12-helper-to-jay.md).  Its
 # settings file is read once, to carry the owner's applyEnabled across the move, and only when it
 # and every folder above it are root's and writable by no one else.
