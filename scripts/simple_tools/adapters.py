@@ -687,11 +687,20 @@ ROUTINE_MAX_BODY = 64 * 1024
 WORKER_OUTCOMES = frozenset(
     {"delivered", "no_subscriber", "channel_refused", "rejected", "gone", "not_live"}
 )
+# One read of the wake router's receipt (RoutineRunner.read_receipt) waits at most this long, or the
+# routine's own timeout when that is shorter.  The router answers a receipt from a file, and a read
+# that times out is simply read again on the daemon's schedule (wakes.receipt_next_read).
+RECEIPT_TIMEOUT = 5.0
+# The wake router's own path shapes (wake_router.SEAT_RE and WAKE_ID_RE):  a receipt URL is derived
+# only for a seat and a wake id its `/receipt/<SEAT>/<id>` path accepts.
+_ROUTER_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+_ROUTER_WAKE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class RoutineTarget:
     """A resolved routine:  the URL and key read from the environment, and how to send them.
-    It is never logged and never written anywhere; `host` is the only part that is."""
+    The URL and key are never logged or written anywhere.  `host` is logged, and `origin`
+    (host and port) is written in a router wake's `done` row as `receipt_routine.origin`."""
 
     def __init__(self, url: str, key: str, cfg: RoutineConfig) -> None:
         self.url = url
@@ -708,6 +717,15 @@ class RoutineTarget:
     @property
     def host(self) -> str:
         return (urllib.parse.urlsplit(self.url).hostname or "").lower()
+
+    @property
+    def origin(self) -> str:
+        """`host:port`, the port empty when the URL names none:  where the key goes, without the
+        path or query, which may hold a token.  A daemon restart checks it before it reads a
+        receipt with a routine rebuilt from the ledger (daemon._sent_routine).  The URL passed
+        routine_url_problem, so its port parses."""
+        port = urllib.parse.urlsplit(self.url).port
+        return "%s:%s" % (self.host, "" if port is None else port)
 
     def header_value(self, body: bytes) -> str:
         """The auth header for these exact body bytes:  the key itself, `Bearer <key>`, or the
@@ -859,6 +877,55 @@ def routine_answer(data: bytes) -> dict[str, Any] | None:
     }
 
 
+def receipt_url(url: str, seat: str, wake_id: str) -> str | None:
+    """The wake router's receipt URL for one wake:  the routine URL with its final `/wake/<SEAT>`
+    replaced by `/receipt/<SEAT>/<wake_id>` (wake_router.RECEIPT_PATH_RE), keeping any path before
+    it (a router behind a prefix).  None when the URL does not end that way, carries a query or a
+    fragment (the router's paths never do), or the seat or wake id is not one its path accepts.
+    Any of the three that is not a string is refused the same way, never raised on."""
+    if not (isinstance(url, str) and isinstance(seat, str) and isinstance(wake_id, str)):
+        return None
+    if not _ROUTER_SEAT_RE.fullmatch(seat) or not _ROUTER_WAKE_ID_RE.fullmatch(wake_id):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    suffix = "/wake/%s" % seat
+    if not parts.netloc or parts.query or parts.fragment or not parts.path.endswith(suffix):
+        return None
+    path = parts.path[: -len(suffix)] + "/receipt/%s/%s" % (seat, wake_id)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+class ReceiptRead:
+    """One read of a wake router receipt.  `body` is the answer when it was a 200 holding one JSON
+    object, else None;  `error` is a fixed word when no HTTP answer came (`timeout`, `network`,
+    `request_refused`).  The answer is untrusted:  wakes.receipt_outcome decides what counts."""
+
+    def __init__(
+        self, status: int | None = None, body: Any = None, error: str | None = None
+    ) -> None:
+        self.status = status
+        self.body = body
+        self.error = error
+
+
+def _read_by(response: Any, deadline: float, clock: Callable[[], float]) -> bytes:
+    """At most ROUTINE_RESPONSE_CAP bytes of a response body, read a piece at a time (each one
+    socket read, bounded by the socket's own timeout), and TimeoutError once `clock` reaches
+    `deadline`:  a server that sends a byte now and then cannot hold the read for long."""
+    data = bytearray()
+    while len(data) < ROUTINE_RESPONSE_CAP:
+        if clock() >= deadline:
+            raise TimeoutError("the response was not read by its deadline")
+        piece = response.read1(min(16384, ROUTINE_RESPONSE_CAP - len(data)))
+        if not piece:
+            break
+        data += piece
+    return bytes(data)
+
+
 def routine_surfaced(result: RoutineResult) -> bool:
     """Did this wake reach the seat, so the held-back items it listed count as surfaced?  Not when
     the routine did not take it.  A 2xx from a routine that is not the hosted Worker counts.  The
@@ -968,6 +1035,46 @@ class RoutineRunner:
             self.sleep(self.backoff[min(attempt - 1, len(self.backoff) - 1)])
         out.secs = round(self.clock() - started, 2)
         return out
+
+    def read_receipt(
+        self, target: RoutineTarget, url: str, *, timeout: float = RECEIPT_TIMEOUT
+    ) -> ReceiptRead:
+        """One GET of a wake router receipt (`url`, from receipt_url) with the routine's own header
+        and key, as the wake was sent.  The same handling as `deliver`:  no proxy, no redirect (it
+        would re-send the key elsewhere), a bounded timeout and at most ROUTINE_RESPONSE_CAP bytes.
+        Only a 200's body is read, a piece at a time against a deadline `timeout` after the
+        request began (_read_by), so a body sent slowly cannot hold the read much past it;  the
+        status line and headers are bounded per socket read, as in `deliver`.  One request and no
+        retry:  the daemon reads again on its own schedule.  It logs nothing."""
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": Z.USER_AGENT,
+            target.header: target.header_value(b""),
+        }
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), Z._NoRedirect())
+        request = urllib.request.Request(url, method="GET", headers=headers)
+        wait = min(float(target.timeout), float(timeout))
+        deadline = self.clock() + wait
+        try:
+            with opener.open(request, timeout=wait) as response:
+                status = int(response.status)
+                data = _read_by(response, deadline, self.clock) if status == 200 else b""
+        except urllib.error.HTTPError as exc:
+            exc.close()  # only a 200 is a receipt, so an error answer's body is never read
+            return ReceiptRead(status=int(exc.code))
+        except ValueError:
+            return ReceiptRead(error="request_refused")
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            reason = getattr(exc, "reason", exc)
+            timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+            return ReceiptRead(error="timeout" if timed_out else "network")
+        body: Any = None
+        if status == 200:
+            try:
+                body = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError):
+                body = None
+        return ReceiptRead(status=status, body=body if isinstance(body, dict) else None)
 
 
 def _hash_part(text: str) -> str:

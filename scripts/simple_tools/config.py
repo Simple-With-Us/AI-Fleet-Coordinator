@@ -1525,6 +1525,33 @@ def listener_api_key_env(seat: str, routine: RoutineConfig | None) -> str:
     return env_code(seat) + "_ROUTINE_KEY"
 
 
+def routes_to_router(routine: RoutineConfig | None) -> bool:
+    """Whether a seat's wakes go to the one wake router:  its routine sends the router's bearer
+    (`key_env` is ROUTER_BEARER_ENV with `auth = "bearer"`, the one role _refuse_shared_env lets
+    that name have).  Decided from the config alone, never from the seat's name, so every seat the
+    router serves is treated alike (daemon.receipt_pass reads its receipts)."""
+    return routine is not None and routine.key_env == ROUTER_BEARER_ENV and routine.auth == "bearer"
+
+
+def router_routine(seat: str, sent: Any) -> RoutineConfig | None:
+    """The router routine a wake was sent with, rebuilt from the `receipt_routine` its `done` row
+    recorded (daemon.run_routine):  the router's bearer as a `bearer` key, with the recorded URL
+    variable, header and timeout, each checked as a seat's routine is (_routine).  None when the
+    record is not a mapping or any part of it fails a check (daemon._recover_receipts)."""
+    if not isinstance(sent, Mapping):
+        return None
+    given = {
+        "url_env": sent.get("url_env"),
+        "key_env": ROUTER_BEARER_ENV,
+        "auth": "bearer",
+        "header": sent.get("header"),
+        "timeout_seconds": sent.get("timeout"),
+    }
+    problems: list[str] = []
+    routine = _routine(seat, given, problems)
+    return routine if routine is not None and not problems else None
+
+
 def outgoing_webhook_token_env(seat: str) -> str:
     """The variable that holds a seat's Zulip outgoing-webhook token
     (daemon._configure_outgoing_webhook), ZULIP_OUTGOING_<CODE>_TOKEN, read for a seat in
