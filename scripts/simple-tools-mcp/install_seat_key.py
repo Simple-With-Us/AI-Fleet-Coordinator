@@ -35,7 +35,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -119,7 +118,7 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
 def fleet_ops_project() -> str:
     """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
     line of ~/.simple-tools/fleet-ops-project-id (same sources as
-    scripts/fleet_secrets/core.py).  Fails closed when neither holds a UUID."""
+    scripts/fleet_infisical.py).  Fails closed when neither holds a UUID."""
     value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
     if not value:
         try:
@@ -167,22 +166,35 @@ def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, 
     return INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY", secret_name, email_var
 
 
+# This script's own scoped read-only service token for the handoff names:  Fleet-OPS prod
+# root, the folder they are read from.  The token lives in the consumer's own store (the
+# owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
+# checks the token's own grant and the answer's own provenance before the value is used.
+HANDOFF_TOKEN_ACCOUNT = "install-seat-key-ro"
+HANDOFF_FOLDER = "/"
+
+
 def handoff(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    handoff file is retired (AFC-359).  Only the name is ever reported."""
+    """One credential:  the environment first, then this script's own scoped token against
+    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).  Only the
+    name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
     try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    fail(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
+        env = dict(os.environ)
+        env[scoped_secrets.ENV_READ_PATHS] = HANDOFF_FOLDER
+        found, status = scoped_secrets.fetch_scoped(
+            name, HANDOFF_FOLDER, HANDOFF_TOKEN_ACCOUNT, env
+        )
+    except Exception:
+        found, status = "", "unavailable"
+    if status == "ok" and found:
+        return found
+    fail(
+        f"{name} is not in the environment or this consumer's scoped token "
+        f"({status};  name only, no value printed)"
+    )
 
 
 def wrangler_vars() -> dict:

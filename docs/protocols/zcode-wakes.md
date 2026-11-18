@@ -99,12 +99,12 @@ cutover that does not work never leaves the seat without a route.
     other seat follows.  The bridge's own URL is governed in AFC prod `/zulip` under
     `ZC_BRIDGE_ROUTINE_URL`, so the seat's own name never serves the router's front and the
     bridge at the same time, and the operator reads that one through the approved route,
-    `fleet-secrets get ZC_BRIDGE_ROUTINE_URL --path /zulip --project ai-fleet-coordinator`,
-    captured into the write and never echoed.  The explicit project selector is part of that
-    route and not an extra on it:  the reader's default project is Fleet-OPS, the name is not
-    there, and the same read without the selector exits 3 with "key ZC_BRIDGE_ROUTINE_URL is
-    not in Infisical at /zulip" (checked on Nov 17, 2026), because the name lives in the AI
-    Fleet Coordinator project.  The bridge's own key is already in the loader's
+    the folder's own scoped service token reads `ZC_BRIDGE_ROUTINE_URL` in the AI Fleet
+    Coordinator `/zulip` folder,
+    captured into the write and never echoed.  The project is bound by that token and not an
+    extra on the route:  a Fleet-OPS-scoped token does not carry the name at all, and a read
+    without the right grant fails closed rather than answering, because the name lives in
+    the AI Fleet Coordinator project.  The bridge's own key is already in the loader's
     secondary read, so a rollback has a value to point at.  The
     environment is read once at the container's start, so the container is restarted after the
     name is minted.  The seat's own binding is named here, so the
@@ -146,10 +146,10 @@ cutover that does not work never leaves the seat without a route.
     operator reads from `ZC_BRIDGE_ROUTINE_URL` in the same folder and writes into that name
     without echoing it, and that is the one write the rollback needs outside the server:  that
     name carries the router's front today, so the write is what moves the seat back and not a
-    read of what the name holds.  That write has one named route, and it is not
-    `fleet-secrets set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
-    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins`, and the
-    writer writes the Fleet-OPS project, so `fleet-secrets set ZC_ROUTINE_URL --path /zulip`
+    read of what the name holds.  That write has one named route, and it is not the retired
+    reader's `set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
+    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins`, and it
+    writes the Fleet-OPS project, so a `ZC_ROUTINE_URL` write under `/zulip`
     exits 2 on the allowlist and could not reach this project anyway.  The write goes through
     the approved scoped Infisical consumer for that setting:  one service token whose grant
     is exactly the AI Fleet Coordinator project, `prod`, `/zulip`, with write permission, and
@@ -270,7 +270,7 @@ This is the legacy bridge's own setup, not the seat's routine:  the seat's routi
 one wake router's, and the names below are the bridge's.
 
 1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
-    `fleet-secrets` writes it;  never through chat text, never printed.
+    the approved scoped writer writes it;  never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  the seat's block moves to the bridge's own binding, which is the shape

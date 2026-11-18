@@ -1,61 +1,63 @@
-"""Named-secret adapter.  Secrets resolve through the fleet-secrets CLI only.
+"""Named-secret adapter.  Secrets resolve through the consumer's own scoped token only.
 
-Owner decision 2026-10-21:  no process-environment secrets, no .env files and
-no direct Infisical HTTP in fleet components.  The CLI holds its own
+Owner decision 2026-10-21:  no process-environment secrets, no dotenv files and
+no direct Infisical HTTP in fleet components.  The reader holds its own
 independently scoped identity;  deployment must verify that identity is denied
 outside the approved secret paths (/operator-github/callers, /github-apps).
+
+Each folder has its own read-only service token, held in the consumer's own
+store (the owner's login keychain on the Mac, a private file on a server) and
+read through the shared Infisical client, which checks the token's own grant
+and the answer's own provenance before a value is used.  There is no shared
+reader, no machine identity and no cached copy:  a missing token, a locked
+keychain or a refused grant yields nothing, and the refusal says which.
 """
 
 import os
 import re
-import subprocess
-from pathlib import Path
 
 from .github_token_router import RoutingError, secret_names
-from .zulip import fleet_secrets_bin
 
 LOOKUP_TIMEOUT_SECONDS = 10
+# One read-only grant per folder, each named for the folder it covers.
+TOKEN_ACCOUNTS = {
+    "/operator-github/callers": "operator-github-callers-ro",
+    "/github-apps": "operator-github-apps-ro",
+}
 
 
-def fleet_secrets_get(path, name):
-    """Read one named secret via `fleet-secrets get NAME --path PATH --project fleet-ops`;
-    errors name the variable, never a value or backend detail.  Every local failure
+def scoped_secret_get(path, name):
+    """Read one named secret through the consumer's own scoped token.
+
+    Errors name the variable, never a value or a backend detail.  Every local failure
     happens before any provider request, so the broker releases the caller nonce:
     "refused" for a missing or rejecting store, "retryable" for a timeout."""
-    # An explicit FLEET_SECRETS_BIN override must survive a failing Path.home().
-    try:
-        binary = fleet_secrets_bin(os.environ, Path.home())
-    except (OSError, RuntimeError):
-        explicit = (os.environ.get("FLEET_SECRETS_BIN") or "").strip()
-        binary = os.path.expanduser(explicit) if explicit else None
-    if not binary:
+    account = TOKEN_ACCOUNTS.get(path)
+    if not account:
         raise RoutingError(
-            name + " unavailable: fleet-secrets executable not found", outcome="refused"
+            name + " unavailable: no scoped token covers " + path, outcome="refused"
         )
     try:
-        result = subprocess.run(
-            [binary, "get", name, "--path", path, "--project", "fleet-ops"],
-            capture_output=True,
-            timeout=LOOKUP_TIMEOUT_SECONDS,
+        import fleet_infisical as FI
+
+        env = dict(os.environ)
+        env[FI.ENV_READ_PATHS] = path
+        value, status = FI.fetch_scoped(name, path, account, env)
+    except TimeoutError:
+        raise RoutingError(
+            name + " unavailable: Infisical lookup timed out", outcome="retryable"
+        ) from None
+    except Exception:
+        raise RoutingError(
+            name + " unavailable: Infisical lookup failed", outcome="refused"
+        ) from None
+    if status != "ok":
+        raise RoutingError(
+            name + " unavailable: Infisical lookup failed (" + status + ")", outcome="refused"
         )
-    except subprocess.TimeoutExpired:
-        raise RoutingError(
-            name + " unavailable: fleet-secrets lookup timed out", outcome="retryable"
-        ) from None
-    except FileNotFoundError:
-        raise RoutingError(
-            name + " unavailable: fleet-secrets executable not found", outcome="refused"
-        ) from None
-    except OSError:
-        raise RoutingError(
-            name + " unavailable: fleet-secrets lookup failed", outcome="refused"
-        ) from None
-    if result.returncode:
-        raise RoutingError(name + " unavailable: fleet-secrets lookup failed", outcome="refused")
-    value = result.stdout.decode("utf-8", "replace").strip()
     if not value:
         raise RoutingError(
-            name + " unavailable: fleet-secrets returned an empty value", outcome="refused"
+            name + " unavailable: Infisical returned an empty value", outcome="refused"
         )
     return value
 
@@ -66,7 +68,7 @@ class NamedSecrets:
     def __init__(self, seats, apps, *, transport=None):
         self.seats = frozenset(seats)
         self.apps = frozenset(apps)
-        self.transport = transport or fleet_secrets_get
+        self.transport = transport or scoped_secret_get
 
     def caller_key(self, seat):
         if seat not in self.seats or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,31}", seat):

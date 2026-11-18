@@ -20,7 +20,7 @@ The command is:
 recall ingest --source linear,doc,skill,memory --prune --no-heartbeat
 ```
 
-`--no-heartbeat` keeps the process off `fleet-secrets`.  That reader can use a machine identity.  This job never calls it.
+`--no-heartbeat` keeps the process off the Infisical reader.  That reader is service-token only:  a machine identity is not a current credential.  This job never calls it.
 
 The nightly accepts a recent successful code-main-sync and does not start that unit.  The read is `systemctl show` on `code-main-sync.service`, which the service account can do.  It passes when the unit is not running, `Result` is `success`, `ExecMainStatus` is 0, and that run started within the last hour.  A success older than an hour does not count.  If the unit is still running, the job polls that same read until the oneshot finishes or 30 minutes pass.  It does not call `systemctl start` to wait.
 

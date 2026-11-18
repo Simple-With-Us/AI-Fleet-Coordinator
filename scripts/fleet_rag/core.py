@@ -23,9 +23,7 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import stat
-import subprocess
 import sys
 import time
 import urllib.error
@@ -255,66 +253,36 @@ def _identity(prefix: str) -> tuple[None, None]:
 
 
 FLEET_SECRETS_TIMEOUT = 60
-_FLEET_SECRETS_PICK = (
-    "import json,os,sys;"
-    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
-)
 
 
-def _fleet_secrets_bin() -> str | None:
-    """The `fleet-secrets` command (OPS-818) on PATH or in ~/.local/bin, or None."""
-    found = shutil.which("fleet-secrets")
-    if found:
-        return found
-    local = pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else None
+def infisical_many(names: Iterable[str]) -> dict[str, str]:
+    """Values of `names` the recall reader's own scoped token can supply, from one fetch.
 
-
-def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
-    """Values of `names` that `fleet-secrets` can supply, from one fetch.  Missing command,
-    a failure or an absent name just leaves that name out;  values are never logged.
-
-    One `fleet-secrets run` fetches Fleet-OPS once and starts a tiny child that prints only the
-    wanted names as JSON on a pipe, so N names cost one fetch rather than N `get` calls.
+    The read goes through the shared Infisical client, with the recall reader's own
+    read-only service token (the environment variable or its mode-600 file) against the
+    configured project's root.  A missing binding, a failure or an absent name just leaves
+    that name out;  values are never logged.
     """
     wanted = [n for n in names if n]
-    binary = _fleet_secrets_bin()
-    if not wanted or not binary:
+    if not wanted:
         return {}
     try:
-        proc = subprocess.run(
-            [binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
-            capture_output=True,
-            text=True,
-            timeout=FLEET_SECRETS_TIMEOUT,
-        )
-        if proc.returncode != 0:
-            return {}
-        got = json.loads(proc.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
+        return infisical_fetch(wanted)
+    except Exception:
         return {}
-    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
-def fleet_secret(name: str) -> str | None:
-    """One value via `fleet-secrets`, or None."""
-    return fleet_secrets_many([name]).get(name)
+def infisical_secret(name: str) -> str | None:
+    """One value through the recall reader's own scoped token, or None."""
+    return infisical_many([name]).get(name)
 
 
-def fleet_secret_get(name: str) -> str | None:
-    """One value via `fleet-secrets get NAME` (works for INFISICAL_* names that `run` refuses),
-    or None for a missing command, a failure or an absent name.  The value is never logged."""
-    binary = _fleet_secrets_bin()
-    if not name or not binary:
+def infisical_secret_get(name: str) -> str | None:
+    """One value through the recall reader's own scoped token, or None for a missing
+    binding, a failure or an absent name.  The value is never logged."""
+    if not name:
         return None
-    try:
-        proc = subprocess.run(
-            [binary, "get", name], capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = proc.stdout.strip() if proc.returncode == 0 else ""
-    return value or None
+    return infisical_many([name]).get(name)
 
 
 def _read_token_file() -> str | None:
@@ -386,7 +354,7 @@ def read_token_binding() -> str | None:
 
 def infisical_login() -> str | None:
     """The explicit read-only service-token binding, without a login."""
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     env = dict(os.environ)
     token = (read_token_binding() or "").strip()
@@ -409,7 +377,7 @@ def infisical_login() -> str | None:
 
 def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     """Read this configured project's root; never borrow Fleet-OPS credentials."""
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     infisical_env()
     env = dict(os.environ)

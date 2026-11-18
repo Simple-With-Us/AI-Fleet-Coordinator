@@ -21,7 +21,8 @@ bridge runs on the Mac, and every tick:
 
 No token is read into this process: the simple-chat CLI resolves each seat's own
 Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
-the fleet reader bot's key from Infisical Fleet-OPS /zulip (`fleet-secrets get`, AFC-359).
+the fleet reader bot's key from Infisical Fleet-OPS /zulip, through this bridge's own scoped
+read-only service token (AFC-359).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -61,9 +62,11 @@ except ImportError:  # pragma: no cover
 CHANNEL_DEFAULT = "work-in-progress"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
-FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
+# This bridge's own scoped read-only service token:  Fleet-OPS prod /zulip, the one folder it
+# reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
+# private file on a server);  the shared Infisical client checks the token's own grant and the
+# answer's own provenance before a value is used.
+TOKEN_ACCOUNT = "outbox-bridge-ro"
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -453,28 +456,25 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _fleet_secret(name, folder):
-    """One Infisical value via `fleet-secrets get`, or None.  Never logged."""
+def _infisical_secret(name, folder):
+    """One Infisical value through this bridge's own scoped token, or None.  Never logged."""
     try:
-        proc = subprocess.run(
-            [FLEET_SECRETS_BIN, "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
+        import fleet_infisical as FI
+
+        env = dict(os.environ)
+        env[FI.ENV_READ_PATHS] = folder
+        value, status = FI.fetch_scoped(name, folder, TOKEN_ACCOUNT, env)
+    except Exception:
         return None
-    out = proc.stdout.strip() if proc.returncode == 0 else ""
-    return out or None
+    return value or None
 
 
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
     Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
-    Infisical through `fleet-secrets get`, so the key never appears on a command line and
-    never in an exception message.  Refuses any host but the fleet realm and
+    Infisical through this bridge's own scoped token, so the key never appears on a command line
+    and never in an exception message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
 
@@ -484,7 +484,7 @@ class ZulipClient:
         self.email = self.key = self.site = None
         if rc_path is None:
             self.email, self.key, self.site = (
-                _fleet_secret("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part), "/zulip")
+                _infisical_secret("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part), "/zulip")
                 for part in ("EMAIL", "KEY", "SITE")
             )
             text = ""

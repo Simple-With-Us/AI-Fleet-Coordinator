@@ -104,7 +104,6 @@ RECALL_MODULES = (
 # `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
-SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
@@ -147,7 +146,6 @@ EXACT = frozenset(
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
         "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
@@ -240,7 +238,6 @@ TOOL_REQUIRED = frozenset(
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         # Required scoped verifier dependency for new knobs/recall bundles, without the generic CLI.
         "scripts/fleet_infisical.py",
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/simple_tools/mcp/fleetlink-tools.json",

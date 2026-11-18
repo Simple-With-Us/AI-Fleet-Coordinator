@@ -344,15 +344,14 @@ jobs:
       run: |
         "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
         cd scripts && "$PY39" -m unittest discover -s fleet_view/tests -t . -v
-    # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
-    # unresolved-reference guard, auth selection, and no secret in argv or error text.
-    - name: fleet_secrets tests
+    # The shared Infisical client (the one reader the fleet uses):  the consumer's own
+    # scoped service token from the consumer's own store, the Mac keychain and the
+    # server file store, the grant check, and no secret in argv, a message or a log.
+    - name: Shared Infisical client tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
-        bash -n install-fleet-secrets.sh
-        bash -n fleet_secrets/seed-system-keychain.sh
-        bash -n fleet_secrets/switch-pm2-jobs.sh
+        cd scripts && python3 -m unittest test_fleet_infisical_store -v
+        bash -n install-infisical-scoped.sh
     # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `simple-chat` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.
@@ -390,7 +389,7 @@ jobs:
     - name: Fleet app processes tests
       timeout-minutes: 10
       run: python3 scripts/test_fleet_app_processes.py
-    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
+    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake store.
     - name: Zulip provision bots tests
       timeout-minutes: 10
       run: python3 scripts/test_zulip_provision_bots.py
@@ -624,7 +623,7 @@ jobs:
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
+    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key store reads and the
     # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
     # CredentialPreviewTests and CredentialFailureTests pin what the board says about a credential it
@@ -680,7 +679,7 @@ jobs:
       timeout-minutes: 10
       run: node --test scripts/safari-start/worker.test.mjs
     # The alert-ingress secret provisioner (AFC-351):  the batched read against a
-    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # fake store that keeps the shared client's own contract -- one name answers
     # with the raw value, several answer with a JSON object -- so a one-name
     # batch cannot decode as the other.  No network, no secret in any assertion.
     - name: alert_ingress provisioner tests
@@ -712,7 +711,7 @@ jobs:
         npm ci --ignore-scripts --prefix scripts/simple-tools-mcp
         node --test scripts/simple-tools-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
-    # fleet-secrets:  names-only output, collisions, exit codes and reruns.
+    # store:  names-only output, collisions, exit codes and reruns.
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
       run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py

@@ -1557,13 +1557,14 @@ class ServerTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("current", "OK"))
         self.assertIn("fired 20 minutes ago", row["reason"])
 
-    def test_wrappers_and_the_fleet_secrets_link(self):
+    def test_wrappers_and_no_row_for_the_retired_reader(self):
         current = str(self.fleet_cli / "current")
         self.touch(
             ".local/bin/simple-chat",
             f"release = Path({current!r})\nargv = [str(release / 'scripts/simple-chat')]\n",
         )
         self.touch(".local/bin/simple-board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        # A leftover binary on the host changes nothing:  the retired reader has no row.
         self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
         (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
         report = doctor.Report()
@@ -1572,7 +1573,7 @@ class ServerTests(HomeCase):
         self.assertEqual(report.row("tool:simple-chat")["state"], "current")
         self.assertEqual(report.row("tool:simple-board")["state"], "missing")  # points elsewhere
         self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
-        self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
+        self.assertIsNone(report.row("tool:fleet-secrets"))  # the retired reader is gone
         self.assertEqual(report.row("tool:fleetlink")["state"], "missing")
 
 

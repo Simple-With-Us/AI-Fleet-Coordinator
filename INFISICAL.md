@@ -11,7 +11,7 @@ own store and never go in Infisical.
 
 ## Service Tokens Only
 
-Owner rule, Nov 11, 2026.  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  No runtime path in this repo logs in with a machine identity.  The `--linux-private-bootstrap` flag in `scripts/install-fleet-secrets.sh` installs the service-token entrypoint and does not read a client id or secret.  The universal-auth login in `scripts/simple_tools/zulip.py` was already deleted (AFC-711).  The shared automation identity is revoked only after no host still holds it.  `scripts/fleet_secrets` and `scripts/fleet_rag/infisical_settings.py` already accept only an explicit service-token binding.
+Owner rule, Nov 11, 2026.  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  No runtime path in this repo logs in with a machine identity.  Every consumer reaches Infisical with its own scoped service token:  there is no shared reader, no bootstrap entrypoint and no machine identity.  The universal-auth login in `scripts/simple_tools/zulip.py` was already deleted (AFC-711).  The shared automation identity is revoked only after no host still holds it.  `scripts/fleet_infisical.py` and `scripts/fleet_rag/infisical_settings.py` accept only an explicit service-token binding.
 
 ## Key inventory
 
@@ -119,10 +119,10 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 
 | Name | Where | Who reads it |
 |---|---|---|
-| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`, else (when the knob reads empty, as on the server once its last-known-good copy lapses) through `fleet-secrets get --project ai-fleet-coordinator`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
+| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`, else (when the knob reads empty, as on the server once its last-known-good copy lapses) through the consumer's own scoped read-only service token and `scripts/fleet_infisical.py`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
 | `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
-| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
-| `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
+| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (the server Notes reader below, with its own `operator-notes-read` service token, held in memory) |
+| `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, through its own scoped service token and `scripts/fleet_infisical.py`) |
 
 ### Server Notes reader without environment credentials
 
@@ -164,8 +164,7 @@ failed refresh never returns a stale key. The cache is thread-safe and memory-on
 
 The non-secret URL comes from the committed private deployment pins; this does not
 change fleet-knobs local-value or last-known-good freshness rules. Host provisioning,
-private token custody and runtime activation remain separate release steps. Generic
-`fleet-secrets` verified reads and writes are unchanged.
+private token custody and runtime activation remain separate release steps. Generic verified reads through a consumer's own scoped service token are unchanged.
 
 Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
@@ -371,76 +370,65 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 
 ## Prod-only lint
 
-`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_secrets`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
+`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_infisical.py`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
 
 ## Local dev
 
-Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or point `INFISICAL_MACHINE_IDENTITY` at your handoff file and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
+Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or bind the service's own scoped service token as `INFISICAL_TOKEN` and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
 
-## fleet-secrets
+## Secrets and service tokens
 
-`fleet-secrets` (`scripts/fleet_secrets/`, Linear OPS-818) is the one way a Mac script, LaunchAgent or pm2 start script reads Fleet-OPS secrets now that nothing may read the flat file `~/.secrets/global-api-keys`.  Install it with `bash scripts/install-fleet-secrets.sh`;  that copies the package to `~/.local/share/fleet-secrets/` and links `~/.local/bin/fleet-secrets` to the copy (a symlink into a lane would break when the lane is retired), so re-run the installer after the package changes.  Python stdlib only.  Run `fleet-secrets doctor` to check it.
+There is no shared reader any more.  `fleet-secrets` is retired:  the CLI, its package (`scripts/fleet_secrets/`) and its installer are gone from this repository, from the release bundle and from both hosts (owner directive, Tue, Nov 17, 2026).  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`, and this section is the cookbook that follows it.
 
-| Command | What it does |
-|---|---|
-| `fleet-secrets run [--path /] [--only A,B] -- CMD [ARG...]` | Fetches once, then `exec`s `CMD` with the secrets as environment variables (a variable of the same name is replaced).  `--only` injects just those keys and exits 3 if one is absent.  PATH, HOME, USER, SHELL, TMPDIR, `LD_*`, `DYLD_*` and a few interpreter variables are never injected by `run`, and `--only` naming one of them is a usage error (exit 2).  Every `INFISICAL_*` key is in that list too, so a stored `INFISICAL_TOKEN` or a retired client secret never reaches the command.  The fleet-secrets auth variables (`INFISICAL_TOKEN`, `INFISICAL_WRITE_TOKEN` and the retired universal-auth client id and secret names) are removed from the started command's environment. |
-| `fleet-secrets get NAME [--path /] [--project fleet-ops\|ai-fleet-coordinator]` | Prints exactly one value to stdout with no trailing newline.  Exit 3 and a message naming the key if it is absent.  `--project` picks the Infisical project (read-only, default Fleet-OPS);  the FleetLink seat tokens are read with `--project ai-fleet-coordinator --path /fleetlink`. |
-| `fleet-secrets names [--path /] [--project fleet-ops\|ai-fleet-coordinator]` | Key names only, one per line.  `--project ai-fleet-coordinator` is the one read-only second project (the FleetLink seat tokens live in its `/fleetlink`);  its id comes from `INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID` or `~/.simple-tools/ai-fleet-coordinator-project-id`. |
-| `fleet-secrets set NAME --path /linear` | Creates or updates one Fleet-OPS prod secret, but ONLY names on the built-in allowlist `core.WRITE_ALLOWLIST` (now `^CACHE_[A-Z0-9_]+$` under `/linear`, the minted Linear tokens `simple-board` keeps);  anything else exits 2 before auth.  Widening the list takes a reviewed code change, never a flag or environment variable (a general write would let any agent overwrite any secret through one shared credential) (AFC-359).  The value comes from standard input (one trailing newline removed), never an argument.  It writes over REST with the separate writer service token bound as `INFISICAL_WRITE_TOKEN` (Fleet-OPS only);  the CLI's own login session is refused because it cannot hand a token to a REST call.  It never creates a folder:  a missing one fails with `folder-missing` and writes nothing.  Prints `created|updated NAME at PATH`, never the value.  Exit 4 on a failed write. |
-| `fleet-secrets doctor [--json]` | Booleans, the CLI version and counts only:  CLI present, project id resolvable, auth mode, session valid, a test fetch, key count, unresolved-reference count.  Exit 1 when something is wrong. |
+**The grant.**  Each consumer holds its own scoped, read-only service token, named `<consumer>-ro`, scoped to exactly one project, environment `prod` and one folder.  A consumer that reads two folders gets two tokens, one per folder.  It never gets a shared grant, and it never reads another consumer's token.
 
-Exit codes:  0 ok, 2 usage or a refused setting, 3 key absent, 4 fetch or auth failure, 5 unresolved reference, 126 or 127 the command could not start.
+**The store is the consumer's own.**  On the Mac: the owner's login keychain, one generic-password item, service `infisical-service-token`, account `<consumer>-ro` (`/usr/bin/security find-generic-password -s infisical-service-token -a <consumer>-ro -w`).  On a server: a file owned by the consumer account, mode 0600, inside a parent directory of mode 0700, at `~/.config/infisical/tokens/<consumer>-ro.token`.  A token is never in another consumer's store, never in the retired reader, never in a repository and never on a command line.
 
-**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets.  Every key in the flat file is at root (checked Sun, Oct 18, 2026:  eleven names that were missing, the `SIMPLE_TOOLS_*`, `B2_*_BUCKET_NAME` and `USAGE_*` tokens, `ANTIGRAVITY_INGEST_TOKEN` and `PAGERDUTY_API_KEY`, now have root references), so `--path` is only needed for keys that live in a folder alone.  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.simple-tools/fleet-ops-project-id` (the same two sources and error text as `scripts/simple_tools/zulip.py`), and the command fails closed when neither holds a UUID.
+**The read is direct and scoped.**  The consumer calls the Infisical raw-secret route with its own token:
 
-**Auth, one route (for `fleet-secrets` only).**  This paragraph describes `fleet-secrets`.  No other runtime path in this repo logs in with a machine identity.  The Linux launcher below installs the service-token entrypoint and does not read a client id or secret.  The shared automation identity is revoked only after no host still holds it.  `INFISICAL_TOKEN` in the environment, the consumer's own scoped read-only service token (mode `token`).  `INFISICAL_WRITE_TOKEN` is a separate writer used only by `set`.  With no token the mode is `missing`, and a non-interactive read fails with `service-token-required`.  The one exception is an explicit interactive admin read:  `get` and `names` run from a terminal (stdin is a TTY) may fall back to the operator's own Infisical CLI login session (`infisical export`), read-only, and never for automation.  Nothing else is consulted:  no universal-auth identity (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET`), no login or System Keychain item and no credential file.  Owner rule of Nov 11, 2026;  `scripts/fleet_secrets/core.py` already enforces it, and the old `automation-env`, `keychain` and `system-keychain` modes no longer exist.  The Keychain item names in `core.py` are retired identifiers kept for compatibility callers, and `doctor` reports the chosen `auth_mode`.  `run` never passes the token on.  Mint a token for a new consumer under the `service-tokens` skill, one narrow grant, and log it on the service-tokens tab of the fleet references workbook.
-
-**Safety.**  One fetch per process, values only in memory, never written to disk, a log or stderr.  The CLI's stdout and stderr are captured, never echoed, so a failure is a reason token (`cli-missing`, `timeout`, `exit-1`, `bad-output`, `login-failed`).  A value that is still `${...}` after expansion stops the command and names the key (exit 5).  `get` and `run --only` check only the keys they use;  `names`, `doctor` and a plain `run` check all of them.
-
-### Migration cookbook
-
-**(a) A shell script that greps one key.**
-
-```bash
-# before
-KEY="$(grep -m1 '^KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
-# after
-KEY="$(fleet-secrets get KEY)" || exit $?
+```
+GET {INFISICAL_API}/api/v3/secrets/raw/{name}
+    ?projectId=<project id>&environment=prod&secretPath=<folder>
+Authorization: Bearer <token>
 ```
 
-`get` already strips nothing and adds nothing, so drop the `tr`.  Never `echo` the variable.
+The shared client is `scripts/fleet_infisical.py`, and it stays.  `fetch_verified(name, folder, env, token)` performs the read and checks the answer's own provenance (workspace, environment, secretPath, secretKey and shared type), so a value from the wrong place fails closed.  `token_from_store(account)` reads the consumer's own store and says which refusal it was (`ok`, `no-token`, `keychain-locked`, `token-unreadable`).  `fetch_scoped(name, folder, account)` does both and returns the value and a status (`ok`, `absent`, `forbidden`, `no-token`, `keychain-locked`, `token-unreadable`, `failed`).  A consumer that lives outside this repository calls the same route itself, with the checks its own code needs;  `scripts/mac-resource-watch.py` is the reviewed precedent for that shape.
 
-**(b) A start script that sources the whole file.**
+**The environment still wins.**  A value already in the environment is used and never second-guessed.  The scoped token is the fallback, not the override.
 
-```bash
-# before
-set -a; . ~/.secrets/global-api-keys; set +a
-exec ./server --port 8080
-# after
-exec fleet-secrets run -- ./server --port 8080
-# or, when the process needs only a few keys
-exec fleet-secrets run --only KEY_A,KEY_B -- ./server --port 8080
-```
+**No fallback and no cached copy.**  There is no route to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields nothing, and the consumer says which of those it was.
 
-In a LaunchAgent plist or a pm2 ecosystem file, make `fleet-secrets` the program and put the old command after `run --`.  Use the absolute path `/Users/jay/.local/bin/fleet-secrets`, because a LaunchAgent's PATH is minimal.
+An operator reading one value by hand uses the Infisical CLI session (`infisical export`), read-only, and never for automation.  A write goes through the Infisical CLI or the API with a separate writer token bound to that one consumer;  there is no general write path any more.
 
-**(c) Python or Node that opens and parses the file.**
+### Reading a secret
+
+**(a) A script that needs one value.**  The consumer resolves its own token from its own store and calls the shared client:
 
 ```python
-# before
-for line in open(os.path.expanduser("~/.secrets/global-api-keys")):
-    k, _, v = line.partition("="); env[k] = v.strip().strip('"')
-# after
-token = os.environ["KEY"]          # launched as:  fleet-secrets run --only KEY -- python3 job.py
+import sys
+sys.path.insert(0, "/path/to/AI-Fleet-Coordinator/scripts")
+from fleet_infisical import fetch_scoped
+
+value, status = fetch_scoped("TARGET_KEY", "/folder", "consumer-ro")
+if status != "ok":
+    raise SystemExit("secret read failed: " + status)
 ```
 
-Delete the file reader, read `os.environ` (`process.env` in Node) and launch the program under `fleet-secrets run`.  A job that must fetch inside the process can call `subprocess.run(["fleet-secrets", "get", "KEY"], capture_output=True, check=True).stdout.decode()`.  Do not put the value in argv or a log.
+Never `echo` the value, never put it in argv, and never write it to a log or a transcript.
 
-**Setup for a new consumer** (agents may do this themselves, owner rule of Nov 11, 2026):  mint one scoped service token with the Infisical CLI under the `service-tokens` skill, one project, environment and folder, read-only unless a write is proven necessary, with an expiry.  Store it only in the consumer's own store (a root-only file or the platform's secret store), bind it as `INFISICAL_TOKEN`, verify its exact scope in both directions, and log it on the service-tokens tab.  Do not create a universal-auth machine identity and do not seed a Keychain with one.  `scripts/fleet_secrets/seed-system-keychain.sh` and `scripts/fleet_secrets/switch-pm2-jobs.sh` predate this rule:  `fleet-secrets` no longer reads the System keychain, so they are not part of the current route and are slated for retirement.
+**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  A value that is already in the environment is used as it is, and the token is only the fallback.
+
+**(c) A consumer on a server.**  The same client and the same shape, with the token in the 0600 file the store table above names.
+
+**Setup for a new consumer** (agents may do this themselves, owner rule of Nov 11, 2026):  mint one scoped service token with the Infisical CLI under the `service-tokens` skill, one project, environment and folder, read-only unless a write is proven necessary, with an expiry.  Store it only in the consumer's own store, bind it to that consumer, verify its exact scope in both directions, and log it on the service-tokens tab of the fleet references workbook.  Do not create a universal-auth machine identity and do not seed a Keychain with one.
+
+**Where the values live.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets.  Every key in the flat file is at root (checked Sun, Oct 18, 2026:  eleven names that were missing, the `SIMPLE_TOOLS_*`, `B2_*_BUCKET_NAME` and `USAGE_*` tokens, `ANTIGRAVITY_INGEST_TOKEN` and `PAGERDUTY_API_KEY`, now have root references), so a folder is only needed for keys that live in a folder alone.  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.simple-tools/fleet-ops-project-id` (the same two sources and error text as `scripts/simple_tools/zulip.py`), and the read fails closed when neither holds a UUID.
+
+**Safety.**  A consumer fetches once per folder per process, holds the value in memory, and never writes it to disk, a log or stderr.  The value never appears in an error message:  an error names the key, the folder or the status only.  A value that is still `${...}` after expansion fails the read and names the key.
 
 ## Brokering credentials to agents
 
-`fleet-secrets` injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
+A consumer's own scoped service token injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
 
 | | Agent Proxy | Agent Vault |
 |---|---|---|
@@ -450,19 +438,19 @@ Delete the file reader, read `os.environ` (`process.env` in Node) and launch the
 | Plan | any plan | Pro add-on, 5,000 brokered requests a month included, then $2 per 1,000 |
 | Infisical's guidance | local sandboxed proxy, or dynamic secrets | **recommended for new setups** |
 
-This fleet does not mint a universal-auth client id or secret for Agent Proxy.  `fleet-secrets` with a scoped service token is the route.
+This fleet does not mint a universal-auth client id or secret for Agent Proxy.  A consumer's own scoped service token is the route.
 
 Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`, `~/.ssh`, `~/.aws` and `~/.config/gh` but **not** `~/.secrets`, `~/Library/Keychains`, `~/.codex/config.toml` or `~/.claude.json`, and it has no deny flag;  `127.0.0.1` is unreachable inside it even with `--allow-host`, so local MCP servers and hooks break;  `--unmatched-host block` works;  and the first run writes `~/.infisical/agent-proxy/local-ca.{crt,key}`, which expires in about a week.  Agent Vault has no sandbox and `--no-proxy` always merges `localhost` and `127.0.0.1`, and its CA is fetched per run with optional `--ca-fingerprint` pinning.
 
-Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on `fleet-secrets run`.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names two `/agent-proxy` identities from a pilot that is not a current credential route.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
+Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on a direct scoped read.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names two `/agent-proxy` identities from a pilot that is not a current credential route.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
 
 ## Mac `global-api-keys` sync (retired, AFC-359)
 
-The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with `fleet-secrets` from Fleet-OPS root.
+The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with the consumer's own scoped service token from Fleet-OPS root.
 
 ## Retiring `~/.secrets` (AFC-359)
 
-Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with `fleet-secrets` (environment first, then `fleet-secrets get NAME --path /folder`, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (environment first, then a direct scoped read of `NAME` in its folder, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
 
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|
@@ -553,10 +541,10 @@ The owner selected dedicated read-only service tokens in AFC.  This supersedes t
 | `WA_OPERATOR_HMAC_KEY_JET` | AFC prod `/operator-jet-wake` | Operator client and existing Worker |
 | `WA_WORKER_URL` | Literal origin in both folders | Respective client |
 
-Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
+Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed consumer read strips bootstrap authentication before it hands a value to a child process.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
 
 No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.
 
-### Linux service-token entrypoint
+### Server consumers
 
-`scripts/install-fleet-secrets.sh --linux-private-bootstrap` installs `scripts/fleet_secrets/linux-entrypoint.py`.  The entrypoint accepts `INFISICAL_TOKEN`, `INFISICAL_AI_FLEET_COORDINATOR_TOKEN`, or `INFISICAL_WRITE_TOKEN`.  A noninteractive command with no token fails closed and names `INFISICAL_TOKEN`, `INFISICAL_AI_FLEET_COORDINATOR_TOKEN`, and `INFISICAL_WRITE_TOKEN`.  The flag does not read `/root/.config/fleet-secrets/bootstrap.json`, a client id, or a client secret, and it does not perform a universal-auth login.  A host that still has that JSON file is a retirement item, not a pattern.  The normal installer, including Mac installs, is unchanged.  Applying or removing this on a host, and checking that host's tools, is separate from source review and tests.
+The retired reader's package took its Linux bootstrap entrypoint with it, so there is no shared entrypoint left to install.  A server consumer holds its own scoped read-only service token in its own store, at `~/.config/infisical/tokens/<consumer>-ro.token`, mode 0600 inside a 0700 directory, and reads through `scripts/fleet_infisical.py` (`token_from_store` and `fetch_scoped`) or the same raw-secret route.  There is no bootstrap token file, no client id, no client secret and no universal-auth login anywhere on the route;  a host that still holds one of those is a retirement item, not a pattern.  Applying this on a host, and checking that host's tools, is separate from source review and tests.

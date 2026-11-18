@@ -635,7 +635,7 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     if not names:
         return []
     if fetch is None:
-        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
+        fetch = lambda ns: Z._fetch_from_infisical(ns, env, home)
     try:
         got = dict(fetch(tuple(names)))
     except Z.CredentialError as exc:

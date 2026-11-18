@@ -36,7 +36,7 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read from Infisical through `fleet-secrets get` (RECALL_API_TOKEN, and the Access pair under
+     read from Infisical through the shared Infisical client (RECALL_API_TOKEN, and the Access pair under
      its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix) so this works from the stock
      `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
@@ -110,7 +110,7 @@ USER_AGENT = (
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
 # rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# a name not in the environment comes from Infisical through `fleet-secrets get` (AFC-359:  no
+# a name not in the environment comes from Infisical through the shared client (AFC-359:  no
 # credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
 # Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
 # under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
@@ -406,7 +406,7 @@ def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
     Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from Infisical through `fleet-secrets` the same
+    name is not in the environment, read it from Infisical through the shared client the same
     way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
     works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
     and no change to any client's MCP config.
@@ -428,7 +428,7 @@ def _resolve_public_env() -> dict[str, str]:
 def _resolve_public_env_key(key: str) -> str:
     v = (os.environ.get(key) or "").strip()
     if not v:
-        v = (core.fleet_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
+        v = (core.infisical_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return v
 
 

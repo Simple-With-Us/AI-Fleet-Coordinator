@@ -61,9 +61,8 @@ def operator_bot(user, env, owner_id):
 
 def operator_credentials(env, home=None, fetch=None):
     """Read only the two named Operator values, through the fleet's Infisical reader (the
-    environment first, then the reader:  `fleet-secrets run --only`, or on the server instance,
-    whose image ships no fleet-secrets, the reader's direct Infisical API route); no local
-    credential-file fallback."""
+    environment first, then the reader's own scoped service token and its direct Infisical API
+    route); no local credential-file fallback and no other credential source."""
     from . import zulip as Z
 
     _, expected_email = operator_identity(env)
@@ -73,7 +72,7 @@ def operator_credentials(env, home=None, fetch=None):
     )
     # The server instance's loader (server/infisical_env.py) reads exactly these two names from
     # /zulip_operator with its own read-only service token and puts them in the daemon's
-    # environment, because that image ships no fleet-secrets and holds no machine identity.  When
+    # environment, because that image ships no reader and holds no machine identity.  When
     # both are there they are the answer;  a half-set pair, an unresolved reference or a value for
     # another address is refused rather than completed from somewhere else.
     held = {n: str(env.get(n) or "").strip() for n in names}
@@ -144,9 +143,8 @@ def openrouter_api_key(env, home=None, fetch=None):
     """The Operator's OpenRouter key for the headless wake's HTTP runtime, as one string.
 
     Read the way `operator_credentials` reads the Operator's own three names:  one named value from
-    Fleet-OPS (`INFISICAL_FLEET_OPS_PROJECT_ID`), folder `/wake`, through the installed fleet-secrets
-    reader, so it gets that reader's in-memory cache, its outage memory and its last-known-good
-    fallback.  No local file, no other app's OpenRouter key and no other folder.  Every failure is a
+    Fleet-OPS (`INFISICAL_FLEET_OPS_PROJECT_ID`), folder `/wake`, through the shared Infisical
+    client, so it gets that client's in-memory cache and its outage memory.  No local file, no other app's OpenRouter key and no other folder.  Every failure is a
     `CredentialError` carrying a reason token and the name of the secret, never a value, and the key
     is returned to the caller and to nothing else:  the caller hides it from every log and scan."""
     from . import zulip as Z

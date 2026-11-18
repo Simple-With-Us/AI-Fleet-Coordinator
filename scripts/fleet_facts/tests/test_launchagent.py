@@ -148,16 +148,16 @@ class ZshenvRowTests(unittest.TestCase):
         self.assertIn("this shell is the one documented exception", self.flat)
         self.assertIn("approved by Jay on Oct 21, 2026", self.flat)
 
-    def test_the_sync_row_lists_the_sources_the_script_accepts(self) -> None:
+    def test_the_sync_row_says_the_retired_script_is_gone(self) -> None:
+        # The script lived in the retired reader package and went with it:  the row says so,
+        # and it names the scoped service token as the way the folder is written now.
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
         (row,) = [line for line in text.splitlines() if line.startswith("| `scripts/fleet_secrets/sync_cli_login.py`")]
-        script = (REPO / "scripts" / "fleet_secrets" / "sync_cli_login.py").read_text(encoding="utf-8")
-        for source in ('"env"', '"fleet-secrets"', '"file"'):
-            self.assertIn(source, script, "the script no longer accepts this source")
-        for source in ("--from env NAME", "--from fleet-secrets --from-path PATH", "--from file PATH"):
-            self.assertIn(source, row, "the row does not list a source the script accepts")
-        for rejected in ("--from gh", "--from stdin", "--from keychain"):
-            self.assertNotIn(rejected, row, "the row lists a source the script rejects")
+        flat = re.sub(r"\s+", " ", row)
+        self.assertIn("Retired", flat)
+        self.assertIn("gone", flat)
+        self.assertIn("service token", flat)
+        self.assertFalse((REPO / "scripts" / "fleet_secrets" / "sync_cli_login.py").exists())
 
     def test_the_store_side_is_qualified_and_the_fallbacks_are_named(self) -> None:
         self.assertIn("a nonempty fleet-store value wins whenever the store answers with one", self.flat)

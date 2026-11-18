@@ -2346,20 +2346,64 @@ if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
 fi
 
-# One secret on stdout:  the environment value, else `fleet-secrets get NAME`, else nothing.
+# One secret from Infisical, through this consumer's own scoped read-only service token.
+#
+# The token lives in the owner's login keychain as one generic-password item per token:  the
+# service is infisical-service-token and the account is the token's registry name.  The read
+# is the raw-secret route, and the answer's own provenance (the name, the folder, the
+# environment and the shared type) is checked before the value is used.  There is no shared
+# reader, no machine identity and no cached copy:  a missing token, a locked keychain or a
+# refused grant yields nothing.  The value is never logged.
+_infisical_secret() {
+  local name="$1" folder="$2" account="$3" token project value=""
+  token="$(/usr/bin/security find-generic-password -s infisical-service-token -a "$account" -w 2>/dev/null || true)"
+  project="${INFISICAL_FLEET_OPS_PROJECT_ID:-}"
+  if [[ -z "$project" && -r "${HOME}/.simple-tools/fleet-ops-project-id" ]]; then
+    project="$(/usr/bin/head -n 1 "${HOME}/.simple-tools/fleet-ops-project-id" 2>/dev/null | /usr/bin/tr -d '[:space:]')"
+  fi
+  if [[ -z "$token" || -z "$project" ]]; then
+    return 0
+  fi
+  value="$(/usr/bin/curl -sS --max-time 30 \
+    -H "Authorization: Bearer ${token}" \
+    "${INFISICAL_API_BASE:-https://app.infisical.com}/api/v3/secrets/raw/${name}?workspaceId=${project}&environment=prod&secretPath=${folder}&viewSecretValue=true&expandSecretReferences=false&recursive=false&include_imports=false" \
+    2>/dev/null | /usr/bin/python3 -c '
+import json, sys
+try:
+    answer = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+secret = answer.get("secret") if isinstance(answer, dict) else None
+if not isinstance(secret, dict):
+    raise SystemExit(1)
+if secret.get("secretKey") != sys.argv[1]:
+    raise SystemExit(1)
+if secret.get("environment") != "prod" or secret.get("type") != "shared":
+    raise SystemExit(1)
+if secret.get("secretPath") != sys.argv[2].replace("%2F", "/"):
+    raise SystemExit(1)
+value = secret.get("secretValue")
+if not isinstance(value, str) or not value:
+    raise SystemExit(1)
+sys.stdout.write(value)
+' "$name" "$folder" 2>/dev/null)" || value=""
+  printf '%s' "$value"
+}
+
+# One secret on stdout:  the environment value first, else this consumer's own scoped token
+# against Infisical Fleet-OPS prod root, else nothing.
 _pushover_secret() {
-  local name="$1" value="${!1:-}" bin
+  local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    bin="$(command -v fleet-secrets 2>/dev/null || true)"
-    [[ -z "$bin" && -x "${HOME}/.local/bin/fleet-secrets" ]] && bin="${HOME}/.local/bin/fleet-secrets"
-    [[ -n "$bin" ]] && value="$("$bin" get "$name" 2>/dev/null || true)"
+    value="$(_infisical_secret "$name" "%2F" "apple-notes-ro")"
   fi
   printf '%s' "$value"
 }
 
 _send_pushover_notification() {
   local user_key token
-  # Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+  # Environment first, then this consumer's own scoped token against Infisical Fleet-OPS
+  # prod root (OPS-818;  the old flat secrets file is retired, AFC-359).
   user_key=$(_pushover_secret PUSHOVER_USER_KEY)
   token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
   [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)

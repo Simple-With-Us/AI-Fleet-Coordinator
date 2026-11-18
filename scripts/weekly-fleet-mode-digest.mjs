@@ -35,9 +35,10 @@
 //   simple-chat post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
-// value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
-// the old flat secrets file is retired, AFC-359).  Neither value is
-// ever printed, logged, or included in the composed message.
+// value-blind from environment first, then from Infisical Fleet-OPS prod root
+// through this digest's own scoped read-only service token (OPS-818; the old
+// flat secrets file is retired, AFC-359).  Neither value is ever printed,
+// logged, or included in the composed message.
 //
 // Install the LaunchAgent (every Monday 8:00 AM Central, matches system tz):
 //   launchctl bootstrap gui/$(id -u) \
@@ -45,7 +46,7 @@
 // Uninstall:
 //   launchctl bootout gui/$(id -u)/com.jays.weekly-fleet-mode-digest
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -109,31 +110,85 @@ function log(message) {
 
 // ------------------------------------------------------------- secrets ---
 
-/** The `fleet-secrets` command:  the LaunchAgent's PATH is minimal, so ~/.local/bin is tried
- *  explicitly before the bare name. */
-const FLEET_SECRETS_BINS = [join(homedir(), ".local", "bin", "fleet-secrets"), "fleet-secrets"];
+/** This digest's own scoped read-only service token:  Fleet-OPS prod root, the folder the
+ *  Usage Monitor and Sentry values are read from.  The token lives in the owner's login
+ *  keychain as one generic-password item per token:  the service is infisical-service-token
+ *  and the account is the token's registry name.  There is no shared reader, no machine
+ *  identity and no cached copy:  a missing item, a locked keychain or a refused grant yields
+ *  nothing. */
+const TOKEN_ACCOUNT = "fleet-mode-digest-ro";
+const SECRET_FOLDER = "/";
+const INFISICAL_API = process.env.INFISICAL_API_BASE || "https://app.infisical.com";
 
-/** Value-blind secret load: env var first, then `fleet-secrets get NAME`.
+/** The scoped token from the owner's login keychain, or null.  Never printed or logged. */
+function serviceToken() {
+  // stdout is captured, never echoed;  stderr is discarded.
+  const run = spawnSync(
+    "/usr/bin/security",
+    ["find-generic-password", "-s", "infisical-service-token", "-a", TOKEN_ACCOUNT, "-w"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
+  );
+  if (run.error || run.status !== 0) return null;
+  return run.stdout?.trim() || null;
+}
+
+/** The Fleet-OPS project id:  the environment first, else the private inventory file. */
+function projectId() {
+  const fromEnv = process.env.INFISICAL_FLEET_OPS_PROJECT_ID?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const first = readFileSync(
+      join(homedir(), ".simple-tools", "fleet-ops-project-id"),
+      "utf8",
+    )
+      .split("\n")[0]
+      ?.trim();
+    return first || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Value-blind secret load: env var first, then this consumer's own scoped token.
  *  Never printed, logged, or returned in any user-facing string. */
-function resolveSecret(envVarNames) {
+async function resolveSecret(envVarNames) {
   for (const name of envVarNames) {
     const val = process.env[name]?.trim();
     if (val) return val;
   }
-  for (const bin of FLEET_SECRETS_BINS) {
-    if (bin.includes("/") && !existsSync(bin)) continue;
-    for (const name of envVarNames) {
-      // stdout is captured, never echoed;  stderr is discarded.
-      const run = spawnSync(bin, ["get", name], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 60_000,
+  const token = serviceToken();
+  const project = projectId();
+  if (!token || !project) return null;
+  for (const name of envVarNames) {
+    const url =
+      `${INFISICAL_API}/api/v3/secrets/raw/${encodeURIComponent(name)}` +
+      `?workspaceId=${encodeURIComponent(project)}&environment=prod` +
+      `&secretPath=${encodeURIComponent(SECRET_FOLDER)}&viewSecretValue=true` +
+      `&expandSecretReferences=false&recursive=false&include_imports=false`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (!run.error && run.status === 0 && run.stdout?.trim()) {
-        return run.stdout.trim();
-      }
+    } catch {
+      continue;
     }
-    // A missing/failed command -- treated as "no secret available".
+    if (!response.ok) continue;
+    let answer;
+    try {
+      answer = await response.json();
+    } catch {
+      continue;
+    }
+    const secret = answer?.secret;
+    if (!secret || typeof secret !== "object") continue;
+    if (secret.secretKey !== name) continue;
+    if (secret.environment !== "prod" || secret.type !== "shared") continue;
+    if (secret.secretPath !== SECRET_FOLDER) continue;
+    const value = secret.secretValue;
+    if (typeof value === "string" && value) return value;
   }
   return null;
 }
@@ -183,7 +238,7 @@ function hostOf(url) {
 
 /** Returns { available: boolean, data, error? }. Never throws. */
 async function fetchUsageMonitorMix() {
-  const token = resolveSecret(["USAGE_READ_TOKEN"]);
+  const token = await resolveSecret(["USAGE_READ_TOKEN"]);
   if (!token) {
     return { available: false, data: null, error: "USAGE_READ_TOKEN not found" };
   }
@@ -197,7 +252,7 @@ async function fetchUsageMonitorMix() {
 
 /** Returns { available: boolean, rows, error? }. Never throws. */
 async function fetchSentrySubagentMix() {
-  const token = resolveSecret(["SENTRY_AUTH_TOKEN_FULLSCOPE"]);
+  const token = await resolveSecret(["SENTRY_AUTH_TOKEN_FULLSCOPE"]);
   if (!token) {
     return {
       available: false,

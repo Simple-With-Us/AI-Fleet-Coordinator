@@ -163,7 +163,7 @@ bucket has a **lifecycle rule** with `daysFromHidingToDeleting` of 7 to 30 (whic
 window).  The dedicated bucket's rule is the whole-bucket one,
 `{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}`, and the check accepts it
 (a rule on `fleet-work-backup/` alone is accepted too).  A key that can delete lets any process on the Mac that
-can read it erase the history, so keep the key in Infisical only (read through `fleet-secrets`) and consider Object Lock.
+can read it erase the history, so keep the key in Infisical only (read through the consumer's own scoped service token) and consider Object Lock.
 
 The staging folder is fixed at `~/Library/Caches/fleet-work-backup/stage` (restic picks the parent
 snapshot by path, so a timestamped folder would break deduplication and retention).  Files are
@@ -174,7 +174,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 ## Credentials
 
-Read by the job from the environment, else one `fleet-secrets` fetch (OPS-818;  the flat file `global-api-keys` is no longer read), into the restic
+Read by the job from the environment, else one scoped Infisical fetch (OPS-818;  the flat file `global-api-keys` is no longer read), into the restic
 subprocess environment only.  Names, never values:
 
 | Name | Use |
@@ -187,12 +187,12 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
-The fetch is least-privilege:  `fleet-secrets run --only` injects just the four job names (the two master names are
+The fetch is least-privilege:  the scoped read injects just the four job names (the two master names are
 added only when `FLEET_WORK_BACKUP_ALLOW_MASTER=1`).  If `--only` exits non-zero, because one name is absent or
-the fetch failed, the job falls back to one `fleet-secrets get` per name, so the names that exist still load and the
+the fetch failed, the job falls back to one scoped read per name, so the names that exist still load and the
 missing ones are reported.
 
-All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with `fleet-secrets` (AFC-359:
+All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with its own scoped service token (AFC-359:
 nothing is read from `~/.secrets`).  They were seeded from the `AI Fleet Coordinator` project by the one-way
 `com.jay.infisical-secrets-sync` job, which is being retired.  The password must be a
 urlsafe token of at least 16 characters, with no whitespace and no backslash (the sync's plausibility
@@ -203,7 +203,7 @@ check rejects anything else, and its `awk -v` mangles backslashes).  Generate it
 which writes a 43-character urlsafe token to Infisical through the logged-in CLI and never prints it:  the
 value reaches the CLI as a file path (`RESTIC_FLEET_WORK_PASSWORD=@<0600 file>`, removed afterwards), never in
 argv, the CLI's output is discarded, and the value is read back and compared in memory (it reports
-`matched` and the length).  It refuses when `fleet-secrets`, the environment or Infisical already has a
+`matched` and the length).  It refuses when the scoped read, the environment or Infisical already has a
 password, and a read it cannot make is a refusal, never "absent".
 
 **The password is the only key to every snapshot, so it is never rotated in Infisical.**  The sync
@@ -331,7 +331,7 @@ Neither changes the backup run path.
 
 **`health --json`** is read-only.  It reads `state.json`, the newest line of the run log, the installed files and
 `launchctl print gui/<uid>/com.jay.fleet-work-backup` (the one launchctl verb it uses), and it writes nothing, not
-even a directory.  It never reads the credential names or values, `fleet-secrets`, restic or B2.  It always exits 0:
+even a directory.  It never reads the credential names or values, the scoped reader, restic or B2.  It always exits 0:
 the verdict is in the output.  Without `--json` it prints the same facts as a few lines.
 
 | Field | What it holds |
@@ -405,7 +405,7 @@ Order matters;  nothing here runs by itself:
    (project `AI Fleet Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
    `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py
    new-password` for `RESTIC_FLEET_WORK_PASSWORD`.
-4. Confirm `fleet-secrets names | grep -E 'B2_FLEET_WORK|RESTIC_FLEET_WORK'` lists all four names (Fleet-OPS, root `/`).
+4. Confirm a names-only scoped Infisical read of the Fleet-OPS root folder lists all four names (Fleet-OPS, root `/`).
 5. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init` (it checks the key's scope and the lifecycle
    rule first), then add the recovery key (Credentials, above) and keep its password outside Infisical.
 6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent and records the installed

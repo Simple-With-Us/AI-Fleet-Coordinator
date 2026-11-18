@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """stdio MCP proxy to local seat-mcp (127.0.0.1:8793).
 
-Reads SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through
-`fleet-secrets get` (AFC-359).  Never prints it.  Never puts the token on argv.  Loopback only.
+Reads SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through this
+proxy's own scoped read-only service token (AFC-359).  Never prints it.  Never puts the token
+on argv.  Loopback only.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
+# This proxy's own scoped read-only service token:  Fleet-OPS prod /seat-mcp, the one folder
+# it reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac,
+# a private file on a server);  the shared Infisical client checks the token's own grant and the
+# answer's own provenance before the value is used.
+TOKEN_ACCOUNT = "seat-mcp-ro"
+SECRET_FOLDER = "/seat-mcp"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 BASE = "http://127.0.0.1:8793/mcp"
 
 
@@ -25,17 +29,13 @@ def load_token() -> str:
     token = os.environ.get("SEAT_MCP_TOKEN", "").strip()
     if not token:
         try:
-            proc = subprocess.run(
-                [FLEET_SECRETS, "get", "SEAT_MCP_TOKEN", "--path", "/seat-mcp"],
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                token = proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
+            import fleet_infisical as FI
+
+            env = dict(os.environ)
+            env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+            value, status = FI.fetch_scoped("SEAT_MCP_TOKEN", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+            token = value if status == "ok" else ""
+        except Exception:
             token = ""
     if not token:
         sys.stderr.write("SEAT_MCP_TOKEN missing in Infisical /seat-mcp\n")

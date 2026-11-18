@@ -429,6 +429,43 @@ def verify_service_token(
     return paths
 
 
+def token_scopes(token: str, env: Mapping[str, str]) -> tuple[str, ...]:
+    """The prod folders one service token's own grant covers.
+
+    A consumer that reads a folder the token does not hold must fail closed,
+    and a consumer that holds more than one folder must declare exactly the
+    grant's set:  the shared client refuses a read whose declared folders are
+    not the grant's folders.  This is how a consumer learns that set from the
+    store instead of hard-coding it, so a grant that changes on the server
+    stops the read rather than widening it.
+
+    The answer is a list of folder paths, never a value and never a token.
+    """
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_service_token(token)
+    status, metadata = _api_json(
+        "GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024
+    )
+    if status != 200 or not isinstance(metadata, dict):
+        raise SecretsError("token-verification-failed")
+    scopes = metadata.get("scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise SecretsError("token-scope-mismatch")
+    paths: list[str] = []
+    for scope in scopes:
+        if not isinstance(scope, dict) or scope.get("environment") != ENVIRONMENT:
+            raise SecretsError("token-scope-mismatch")
+        secret_path = scope.get("secretPath")
+        if not isinstance(secret_path, str):
+            raise SecretsError("token-scope-mismatch")
+        paths.append(check_path(secret_path))
+    if len(paths) != len(set(paths)):
+        raise SecretsError("token-scope-mismatch")
+    return tuple(paths)
+
+
 def secret_query(project: str, path: str, *, values: bool = True) -> str:
     return urllib.parse.urlencode(
         {
@@ -992,3 +1029,163 @@ def put_secret(
     finally:
         body = {}
         token = ""
+
+
+# --------------------------------------------------------------------------- the consumer's own store
+#
+# The shared reader is retired.  Every consumer that needs a secret now holds its own scoped
+# service token, and the token lives in that consumer's own store on its own host: the
+# owner's login keychain on the Mac, a private file on a server.  Nothing is shared, so a
+# consumer's grant can be revoked without touching anyone else, and a consumer that reads
+# one folder never holds a grant on another.
+#
+# Mac:     one generic-password item per token.  The service is KEYCHAIN_SERVICE and the
+#          account is the token's registry name, so a reader holding the registry row can
+#          find the item by that name.
+# Server:  a file owned by the consumer account, mode 0600, inside a parent directory of
+#          mode 0700.
+#
+# The token value never appears in a message, a log or an exception.
+
+KEYCHAIN_SERVICE = "infisical-service-token"
+TOKEN_STORE_DIR = ".config/infisical/tokens"
+SECURITY_BIN = "/usr/bin/security"
+# `security find-generic-password` exit codes:  44 is errSecItemNotFound (no such item) and
+# 36 is errSecInteractionNotAllowed (the keychain is locked, or the caller is outside the
+# owner's GUI session).  Both are refusals, and the caller has to be able to tell them apart.
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+
+
+def _is_macos() -> bool:
+    """True on the Mac, where the owner's login keychain is the approved store."""
+    return sys.platform.startswith("darwin")
+
+
+def _token_file(home: Path, account: str) -> Path:
+    return home / TOKEN_STORE_DIR / (account + ".token")
+
+
+def token_from_store(
+    account: str,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> tuple[str, str]:
+    """The consumer's own scoped service token from the host's approved store, and why.
+
+    The account is the token's registry name, for example "cursor-surfaces-ro".  The store is
+    the one the host's policy allows: the owner's login keychain on the Mac, a private file
+    on a server.
+
+    Returns (token, status).  The token is "" for every refusal.  The status says which
+    refusal it was: "ok", "no-token" (the store has no such item), "keychain-locked" (the
+    keychain refused the read) or "token-unreadable" (the item is there but unreadable, or
+    what it holds is not a service token).
+
+    The value is never printed, logged or echoed.
+    """
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if not account or account.strip() != account or "/" in account or account.startswith("."):
+        return "", "no-token"
+    if _is_macos():
+        return _token_from_keychain(account)
+    return _token_from_file(home, account)
+
+
+def _token_from_keychain(account: str) -> tuple[str, str]:
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = (result.stdout or "").strip()
+        if not token:
+            return "", "no-token"
+        try:
+            return check_service_token(token), "ok"
+        except SecretsError:
+            return "", "token-unreadable"
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _token_from_file(home: Path, account: str) -> tuple[str, str]:
+    path = _token_file(home, account)
+    try:
+        info = path.lstat()
+    except OSError:
+        return "", "no-token"
+    if not path.is_file() or path.is_symlink():
+        return "", "token-unreadable"
+    parent = path.parent
+    try:
+        parent_info = parent.lstat()
+        file_info = info
+    except OSError:
+        return "", "token-unreadable"
+    if not parent.is_dir() or parent.is_symlink():
+        return "", "token-unreadable"
+    uid = os.getuid()
+    if parent_info.st_uid != uid or file_info.st_uid != uid:
+        return "", "token-unreadable"
+    if (parent_info.st_mode & 0o777) != 0o700 or (file_info.st_mode & 0o777) != 0o600:
+        return "", "token-unreadable"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "", "token-unreadable"
+    token = raw.strip()
+    if not token:
+        return "", "no-token"
+    try:
+        return check_service_token(token), "ok"
+    except SecretsError:
+        return "", "token-unreadable"
+
+
+def fetch_scoped(
+    name: str,
+    folder: str,
+    account: str,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """One secret, through the consumer's own scoped token, and the status.
+
+    The token comes from the consumer's own store (see `token_from_store`) and the read goes
+    through `fetch_verified`, which checks the answer's own provenance as well as the grant.
+    The environment still wins for a consumer that reads the value itself; this is the
+    fallback path, never an override.
+
+    Returns (value, status).  The value is "" for every failure, and the status says which:
+    "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
+    it), "no-token", "keychain-locked", "token-unreadable" or "failed".
+
+    The value never appears in a message, a log or an exception.
+    """
+    env = os.environ if env is None else env
+    token, status = token_from_store(account, env)
+    if not token:
+        return "", status
+    try:
+        return fetch_verified(name, folder, env, token), "ok"
+    except SecretsError as exc:
+        message = exc.message
+        if exc.code == 3:
+            return "", "absent"
+        if "token-verification-failed" in message or "status-403" in message:
+            return "", "forbidden"
+        return "", "failed"

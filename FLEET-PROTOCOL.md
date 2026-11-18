@@ -486,7 +486,7 @@ The name is a claim about the bearer, not proof of it.  The proof is the verifi
 
 ### How a Bearer Is Presented
 
-**On the command line**, a seat never puts the bearer in an argument or an environment variable it controls.  It sets one variable, `SIMPLE_BOARD_BEARER_LOCATOR`, to the *location* of the token rather than the token:  a folder and a key name, written `FOLDER:KEY_NAME`.  The location is not a secret.  The CLI reads the value at that location with `fleet-secrets`, presents it to the verification service, and acts as the seat the service names.
+**On the command line**, a seat never puts the bearer in an argument or an environment variable it controls.  It sets one variable, `SIMPLE_BOARD_BEARER_LOCATOR`, to the *location* of the token rather than the token:  a folder and a key name, written `FOLDER:KEY_NAME`.  The location is not a secret.  The CLI reads the value at that location through its own scoped Infisical service token, presents it to the verification service, and acts as the seat the service names.
 
 If that variable is missing, the CLI refuses to write and says why:  it writes only as a bearer-verified seat and never takes an identity from the environment.  Reads -- list, show, stats, whoami -- keep working, because reading is not acting as a seat.
 

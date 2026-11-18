@@ -1448,7 +1448,7 @@ def _build_shared_verifier():
     """The ST-MCP shared-bearer verifier, or None when not configured.
 
     Set GIT_RELAY_VERIFY_URL to resolve admin-minted per-identity bearers
-    through the Worker's verify route.  The route key is a fleet-secrets read
+    through the Worker's verify route.  The route key is a scoped store read
     like every other credential here;  a configured URL with an unreadable or
     short key is a startup error, never silent unauthenticated operation.
 
@@ -1459,9 +1459,8 @@ def _build_shared_verifier():
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
         return None
-    if not shutil.which("fleet-secrets"):
-        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    _require_infisical_client()
+    from .app_tokens import AppTokenError, InfisicalSource
     from .shared_bearer import SharedBearerVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1475,7 +1474,7 @@ def _build_shared_verifier():
             # The verify-key source therefore binds the App credential
             # file by default;  GIT_RELAY_TOOLS_CREDENTIAL_FILE exists
             # only for a future split.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1517,9 +1516,8 @@ def _build_assertion_verifier():
         raise SystemExit(
             "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
         )
-    if not shutil.which("fleet-secrets"):
-        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    _require_infisical_client()
+    from .app_tokens import AppTokenError, InfisicalSource
     from .assertion import GrAssertionVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1530,7 +1528,7 @@ def _build_assertion_verifier():
             # Same source binding rules as the bearer verify key (see
             # _build_shared_verifier):  the App credential file's scope covers
             # /tools;  GIT_RELAY_TOOLS_CREDENTIAL_FILE is the future split.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1594,12 +1592,12 @@ def from_env() -> Relay:
     app_source = None
     outcome_capacity = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
-        # App-credential reads go through the fleet-secrets CLI only (owner
-        # decision 2026-10-21:  no env secrets, no direct Infisical).  The CLI
-        # must be installed on this host or App actions stay unavailable.
-        if not shutil.which("fleet-secrets"):
-            raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
-        from .app_tokens import AppTokenError, AppTokenMinter, FleetSecretsSource
+        # App-credential reads go through the shared Infisical client and the
+        # relay's own scoped service token (owner decision 2026-10-21:  no env
+        # secrets, one shared client).  That client must be installed on this
+        # host or App actions stay unavailable.
+        _require_infisical_client()
+        from .app_tokens import AppTokenError, AppTokenMinter, InfisicalSource
 
         # The Fleet-OPS prod folder the App keys are read from.  Defaults to
         # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
@@ -1613,7 +1611,7 @@ def from_env() -> Relay:
                 "unset it to use /github-apps"
             )
         try:
-            app_source = FleetSecretsSource(
+            app_source = InfisicalSource(
                 path=(raw_secrets_path or "/github-apps").strip(),
                 credential_file=_credential_file_for(
                     "the App-credentials source",
@@ -1661,8 +1659,23 @@ def from_env() -> Relay:
     )
 
 
+def _require_infisical_client():
+    """The shared Infisical client this host must carry, or refuse to start.
+
+    The relay reads every credential through the one shared client the fleet
+    uses.  A host without that client has no approved credential path, so it
+    refuses to start rather than falling back to an ambient token.
+    """
+    from .app_tokens import AppTokenError, load_infisical_client
+
+    try:
+        return load_infisical_client()
+    except AppTokenError as exc:
+        raise SystemExit(f"git-relay config: {exc}") from exc
+
+
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
-    """The protected Infisical-token file one fleet-secrets source runs under.
+    """The protected Infisical-token file one store source runs under.
 
     Production resolves it from systemd's CREDENTIALS_DIRECTORY (the unit's
     LoadCredential keys are the default file names) or an explicit
@@ -1690,8 +1703,8 @@ def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | N
 
 
 def _owner_token_from_cli() -> str:
-    """The owner PAT for open_pr, read once at startup through `fleet-secrets
-    get-verified` at its fixed folder (/git-relay-owner):  the CLI proves the
+    """The owner PAT for open_pr, read once at startup through the shared
+    client at its fixed folder (/git-relay-owner):  the client proves the
     value came from that exact folder before answering.  Never the process
     environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
     fallback source (owner direction 2026-10-21 + the /git-relay-owner
@@ -1701,9 +1714,9 @@ def _owner_token_from_cli() -> str:
     folder scope (_credential_file_for):  no ambient inheritance in
     production.
     """
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
 
-    source = FleetSecretsSource(
+    source = InfisicalSource(
         path="/git-relay-owner",
         credential_file=_credential_file_for(
             "the /git-relay-owner source",

@@ -2,7 +2,7 @@
 
 Ordered steps to put the Phase 0 stub on `https://agents.simplewithus.com`.  The stub holds no Zulip key, so spec 3.2 allows today's credential (the Global key) for it.  Every Cloudflare change below is Jay-approved work for the parent session, run by hand, never from CI and never on merge.
 
-Everything runs from `scripts/simple-tools-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else `fleet-secrets get` (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
+Everything runs from `scripts/simple-tools-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else a scoped Infisical read (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
 
 ## What can hold the hostname (read-only probe: `python3 -I infra_phase0.py status`)
 
@@ -63,7 +63,7 @@ The Access AUD is a private Cloudflare resource identifier and is **not** commit
 
 Two things about that call, because a failure here is otherwise a bare exit code:
 
-- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same `fleet-secrets` credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it reports only the exit code plus two allow-listed fields taken from wrangler's output (the Cloudflare error code and the request id); none of wrangler's own text is relayed, so no secret can ride along.  Exit 124 is a hung wrangler and 127 is a missing one.
+- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same scoped Infisical credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it reports only the exit code plus two allow-listed fields taken from wrangler's output (the Cloudflare error code and the request id); none of wrangler's own text is relayed, so no secret can ride along.  Exit 124 is a hung wrangler and 127 is a missing one.
 - **It needs the Worker to already exist.**  On a brand-new endpoint, run this step again *after* step 5: `wrangler secret put` has nothing to attach to until the Worker is deployed.  Setting it later needs no redeploy, so it can equally be run after `check`.
 
 ## Step 4:  Remove the tunnel CNAME
@@ -84,8 +84,8 @@ cd scripts/simple-tools-mcp
 (
   set +x
   export CLOUDFLARE_ACCOUNT_ID=3a9368057468d0909cafaa85df12d1b7
-  CLOUDFLARE_EMAIL="$(fleet-secrets get CLOUDFLARE_JAY_ACCOUNT_EMAIL)"
-  CLOUDFLARE_API_KEY="$(fleet-secrets get CLOUDFLARE_JAY_API_KEY)"
+  CLOUDFLARE_EMAIL="$(read_secret CLOUDFLARE_JAY_ACCOUNT_EMAIL / <consumer>-ro)"
+  CLOUDFLARE_API_KEY="$(read_secret CLOUDFLARE_JAY_API_KEY / <consumer>-ro)"
   export CLOUDFLARE_EMAIL CLOUDFLARE_API_KEY
   WRANGLER_SEND_METRICS=false perl -e 'alarm 600; exec @ARGV' npx --no-install wrangler deploy
 )

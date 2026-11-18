@@ -10,7 +10,7 @@ One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lan
 
 ## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
 
-Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  (That reader was retired on Nov 17, 2026:  the CLI and its installer are gone, and the route is now a scoped Infisical service token.)  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
 
 ## 2026-11-01 MC — Muster Fleet Overhaul Sweep
 

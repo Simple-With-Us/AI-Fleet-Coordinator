@@ -12,11 +12,12 @@ Three check types live here, all L0:
     result can carry a secret value.  ``ObservedState`` has no field that could hold
     one either, and the reason string names the credential reference, never its
     contents.
-  * ``CREDENTIAL_KEY_PRESENT``  asks the fleet's ``fleet-secrets`` CLI for the KEY
-    NAMES in one secret-store folder and reports which of the rule's names are there.
-    It is how the fleet reaches a credential today (AFC-359):  the command it runs is
-    fixed by this module,  the ``names`` verb only,  and that verb prints names and
-    never values.  A value cannot reach a result,  a reason or a log.
+  * ``CREDENTIAL_KEY_PRESENT``  asks the shared Infisical client for the KEY NAMES in
+    one secret-store folder and reports which of the rule's names are there.  It is how
+    the fleet reaches a credential today (AFC-359):  the read goes through this checker's
+    own scoped service token,  whose grant names exactly that folder,  and the client
+    asks for names and never for values.  A value cannot reach a result,  a reason or a
+    log,  and no child process starts.
 
 The permission names are compared as sets:  the names a settings file holds must be
 exactly the names the rule expects.  An identifier that the rule does not list is a
@@ -34,8 +35,8 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
-import shutil
 import stat as stat_module
 from datetime import datetime, timezone
 from typing import Any
@@ -43,11 +44,9 @@ from typing import Any
 from .checks import (
     CheckContext,
     CheckError,
-    CommandRefused,
     build_result,
     expand_target,
     iso_utc,
-    run_cli,
 )
 from .checks_hooks import read_config_document
 from .types import (
@@ -67,7 +66,7 @@ _PERMISSION_LIST_KEYS = ("allow", "deny", "ask")
 _FLAT_PERMISSION_KEYS = ("allowPermissions", "denyPermissions", "askPermissions")
 
 # The secret-store folder a credential rule may name.  The pattern is the one the
-# fleet-secrets CLI itself accepts,  so a manifest can never turn the check into a
+# shared Infisical client itself accepts,  so a manifest can never turn the check into a
 # request for something else.
 _FOLDER_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 
@@ -75,13 +74,13 @@ _FOLDER_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 # a failing UNKNOWN and never a pass.
 _KEY_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
 
-# The CLI the check asks for key names.  The name is also the one the fleet's other
-# tools use,  so the same binary answers for the whole fleet.
-_FLEET_SECRETS = "fleet-secrets"
-
-# The environment variable that names the binary explicitly,  as the fleet's own
-# doctor does.
-_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
+# The checker's own scoped token per secret-store folder.  One token per folder,  so the
+# check proves a folder only with a grant that names that folder,  and the account is the
+# token's registry name in the host's approved store (the owner's keychain on the Mac,  the
+# checker's own token file on a server).
+FOLDER_TOKEN_ACCOUNTS = {
+    "/zulip": "fleet-config-check-ro",
+}
 
 
 def permission_names(document: dict[str, Any]) -> tuple[str, ...]:
@@ -377,77 +376,74 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
     )
 
 
-def _secret_store_binary(ctx: CheckContext) -> str | None:
-    """The ``fleet-secrets`` binary to ask, or None when there is none.
-
-    The fleet's own ``FLEET_SECRETS_BIN`` override wins, so a caller can name the
-    binary explicitly.  Otherwise the binary is looked up on the PATH the check was
-    given, not the process PATH, so a run that was pointed at a different PATH asks
-    that one and a test never reaches the real secret store by accident.
-    """
-    override = (ctx.env.get(_FLEET_SECRETS_BIN) or os.environ.get(_FLEET_SECRETS_BIN) or "").strip()
-    if override:
-        return override
-    path = ctx.env.get("PATH") or os.environ.get("PATH", "")
-    return shutil.which(_FLEET_SECRETS, path=path)
-
-
 def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     """The key NAMES in one secret-store folder, or a CheckError.
 
-    The command is the ``names`` verb, which prints names and never values, so a
-    secret cannot reach this module, a result, a reason or a log.  The listing is
-    cached on the context, so one status run asks the secret store once per folder
-    rather than once per rule.
+    The read goes through the shared Infisical client with the checker's own scoped
+    service token:  the token names exactly this folder,  and the client asks for names
+    and never for values,  so a secret cannot reach this module, a result, a reason or a
+    log.  The listing is cached on the context, so one status run asks the secret store
+    once per folder rather than once per rule.
 
-    The command runs through the one allowlisted runner,  so it has an explicit
-    timeout and a command that is not on the allowlist is refused before it starts.
+    No child process starts:  the retired reader command is gone,  and the token in the
+    environment still wins over the one in the checker's own store.
     """
-    cache_key = "fleet-secrets:names:%s" % folder
+    cache_key = "infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
     if cached is not None:
         return cached
 
-    binary = _secret_store_binary(ctx)
-    if not binary:
+    account = FOLDER_TOKEN_ACCOUNTS.get(folder, "")
+    if not account:
         raise CheckError(
-            "the fleet-secrets command is not on PATH, so the secret store cannot be reached",
+            "no scoped token is registered for the secret-store folder %s" % folder,
             ReasonCode.ERROR,
         )
-    argv = [binary, "names", "--path", folder]
     try:
-        result = run_cli(argv, timeout=ctx.timeout or 10, env=ctx.child_env())
-    except CommandRefused as exc:
+        import fleet_infisical as FI
+    except ImportError:
         raise CheckError(
-            "the fleet-secrets command is not on the allowlist:  %s" % exc,
+            "the shared Infisical client is not importable, so the secret store cannot be reached",
             ReasonCode.ERROR,
         ) from None
-    if result.timed_out:
+
+    home = pathlib.Path(str(ctx.home))
+    env = dict(ctx.child_env())
+    env["HOME"] = str(home)
+    env[FI.ENV_READ_PATHS] = folder
+    token = ""
+    try:
+        token = FI.resolve_token(env)
+    except FI.SecretsError:
+        token, _status = FI.token_from_store(account, env, home)
+    if not token:
         raise CheckError(
-            "the fleet-secrets command did not answer within %ds" % (ctx.timeout or 10),
-            ReasonCode.TIMEOUT,
-        )
-    if result.error:
-        raise CheckError(
-            "the fleet-secrets command could not be started:  %s" % result.error,
+            "the check holds no scoped token for the secret-store folder %s" % folder,
             ReasonCode.ERROR,
         )
-    if result.returncode != 0:
-        # The error text names keys and reason tokens, never values, but it is not
-        # needed here, so only the exit code is reported.
-        raise CheckError(
-            "the fleet-secrets command exited %d, so the secret store could not be read"
-            % result.returncode,
-            ReasonCode.ERROR,
+    try:
+        project = FI.infisical_project_id(env, home)
+        found = FI.list_project_names(
+            project, folder, env, token=token, timeout=ctx.timeout or 10
         )
+    except FI.SecretsError as exc:
+        reason = ReasonCode.UNPARSEABLE if "bad-output" in exc.message else ReasonCode.ERROR
+        raise CheckError(
+            "the secret store could not be read:  %s" % exc.message,
+            reason,
+        ) from None
+    except OSError:
+        raise CheckError(
+            "the secret store could not be reached",
+            ReasonCode.ERROR,
+        ) from None
+    finally:
+        token = ""
     names = set()
-    for line in result.stdout.decode("utf-8", "replace").splitlines():
-        text = line.strip()
-        if not text:
-            continue
+    for text in found:
         if not _KEY_NAME_RE.match(text):
             raise CheckError(
-                "the fleet-secrets command printed a line that is not a key name",
+                "the secret store listed a name that is not a key name",
                 ReasonCode.UNPARSEABLE,
             )
         names.add(text)
@@ -461,12 +457,13 @@ def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -
 
     This is how the fleet reaches a credential now that ``~/.secrets`` is retired
     (AFC-359):  the seat's credential lives in the secret store under a key name, and
-    the check asks the ``fleet-secrets`` CLI whether that name is there.
+    the check asks the shared Infisical client, with the checker's own scoped token for
+    that folder, whether that name is there.
 
-    The check never sees a value.  The ``names`` verb prints names only, the observed
-    state carries the names that were found, and the reason string names the rule's
-    expected names.  A key that is absent is ``MISSING``;  a secret store that cannot
-    be reached is a failing ``UNKNOWN``;  neither is ever a pass.
+    The check never sees a value.  The client lists names only, the observed state
+    carries the names that were found, and the reason string names the rule's expected
+    names.  A key that is absent is ``MISSING``;  a secret store that cannot be reached
+    is a failing ``UNKNOWN``;  neither is ever a pass.
     """
     folder = (rule.check.target or "").strip()
     if not _FOLDER_RE.match(folder):

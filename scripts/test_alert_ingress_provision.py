@@ -1,5 +1,4 @@
 import importlib.util
-import json
 import os
 import unittest
 from unittest import mock
@@ -14,22 +13,11 @@ provision = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provision)
 
 
-class FakeProc:
-    """What `fleet-secrets get` hands back."""
+class FakeRead:
+    """Stands in for the shared client's scoped read.
 
-    def __init__(self, returncode=0, stdout=b"", stderr=b""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-class FakeCLI:
-    """Stands in for `fleet-secrets get NAME...`.
-
-    The contract it reproduces is scripts/fleet_secrets/cli.py:133-136:  one
-    name answers with the raw value and no wrapper, several answer with a JSON
-    object.  A name the folder does not hold refuses the whole batch with
-    exit 3 and names the missing ones on stderr.
+    The contract it reproduces:  one read answers with the names the folder holds,  and a
+    name the folder does not hold is simply absent.
     """
 
     def __init__(self, answers, absent=()):
@@ -37,29 +25,14 @@ class FakeCLI:
         self.absent = set(absent)
         self.calls = []
 
-    def __call__(self, argv, **kwargs):
-        argv = list(argv)
-        self.calls.append(argv)
-        names = []
-        path = ""
-        after_get = argv[argv.index("get") + 1 :]
-        for token in after_get:
-            if token == "--path":
-                break
-            names.append(token)
-        if "--path" in argv:
-            path = argv[argv.index("--path") + 1]
-        missing = [name for name in names if name in self.absent]
-        if missing:
-            return FakeProc(
-                3,
-                b"",
-                "key {} is not in Infisical at {}".format(", ".join(missing), path).encode(),
-            )
-        values = {name: self.answers[name] for name in names}
-        if len(names) == 1:
-            return FakeProc(0, values[names[0]].encode())
-        return FakeProc(0, json.dumps(values).encode())
+    def __call__(self, project, path, env, *, token=None, names=None, **kwargs):
+        self.calls.append((project, path, tuple(names or ())))
+        found = {}
+        for name in names or ():
+            if name in self.absent:
+                continue
+            found[name] = self.answers[name]
+        return found
 
 
 class ServiceTokenTestCase(unittest.TestCase):
@@ -75,66 +48,74 @@ class ServiceTokenTestCase(unittest.TestCase):
         )
         self.token_env.start()
         self.addCleanup(self.token_env.stop)
+        project = mock.patch.object(
+            provision.scoped_secrets,
+            "infisical_project_id",
+            lambda env, home, project="fleet-ops": "11111111-2222-3333-4444-555555555555",
+        )
+        project.start()
+        self.addCleanup(project.stop)
+
+    def read(self, answers, absent=()):
+        """Patch the scoped read and return the fake."""
+        fake = FakeRead(answers, absent)
+        patcher = mock.patch.object(provision.scoped_secrets, "fetch_project", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
 
 
-class OneNameBatch(ServiceTokenTestCase):
-    """A batch of one answers with the raw value, not with a JSON object."""
+class ScopedRead(ServiceTokenTestCase):
+    """One scoped read, with the provisioner's own token for that project."""
 
     def test_one_name_is_read_as_itself(self):
-        cli = FakeCLI({"ONLY_ONE": "the-value"})
-        with mock.patch.object(provision.subprocess, "run", cli):
-            found = provision.fleet_secrets_get_many(["ONLY_ONE"], "fleet-ops", "/")
+        read = self.read({"ONLY_ONE": "the-value"})
+        found = provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
         self.assertEqual(found, {"ONLY_ONE": "the-value"})
+        self.assertEqual(len(read.calls), 1)
 
-    def test_several_names_are_read_as_a_json_object(self):
-        cli = FakeCLI({"A": "one", "B": "two"})
-        with mock.patch.object(provision.subprocess, "run", cli):
-            found = provision.fleet_secrets_get_many(["A", "B"], "fleet-ops", "/")
+    def test_several_names_come_from_one_read(self):
+        read = self.read({"A": "one", "B": "two"})
+        found = provision.scoped_values(["A", "B"], "fleet-ops", "/")
         self.assertEqual(found, {"A": "one", "B": "two"})
+        self.assertEqual(len(read.calls), 1)
 
-    def test_a_retry_that_leaves_one_name_still_reads(self):
-        # One name of the batch is absent:  the CLI refuses the whole batch,
-        # the absent name is dropped, and the retry is a one-name batch that
-        # answers with the raw value.
-        cli = FakeCLI({"PRESENT": "the-value"}, absent=("GONE",))
-        with mock.patch.object(provision.subprocess, "run", cli):
-            found = provision.fleet_secrets_get_many(["PRESENT", "GONE"], "fleet-ops", "/")
+    def test_an_absent_name_is_left_out(self):
+        read = self.read({"PRESENT": "the-value"}, absent=("GONE",))
+        found = provision.scoped_values(["PRESENT", "GONE"], "fleet-ops", "/")
         self.assertEqual(found, {"PRESENT": "the-value"})
-        self.assertEqual(len(cli.calls), 2)
+        self.assertEqual(len(read.calls), 1)
 
 
 class BatchValues(ServiceTokenTestCase):
     """The environment first, one batched read second, an absence is an error."""
 
     def test_the_environment_comes_first(self):
-        cli = FakeCLI({"A": "from-infisical"})
-        with mock.patch.object(provision.subprocess, "run", cli):
-            with mock.patch.dict(os.environ, {"A": "from-the-environment"}):
-                values = provision.batch_values(["A"], "fleet-ops", "/")
+        read = self.read({"A": "from-infisical"})
+        with mock.patch.dict(os.environ, {"A": "from-the-environment"}):
+            values = provision.batch_values(["A"], "fleet-ops", "/")
         self.assertEqual(values, {"A": "from-the-environment"})
-        self.assertEqual(cli.calls, [])
+        self.assertEqual(read.calls, [])
 
     def test_an_absent_name_is_an_error(self):
-        cli = FakeCLI({}, absent=("MISSING",))
-        with mock.patch.object(provision.subprocess, "run", cli):
-            with self.assertRaises(provision.ReadError) as caught:
-                provision.batch_values(["MISSING"], "fleet-ops", "/")
+        self.read({}, absent=("MISSING",))
+        with self.assertRaises(provision.ReadError) as caught:
+            provision.batch_values(["MISSING"], "fleet-ops", "/")
         self.assertIn("MISSING is absent from fleet-ops/", caught.exception.reason)
 
     def test_three_names_are_one_export(self):
         # Fleet-OPS reads use this caller's distinct service token.
-        cli = FakeCLI(
+        read = self.read(
             {
                 "CLOUDFLARE_FLEET_API_TOKEN": "the-token",
             }
         )
-        with mock.patch.object(provision.subprocess, "run", cli):
-            values = provision.batch_values(
-                ["CLOUDFLARE_FLEET_API_TOKEN"],
-                "fleet-ops",
-                "/",
-            )
-        self.assertEqual(len(cli.calls), 1)
+        values = provision.batch_values(
+            ["CLOUDFLARE_FLEET_API_TOKEN"],
+            "fleet-ops",
+            "/",
+        )
+        self.assertEqual(len(read.calls), 1)
         self.assertEqual(values["CLOUDFLARE_FLEET_API_TOKEN"], "the-token")
 
 

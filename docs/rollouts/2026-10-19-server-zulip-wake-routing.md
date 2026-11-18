@@ -1,5 +1,7 @@
 # Server Zulip Wake Routing
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 AFC-411 picks up Claude handoff `4237229e-5f06-4aa5-8329-f43051bfce93`.  PR #722 adds Linux systemd user-service install/uninstall/status, retains launchd on macOS, and documents the interactive partition and authentication prerequisites.
 
 ## Verified
@@ -17,7 +19,7 @@ The Linux fast-import check was contaminated by the host Datadog sitecustomize i
 
 Current-head Codex review and required CI precede merging.  The server wrapper still uses its existing fleet-cli release; verify the merged module reaches that runtime before calling the wrapper installer.
 
-`fleet-secrets doctor` reports no valid server session login or automation environment pair.  The original handoff requires owner approval for a persistent scoped Infisical machine identity.  The unit carries no credential file:  the service environment supplies the credential-provider variables and each seat falls back to `fleet-secrets` / Infisical.  Restrict the identity to required CLAUDE bot reads; preserve other seats.
+the shared reader's own status reports no valid server session login or automation environment pair.  The original handoff requires owner approval for a persistent scoped Infisical machine identity.  The unit carries no credential file:  the service environment supplies the credential-provider variables and each seat falls back to its own scoped service token / Infisical.  Restrict the identity to required CLAUDE bot reads; preserve other seats.
 
 After approval and authentication, configure only CLAUDE with `creds = "infisical"` and `wake = "inbox"`, pin the owner, and verify two real interactive sessions in isolated scratch state with a sandbox topic.  Confirm A wakes, B remains idle, and CLI inbox reads do not affect A.  Enable `rewake_verified_cli` in live state only after that proof.  Headless wakes and Desktop verification remain separately gated.
 

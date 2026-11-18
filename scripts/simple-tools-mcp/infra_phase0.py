@@ -2,8 +2,8 @@
 """Cloudflare setup and checks for the ST-MCP Worker, Phase 0.
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
-read inside this process from the environment or `fleet-secrets get` and never printed, logged or
-put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
+read inside this process from the environment or from Infisical through this script's own
+scoped read-only service token, and never printed, logged or put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
 
     python3 -I infra_phase0.py status            # read-only inventory
     python3 -I infra_phase0.py access [--apply]  # path-scoped Access app
@@ -59,27 +59,39 @@ BACKUP_DIR = pathlib.Path.home() / ".simple-tools-mcp-phase0"
 
 API = "https://api.cloudflare.com/client/v4"
 
+# This script's own scoped read-only service token:  Fleet-OPS prod root, the folder the
+# Cloudflare credentials are read from.  The token lives in the consumer's own store (the
+# owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
+# checks the token's own grant and the answer's own provenance before the value is used.
+TOKEN_ACCOUNT = "infra-phase0-ro"
+SECRET_FOLDER = "/"
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
 
 # ---------------------------------------------------------------- credentials
 
 
 def _load(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    handoff file is retired (AFC-359).  Only the name is ever reported."""
+    """One credential:  the environment first, then this script's own scoped token against
+    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).  Only the
+    name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
     try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
+        import fleet_infisical as FI
+
+        env = dict(os.environ)
+        env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+        found, status = FI.fetch_scoped(name, SECRET_FOLDER, TOKEN_ACCOUNT, env)
+    except Exception:
+        found, status = "", "unavailable"
+    if status == "ok" and found:
+        return found
     raise SystemExit(
-        f"error: {name} is not in the environment or fleet-secrets (name only; no value printed)"
+        f"error: {name} is not in the environment or this consumer's scoped token "
+        f"({status};  name only, no value printed)"
     )
 
 

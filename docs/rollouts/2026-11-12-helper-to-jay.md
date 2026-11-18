@@ -1,5 +1,7 @@
 # The Server Control Helper Moves Into Jay
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 The owner's ruling, Thu, Nov 12, 2026:  the fleet's server-side Operator tools are owned by the `jay` account, not root ("all should be in jay really").  This moves the control helper, `fleet-ops-control.py`, and everything installed beside it, from root-owned `/usr/local/lib/fleet-resource-control` to `jay`'s own `~/.local/lib/fleet-resource-control`.
 
 ## What Was Already True
@@ -21,7 +23,7 @@ So only the code was root's.  Root ownership was never a boundary against `jay`
 | `server logs` | `journalctl` (jay is in `systemd-journal`) | jay | No |
 | `server update fleet-cli` | `sudo -n /usr/bin/systemctl start --no-block fleet-cli-git-update.service`, after `sudo -n -l` for that exact argv | jay, then root for that one argv | Yes:  it starts a system unit.  Fixed in code (`update_command`) |
 | `server update-status`, `server unit-status` | `systemctl [--user] show` | jay | No |
-| `server redeploy` | Coolify over HTTP, token through `fleet-secrets` | jay | No |
+| `server redeploy` | Coolify over HTTP, token through the consumer's own scoped service token | jay | No |
 | `server resource-status` | reads `/run/fleet-coding-resources/status.json` (root's receipt, read only) | jay | No |
 | `server resource-policy` | Infisical with jay's 0600 token, then `sudo -n systemctl kill --kill-whom=main --signal=HUP fleet-coding-memory.service` | jay, then root for the HUP | Yes for the HUP:  the controller is a root system service.  Fixed in code (`fleet_resource_control.RELOAD`) |
 | `server seat-inventory` | jay's home | jay | No |

@@ -10,7 +10,8 @@ checking need only a member key, so any seat can run them:
     python3 scripts/zulip_linkifiers.py --apply --admin # realm-admin bot:  apply the plan, then check
 
 Credentials:  with --admin, only the realm-admin bot:  env ZULIP_OPERATOR_EMAIL / _API_KEY / _SITE
-first, then Infisical Fleet-OPS /zulip_operator through `fleet-secrets get` (no legacy-name fallback).
+first, then Infisical Fleet-OPS /zulip_operator through this script's own scoped service
+token (no legacy-name fallback).
 Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
 Infisical CLAUDE_ZULIP_* (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
 No credential file is read (AFC-359).
@@ -204,24 +205,50 @@ CHECKS: list[tuple[str, str | None]] = [
 ]
 
 
+# This script's own scoped read-only service tokens:  one grant per Infisical folder, each
+# named for the folder it covers and held in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server).  The environment still wins when it
+# already binds a token.
+TOKEN_ACCOUNTS = {
+    "/zulip_operator": "zulip-linkifiers-operator-ro",
+    "/zulip": "zulip-linkifiers-zulip-ro",
+    "/": "zulip-linkifiers-root-ro",
+}
+
+
 def _fleet_secret(name: str) -> str:
-    """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
-    binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", None]
+    """One Infisical value through this script's own scoped token, or "" (never logged).
+
+    The folder is chosen by the name:  the Operator's own credentials live in
+    /zulip_operator, and everything else is read from /zulip, with the project root as the
+    last place the old reader looked.
+    """
+    import fleet_infisical as FI
+
+    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", "/"]
+    env = dict(os.environ)
+    project = (env.get(FI.ENV_PROJECT) or "").strip()
+    if not project:
+        return ""
     for folder in folders:
-        extra = ["--path", folder] if folder else []
+        account = TOKEN_ACCOUNTS.get(folder)
+        if not account:
+            continue
+        scoped = dict(env)
+        scoped[FI.ENV_READ_PATHS] = folder
+        token = (env.get(FI.ENV_TOKEN) or "").strip()
+        if not token:
+            token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+        if not token:
+            continue
         try:
-            proc = subprocess.run(
-                [binary, "get", name, *extra],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
+            value = FI.fetch_verified(name, folder, scoped, token=token)
+        except FI.SecretsError:
+            continue
+        except OSError:
             return ""
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
+        if value:
+            return value
     return ""
 
 

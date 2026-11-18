@@ -2,10 +2,11 @@
 
 Seats never see an App id, private key, or the 1-hour installation-token
 expiry:  the relay reads each seat App's credentials (GH_APP_<SLUG>_ID and
-GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the `fleet-secrets`
-CLI only - owner decision 2026-10-21:  no process-environment secrets and no
-direct Infisical HTTP in the relay - signs a JWT with the local openssl
-binary (stdlib has no RSA), and caches installation tokens in memory,
+GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the SHARED Infisical
+client and the relay's own scoped service token - owner decision 2026-10-21:
+no process-environment secrets, and the one client the fleet reads secrets
+with rather than a reader of the relay's own - signs a JWT with the local
+openssl binary (stdlib has no RSA), and caches installation tokens in memory,
 refreshing 5 minutes early.  The private key reaches openssl through an inherited pipe fd,
 so nothing is written to disk and no secret is ever logged or returned beyond
 the minted token a seat is allowed to use.
@@ -14,12 +15,15 @@ the minted token a seat is allowed to use.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 TIMEOUT_SECONDS = 30
@@ -104,9 +108,9 @@ def missing_app_credential(exc: BaseException) -> bool:
     text = str(exc)
     if text in _NO_APP_CREDENTIAL_EXACT:
         return True
-    if text.startswith("fleet-secrets has no value for "):
+    if text.startswith("there is no value for "):
         return True
-    if text.startswith("fleet-secrets returned an empty value for "):
+    if text.startswith("the store returned an empty value for "):
         return True
     if text.startswith("app id for ") and text.endswith(" is not an integer"):
         return True
@@ -154,225 +158,233 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
         os.close(read_fd)
 
 
-# The CLI's own folder-path rules (scripts/fleet_secrets/core.py check_path):
-# anything weaker here would pass a bad path down and surface as a misleading
-# missing-key error.
+# The shared client's own folder-path rules (scripts/fleet_infisical.py
+# check_path):  anything weaker here would pass a bad path down and surface as a
+# misleading missing-key error.
 _PATH_RE = re.compile(r"/[A-Za-z0-9._/-]*")
 
-# The CLI's exit-3 line (scripts/fleet_secrets/cli.py cmd_get):
-#   fleet-secrets: key NAME[, NAME ...] is not in Infisical at PATH
-# Absent names are read from that list as exact tokens, never by substring,
-# so a requested name that is a prefix of an absent one is not blamed too.
-_ABSENT_RE = re.compile(r"\bkey (?P<names>[A-Za-z0-9_, ]+?) is not in Infisical at ")
+# Where the shared fleet Infisical client lives on this host.  The relay runs
+# from /opt/git-relay/git-relay, and the client is installed beside it in
+# /opt/git-relay/scripts.  GIT_RELAY_INFISICAL_CLIENT names one file outright;
+# GIT_RELAY_INFISICAL_CLIENT_DIRS names a comma-separated list of directories.
+_CLIENT_ENV = "GIT_RELAY_INFISICAL_CLIENT"
+_CLIENT_DIRS_ENV = "GIT_RELAY_INFISICAL_CLIENT_DIRS"
+_DEFAULT_CLIENT_DIRS = ("/opt/git-relay/scripts",)
+
+# The loaded client module, cached so one process loads it once.
+_CLIENT = None
 
 
-def _absent_names(detail: str, wanted: list) -> list:
-    """The requested names the CLI's exit-3 line lists;  the first name when
-    no line parses (exit 3 always means one is absent:  fail closed).  Every
-    stderr line is searched, so a warning printed before it changes nothing."""
-    match = next(filter(None, map(_ABSENT_RE.search, detail.splitlines())), None)
-    listed = {n.strip() for n in match.group("names").split(",")} if match else set()
-    return [n for n in wanted if n in listed] or wanted[:1]
+def _client_candidates():
+    """The shared client file paths this host may carry, in order."""
+    explicit = (os.environ.get(_CLIENT_ENV) or "").strip()
+    if explicit:
+        yield Path(explicit)
+        return
+    raw = (os.environ.get(_CLIENT_DIRS_ENV) or "").strip()
+    if raw:
+        directories = [item.strip() for item in raw.split(",") if item.strip()]
+    else:
+        directories = list(_DEFAULT_CLIENT_DIRS)
+    # A checkout runs the client from the repository's own scripts/ directory.
+    directories.append(str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+    for directory in directories:
+        yield Path(directory) / "fleet_infisical.py"
 
 
-class FleetSecretsSource:
-    """Reads named secrets through the `fleet-secrets` CLI.
+def load_infisical_client():
+    """Import the shared fleet Infisical client, or fail closed.
 
-    The only approved credential path for the relay:  no environment reads,
-    no direct Infisical calls.  The CLI's own identity and backend are its
-    concern;  this class runs it with a timeout, caches values in memory, and
-    never logs or includes what it returns.
+    The relay holds no second reader of its own:  the shared client is the one
+    implementation the whole fleet reads secrets with, and this host installs a
+    copy of it.  A missing copy is a startup error, never a silent fallback to
+    an ambient token.
+    """
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+    for path in _client_candidates():
+        try:
+            if not path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location("fleet_infisical", path)
+        except OSError:
+            continue
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["fleet_infisical"] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop("fleet_infisical", None)
+            raise AppTokenError("the shared Infisical client could not be loaded") from None
+        _CLIENT = module
+        return module
+    raise AppTokenError("the shared Infisical client is not installed on this host")
 
-    `secrets()` reads several names in ONE CLI invocation:  `fleet-secrets
-    get` exports the whole folder per call, so an App's id and private key
-    must be fetched together - per-name calls would re-export the folder for
-    every name.  A name the CLI reports absent (exit 3) is remembered for the
-    process lifetime, so an incomplete App pair does not drive a full folder
-    export per request;  add the secret and restart the relay to pick it up.
 
-    `path` is the Fleet-OPS prod folder the names are read from.  It
-    defaults to /github-apps, where the GH_APP_<SLUG>_ID and
-    GH_APP_<SLUG>_PRIVATE_KEY pairs actually live (verified live
-    2026-10-23):  without it `fleet-secrets get` reads the project root
-    and every App-key lookup misses.
+class InfisicalSource:
+    """Reads named secrets through the shared Infisical client.
 
-    `credential_file`, when set, names a protected file (systemd
-    LoadCredential, root 0600) holding the ONE Infisical token for this
-    source's folder scope:  it is read at call time and passed to the CLI
-    child with an allowlist environment (INFISICAL_FLEET_OPS_PROJECT_ID
-    required, INFISICAL_ENVIRONMENT=prod set, no HOME), so no co-located
-    secret in the relay's own environment is ever inherited and the CLI
-    cannot fall through to ~/.simple-tools file resolution.  When unset the
-    child inherits the process environment - the legacy shape the fleet's
-    other local tooling still uses.
+    The relay's own scoped service token is the only credential:  it is read
+    from the protected credential file the unit binds (systemd LoadCredential),
+    never from the process environment, and the token's own grant is verified
+    before any value is used, so a token clamped to another folder fails closed
+    instead of answering for the wrong scope.
+
+    `secrets()` reads several names under ONE grant check and ONE folder
+    request:  an App's id and private key must be fetched together, because a
+    per-name call would re-verify the grant for every name.  A name the store
+    does not hold is remembered for the process lifetime, so an incomplete App
+    pair does not drive a folder read per request;  add the secret and restart
+    the relay to pick it up.
+
+    `path` is the Fleet-OPS prod folder the names are read from.  It defaults
+    to /github-apps, where the GH_APP_<SLUG>_ID and GH_APP_<SLUG>_PRIVATE_KEY
+    pairs actually live (verified live 2026-10-23).
+
+    The value never appears in a message or a log:  an error names the key, the
+    folder or the refusal, and nothing else.
     """
 
     def __init__(
         self,
-        executable: str = "fleet-secrets",
-        runner=subprocess.run,
         path: str = "/github-apps",
         credential_file: str | None = None,
         environ=os.environ,
+        client=None,
+        project: str | None = None,
     ):
         if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
-            raise AppTokenError(f"fleet-secrets path is not a usable folder path: {path!r}")
+            raise AppTokenError(f"secret folder path is not a usable folder path: {path!r}")
+        self._path = path
         self._credential_file = credential_file
         self._environ = environ
-        self._exe = executable
-        self._run = runner
-        self._path = path
+        self._client = client
+        self._project = project
         self._cache: dict[str, str] = {}
         self._missing: set[str] = set()
+        self._scoped_env: dict | None = None
+        self._token = ""
+
+    def _module(self):
+        if self._client is None:
+            self._client = load_infisical_client()
+        return self._client
+
+    def _read_token(self) -> str:
+        """The one scoped service token this source runs under."""
+        if self._credential_file:
+            try:
+                with open(self._credential_file, "r", encoding="utf-8") as handle:
+                    token = handle.read().strip()
+            except OSError:
+                raise AppTokenError(f"credential file unreadable for {self._path}") from None
+            if not token:
+                raise AppTokenError(f"credential file empty for {self._path}")
+            return token
+        token = (self._environ.get("INFISICAL_TOKEN") or "").strip()
+        if not token:
+            raise AppTokenError(f"no scoped service token is bound for {self._path}")
+        return token
+
+    def _scope(self):
+        """The env the client reads with, declaring exactly this token's grant.
+
+        The declared folder set is the token's own scope, read from the store:
+        the client refuses a read whose declared set is not the grant's set, so
+        declaring the grant is what makes a clamped token fail closed instead
+        of silently serving the wrong folder.
+        """
+        if self._scoped_env is None:
+            client = self._module()
+            env = dict(self._environ)
+            if not (env.get(client.ENV_PROJECT) or "").strip():
+                raise AppTokenError(
+                    f"{client.ENV_PROJECT} is not set:  the relay's Infisical project is not bound"
+                )
+            token = self._read_token()
+            try:
+                paths = client.token_scopes(token, env)
+            except client.SecretsError:
+                raise AppTokenError(f"the bound service token refused {self._path}") from None
+            if self._path not in paths:
+                raise AppTokenError(f"the bound service token does not cover {self._path}")
+            env[client.ENV_READ_PATHS] = ",".join(paths)
+            self._scoped_env = env
+            self._token = token
+        return self._scoped_env
+
+    def _project_id(self) -> str:
+        if self._project:
+            return self._project
+        client = self._module()
+        value = (self._scope().get(client.ENV_PROJECT) or "").strip()
+        if not value:
+            raise AppTokenError(
+                f"{client.ENV_PROJECT} is not set:  the relay's Infisical project is not bound"
+            )
+        return value
 
     def secret(self, name: str) -> str:
         return self.secrets([name])[name]
 
     def verified_secret(self, name: str) -> str:
-        """One folder-PROVEN secret via `fleet-secrets get-verified`.
+        """One folder-PROVEN secret.
 
-        Unlike `secret`, the CLI answers only when the REST raw-secret row's
-        own secretPath is exactly this source's folder:  a legacy-scoped
-        token whose --path clamps to another folder fails closed instead of
-        returning the wrong scope's value.  Exit 3 (absent) is remembered for
-        the process lifetime, like `secret`;  every other failure raises.
+        Unlike `secret`, the answer's own row must show it came from exactly
+        this folder:  a legacy-scoped token whose grant clamps to another
+        folder fails closed instead of returning the wrong scope's value.
         """
         if not name or not re.fullmatch(r"[A-Za-z0-9_]+", name):
             raise AppTokenError(f"not a usable secret name: {name!r}")
         if name in self._cache:
             return self._cache[name]
         if name in self._missing:
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
+            raise AppTokenError(f"there is no value for {name}")
+        client = self._module()
+        env = self._scope()
         try:
-            result = self._run_scoped([self._exe, "get-verified", name, "--path", self._path])
-        except subprocess.TimeoutExpired:
-            raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
-        except FileNotFoundError:
-            raise AppTokenError("fleet-secrets executable not found") from None
-        except OSError as exc:
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {name}: {type(exc).__name__}"
-            ) from None
-        if result.returncode == 3:
-            self._missing.add(name)
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
-        if result.returncode:
-            raise AppTokenError(
-                f"fleet-secrets get-verified failed for {name}: exit {result.returncode}"
+            value = client.fetch_verified(
+                name, self._path, env, token=self._token
             )
-        value = result.stdout.decode("utf-8", "replace").rstrip("\n")
+        except client.SecretsError as exc:
+            if exc.code == 3:
+                self._missing.add(name)
+                raise AppTokenError(f"there is no value for {name}") from None
+            raise AppTokenError(f"the store lookup failed for {name}") from None
         if not value:
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
+            raise AppTokenError(f"the store returned an empty value for {name}")
         self._cache[name] = value
         return value
 
     def secrets(self, names) -> dict:
-        """Read several names in one CLI invocation (one folder export)."""
+        """Read several names under one grant check and one folder request."""
         names = list(names)
         known_missing = [n for n in names if n in self._missing]
         if known_missing:
-            raise AppTokenError(f"fleet-secrets has no value for {known_missing[0]}")
+            raise AppTokenError(f"there is no value for {known_missing[0]}")
         wanted = [n for n in names if n not in self._cache]
         if wanted:
             self._fetch(wanted)
         return {n: self._cache[n] for n in names}
 
-    # Child-environment allowlist for scoped reads:  what the CLI needs to
-    # run, plus the one token from the credential file.  Nothing else in the
-    # relay's environment is the CLI's business.
-    # Matches the supported fleet-secrets core:  ENV_PROJECT /
-    # ENV_NAMES in scripts/fleet_secrets/core.py.  The required
-    # INFISICAL_FLEET_OPS_PROJECT_ID binding is what keeps the CLI off
-    # its ~/.simple-tools project-file fallback (expanduser reaches the
-    # runtime user's home regardless of HOME), and HOME is simply not
-    # forwarded.
-    _CHILD_ENV_KEYS = (
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "INFISICAL_FLEET_OPS_PROJECT_ID",
-    )
-
-    def _child_env(self):
-        if self._credential_file is None:
-            return None  # transitional: inherit (see the class docstring)
-        try:
-            with open(self._credential_file, "r", encoding="utf-8") as fh:
-                token = fh.read().strip()
-        except OSError:
-            raise AppTokenError(f"credential file unreadable for {self._path}") from None
-        if not token:
-            raise AppTokenError(f"credential file empty for {self._path}")
-        if not (self._environ.get("INFISICAL_FLEET_OPS_PROJECT_ID") or "").strip():
-            raise AppTokenError(
-                "INFISICAL_FLEET_OPS_PROJECT_ID is not set:  without it the "
-                "CLI would resolve the Fleet-OPS project from the runtime "
-                "user's ~/.simple-tools file instead of the explicit binding"
-            )
-        env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
-        env["INFISICAL_TOKEN"] = token
-        env["INFISICAL_ENVIRONMENT"] = "prod"  # the CLI contract:  Fleet-OPS prod only
-        return env
-
-    def _run_scoped(self, argv):
-        kwargs = {}
-        env = self._child_env()
-        if env is not None:
-            kwargs["env"] = env
-        return self._run(argv, capture_output=True, timeout=30, **kwargs)
-
     def _fetch(self, wanted) -> None:
+        client = self._module()
+        env = self._scope()
+        project = self._project_id()
         try:
-            result = self._run_scoped([self._exe, "get", *wanted, "--path", self._path])
-        except subprocess.TimeoutExpired:
-            raise AppTokenError(f"fleet-secrets lookup timed out for {wanted[0]}") from None
-        except FileNotFoundError:
-            raise AppTokenError("fleet-secrets executable not found") from None
-        except OSError as exc:
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {wanted[0]}: {type(exc).__name__}"
-            ) from None
-        if result.returncode:
-            # Exit 3 is a clean export that lacked the key:  remember the
-            # absence so an incomplete App pair cannot drive one folder
-            # export per request.  Only names the CLI actually lists are
-            # cached.  Exit 2 (usage) names keys and reason tokens, never
-            # values, so its first line is safe to surface - it is what tells
-            # an operator a bad --path apart from a missing key;  the usage
-            # block the CLI prints after it is dropped.  Any other failure can
-            # carry backend detail on stderr:  report only the variable name
-            # and the exit code.
-            detail = result.stderr.decode("utf-8", "replace").strip()
-            if result.returncode == 3:
-                absent = _absent_names(detail, wanted)
-                self._missing.update(absent)
-                raise AppTokenError(f"fleet-secrets has no value for {absent[0]}")
-            if result.returncode == 2 and detail:
-                reason = detail.splitlines()[0]
-                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {reason}")
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
+            values = client.fetch_project(
+                project, self._path, env, token=self._token, names=wanted
             )
-        raw = result.stdout.decode("utf-8", "replace").strip()
-        if len(wanted) == 1:
-            values = {wanted[0]: raw}
-        else:
-            # Several names print one JSON object.  Any other stdout (a stray
-            # banner, a format change) is a lookup failure like the rest -
-            # AppTokenError, so the relay answers 503 unavailable, not 400 -
-            # and its message names the variable, never the output.
-            try:
-                values = json.loads(raw)
-            except ValueError:
-                values = None
-            if not isinstance(values, dict):
-                raise AppTokenError(f"fleet-secrets returned unreadable output for {wanted[0]}")
+        except client.SecretsError:
+            raise AppTokenError(f"the store lookup failed for {wanted[0]}") from None
         for name in wanted:
             value = str(values.get(name) or "").strip()
             if not value:
-                raise AppTokenError(f"fleet-secrets returned an empty value for {name}")
+                self._missing.add(name)
+                raise AppTokenError(f"there is no value for {name}")
             self._cache[name] = value
 
 
@@ -393,8 +405,7 @@ class AppTokenMinter:
 
     def _app_credentials(self, slug: str) -> tuple[int, str]:
         prefix = "GH_APP_" + slug.upper().replace("-", "_")
-        # One CLI invocation per App, not per name:  `fleet-secrets get`
-        # exports the whole folder on every call.
+        # One grant check and one folder request per App, not per name.
         pair = self._source.secrets([prefix + "_ID", prefix + "_PRIVATE_KEY"])
         try:
             app_id = int(pair[prefix + "_ID"].strip())

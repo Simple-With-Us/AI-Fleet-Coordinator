@@ -23,24 +23,25 @@ What this does, in order:
      PUT, under the names the Worker asks for
      (workers/alert-ingress/src/index.js, credentialSlug()).
 
-Every credential is read from the environment first and from `fleet-secrets`
-second, so a value the environment already holds is never fetched again.  Folder reads and
-generated-secret writes use separate, caller-scoped Infisical service tokens.
+Every credential is read from the environment first and from Infisical
+second, so a value the environment already holds is never fetched again.  Folder reads and
+generated-secret writes use separate, caller-scoped Infisical service tokens:  each is its own
+read-only (or writer) grant on exactly one project and folder, and each lives in this
+provisioner's own store (the owner's login keychain on the Mac, a private file on a server) or
+in the deployment's own environment binding.  The shared Infisical client checks the token's
+own grant and the answer's own provenance before a value is used.
 
 Names and lengths are printed; no value is ever printed, logged or persisted.
 The values live in this process's memory for the length of the run.
 
-`fleet-secrets set` cannot write these names (its allowlist covers CACHE_*
-under /linear and the CLI logins), so writes use the scoped AFC write token.
+The shared reader's write allowlist does not cover these names, so the writes use this
+provisioner's own scoped AFC write token.
 """
 
 import json
 import os
 import pathlib
-import re
 import secrets as _secrets
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -106,10 +107,14 @@ GENERATED = (
 # there and says so when it is not.
 VENDOR_ISSUED = ("SENTRY_WEBHOOK_SECRET",)
 
-FLEET_SECRETS_ABSENT = 3
 READ_TOKEN_AFC = "ALERT_INGRESS_AFC_READ_TOKEN"
 READ_TOKEN_FLEETOPS = "ALERT_INGRESS_FLEETOPS_READ_TOKEN"
 WRITE_TOKEN_AFC = "ALERT_INGRESS_AFC_WRITE_TOKEN"
+# The same two read grants, named for this provisioner's own store:  one per project and folder.
+READ_TOKEN_ACCOUNTS = {
+    AFC_SLUG: "alert-ingress-afc-ro",
+    FLEETOPS_SLUG: "alert-ingress-fleetops-ro",
+}
 
 # Exit codes the shell reads:  124 is a timeout, 127 a missing executable.
 EXIT_TIMEOUT = 124
@@ -118,13 +123,6 @@ EXIT_MISSING_EXECUTABLE = 127
 # The reason word for a write whose outcome the server never confirmed.  Such
 # a write may already have been applied, so it is never a definite failure.
 OUTCOME_UNKNOWN = "outcome_unknown"
-
-# `fleet-secrets get` answers a name the folder does not hold with this fixed
-# sentence and exit code 3.  Only the sentence is read, and only names that
-# were asked for are accepted, so nothing else in the stream can be mistaken
-# for a name.
-ABSENT_PATTERN = re.compile(r"key ([A-Za-z0-9_]+(?:, [A-Za-z0-9_]+)*) is not in Infisical at ")
-
 
 class ReadError(Exception):
     """A read or write failed.  Carries a reason word only:  no payload kept."""
@@ -150,186 +148,62 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def fleet_secrets_binary():
-    return shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+def _read_token(project):
+    """This provisioner's own scoped read-only service token for one project.
 
-
-def fleet_secrets_get(name, project, path):
-    """One value through `fleet-secrets get`, or None when it is absent.
-
-    fleet-secrets expands Infisical references and refuses an unresolved one,
-    so a literal ${...} is never returned.  Any other failure raises with a
-    reason word only;  stderr is discarded unread so no server text leaks.
-    """
-    argv, env = fleet_secrets_batch([name], project, path)
-    try:
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=90,
-            check=False,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        raise ReadError(f"{name}:  fleet-secrets timed out", EXIT_TIMEOUT) from None
-    except FileNotFoundError:
-        raise ReadError(
-            f"{name}:  fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE
-        ) from None
-    except OSError as error:
-        raise ReadError(f"{name}:  fleet-secrets could not run ({type(error).__name__})") from None
-    if proc.returncode == FLEET_SECRETS_ABSENT:
-        return None
-    if proc.returncode != 0:
-        raise ReadError(f"{name}:  fleet-secrets exited {proc.returncode}")
-    try:
-        return proc.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        raise ReadError(f"{name}:  fleet-secrets returned unreadable output")
-
-
-def _absent_names(stderr, requested):
-    """The names the CLI reported as absent, and only those."""
-    if stderr is None:
-        return set()
-    text = stderr.decode("utf-8", "replace")
-    absent = set()
-    for match in ABSENT_PATTERN.finditer(text):
-        for name in match.group(1).split(", "):
-            if name in requested:
-                absent.add(name)
-    return absent
-
-
-def fleet_secrets_batch(names, project, path):
-    """The command that reads several names in ONE Infisical export.
-
-    `fleet-secrets get NAME...` exports the folder once and answers with a JSON
-    object of name to value.  The copy installed on a machine may still be the
-    older one that takes a single name, so the repo's own copy is preferred
-    when it sits next to this script.
+    The environment wins when the deployment binds the token there;  the consumer's own
+    store (the owner's login keychain on the Mac, a private file on a server) is the
+    fallback.  There is no shared reader and no cached copy.  The value never appears in a
+    message.
     """
     token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
+    account = READ_TOKEN_ACCOUNTS[project]
     token = (os.environ.get(token_name) or "").strip()
+    if not token:
+        token, status = scoped_secrets.token_from_store(account)
+        if not token:
+            raise ReadError(
+                f"{token_name} is missing or unusable ({status})", EXIT_MISSING_EXECUTABLE
+            )
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048
         or any(c.isspace() for c in token)
     ):
         raise ReadError(f"{token_name} is missing or invalid")
-    package = pathlib.Path(__file__).resolve().parent.parent / "fleet_secrets"
-    env = dict(os.environ)
-    for name in (
-        "INFISICAL_TOKEN",
-        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
-        READ_TOKEN_AFC,
-        READ_TOKEN_FLEETOPS,
-    ):
-        env.pop(name, None)
-    if project == AFC_SLUG:
-        env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
-    else:
-        env["INFISICAL_TOKEN"] = token
-    env[scoped_secrets.ENV_READ_PATHS] = path
-    if project == AFC_SLUG:
-        env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = AFC
-    if (package / "__main__.py").is_file():
-        root = str(package.parent)
-        existing = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = root + (os.pathsep + existing if existing else "")
-        return (
-            [
-                sys.executable,
-                "-m",
-                "fleet_secrets",
-                "get",
-                *names,
-                "--path",
-                path,
-                "--project",
-                project,
-            ],
-            env,
-        )
-    return (
-        [fleet_secrets_binary(), "get", *names, "--path", path, "--project", project],
-        env,
-    )
+    return token
 
 
-def fleet_secrets_get_many(names, project, path):
-    """Every requested name in ONE Infisical read.
+def scoped_values(names, project, path):
+    """Every requested name in ONE scoped read.
 
-    `fleet-secrets get NAME...` exports the whole folder once and answers with
-    the names it holds, so ten per-name calls -- ten exports of the same
-    folder -- become one.  A name the folder does not hold is reported as
-    absent, not as an error:  the caller decides which ones it may do without.
-
-    The CLI names the absent ones in its own fixed sentence on stderr;  only
-    that sentence is read, and only names that were asked for are accepted.
+    The read goes through the shared Infisical client with this provisioner's own read-only
+    token for that project, so ten per-name reads -- ten exports of the same folder -- become
+    one.  The client checks the token's own grant and the answer's own provenance, and
+    refuses an unresolved reference, so a literal ${...} is never returned.  A name the
+    folder does not hold is simply absent, not an error:  the caller decides which ones it
+    may do without.
     """
     if not names:
         return {}
-    found = {}
-    pending = list(names)
-    while pending:
-        argv, env = fleet_secrets_batch(pending, project, path)
+    token = _read_token(project)
+    env = {k: v for k, v in os.environ.items() if k not in scoped_secrets.AUTH_ENV_VARS}
+    env[scoped_secrets.ENV_READ_PATHS] = path
+    if project == AFC_SLUG:
+        project_id = AFC
+        env[scoped_secrets.ENV_AI_FLEET_COORDINATOR_PROJECT_ID] = AFC
+    else:
         try:
-            proc = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=90,
-                check=False,
-                env=env,
+            project_id = scoped_secrets.infisical_project_id(
+                env, scoped_secrets.home_dir(env), project
             )
-        except subprocess.TimeoutExpired:
-            raise ReadError("fleet-secrets timed out reading the folder", EXIT_TIMEOUT) from None
-        except FileNotFoundError:
-            raise ReadError("fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE) from None
-        except OSError as error:
-            raise ReadError(f"fleet-secrets could not run ({type(error).__name__})") from None
-        if proc.returncode == 0:
-            try:
-                raw = proc.stdout.decode("utf-8")
-            except UnicodeDecodeError:
-                raise ReadError("fleet-secrets returned unreadable output") from None
-            if len(pending) == 1:
-                # One name asked for:  the CLI answers with the raw value and
-                # no JSON wrapper (scripts/fleet_secrets/cli.py:133-134).  A
-                # one-name batch is the common case -- the retry after an
-                # absent name leaves exactly one -- so it must decode as
-                # itself and not as a JSON object.
-                found[pending[0]] = raw
-                break
-            try:
-                payload = json.loads(raw)
-            except ValueError:
-                raise ReadError("fleet-secrets returned unreadable output") from None
-            if not isinstance(payload, dict):
-                raise ReadError("fleet-secrets returned an unexpected shape")
-            found.update({name: payload[name] for name in pending if name in payload})
-            break
-        if proc.returncode == FLEET_SECRETS_ABSENT:
-            absent = _absent_names(proc.stderr, pending)
-            if absent:
-                pending = [name for name in pending if name not in absent]
-                continue
-        elif proc.returncode != 2:
-            raise ReadError(f"fleet-secrets exited {proc.returncode}")
-        # The slow path:  the CLI could not take the whole batch, so every
-        # remaining name is read on its own.
-        for name in pending:
-            value = fleet_secrets_get(name, project, path)
-            if value is not None:
-                found[name] = value
-        break
-    return found
+        except scoped_secrets.SecretsError as exc:
+            raise ReadError(f"the Infisical project id is unusable ({exc.message})") from None
+    try:
+        return scoped_secrets.fetch_project(project_id, path, env, token=token, names=names)
+    except scoped_secrets.SecretsError as exc:
+        raise ReadError(f"the scoped Infisical read failed ({exc.message})") from None
+
 
 
 def batch_values(names, project, path):
@@ -348,7 +222,7 @@ def batch_values(names, project, path):
         else:
             missing.append(name)
     if missing:
-        fetched = fleet_secrets_get_many(missing, project, path)
+        fetched = scoped_values(missing, project, path)
         for name in missing:
             value = fetched.get(name)
             if not value:
@@ -464,7 +338,7 @@ def main():
     from_env = {name: os.environ.get(name, "").strip() for name in wanted}
     to_fetch = [name for name in wanted if not from_env[name]]
     try:
-        fetched = fleet_secrets_get_many(to_fetch, AFC_SLUG, SECRET_PATH)
+        fetched = scoped_values(to_fetch, AFC_SLUG, SECRET_PATH)
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code

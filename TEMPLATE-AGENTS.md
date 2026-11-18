@@ -555,10 +555,10 @@ and platform.  Product UI stays the viewer's timezone.  A market bell stays as
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
   - **Seats without a local clone:** a seat with read access to the private repo reads it through the relay (`gr_wf_file_get` on the hosted front, `wf_file_get` through GR-MCP, path `ATTACK-MAP.md` in Simple-With-Us/Fleet-OPS); `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'` is the logged backup only; a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
-  - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`).  Never log, grep, or print raw `KEY=value` lines.  Never commit or refer to cloud storage / Google Drive backups of secrets.
-- **Service tokens only, Infisical sole source (owner, Nov 11, 2026).**  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  No runtime path in this repo logs in with a machine identity.  The `--linux-private-bootstrap` flag in `scripts/install-fleet-secrets.sh` installs the service-token entrypoint and does not read a client id or secret.  The universal-auth login in `scripts/simple_tools/zulip.py` was already deleted (AFC-711).  The shared automation identity is revoked only after no host still holds it.  `scripts/fleet_secrets` and `scripts/fleet_rag/infisical_settings.py` already accept only an explicit service-token binding.
+  - **Secret reads:** Every consumer holds its own scoped read-only Infisical service token and reads through it (on the Mac, `scripts/fleet_infisical.py`:  `token_from_store` and `fetch_scoped`;  there is no shared reader any more;  cookbook in `INFISICAL.md` § `Secrets and service tokens`).  Never log, grep, or print raw `KEY=value` lines.  Never commit or refer to cloud storage / Google Drive backups of secrets.
+- **Service tokens only, Infisical sole source (owner, Nov 11, 2026).**  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  No runtime path in this repo logs in with a machine identity.  Every consumer reaches Infisical with its own scoped service token:  there is no shared reader, no bootstrap entrypoint and no machine identity.  The universal-auth login in `scripts/simple_tools/zulip.py` was already deleted (AFC-711).  The shared automation identity is revoked only after no host still holds it.  `scripts/fleet_infisical.py` and `scripts/fleet_rag/infisical_settings.py` accept only an explicit service-token binding.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
-  Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;
+  Fleet keys live in Infisical Fleet-OPS and are read with the consumer's own scoped service token;
   nothing reads `~/.secrets` (AFC-359), and no deployed app depends on it.  Cross-app keys
   needed at runtime must be **copied into the consuming app's Infisical project**
   (store-to-store, never printed).
@@ -571,7 +571,8 @@ and platform.  Product UI stays the viewer's timezone.  A market bell stays as
   verify by key **length** only.  Load the `secret-safety` skill before secret tools.
 - **Secrets-file grep trap (2026-08-14):** `grep '^[A-Z0-9_]+=' <any ~/.secrets file or .env>`
   (or `rg KEY file` without `-o`) prints **values** into the transcript.  Names only:
-  `fleet-secrets names`.  One value: `fleet-secrets get NAME`.  Never `cat` / Read a
+  the folder's own scoped token and `scripts/fleet_infisical.py` (`list_project_names`).
+  One value: the same scoped read, one name at a time.  Never `cat` / Read a
   secrets file, and never add `2>&1` to a command that touches a secret.
 - **Loaded-key byte dumps (2026-09-17):** never `od` / `xxd` / `hexdump` / `hd` /
   `strings` / `base64` / `cut -c` / last-command `printf %s` of `$NAME` when NAME
@@ -588,7 +589,7 @@ Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify to
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`) and Fleet MCP are the
 tools for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
 `react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: Mac seats use
-Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through `fleet-secrets`); cloud seats use env `ZULIP_EMAIL`,
+Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through the seat's own scoped service token); cloud seats use env `ZULIP_EMAIL`,
 `ZULIP_API_KEY`, `ZULIP_SITE`.  Pin your seat in `AGENT_SEAT`.  Setup and FAQ:
 `docs/protocols/zulip-fleet-guide.md` (published at
 https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
@@ -846,7 +847,7 @@ paternalism that keeps creeping back in from every agent (Claude, Codex, others)
   - If a key is missing, wrong, exhausted, or rejected: STOP and tell the owner
     what you observed and which key you believe is in play (identify it by its
     masked first-8/last-4 preview — see below — never by pasting a value).  The
-    owner supplies keys through Infisical (read with `fleet-secrets get NAME`) or as a `chmod 600` file path.
+    The owner supplies keys through Infisical (read with the consumer's own scoped service token) or as a `chmod 600` file path.
     Waiting is always cheaper than a second key.
   - To see WHICH key is serving without ever revealing one: the Connections page
     (`/console/connections#api-keys`) shows the masked preview of the key that

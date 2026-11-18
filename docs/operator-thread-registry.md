@@ -92,7 +92,7 @@ the Operator registries;  no dedicated SA is created for this registry.
 
 - Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
 - Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
-  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the same
+  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through the consumer's own scoped service token at runtime — the same
   resolution shape as the existing `/google-sheets-sa` secret, a separate purpose-scoped
   path that holds a copy of that fleet credential.  The key is never written to disk or
   printed.

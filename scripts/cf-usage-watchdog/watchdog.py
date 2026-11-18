@@ -7,7 +7,8 @@ day-to-date over a threshold, and a 5-minute rate over a threshold.  Two named p
 and enforce.  See README.md for the design, the stop action and the operating steps.
 
 Standard library only, plus this repo's stdlib-only fleet_knobs for the mode and the profile.
-Credentials come from fleet-secrets, live in memory only and never reach a log or a message.
+Credentials come from this watcher's own scoped Infisical service token, live in memory only and
+never reach a log or a message.
 """
 
 from __future__ import annotations
@@ -34,9 +35,15 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
 CONFIG_PATH = HERE / "config.json"
 REGISTRY_PATH = HERE.parent / "worker-registry.json"
 API_BASE = "https://api.cloudflare.com/client/v4"
+# This watcher's own scoped read-only service token:  the project and folder its config names.
+# The token lives in the consumer's own store (the owner's login keychain on the Mac, a private
+# file on a server);  the shared Infisical client checks the token's own grant and the answer's
+# own provenance before a value is used.
+TOKEN_ACCOUNT = "cf-usage-watchdog-ro"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 CHICAGO = ZoneInfo("America/Chicago")
 GAP = "  "  # Between sentences in owner-facing text.
@@ -619,28 +626,29 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """One value from fleet-secrets, or None when it is absent.  Raises PollError on any other failure."""
+        """One value through this watcher's own scoped token, or None when it is absent.
+        Raises PollError on any other failure."""
         conf = self.cfg["infisical"]
-        command = [
-            "fleet-secrets",
-            "get",
-            name,
-            "--path",
-            conf["path"],
-            "--project",
-            conf["project"],
-        ]
         try:
-            done = self.runner(
-                command, capture_output=True, text=True, timeout=30, check=False, env=self.env
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
-        if done.returncode == 3:
-            return None
-        if done.returncode != 0:
-            raise PollError(f"credential-fetch-exit-{done.returncode}")
-        return done.stdout.strip() or None
+            import fleet_infisical as FI
+
+            env = dict(self.env)
+            env[FI.ENV_READ_PATHS] = conf["path"]
+            project = FI.infisical_project_id(env, FI.home_dir(env), conf["project"])
+            # The environment still wins:  the unit's own env file carries this watcher's
+            # token, and the consumer's own store is the fallback.
+            token = (env.get(FI.ENV_TOKEN) or "").strip()
+            if not token:
+                token, status = FI.token_from_store(conf.get("token_account", TOKEN_ACCOUNT), env)
+                if not token:
+                    raise PollError("credential-fetch-" + status)
+            values = FI.fetch_project(project, conf["path"], env, token=token, names=(name,))
+        except PollError:
+            raise
+        except Exception:
+            raise PollError("credential-fetch-failed") from None
+        value = values.get(name, "")
+        return value or None
 
     def token(self) -> str:
         if self._token is None:

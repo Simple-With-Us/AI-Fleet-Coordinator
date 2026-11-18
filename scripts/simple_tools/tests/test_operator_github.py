@@ -6,6 +6,8 @@ import threading
 import unittest
 import urllib.request
 import urllib.error
+
+import fleet_infisical
 from simple_tools.operator_github import Broker, BrokerHttp, CallerPolicy, Refused, signature
 from simple_tools.operator_github_client import bound_command, ClientError, child_environment
 
@@ -236,63 +238,78 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(self.audit[-1]['outcome'],'outcome_unknown')
 
 class CallerKeyTests(unittest.TestCase):
-    def test_fleet_secrets_is_the_single_source(self):
+    """The caller key comes from the consumer's own scoped service token, and nowhere else."""
+
+    def scoped(self, value="e"*32, status="ok"):
+        calls = []
+
+        def read(name, folder, account, env=None):
+            calls.append((name, folder, account))
+            return (value, status)
+
+        return read, calls
+
+    def test_the_scoped_token_is_the_single_source(self):
         import os
         from unittest.mock import patch
         from simple_tools.operator_github_client import caller_key
-        class Done:
-            returncode=0
-            stdout=b'e'*32+b'\n'
+        read, calls = self.scoped("e"*32)
         with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'z'*32}):
-            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch.object(fleet_infisical, "fetch_scoped", read):
                 self.assertEqual(caller_key('ECHO'),'e'*32)
-                run.assert_called_once()
-    def test_fleet_secrets_fallback(self):
+        self.assertEqual(
+            calls,
+            [("OPERATOR_GITHUB_CALLER_ECHO_HMAC", "/operator-github/callers", "operator-github-callers-ro")],
+        )
+
+    def test_the_scoped_read_is_the_only_source(self):
         import os
         from unittest.mock import patch
         from simple_tools.operator_github_client import caller_key
-        class Done:
-            returncode=0
-            stdout=b'f'*32+b'\n'
+        read, calls = self.scoped("f"*32)
         with patch.dict(os.environ,{},clear=True):
-            with patch('simple_tools.operator_github_client.fleet_secrets_bin',return_value='fleet-secrets'),patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch.object(fleet_infisical, "fetch_scoped", read):
                 self.assertEqual(caller_key('ECHO'),'f'*32)
-                args=run.call_args[0][0]
-                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_ECHO_HMAC','--path','/operator-github/callers','--project','fleet-ops'])
+        self.assertEqual(len(calls), 1)
+
     def test_missing_everywhere_names_variable_not_value(self):
         import os
         from unittest.mock import patch
         from simple_tools.operator_github_client import caller_key
-        class Done:
-            returncode=3
-            stdout=b''
         with patch.dict(os.environ,{},clear=True):
-            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()):
-                with self.assertRaises(ClientError) as c:caller_key('ECHO')
+            with patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "forbidden")):
+                with self.assertRaises(ClientError) as c: caller_key('ECHO')
         self.assertIn('OPERATOR_GITHUB_CALLER_ECHO_HMAC',str(c.exception))
+
+    def test_a_missing_token_exits_127(self):
+        import os
+        from unittest.mock import patch
+        from simple_tools.operator_github_client import caller_key
+        with patch.dict(os.environ,{},clear=True):
+            with patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):
+                with self.assertRaises(SystemExit) as c: caller_key('ECHO')
+        self.assertEqual(c.exception.code, 127)
+
     def test_short_key_refused(self):
         import os
         from unittest.mock import patch
         from simple_tools.operator_github_client import caller_key
-        class Done:
-            returncode=0
-            stdout=b'short'
         with patch.dict(os.environ,{},clear=True):
-            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()):
-                with self.assertRaises(ClientError):caller_key('ECHO')
+            with patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("short", "ok")):
+                with self.assertRaises(ClientError): caller_key('ECHO')
+
     def test_environment_is_never_consulted(self):
-        # Owner decision 2026-10-21:  fleet-secrets is the single credential
-        # path;  an exported variable must be ignored even when valid-looking.
+        # Owner decision 2026-10-21:  the consumer's own scoped token is the single
+        # credential path;  an exported variable must be ignored even when valid-looking.
         import os
         from unittest.mock import patch
         from simple_tools.operator_github_client import caller_key
-        class Done:
-            returncode=0
-            stdout=b'g'*32+b'\n'
+        read, calls = self.scoped("g"*32)
         with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'h'*32}):
-            with patch('simple_tools.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch.object(fleet_infisical, "fetch_scoped", read):
                 self.assertEqual(caller_key('ECHO'),'g'*32)
-                run.assert_called_once()
+        self.assertEqual(len(calls), 1)
+
 
 class RunBoundedTests(unittest.TestCase):
     def test_missing_executable_exits_127(self):

@@ -27,8 +27,6 @@ FILES = (
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
     "fleet_infisical.py",
-    "fleet_secrets/__init__.py",
-    "fleet_secrets/core.py",
     "collect-repo-documents.py",
     "export-repo-git-source.py",
     "remote_git_source.py",
@@ -111,7 +109,6 @@ def install(source, destination, source_commit):
             "scripts",
             "scripts/fleet_lanes",
             "scripts/fleet_knobs",
-            "scripts/fleet_secrets",
             "scripts/fleet_docs",
         }
         for root, dirs, files in os.walk(destination, followlinks=False):

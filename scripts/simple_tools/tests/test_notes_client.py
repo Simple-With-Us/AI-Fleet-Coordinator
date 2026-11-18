@@ -2,7 +2,7 @@
 https origin, the principal's key, the signed client against a fake Operator, the wait, and the one `call` that
 simple-notes and the stdio tools share, on a Mac and off one.
 
-Nothing here reaches a network, Infisical or the real fleet-secrets:  the opener, the key runner and the clock are
+Nothing here reaches a network, Infisical or a real store:  the opener, the key runner and the clock are
 fakes, and the one test that needs real HTTP (a redirect is never followed) talks to a server on 127.0.0.1.
 
 Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_client
@@ -222,19 +222,19 @@ class BaseUrlTests(unittest.TestCase):
             ("ops.example.test", None),
         ):
             with self.subTest(raw):
-                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")), mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
+                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")), mock.patch.object(NC, "scoped_read", side_effect=AssertionError("the store is not asked")):
                     self.assertEqual(NC.base_url({"OPERATOR_API_URL": raw}), expected)
 
     def test_without_the_variable_the_fleet_knob_is_read_first(self):
         from fleet_knobs import knobs
 
-        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve, mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
+        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve, mock.patch.object(NC, "scoped_read", side_effect=AssertionError("the store is not asked")):
             self.assertEqual(NC.base_url({}), "https://knob.example.test")
         self.assertEqual(resolve.call_args.args, ("OPERATOR_API_URL", "", "str"))
 
-    def test_with_no_knob_fleet_secrets_is_asked_and_a_failure_is_not_configured(self):
+    def test_with_no_knob_the_store_is_asked_and_a_failure_is_not_configured(self):
         # The server's agent shells:  fleet_knobs has no Infisical login there, so the knob is empty once its
-        # last-known-good copy lapses, and fleet-secrets (which logs in for itself) is asked for the same key.
+        # last-known-good copy lapses, and the store (which holds this client's own token) is asked for the same key.
         from fleet_knobs import knobs
 
         env = {"PATH": "/nowhere"}
@@ -244,12 +244,12 @@ class BaseUrlTests(unittest.TestCase):
             mock.patch.dict("sys.modules", {"fleet_knobs": None}),
         ):
             with self.subTest(knob=knob), knob:
-                with mock.patch.object(NC, "fleet_secrets_get", return_value="https://secrets.example.test") as get:
+                with mock.patch.object(NC, "scoped_read", return_value="https://secrets.example.test") as get:
                     self.assertEqual(NC.base_url(env), "https://secrets.example.test")
                 self.assertEqual(get.call_args.args[:3], ("OPERATOR_API_URL", "/", env))
-                with mock.patch.object(NC, "fleet_secrets_get", return_value=""):
+                with mock.patch.object(NC, "scoped_read", return_value=""):
                     self.assertIsNone(NC.base_url(env))
-                with mock.patch.object(NC, "fleet_secrets_get", return_value="http://secrets.example.test"):
+                with mock.patch.object(NC, "scoped_read", return_value="http://secrets.example.test"):
                     self.assertIsNone(NC.base_url(env), "the same https-origin rule applies")
 
     def test_the_url_is_read_directly_from_the_exact_project_root(self):
@@ -264,7 +264,7 @@ class BaseUrlTests(unittest.TestCase):
         self.assertEqual(fetch.call_args.kwargs["names"], ("OPERATOR_API_URL",))
 
     def test_operator_client_is_not_configured_without_an_origin(self):
-        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "fleet_secrets_get", return_value=""):
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "scoped_read", return_value=""):
             with self.assertRaises(N.NotesError) as caught:
                 NC.operator_client({})
         self.assertEqual(caught.exception.code, "not_configured")
@@ -286,8 +286,8 @@ class KeySourceTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def fake_secrets(self):
-        path = self.bin / "fleet-secrets"
+    def fake_reader(self):
+        path = self.bin / "infisical-scoped"
         path.write_text("#!/bin/sh\nexit 99\n")  # never run:  the runner below stands in for it
         path.chmod(0o700)
         return path
@@ -890,7 +890,7 @@ class HostTests(unittest.TestCase):
         ), mock.patch.object(
             NC.SR, "load", side_effect=AssertionError("the service reader is not asked")
         ), mock.patch.object(
-            NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")
+            NC, "scoped_read", side_effect=AssertionError("the store is not asked")
         ):
             host = NC.Host(
                 self.env,

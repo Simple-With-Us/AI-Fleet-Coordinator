@@ -17,6 +17,8 @@ spec = importlib.util.spec_from_file_location(
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
+import fleet_infisical
+
 SEAT = "INSTINCT"
 GOOD = '[INSTINCT] sync-1\nrepo: Congress.Trade\nowner-relay: "ship the scout fix"\nsaid: Thu, Sep 17, 2026 at 4:10 PM CT'
 
@@ -674,29 +676,30 @@ class RuleTests(unittest.TestCase):
             with self.assertRaises(bridge.BridgeError):
                 bridge.ZulipClient(http)
 
-    def test_zulip_client_reads_infisical_through_fleet_secrets(self):
+    def test_zulip_client_reads_infisical_through_its_own_scoped_token(self):
         # With no --rc the client takes <BOT>_ZULIP_EMAIL / _KEY / _SITE from Infisical /zulip.
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fleet-secrets"
-            fake.write_text(
-                "#!/bin/sh\n"
-                '[ "$1" = get ] && [ "$3" = --path ] && [ "$4" = /zulip ] || exit 3\n'
-                'case "$2" in\n'
-                "  CLAUDE_ZULIP_EMAIL) echo claude-bot@example.test;;\n"
-                "  CLAUDE_ZULIP_KEY) echo fake-key;;\n"
-                "  CLAUDE_ZULIP_SITE) echo https://simplewithus.zulipchat.com;;\n"
-                "  *) exit 3;;\n"
-                "esac\n"
+        values = {
+            "CLAUDE_ZULIP_EMAIL": "claude-bot@example.test",
+            "CLAUDE_ZULIP_KEY": "fake-key",
+            "CLAUDE_ZULIP_SITE": "https://simplewithus.zulipchat.com",
+        }
+        asked = []
+
+        def read(name, folder, account, env=None):
+            asked.append((name, folder, account))
+            return (values.get(name, ""), "ok" if name in values else "absent")
+
+        with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+            client = bridge.ZulipClient()
+            self.assertEqual(
+                (client.email, client.key), ("claude-bot@example.test", "fake-key")
             )
-            fake.chmod(0o700)
-            with mock.patch.object(bridge, "FLEET_SECRETS_BIN", str(fake)):
-                client = bridge.ZulipClient()
-                self.assertEqual(
-                    (client.email, client.key), ("claude-bot@example.test", "fake-key")
-                )
-                gone = bridge.ZulipClient(bot="NOBODY")
-                self.assertIsNone(gone.email)
-                self.assertIsNone(gone.key)
+            gone = bridge.ZulipClient(bot="NOBODY")
+            self.assertIsNone(gone.email)
+            self.assertIsNone(gone.key)
+        self.assertEqual(
+            asked[0], ("CLAUDE_ZULIP_EMAIL", "/zulip", "outbox-bridge-ro")
+        )
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)

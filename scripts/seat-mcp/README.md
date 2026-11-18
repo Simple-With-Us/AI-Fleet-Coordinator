@@ -11,7 +11,7 @@ Fleet RAG (any device):
 
 See `mcp.example.json` and `docs/RAG-FLEET-INFRA.md`.
 
-Token:  Infisical Fleet-OPS `/seat-mcp` (`SEAT_MCP_TOKEN`), read with `fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp`.  Never print it.  Never put it in `~/.shellular/agents.json` or git.
+Token:  Infisical Fleet-OPS `/seat-mcp` (`SEAT_MCP_TOKEN`), read through the consumer's own scoped service token from the `/seat-mcp` folder.  Never print it.  Never put it in `~/.shellular/agents.json` or git.
 
 Job records:  `~/.seat-mcp/jobs/<jobId>.json` (atomic write + ring-buffered tail).  Multi-seat:  do not use `~/.dsh/mcp-jobs`.
 
@@ -80,7 +80,7 @@ Test adapters (not for Conductor production):  `_echo`, `_sleep`.
 Load the token into the environment without printing it:
 
 ```bash
-SEAT_MCP_TOKEN="$(fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp)"
+SEAT_MCP_TOKEN="$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from fleet_infisical import fetch_scoped; v,s=fetch_scoped("SEAT_MCP_TOKEN","/seat-mcp","consumer-ro"); sys.exit(1) if s!="ok" else sys.stdout.write(v)')"
 BASE=http://127.0.0.1:8793/mcp
 AUTH="Authorization: Bearer $SEAT_MCP_TOKEN"
 ```

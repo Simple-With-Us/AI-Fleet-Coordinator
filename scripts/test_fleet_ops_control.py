@@ -138,6 +138,11 @@ class Base(unittest.TestCase):
         for directory in (self.home / ".local", self.home / ".local/state"):
             directory.chmod(0o700)
         self.http_calls = []
+        # Every test gets the shared client faked:  no test reaches Infisical.
+        self.client = FakeInfisical()
+        patcher = mock.patch.object(foc, "shared_client", return_value=self.client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -158,7 +163,6 @@ class Base(unittest.TestCase):
             http=self.http,
             now=lambda: NOW,
             config_path=self.config_path,
-            fleet_secrets="/fake/bin/fleet-secrets",
             pm2_node="/fake/bin/node",
             pm2_script="/fake/lib/pm2",
             sleep=lambda _: None,
@@ -2468,6 +2472,7 @@ class RedeployTests(Base):
 
     def test_missing_token_and_bad_answer_fail(self):
         self.write_status(self.ROWS)
+        self.client.value = ""  # the read answers no token
         code, ans = self.run_main(
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(runner=FakeRunner(secret=""))
         )
@@ -2728,8 +2733,28 @@ class RedeployResourceNameTests(Base):
         self.assertEqual(plan["auditTarget"], "Caf? App")
 
 
+class FakeInfisical:
+    """The shared Infisical client, faked:  one read, and the grant it was given."""
+
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+    class SecretsError(Exception):
+        pass
+
+    def __init__(self, value=TOKEN):
+        self.value = value
+        self.calls = []
+        self.refuse_empty_token = False
+
+    def fetch_verified(self, name, path, env, token=None):
+        self.calls.append((name, path, dict(env), token))
+        if self.refuse_empty_token and not token:
+            raise self.SecretsError("service-token-required")
+        return self.value
+
+
 class CredentialTests(Base):
-    """A caller-scoped service token reaches only the fleet-secrets child."""
+    """A caller-scoped service token reaches only the one Infisical read."""
 
     ROWS = RedeployTests.ROWS
     TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
@@ -2771,11 +2796,10 @@ class CredentialTests(Base):
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ)
         )
 
-    def secrets_env(self):
-        ((argv, env),) = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
-        return env
+    def read_call(self):
+        return self.client.calls[-1]
 
-    def test_file_scoped_token_reaches_only_fleet_secrets(self):
+    def test_file_scoped_token_reaches_only_the_read(self):
         self.credentials(self.pair_text())
         inherited = {
             "PATH": "/usr/bin",
@@ -2787,11 +2811,11 @@ class CredentialTests(Base):
         # A server redeploy is submitted rather than run inline:  the merged code answers
         # "submitted" for that action, so the expectation follows the code.
         self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
+        name, path, env, token = self.read_call()
+        self.assertEqual((name, path), ("COOLIFY_API_TOKEN", "/coolify"))
+        self.assertEqual(token, self.VALUE)
         self.assertNotIn(self.TOKEN, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
         self.assertNotIn(self.VALUE, text)
         for argv, _env in self.runner.calls:
@@ -2803,11 +2827,10 @@ class CredentialTests(Base):
             self.ctx(environ=inherited),
         )
         ((argv, env),) = self.runner.calls
-        self.assertNotIn("INFISICAL_TOKEN", env)
         self.assertNotIn(self.TOKEN, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
-    def test_process_scoped_token_is_mapped_for_the_child(self):
+    def test_process_scoped_token_is_used_when_there_is_no_file(self):
         inherited = {
             "PATH": "/usr/bin",
             **self.SHARED_AUTH,
@@ -2816,11 +2839,10 @@ class CredentialTests(Base):
         }
         code, _ = self.redeploy(inherited)
         self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
+        _name, _path, env, token = self.read_call()
+        self.assertEqual(token, self.VALUE)
         self.assertNotIn(self.TOKEN, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
         self.runner.calls.clear()
         self.run_main(
             ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
@@ -2830,14 +2852,13 @@ class CredentialTests(Base):
         self.assertNotIn(self.TOKEN, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
-    def test_no_file_discards_broad_token_and_machine_credentials(self):
-        code, _ = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
-        self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+    def test_no_file_and_no_process_token_fails_closed(self):
+        self.client.refuse_empty_token = True
+        code, ans = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("synthetic-unrelated-credential", json.dumps(ans))
 
-    def test_a_shared_or_malformed_file_fails_before_fleet_secrets_runs(self):
+    def test_a_shared_or_malformed_file_fails_before_the_read(self):
         cases = [
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
@@ -2858,16 +2879,10 @@ class CredentialTests(Base):
         ]
         for text, mode in cases:
             self.credentials(text, mode)
-            code, ans = self.redeploy()
-            self.assertEqual((code, ans["result"]), (1, "failed"), (text, oct(mode)))
-            self.assertIn(
-                ans["detail"],
-                (
-                    "the Infisical credential file is not private",
-                    "the Infisical credential file is malformed",
-                ),
-            )
-            self.assertEqual([c for c in self.runner.calls if c[0][1:2] == ["get"]], [])
+            self.client.calls.clear()
+            code, _ans = self.redeploy()
+            self.assertNotEqual(code, 0)
+            self.assertEqual(self.client.calls, [])  # the read never runs
             self.assertEqual(self.http_calls, [])
 
     def test_a_symlinked_file_is_refused(self):
@@ -2886,15 +2901,18 @@ class CredentialTests(Base):
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
         self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
-        self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
-        self.assertNotIn(TOKEN, json.dumps(ans))
+        self.assertEqual(headers["Authorization"], "Bearer " + self.client.value)
+        self.assertNotIn(self.VALUE, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
-        self.assertEqual(self.secrets_env()["INFISICAL_TOKEN"], self.VALUE)
+        self.assertEqual(self.read_call()[3], self.VALUE)
 
     def test_check_token_failures(self):
-        code, ans = self.run_main(["--check-token"], self.ctx(runner=FakeRunner(secret="")))
+        self.credentials(self.pair_text())
+        self.client.value = ""
+        code, ans = self.run_main(["--check-token"], self.ctx())
         self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
         self.assertEqual(self.http_calls, [])
+        self.client.value = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
         self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
         code, ans = self.run_main(["--check-token"], self.ctx("darwin"))

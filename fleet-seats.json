@@ -445,7 +445,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -692,7 +692,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -774,7 +774,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "abfedd6faf4072476fdb6a72ed42e44f77da79994a82f0c27b3ea795c9120eac"
+            "sha256": "22179cd851bf7b4bb760f698c716f597d5243d1804e2f8733eee4b78211fdc6f"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -905,7 +905,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -1152,7 +1152,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -1380,7 +1380,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -1615,7 +1615,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -1867,7 +1867,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -2013,7 +2013,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "f8ee5cfd81e6311c46d63d4dceb35f2b01687555bc69d439ada3f94147c244b4"
+            "sha256": "96bffd3716d75bdfa35ec5ab02a101b405342c724f845b0c342dc78b93c43f5c"
           },
           "id": "kimi-instructions-lane-map",
           "kind": "instructions",
@@ -2171,7 +2171,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -2306,7 +2306,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -2489,7 +2489,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -2734,7 +2734,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -2898,7 +2898,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
@@ -3005,7 +3005,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "047940614c9be9a939ad83faa53473ef37aa63475985b75258170df91d7f1a26"
+            "sha256": "9f39f1073c311aefbc80fd30210586c6f30ecf0fb27c0038ff30b16085176106"
           },
           "id": "zc-instructions-lane-map",
           "kind": "instructions",
@@ -3163,7 +3163,7 @@
             "type": "credential_key_present"
           },
           "collector": "mac",
-          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "description": "The check asks the shared Infisical client, with the checker's own scoped token for that folder, for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [

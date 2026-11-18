@@ -623,8 +623,10 @@ class ReviewFindingTests(unittest.TestCase):
             result = check_command(self._command("security", detail), "mac", self.ctx)
             self.assertIs(result.state, CheckState.UNKNOWN)
             self.assertIn("not allowed to run", result.reason)
+        # The retired reader is not a program this package may start at all.
         result = check_command(self._command("fleet-secrets", "set NAME"), "mac", self.ctx)
-        self.assertIn("not allowed to run set", result.reason)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn("not allowed to run", result.reason)
 
     def test_a_malformed_command_detail_is_not_run_bare(self) -> None:
         result = check_command(self._command("fleet-secrets", 'doctor "unbalanced'), "mac", self.ctx)

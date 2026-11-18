@@ -1200,350 +1200,211 @@ class TestAuditSecretHashing(unittest.TestCase):
         self.assertNotIn("note", row)
 
 
-class TestFleetSecretsSource(unittest.TestCase):
-    """Owner decision 2026-10-21:  relay secrets resolve through the
-    fleet-secrets CLI only - never the process environment, never direct
-    Infisical HTTP."""
+class FakeInfisicalClient:
+    """A stand-in for the shared fleet Infisical client.
 
-    def _source(self, stdout=b"", returncode=0, calls=None):
-        from git_relay.app_tokens import FleetSecretsSource
+    The relay never implements secret reading of its own:  it calls the one
+    shared client, and this fake is what the tests put in its place.
+    """
 
-        def runner(argv, capture_output, timeout):
-            if calls is not None:
-                calls.append(argv)
-            return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=b"")
+    class SecretsError(Exception):
+        def __init__(self, message, code=4):
+            super().__init__(message)
+            self.message = message
+            self.code = code
 
-        return FleetSecretsSource(runner=runner)
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+    ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 
-    def test_reads_through_fleet_secrets_get_and_caches(self):
-        calls = []
-        source = self._source(stdout=b"value\n", calls=calls)
-        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
-        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
-        self.assertEqual(
-            calls, [["fleet-secrets", "get", "GH_APP_SWU_ECHO_ID", "--path", "/github-apps"]]
+    def __init__(self, values=None, scopes=("/github-apps",), project="proj-1", fail=None):
+        self.values = dict(values or {})
+        self.scopes = tuple(scopes)
+        self.project = project
+        self.fail = fail
+        self.calls = []
+
+    def token_scopes(self, token, env):
+        self.calls.append(("scopes", token))
+        if not token:
+            raise self.SecretsError("service-token-required")
+        return self.scopes
+
+    def fetch_project(self, project, path, env, *, token=None, names=None, **_kw):
+        self.calls.append(("project", path, tuple(names or ())))
+        if self.fail:
+            raise self.SecretsError(self.fail)
+        wanted = list(names) if names else list(self.values)
+        return {name: self.values[name] for name in wanted if name in self.values}
+
+    def fetch_verified(self, name, path, env, token=None):
+        self.calls.append(("verified", name, path))
+        if self.fail:
+            raise self.SecretsError(self.fail)
+        if name not in self.values:
+            raise self.SecretsError(f"key {name} is not in Infisical at {path}", 3)
+        return self.values[name]
+
+
+class TestInfisicalSource(unittest.TestCase):
+    """The relay reads every credential through the shared Infisical client
+    and its own scoped service token:  never the process environment, never a
+    reader of the relay's own, never the retired CLI."""
+
+    ENV = {"INFISICAL_FLEET_OPS_PROJECT_ID": "proj-1"}
+
+    def _source(self, client=None, **kwargs):
+        from git_relay.app_tokens import InfisicalSource
+
+        self.client = client or FakeInfisicalClient(
+            values={"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"}
         )
+        kwargs.setdefault("environ", dict(self.ENV))
+        kwargs.setdefault("client", self.client)
+        return InfisicalSource(**kwargs)
 
-    def test_default_path_is_github_apps_and_is_overridable(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+    def _credential_file(self, tmp, token="st." + "x" * 40):
+        path = os.path.join(tmp, "token")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+        return path
 
-        calls = []
+    def test_reads_through_the_shared_client_and_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "42")
+            self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "42")
+        # One read, then the cache:  the store is not asked twice.
+        reads = [call for call in self.client.calls if call[0] == "project"]
+        self.assertEqual(len(reads), 1)
 
-        def runner(argv, capture_output, timeout):
-            calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, stdout=b"v", stderr=b"")
-
-        FleetSecretsSource(runner=runner).secret("GH_APP_SWU_ECHO_ID")
-        self.assertEqual(calls[0][-2:], ["--path", "/github-apps"])
-        calls.clear()
-        FleetSecretsSource(runner=runner, path="/ghr").secret("GH_APP_SWU_ECHO_ID")
-        self.assertEqual(calls[0][-2:], ["--path", "/ghr"])
-        with self.assertRaises(AppTokenError):
-            FleetSecretsSource(runner=runner, path="github-apps")
-
-    def test_environment_is_never_consulted(self):
-        calls = []
-        source = self._source(stdout=b"from-fleet-secrets\n", calls=calls)
-        with unittest.mock.patch.dict(os.environ, {"GH_APP_SWU_ECHO_ID": "from-env"}):
-            self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "from-fleet-secrets")
-        self.assertEqual(len(calls), 1)
-
-    def test_missing_value_names_the_variable_only(self):
-        from git_relay.app_tokens import AppTokenError
-
-        source = self._source(returncode=1)
-        with self.assertRaises(AppTokenError) as ctx:
-            source.secret("GH_APP_SWU_ECHO_PRIVATE_KEY")
-        self.assertIn("GH_APP_SWU_ECHO_PRIVATE_KEY", str(ctx.exception))
-
-    def test_timeout_and_missing_executable_are_named_errors(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        def hanging(argv, capture_output, timeout):
-            raise subprocess.TimeoutExpired(argv, timeout)
-
-        with self.assertRaises(AppTokenError) as ctx:
-            FleetSecretsSource(runner=hanging).secret("GH_APP_X_ID")
-        self.assertIn("timed out", str(ctx.exception))
-
-        def missing(argv, capture_output, timeout):
-            raise FileNotFoundError(argv[0])
-
-        with self.assertRaises(AppTokenError) as ctx:
-            FleetSecretsSource(runner=missing).secret("GH_APP_X_ID")
-        self.assertIn("not found", str(ctx.exception))
-
-    def test_secrets_reads_a_pair_in_one_cli_call(self):
-        calls = []
-        source = self._source(
-            stdout=b'{"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"}',
-            calls=calls,
-        )
-        pair = source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"])
-        self.assertEqual(pair, {"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"})
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            calls[0],
-            [
-                "fleet-secrets",
-                "get",
-                "GH_APP_SWU_ECHO_ID",
-                "GH_APP_SWU_ECHO_PRIVATE_KEY",
-                "--path",
-                "/github-apps",
-            ],
-        )
-        # Cached:  reading the pair (or one name of it) again runs no CLI call.
-        self.assertEqual(
-            source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"]), pair
-        )
-        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "42")
-        self.assertEqual(len(calls), 1)
-
-    def test_absent_name_is_not_refetched_per_request(self):
-        from git_relay.app_tokens import AppTokenError
-
-        calls = []
-        source = self._source(returncode=3, calls=calls)
-        with self.assertRaises(AppTokenError):
-            source.secret("GH_APP_NOPE_ID")
-        with self.assertRaises(AppTokenError):
-            source.secret("GH_APP_NOPE_ID")
-        self.assertEqual(len(calls), 1)
-
-    def test_absent_names_are_read_as_exact_tokens(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        # GH_APP_X_ID is a prefix of GH_APP_X_ID_OLD:  the CLI's exit-3 line
-        # lists only the second, and only the second may be remembered absent.
-        calls = []
-
-        def runner(argv, capture_output, timeout):
-            calls.append(argv)
-            if "GH_APP_X_ID_OLD" in argv:
-                return subprocess.CompletedProcess(
-                    argv,
-                    3,
-                    stdout=b"",
-                    stderr=(
-                        b"fleet-secrets: key GH_APP_X_ID_OLD is not in Infisical at /github-apps\n"
-                    ),
-                )
-            return subprocess.CompletedProcess(argv, 0, stdout=b"7", stderr=b"")
-
-        source = FleetSecretsSource(runner=runner)
-        with self.assertRaises(AppTokenError) as ctx:
-            source.secrets(["GH_APP_X_ID", "GH_APP_X_ID_OLD"])
-        self.assertIn("GH_APP_X_ID_OLD", str(ctx.exception))
-        self.assertEqual(source.secret("GH_APP_X_ID"), "7")
-        with self.assertRaises(AppTokenError):
-            source.secret("GH_APP_X_ID_OLD")
-        self.assertEqual(len(calls), 2)
-
-    def test_the_absent_line_is_found_after_other_stderr_lines(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        # A warning ahead of the exit-3 line must not send the parse to the
-        # first-name fallback, which would blame the live GH_APP_X_ID.
-        calls = []
-
-        def runner(argv, capture_output, timeout):
-            calls.append(argv)
-            if "GH_APP_X_PRIVATE_KEY" in argv:
-                return subprocess.CompletedProcess(
-                    argv,
-                    3,
-                    stdout=b"",
-                    stderr=(
-                        b"warning: a newer release is available\n"
-                        b"fleet-secrets: key GH_APP_X_PRIVATE_KEY"
-                        b" is not in Infisical at /github-apps\n"
-                    ),
-                )
-            return subprocess.CompletedProcess(argv, 0, stdout=b"7", stderr=b"")
-
-        source = FleetSecretsSource(runner=runner)
-        with self.assertRaises(AppTokenError) as ctx:
-            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
-        self.assertIn("GH_APP_X_PRIVATE_KEY", str(ctx.exception))
-        self.assertEqual(source.secret("GH_APP_X_ID"), "7")
-        self.assertEqual(len(calls), 2)
-
-    def test_every_listed_absent_name_is_remembered(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        calls = []
-
-        def runner(argv, capture_output, timeout):
-            calls.append(argv)
-            return subprocess.CompletedProcess(
-                argv,
-                3,
-                stdout=b"",
-                stderr=(
-                    b"fleet-secrets: key GH_APP_X_ID, GH_APP_X_PRIVATE_KEY"
-                    b" is not in Infisical at /github-apps\n"
-                ),
+    def test_a_pair_reads_in_one_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            self.assertEqual(
+                source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"]),
+                {"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"},
             )
+        reads = [call for call in self.client.calls if call[0] == "project"]
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(len(reads[0][2]), 2)
 
-        source = FleetSecretsSource(runner=runner)
-        with self.assertRaises(AppTokenError):
-            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
-        for name in ("GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"):
-            with self.assertRaises(AppTokenError, msg=name):
-                source.secret(name)
-        self.assertEqual(len(calls), 1)
-
-    def test_usage_failure_surfaces_the_cli_reason(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        # The CLI's exit-2 stderr:  one reason line, then its whole usage block.
-        def runner(argv, capture_output, timeout):
-            return subprocess.CompletedProcess(
-                argv,
-                2,
-                stdout=b"",
-                stderr=(
-                    b"fleet-secrets: bad --path:  use an absolute Infisical folder path"
-                    b" such as /\n"
-                    b"usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
-                    b"       fleet-secrets get NAME [NAME ...] [--path /]\n"
-                    b"       fleet-secrets doctor [--json]\n"
-                ),
-            )
-
-        source = FleetSecretsSource(runner=runner)
-        with self.assertRaises(AppTokenError) as ctx:
+    def test_the_declared_folders_are_the_tokens_own_scopes(self):
+        client = FakeInfisicalClient(
+            values={"GH_APP_SWU_ECHO_ID": "42"}, scopes=("/github-apps", "/tools")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(client, credential_file=self._credential_file(tmp))
             source.secret("GH_APP_SWU_ECHO_ID")
-        self.assertIn("GH_APP_SWU_ECHO_ID", str(ctx.exception))
-        self.assertIn("bad --path", str(ctx.exception))
-        self.assertNotIn("usage:", str(ctx.exception))
-        self.assertNotIn("\n", str(ctx.exception))
+        # The declared set is read from the grant, so a clamped token cannot
+        # widen the read.
+        self.assertIn(("project", "/github-apps", ("GH_APP_SWU_ECHO_ID",)), client.calls)
 
-    def test_unreadable_pair_output_is_an_app_token_error(self):
-        from git_relay.app_tokens import AppTokenError
+    def test_a_folder_the_token_does_not_cover_is_refused(self):
+        client = FakeInfisicalClient(values={"X": "1"}, scopes=("/tools",))
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(client, credential_file=self._credential_file(tmp))
+            with self.assertRaises(Exception) as ctx:
+                source.secret("X")
+        self.assertIn("does not cover", str(ctx.exception))
 
-        # For several names the CLI prints one JSON object.  Anything else on
-        # stdout (a stray banner, JSON that is not an object) is a lookup
-        # failure like every other:  AppTokenError, never a bare ValueError
-        # (a 400 bad_request) or AttributeError (a 500), and the message
-        # carries the names only, never the output.
-        for stdout in (b"warning: a newer release is available\n", b"[]", b'"SENTINEL_OUT"'):
-            calls = []
-            source = self._source(stdout=stdout, calls=calls)
-            with self.assertRaises(AppTokenError, msg=stdout) as ctx:
-                source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
-            self.assertIn("GH_APP_X_ID", str(ctx.exception))
-            self.assertNotIn("newer release", str(ctx.exception))
-            self.assertNotIn("SENTINEL_OUT", str(ctx.exception))
-            self.assertEqual(len(calls), 1)
+    def test_a_bad_folder_path_is_refused(self):
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
-    def test_path_guard_matches_the_cli_rules(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        for bad in (
-            "github-apps",
-            "",
-            "/github apps",
-            "/github-apps/../linear",
-            "/github-apps/..",
-            "/github-apps\n",
-        ):
-            with self.assertRaises(AppTokenError, msg=bad):
-                FleetSecretsSource(path=bad)
-        FleetSecretsSource(path="/github-apps")  # the real folder stays accepted
-
-    def test_empty_value_is_refused(self):
-        from git_relay.app_tokens import AppTokenError
-
-        source = self._source(stdout=b"  \n")
         with self.assertRaises(AppTokenError):
-            source.secret("GH_APP_X_ID")
+            InfisicalSource(path="github-apps")
+        with self.assertRaises(AppTokenError):
+            InfisicalSource(path="/../etc")
+        # The real folder stays accepted.
+        InfisicalSource(path="/github-apps")
 
-    def test_secret_value_never_appears_in_errors(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+    def test_an_absent_name_is_remembered_and_never_re_asked(self):
+        from git_relay.app_tokens import AppTokenError
 
-        def runner(argv, capture_output, timeout):
-            return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"backend detail")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            with self.assertRaises(AppTokenError):
+                source.secret("GH_APP_MISSING_ID")
+            with self.assertRaises(AppTokenError):
+                source.secret("GH_APP_MISSING_ID")
+        reads = [call for call in self.client.calls if call[0] == "project"]
+        self.assertEqual(len(reads), 1)
 
-        try:
-            FleetSecretsSource(runner=runner).secret("GH_APP_X_ID")
-        except AppTokenError as exc:
-            self.assertNotIn("backend detail", str(exc))
-        else:
-            self.fail("expected AppTokenError")
+    def test_the_credential_file_is_the_only_token_source(self):
+        from git_relay.app_tokens import AppTokenError
 
-
-class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
-    """The relay parses the fleet-secrets CLI's stdout and stderr, so these
-    tests run the real CLI (scripts/fleet_secrets/cli.py, in this repository)
-    in-process with a fake folder in place of the Infisical export:  a
-    wording change in the CLI fails here instead of silently sending every
-    exit 3 through the first-name fallback."""
-
-    FOLDER = {"GH_APP_X_ID": "7", "GH_APP_X_PRIVATE_KEY": "pem"}
-
-    def _source(self, calls):
-        from git_relay.app_tokens import FleetSecretsSource
-
-        scripts = str(pathlib.Path(__file__).resolve().parents[3] / "scripts")
-        sys.path.insert(0, scripts)
-        try:
-            from fleet_secrets import cli, core
-        finally:
-            sys.path.remove(scripts)
-
-        def fake_export(path, env, project_name=None, token=None, *, allow_session=False):
-            self.assertIs(allow_session, False)
-            return dict(self.FOLDER)
-
-        def runner(argv, capture_output, timeout):
-            calls.append(argv)
-            out, err = io.StringIO(), io.StringIO()
-            with (
-                unittest.mock.patch.object(core, "fetch_all", fake_export),
-                unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
-            ):
-                code = cli.main(argv[1:], env={}, out=out, err=err)
-            return subprocess.CompletedProcess(
-                argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(
+                environ=dict(self.ENV, INFISICAL_TOKEN="st.ambient-must-not-be-used"),
+                credential_file=self._credential_file(tmp),
             )
+            source.secret("GH_APP_SWU_ECHO_ID")
+        scopes = [call for call in self.client.calls if call[0] == "scopes"]
+        self.assertNotIn("ambient-must-not-be-used", scopes[0][1])
+        self.assertTrue(scopes[0][1].startswith("st."))
 
-        return FleetSecretsSource(runner=runner)
-
-    def test_a_pair_reads_through_the_real_cli(self):
-        calls = []
-        source = self._source(calls)
-        self.assertEqual(
-            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"]),
-            {"GH_APP_X_ID": "7", "GH_APP_X_PRIVATE_KEY": "pem"},
-        )
-        self.assertEqual(len(calls), 1)
-
-    def test_only_the_names_the_real_cli_lists_are_remembered_absent(self):
+    def test_an_unreadable_credential_file_is_refused(self):
         from git_relay.app_tokens import AppTokenError
 
-        calls = []
-        source = self._source(calls)
-        with self.assertRaises(AppTokenError) as ctx:
-            source.secrets(["GH_APP_X_ID", "GH_APP_X_ID_OLD"])
-        # The fallback would blame GH_APP_X_ID, the first name:  this only
-        # passes when the CLI's own exit-3 line was parsed.
-        self.assertIn("GH_APP_X_ID_OLD", str(ctx.exception))
-        self.assertEqual(source.secret("GH_APP_X_ID"), "7")
-        with self.assertRaises(AppTokenError):
-            source.secret("GH_APP_X_ID_OLD")
-        self.assertEqual(len(calls), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=os.path.join(tmp, "absent"))
+            with self.assertRaises(AppTokenError) as ctx:
+                source.secret("GH_APP_SWU_ECHO_ID")
+        self.assertIn("unreadable", str(ctx.exception))
 
-    def test_a_real_usage_error_surfaces_one_line(self):
+    def test_an_empty_credential_file_is_refused(self):
         from git_relay.app_tokens import AppTokenError
 
-        source = self._source([])
-        with self.assertRaises(AppTokenError) as ctx:
-            source.secret("GH-APP-X-ID")  # not a valid key name:  the CLI exits 2
-        self.assertIn("bad key name", str(ctx.exception))
-        self.assertNotIn("usage:", str(ctx.exception))
-        self.assertNotIn("\n", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "token")
+            open(path, "w", encoding="utf-8").close()
+            source = self._source(credential_file=path)
+            with self.assertRaises(AppTokenError) as ctx:
+                source.secret("GH_APP_SWU_ECHO_ID")
+        self.assertIn("empty", str(ctx.exception))
+
+    def test_a_store_failure_names_the_key_and_no_backend_detail(self):
+        from git_relay.app_tokens import AppTokenError
+
+        client = FakeInfisicalClient(fail="backend detail:  the-host said no")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(client, credential_file=self._credential_file(tmp))
+            with self.assertRaises(AppTokenError) as ctx:
+                source.secret("GH_APP_X_ID")
+        self.assertNotIn("backend detail", str(ctx.exception))
+        self.assertIn("GH_APP_X_ID", str(ctx.exception))
+
+    def test_the_verified_route_checks_the_row_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            self.assertEqual(source.verified_secret("GH_APP_SWU_ECHO_ID"), "42")
+        verified = [call for call in self.client.calls if call[0] == "verified"]
+        self.assertEqual(verified[0][1], "GH_APP_SWU_ECHO_ID")
+        self.assertEqual(verified[0][2], "/github-apps")
+
+    def test_an_absent_verified_name_is_refused(self):
+        from git_relay.app_tokens import AppTokenError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            with self.assertRaises(AppTokenError):
+                source.verified_secret("GH_APP_MISSING_ID")
+
+    def test_an_unusable_name_is_refused_before_any_request(self):
+        from git_relay.app_tokens import AppTokenError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._source(credential_file=self._credential_file(tmp))
+            with self.assertRaises(AppTokenError):
+                source.verified_secret("GH-APP-X-ID")
+        self.assertEqual([call for call in self.client.calls if call[0] == "verified"], [])
+
+    def test_a_missing_client_is_a_startup_error_not_a_fallback(self):
+        from git_relay.app_tokens import AppTokenError, load_infisical_client
+
+        with unittest.mock.patch.dict(os.environ, {"GIT_RELAY_INFISICAL_CLIENT": "/absent/x.py"}):
+            with unittest.mock.patch("git_relay.app_tokens._CLIENT", None):
+                with self.assertRaises(AppTokenError):
+                    load_infisical_client()
 
 
 class TestGithubErrorSplit(unittest.TestCase):
@@ -2060,31 +1921,40 @@ class TestAppTokenErrorMapped(unittest.TestCase):
                 logged = fh.read()
             self.assertIn("unavailable", logged)
 
-    def test_unreadable_fleet_secrets_output_is_503_not_400(self):
-        from git_relay.app_tokens import AppTokenMinter, FleetSecretsSource
+    def test_an_unreadable_store_answer_is_503_not_400(self):
+        from git_relay.app_tokens import AppTokenMinter, InfisicalSource
 
-        # The real minter and source, with only the CLI faked:  stdout that is
-        # not the JSON object a pair read prints must answer like every other
-        # fleet-secrets failure (503, audited "unavailable"), not as the seat's
-        # bad request.
-        def runner(argv, capture_output, timeout):
-            return subprocess.CompletedProcess(argv, 0, stdout=b"not json\n", stderr=b"")
+        # The real minter and source, with only the store faked:  a failed
+        # read must answer like every other credential failure (503, audited
+        # "unavailable"), not as the seat's bad request.
+        client = FakeInfisicalClient(fail="the store refused")
 
         def api(method, path, bearer, payload=None):
             raise AssertionError("no GitHub call may follow a failed secrets read")
 
         with tempfile.TemporaryDirectory() as tmp:
+            creds = os.path.join(tmp, "apps-token")
+            with open(creds, "w", encoding="utf-8") as handle:
+                handle.write("scoped-token\n")
             relay = Relay(
                 SeatPolicy(APP_SEATS_JSON),
                 StubClient(),
                 AuditLog(os.path.join(tmp, "a.jsonl")),
                 app_minter=AppTokenMinter(
-                    FleetSecretsSource(runner=runner), api, signer=lambda *a: "JWT"
+                    InfisicalSource(
+                        client=client,
+                        credential_file=creds,
+                        environ={"INFISICAL_FLEET_OPS_PROJECT_ID": "project-uuid"},
+                    ),
+                    api,
+                    signer=lambda *a: "JWT",
                 ),
             )
             status, body = relay.handle(SEAT_TOKEN, "merge_pr", {"repo": "example/x", "number": 1})
             self.assertEqual(status, 503)
-            self.assertIn("unreadable output", body["error"])
+            # The message names the variable and never a value.
+            self.assertIn("GH_APP_SWU_ECHO_ID", body["error"])
+            self.assertNotIn("the store refused", body["error"])
             with open(os.path.join(tmp, "a.jsonl")) as fh:
                 rows = [json.loads(line) for line in fh]
             self.assertEqual(rows[-1]["result"], "unavailable")
@@ -2732,11 +2602,11 @@ class LegacyStateAdoption(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         captured = {}
-        real_source = app_tokens.FleetSecretsSource
+        real_source = app_tokens.InfisicalSource
 
         def fake_source(**kwargs):
             captured.update(kwargs)
-            source = real_source(runner=lambda *a, **k: None, **kwargs)
+            source = real_source(client=FakeInfisicalClient(), **kwargs)
             source.verified_secret = unittest.mock.Mock(return_value="20000")
             return source
 
@@ -2744,9 +2614,9 @@ class LegacyStateAdoption(unittest.TestCase):
         with (
             self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"),
             unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+                server, "_require_infisical_client", return_value=object()
             ),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
         ):
             os.chdir(directory)
             try:
@@ -2768,7 +2638,7 @@ class LegacyStateAdoption(unittest.TestCase):
         with (
             self._app_mint_env(GIT_RELAY_SECRETS_PATH=""),
             unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+                server, "_require_infisical_client", return_value=object()
             ),
         ):
             os.chdir(directory)
@@ -2781,8 +2651,8 @@ class LegacyStateAdoption(unittest.TestCase):
 
 
 class TestOwnerTokenFromCli(unittest.TestCase):
-    """The open_pr owner token comes ONLY from `fleet-secrets get-verified`
-    at /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
+    """The open_pr owner token comes ONLY from the shared client's verified
+    read at /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
 
     def _fake_source(self, captured, value=None, error=None):
         def factory(**kwargs):
@@ -2813,7 +2683,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 clear=True,
             ),
             unittest.mock.patch.object(
-                app_tokens, "FleetSecretsSource", self._fake_source(captured, "cli-value")
+                app_tokens, "InfisicalSource", self._fake_source(captured, "cli-value")
             ),
         ):
             self.assertEqual(server._owner_token_from_cli(), "cli-value")
@@ -2832,7 +2702,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 clear=True,
             ),
             unittest.mock.patch.object(
-                app_tokens, "FleetSecretsSource", self._fake_source(captured, "v")
+                app_tokens, "InfisicalSource", self._fake_source(captured, "v")
             ),
         ):
             server._owner_token_from_cli()
@@ -2850,7 +2720,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
             ),
             unittest.mock.patch.object(
                 app_tokens,
-                "FleetSecretsSource",
+                "InfisicalSource",
                 self._fake_source(
                     captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
                 ),
@@ -2863,129 +2733,91 @@ class TestOwnerTokenFromCli(unittest.TestCase):
 
 
 class TestVerifiedSecret(unittest.TestCase):
-    def _source(self, result=None, raises=None, **kwargs):
-        from git_relay.app_tokens import FleetSecretsSource
+    """The relay's verified read goes through the shared client and carries
+    only its own scoped token."""
 
-        captured = {}
+    def _source(self, values=None, scopes=("/git-relay-owner",), **kwargs):
+        from git_relay.app_tokens import InfisicalSource
 
-        def runner(argv, **run_kwargs):
-            captured["argv"] = list(argv)
-            captured["run_kwargs"] = run_kwargs
-            if raises is not None:
-                raise raises
-            return result
+        client = FakeInfisicalClient(
+            values={"GITHUB_TOKEN": "v"} if values is None else values, scopes=scopes
+        )
+        kwargs.setdefault("path", "/git-relay-owner")
+        kwargs.setdefault(
+            "environ",
+            {
+                "INFISICAL_FLEET_OPS_PROJECT_ID": "project-uuid",
+                "INFISICAL_TOKEN": "scoped-token",
+            },
+        )
+        return InfisicalSource(client=client, **kwargs), client
 
-        return FleetSecretsSource(runner=runner, **kwargs), captured
-
-    def _result(self, code=0, stdout=b"v\n", stderr=b""):
-        return subprocess.CompletedProcess(["x"], code, stdout, stderr)
-
-    def test_uses_the_get_verified_command_at_the_source_folder(self):
-        source, captured = self._source(result=self._result())
+    def test_uses_the_verified_route_at_the_source_folder(self):
+        source, client = self._source(path="/git-relay-owner")
         self.assertEqual(source.verified_secret("GITHUB_TOKEN"), "v")
-        self.assertEqual(captured["argv"][0:2], ["fleet-secrets", "get-verified"])
-        self.assertEqual(captured["argv"][2], "GITHUB_TOKEN")
-        self.assertIn("--path", captured["argv"])
-        # transitional mode: no env= kwarg, the legacy call shape is byte-identical
-        self.assertNotIn("env", captured["run_kwargs"])
+        verified = [call for call in client.calls if call[0] == "verified"]
+        self.assertEqual(verified[0][1], "GITHUB_TOKEN")
+        self.assertEqual(verified[0][2], "/git-relay-owner")
 
     def test_absent_is_remembered_and_other_failures_are_not(self):
         from git_relay.app_tokens import AppTokenError
 
-        source, _ = self._source(result=self._result(code=3))
+        source, _ = self._source(values={})
         with self.assertRaises(AppTokenError) as ctx:
             source.verified_secret("MISSING")
         self.assertIn("MISSING", str(ctx.exception))
         self.assertIn("MISSING", source._missing)
 
-        source, _ = self._source(result=self._result(code=1))
-        with self.assertRaises(AppTokenError):
-            source.verified_secret("OTHER")
-        with self.assertRaises(AppTokenError):
-            source.verified_secret("OTHER")  # not cached absent: raises, no retry state
+    def test_the_credential_file_is_the_only_token_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            creds = os.path.join(tmp, "owner-token")
+            with open(creds, "w", encoding="utf-8") as handle:
+                handle.write("scoped-token\n")
+            source, client = self._source(
+                path="/git-relay-owner",
+                credential_file=creds,
+                environ={
+                    "PATH": "/usr/bin",
+                    "HOME": "/home/x",
+                    "INFISICAL_FLEET_OPS_PROJECT_ID": "project-uuid",
+                    "INFISICAL_TOKEN": "ambient-must-not-leak",
+                    "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
+                },
+            )
+            source.verified_secret("GITHUB_TOKEN")
+        scopes = [call for call in client.calls if call[0] == "scopes"]
+        self.assertEqual(scopes[0][1], "scoped-token")
+        self.assertNotIn("ambient-must-not-leak", scopes[0][1])
 
-    def test_empty_stdout_is_an_error_not_a_value(self):
+    def test_an_unreadable_credential_file_fails_closed(self):
         from git_relay.app_tokens import AppTokenError
 
-        source, _ = self._source(result=self._result(code=0, stdout=b"\n"))
-        with self.assertRaises(AppTokenError):
-            source.verified_secret("EMPTY")
-
-    def test_credential_file_scopes_the_child_environment(self):
-        from git_relay.app_tokens import FleetSecretsSource
-
-        directory = pathlib.Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, directory, True)
-        creds = directory / "owner-token"
-        creds.write_text("scoped-token\n", encoding="utf-8")
-
-        captured = {}
-
-        def runner(argv, **run_kwargs):
-            captured.update(run_kwargs)
-            return self._result()
-
-        environ = {
-            "PATH": "/usr/bin",
-            "HOME": "/home/x",
-            "INFISICAL_FLEET_OPS_PROJECT_ID": "project-uuid",
-            "INFISICAL_TOKEN": "ambient-must-not-leak",
-            "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
-        }
-        source = FleetSecretsSource(
-            runner=runner,
-            path="/git-relay-owner",
-            credential_file=str(creds),
-            environ=environ,
-        )
-        source.verified_secret("GITHUB_TOKEN")
-        child = captured["env"]
-        self.assertEqual(child["INFISICAL_TOKEN"], "scoped-token")
-        self.assertEqual(child["PATH"], "/usr/bin")
-        self.assertEqual(child["INFISICAL_ENVIRONMENT"], "prod")
-        self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
-        self.assertNotIn("ENVIRONMENT", child)
-        self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
-        self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
-
-    def test_unreadable_credential_file_fails_closed(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
-
-        source = FleetSecretsSource(
-            runner=lambda *a, **k: None,
-            path="/git-relay-owner",
-            credential_file="/nonexistent/credential",
+        source, _ = self._source(
+            path="/git-relay-owner", credential_file="/nonexistent/credential"
         )
         with self.assertRaises(AppTokenError) as ctx:
             source.verified_secret("GITHUB_TOKEN")
         self.assertNotIn("credential-value", str(ctx.exception))
 
-    def test_scoped_env_applies_to_app_key_reads_too(self):
-        from git_relay.app_tokens import FleetSecretsSource
-
-        directory = pathlib.Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, directory, True)
-        creds = directory / "apps-token"
-        creds.write_text("apps-scoped\n", encoding="utf-8")
-
-        captured = {}
-
-        def runner(argv, **run_kwargs):
-            captured.update(run_kwargs)
-            return self._result(stdout=b'{"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}')
-
-        source = FleetSecretsSource(
-            runner=runner,
-            credential_file=str(creds),
-            environ={"PATH": "/usr/bin", "INFISICAL_FLEET_OPS_PROJECT_ID": "uuid"},
-        )
-        source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
-        self.assertEqual(captured["env"]["INFISICAL_TOKEN"], "apps-scoped")
+    def test_the_scoped_read_applies_to_app_key_reads_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            creds = os.path.join(tmp, "apps-token")
+            with open(creds, "w", encoding="utf-8") as handle:
+                handle.write("apps-scoped\n")
+            source, client = self._source(
+                values={"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"},
+                scopes=("/github-apps",),
+                path="/github-apps",
+                credential_file=creds,
+                environ={"PATH": "/usr/bin", "INFISICAL_FLEET_OPS_PROJECT_ID": "uuid"},
+            )
+            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
+        scopes = [call for call in client.calls if call[0] == "scopes"]
+        self.assertEqual(scopes[0][1], "apps-scoped")
 
 
 class TestProductionCredentialBinding(unittest.TestCase):
-    """from_env's production entry binds every fleet-secrets source to its
+    """from_env's production entry binds every store source to its
     credential file and fails closed otherwise - the class-level
     credential_file=None shape is unreachable from production wiring."""
 
@@ -3066,9 +2898,9 @@ class TestProductionCredentialBinding(unittest.TestCase):
                 GIT_RELAY_VERIFY_URL="https://sync.example/gr-internal/verify-bearer",
             ),
             unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+                server, "_require_infisical_client", return_value=object()
             ),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
             unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40),
         ):
             server.from_env()
@@ -3094,7 +2926,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
         with (
             self._env(CREDENTIALS_DIRECTORY=str(directory)),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
         ):
             server.from_env()
         self.assertEqual(captured.get("path"), "/git-relay-owner")
@@ -3102,8 +2934,8 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 
 class TestScopedChildProjectBinding(unittest.TestCase):
-    """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.simple-tools file resolution."""
+    """The scoped read must carry the SUPPORTED Infisical variable names and
+    cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())
@@ -3113,10 +2945,10 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         return str(creds)
 
     def test_missing_project_binding_fails_closed_naming_the_variable(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
-        source = FleetSecretsSource(
-            runner=lambda *a, **k: None,
+        source = InfisicalSource(
+            client=FakeInfisicalClient(),
             path="/git-relay-owner",
             credential_file=self._creds(),
             environ={"PATH": "/usr/bin", "HOME": "/home/x"},
@@ -3126,10 +2958,10 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         self.assertIn("INFISICAL_FLEET_OPS_PROJECT_ID", str(ctx.exception))
 
     def test_blank_project_binding_is_missing(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
-        source = FleetSecretsSource(
-            runner=lambda *a, **k: None,
+        source = InfisicalSource(
+            client=FakeInfisicalClient(),
             path="/git-relay-owner",
             credential_file=self._creds(),
             environ={"PATH": "/usr/bin", "INFISICAL_FLEET_OPS_PROJECT_ID": "  "},

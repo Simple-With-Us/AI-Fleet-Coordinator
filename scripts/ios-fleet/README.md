@@ -32,7 +32,7 @@ hand-maintained sheet is exactly why it never converged.
 `https://docs.google.com/spreadsheets/d/1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY/edit`
 
 Strictly private.  Service account `fleet-sheets-sync@jay-wedgeworth.iam.gserviceaccount.com`,
-key in Infisical Fleet-OPS `/google-sheets-sa` (`GOOGLE_SHEETS_SA`, read with `fleet-secrets get`).  Never make it public and never query it anonymously.
+key in Infisical Fleet-OPS `/google-sheets-sa` (`GOOGLE_SHEETS_SA`, read through the consumer's own scoped service token).  Never make it public and never query it anonymously.
 
 Runs from an AI-Fleet-Coordinator lane at origin/main (never from a stale copy; an old copy
 rolled the sheet back before):
@@ -87,7 +87,7 @@ Two rules the copy must keep:
    pushed meanwhile is kept); the branch is only reset when it has nothing the default branch
    lacks.  An app both sides changed differently stops the run for a human.  The schema is
    unchanged (`updatedAt` stays top-level).
-4. **The credential is `GH_TOKEN` (the fleet GH_PAT) or `fleet-secrets get GH_PAT`.**  A bare
+4. **The credential is `GH_TOKEN` (the fleet GH_PAT) or a scoped Infisical read of GH_PAT.**  A bare
    `gh` login is never used.  A failure to arm auto-merge exits non-zero.
 
 ## Why the rules block is generated

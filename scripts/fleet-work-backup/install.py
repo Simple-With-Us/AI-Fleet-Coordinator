@@ -11,7 +11,7 @@ What it does, from a checkout of AI-Fleet-Coordinator:
   1. copies fleet_work_backup.py to ~/apps/fleet-work-backup/ (a replaced copy is kept as
      <file>.bak-fwb-<stamp>);
   2. checks the prerequisites and prints what is missing:  restic, the four credential NAMES in
-     fleet-secrets or the environment (names only, never values), the interpreter, gitleaks (optional), and,
+     the secret store or the environment (names only, never values), the interpreter, gitleaks (optional), and,
      with read-only B2 calls, that the key is limited to the bucket and the fleet-work-backup/ prefix,
      holds no admin capability, and that a lifecycle rule deletes hidden versions there;
   3. copies scripts/launchd/com.jay.fleet-work-backup.plist to ~/Library/LaunchAgents/ and boots it
@@ -53,6 +53,10 @@ LABEL = "com.jay.fleet-work-backup"
 DEFAULT_INTERPRETER = "/usr/bin/python3"
 SCRIPT_SRC = os.path.join(HERE, "fleet_work_backup.py")
 SCRIPT_DST = os.path.join(HOME, "apps", "fleet-work-backup", "fleet_work_backup.py")
+# The shared scoped Infisical client the job reads its credentials with:  it is copied
+# beside the job,  so the job imports it by path and holds no other credential source.
+CLIENT_SRC = os.path.join(os.path.dirname(HERE), "fleet_infisical.py")
+CLIENT_DST = os.path.join(HOME, "apps", "fleet-work-backup", "fleet_infisical.py")
 PLIST_SRC = os.path.join(os.path.dirname(HERE), "launchd", f"{LABEL}.plist")
 PLIST_DST = os.path.join(HOME, "Library", "LaunchAgents", f"{LABEL}.plist")
 
@@ -152,7 +156,7 @@ def prerequisites(
         missing.append(f"interpreter {interpreter} (Python 3.9 or later)")
     env, names = fwb.restic_env(cfg)
     if env is None:
-        missing.append("credentials in fleet-secrets or the environment: " + ", ".join(names))
+        missing.append("credentials in the secret store or the environment: " + ", ".join(names))
     else:
         say("credentials: all four names are set (values not shown)")
         probs = fwb.check_b2_setup(cfg)
@@ -255,6 +259,7 @@ def main() -> int:
         return 1
     fwb = load_module()
     copy(SCRIPT_SRC, SCRIPT_DST, 0o755, a.dry_run)
+    copy(CLIENT_SRC, CLIENT_DST, 0o644, a.dry_run)
     hard: list[str] = []
     missing = prerequisites(fwb, a.interpreter, a.install_restic, a.dry_run, hard)
     if a.check_repo:

@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import cursor_chat_surfaces as ccs
+import fleet_infisical
 
 
 class GithubUrlTests(unittest.TestCase):
@@ -133,11 +134,11 @@ class LoadApiKeyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_api = os.environ.pop("CURSOR_API_KEY", None)
         self.old_sync = os.environ.pop("CURSOR_SYNC_API_KEY", None)
-        self.old_fleet_secrets = ccs._fleet_secrets_key
-        ccs._fleet_secrets_key = lambda: None  # never shell out to a real fleet-secrets
+        self.old_infisical_key = ccs._infisical_key
+        ccs._infisical_key = lambda: None  # never reach the real store or Infisical
 
     def tearDown(self) -> None:
-        ccs._fleet_secrets_key = self.old_fleet_secrets
+        ccs._infisical_key = self.old_infisical_key
         for name, old in (
             ("CURSOR_API_KEY", self.old_api),
             ("CURSOR_SYNC_API_KEY", self.old_sync),
@@ -155,34 +156,24 @@ class LoadApiKeyTests(unittest.TestCase):
         os.environ["CURSOR_SYNC_API_KEY"] = "cursor_sync_test_key"
         self.assertEqual(ccs.load_api_key(), "cursor_sync_test_key")
 
-    def test_fleet_secrets_fallback(self) -> None:
-        ccs._fleet_secrets_key = lambda: "from_fleet_secrets"
-        self.assertEqual(ccs.load_api_key(), "from_fleet_secrets")
+    def test_the_scoped_read_is_the_fallback(self) -> None:
+        ccs._infisical_key = lambda: "from_the_scoped_read"
+        self.assertEqual(ccs.load_api_key(), "from_the_scoped_read")
 
-    def test_fleet_secrets_command(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fleet-secrets"
-            fake.write_text(
-                '#!/bin/sh\n[ "$1" = get ] && [ "$2" = CURSOR_SYNC_API_KEY ] && printf from_command && exit 0\nexit 3\n',
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            old_bin = ccs.FLEET_SECRETS_BIN
-            ccs.FLEET_SECRETS_BIN = fake
-            try:
-                with mock.patch.object(ccs.shutil, "which", return_value=None):
-                    self.assertEqual(self.old_fleet_secrets(), "from_command")
-            finally:
-                ccs.FLEET_SECRETS_BIN = old_bin
+    def test_the_scoped_read_asks_for_the_two_cursor_names(self) -> None:
+        asked = []
 
-    def test_fleet_secrets_missing_command(self) -> None:
-        old_bin = ccs.FLEET_SECRETS_BIN
-        ccs.FLEET_SECRETS_BIN = Path("/nonexistent/fleet-secrets")
-        try:
-            with mock.patch.object(ccs.shutil, "which", return_value=None):
-                self.assertIsNone(self.old_fleet_secrets())
-        finally:
-            ccs.FLEET_SECRETS_BIN = old_bin
+        def read(name, folder, account, env=None):
+            asked.append((name, folder, account))
+            return ("from_the_scoped_read", "ok")
+
+        with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+            self.assertEqual(self.old_infisical_key(), "from_the_scoped_read")
+        self.assertEqual(asked, [("CURSOR_API_KEY", "/", "cursor-surfaces-ro")])
+
+    def test_a_refused_scoped_read_yields_no_key(self) -> None:
+        with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):
+            self.assertIsNone(self.old_infisical_key())
 
 
 class SaveJsonTests(unittest.TestCase):

@@ -18,7 +18,7 @@ from unittest import mock
 
 from fleet_rag import mirror, mirror_install, nightly_job
 from fleet_rag.mirror import MirrorError
-from fleet_secrets.core import SecretsError
+from fleet_infisical import SecretsError
 
 TOKEN = "st." + ("a" * 24)
 SECRET = "ghp_" + ("b" * 36)

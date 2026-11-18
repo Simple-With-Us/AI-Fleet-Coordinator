@@ -56,9 +56,9 @@ class CleanEnvironmentTests(unittest.TestCase):
         patcher = mock.patch.object(core, "http_json", self.http)
         patcher.start()
         self.addCleanup(patcher.stop)
-        no_bin = mock.patch.object(core, "_fleet_secrets_bin", lambda: None)
-        no_bin.start()
-        self.addCleanup(no_bin.stop)
+        no_binding = mock.patch.object(core, "read_token_binding", lambda: None)
+        no_binding.start()
+        self.addCleanup(no_binding.stop)
 
     def env(self, **extra: str) -> dict[str, str]:
         return {**BYO, "FLEET_RAG_HANDOFF_FILE": str(self.absent), **extra}
@@ -78,7 +78,7 @@ class CleanEnvironmentTests(unittest.TestCase):
 
     def test_complete_environment_ignores_unrelated_generic_service_token(self) -> None:
         with (mock.patch.dict(os.environ, self.env(INFISICAL_TOKEN="st." + "x" * 32), clear=True),
-              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("unexpected fetch"))):
+              mock.patch.object(core, "infisical_many", side_effect=AssertionError("unexpected fetch"))):
             cfg = core.load_config()
         self.assertEqual({key: cfg[key] for key in BYO}, BYO)
         self.assertEqual(self.http.calls, [])
@@ -115,66 +115,37 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.http.calls, [])
 
 
-FAKE_FLEET_SECRETS = """#!/bin/sh
-# Stands in for `fleet-secrets run -- python -c PICK names...`: runs the child with a fake env.
-[ "$1" = run ] || exit 2
-shift; [ "$1" = -- ] && shift
-TEI_URL=https://tei.example.invalid TEI_API_KEY=fake-tei QDRANT_URL=https://q.example.invalid \\
-QDRANT_FLEET_COLLECTION=fake-coll exec "$@"
-"""
-
-
-class FleetSecretsFallbackTests(unittest.TestCase):
-    """The Mac path:  env first, then the `fleet-secrets` command, never the flat file."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.bin = pathlib.Path(self.tmp.name) / "fleet-secrets"
-        self.bin.write_text(FAKE_FLEET_SECRETS)
-        self.bin.chmod(0o755)
+class ScopedReaderFallbackTests(unittest.TestCase):
+    """The Mac path:  env first, then the reader's own scoped service token."""
 
     def test_many_returns_only_present_names(self) -> None:
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-            got = core.fleet_secrets_many(["TEI_URL", "NOT_THERE"])
+        found = {"TEI_URL": "https://tei.example.invalid"}
+        with mock.patch.object(core, "infisical_fetch", return_value=found):
+            got = core.infisical_many(["TEI_URL", "NOT_THERE"])
         self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
 
-    def test_identity_falls_back_to_fleet_secrets_get(self) -> None:
-        self.bin.write_text(
-            "#!/bin/sh\n"
-            '[ "$1" = get ] || exit 2\n'
-            'case "$2" in\n'
-            "  INFISICAL_SHARED_CLIENT_ID) printf cid-fs ;;\n"
-            "  INFISICAL_SHARED_CLIENT_SECRET) printf placeholder-fs ;;\n"
-            "  *) exit 3 ;;\n"
-            "esac\n"
-        )
+    def test_identity_never_falls_back_to_another_reader(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-                self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
-                self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
+            self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
+            self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
 
-    def test_identity_environment_beats_fleet_secrets(self) -> None:
+    def test_identity_environment_beats_the_reader(self) -> None:
         env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"),
-        ):
+        with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
-    def test_missing_binary_is_just_absent(self) -> None:
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: None):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
-            self.assertIsNone(core.fleet_secret("TEI_URL"))
+    def test_missing_binding_is_just_absent(self) -> None:
+        with mock.patch.object(core, "infisical_fetch", side_effect=core.FleetRagError("no token")):
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
+            self.assertIsNone(core.infisical_secret("TEI_URL"))
 
-    def test_failing_binary_is_just_absent(self) -> None:
-        self.bin.write_text("#!/bin/sh\nexit 4\n")
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+    def test_failing_read_is_just_absent(self) -> None:
+        with mock.patch.object(core, "infisical_fetch", side_effect=core.FleetRagError("boom")):
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
 
     def test_missing_config_does_not_borrow_a_foreign_project_loader(self) -> None:
         with (mock.patch.dict(os.environ, {"QDRANT_API_KEY": "k"}, clear=True),
-              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("foreign fallback"))):
+              mock.patch.object(core, "infisical_many", side_effect=AssertionError("foreign fallback"))):
             with self.assertRaises(core.FleetRagError):
                 core.load_config()
 
@@ -242,7 +213,7 @@ class OverrideTests(unittest.TestCase):
     def test_login_and_fetch_use_the_overridden_infisical(self) -> None:
         seen: list[str] = []
 
-        from fleet_secrets import core as secrets
+        import fleet_infisical as secrets
 
         def fake_api(method, path, token, body, env, **kwargs):
             seen.append(path)
