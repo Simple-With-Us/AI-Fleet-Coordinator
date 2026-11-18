@@ -76,8 +76,8 @@ the server holds 52 wakes, and not one of them was delivered.  That count is a 
 result and not a claim, so it comes with the command that produced it:  the bridge's own
 receipt ledger on the server, `/home/jay/.local/state/zc-wake/wakes.jsonl`, read with
 `python3 -c "import json;rows=[json.loads(l) for l in open('/home/jay/.local/state/zc-wake/wakes.jsonl') if l.strip()];ids=[r.get('wake_id') for r in rows];print(json.dumps({'lines':len(rows),'distinct':len(set(ids)),'delivered_true':sum(1 for r in rows if r.get('delivered') is True),'delivered_false':sum(1 for r in rows if r.get('delivered') is False),'delivered_null':sum(1 for r in rows if r.get('delivered') is None)}))"`, which on Nov 17, 2026 answered
-`{"lines": 83, "distinct": 52, "delivered_true": 0, "delivered_false": 31, "delivered_null": 52}`:  the 83 rows are 52 routing rows and 31 final rows, and not one row
-records a delivery.  The bridge's path is not the
+`{"lines": 83, "distinct": 52, "delivered_true": 0, "delivered_false": 31, "delivered_null": 52}`:  the 83 rows are 52 routing rows and 31 finalized rows for the
+wakes the bridge attempted, and not one row records a delivery.  The bridge's path is not the
 module's path:  the bridge resumes the session with its own command template and never
 checks the directory the session reports, while the module runs the CLI with the
 workspace the deployment names and refuses a session whose recorded directory differs
@@ -148,24 +148,25 @@ cutover that does not work never leaves the seat without a route.
     name carries the router's front today, so the write is what moves the seat back and not a
     read of what the name holds.  That write has one named route, and it is not
     `fleet-secrets set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
-    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins/<SEAT>`,
-    and the writer writes the Fleet-OPS project, so `fleet-secrets set ZC_ROUTINE_URL --path
-    /zulip` exits 2 on the allowlist and could not reach this project anyway.  The write goes
-    through the Infisical CLI against the AI Fleet Coordinator project
-    (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), environment `prod` (the only one), folder
-    `/zulip`, name `ZC_ROUTINE_URL`, type `shared`:  `infisical secrets set
-    'ZC_ROUTINE_URL=@<0600 value file>' --path /zulip --projectId
-    9bf7417a-fbbb-42ca-870c-2b45207233f5 --env prod --type shared --silent`, with the value
-    read from a 0600 file and never in an argument or a log, and the file deleted afterwards.
-    The credential for it is a scoped Infisical service token for exactly that project,
-    environment and folder with write access, minted under the `service-tokens` skill (one
-    project, one environment, one folder, read-write, an expiry, and a row in the
-    service-token registry) and bound as `INFISICAL_TOKEN` for the command, never as an
-    argument;  an operator's own Infisical login session is the same command with their own
-    credential.  That route was exercised on Nov 17, 2026 with the value the name already
-    held, and the CLI answered "SECRET VALUE UNCHANGED" with exit 0 and the name read back
-    unchanged, so the project, the folder, the name, the type and the command shape are all
-    confirmed.  Both names
+    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins`, and the
+    writer writes the Fleet-OPS project, so `fleet-secrets set ZC_ROUTINE_URL --path /zulip`
+    exits 2 on the allowlist and could not reach this project anyway.  The write goes through
+    the approved scoped Infisical consumer for that setting:  one service token whose grant
+    is exactly the AI Fleet Coordinator project, `prod`, `/zulip`, with write permission, and
+    the grant is proved from the token's own metadata before anything is written.  The write
+    itself is the Infisical raw write for that name in that folder with the token as the
+    bearer, the value read from a 0600 file and never in an argument, a log or a transcript,
+    and the file deleted afterwards.  The project's id is not written down here, because this
+    repository is public:  it is resolved at runtime from
+    `INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID` or the first line of
+    `~/.simple-tools/ai-fleet-coordinator-project-id`, and a run with neither stops and names
+    that variable.  The token is minted under the `service-tokens` skill, one project, one
+    environment, one folder, read-write, an expiry, and a row in the service-token registry,
+    and it lives in the consumer's own store;  an operator's Infisical login session is not
+    that route and is refused for writes.  The route was exercised on Nov 17, 2026:  the
+    scoped token's own metadata proved the project, the environment, the folder and the write
+    permission, a write with the value the name already held answered HTTP 200, the name
+    read back unchanged through the approved reader, and the value file was deleted.  Both names
     are the seat's own, so the settings-edit path writes that routine, and the daemon picks it
     up on the reload that write ends with.  The sample has to come back with it:  the sample
     still carries the router's binding for this seat, so the next apply would move the seat
@@ -224,9 +225,10 @@ made explicit.
 - `scripts/zc-wake-bridge`  the receiver, the dedupe, the target resolution and the delivery
   executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only
   secret), `config.json` (the delivery switch and command template), `seen.json`,
-  `wakes.jsonl` (the receipt ledger:  a routing row per wake, plus a final row per delivered
-  wake, so count distinct `wake_id` values and not lines).  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
-  hand, the same code the POST path runs.
+  `wakes.jsonl` (the receipt ledger:  a routing row per wake, plus a finalized receipt row
+  per wake the bridge attempted, with `delivered` true or false;  count distinct `wake_id`
+  values and not lines).  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery
+  by hand, the same code the POST path runs.
 - `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
   registry env file (`~/.local/bin/operator-registry-env`) itself (the letter hooks no longer read it:  they get the same
   settings from the host's `~/.local/bin/platform-letter` wrapper, which sources an env script in shell), binds the
