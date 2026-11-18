@@ -39,7 +39,25 @@ FILES = (
     "fleet_docs/snapshot.py",
 )
 # The first shared runtime shipped this exact closure before Docs was added.
-LEGACY_FILES = FILES[:15]
+# Named explicitly:  deriving it positionally lets any middle-of-list addition move the
+# boundary and break existing-bundle recognition on hosts that hold the original set.
+LEGACY_FILES = (
+    "code-main-keeper.sh",
+    "fleet_lanes/__init__.py",
+    "fleet_lanes/code_main_sync.py",
+    "fleet_lanes/code_mirror_credentials.py",
+    "fleet_lanes/placement.py",
+    "fleet_lanes/placement-exceptions.json",
+    "fleet_knobs/__init__.py",
+    "fleet_knobs/knobs.py",
+    "fleet_knobs/lkg.py",
+    "fleet_knobs/registry.py",
+    "fleet_knobs/registry.json",
+    "fleet_knobs/source.py",
+    "fleet_knobs/values.py",
+    "fleet_secrets/__init__.py",
+    "fleet_secrets/core.py",
+)
 
 
 def _real_parents(path):
