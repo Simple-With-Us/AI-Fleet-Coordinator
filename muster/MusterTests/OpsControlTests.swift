@@ -799,6 +799,7 @@ final class OpsWireContractTests: XCTestCase {
                 set: ["seat.CLAUDE.enabled": .bool(false)],
                 expectPlanSHA256: String(repeating: "b", count: 64)
             ))
+        case "testWake": return OperatorWakeTarget(word: target).map { .testWake($0) }
         default: return nil
         }
     }

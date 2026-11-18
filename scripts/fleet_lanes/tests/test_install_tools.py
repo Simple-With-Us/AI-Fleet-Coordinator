@@ -7226,5 +7226,154 @@ class ClaudeFileGuardInstallTests(World):
         self.assertTrue(T.is_claude_file_hook("'/s p/claude-file-guard-hook'"))
 
 
+class ZcodeSeatTests(World):
+    """Z Code has no settings env block,  so the seat is declared in the hook command itself (AFC-813).
+
+    Without the seat the file guard has no trusted seat and refuses every lane write,  so the installer
+    writes the command with the seat in it and never strips it again.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed_platforms()
+
+    def zcode_groups(self) -> list:
+        return self.load("zcode")["hooks"]["events"]["PreToolUse"]
+
+    def zcode_file_groups(self) -> list:
+        return [
+            g
+            for g in self.zcode_groups()
+            if any(T.is_claude_file_hook(h.get("command")) for h in g.get("hooks") or ())
+        ]
+
+    def test_the_shell_command_carries_the_seat(self) -> None:
+        self.install(("zcode",))
+        shell = [g for g in self.zcode_groups() if g.get("matcher") == "Bash"]
+        self.assertEqual(len(shell), 1)
+        command = shell[0]["hooks"][0]["command"]
+        self.assertEqual(command, T.hook_command(self.paths, "claude", "ZC"))
+        self.assertTrue(command.startswith(T.seat_prefix("ZC")), command)
+        self.assertIn("AGENT_TAG:-ZC", command)
+
+    def test_the_file_guard_group_carries_the_seat(self) -> None:
+        self.install(("zcode",))
+        groups = self.zcode_file_groups()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["matcher"], T.ZCODE_FILE_MATCHER)
+        command = groups[0]["hooks"][0]["command"]
+        self.assertEqual(command, T.zcode_file_hook_command(self.paths, "ZC"))
+        self.assertTrue(command.startswith(T.seat_prefix("ZC")), command)
+        self.assertIn("AGENT_TAG:-ZC", command)
+
+    def test_a_command_without_the_seat_is_updated_and_then_stable(self) -> None:
+        self.install(("zcode",))
+        doc = self.load("zcode")
+        prefix = T.seat_prefix("ZC")
+        for group in doc["hooks"]["events"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                hook["command"] = hook["command"].replace(prefix, "")
+        write_json(self.config("zcode"), doc)
+        plan = T.plan_platform(T.PLATFORMS["zcode"], self.paths)
+        self.assertEqual(plan.action, "update")
+        r = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "updated", r)
+        for group in self.zcode_groups():
+            for hook in group["hooks"]:
+                if T.is_ours(hook.get("command")) or T.is_claude_file_hook(hook.get("command")):
+                    self.assertTrue(hook["command"].startswith(prefix), hook["command"])
+        again = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(again.status, "unchanged", again)
+
+    def test_a_missing_file_group_is_added(self) -> None:
+        self.install(("zcode",))
+        doc = self.load("zcode")
+        doc["hooks"]["events"]["PreToolUse"] = [
+            g for g in doc["hooks"]["events"]["PreToolUse"] if g not in self.zcode_file_groups()
+        ]
+        write_json(self.config("zcode"), doc)
+        self.assertFails(self.verify("zcode"), "no claude-file-guard-hook hook")
+        plan = T.plan_platform(T.PLATFORMS["zcode"], self.paths)
+        self.assertEqual(plan.action, "add")
+        r = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "added", r)
+        self.assertEqual(len(self.zcode_file_groups()), 1)
+
+    def test_verify_runs_the_file_probes_and_they_pass(self) -> None:
+        self.install(("zcode",))
+        checks = self.verify("zcode")
+        self.assertAllPass(checks)
+        names = {c.name for c in checks}
+        self.assertIn("file-guard", names)
+
+    def test_a_stale_file_command_fails_verify(self) -> None:
+        self.install(("zcode",))
+        doc = self.load("zcode")
+        for group in doc["hooks"]["events"]["PreToolUse"]:
+            for hook in group["hooks"]:
+                if T.is_claude_file_hook(hook.get("command")):
+                    hook["command"] = "/bin/true # claude-file-guard-hook"
+        write_json(self.config("zcode"), doc)
+        self.assertFails(self.verify("zcode"), "Read/probe-placeholder/deny")
+
+    def test_a_malformed_third_party_group_is_skipped_and_reported(self) -> None:
+        """A group the fleet does not own must not block the fleet's own hook (Kody on #2279)."""
+        self.install(("zcode",))
+        doc = self.load("zcode")
+        groups = doc["hooks"]["events"]["PreToolUse"]
+        groups.insert(0, {"matcher": "Read", "hooks": "not-a-list"})
+        groups.append("not-an-object")
+        write_json(self.config("zcode"), doc)
+        plan = T.plan_platform(T.PLATFORMS["zcode"], self.paths)
+        self.assertNotEqual(plan.action, "refuse")
+        checks = self.verify("zcode")
+        self.assertIn("unreadable groups", {c.name for c in checks})
+        self.assertEqual(
+            T.zcode_unreadable_groups(doc),
+            ["hooks.events.PreToolUse[0].hooks", "hooks.events.PreToolUse[4]"],
+        )
+
+    def test_the_seat_in_the_command_is_a_default_the_session_beats(self) -> None:
+        """The prefix must not override a seat the session already declares (Kody on #2279)."""
+        prefix = T.seat_prefix("ZC")
+        cases = (
+            ({}, "ZC"),
+            ({"AGENT_SEAT": "CLAUDE"}, "CLAUDE"),
+            ({"AGENT_TAG": "CODEX"}, "CODEX"),
+            ({"AGENT_LAUNCH_SEAT": "GROK"}, "GROK"),
+            ({"AGENT_SEAT": "CLAUDE", "AGENT_TAG": "CODEX"}, "CLAUDE"),
+        )
+        for env, want in cases:
+            with self.subTest(env=env):
+                child_env = os.environ.copy()
+                for key in ("AGENT_SEAT", "AGENT_TAG", "AGENT_LAUNCH_SEAT", "AGENT_LAUNCHER"):
+                    child_env.pop(key, None)
+                child_env.update(env)
+                out = subprocess.run(
+                    ["/bin/sh", "-c", prefix + " sh -c 'printf %s \"$AGENT_SEAT\"'"],
+                    capture_output=True,
+                    text=True,
+                    env=child_env,
+                    timeout=30,
+                )
+                self.assertEqual(out.stdout, want)
+
+    def test_the_merge_never_touches_another_hook(self) -> None:
+        doc = {
+            "hooks": {
+                "events": {
+                    "PreToolUse": [
+                        {"matcher": "Read", "hooks": [{"type": "command", "command": "x"}]}
+                    ]
+                }
+            }
+        }
+        new, action, _notes = T.merge_zcode_files(doc, "/s/claude-file-guard-hook")
+        self.assertEqual(action, "added")
+        self.assertTrue(T._is_extension(doc, new))
+        self.assertEqual(new["hooks"]["events"]["PreToolUse"][0], doc["hooks"]["events"]["PreToolUse"][0])
+
+
+
 if __name__ == "__main__":
     unittest.main()
