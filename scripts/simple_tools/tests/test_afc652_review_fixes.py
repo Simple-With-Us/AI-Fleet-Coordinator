@@ -12,6 +12,7 @@ Three sentry findings, one test each:
 """
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
 
@@ -20,21 +21,26 @@ from simple_tools import live as L
 from simple_tools import router as R
 from simple_tools import wakes as W
 from simple_tools.tests.test_chat_fanout import FakeCatalog, cloud
+from simple_tools.tests.listener_harness import fake_watcher
 from simple_tools.tests.test_daemon import DaemonHarness, MENTION
 
 ST_URL = "https://github.com/example-org/Socratic-Trade"
 
 
 class RequeuedTriggerSurvivesInboxDedupeTests(DaemonHarness):
+    # A capture seat hands the mention to its wake-capable session (a seat with a routine never
+    # hands a mention to a session, at route time or at wake time).
+    default_wake = "inbox"
+
     def test_a_requeued_trigger_survives_dedupe_and_its_replay_still_dedupes(self) -> None:
+        self.write_config(rewake=True)
         daemon = self.started()
+        self.write_lease("late", last_prompt=10.0)
+        self.addCleanup(os.close, fake_watcher(self.seat_paths(), "late"))
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.clock.advance(25)
-        daemon.tick()
-        self.write_lease("late", topics=[("simple-tools", "t")])
-        daemon.run_jobs("CLAUDE")
+        self.pump_until(daemon, lambda: len(self.live_items("late")) >= 1)
         self.assertEqual([i["id"] for i in self.live_items("late")], [mid])
+        self.assertEqual([(r["id"], r["delivered_to"]) for r in self.inbox()], [(mid, "late")])
 
         runner = daemon.seats["CLAUDE"]
         items = L.release(self.seat_paths(), "late", field="released")
