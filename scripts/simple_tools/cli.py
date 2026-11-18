@@ -3031,7 +3031,7 @@ REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
-REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read", "show")
 REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit")
 REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 
@@ -3520,6 +3520,11 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
+        elif cmd == "show":
+            #  One message by id with its whole body:  the hosted topic and search reads are
+            #  compact by design, and a wake's standing rule is "open the message and read all
+            #  of it", so remote show always asks the hosted read for the full lossless payload.
+            tool, targs = "zulip_get_message", {"message_id": args.id, "full": True}
         elif cmd == "search":
             targs = {"limit": args.limit}
             words = list(getattr(args, "words", None) or [])

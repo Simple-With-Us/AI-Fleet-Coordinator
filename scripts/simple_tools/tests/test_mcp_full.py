@@ -156,6 +156,23 @@ class FullZulipToolTests(McpHarness):
         self.assertEqual(self.assert_structured("zulip_delete_message", session.call("zulip_delete_message", {"message_id": mine})),
                          {"id": mine, "deleted": True})
 
+    def test_get_message_full_is_lossless_past_the_page_cap(self):
+        #  Compact stays at the compact cap;  full on ONE message must be lossless even past
+        #  the 4000-character list cap (AFC-756's contract:  the cap bounds list pages, not a
+        #  single read), so a seat told to read a wake's message in whole gets the whole body.
+        session = self.session()
+        filler = "The router delivered this wake to the exact thread and recorded the receipt. " * 85
+        long_body = filler + "UNIQUETAIL9"
+        theirs = self.fake.add_message("Codex", "simple-tools", "t", long_body)
+        self.assertGreater(len(long_body), T.LP.FULL_ZULIP_BODY_LIMIT)
+        compact = self.assert_fence(session.call("zulip_get_message", {"message_id": theirs})["content"][0]["text"])[0]
+        self.assertTrue(compact["truncated"])
+        self.assertNotIn("UNIQUETAIL9", compact["body"])
+        got = session.call("zulip_get_message", {"message_id": theirs, "full": True})
+        item = self.assert_fence(got["content"][0]["text"])[0]
+        self.assertFalse(item["truncated"])
+        self.assertIn("UNIQUETAIL9", item["body"])
+
     def test_move_resolve_unresolve_unreact_and_flags(self):
         session = self.session()
         a = self.fake.add_message("Codex", "simple-tools", "old", "a")
