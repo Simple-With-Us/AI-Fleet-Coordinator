@@ -35,10 +35,12 @@ then the topic's words in a chat's title;  then recency.  A tie within a step go
 recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
 recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
 and an unreadable registry do not deliver.  `no-live-session` is a bounded retry, because a chat
-may register before `max_attempts` runs out;  a registry that could not be read is not counted
-against the wake's attempts at all, because the registry may come back long after `max_attempts`
-would have been spent, and it is bounded by `max_age_seconds` alone.  An answer that is not an
-answer is malformed data rather than an outage, so it keeps the bounded attempts.  The receiving chat
+may register before `max_attempts` runs out;  a registry that could not be read, on a host that is
+configured to reach it, is not counted against the wake's attempts at all, because the registry may
+come back long after `max_attempts` would have been spent, and it is bounded by `max_age_seconds`
+alone.  An answer that is not an answer is malformed data rather than an outage, so it keeps the
+bounded attempts, and so does a host with no registry address or key, which is a deployment fault
+and not an outage.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
