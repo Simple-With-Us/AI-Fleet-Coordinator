@@ -67,7 +67,6 @@ class InstallerTests(unittest.TestCase):
             "muster_approval.py",
             "fleet_infisical.py",
             "fleet_infisical_cli.py",
-            "fleet_infisical_cli.py",
             "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
