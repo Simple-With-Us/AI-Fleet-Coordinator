@@ -86,7 +86,7 @@ function loadServiceAccount() {
   return JSON.parse(raw);
 }
 
-async function getGoogleAccessToken() {
+export async function getGoogleAccessToken() {
   const sa = loadServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const signingInput = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(
@@ -107,8 +107,16 @@ async function getGoogleAccessToken() {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}: ${redactForError(JSON.stringify(data))}`);
+  // Read the body once, as text, so a non-JSON error page still reports its
+  // HTTP status instead of dying in res.json() with the status lost.
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}: ${redactForError(text)}`);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Google OAuth error: HTTP ${res.status}: token response was not JSON`);
+  }
   // Shape-check before use, the way operator_sheets_google.mjs validates its
   // token response:  an unexpected body must fail here, not downstream as an
   // auth header.  (This drain runs under bare node with no zod available.)

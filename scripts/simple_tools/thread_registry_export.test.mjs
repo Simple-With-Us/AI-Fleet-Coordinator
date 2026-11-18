@@ -3,7 +3,8 @@
 // redacted, and a non-JSON error body must never mask the original failure.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeSheetsAdapter, redactForError } from "./thread_registry_export.mjs";
+import crypto from "node:crypto";
+import { getGoogleAccessToken, makeSheetsAdapter, redactForError } from "./thread_registry_export.mjs";
 
 function fakeResponse(status, body, { textThrows = false } = {}) {
   return {
@@ -77,4 +78,26 @@ test("a body stream failure still throws the status-only error", async () => {
       return true;
     });
   } finally { globalThis.fetch = saved; }
+});
+
+test("token endpoint non-JSON 502 names the status and leaks no body secrets", async () => {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const private_key = privateKey.export({ type: "pkcs8", format: "pem" });
+  const savedEnv = process.env.OPERATOR_GOOGLE_SHEETS_SA;
+  process.env.OPERATOR_GOOGLE_SHEETS_SA = JSON.stringify({
+    client_email: "t@example.iam.gserviceaccount.com", private_key,
+  });
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => fakeResponse(502, '<html>Bad Gateway</html> {"access_token": "ya29.SUPERSECRETVALUE123"}');
+  try {
+    await assert.rejects(getGoogleAccessToken(), (err) => {
+      assert.match(err.message, /Google OAuth error: HTTP 502/);
+      assert.ok(!err.message.includes("SUPERSECRETVALUE123"), "error leaked body credential");
+      return true;
+    });
+  } finally {
+    globalThis.fetch = saved;
+    if (savedEnv === undefined) delete process.env.OPERATOR_GOOGLE_SHEETS_SA;
+    else process.env.OPERATOR_GOOGLE_SHEETS_SA = savedEnv;
+  }
 });
