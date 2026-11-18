@@ -10,7 +10,7 @@ from pathlib import Path
 
 BASE = {
     "scripts/simple-git": "7c375cbe1b13c836b382871e05f63a4ceb5590a3d967912ddc000ec42a873a92",
-    "scripts/git-tools/git": "8b8cc9d0b1e0b1f58d82d024deaa96edb5fd470f990b321ed3e2051a0c06ff2e",
+    "scripts/git-tools/git": "fb1b0b85d5d8f8ae1551c74a6813ff6bd7fbc8d9d2dd40b12a6939a5748266e6",
     "scripts/git-tools/catalog.json": "a92812f6893791957552246167fe6f46baaf198f73f0d5be427f668ce05971ea",
     "scripts/git-tools/export_catalog.py": "727f0e66aee78660c01cb9d36e5861a547fd2d962664e54f1397e9d4d57ceed9",
     "scripts/simple_tools/secretscan.py": "f29d222d0d6af9726b93c268134cf4fe4c84af10a60da9460250aef9892c253c",
@@ -22,7 +22,7 @@ INPUTS = {
 RESULTS = dict(
     BASE,
     **{
-        "scripts/git-tools/git": "a9b33dd4edd3a71e19eed164416f275da86b9127d50b75e42fa07e45b445f297",
+        "scripts/git-tools/git": "67462bec3257b5179634007658c5f9d18485055c50507f1419e80849adff29fd",
         "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
     },
 )
@@ -164,7 +164,7 @@ def build(baseline, inputs, destination):
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic_write(path, data, 0o755 if name in ("scripts/simple-git", impl) else 0o644)
     manifest = {
-        "baseline": "0fac2e8417218ff8791da9d699b66de0770bddca",
+        "baseline": "f17794b5008cb7052f243f35a7da751dd1d11fe1",
         "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
         "activation_performed": False,
         "files": RESULTS,
