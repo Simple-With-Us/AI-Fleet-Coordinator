@@ -6646,10 +6646,11 @@ class PauseTests(Base):
     EMAIL = "someone@" + "example.invalid"
 
     def status(self, pause=None):
+        # The listener publishes its pause file as read:  `{}` when nothing is paused.
         return {
             "updated": NOW,
             "seats": {"CLAUDE": {"connected": True}, "CODEX": {"connected": True}},
-            "pause": pause,
+            "pause": {} if pause is None else pause,
         }
 
     def entry(self, wakes_only=False, by="cli"):
@@ -6752,6 +6753,8 @@ class PauseTests(Base):
         reader = PauseReader([self.status()])
         code, answer = self.go("pause-wakes", "server", reader=reader)
         self.assertEqual((code, answer["ok"], answer["errorCode"]), (1, False, "not_confirmed"))
+        # It may still land, so it is not a failure:  Muster reads it as "may or may not have run".
+        self.assertEqual(answer["result"], "unknown")
         self.assertEqual(len(reader.runs), 1)
         self.assertEqual(len(self.audit_rows()), 1)
         # A pause of the other kind is not the asked-for change either.
@@ -6767,23 +6770,25 @@ class PauseTests(Base):
         self.assertEqual(answer["pause"], {"all": None, "seats": {}})
 
     def test_a_failed_command_says_why_in_code_words_only(self):
-        for status, stderr, over, code_word in (
-            (2, b"usage: simple-chat daemon pause", False, "usage"),
-            (127, b"", False, "docker_unavailable"),
-            (124, b"", False, "timeout"),
-            (0, b"", True, "too_large"),
+        for status, stderr, over, code_word, result in (
+            (2, b"usage: simple-chat daemon pause", False, "usage", "failed"),
+            (127, b"", False, "docker_unavailable", "failed"),
+            # A timeout stops only the docker client, so its outcome is not known.
+            (124, b"", False, "timeout", "unknown"),
+            (0, b"", True, "too_large", "failed"),
             (
                 1,
                 b"Error response from daemon: container eavesdropper is not running",
                 False,
                 "container_not_running",
+                "failed",
             ),
         ):
             with self.subTest(code_word=code_word):
                 reader = PauseReader([self.status()], status=status, stderr=stderr, over=over)
                 code, answer = self.go("pause", "server", reader=reader)
                 self.assertEqual(
-                    (code, answer["result"], answer["errorCode"]), (1, "failed", code_word)
+                    (code, answer["result"], answer["errorCode"]), (1, result, code_word)
                 )
                 self.assertNotIn("usage: simple-chat", json.dumps(answer))
 
@@ -6804,16 +6809,76 @@ class PauseTests(Base):
         # A timeout the status never confirms keeps its own code and keeps the pause it read.
         reader = PauseReader([before], status=124)
         code, answer = self.go("pause-wakes", "server", reader=reader)
-        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", "timeout"))
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "timeout"))
         self.assertIn("may still take effect", answer["detail"])
         self.assertEqual(answer["pause"], {"all": None, "seats": {}})
 
     def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
         reader = PauseReader([self.status()], raise_on_run=True)
         code, answer = self.go("pause", "server", reader=reader)
-        self.assertEqual((code, answer["errorCode"]), (1, "pause_failed"))
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed"))
         self.assertNotIn("reader broke", json.dumps(answer))
         self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_a_drain_window_refuses_every_pause_verb(self):
+        # `daemon pause` would replace the `*` marker and `daemon resume` would clear it, and the
+        # drain's restore puts back its saved bytes over any other change.
+        drain = dict(self.entry(wakes_only=True, by="drain"), defer=True)
+        for verb, target, pause in (
+            ("pause", "server", {"*": drain}),
+            ("pause-wakes", "CLAUDE", {"*": drain}),
+            ("resume", "server", {"*": drain, "CLAUDE": self.entry()}),
+            ("resume", "CLAUDE", {"*": drain, "CLAUDE": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(verb=verb, target=target, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go(verb, target, mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer["errorCode"]), (2, "refused", "drain_active")
+                    )
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_wakes_only_pause_never_loosens_a_full_one(self):
+        for target, pause in (("CLAUDE", {"CLAUDE": self.entry()}), ("server", {"*": self.entry()})):
+            with self.subTest(target=target):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause-wakes", target, mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+                self.assertEqual(reader.runs, [])
+        # Tightening, repeating a wakes-only pause, and a seat's own pause under a fleet-wide one
+        # all plan as usual.
+        for verb, target, pause in (
+            ("pause", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"*": self.entry()}),
+        ):
+            with self.subTest(verb=verb, pause=pause):
+                code, answer = self.go(verb, target, mode="--plan", reader=PauseReader([self.status(pause)]))
+                self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_the_checks_run_again_under_the_lock(self):
+        # The plan saw nothing paused;  by the run a full pause is in force, so nothing runs.
+        reader = PauseReader([self.status(), self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("pause-wakes", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+        self.assertEqual(reader.runs, [])
+
+    def test_a_pause_it_cannot_read_is_never_read_as_no_pause(self):
+        for pause in (
+            "paused",
+            {"*": "yes"},
+            {"*": {"wakes_only": "yes", "by": "cli", "ts": NOW}},
+            {"claude": self.entry()},
+        ):
+            with self.subTest(pause=pause):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "pause_unreadable"))
+        status = self.status()
+        status["seats"] = ["CLAUDE"]
+        code, answer = self.go("pause", "CLAUDE", mode="--plan", reader=PauseReader([status]))
+        self.assertEqual((code, answer["errorCode"]), (2, "status_unavailable"))
 
     def test_the_ssh_gate_accepts_the_three_verbs_with_one_target_only(self):
         for line in (

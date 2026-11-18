@@ -54,11 +54,15 @@ struct OperatorPauseEntry: Decodable, Equatable {
         since = container.optionalText(.since, limit: 40)
     }
 
-    /// The pause in plain words, for one target.
+    /// The pause in plain words, for one target.  A pause whose kind was not reported says so, and
+    /// is never shown as the stronger full pause.
     func sentence(for name: String) -> String {
-        var line = wakesOnly == true
-            ? "\(name): wakes are paused, and live interrupts and capture go on"
-            : "\(name): wakes and live interrupts are paused, and capture goes on"
+        var line: String
+        switch wakesOnly {
+        case true?: line = "\(name): wakes are paused, and live interrupts and capture go on"
+        case false?: line = "\(name): wakes and live interrupts are paused, and capture goes on"
+        case nil: line = "\(name): paused, and whether live interrupts stop too is not reported"
+        }
         if let setBy { line += ", set by \(setBy)" }
         if let since { line += ", since \(since)" }
         return line + "."
@@ -81,10 +85,14 @@ struct OperatorPauseState: Decodable, Equatable {
         self.seats = seats
     }
 
+    /// Strict for the two parts it reads:  an `all` that is not an object (or null), or `seats`
+    /// that is not a map of objects, throws, so a malformed pause is shown as unreadable (the
+    /// answer's `pause` is nil) and never as "Nothing is paused."  Other keys are left for later
+    /// fields, as the helper's answers add them.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        all = container.optionalField(OperatorPauseEntry.self, .all)
-        let raw = (try? container.decodeIfPresent([String: OperatorPauseEntry].self, forKey: .seats)) ?? [:]
+        all = try container.decodeIfPresent(OperatorPauseEntry.self, forKey: .all)
+        let raw = try container.decodeIfPresent([String: OperatorPauseEntry].self, forKey: .seats) ?? [:]
         var seats: [String: OperatorPauseEntry] = [:]
         for key in raw.keys.sorted() where OpsCommandBuilder.isSeatName(key) && seats.count < 64 {
             seats[key] = raw[key]

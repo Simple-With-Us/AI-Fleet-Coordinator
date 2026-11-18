@@ -1578,7 +1578,9 @@ struct OpsOutcome: Equatable {
                 case .resume:
                     return "Resumed.\(gap)The Eavesdropper's status shows the pause lifted."
                 }
-            case .failed where errorCode == "not_confirmed":
+            // The helper answers `unknown` when the change may still land:  the command ran and the
+            // status did not show it in time.
+            case .unknown where errorCode == "not_confirmed":
                 return "The command ran, but the Eavesdropper's status did not show the change in time.\(gap)Refresh the panel before you run it again."
             default:
                 break
@@ -1656,6 +1658,12 @@ struct OpsOutcome: Equatable {
             return "The Eavesdropper's status lists no such seat, so nothing changed.\(gap)Refresh the panel and pick a seat it serves."
         case "status_unavailable":
             return "The server could not read the Eavesdropper's status, so it could not confirm the target and changed nothing."
+        case "pause_unreadable":
+            return "The server could not read the pause in force from the Eavesdropper's status, so it changed nothing.\(gap)Check the Eavesdropper on the server before you try again."
+        case "drain_active":
+            return "A drain window is in force on the Eavesdropper, so nothing changed.\(gap)Only the drain procedure's own restore lifts it (docs/protocols/listener-drain.md)."
+        case "would_loosen":
+            return "A full pause is already in force there, and a wakes-only pause would let live interrupts through again, so nothing changed."
         case "not_paused":
             return "There is no pause on that target to lift, so nothing changed.\(gap)A seat's resume lifts only that seat's own pause."
         case "not_confirmed":

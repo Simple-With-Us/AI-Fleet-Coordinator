@@ -67,6 +67,24 @@ final class OperatorPauseTests: XCTestCase {
         XCTAssertEqual(clear.lines, ["Nothing is paused."])
     }
 
+    /// A malformed pause is unreadable, never "Nothing is paused.", and a pause whose kind was not
+    /// reported is never shown as a full one.
+    func test_a_malformed_pause_is_unreadable_and_an_unreported_kind_is_said_so() throws {
+        for json in [#"{"all": null, "seats": ["CODEX"]}"#, #"{"all": "yes", "seats": {}}"#,
+                     #"{"all": null, "seats": {"CODEX": "paused"}}"#] {
+            XCTAssertThrowsError(try JSONDecoder().decode(OperatorPauseState.self, from: Data(json.utf8)), json)
+        }
+        let unreported = OperatorPauseEntry(wakesOnly: nil, setBy: nil, since: nil).sentence(for: "CODEX")
+        XCTAssertEqual(unreported, "CODEX: paused, and whether live interrupts stop too is not reported.")
+        // The answer's `pause` is then nil:  the sheet shows no block rather than an empty one.
+        let action = OpsAction.eavesdropperPause(OperatorPauseRequest(kind: .pause, seat: nil))
+        let plan = try parse([
+            "ok": true, "verb": "server pause", "target": "server", "result": "planned", "detail": "x",
+            "pause": ["all": NSNull(), "seats": ["CODEX"]],
+        ], exit: 0, mode: .plan, action: action)
+        XCTAssertNil(plan.pause)
+    }
+
     func test_a_plan_shows_the_pause_in_force_and_an_answer_for_another_verb_does_not() throws {
         let action = OpsAction.eavesdropperPause(OperatorPauseRequest(kind: .pause, seat: nil))
         var answer: [String: Any] = [
@@ -90,15 +108,24 @@ final class OperatorPauseTests: XCTestCase {
         ], exit: 0, mode: .yes, action: action)
         XCTAssertEqual(done.resultTitle(for: action), "Paused.\(gap)The Eavesdropper's status shows it, and capture goes on.")
         let unconfirmed = try parse([
-            "ok": false, "verb": "server pause-wakes", "target": "CLAUDE", "result": "failed",
+            "ok": false, "verb": "server pause-wakes", "target": "CLAUDE", "result": "unknown",
             "detail": "x", "errorCode": "not_confirmed",
         ], exit: 1, mode: .yes, action: action)
         XCTAssertTrue(unconfirmed.resultTitle(for: action).hasPrefix("The command ran, but the Eavesdropper's status did not show the change"))
+        XCTAssertTrue(unconfirmed.runNotKnown)
+        // A timeout is not known either:  it reads as "may or may not have run", never as failed.
+        let timedOut = try parse([
+            "ok": false, "verb": "server pause-wakes", "target": "CLAUDE", "result": "unknown",
+            "detail": "x", "errorCode": "timeout",
+        ], exit: 1, mode: .yes, action: action)
+        XCTAssertEqual(timedOut.kind, .unknown)
+        XCTAssertTrue(timedOut.resultTitle(for: action).hasPrefix("This may or may not have run"))
     }
 
     func test_every_code_the_pause_verbs_answer_has_advice() throws {
         let action = OpsAction.eavesdropperPause(OperatorPauseRequest(kind: .resume, seat: "CLAUDE"))
         for code in ["seat_unknown", "status_unavailable", "not_paused", "not_confirmed", "pause_failed",
+                     "pause_unreadable", "drain_active", "would_loosen",
                      "usage", "docker_unavailable", "container_not_running", "read_failed", "timeout",
                      "too_large"] {
             let outcome = try parse([

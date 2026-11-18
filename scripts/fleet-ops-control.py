@@ -689,6 +689,14 @@ PAUSE_ERRORS = {
     "seat_unknown": "the Eavesdropper's status lists no such seat",
     "status_unavailable": "the Eavesdropper's status could not be read, so the target is not confirmed",
     "not_paused": "that target has no pause to lift",
+    "pause_unreadable": "the pause in force could not be read from the Eavesdropper's status, so nothing runs",
+    # The drain procedure (docs/protocols/listener-drain.md) owns the pause file while its marker is
+    # set:  `daemon pause` and `daemon resume` would replace or clear the marker, and its restore
+    # would put back the bytes it saved over any other change.
+    "drain_active": "a drain window is in force, and only the drain procedure's own restore lifts it",
+    # `daemon pause` replaces the target's entry, so a wakes-only pause over a full one would let
+    # live interrupts through again.
+    "would_loosen": "a full pause is already in force there, and a wakes-only pause would loosen it",
     "not_confirmed": "the command ran, but the Eavesdropper's status did not show the change in time",
     "usage": "the Eavesdropper refused the request",
     "pause_failed": "the pause or resume stopped without an answer this helper could read;  it may have run",
@@ -2890,9 +2898,52 @@ def pause_target(ctx, target):
     if status is None:
         raise Refused(PAUSE_ERRORS["status_unavailable"], error_code="status_unavailable")
     seats = status.get("seats")
-    if seat is not None and (not isinstance(seats, dict) or seat not in seats):
+    if not isinstance(seats, dict):
+        # A seat list in another shape is not an empty one:  the target cannot be confirmed.
+        raise Refused(PAUSE_ERRORS["status_unavailable"], error_code="status_unavailable")
+    if seat is not None and seat not in seats:
         raise Refused(PAUSE_ERRORS["seat_unknown"], error_code="seat_unknown")
     return seat, status
+
+
+def pause_in_force(status):
+    """The reduced pause of a status read (`reduce_pause`), or Refused when it cannot be trusted.
+
+    The status's `pause` is the pause file as the Eavesdropper read it.  Every key must be `*` or a
+    seat, every entry an object whose `wakes_only` is a boolean;  anything else is
+    `pause_unreadable`, never an empty pause.  A drain marker (`defer`) on any entry is
+    `drain_active`."""
+    raw = status.get("pause") if isinstance(status, dict) else None
+    if not isinstance(raw, dict):
+        raise Refused(PAUSE_ERRORS["pause_unreadable"], error_code="pause_unreadable")
+    for key, entry in raw.items():
+        if not (
+            isinstance(key, str)
+            and (key == "*" or PAUSE_SEAT_RE.fullmatch(key))
+            and isinstance(entry, dict)
+            and isinstance(entry.get("wakes_only"), bool)
+        ):
+            raise Refused(PAUSE_ERRORS["pause_unreadable"], error_code="pause_unreadable")
+    if any(entry.get("defer") for entry in raw.values()):
+        raise Refused(PAUSE_ERRORS["drain_active"], error_code="drain_active")
+    return reduce_pause(status)
+
+
+def pause_checks(ctx, verb, target):
+    """(the seat, the reduced pause in force) for a pause verb that may run now, or Refused.
+
+    Run at plan time and again under the action lock:  the target is confirmed, the pause in force
+    is read and trusted (`pause_in_force`), a resume with nothing to lift is refused, and so is a
+    wakes-only pause over a full one, which `daemon pause` would loosen."""
+    seat, status = pause_target(ctx, target)
+    current = pause_in_force(status)
+    if verb == RESUME_VERB and pause_done(RESUME_VERB, seat, current):
+        raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
+    if verb == PAUSE_WAKES_VERB:
+        held = current["all"] if seat is None else current["seats"].get(seat)
+        if held is not None and held["wakesOnly"] is False:
+            raise Refused(PAUSE_ERRORS["would_loosen"], error_code="would_loosen")
+    return seat, current
 
 
 def pause_argv(verb, seat):
@@ -3008,17 +3059,20 @@ def run_pause(ctx, verb, seat):
         if remaining <= 0:
             break
         ctx.sleep(min(PAUSE_CONFIRM_EVERY, remaining))
+    # Neither ending knows whether the change landed:  the command may still finish in the container,
+    # or the status may show it later.  So both are `unknown` (Muster's "may or may not have run"),
+    # never `failed`, and the error code says which.
     if reason == "timeout":
         return {
             "ok": False,
-            "result": "failed",
+            "result": "unknown",
             "detail": PAUSE_UNAVAILABLE["timeout"],
             "errorCode": "timeout",
             "pause": pause,
         }, 1
     return {
         "ok": False,
-        "result": "failed",
+        "result": "unknown",
         "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS['not_confirmed']}",
         "errorCode": "not_confirmed",
         "pause": pause,
@@ -4297,11 +4351,8 @@ def handle(
             if require_approval:
                 raise Refused(f"{action} is not offered on this route")
             _server_only(ctx)
-            seat, status = pause_target(ctx, target)
+            seat, current = pause_checks(ctx, action, target)
             answer["commands"] = [pause_argv(action, seat)]
-            current = reduce_pause(status)
-            if action == RESUME_VERB and pause_done(RESUME_VERB, seat, current):
-                raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
             if mode == "plan":
                 answer.update(
                     ok=True, result="planned", detail=pause_detail(action, seat), pause=current
@@ -4310,9 +4361,9 @@ def handle(
             with contextlib.ExitStack() as held:
                 if not lock_held:
                     held.enter_context(action_lock(ctx))
-                seat, status = pause_target(ctx, target)
-                if action == RESUME_VERB and pause_done(RESUME_VERB, seat, reduce_pause(status)):
-                    raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
+                # The pause file may have changed since the plan (an owner DM, a drain):  every check
+                # runs again here, under the one action lock, just before the command.
+                seat, _current = pause_checks(ctx, action, target)
                 if isinstance(reason_out, dict):
                     reason_out["started"] = True
                 try:
@@ -4321,7 +4372,7 @@ def handle(
                     fields, code = (
                         {
                             "ok": False,
-                            "result": "failed",
+                            "result": "unknown",
                             "detail": PAUSE_ERRORS["pause_failed"],
                             "errorCode": "pause_failed",
                             "pause": None,
