@@ -197,6 +197,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "app/src/security/__tests__/originLock.test.ts",
         "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
     ): frozenset({("assigned secret", 547, 580, 557, 580)}),
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "git-relay/git_relay/server.py",
+        "0b9d5296287c1c3dd5b7d508af8ae2afffb9da83ff03f64a3331ec5f1df01f20",
+    ): frozenset({("assigned secret", 52346, 52389, 52354, 52389)}),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
