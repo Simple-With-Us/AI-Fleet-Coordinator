@@ -661,10 +661,16 @@ class TestAntigravityDeliverLocal(BaseTest):
             return subprocess.CompletedProcess(argv, returncode=127)
 
         with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            # A run past its timeout had started its turn, which may have run (AFC-838):
+            # unknown, so the router neither retries it nor records it as delivered.
             d_time = AGW.deliver_local(
                 self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=timeout_runner
             )
-            self.assertEqual((d_time.outcome, d_time.code), ("refused", "resume-timeout"))
+            self.assertEqual(
+                (d_time.outcome, d_time.route, d_time.code),
+                ("unknown", "resume", "resume-timeout"),
+            )
+            self.assertNotIn("resume-timeout", AGW.NEVER_RAN)
 
             d_os = AGW.deliver_local(
                 self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=oserror_runner
@@ -1016,36 +1022,85 @@ class TestAntigravityResumeOutcome(ResumeBase):
         delivery = self.server(agy(1, *lines))
         self.assertEqual(self.four(delivery), ("refused", "resume", "resume-exit-1", ""))
 
-    def test_only_the_tail_is_read(self) -> None:
+    def test_every_line_is_read_wherever_it_falls(self) -> None:
+        """stderr is read one line at a time as it comes, so a line that names an ending counts
+        however much output follows it, and no whole line is dropped (AFC-838, PR 2320)."""
         cap = AGW.OUTPUT_SCAN_CAP
         filler = ["filler line %06d" % i for i in range((cap + 100) // 19 + 1)]
         self.assertGreater(sum(len(line) + 1 for line in filler), cap + 100)
         mark = SIGNIN_LINES[0]
-        with self.subTest("a sign-in line before the tail"):
-            delivery = self.server(agy(1, mark, *filler))
-            self.assertEqual(self.four(delivery), ("refused", "resume", "resume-exit-1", ""))
-        with self.subTest("a sign-in line in the tail"):
-            delivery = self.server(agy(1, *filler, mark))
-            self.assertEqual(
-                self.four(delivery),
-                ("refused", "resume", "resume-signin-required", "agy-exit-1"),
-            )
-        with self.subTest("a sign-in line the cap cuts"):
-            # The cap starts the read exactly at the mark inside this line:  the cut first line
-            # is dropped, so it is not read as one the CLI began.
-            cut = "x" * 5 + mark
-            rest = "f" * (cap + 4 - len(cut) - 1)
-            self.assertEqual(len(cut) + 1 + len(rest) + 1, cap + 5)
-            delivery = self.server(agy(1, cut, rest))
-            self.assertEqual(self.four(delivery), ("refused", "resume", "resume-exit-1", ""))
-        # Only the cap is kept in memory, however much the CLI writes.
-        tail = AGW._StderrTail(cap)
+        named = ("refused", "resume", "resume-signin-required", "agy-exit-1")
+        with self.subTest("a sign-in line, then more than the cap of other output"):
+            self.assertEqual(self.four(self.server(agy(1, mark, *filler))), named)
+        with self.subTest("a sign-in line at the end"):
+            self.assertEqual(self.four(self.server(agy(1, *filler, mark))), named)
+        with self.subTest("a whole sign-in line that starts exactly one cap from the end"):
+            rest = "f" * (cap - len(mark) - 2)
+            self.assertEqual(len(mark) + 1 + len(rest) + 1, cap)
+            self.assertEqual(self.four(self.server(agy(1, *filler, mark, rest))), named)
+        with self.subTest("a sign-in line, then one unended line longer than the cap"):
+
+            def run(argv, **kwargs):
+                os.write(kwargs["stderr"], (mark + "\n" + "x" * (cap + 10)).encode("ascii"))
+                return subprocess.CompletedProcess(argv, 1)
+
+            self.assertEqual(self.four(self.server(run)), named)
+        with self.subTest("the new-chat warning, then more than the cap of other output"):
+            expected = ("refused", "resume", "resume-new-chat", "agy-exit-0")
+            self.assertEqual(self.four(self.server(agy(0, NEW_CHAT_LINE, *filler))), expected)
+            self.assertEqual(self.four_of(self.mac(agy(0, NEW_CHAT_LINE, *filler))), expected)
+
+    def test_a_line_longer_than_the_cap_names_nothing(self) -> None:
+        """The CLI's own ending lines are short, so a longer line is skipped:  a mark anywhere in
+        it is not read as a line the CLI began or ended with."""
+        cap = AGW.OUTPUT_SCAN_CAP
+        mark = SIGNIN_LINES[0]
+        cases = (
+            (1, "x" * cap + mark),
+            (1, "x" * 5 + mark + "f" * cap),
+            (1, mark + " " + "x" * cap),
+            (3, QUOTA_LINES[0] + " " + "x" * cap),
+        )
+        for returncode, line in cases:
+            with self.subTest(returncode=returncode, start=line[:8]):
+                delivery = self.server(agy(returncode, line))
+                self.assertEqual(
+                    self.four(delivery),
+                    ("refused", "resume", "resume-exit-%d" % returncode, ""),
+                )
+
+    def test_only_the_line_being_read_is_held(self) -> None:
+        cap = AGW.OUTPUT_SCAN_CAP
+        lines = AGW._StderrLines(cap)
         for _ in range(3 * cap // 100 + 1):
-            os.write(tail.write_fd, ("y" * 99 + "\n").encode("ascii"))
-        tail.finish(5.0)
-        self.assertLessEqual(len(tail._buf), cap)
-        self.assertTrue(tail.text())
-        self.assertLessEqual(len(tail.text().encode("utf-8")), cap)
+            os.write(lines.write_fd, ("y" * 99 + "\n").encode("ascii"))
+        for _ in range(3 * cap // 1000 + 1):
+            os.write(lines.write_fd, ("z" * 1000).encode("ascii"))
+        lines.finish(5.0)
+        self.assertTrue(lines._done.is_set())
+        self.assertLessEqual(len(lines._line), cap)
+        self.assertEqual(lines.result(), ("", False))
+        # A line that comes in pieces, with a character split between two of them, is one line:
+        # it names its ending once it is whole, and not before.
+        pieces = AGW._StderrLines(cap)
+        pieces.finish(5.0)
+        raw = "Error: authentication required. Run 'ågy' to log in, then retry.\n"
+        data = raw.encode("utf-8")
+        split = data.index(b"\xc3") + 1
+        with pieces._lock:
+            pieces._feed(data[:split])
+        self.assertEqual(pieces.result(), ("", False))
+        with pieces._lock:
+            pieces._feed(data[split:])
+        self.assertEqual(pieces.result(), (AGW.SIGNIN_REQUIRED, False))
+
+    def test_a_timeout_is_unknown_on_both_hosts(self) -> None:
+        def timeout(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, timeout=900)
+
+        expected = ("unknown", "resume", "resume-timeout", "")
+        self.assertEqual(self.four(self.server(timeout)), expected)
+        self.assertEqual(self.four_of(self.mac(timeout)), expected)
 
     def test_receipt_carries_no_output_text(self) -> None:
         fixtures = (
@@ -1128,7 +1183,7 @@ class TestAntigravityResumeOutcome(ResumeBase):
         # after the short wait, from what was read by then, and the child is never blocked.
         held: list = []
         tails: list = []
-        real_tail = AGW._StderrTail
+        real_tail = AGW._StderrLines
 
         def make_tail(cap):
             tails.append(real_tail(cap))
@@ -1151,7 +1206,7 @@ class TestAntigravityResumeOutcome(ResumeBase):
         self.addCleanup(lambda: [tail._done.wait(10) for tail in tails])
         with (
             mock.patch.object(AGW, "OUTPUT_WAIT_SECONDS", 0.5),
-            mock.patch.object(AGW, "_StderrTail", side_effect=make_tail),
+            mock.patch.object(AGW, "_StderrLines", side_effect=make_tail),
         ):
             started = time.monotonic()
             delivery = self.server(run)
@@ -1197,6 +1252,26 @@ class TestAntigravityEndingsInTheRouter(TWR.Base):
                     self.delivered, [(TWR.SID_A, wake_id), (TWR.SID_A, wake_id + "-next")]
                 )
                 self.assertEqual(self.done(wake_id + "-next")["status"], "delivered")
+
+    def test_a_timeout_is_one_unknown_receipt(self) -> None:
+        """A resume past its timeout may have run its turn (AFC-838, PR 2320):  one final
+        `unknown` receipt with `delivered` null, never run again, and no hold on the chat."""
+        self.registry.rows = [TWR.row(TWR.SID_A, "AA", "Only chat")]
+        self.results = [WR.Delivery("unknown", "resume", code="resume-timeout")]
+        router = self.router()
+        router.never_ran = WR.NEVER_RAN | AGW.NEVER_RAN
+        router.accept(self.wake("w-timeout"))
+        self.drain(router)
+        receipt = self.done("w-timeout")
+        self.assertEqual((receipt["status"], receipt["code"]), ("unknown", "resume-timeout"))
+        self.assertIsNone(receipt["delivered"])
+        self.assertFalse(self.pending("w-timeout").exists())
+        router.accept(self.wake("w-timeout-next"))
+        self.drain(router)
+        self.assertEqual(
+            self.delivered, [(TWR.SID_A, "w-timeout"), (TWR.SID_A, "w-timeout-next")]
+        )
+        self.assertEqual(self.done("w-timeout-next")["status"], "delivered")
 
 
 class TestAntigravityBuilderIntegration(unittest.TestCase):

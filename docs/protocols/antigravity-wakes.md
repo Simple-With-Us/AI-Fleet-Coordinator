@@ -6,6 +6,10 @@ Mac alongside all other platforms.
 
 ## The chain, end to end
 
+This is the AFC-665 bridge's chain, kept as a record.  Neither host runs the bridge (see
+Arming the wake), and AG wakes go through the one wake router (`zulip-wake-routing.md`),
+whose AG delivery is `deliver_local` in `scripts/simple_tools/antigravity_wake.py`.
+
     Zulip tag @AG or DM ag-bot
       -> the listener that holds the seat records the message in the seat inbox
       -> [seat.AG] wake = "http" POSTs simple-tools-wake/1, bearer-signed with AG_ROUTINE_KEY
@@ -31,7 +35,7 @@ after the POST is handled.
   `seen.json` and `delivery.jsonl`.  `ag-wake-bridge deliver --wake-id ... --topic ...` runs one
   delivery by hand using the same code path as the POST handler.
 - `scripts/simple_tools/server/ag-wake-bridge.service`:  the systemd unit template for the server
-  (port 8792).  On the Mac, `ag-wake-bridge serve --bind 127.0.0.1 --port 8792` runs with
+  (port 8792).  On the Mac, `ag-wake-bridge serve --bind 127.0.0.1 --port 8792` ran with
   `target_host` set to `"mac"` in `~/.local/state/ag-wake/config.json`.
 - Registry settings for a hook:  a letter hook is launched with no profile, so `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and
   its key reach it through the host's `~/.local/bin/platform-letter` wrapper, which sources the host's registry env
@@ -45,10 +49,21 @@ after the POST is handled.
 
 ## Arming the wake
 
-**Legacy launch point (AFC-838).**  The bridge and these steps predate the wake router.  The
-bridge's `deliver` (`scripts/ag-wake-bridge`, lines 417-423) starts `agy` with inherited stdin,
-which under launchd or systemd is `/dev/null`, a character device, so it does not have the
-no-browser fix below.  Neither host runs it (read-only checks on Nov 18, 2026, 2:50 to 2:58 AM):
+AG wakes have one path, the wake router, as every platform's do (`zulip-wake-routing.md`,
+and `AGENTS.md`, "One Operator, No Special Seats").  Its `deliver_local` is the launch point
+that has the no-browser fix below, on the server and through the Mac's `simple-chat
+wake-deliver`.  This page has no steps for arming the AFC-665 bridge, and the steps an older
+copy of it listed are not to be run (AFC-838, PR 2320):
+- The bridge's `deliver` (`scripts/ag-wake-bridge`, lines 417-423) starts `agy` with
+  inherited stdin, which under launchd or systemd is `/dev/null`, a character device, so it
+  does not have the fix.
+- The bridge reads its bearer key only from a file (`AG_WAKE_KEY_FILE`, by default
+  `~/.local/state/ag-wake/routine-key`, `scripts/ag-wake-bridge` line 149), so arming it
+  meant copying a secret out of Infisical into that file by hand.  Infisical is the only
+  source of a secret, and a copy is synced from it, never set by hand (`AGENTS.md`,
+  "Infisical sole source of truth").
+
+Neither host runs the bridge (read-only checks on Nov 18, 2026, 2:50 to 2:58 AM):
 - The server has no `ag-wake-bridge` unit among its user or system units, and nothing listens on
   port 8792.
 - The Mac has no AG wake job installed or loaded:  its LaunchAgents and `launchctl list` show
@@ -56,15 +71,6 @@ no-browser fix below.  Neither host runs it (read-only checks on Nov 18, 2026, 
 - The live listener's `[seat.AG]` posts to the wake router (`wake = "http"`, `key_env =
   "WAKE_ROUTER_KEY"`, bearer auth).  The router's AG ledger holds every recent AG wake, delivered
   with route `resume` on the server or `ssh:resume` to the Mac.
-
-The wake router is the one wake path, and its `deliver_local` is the launch point that has the
-fix.  Starting the bridge again would bring back one that does not.
-
-1. Mint `AG_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters) via `fleet-secrets`.
-2. Write the same value to `~/.local/state/ag-wake/routine-key` (mode `0600`).
-3. Configure `~/.local/state/ag-wake/config.json` with `{"delivery_enabled": true, "target_host": "server"}` on the server (or `"target_host": "mac"` on the Mac).
-4. In the listener config, set `[seat.AG]` `wake = "http"`, `url_env = "AG_ROUTINE_URL"` and `key_env = "AG_ROUTINE_KEY"`.
-5. Start `afc-ag-wake-bridge.service` and verify `curl -s http://127.0.0.1:8792/health`.
 
 ## Resuming Without A Browser (AFC-838)
 
@@ -124,15 +130,19 @@ own server (`acp/server`, `serverTurns.StartOAuthProcess`) and `acp/auth`'s loop
 it.  An `agy acp` run with pipes and no terminal can still open a browser, which is what Wise
 saw.  The empty-pipe rule here is not a fix for `scripts/agy-acp-runtime`.
 
-**Reading how a run ended.**  The CLI's stderr goes into a pipe that a thread drains, keeping
-only the last 8192 bytes in memory;  nothing reaches disk.  After `agy` exits the pipe gets 2
-seconds to end;  a process `agy` left holding it is not waited for, and the thread keeps reading
-it, within the cap.  These are the CLI's own lines:  `printmode.run` writes control output to
-`os.Stderr` unless its caller passes a writer (`printmode.go:213-218`), the text emitter writes
-`error: %v` and the `AGY_ERROR` line there (`emitter.go:108`, 126-135), and `waitForAuth` gets
-that writer at `printmode.go:286`.  The last line that names an ending decides, since the CLI
-writes how it ended last.  Only a fixed code reaches the receipt.  Wakes stay enabled, and no
-code holds or pauses a later wake to the same chat.  On the Mac the route reads `ssh:resume`.
+**Reading how a run ended.**  The CLI's stderr goes into a pipe that a thread reads one line
+at a time as it comes.  It holds only the line being read, at most 8192 bytes of it, and keeps
+what each line names as a fixed code, so nothing reaches disk and a line counts wherever it
+falls in the output (PR 2320).  A longer line names nothing:  the CLI's own ending lines are
+short, and it cuts a long non-JSON error body after 500 bytes (the 1.3.3 changelog).  After
+`agy` exits the pipe gets 2 seconds to end;  a process `agy` left holding it is not waited for,
+and the thread keeps reading it.  These are the CLI's own lines:  `printmode.run` writes
+control output to `os.Stderr` unless its caller passes a writer (`printmode.go:213-218`), the
+text emitter writes `error: %v` and the `AGY_ERROR` line there (`emitter.go:108`, 126-135), and
+`waitForAuth` gets that writer at `printmode.go:286`.  The last line that names an ending
+decides, since the CLI writes how it ended last.  Only a fixed code reaches the receipt.  Wakes
+stay enabled, and no code holds or pauses a later wake to the same chat.  On the Mac the route
+reads `ssh:resume`.
 
 **The codes.**
 
@@ -150,16 +160,36 @@ code holds or pauses a later wake to the same chat.  On the Mac the route reads
   `failed:` (473-488).
 - `resume-new-chat`:  refused, dead, `delivered` null, no retry.  `agy` exited 0 but printed
   `warning: conversation "<id>" not found` and ran the turn in a new chat
-  (`projectresolve.go:74-78`).  This is the only line an exit 0 is read for.  It is detection
-  after the fact, not prevention:  see AFC-840 under Not proven.
+  (`projectresolve.go:74-78`).  This is the only line an exit 0 is read for, and it counts
+  wherever it falls in stderr.  It is detection after the fact, not prevention:  see AFC-840
+  under Not proven.
 - `resume-exit-N`:  refused, dead, `delivered` null, no retry, as before.  Any other nonzero
   exit.
+- `resume-timeout`:  unknown, `delivered` null, no retry (PR 2320).  `agy` ran past
+  `resume_timeout_seconds` (900 by default) and was killed.  The two waits found before a turn
+  each last a minute (the sign-in wait at `printmode.go:465`, the eligibility wait at 505), and
+  the rest of start-up has no known bound, so a turn may have run.  It was refused and dead before.
 - `resume-capture-<Error>`:  failed, a counted retry, since nothing ran.  The pipe or its thread
   could not be made.
 
-A quota or new-chat code keeps `delivered` null because a turn had started.  None of these codes
-is `failed`, `busy` or `unreachable`, since each of those would retry against the quota or the
-missing sign-in.
+A quota, new-chat or timeout code keeps `delivered` null, because a turn had started or may
+have.  Only `resume-capture-<Error>` is `failed`, since nothing ran.  None of the others is
+`failed`, `busy` or `unreachable`, since each of those would retry against the quota or the
+missing sign-in, or run a turn twice.
+
+**Why a quota ending is final, not `busy` (PR 2320).**  In the router, `busy` uses up no
+attempt and comes back every `busy_retry_seconds` (30 by default) until the wake is
+`max_age_seconds` old (86400 by default), each time as a try that did not run the wake
+(`wake_router.py`, lines 104, 368, 370 and 1730-1740).  That is up to about 2,880 more runs
+of `agy` in a day.  A quota ending is not a try that did not run:  the CLI prints `AGY_ERROR`
+and exits 3 when a turn ends on a model API failure (the 1.2.6 changelog), and a model call can
+fail after tools in the same turn ran (1.2.1 keeps their outputs when it retries the call
+itself), so a retry could run them twice.  Nor does the cap pass in minutes:  the CLI already
+waits out a short rate limit for up to 4 minutes, and stops at once on a spend cap, a prepaid
+balance or a weekly quota (1.5.10) and on the individual quota (1.3.3).  `failed` does not fit
+either:  it is for a try that cannot have run the wake (line 106), and it ends as `delivered`
+false (lines 1722-1729).  So the code is final with `delivered` null, the receipt shows it,
+and the message stays in the seat inbox (lines 125-126 and 150-153).
 
 **Not proven.**
 
@@ -181,8 +211,7 @@ missing sign-in.
   cannot be loaded, `agy` warns and runs the turn in a new chat (`projectresolve.go:74-78`), and
   no strict flag exists.  The summaries-row check before launch is the only guard, and it does not
   prove the CLI can load the conversation.  `resume-new-chat` names the fallback only after the
-  turn may already have run, and only when the warning is in the last 8192 bytes of stderr:  if
-  more output follows it, the run reads as sent.
+  turn may already have run, though the warning counts wherever it falls in stderr (PR 2320).
 - Whether a quota failure leaves the wake prompt in the chat is unknown.  On a timeout only `agy`
   is killed, as before.  An exit 0 is read only for the new-chat warning, so an older CLI that
   exits 0 on a failed turn still reads as sent.

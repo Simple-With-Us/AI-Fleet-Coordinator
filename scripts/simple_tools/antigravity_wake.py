@@ -27,12 +27,14 @@ delivery, ensuring the letter was not released or reassigned.
 A resume without a browser (AFC-838).  `agy` has no flag or variable that only turns off its
 browser sign-in:  its print mode falls back to the browser whenever stdin is a character device or
 `/dev/tty` opens (printmode.go:390-397, 425-433;  browser.go:79-80).  So the resume runs with an
-empty pipe on stdin, in a session of its own.  Its stderr goes into a pipe that a thread drains,
-keeping only the last `OUTPUT_SCAN_CAP` bytes in memory.  The last line the CLI wrote that says
-how a failed run ended maps to a fixed code:  `resume-quota-exhausted`, `resume-signin-required`
-or `resume-signin-interactive`;  anything else keeps `resume-exit-N`.  An exit 0 that the CLI
-moved to a new chat answers `resume-new-chat`.  All of them are final, and none of them changes
-what happens to a later wake.
+empty pipe on stdin, in a session of its own.  Its stderr goes into a pipe that a thread reads
+one line at a time, holding only the line being read (at most `OUTPUT_SCAN_CAP` bytes) in
+memory.  The last line the CLI wrote that says how a failed run ended maps to a fixed code:
+`resume-quota-exhausted`, `resume-signin-required` or `resume-signin-interactive`;  anything else
+keeps `resume-exit-N`.  An exit 0 that the CLI moved to a new chat answers `resume-new-chat`,
+wherever its warning falls in the output.  All of them are final, and none of them changes what
+happens to a later wake.  A run past its timeout answers `unknown` (`resume-timeout`), since it
+may have run its turn.
 
 Python 3.11+, standard library only.
 """
@@ -325,11 +327,13 @@ def _find_agy_binary(child_env: Mapping[str, str]) -> str | None:
     return None
 
 
-#: How much of the CLI's stderr is kept:  its last bytes, in memory only, never logged or written
-#: to disk.  Only the fixed code a line maps to reaches a receipt (AFC-838).
+#: The longest stderr line that is read, in bytes.  Only the line being read is held, in memory
+#: only, never logged or written to disk, and only the fixed code a line maps to is kept and
+#: reaches a receipt (AFC-838).  A longer line is skipped:  the CLI's own ending lines are short,
+#: and it cuts a long non-JSON error body after 500 bytes (its 1.3.3 changelog).
 OUTPUT_SCAN_CAP = 8192
 #: How long a finished run's stderr pipe gets to end.  A process the CLI left holding the pipe is
-#: not waited for:  the drain thread keeps reading it, within the cap, until it lets go.
+#: not waited for:  the drain thread keeps reading it, a line at a time, until it lets go.
 OUTPUT_WAIT_SECONDS = 2.0
 QUOTA_EXHAUSTED = "resume-quota-exhausted"
 SIGNIN_REQUIRED = "resume-signin-required"
@@ -364,16 +368,30 @@ QUOTA_RE = re.compile(
 NEW_CHAT_RE = re.compile(r'warning: conversation ".*" not found')
 
 
-class _StderrTail:
-    """The CLI's stderr through a pipe that a daemon thread drains to its end, keeping only the
-    last `cap` bytes in memory (AFC-838):  nothing reaches disk, and nothing grows with output."""
+class _StderrLines:
+    """The CLI's stderr through a pipe that a daemon thread drains to its end, reading it one line
+    at a time as it comes (AFC-838).  What a line names is kept as a fixed code, and only the line
+    being read is held, at most `cap` bytes of it:  nothing reaches disk, nothing grows with
+    output, and a line counts wherever it falls in the output (PR 2320)."""
 
-    __slots__ = ("_buf", "_cap", "_cut", "_done", "_lock", "_read_fd", "write_fd")
+    __slots__ = (
+        "_cap",
+        "_done",
+        "_ended",
+        "_line",
+        "_lock",
+        "_long",
+        "_new_chat",
+        "_read_fd",
+        "write_fd",
+    )
 
     def __init__(self, cap: int) -> None:
-        self._buf = bytearray()
         self._cap = cap
-        self._cut = False
+        self._ended = ""
+        self._new_chat = False
+        self._line = bytearray()
+        self._long = False
         self._done = threading.Event()
         self._lock = threading.Lock()
         self._read_fd, self.write_fd = os.pipe()
@@ -388,11 +406,7 @@ class _StderrTail:
         try:
             while chunk := os.read(self._read_fd, 65536):
                 with self._lock:
-                    self._buf += chunk
-                    extra = len(self._buf) - self._cap
-                    if extra > 0:
-                        del self._buf[:extra]
-                        self._cut = True
+                    self._feed(chunk)
         except OSError:
             pass
         finally:
@@ -414,12 +428,52 @@ class _StderrTail:
         self.write_fd = -1
         self._done.wait(wait)
 
-    def text(self) -> str:
-        """What is kept, as text for matching only.  A first line the cap cut is dropped."""
+    def _feed(self, chunk: bytes) -> None:
+        """Read `chunk` on from where the last one stopped.  The caller holds the lock."""
+        *ended, rest = chunk.split(b"\n")
+        for piece in ended:
+            self._add(piece)
+            if not self._long:
+                self._note(bytes(self._line))
+            self._line.clear()
+            self._long = False
+        self._add(rest)
+
+    def _add(self, piece: bytes) -> None:
+        """Hold the next piece of the line being read, unless the line is past the cap."""
+        if self._long:
+            return
+        if len(self._line) + len(piece) > self._cap:
+            self._line.clear()
+            self._long = True
+            return
+        self._line += piece
+
+    def _note(self, raw: bytes) -> None:
+        """Keep what one whole line names.  The last line that names an ending decides, since
+        the CLI writes how it ended last;  the new-chat warning counts wherever it falls."""
+        ended, new_chat = _line_says(raw)
+        if ended:
+            self._ended = ended
+        if new_chat:
+            self._new_chat = True
+
+    def result(self) -> tuple[str, bool]:
+        """The code of the last line that named an ending, or "", and whether a line was the
+        new-chat warning.  A last line that has no newline yet counts too."""
         with self._lock:
-            data, cut = bytes(self._buf), self._cut
-        text = data.decode("utf-8", "replace")
-        return text.partition("\n")[2] if cut else text
+            ended, new_chat = self._ended, self._new_chat
+            if self._line and not self._long:
+                last, warned = _line_says(bytes(self._line))
+                ended, new_chat = last or ended, new_chat or warned
+        return ended, new_chat
+
+
+def _line_says(raw: bytes) -> tuple[str, bool]:
+    """What one stderr line names:  the fixed code of an ending, or "", and whether it is the
+    CLI's new-chat warning.  The text is matched here and never kept."""
+    line = raw.decode("utf-8", "replace").strip()
+    return _line_code(line), NEW_CHAT_RE.fullmatch(line) is not None
 
 
 def _line_code(line: str) -> str:
@@ -431,21 +485,6 @@ def _line_code(line: str) -> str:
     if line.startswith(ERROR_LINE_MARKS) and QUOTA_RE.search(line):
         return QUOTA_EXHAUSTED
     return ""
-
-
-def _ended_with(tail: str) -> str:
-    """The fixed code for how a failed resume ended, or "" when no line says.  The last line that
-    names one decides, since the CLI writes how it ended last;  an earlier line is never it."""
-    for line in reversed(tail.splitlines()):
-        code = _line_code(line.strip())
-        if code:
-            return code
-    return ""
-
-
-def _moved_to_new_chat(tail: str) -> bool:
-    """Whether agy said it could not find the chat and started a new one."""
-    return any(NEW_CHAT_RE.fullmatch(line.strip()) for line in tail.splitlines())
 
 
 def deliver_local(
@@ -524,10 +563,10 @@ def deliver_local(
 
             argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
-            # agy's stderr goes into a pipe drained in memory.  Nothing has run yet, so failing
-            # to make the pipe or its thread is safe to retry.
+            # agy's stderr goes into a pipe read in memory, a line at a time.  Nothing has run
+            # yet, so failing to make the pipe or its thread is safe to retry.
             try:
-                tail = _StderrTail(OUTPUT_SCAN_CAP)
+                lines = _StderrLines(OUTPUT_SCAN_CAP)
             except (OSError, RuntimeError) as exc:
                 return WR.Delivery(
                     "failed", "resume", code="resume-capture-%s" % type(exc).__name__
@@ -544,13 +583,17 @@ def deliver_local(
                         env=child_env,
                         input=b"",
                         stdout=subprocess.DEVNULL,
-                        stderr=tail.write_fd,
+                        stderr=lines.write_fd,
                         timeout=timeout_seconds,
                         check=False,
                         start_new_session=True,
                     )
                 except subprocess.TimeoutExpired:
-                    return WR.Delivery("refused", "resume", code="resume-timeout")
+                    # The two waits found before a turn each last a minute (printmode.go:465, 505),
+                    # and the rest of start-up has no known bound, so a run this long may have run
+                    # its turn and nobody can tell:  unknown, never retried and never recorded as
+                    # delivered (PR 2320).
+                    return WR.Delivery("unknown", "resume", code="resume-timeout")
                 except OSError as exc:
                     return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
                 except Exception as exc:  # noqa: BLE001 - may have started, so it is final
@@ -558,20 +601,23 @@ def deliver_local(
                         "refused", "resume", code="resume-error-%s" % type(exc).__name__
                     )
 
-                tail.finish(OUTPUT_WAIT_SECONDS)
+                lines.finish(OUTPUT_WAIT_SECONDS)
+                ended, new_chat = lines.result()
                 if proc.returncode == 0:
                     # Named after the fact only:  the turn ran, in a chat that is not the target.
-                    if _moved_to_new_chat(tail.text()):
+                    if new_chat:
                         return WR.Delivery("refused", "resume", code=NEW_CHAT, note="agy-exit-0")
                     return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
-                ended = _ended_with(tail.text())
                 if ended:
+                    # Final, never busy:  a quota ending comes inside the turn, which may have
+                    # run tools by then, and the CLI retries a short rate limit itself before it
+                    # gives up (PR 2320).
                     return WR.Delivery(
                         "refused", "resume", code=ended, note="agy-exit-%d" % proc.returncode
                     )
                 return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
             finally:
-                tail.finish(OUTPUT_WAIT_SECONDS)
+                lines.finish(OUTPUT_WAIT_SECONDS)
         finally:
             if bridge_lock is not None:
                 bridge_lock.close()
