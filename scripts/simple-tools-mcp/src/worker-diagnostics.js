@@ -22,8 +22,14 @@ import { boundedWorkflowInput } from "./gr-workflow-v1.js";
 import { GAP } from "./textfmt.js";
 
 export const WORKER_DIAGNOSTICS_NAME = "worker_diagnostics";
-/** The most rows the store keeps (seat-state.js DIAGNOSTIC_CAP) and the most one call returns. */
+/** The most wake rows one call returns. */
 export const WORKER_DIAGNOSTICS_MAX = 100;
+/**
+ * The whole log, read in one call:  the shared store's 100 rows plus the relay check rows'
+ * own 40 (seat-state.js DIAGNOSTIC_TOTAL_CAP, AFC-844), so relay rows never cut wake rows
+ * out of the read.  test/diagnostic-coalesce.test.mjs pins the two equal.
+ */
+export const WORKER_DIAGNOSTICS_STORE_ROWS = 140;
 export const WORKER_DIAGNOSTICS_DEFAULT = 50;
 /** How many of the newest rows of every kind ride along as `recent`. */
 export const WORKER_DIAGNOSTICS_RECENT = 50;
@@ -138,11 +144,11 @@ export const WORKER_DIAGNOSTICS_METHODS = {
       throw new ToolError("not_configured", "The Worker's diagnostics store is not reachable from this connection.  Every other tool still works.");
     }
     await this.reserve("read");
-    // The store keeps at most WORKER_DIAGNOSTICS_MAX rows, so one read is the whole of it, newest first.  A
+    // The log keeps at most WORKER_DIAGNOSTICS_STORE_ROWS rows, so one read is the whole of it, newest first.  A
     // rejected or malformed read is a transient store failure:  retryable, and nothing from the error is echoed.
     let stored;
     try {
-      stored = await source.diagnosticTail(WORKER_DIAGNOSTICS_MAX);
+      stored = await source.diagnosticTail(WORKER_DIAGNOSTICS_STORE_ROWS);
     } catch {
       this.log?.({ event: "worker_diagnostics_unavailable" });
       throw storeUnavailable();

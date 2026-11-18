@@ -357,8 +357,9 @@ const GR_REFUSALS = new DiagnosticCoalescer();
 function recordGrRefusal(env, ctx, entry) {
   const count = GR_REFUSALS.take(entry);
   if (count === 0) return undefined;
-  // A write that does not land hands its occurrences back (Sentry, PR 2331), so the next
-  // occurrence writes at once instead of waiting out the window.
+  // A write that does not land hands its occurrences back (Sentry, PR 2331), and the next
+  // write of that cause carries them;  the window stays closed, so a log outage cannot
+  // turn every refusal into another spent budget unit (Kody, PR 2331).
   const write = recordDiagnostic(env, { ...entry, count }).then((written) => {
     if (!written) GR_REFUSALS.giveBack(entry, count);
   });

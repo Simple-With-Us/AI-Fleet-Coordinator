@@ -52,13 +52,14 @@ export class DiagnosticCoalescer {
 
   /**
    * A write that `take` allowed did not land (the isolate's diagnostics budget was
-   * spent, or the log failed).  Its occurrences go back to pending and the window
-   * reopens, so the next occurrence writes at once and carries them.
+   * spent, or the log failed).  Its occurrences go back to pending, so the next write
+   * of that cause carries them (Sentry, PR 2331).  The window stays closed:  reopening
+   * it would let every refusal during a log outage spend another unit of the shared
+   * budget (Kody, PR 2331).
    */
   giveBack({ kind, reason, seat = null }, count) {
     const key = `${kind}\0${reason}\0${seat ?? ""}`;
-    const state = this.keys.get(key) ?? { writtenAt: -Infinity, pending: 0 };
-    state.writtenAt = -Infinity;
+    const state = this.keys.get(key) ?? { writtenAt: this.now(), pending: 0 };
     state.pending = Math.min(DIAGNOSTIC_MAX_COUNT, state.pending + count);
     this.keys.set(key, state);
   }

@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DiagnosticCoalescer, DIAGNOSTIC_COALESCE_WINDOW_MS, DIAGNOSTIC_MAX_COUNT } from "../src/diagnostic-coalesce.js";
-import { diagnosticRow } from "../src/worker-diagnostics.js";
+import { diagnosticRow, WORKER_DIAGNOSTICS_STORE_ROWS } from "../src/worker-diagnostics.js";
 import * as S from "../src/seat-state.js";
 
 const NOW = Date.parse("2026-11-18T20:00:00Z");
@@ -38,22 +38,25 @@ test("each kind, reason and seat coalesces on its own", () => {
   assert.equal(c.take({ kind: "gr_bearer", reason: "paused", seat: "ECHO" }), 0);
 });
 
-test("a write that did not land gives its occurrences back, and the next one writes at once", () => {
+test("a write that did not land gives its occurrences back, without reopening the window", () => {
   let now = NOW;
   const c = new DiagnosticCoalescer({ now: () => now });
   const entry = { kind: "gr_bearer", reason: "unavailable" };
   assert.equal(c.take(entry), 1);
-  assert.equal(c.take(entry), 0);
   // The first write was dropped (budget spent or log down):  it hands its one back.
   c.giveBack(entry, 1);
-  now += 1;
-  // Not held for the window:  this write carries the given-back one, the pending one and itself.
-  assert.equal(c.take(entry), 3);
+  // The window stays closed, so an outage does not turn every refusal into a write.
   assert.equal(c.take(entry), 0);
-  // A give-back for a key the coalescer no longer remembers still counts.
+  assert.equal(c.take(entry), 0);
+  now += DIAGNOSTIC_COALESCE_WINDOW_MS;
+  // The next write carries the given-back one, the two pending ones and itself.
+  assert.equal(c.take(entry), 4);
+  // A give-back for a key the coalescer no longer remembers still counts, at the next window.
   const fresh = new DiagnosticCoalescer({ now: () => now });
   fresh.giveBack({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }, 2);
-  assert.equal(fresh.take({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }), 3);
+  assert.equal(fresh.take({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }), 0);
+  now += DIAGNOSTIC_COALESCE_WINDOW_MS;
+  assert.equal(fresh.take({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }), 4);
 });
 
 test("a carried count never passes the writer's ceiling, so a flood still writes a row", () => {
@@ -62,6 +65,9 @@ test("a carried count never passes the writer's ceiling, so a flood still writes
   const entry = { kind: "gr_bearer", reason: "bad_signature" };
   assert.equal(c.take(entry), 1);
   c.giveBack(entry, DIAGNOSTIC_MAX_COUNT + 5);
+  // The window stays closed;  later occurrences still count, but never past the ceiling.
+  for (let i = 0; i < 3; i += 1) assert.equal(c.take(entry), 0);
+  now += DIAGNOSTIC_COALESCE_WINDOW_MS;
   assert.equal(c.take(entry), DIAGNOSTIC_MAX_COUNT);
   for (let i = 0; i < 3; i += 1) c.take(entry);
   now += DIAGNOSTIC_COALESCE_WINDOW_MS;
@@ -100,4 +106,28 @@ test("the writer refuses a count that is not a sane positive integer", async () 
   for (const count of [0, -1, 1.5, "3", 2_000_000]) {
     await assert.rejects(S.recordDiagnostic(store, { kind: "gr_bearer", reason: "mismatch", count }, NOW), /invalid diagnostic count/);
   }
+});
+
+test("relay check rows keep their own store, so a busy relay cannot push wake rows out", async () => {
+  const store = S.memoryStore();
+  for (let i = 0; i < 100; i += 1) await S.recordDiagnostic(store, { kind: "wake", reason: `wake_${i}` }, NOW + i);
+  // Far more distinct relay causes than its own store keeps (Kody, PR 2331).
+  for (let i = 0; i < 300; i += 1) await S.recordDiagnostic(store, { kind: i % 2 ? "gr_bearer" : "gr_assert", reason: `cause_${i}` }, NOW + 1_000 + i);
+  const rows = await S.diagnosticTail(store, S.DIAGNOSTIC_TOTAL_CAP, NOW + 2_000);
+  const wake = rows.filter((r) => r.kind === "wake");
+  const relay = rows.filter((r) => r.kind !== "wake");
+  // Every wake row survived;  the relay kept its newest 40.
+  assert.equal(wake.length, 100);
+  assert.equal(relay.length, S.DIAGNOSTIC_TOTAL_CAP - 100);
+  assert.equal(relay[0].reason, "cause_299");
+  // The merged read is newest first across both stores.
+  for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].ts >= rows[i].ts);
+  // And a wake row written later still lands ahead of the older relay rows.
+  await S.recordDiagnostic(store, { kind: "wake", reason: "wake_late" }, NOW + 3_000);
+  const [newest] = await S.diagnosticTail(store, 1, NOW + 3_001);
+  assert.equal(newest.reason, "wake_late");
+});
+
+test("worker_diagnostics reads the whole log:  its one read equals both stores' caps", () => {
+  assert.equal(WORKER_DIAGNOSTICS_STORE_ROWS, S.DIAGNOSTIC_TOTAL_CAP);
 });

@@ -923,6 +923,12 @@ export async function errorTail(store, limit = 50, now = Date.now()) {
 }
 
 const DIAGNOSTIC_CAP = 100;
+// The git relay's check-route rows (AFC-844) keep a store of their own, so a busy relay
+// can never push wake, token, mcp or provider rows out of the shared 100 (Kody, PR 2331).
+const GR_DIAGNOSTIC_KINDS = new Set(["gr_bearer", "gr_assert"]);
+const GR_DIAGNOSTIC_CAP = 40;
+export const DIAGNOSTIC_TOTAL_CAP = DIAGNOSTIC_CAP + GR_DIAGNOSTIC_CAP;
+const diagnosticStore = (kind) => (GR_DIAGNOSTIC_KINDS.has(kind) ? { key: "gr_diagnostics", cap: GR_DIAGNOSTIC_CAP } : { key: "diagnostics", cap: DIAGNOSTIC_CAP });
 const SAFE_DIAGNOSTIC_KIND = /^[a-z][a-z0-9_-]{0,39}$/i;
 const SAFE_DIAGNOSTIC_REASON = /^[a-z0-9_:-]{1,80}$/i;
 const SAFE_DIAGNOSTIC_SEAT = /^[A-Z][A-Z0-9_-]{0,39}$/;
@@ -938,7 +944,8 @@ async function recordDiagnosticInner(store, { kind, reason, seat, status, count:
   if (!Number.isSafeInteger(occurrences) || occurrences < 1 || occurrences > 1_000_000) throw new TypeError("invalid diagnostic count");
 
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
-  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const { key: storeKey, cap } = diagnosticStore(kind);
+  const rows = ((await store.get(storeKey)) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
   const rowSeat = seat ?? null;
   const key = `${kind}\0${reason}\0${rowSeat ?? ""}`;
   const index = rows.findIndex((row) => `${row.kind}\0${row.reason}\0${row.seat ?? ""}` === key);
@@ -953,8 +960,8 @@ async function recordDiagnosticInner(store, { kind, reason, seat, status, count:
     if (status !== undefined && status !== null) row.status = status;
     rows.push(row);
   }
-  while (rows.length > DIAGNOSTIC_CAP) rows.shift();
-  await store.put("diagnostics", rows);
+  while (rows.length > cap) rows.shift();
+  await store.put(storeKey, rows);
 }
 
 /** Serialize diagnostic aggregation so concurrent failures cannot lose counts. */
@@ -963,12 +970,19 @@ export async function recordDiagnostic(store, entry, now = Date.now()) {
   return store.transaction((txn) => recordDiagnosticInner(txn, entry, now));
 }
 
-/** Newest aggregated diagnostics first, bounded to the retained 90-day window. */
+/**
+ * Newest aggregated diagnostics first, bounded to the retained 90-day window:  both
+ * stores (the shared one and the relay check rows'), merged by last update, so
+ * DIAGNOSTIC_TOTAL_CAP reads the whole log.
+ */
 export async function diagnosticTail(store, limit = 40, now = Date.now()) {
-  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, DIAGNOSTIC_CAP)) : 40;
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, DIAGNOSTIC_TOTAL_CAP)) : 40;
   if (max === 0) return [];
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
-  const rows = ((await store.get("diagnostics")) ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const live = (rows) => (rows ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const rows = [...live(await store.get("diagnostics")), ...live(await store.get("gr_diagnostics"))];
+  // Stable on equal times:  each store is already in update order.
+  rows.sort((a, b) => a.ts - b.ts);
   return rows.slice(-max).reverse();
 }
 
