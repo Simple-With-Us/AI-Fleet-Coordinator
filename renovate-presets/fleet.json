@@ -11,7 +11,7 @@
   "updateNotScheduled": false,
   "prConcurrentLimit": 2,
   "prHourlyLimit": 2,
-  "rebaseWhen": "conflicted",
+  "rebaseWhen": "auto",
   "minimumReleaseAge": "3 days",
   "labels": [
     "dependencies"
