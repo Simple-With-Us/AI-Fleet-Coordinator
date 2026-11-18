@@ -168,6 +168,23 @@ class FailureTests(unittest.TestCase):
             "notarytool failure: unknown.  notarytool gave no answer this script recognizes.",
         )
 
+    def test_no_sentence_names_a_status_of_its_own(self):
+        # A kind chosen by words alone must not print one code beside another (Kody, PR 2295).
+        for name, _marks, sentence in report.FAILURE_KINDS:
+            with self.subTest(kind=name):
+                self.assertNotRegex(sentence, r"\b[1-5][0-9]{2}\b")
+        line = self.run_failure("Error: HTTP status code: 500. Invalid credentials.")
+        self.assertIn("not_authorized (HTTP 500).", line)
+        self.assertNotIn("401", line)
+
+    def test_the_cap_is_on_bytes(self):
+        # Multi-byte text is cut on its encoded bytes, so the cap holds whatever the characters.
+        wide = "é" * report.MAX_BYTES
+        name, _sentence, status = report.classify_failure(wide + " HTTP status code: 403. forbidden")
+        self.assertEqual((name, status), ("unknown", None), "nothing past the cap is read")
+        near = "é" * ((report.MAX_BYTES - 64) // 2) + " HTTP status code: 403. forbidden"
+        self.assertEqual(report.classify_failure(near)[::2], ("forbidden", "403"))
+
 
 if __name__ == "__main__":
     unittest.main()

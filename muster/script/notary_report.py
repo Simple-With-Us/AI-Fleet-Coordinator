@@ -115,13 +115,13 @@ FAILURE_KINDS = (
             "invalid credentials",
             "authentication credentials are missing or invalid",
         ),
-        "Apple did not accept the API key (401):  the key is revoked, or the key id, issuer and key "
+        "Apple did not accept the API key:  the key is revoked, or the key id, issuer and key "
         "file do not belong together.",
     ),
     (
         "forbidden",
         ("http status code: 403", "status code 403", "forbidden"),
-        "Apple accepted the key but refused the request (403):  a missing or expired agreement, "
+        "Apple accepted the key but refused the request:  a missing or expired agreement, "
         "or a key role that may not notarize.",
     ),
     (
@@ -164,9 +164,14 @@ HTTP_STATUS = re.compile(r"(?:http status code|status code)[:\s]+([1-5][0-9]{2})
 
 
 def classify_failure(text):
-    """The kind name, its sentence and Apple's HTTP status (digits or None) for a failed submit."""
-    if len(text.encode("utf-8", "replace")) > MAX_BYTES:
-        text = text[:MAX_BYTES]
+    """The kind name, its sentence and Apple's HTTP status (digits or None) for a failed submit.
+
+    Only the first MAX_BYTES bytes are read:  the cut is made on the encoded bytes, so the cap is a
+    byte cap whatever the characters, and a character split by the cut is dropped.  The sentences
+    name no status of their own, so the line never shows two codes for one failure."""
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) > MAX_BYTES:
+        text = encoded[:MAX_BYTES].decode("utf-8", "ignore")
     lowered = text.lower()
     match = HTTP_STATUS.search(text)
     status = match.group(1) if match else None

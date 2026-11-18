@@ -226,20 +226,26 @@ write_zip() {
   write_sha_file "$ZIP_FILE"
 }
 
+# The file that holds a submit's own words while notary_report.py reads them.  It is global and
+# removed by an EXIT trap too, so a job that is cancelled or times out mid-submit leaves nothing of
+# notarytool's answer on the runner.
+NOTARY_FAILURE_TEXT=""
+
 notarize_file() {
-  local file="$1" response submission status failure_text
+  local file="$1" response submission status
   [[ "${#NOTARY_AUTH[@]}" -gt 0 ]] || { echo "error: no notarization credentials (NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER_ID)." >&2; exit 1; }
   echo "Submitting $(basename "$file") for notarization.  This takes a few minutes."
-  failure_text="$(mktemp "${TMPDIR:-/tmp}/muster-notary.XXXXXX")"
-  if ! response="$(/usr/bin/xcrun notarytool submit "$file" "${NOTARY_AUTH[@]}" --wait --output-format json 2>"$failure_text")"; then
+  NOTARY_FAILURE_TEXT="$(mktemp "${TMPDIR:-/tmp}/muster-notary.XXXXXX")"
+  trap 'rm -f "${NOTARY_FAILURE_TEXT:-}"' EXIT
+  if ! response="$(/usr/bin/xcrun notarytool submit "$file" "${NOTARY_AUTH[@]}" --wait --output-format json 2>"$NOTARY_FAILURE_TEXT")"; then
     echo "error: notarization could not be submitted for $(basename "$file")." >&2
     # notarytool's own words never reach the log:  only the fixed sentence notary_report.py
     # picks for them, and Apple's HTTP status as digits.
-    { printf '%s\n' "$response"; cat "$failure_text"; } | /usr/bin/python3 "$MUSTER_DIR/script/notary_report.py" failure >&2 || true
-    rm -f "$failure_text"
+    { printf '%s\n' "$response"; cat "$NOTARY_FAILURE_TEXT"; } | /usr/bin/python3 "$MUSTER_DIR/script/notary_report.py" failure >&2 || true
+    rm -f "$NOTARY_FAILURE_TEXT"
     exit 1
   fi
-  rm -f "$failure_text"
+  rm -f "$NOTARY_FAILURE_TEXT"
   # The id goes back to notarytool, so only a UUID is accepted;  anything else stops here.
   local parsed
   if ! parsed="$(printf '%s' "$response" | /usr/bin/python3 "$MUSTER_DIR/script/notary_report.py" submission)"; then
