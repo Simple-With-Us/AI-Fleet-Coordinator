@@ -91,13 +91,13 @@ cutover that does not work never leaves the seat without a route.
     sub-key (`env_name_not_allowed`), so the router's front for this seat is `ZC_ROUTINE_URL`.
     `ZC_ROUTINE_URL` is minted in AFC prod `/zulip` with the router's front URL,
     `https://<server tailnet host>:8795/wake/ZC`, and the seat keeps the one convention every
-    other seat follows.  The bridge's own URL and its own key stay where the seat already kept
-    them, in Fleet-OPS `/zulip` under `ZC_ROUTINE_URL` (the bridge's TLS front,
-    `https://<server tailnet host>:8793/wake/ZC`) and under `ZC_ROUTINE_KEY`, so a rollback has
-    a value to point at and the seat's own name never serves the router's front and the bridge
-    at the same time.  The loader also allows a bridge's own name (`<SEAT>_BRIDGE_ROUTINE_URL`)
-    in prod `/zulip`, but this seat's bridge URL is kept in the other project, so the container
-    carries no name for it and a rollback copies the URL from Fleet-OPS `/zulip`.  The
+    other seat follows.  The bridge's own URL and its own key are read through the approved
+    route, `fleet-secrets get ZC_ROUTINE_URL --path /zulip` and
+    `fleet-secrets get ZC_ROUTINE_KEY --path /zulip`, so a rollback has a value to point at and
+    the seat's own name never serves the router's front and the bridge at the same time.  The
+    loader also allows a bridge's own name (`<SEAT>_BRIDGE_ROUTINE_URL`) in prod `/zulip`, but
+    nothing holds that name, so the container carries no name for it and a rollback copies the
+    bridge's URL through the same approved route.  The
     environment is read once at the container's start, so the container is restarted after the
     name is minted.  The seat's own binding is named here, so the
     operator knows what the cutover started from:  the live file on the server held
@@ -129,13 +129,15 @@ cutover that does not work never leaves the seat without a route.
 5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
     picked session and a delivered or an explicitly unsettled outcome.  A front that
     misbehaves here is a rollback, and the values a rollback needs are still in place:
-    Fleet-OPS `/zulip` holds the bridge's own URL under `ZC_ROUTINE_URL` (the bridge's TLS
-    front) and the bridge's own key under `ZC_ROUTINE_KEY`, and neither was ever withdrawn.  The
+    the bridge's own URL and its own key are read through the approved route,
+    `fleet-secrets get ZC_ROUTINE_URL --path /zulip` and
+    `fleet-secrets get ZC_ROUTINE_KEY --path /zulip`, and neither was ever withdrawn.  The
     rollback puts the seat back on the shape it had before the cutover, which is the shape the
     bridge answers:  `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    and `ZC_ROUTINE_URL` in AFC prod `/zulip` is re-pointed at the bridge's URL that Fleet-OPS
-    `/zulip` holds, which is the one write the rollback needs outside the server.  Both names
+    and `ZC_ROUTINE_URL` in AFC prod `/zulip` is re-pointed at the bridge's URL that
+    `fleet-secrets get ZC_ROUTINE_URL --path /zulip` returns, which is the one write the
+    rollback needs outside the server.  Both names
     are the seat's own, so the settings-edit path writes that routine, and the daemon picks it
     up on the reload that write ends with.  The sample has to come back with it:  the sample
     still carries the router's binding for this seat, so the next apply would move the seat
@@ -152,9 +154,10 @@ cutover that does not work never leaves the seat without a route.
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
-receipts.  Until then it stays as it is, with the bridge's own URL and its own key in
-Fleet-OPS `/zulip` under `ZC_ROUTINE_URL` and `ZC_ROUTINE_KEY`, and the sample keeps carrying
-the router's binding for this seat.
+receipts.  Until then it stays as it is, with the bridge's own URL and its own key readable
+through the approved route, `fleet-secrets get ZC_ROUTINE_URL --path /zulip` and
+`fleet-secrets get ZC_ROUTINE_KEY --path /zulip`, and the sample keeps carrying the router's
+binding for this seat.
 
 ## What the module guarantees
 
@@ -242,12 +245,13 @@ one wake router's, and the names below are the bridge's.
     the seat had before the cutover:  `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
     and `ZC_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's tailnet URL,
-    `http://<jay-server tailnet ip>:8791/wake/ZC`.  The bridge's own URL is also kept in
-    Fleet-OPS `/zulip` under `ZC_ROUTINE_URL` (its TLS front on the same bridge), so a
-    rollback has a URL to copy.  The change is made in the repo's
+    `http://<jay-server tailnet ip>:8791/wake/ZC`.  The bridge's own URL is read through the
+    approved route, `fleet-secrets get ZC_ROUTINE_URL --path /zulip`, so a rollback has a URL
+    to copy.  The change is made in the repo's
     `scripts/simple_tools/server/listener.toml`, the file of record, and
     `apply_live_config.py --apply` writes it into the live file.  The server loader reads the
-    key from Fleet-OPS `/zulip` (its secondary read, `INFISICAL_LISTENER_READ_PROJECT_ID` in
+    key from its secondary project (its secondary read, `INFISICAL_LISTENER_READ_PROJECT_ID`
+    in `server/infisical_env.py`, whose name set `_secondary_names` builds) and the URL from
     `server/infisical_env.py`, whose name set `_secondary_names` builds) and the URL from AFC
     `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a
     `daemon reload` does not.
