@@ -429,6 +429,29 @@ int main(void) {
         CHECK("duplicate scanned at the 1024-key bound refused", !mp_js_canonical(wide, bm));
     }
 
+    /* JSON protocol constants must be actual strings, never inner slices of
+     * numeric, array, boolean or object values. Escaped strings still compare. */
+    {
+        static const unsigned char number[] = "12.05";
+        static const unsigned char array[] = "[2.0]";
+        static const unsigned char boolean[] = "true";
+        static const unsigned char object[] = "{2.0}";
+        static const unsigned char quoted[] = "\"2.0\"";
+        CHECK("numeric span cannot equal string", !mp_js_str_eq(number, 0, 5, "2.0"));
+        CHECK("array span cannot equal string", !mp_js_str_eq(array, 0, 5, "2.0"));
+        CHECK("boolean span cannot equal string", !mp_js_str_eq(boolean, 0, 4, "ru"));
+        CHECK("object span cannot equal string", !mp_js_str_eq(object, 0, 5, "2.0"));
+        CHECK("empty span refused", !mp_js_str_eq(number, 0, 0, ""));
+        CHECK("single byte span refused", !mp_js_str_eq(number, 0, 1, ""));
+        CHECK("quoted constant accepted", mp_js_str_eq(quoted, 0, 5, "2.0"));
+        script_reset();
+        n = handle("{\"jsonrpc\":12.05,\"id\":91,\"method\":\"initialize\",\"params\":{}}");
+        CHECK("numeric jsonrpc refused before network", n && captured.calls == 0);
+        script_reset();
+        n = handle("{\"jsonrpc\":[2.0],\"id\":92,\"method\":\"initialize\",\"params\":{}}");
+        CHECK("array jsonrpc refused before network", n && captured.calls == 0);
+    }
+
     printf(failures ? "\n%d FAILURES\n" : "\nALL FIXTURE CHECKS PASS\n", failures);
     return failures ? 1 : 0;
 }

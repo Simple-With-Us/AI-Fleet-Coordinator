@@ -315,6 +315,7 @@ static int mp_js_valid(const unsigned char *t, size_t n) {
  * identity binding as merely "not equal".  Malformed escapes, or a decoded value beyond
  * the key bound, are simply not equal (such a value never equals a short constant). */
 static int mp_js_str_eq(const unsigned char *t, size_t span, size_t slen, const char *expect) {
+    if (slen < 2 || t[span] != '"' || t[span + slen - 1] != '"') return 0;
     unsigned char decoded[MP_MAX_KEY_BYTES + 4];
     long n = mp_key_decode(t, span, slen, decoded, MP_MAX_KEY_BYTES);
     if (n < 0) return 0;
