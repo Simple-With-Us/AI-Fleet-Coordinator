@@ -1161,11 +1161,18 @@ class RequestProtocolTests(Case):
 
     def test_private_failures_are_fixed_and_scrub_even_if_input_read_or_request_raises(self):
         envelope = self.bootstrap()
+        deep_val: object = 1
+        for _ in range(M.BOOTSTRAP_MAX_DEPTH):
+            deep_val = [deep_val]
+        deep_envelope = self.bootstrap(request={**envelope["request"], "notes": deep_val})
+        dense_envelope = self.bootstrap(
+            request={**envelope["request"], "notes": list(range(M.BOOTSTRAP_MAX_NODES + 5))}
+        )
         cases = [b"not-json", b'{"protocol":"a","protocol":"b"}',
                  json.dumps({**envelope, "extra": self.writer}).encode(),
                  json.dumps({**envelope, "request": {"action": "get"}}).encode(),
-                 b'{"protocol":"operator-settings-bootstrap/1","request":{"action":"save"},"bootstrap":' + (b"[" * 20) + (b"]" * 20) + b"}",
-                 json.dumps({**envelope, "dense": list(range(M.BOOTSTRAP_MAX_NODES + 5))}).encode(),
+                 json.dumps(deep_envelope).encode(),
+                 json.dumps(dense_envelope).encode(),
                  b"x" * (M.BOOTSTRAP_MAX_BYTES + 1)]
         for raw in cases:
             with self.subTest(raw_length=len(raw)), mock.patch.dict(os.environ, {
@@ -1176,6 +1183,15 @@ class RequestProtocolTests(Case):
                                                              "errorCode": "bootstrap_unavailable"})
                 self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
                 self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            M, "run_request", return_value=({"tool": M.TOOL, "ok": True, "result": "initialized"}, 0)
+        ) as mocked_run:
+            for limited in (deep_envelope, dense_envelope):
+                answer, code = M.bootstrap_request(json.dumps(limited).encode())
+                self.assertEqual((answer, code), (
+                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+                ))
+            mocked_run.assert_not_called()
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(M, "run_request", side_effect=RuntimeError(self.writer)):
                 answer, code = M.bootstrap_request(json.dumps(envelope).encode())

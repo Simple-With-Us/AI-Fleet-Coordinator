@@ -96,8 +96,8 @@ changes):
     and anything else is "unknown".  The daemon rewrites the file every two seconds, so five
     minutes is a stopped or wedged listener and not a slow one.
   * `wake` is the source's configured wake kind when it is one of the known kinds, else "other".
-    It is "fallback" while the seat's `fallback.stands_in` is true (the primary cannot run and the
-    fallback answers in its place).  "mcode" is in the vocabulary but is never produced: the
+    A document from an older listener says "fallback" while the seat's `fallback.stands_in` is true (the
+    primary could not run and the fallback answered in its place);  a current listener writes no `fallback`.  "mcode" is in the vocabulary but is never produced: the
     source carries no mcode fallback.
   * `paused` is true when the source's `paused` (a full pause) or `wakes_paused` (a pause that
     only stops wakes) is true, false when they say false, else null.  The top-level `pause` is the
@@ -105,8 +105,8 @@ changes):
     a pause on one seat shows on that seat.  `set_by` is the pause's `by` ("cli", "owner-dm") when it
     is a short token.
   * `held_back` is the source's `held_back.count`.  `last_event` is `last_event` (epoch seconds).
-  * `quota` is the provider quota the wake gate reads (the CodeCaps snapshot), and only for a seat
-    whose wake names a provider.  A seat the source gives no quota is `known: false` with nulls.
+  * `quota` is the provider quota an older listener's wake gate read (the CodeCaps snapshot), and only for a
+    seat whose wake names a provider;  a current listener writes none, so it is `known: false`.  A seat the source gives no quota is `known: false` with nulls.
     `exhausted` is the producer's verdict and is null unless `known` (an absent reading is not an
     exhausted one).  `remaining` is a percent, rounded to an integer in 0 to 100.  `reset_at` is
     normalised to UTC.
