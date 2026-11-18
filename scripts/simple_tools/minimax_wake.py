@@ -75,11 +75,14 @@ from urllib.parse import quote
 
 from . import secretscan
 from . import wake_router as WR
-from .config import MCODE_DEFAULT_MODEL
 
 SEAT = "MM"
 PLATFORM = "minimax"
 MENTION = "MiniMax"
+#: The model a woken MiniMax chat runs under when the seat's wake settings name none.  It was
+#: `config.MCODE_DEFAULT_MODEL`, which went with the listener's retired mcode runner;  this
+#: delivery is its only reader now.
+MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 # A MiniMax Code session id:  "mvs_" and 32 lowercase hex digits.  The store holds 1608 of
 # them and no other shape, and the registry's live MiniMax rows carry the same shape.
 SESSION_RE = re.compile(r"^mvs_[0-9a-f]{32}$")
@@ -122,8 +125,7 @@ REQUEST_FIELDS = frozenset({"platform", "target", "wake"})
 #: The permission posture a woken chat runs under:  `off`.  mcode's own local config defaults to
 #: bypassing permissions, and a headless run cannot answer a prompt for one.
 MCODE_PERMISSION = "off"
-#: The step cap `mcode exec` runs under, the same value the house fallback runtime uses
-#: (`adapters.MCODE_MAX_STEPS`):  at 8 the wake contract does not fit, and 16 is the cap the
+#: The step cap `mcode exec` runs under:  at 8 a woken turn does not fit, and 16 is the cap the
 #: fleet measured.
 MCODE_MAX_STEPS = 16
 #: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
@@ -373,10 +375,11 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        # A host with no registry address or key is a deployment fault, not an outage.
+        return WR.registry_failure(env)
     if not isinstance(answer, Mapping) or "error" in answer:
         # A host with no registry address or key is not an outage, and the house code says so.
-        return WR.Delivery("failed", code=WR.registry_trouble(answer))
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
@@ -585,9 +588,8 @@ def deliver_local(
             if not binary:
                 return WR.Delivery("failed", "wake", code="mcode-not-found")
 
-            # Every flag is its own element and every value is the element after it, the way the
-            # house fallback runtime passes them (`adapters.mcode_argv`), which is the form the
-            # `mcode exec` help shows.  A value that could be read as an option of its own is
+            # Every flag is its own element and every value is the element after it, which is the
+            # form the `mcode exec` help shows.  A value that could be read as an option of its own is
             # refused before it reaches the command line:  the session id and the model have
             # their own shapes, and the workspace was checked above.
             argv = [

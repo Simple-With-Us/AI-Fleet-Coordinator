@@ -1157,12 +1157,17 @@ test('v2: custody verb arg validation',()=>{
   assert.ok(validWfV1Args('wf_pr_edit',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));
   assert.ok(!validWfV1Args('wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40}));
 
-  // AFC-683: verbs no seat policy grants carry the working routes, not the candidate note.
+  // Capability descriptions follow live seat policy, never assert stale universal denial or fallback authority.
   {
     const e = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit');
-    assert.match(e.description, /UNGRANTED: no seat policy grants this verb/);
+    assert.match(e.description, /live seat policy grants this verb/);
+
     assert.match(e.description, /gr_edit_pr/);
     assert.ok(!e.description.includes('Inactive candidate'));
+    for (const tool of [e]) {
+      assert.doesNotMatch(tool.description, /UNGRANTED|owner 2026|2026-11-10|gh fallback|owner's account/);
+      assert.match(tool.description, /direct GitHub/);
+    }
     assert.ok(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_close').description.includes('Inactive candidate'));
   }
   assert.ok(validWfV1Args('wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));

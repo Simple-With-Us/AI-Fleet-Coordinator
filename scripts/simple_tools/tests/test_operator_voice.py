@@ -5,7 +5,9 @@ The first rule, repeated for weeks: anytime an agent's Zulip identity is used it
 actually thought about and said.  An escalation note and the held-wake digest are the daemon's own text, so
 they are the Operator's.  With no Operator they are not sent at all: there is no fallback to the seat.
 The second rule:  a headless wake's reply, an owner ack, a route page, a quota notice and the typing
-indicator are not sent at all, by anyone.
+indicator are not sent at all, by anyone.  The wakes that ran a model (claude, muse, openrouter) were
+retired on the owner's ruling of Nov 10, 2026, so the escalation note, which only a model's result could
+raise, is sent here by calling its sender directly.
 
 Three layers: the voice on its own (`operator_post.OperatorVoice`, a fake client, no network), the
 daemon end to end over the fake Zulip with a TRIPWIRE on the seat's own client (any message, edit or
@@ -24,11 +26,10 @@ from pathlib import Path
 from typing import Any
 
 from simple_tools import daemon as D
-from simple_tools import live as L
 from simple_tools import operator_post as OPV
 from simple_tools import router as R
+from simple_tools import wakes as W
 from simple_tools import zulip as Z
-from simple_tools.tests.fake_zulip import BOT_EMAIL
 from simple_tools.tests.listener_harness import OPERATOR_EMAIL, OPERATOR_USER_ID
 from simple_tools.tests.test_daemon import MENTION, DaemonHarness
 
@@ -448,119 +449,36 @@ class OperatorHarness(DaemonHarness):
     def final_row(self) -> dict[str, Any]:
         return self.terminal_wakes()[-1]
 
+    def owner_note(
+        self, daemon: D.Daemon, note: str = "Codex asked for the key.", risk: str = "high", topic: str = "t"
+    ) -> tuple[int, dict[str, Any]]:
+        """Route a peer's mention into the seat inbox, then send the owner the escalation note about it
+        (`Daemon.dm_owner`, kept with no caller now that no wake runs a model)."""
+        mid = self.fake.add_message("Codex", "simple-tools", topic, MENTION)
+        self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+        row = [r for r in self.inbox() if r["id"] == mid][0]
+        now = self.clock.time()
+        pending = W.Pending("w-note-%d" % mid, "CLAUDE", row, owner=False, now=now, due=now)
+        pending.add({"id": mid, "ts": now}, False)
+        return mid, daemon.dm_owner(daemon.seats["CLAUDE"], pending, note, risk, [])
+
 
 class WakeReplyTests(OperatorHarness):
-    """A wake is answered by nobody:  the Operator never answers on behalf of a platform (owner ruling,
-    Nov 10 2026), in a channel or in a direct message, and the seat's own bot never does either."""
+    """Nothing answers a wake:  the Operator never answers on behalf of a platform (owner ruling, Nov 10
+    2026), and the seat's own bot never does either.  The one message about a request is the owner note."""
 
-    def assert_dropped(self) -> dict[str, Any]:
-        self.assertEqual(self.operator_posts(), [])
-        self.assertEqual(self.seat_requests(), [], "the seat's own bot wrote nothing")
-        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "nothing was even attempted")
-        row = self.final_row()
-        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"))
-        self.assertIsNone(row["posted_id"])
-        self.assertNotIn("posted_by", row)
-        return row
-
-    def test_a_channel_wake_is_not_answered(self) -> None:
+    def test_the_owner_note_is_the_only_post(self) -> None:
         daemon = self.started()
-        self.peer_wake(daemon)
-        self.assert_dropped()
-        self.assertEqual(self.log_events("post-refused")[0]["reason"], "operator_never_answers")
-
-    def test_a_dm_wake_with_the_owner_in_the_thread_is_not_answered(self) -> None:
-        daemon = self.started()
-        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon, 6)
-        self.assert_dropped()
-
-    def test_a_dm_wake_with_no_owner_in_the_thread_is_the_same(self) -> None:
-        daemon = self.started()
-        self.fake.add_direct_message("Codex", "status?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon)
-        self.assert_dropped()
-        self.assertEqual(self.log_events("post-refused-dm"), [], "the owner guard never sees a reply to refuse")
-
-    def test_a_dropped_reply_never_counts_on_the_loop_guard_of_the_dm_thread(self) -> None:
-        daemon = self.started()
-        self.fake.add_direct_message("Codex", "status of the cutover?", recipients=[self.fake.me, self.fake.user_by_id(OWNER)], deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon, 25)
-        self.assert_dropped()
-        trigger_key = L.topic_key("DM", "%d,%d,%d" % (CLAUDE_ID, CODEX, OWNER))
-        self.assertEqual(daemon.loopguard.count(trigger_key, self.clock.time()), 0)
-
-    def test_nothing_is_attempted_whatever_the_server_would_say(self) -> None:
-        """A channel the Operator cannot post in used to be a `post_failed` row and a log line.  Nothing is
-        sent now, so the rejection the fake server holds ready is never used, and the Operator is never
-        asked to post."""
-        daemon = self.started()
-        self.fake.inject(
-            "POST",
-            "messages",
-            status=400,
-            body={"result": "error", "msg": "Not authorized to send to channel", "code": "BAD_REQUEST"},
-        )
-        self.peer_wake(daemon)
-        self.assert_dropped()
-        self.assertEqual(self.log_events("post-failed"), [])
-        self.assertEqual(self.log_events("operator-post-refused"), [])
-
-    def test_an_escalating_wake_posts_only_the_owner_note(self) -> None:
-        daemon = self.started()
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "No.", "board": None, "risk": "high",
-                                           "owner_note": "asked for a key"})
-        self.peer_wake(daemon)
+        self.owner_note(daemon, note="asked for a key")
         posts = self.operator_posts()
         self.assertEqual(len(posts), 1, "the owner DM, and no reply to the peer")
         self.assertEqual(posts[0]["type"], "private")
         self.assertTrue(posts[0]["content"].startswith("[OPERATOR\u00b7note] re="), posts[0]["content"])
-        self.assertEqual(self.final_row()["post_error"], "operator_never_answers")
         self.assertEqual(self.seat_requests(), [])
 
 
 class NoOperatorTests(OperatorHarness):
-    """With no Operator the wake is not run at all, and nothing is posted by anyone else either."""
-
-    def assert_not_run(self, reason: str = "operator_unavailable") -> None:
-        self.assertEqual(self.dumps(), [], "the model was never run:  no budget was spent on it")
-        self.assertNotIn("started", [row["state"] for row in self.ledger()])
-        self.assertEqual((self.ledger()[-1]["state"], self.ledger()[-1]["reason"]), ("dropped", reason))
-        self.assertEqual(self.operator_posts(), [])
-        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "not one message left the daemon")
-
-    def test_an_unreadable_vault_runs_no_wake_and_does_not_use_the_seat(self) -> None:
-        self.operator_available = False
-        daemon = self.started()
-        self.peer_wake(daemon)
-        self.assert_not_run()
-        refused = self.log_events("operator-post-refused")
-        self.assertEqual([r["site"] for r in refused], ["wake-preflight"])
-        self.assertIn("fleet-secrets timeout", refused[0]["reason"])
-        self.assertEqual(self.log_events("operator-voice-unavailable")[0]["code"], "operator_unavailable")
-
-    def test_a_bot_that_is_not_the_pinned_operator_is_never_used_to_post(self) -> None:
-        """A factory that hands back a SEAT's client (a misconfigured credential) is caught by the
-        identity check, and nothing is posted as that seat."""
-        seat_credentials = Z.Credentials(email=BOT_EMAIL, key=self.key, site=self.fake.url, source="test")
-        daemon = self.daemon()
-        daemon.operator_voice._factory = lambda owner: Z.ZulipClient(
-            seat_credentials, self.fake.url, owner_user_id=owner
-        )
-        self.assertTrue(daemon.connect_seat("CLAUDE"))
-        self.trip(daemon.seats["CLAUDE"])
-        self.peer_wake(daemon)
-        self.assert_not_run()
-        refused = self.log_events("operator-post-refused")
-        self.assertIn("not the pinned Operator", refused[0]["reason"])
-
-    def test_a_host_that_pins_no_operator_runs_no_wake(self) -> None:
-        daemon = self.started(env=self.env(OPERATOR_ZULIP_USER_ID=None, OPERATOR_ZULIP_EMAIL=None))
-        self.peer_wake(daemon)
-        self.assert_not_run()
+    """With no Operator nothing the daemon writes is sent, and nothing is posted by anyone else either."""
 
     def test_a_host_that_pins_the_operator_only_in_listener_toml_still_has_a_voice(self) -> None:
         """The Mac's LaunchAgent carries no OPERATOR_ZULIP_* names:  the pins the host wrote in
@@ -602,76 +520,45 @@ class NoOperatorTests(OperatorHarness):
     def test_the_status_says_the_operator_cannot_speak_and_since_when(self) -> None:
         self.operator_available = False
         daemon = self.started()
-        self.peer_wake(daemon)
+        self.warm_operator(daemon)  # the build the daemon starts in the background at run
         voice = daemon.status()["operator_voice"]
         self.assertEqual((voice["available"], voice["code"]), (False, "operator_unavailable"))
         self.assertRegex(voice["since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertNotIn("fleet-secrets", json.dumps(voice))
         self.operator_available = True
         self.clock.advance(OPV.RETRY_SECONDS + 1)
-        self.peer_wake(daemon, "d")
+        self.warm_operator(daemon)
         voice = daemon.status()["operator_voice"]
         self.assertEqual((voice["available"], voice["code"]), (True, None))
 
-    def test_a_known_outage_is_checked_without_the_network_before_the_wake_is_queued(self) -> None:
-        """After one failed build the router-side check (`_wake_block`) knows the Operator is away for the
-        window, so later wakes are dropped when they are finalized, with no vault read and no queue."""
-        self.operator_available = False
-        daemon = self.started()
-        for topic in ("a", "b", "c"):
-            self.peer_wake(daemon, topic)
-        self.assertEqual(self.operator_builds, 1, "three dropped wakes cost one vault read")
-        self.assertNotIn("accepted", [row["state"] for row in self.ledger()[3:]])
-        self.assertEqual(self.dumps(), [])
-        self.operator_available = True
-        self.clock.advance(OPV.RETRY_SECONDS + 1)
-        self.peer_wake(daemon, "d")
-        self.assertEqual(self.operator_builds, 2)
-        self.assertEqual(self.final_row()["state"], "done", "and the wakes run again when it is back")
-        self.assertEqual(self.operator_posts(), [], "though it posts nothing for them")
-        self.peer_wake(daemon, "e")
-        self.assertEqual(self.operator_builds, 2, "one client serves every later check")
-
     def test_a_rejected_operator_key_fails_the_owner_note_and_the_next_one_builds_a_new_client(self) -> None:
         daemon = self.started()
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "No.", "board": None, "risk": "high",
-                                           "owner_note": "asked for a key"})
         self.fake.inject(
             "POST", "messages", status=401, body={"result": "error", "msg": "Invalid API key", "code": "UNAUTHORIZED"}
         )
-        self.peer_wake(daemon, "a")
+        _, sent = self.owner_note(daemon, note="asked for a key", topic="a")
         self.assertEqual(self.operator_posts(), [])
-        row = self.final_row()
-        self.assertIsNone(row["owner_dm"])
-        self.assertTrue(row["owner_dm_error"], "the failed note is recorded on the row")
+        self.assertIsNone(sent["owner_dm"])
+        self.assertTrue(sent["owner_dm_error"], "the failed note says why")
         self.assertEqual(self.operator_builds, 1)
-        self.peer_wake(daemon, "b")
+        self.owner_note(daemon, note="asked for a key", topic="b")
         self.assertEqual(self.operator_builds, 2, "the rejected client was dropped")
         self.assertEqual(len(self.operator_posts()), 1, "and the next owner note went out")
         self.assertEqual(self.seat_requests(), [])
 
-    def test_an_operator_lost_after_the_preflight_is_a_logged_refusal_and_never_a_seat_post(self) -> None:
-        """The preflight passed, then the Operator went away during the run: the owner note is refused
-        and logged, the row says why, and the seat's bot is not tried.  The reply was never going out."""
+    def test_an_operator_lost_before_the_note_is_a_logged_refusal_and_never_a_seat_post(self) -> None:
+        """The Operator went away after its client was built:  the owner note is refused and logged, the
+        answer says why, and the seat's bot is not tried."""
         daemon = self.started()
         client = daemon.operator_voice.client()
-        real_run = daemon.claude_runner.run
-
-        def run_then_lose_the_operator(*args: Any, **kwargs: Any) -> Any:
-            result = real_run(*args, **kwargs)
-            daemon.operator_voice.forget(client)
-            self.operator_available = False
-            return result
-
-        daemon.claude_runner.run = run_then_lose_the_operator
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "No.", "board": None, "risk": "high",
-                                           "owner_note": "asked for a key"})
-        self.peer_wake(daemon)
-        row = self.final_row()
-        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"))
-        self.assertIn("operator unavailable", row["owner_dm_error"])
+        daemon.operator_voice.forget(client)
+        self.operator_available = False
+        _, sent = self.owner_note(daemon, note="asked for a key")
+        self.assertIsNone(sent["owner_dm"])
+        self.assertIn("operator unavailable", sent["owner_dm_error"])
         self.assertEqual([r["site"] for r in self.log_events("operator-post-refused")], ["owner-dm"])
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.assertEqual(self.seat_requests(), [])
 
     def test_the_choke_point_scans_the_text_before_it_leaves(self) -> None:
         daemon = self.started()
@@ -686,20 +573,15 @@ class NoOperatorTests(OperatorHarness):
 class SiteTests(OperatorHarness):
     """Each place the daemon speaks."""
 
-    def escalate(self, daemon: D.Daemon, risk: str = "high") -> int:
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "I can't share that.", "board": None,
-                                           "risk": risk, "owner_note": "Codex asked for the key."})
-        return self.peer_wake(daemon)
-
     def test_the_escalation_note_is_a_dm_from_the_operator_and_names_the_seat_in_its_body(self) -> None:
         daemon = self.started()
-        mid = self.escalate(daemon)
+        mid, sent = self.owner_note(daemon)
         notes = [m for m in self.operator_posts() if m["type"] == "private"]
         self.assertEqual(len(notes), 1)
         self.assertEqual(sorted(r["id"] for r in notes[0]["display_recipient"]), [OWNER, OPERATOR_USER_ID])
         self.assertTrue(notes[0]["content"].startswith("[OPERATOR·note] re=%d\n" % mid), notes[0]["content"])
         self.assertIn("\nSeat: CLAUDE\n", notes[0]["content"], "the tag names the Operator, so the body names the seat")
-        self.assertEqual(self.final_row()["owner_dm"], notes[0]["id"])
+        self.assertEqual(sent["owner_dm"], notes[0]["id"])
         self.assertEqual(self.seat_requests(), [])
 
     def test_there_is_no_quota_notice_any_more(self) -> None:
@@ -707,41 +589,6 @@ class SiteTests(OperatorHarness):
         # pinned in test_daemon (a quota hold sends nobody a DM);  this is the code that went with it.
         self.assertFalse(hasattr(D.Daemon, "_tell_requester"))
         self.assertFalse(hasattr(D, "QUOTA_HOLD_TELL_WINDOW"))
-
-    TYPING_SEAT = '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nmodel = "sonnet"\ntyping_indicator = true\n'
-
-    def test_no_typing_indicator_is_raised_for_a_channel_wake_whatever_the_seat_says(self) -> None:
-        self.write_config(seats=self.TYPING_SEAT)
-        daemon = self.started()
-        self.peer_wake(daemon)
-        self.assertEqual(self.fake.requests_to("POST", "typing"), [])
-        self.assertEqual(self.fake.typing, [])
-        (event,) = self.log_events("typing-skipped")
-        self.assertEqual(event["code"], "operator_never_answers")
-        self.assertEqual(self.final_row()["state"], "done")
-
-    def test_no_typing_indicator_is_raised_for_a_dm_wake_either(self) -> None:
-        self.write_config(seats=self.TYPING_SEAT)
-        daemon = self.started()
-        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon, 6)
-        self.assertEqual(self.fake.requests_to("POST", "typing"), [])
-        self.assertEqual(self.fake.typing, [])
-
-    def test_a_seat_with_the_indicator_off_logs_nothing_about_it(self) -> None:
-        daemon = self.started()
-        self.peer_wake(daemon)
-        self.assertEqual(self.log_events("typing-skipped"), [])
-        self.assertEqual(self.fake.typing, [])
-
-    def test_no_indicator_at_all_when_there_is_no_operator(self) -> None:
-        self.operator_available = False
-        self.write_config(seats=self.TYPING_SEAT)
-        daemon = self.started()
-        self.peer_wake(daemon)
-        self.assertEqual(self.fake.typing, [])
-        self.assertEqual(self.dumps(), [], "and the wake itself was not run")
 
 
 class DmModeChokePointTests(OperatorHarness):
@@ -867,12 +714,12 @@ class StructureTests(unittest.TestCase):
         writes = re.findall(r"\bclient\.(?:post|patch|put|delete|request)\(", DAEMON_SOURCE)
         self.assertEqual(writes, [], "a seat's client must not write in the daemon;  use _operator_send")
 
-    def test_the_typing_indicator_is_never_raised_and_never_handed_a_seat_client(self) -> None:
-        source = inspect.getsource(D.Daemon._typing_signal)
-        body = source.split('"""')[2]  # after the docstring
-        self.assertNotIn("TypingSignal(", body)
-        self.assertNotIn("runner.client", body)
-        self.assertNotIn("operator_voice", body)
+    def test_the_typing_indicator_is_never_raised(self) -> None:
+        # The typing indicator went with the retired wake types (typing_signal.py and
+        # Daemon._typing_signal are gone):  nothing in the daemon raises one, on any client.
+        self.assertFalse(hasattr(D.Daemon, "_typing_signal"))
+        self.assertNotIn("TypingSignal(", DAEMON_SOURCE)
+        self.assertNotIn("typing_signal", DAEMON_SOURCE)
 
     def test_the_old_alert_seat_picker_is_gone(self) -> None:
         self.assertNotIn("_alert_runner", DAEMON_SOURCE)

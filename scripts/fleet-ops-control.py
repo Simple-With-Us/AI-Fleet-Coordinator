@@ -17,7 +17,8 @@
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
-  python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
+  python3 scripts/fleet-ops-control.py server test-wake SEAT.LETTER.GEN.HOST (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py --from-ssh                        (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
 
@@ -109,6 +110,23 @@ What it promises:
     plan, refuses `--yes` and any target but `server`, needs no allowlist entry, and answers
     `unavailable` with an `errorCode` word and exit status 1 when the router cannot be reached or
     answers unexpectedly.  The `--from-muster` route does not offer it.
+  * `server test-wake SEAT.LETTER.GEN.HOST` (`CLAUDE.BB.2.S`) sends the seat's wake router one
+    dry-run wake (`"test": true`) addressed to that one chat of the letter registry, with the
+    Eavesdropper's own `simple-chat daemon test-wake --seat SEAT --letter LETTER --json`, run with one
+    fixed `docker exec --user simpletools eavesdropper /app/scripts/simple_tools/server/entrypoint.sh`
+    argv (the entrypoint loads the routine's variables from Infisical;  no shell, no sudo, the pinned
+    docker environment, at most 256 KiB, 90 seconds).  Before anything is sent, the registry is read
+    (the `operator-sessions` program) and the target must be exactly one live chat with that seat,
+    letter, generation and host:  `target_gone`, `target_ambiguous` and `registry_unavailable` refuse
+    it, at plan time and again under the lock just before the run.  The router picks as it would for
+    a real wake, delivers nothing and logs one test receipt;  a pick of any other chat is a failed
+    test (`letter_not_picked`, `wrong_target`), never a fallback.  `--plan` shows the one command and
+    runs nothing;  `--yes` holds the one action lock, writes one audit row naming the chat, and answers
+    `testWake`:  the target, the wake id, whether the router accepted the dry run, `delivered` false,
+    and the router's health and pick as booleans, counts, letters and code words only (never the
+    request body, a topic, a session id, a link, a routine's host or its variable names).  A dry run
+    that picked the addressed chat is `done`;  any other is `failed` with the reason word as
+    `errorCode`.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -569,6 +587,62 @@ ROUTER_HEALTH_UNAVAILABLE = {
     "not_json": "the wake router health answer is not a JSON object",
     "read_failed": "the wake router health could not be read",
 }
+# `server test-wake SEAT.LETTER.GENERATION.HOST`:  sends the seat's wake router one dry-run wake
+# (`"test": true`) addressed to one exact chat of the letter registry, through the Eavesdropper's own
+# `simple-chat daemon test-wake --letter`, run inside its container through the container's entrypoint
+# (which loads the routine's variables from Infisical), and answers code words only.  The chat must be
+# the one live registry row with that seat, letter, generation and host, read again just before
+# anything is sent;  a chat that is gone or not one row is refused, and nothing goes to the router.
+# The router picks as it would for a real wake and delivers nothing;  a pick of any other chat is a
+# failed test, never a fallback.  The router appends one test receipt to its own log, so a run is a
+# `--yes` under the action lock with an audit row.  Every word of the argv is a constant here except
+# the seat and the letter, each checked against its own shape.
+TEST_WAKE_VERB = "test-wake"
+# The target word:  `CLAUDE.BB.2.S` (seat, letter, generation, host code).  A seat name holds no `.`.
+TEST_WAKE_TARGET_RE = re.compile(
+    r"(?P<seat>[A-Z0-9][A-Z0-9_-]{0,31})\.(?P<letter>[A-Z]{1,2})\.(?P<generation>[1-9][0-9]{0,5})"
+    r"\.(?P<host>[MSC])"
+)
+# What refuses a target before anything is sent, with the plain sentence for `detail`.
+TEST_WAKE_TARGET_REFUSALS = {
+    "target_gone": "no live chat in the letter registry has that seat, letter, generation and host",
+    "target_ambiguous": "more than one live chat in the letter registry matches that target",
+    "registry_unavailable": "the letter registry could not be read, so the target is not confirmed",
+}
+TEST_WAKE_ENTRYPOINT = "/app/scripts/simple_tools/server/entrypoint.sh"
+# The command checks the route, reads the router's health and sends one wake, each bounded by the
+# routine's own timeout;  the loader's Infisical fetch comes first.
+TEST_WAKE_TIMEOUT = 90
+TEST_WAKE_MAX_BYTES = 256 * 1024
+# The reason words a test wake may answer with, each with the plain sentence for `detail`.  The
+# command's own words for why nothing was sent are kept only when they are one of these.
+TEST_WAKE_ERRORS = {
+    "not_the_router": "the seat's routine is not the wake router, so nothing was sent",
+    "router_unreachable": "the wake router gave no answer at the routine's host",
+    "routine_not_configured": "the seat's routine variables are not set in the Eavesdropper",
+    "routine_key_refused": "the seat's routine key was refused before sending",
+    "routine_url_refused": "the seat's routine address was refused before sending",
+    "not_accepted": "the wake router did not accept the dry run",
+    "not_dry_run": "the routine answered, but not as the wake router's dry run",
+    "no_pick": "the router answered the dry run and picked no chat, so a real wake would reach nobody",
+    "letter_not_picked": "the router picked another chat than the addressed letter",
+    "wrong_target": "the router picked another generation or host than the addressed chat",
+    "seat_not_loaded": "the seat is not a loaded seat of the Eavesdropper",
+    "no_routine": "the seat has no routine, so it has no router to test",
+    "usage": "the Eavesdropper refused the test-wake request",
+    "test_wake_failed": "the test wake stopped without an answer this helper could read;  it may have reached the router",
+}
+TEST_WAKE_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "the test wake took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the test wake could not be run in the eavesdropper container",
+    "too_large": "the test wake's answer is larger than the allowed size",
+    "not_json": "the test wake's answer is not a JSON object",
+}
+# A router's pick and reason words (`picked`, `reason`, a health `reason`):  lower-case words joined
+# by `-` or `_`, read up to the first `:` (`seat-not-served:start-error` is `seat-not-served`).
+TEST_WAKE_WORD_RE = re.compile(r"[a-z][a-z0-9_-]{0,47}")
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -1192,6 +1266,17 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _declared_length(response):
+    """The response's Content-Length as a non-negative int, or None when it has none."""
+    headers = getattr(response, "headers", None)
+    try:
+        value = headers.get("Content-Length") if headers is not None else None
+        length = int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return length if length is not None and length >= 0 else None
+
+
 def _read_router_health_body(response, max_bytes, deadline):
     """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
     raw_fp = getattr(response, "fp", None)
@@ -1199,13 +1284,26 @@ def _read_router_health_body(response, max_bytes, deadline):
     read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
     chunks = bytearray()
     limit = max_bytes + 1
+    is_closed = getattr(response, "isclosed", None)
+    declared = _declared_length(response)
     while len(chunks) < limit:
+        # A body with a Content-Length is complete once that many bytes are read.  Reading on
+        # would wait on a kept-alive socket (Python 3.9's read1 never closes a known-length
+        # response), or set a timeout on the socket http.client already closed (3.11 and
+        # later), which fails with a bad file descriptor.
+        if declared is not None and len(chunks) >= declared:
+            break
+        if chunks and is_closed is not None and is_closed():
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("router health read deadline exceeded")
-        if sock is not None and hasattr(sock, "settimeout"):
+        if sock is not None and hasattr(sock, "settimeout") and sock.fileno() != -1:
             sock.settimeout(remaining)
-        chunk = read_fn(min(4096, limit - len(chunks)))
+        size = min(4096, limit - len(chunks))
+        if declared is not None:
+            size = min(size, declared - len(chunks))
+        chunk = read_fn(size)
         if not chunk:
             break
         chunks.extend(chunk)
@@ -2386,6 +2484,298 @@ def router_health_read(ctx, target, mode):
     }, 0
 
 
+def test_wake_target(target):
+    """The chat a `server test-wake SEAT.LETTER.GENERATION.HOST` names, or Refused.
+
+    {"seat": name, "letter": "A".."ZZ", "generation": int, "host": "mac" | "server" | "cloud",
+     "host_code": "M" | "S" | "C"}"""
+    match = TEST_WAKE_TARGET_RE.fullmatch(target) if isinstance(target, str) else None
+    if match is None:
+        raise Refused("the target is not SEAT.LETTER.GENERATION.HOST")
+    code = match.group("host")
+    host = next(name for name, letter in OPERATOR_HOSTS.items() if letter == code)
+    return {
+        "seat": match.group("seat"),
+        "letter": match.group("letter"),
+        "generation": int(match.group("generation")),
+        "host": host,
+        "host_code": code,
+    }
+
+
+def confirm_test_wake_target(ctx, chat):
+    """Refused unless exactly one live chat of the letter registry is `chat`.  The registry is read
+    with the same constant program and places as `server operator-sessions`, and nothing is sent to
+    the router until this passes.  A registry that cannot be read refuses too:  a target that is not
+    confirmed is never sent."""
+    document, _reason = _read_container_json(
+        ctx,
+        [OPERATOR_PYTHON, "-I", "-c", OPERATOR_SESSIONS_PROGRAM, OPERATOR_REGISTRY_PATH],
+        OPERATOR_READ_TIMEOUT,
+        OPERATOR_READ_MAX_BYTES,
+    )
+    reduced = None
+    if document is not None and "error" not in document:
+        try:
+            reduced = reduce_operator_sessions(document, ctx.now())
+        except Exception:  # noqa: BLE001 - an unreadable registry confirms nothing
+            reduced = None
+    if reduced is None:
+        raise Refused(
+            TEST_WAKE_TARGET_REFUSALS["registry_unavailable"], error_code="registry_unavailable"
+        )
+    matches = [
+        row
+        for row in reduced["sessions"]
+        if row["seat"] == chat["seat"]
+        and row["letter"] == chat["letter"]
+        and row["generation"] == chat["generation"]
+        and row["host_code"] == chat["host_code"]
+        and row["status"] == "active"
+    ]
+    if len(matches) > 1:
+        raise Refused(TEST_WAKE_TARGET_REFUSALS["target_ambiguous"], error_code="target_ambiguous")
+    if not matches:
+        raise Refused(TEST_WAKE_TARGET_REFUSALS["target_gone"], error_code="target_gone")
+
+
+def test_wake_argv(chat):
+    """The one argv of a test wake:  every word a constant of this file but the checked seat and letter."""
+    return [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        TEST_WAKE_ENTRYPOINT,
+        "daemon",
+        TEST_WAKE_VERB,
+        "--seat",
+        chat["seat"],
+        "--letter",
+        chat["letter"],
+        "--json",
+    ]
+
+
+def _test_wake_word(value):
+    """A router word read up to its first `:`, with `-` written `_`, or None."""
+    if not isinstance(value, str):
+        return None
+    head = value.split(":", 1)[0]
+    if not TEST_WAKE_WORD_RE.fullmatch(head):
+        return None
+    return head.replace("-", "_")
+
+
+def _test_wake_error(value):
+    """The command's `error`, as one of TEST_WAKE_ERRORS's words, or None when it gave none."""
+    if value is None:
+        return None
+    word = _test_wake_word(value) if isinstance(value, str) else None
+    return word if word in TEST_WAKE_ERRORS else "not_accepted"
+
+
+def _test_wake_name(chat):
+    """`CLAUDE BB.2 (server)`:  the chat a test wake addresses, in words."""
+    return f"{chat['seat']} {chat['letter']}.{chat['generation']} ({chat['host']})"
+
+
+def reduce_test_wake(report, chat):
+    """The `testWake` object of `server test-wake`, from the command's `--json` report.
+
+    {"target": {"seat", "letter", "generation", "host"}, "mode": "dry_run",
+     "passed": bool, "accepted": bool, "delivered": false, "dryRun": bool, "picked": bool,
+     "wakeId": id | null, "httpStatus": int | null, "error": word | null,
+     "router": {"healthy": bool | null, "delivery": bool | null, "reason": word | null},
+     "answer": {"status": word | null, "pick": word | null, "pickedLetter": letters | null,
+                "pickedGeneration": int | null, "host": "mac" | "server" | "cloud" | null,
+                "reason": word | null, "delivered": bool | null, "letterLive": bool | null,
+                "candidates": int | null}}
+
+    `accepted` is the router taking the dry run (an HTTP answer it gave as its own dry run);
+    `delivered` is always false, because a dry run delivers nothing, whatever the router's answer
+    said.  `passed` needs the router's pick to be the addressed chat itself:  its letter, its
+    generation and its host.  Only booleans, counts, ids and words reach it:  never the request body,
+    a topic, a session id, a thread link, a routine's host or variable names, or the router's text."""
+    answer = _operator_dict(report.get("answer"))
+    health = _operator_dict(report.get("router_health"))
+    request = _operator_dict(report.get("request"))
+    wake_id = _operator_text(answer.get("wake_id"), OPERATOR_WAKE_ID_RE) or _operator_text(
+        request.get("wake_id"), OPERATOR_WAKE_ID_RE
+    )
+    candidates = answer.get("candidates")
+    host = answer.get("host")
+    status = report.get("http_status")
+    dry_run = report.get("dry_run") is True
+    picked = report.get("picked") is True
+    picked_letter = _operator_text(answer.get("picked_letter"), OPERATOR_LETTER_RE)
+    picked_generation = _operator_int(answer.get("picked_generation"), low=1, high=1_000_000)
+    picked_host = host if host in OPERATOR_HOSTS else None
+    exact = (
+        picked_letter == chat["letter"]
+        and picked_generation == chat["generation"]
+        and picked_host == chat["host"]
+    )
+    passed = report.get("passed") is True and dry_run and picked and exact
+    error = _test_wake_error(report.get("error"))
+    if not passed and error is None:
+        if not dry_run:
+            error = "not_dry_run"
+        elif not picked:
+            error = "no_pick"
+        elif picked_letter != chat["letter"]:
+            error = "letter_not_picked"
+        else:
+            error = "wrong_target"
+    return {
+        "target": {key: chat[key] for key in ("seat", "letter", "generation", "host")},
+        "mode": "dry_run",
+        "passed": passed,
+        "accepted": dry_run,
+        "delivered": False,
+        "dryRun": dry_run,
+        "picked": picked,
+        "wakeId": wake_id,
+        "httpStatus": status if type(status) is int and 100 <= status <= 599 else None,
+        "error": None if passed else error,
+        "router": {
+            "healthy": _operator_flag(health.get("healthy")),
+            "delivery": _operator_flag(health.get("delivery")),
+            "reason": _test_wake_word(health.get("reason")),
+        },
+        "answer": {
+            "status": _test_wake_word(answer.get("status")),
+            "pick": _test_wake_word(answer.get("picked")),
+            "pickedLetter": picked_letter,
+            "pickedGeneration": picked_generation,
+            "host": picked_host,
+            "reason": _test_wake_word(answer.get("reason")),
+            "delivered": _operator_flag(answer.get("delivered")),
+            "letterLive": _operator_flag(answer.get("letter_live")),
+            "candidates": len(candidates) if isinstance(candidates, list) else None,
+        },
+    }
+
+
+def test_wake_detail(reduced, chat):
+    """One plain sentence built from the reduced answer's words only.  It never says delivered."""
+    name = _test_wake_name(chat)
+    answer = reduced["answer"]
+    router = reduced["router"]
+    delivery = {True: "on", False: "off, so a real wake would be held"}.get(
+        router["delivery"], "unknown"
+    )
+    if reduced["passed"]:
+        why = ", ".join(
+            f"{label} {value}"
+            for label, value in (("pick", answer["pick"]), ("reason", answer["reason"]))
+            if value
+        )
+        return (
+            f"the router accepted the dry run for {name} and picked that chat"
+            + (f" ({why})" if why else "")
+            + f";  a dry run delivers nothing, and router delivery for {chat['seat']} is {delivery}"
+        )
+    sentence = TEST_WAKE_ERRORS.get(reduced["error"], TEST_WAKE_ERRORS["not_accepted"])
+    if reduced["error"] in ("no_pick", "letter_not_picked", "wrong_target"):
+        picked = answer["pickedLetter"]
+        if picked:
+            picked += f".{answer['pickedGeneration']}" if answer["pickedGeneration"] else ""
+            picked += f" ({answer['host']})" if answer["host"] else ""
+            sentence += f";  it picked {picked}"
+        if answer["reason"]:
+            sentence += f" (reason {answer['reason']})"
+    return f"{name}:  {sentence};  nothing was delivered"
+
+
+def _test_wake_usage(stderr):
+    """The word for a test wake the command refused as a usage error (exit 2):  its own phrases
+    are only compared, never kept."""
+    text = (stderr or b"")[:DOCKER_STDERR_MAX].decode("utf-8", "replace").lower()
+    if "is not a loaded seat" in text:
+        return "seat_not_loaded"
+    if "has no routine" in text:
+        return "no_routine"
+    return "usage"
+
+
+def run_test_wake(ctx, chat):
+    """(the answer fields of a test-wake run, the exit status).  One `docker exec`, no shell, no
+    sudo, the pinned docker environment, at most TEST_WAKE_MAX_BYTES of output and
+    TEST_WAKE_TIMEOUT seconds;  what the command printed is reduced before any of it is answered.
+    The caller has confirmed the target in the registry first (`confirm_test_wake_target`)."""
+    name = _test_wake_name(chat)
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        scratch = None
+    if scratch is None:
+        status, out, err, over = 127, b"", b"", False
+    else:
+        with scratch as config_dir:
+            status, out, err, over = ctx.reader(
+                test_wake_argv(chat),
+                timeout=TEST_WAKE_TIMEOUT,
+                env=_docker_env(config_dir),
+                max_bytes=TEST_WAKE_MAX_BYTES,
+            )
+    reason = None
+    if over:
+        reason = "too_large"
+    elif status == 127:
+        reason = "docker_unavailable"
+    elif status == 124:
+        reason = "timeout"
+    elif status == 2:
+        word = _test_wake_usage(err)
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": f"{name}:  {TEST_WAKE_ERRORS[word]}",
+            "errorCode": word,
+            "testWake": None,
+        }, 1
+    elif status not in (0, 1):
+        reason = _docker_failure(err)
+    report = None
+    if reason is None:
+        try:
+            report = json.loads((out or b"").decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            report = None
+        if not isinstance(report, dict):
+            # Exit status 1 with no report is docker's own failure (a container that is not
+            # running), not the command's:  its words are only compared, never kept.
+            reason = "not_json" if status == 0 else _docker_failure(err)
+    if reason is not None:
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": TEST_WAKE_UNAVAILABLE[reason],
+            "errorCode": reason,
+            "testWake": None,
+        }, 1
+    reduced = reduce_test_wake(report, chat)
+    if reduced["passed"] and status == 0:
+        return {
+            "ok": True,
+            "result": "done",
+            "detail": test_wake_detail(reduced, chat),
+            "testWake": reduced,
+        }, 0
+    if reduced["passed"]:
+        # The report says it passed and the command's own exit status says it did not.
+        reduced = dict(reduced, passed=False, error="not_accepted")
+    return {
+        "ok": False,
+        "result": "failed",
+        "detail": test_wake_detail(reduced, chat),
+        "errorCode": reduced["error"],
+        "testWake": reduced,
+    }, 1
+
+
 def _pm2_prefix(ctx):
     node = ctx.pm2_node
     if node is None:
@@ -3175,14 +3565,14 @@ def check_token(ctx):
     try:
         _server_only(ctx)
         base = coolify_base(ctx)
-        token = read_coolify_token(ctx)
+        coolify_token = read_coolify_token(ctx)
         try:
             status = ctx.http(
                 base + "/api/v1/version",
-                {"Authorization": "Bearer " + token, "Accept": "application/json"},
+                {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
-            token = ""
+            coolify_token = ""
         if not 200 <= status < 300:
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
     except Refused as exc:
@@ -3242,14 +3632,14 @@ def execute(ctx, scope, action, target, commands):
     """Run the planned commands in order; the first failure stops the rest.  Returns detail."""
     if scope == "server" and action == "redeploy":
         base = coolify_base(ctx)
-        token = read_coolify_token(ctx)
+        coolify_token = read_coolify_token(ctx)
         try:
             status = ctx.http(
                 base + commands[0][2],
-                {"Authorization": "Bearer " + token, "Accept": "application/json"},
+                {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
-            token = ""
+            coolify_token = ""
         if not 200 <= status < 300:
             raise Failed(
                 f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
@@ -3602,6 +3992,51 @@ def handle(
             answer.update(fields)
             if mode == "yes":
                 audit_run(ctx, scope, action, target, audit_target, answer, None, extra)
+            return answer, code
+        if scope == "server" and action == TEST_WAKE_VERB:
+            # One dry-run wake to one exact chat of the letter registry.  Both `--plan` and `--yes`
+            # confirm the chat in the registry first and refuse a chat that is gone or not one row;
+            # `--plan` then shows the one command and runs nothing, and `--yes` confirms the chat
+            # again under the one action lock, runs it and writes one audit row naming the chat.
+            # The `--from-muster` route has no approval form for it, so it is refused there.
+            if require_approval:
+                raise Refused("test-wake is not offered on this route")
+            _server_only(ctx)
+            chat = test_wake_target(target)
+            answer["commands"] = [test_wake_argv(chat)]
+            if mode == "plan":
+                confirm_test_wake_target(ctx, chat)
+                answer.update(
+                    ok=True,
+                    result="planned",
+                    detail=f"sends the wake router one dry-run wake addressed to {_test_wake_name(chat)};  "
+                    "the router picks as for a real wake, delivers nothing and logs one test receipt",
+                    testWakeTarget={
+                        key: chat[key] for key in ("seat", "letter", "generation", "host")
+                    },
+                )
+                return answer, 0
+            with contextlib.ExitStack() as held:
+                if not lock_held:
+                    held.enter_context(action_lock(ctx))
+                confirm_test_wake_target(ctx, chat)
+                if isinstance(reason_out, dict):
+                    reason_out["started"] = True
+                try:
+                    fields, code = run_test_wake(ctx, chat)
+                except Exception:  # noqa: BLE001 - a run that may have sent still gets its one audit row
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "failed",
+                            "detail": TEST_WAKE_ERRORS["test_wake_failed"],
+                            "errorCode": "test_wake_failed",
+                            "testWake": None,
+                        },
+                        1,
+                    )
+            answer.update(fields)
+            audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
         if scope == "server" and action in OPERATOR_READS:
             # A read of the server Operator's session registry or wake records, reduced to
@@ -4171,6 +4606,7 @@ def parse_ssh_command(text):
         "operator-sessions",
         "operator-wakes",
         ROUTER_HEALTH_VERB,
+        TEST_WAKE_VERB,
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:

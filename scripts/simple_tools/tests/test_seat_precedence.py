@@ -444,3 +444,28 @@ class WakeLauncherTests(Harness):
         self.assertFalse(
             [k for k in plain if k.startswith(("AGENT", "ZULIP"))], "no seat:  no identity at all"
         )
+
+    def test_the_liveness_probe_environment_is_exactly_the_fixed_list(self) -> None:
+        # claude_env is what `claude agents --json` (lease liveness, Daemon.agent_kinds) runs under:  an
+        # exact dict, so a passed-through key, a missing flag or another PATH fails here.
+        parent = {
+            "USER": "jay",
+            "TMPDIR": "/var/tmp",
+            "ZULIP_API_KEY": "k",
+            "CLAUDE_CODE_SSE_PORT": "1",
+            "ANTHROPIC_API_KEY": "nope",
+            "AGENT_SEAT": "CODEX",
+        }
+        self.assertEqual(
+            A.claude_env(parent, str(self.home), "/usr/bin"),
+            {
+                "HOME": str(self.home),
+                "USER": "jay",
+                "LOGNAME": "jay",
+                "LANG": "en_US.UTF-8",
+                "TMPDIR": "/var/tmp",
+                "PATH": "/usr/bin",
+                "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+                "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
+            },
+        )
