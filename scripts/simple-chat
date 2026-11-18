@@ -57,6 +57,11 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "muster-servi
     from simple_tools.muster_service import main as muster_main
     sys.exit(muster_main(sys.argv[2:]))
 
+# The read-only wake acceptance check (AFC-694):  it asks a platform whether it would accept a wake,
+# and changes nothing.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-acceptance":
+    from simple_tools.wake_acceptance import main as wake_acceptance_main
+    sys.exit(wake_acceptance_main(sys.argv[2:]))
 # The wake router for every platform, and Claude's one-delivery command (OPS-1048):  host-local services, never
 # routed to a hosted server.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-router":

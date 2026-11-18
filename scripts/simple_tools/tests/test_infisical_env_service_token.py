@@ -235,6 +235,16 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             for b in groups[i + 1:]:
                 self.assertTrue(a.isdisjoint(b), sorted(a & b))
 
+    def test_every_server_seat_may_hold_the_url_of_its_own_legacy_bridge(self):
+        # A seat that still has a legacy bridge needs a name for that bridge's URL, and it is
+        # never the seat's own routine name:  the router's front and the bridge are two names,
+        # so a rollback has a URL to point at.
+        names = MODULE.allowed_names(MODULE.server_codes(MODULE.PARTITION_DEFAULT))
+        self.assertIn("ZC_ROUTINE_URL", names)
+        self.assertIn("ZC_BRIDGE_ROUTINE_URL", names)
+        # The bridge's name is a seat name, so a copy of it in the container is dropped.
+        self.assertTrue(MODULE.is_seat_name("ZC_BRIDGE_ROUTINE_URL"))
+
     def test_the_registry_key_pattern_is_the_knob_registry_pattern(self):
         from fleet_knobs import registry
 

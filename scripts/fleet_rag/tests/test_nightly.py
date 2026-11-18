@@ -545,6 +545,8 @@ class NightlyJobTests(unittest.TestCase):
                 root = Path(tmp)
                 env = _ready(root)
                 retired = root / ".secrets" / "fleet-recall-infisical.env"
+                if retired.parent.is_symlink():
+                    raise ValueError(f"refusing symlink: {retired.parent}")
                 retired.parent.mkdir(mode=0o700)
                 retired.write_text(TOKEN)
                 retired.chmod(0o600)
@@ -574,6 +576,30 @@ class NightlyJobTests(unittest.TestCase):
                 ingest_runner=lambda: (0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}),
                 post=lambda *args: None)
         self.assertTrue(summary["ok"], summary)
+
+    def test_malformed_recall_file_names_the_selected_file_binding_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            Path(env[nightly_job.TOKEN_FILE_RECALL]).write_text("not-a-service-token\n")
+            fetch = mock.Mock(side_effect=AssertionError("fetch after invalid file"))
+            with self.assertRaises(nightly_job.NightlyError) as caught:
+                nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+            fetch.assert_not_called()
+        self.assertEqual(caught.exception.reason, "token-invalid:" + nightly_job.TOKEN_FILE_RECALL)
+
+    def test_invalid_or_empty_process_binding_never_falls_back_or_names_the_file(self) -> None:
+        for value, reason in (("not-a-service-token", "token-invalid"), ("", "token-binding-empty")):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                env = _ready(Path(tmp))
+                env[nightly_job.RECALL_TOKEN_KEY] = value
+                fetch = mock.Mock(side_effect=AssertionError("fetch after invalid process binding"))
+                with (
+                    mock.patch.object(nightly_job.core, "_open_read_token_file", side_effect=AssertionError("file fallback")),
+                    self.assertRaises(nightly_job.NightlyError) as caught,
+                ):
+                    nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+                fetch.assert_not_called()
+                self.assertEqual(caught.exception.reason, reason + ":" + nightly_job.RECALL_TOKEN_KEY)
 
     def test_a_missing_linear_pair_refuses(self) -> None:
         def fetch(project, path, token, names):  # noqa: ANN001

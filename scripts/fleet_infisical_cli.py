@@ -51,8 +51,8 @@ USAGE = (
     "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
-    "           [--request-id UUID --request-created-at EPOCH_MS] [--reconcile]\n"
-    "           (value on standard input; reconcile reads no value)\n"
+    "           [--request-id UUID --request-created-at EPOCH_MS] [--reconcile|--clear-unsettled]\n"
+    "           (value on standard input; reconcile and clear-unsettled read no value)\n"
     "       fleet-secrets doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
 )
 
@@ -191,7 +191,12 @@ def write_intent_for_cli(
 
 def _write_options(args: Sequence[str]) -> dict[str, object]:
     """Strict set-only options; malformed input is refused before stdin or state access."""
-    options: dict[str, object] = {"path": "/", "purpose": "fleet-infisical-cli", "reconcile": False}
+    options: dict[str, object] = {
+        "path": "/",
+        "purpose": "fleet-infisical-cli",
+        "reconcile": False,
+        "clear_unsettled": False,
+    }
     names = []
     seen = set()
     i = 0
@@ -199,6 +204,8 @@ def _write_options(args: Sequence[str]) -> dict[str, object]:
         arg = args[i]
         if arg == "--reconcile":
             key, value = "reconcile", True
+        elif arg == "--clear-unsettled":
+            key, value = "clear_unsettled", True
         elif arg.startswith("--"):
             key, separator, value = arg[2:].partition("=")
             if key not in {"path", "purpose", "state-dir", "request-id", "request-created-at"}:
@@ -231,8 +238,12 @@ def _write_options(args: Sequence[str]) -> dict[str, object]:
         if not str(raw).isascii() or not str(raw).isdecimal() or len(str(raw)) > 20:
             raise UsageError("write-intent-time-invalid")
         options["request-created-at"] = int(raw)
+    if options["reconcile"] and options["clear_unsettled"]:
+        raise UsageError("reconcile and clear-unsettled cannot be combined")
     if options["reconcile"] and "request-id" not in options:
         raise UsageError("reconcile requires the original request identity")
+    if options["clear_unsettled"] and "request-id" not in options:
+        raise UsageError("clear-unsettled requires the original request identity")
     return options
 
 
@@ -240,10 +251,10 @@ def _write_report(result, name: str, path: str, intent: core.WriteIntent) -> dic
     """Only fixed outcomes and nonsecret recovery identity cross the command boundary."""
     if not isinstance(result, core.WriteError) and (
         not isinstance(result, core.WriteReceipt)
-        or result.outcome != "ok"
+        or result.outcome not in ("ok", "cleared")
         or result.request_id != intent.request_id
         or result.created_at_ms != intent.created_at_ms
-        or result.result not in ("created", "updated")
+        or result.result not in ("created", "updated", "cleared")
         or type(result.replayed) is not bool
     ):
         raise SecretsError("write-receipt-invalid")
@@ -276,9 +287,10 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
         created_at_ms=opts.get("request-created-at"),
         state_dir=opts.get("state-dir"),
     )
-    if opts["reconcile"]:
+    if opts["reconcile"] or opts["clear_unsettled"]:
+        action = core.clear_unsettled_write if opts["clear_unsettled"] else core.reconcile_secret
         try:
-            result = core.reconcile_secret(name, path, env, intent=intent)
+            result = action(name, path, env, intent=intent)
         except core.WriteError as exc:
             out.write(json.dumps(_write_report(exc, name, path, intent), sort_keys=True) + "\n")
             out.flush()

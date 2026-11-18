@@ -2216,8 +2216,8 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
     # The `board` wrapper is retired (2026-10-28):  `simple-board` is the entry point and is already
     # checked through FLEET_TOOLS and MAC_SIMPLE_TOOLS, so no `board` row is emitted.  A row for a
     # deliberately retired wrapper would be a permanent false failure in the published report.
-    for name in ("recall", "fleet-mode", "fleet-secrets"):
-        add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
+    # The installed copies are not checked here:  check_mac_copies judges them on every Mac,
+    # whichever runtime layout this one has.
     check_lane_tools(report, rt, runner)
     share = command_path("fleetlink")
     why = "presence only:  FleetLink has no managed runtime on the Mac, so currency is not checked"
@@ -2233,6 +2233,42 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
             tool="fleetlink",
         ),
     )
+
+
+def mac_copy_revision(runner: Callable = subprocess.run, tip: str | None = None) -> dict:
+    """The revision the Mac's installed copies are judged against.
+
+    `tip` is the tip of refs/heads/main as it was read from GitHub in this run,  and None when it
+    was not read.  `head` is the managed runtime's own HEAD,  because that is the checkout the
+    copies are compared against:  the layout's runtime dict names a different checkout (the
+    fleet-cli release) on a Mac judged server-style,  and a foreign revision either judges the
+    copies against the wrong commit or leaves the row a permanent WARN/unknown.
+
+    A local origin/main ref is never a tip (the policy at the top of this file):  when the tip was
+    not read,  or the runtime does not hold it,  copy_reference falls back to the runtime HEAD and
+    the row answers WARN/unknown,  never current.
+    """
+    head = git_try(MAC_RUNTIME, "rev-parse", "HEAD", runner=runner)
+    return {"tip": tip or None, "head": head or None}
+
+
+def check_mac_copies(
+    report: Report, runner: Callable = subprocess.run, tip: str | None = None
+) -> None:
+    """The Mac's installed copies (the fleet-rag install, fleet-mode, fleet-secrets) against the tip of main.
+
+    These rows are about a copy on disk, not about where the Mac's commands run, so they hold for
+    every Mac, whichever runtime layout this one has.  They rode check_mac_tools until AFC-1052:
+    that function only runs when the Mac is judged mac-style, and a Mac that also carries a
+    fleet-cli release checkout (the Mac publishes the server's bundle from it) was judged
+    server-style, so every one of these rows was lost.  A stale ~/apps/fleet-rag then went
+    unnoticed for days, and `recall contribute` failed with identity_required for every seat on
+    the Mac.  The revision comes from the managed runtime itself (mac_copy_revision),  never from
+    the layout's runtime dict.
+    """
+    rt = mac_copy_revision(runner, tip)
+    for name in ("recall", "fleet-mode", "fleet-secrets"):
+        add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
 
 
 def check_server_tools(
@@ -3710,6 +3746,10 @@ def run(
     check_catalogs(report, host)
     check_tool_files(report)
     check_fleet_mode_doc(report, rt)
+    if host == "mac":
+        # The installed copies are the Mac's own state and are checked on every Mac, whichever
+        # runtime layout it has:  they are not part of the layout choice.
+        check_mac_copies(report, runner=runner, tip=(expected or {}).get("rev"))
     if on_mac_runtime:
         check_mac_tools(report, rt, runner)
         check_placement_watch(report)

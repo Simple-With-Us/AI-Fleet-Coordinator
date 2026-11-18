@@ -110,6 +110,20 @@ class WriteCallerTests(unittest.TestCase):
         put.assert_not_called()
         self.assertEqual(json.loads(out)["outcome"], "ok")
 
+    def test_clear_unsettled_passes_exact_original_identity_without_reading_stdin(self):
+        receipt = core.WriteReceipt(
+            self.intent.request_id, self.intent.created_at_ms, "cleared", outcome="cleared"
+        )
+        with (
+            mock.patch.object(core, "clear_unsettled_write", return_value=receipt) as clear_fn,
+            mock.patch.object(core, "put_secret") as put,
+        ):
+            code, out, err = self.call([*self.identity(), "--clear-unsettled"])
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(clear_fn.call_args.kwargs["intent"], self.intent)
+        put.assert_not_called()
+        self.assertEqual(json.loads(out)["outcome"], "cleared")
+
     def test_fresh_set_passes_one_intent_and_returns_safe_receipt(self):
         value = secrets.token_urlsafe(40)
 

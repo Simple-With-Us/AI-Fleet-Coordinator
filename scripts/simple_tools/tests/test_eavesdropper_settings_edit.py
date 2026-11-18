@@ -1032,11 +1032,33 @@ class DaemonCheckTests(Case):
         self.assertIs(answer["check"]["ok"], True)
         self.assert_untouched()
 
+    def _a_seat_the_sample_still_routes_by_inbox(self) -> str:
+        """A seat the sample still routes through its inbox, so an http wake has no routine.
+
+        The seat is found in the sample and never named:  a seat that moves to the one wake
+        router carries a routine in the sample from then on, and this case must not break
+        again when that happens.  What it proves does not depend on which seat it is.
+        """
+        sample = tomllib.loads(SAMPLE.read_text(encoding="utf-8"))
+        for name, section in sorted((sample.get("seat") or {}).items()):
+            if section.get("wake", "inbox") != "inbox" or "routine" in section:
+                continue
+            if section.get("enabled") is False:
+                continue
+            return name
+        self.fail("the sample routes every seat with a routine, so no seat is left for this case")
+
     def test_the_real_check_refuses_a_change_the_eavesdropper_would_not_take(self) -> None:
         # An http wake with no routine:  inside every allowlist range, and still a config the
         # Eavesdropper reports an error for.  Only its own check knows that.
+        # A seat the sample still routes through its inbox, so the http wake has no routine:
+        # the seats the one router serves carry a routine in the sample already.
+        seat = self._a_seat_the_sample_still_routes_by_inbox()
         answer, status = M.run_request(
-            self.request("apply", {"seat.CLAUDE.wake": "http", "seat.CLAUDE.budget": {"usd_per_day": 0.5}}),
+            self.request(
+                "apply",
+                {"seat.%s.wake" % seat: "http", "seat.%s.budget" % seat: {"usd_per_day": 0.5}},
+            ),
             path=self.live,
         )
         self.assertEqual((status, answer["errorCode"]), (2, "check_failed"), answer)
@@ -1148,7 +1170,7 @@ class RequestProtocolTests(Case):
                     M.BOOTSTRAP_WRITER: self.writer, M.BOOTSTRAP_READER: self.writer}, clear=True):
                 out = io.StringIO()
                 self.assertEqual(M.main(["--bootstrap-request-stdin"], io.BytesIO(raw), out), 2)
-                self.assertEqual(json.loads(out.getvalue()), {"ok": False, "result": "refused",
+                self.assertEqual(json.loads(out.getvalue()), {"tool": M.TOOL, "ok": False, "result": "refused",
                                                              "errorCode": "bootstrap_unavailable"})
                 self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
                 self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
@@ -1156,6 +1178,7 @@ class RequestProtocolTests(Case):
             with mock.patch.object(M, "run_request", side_effect=RuntimeError(self.writer)):
                 answer, code = M.bootstrap_request(json.dumps(envelope).encode())
             self.assertEqual(code, 2)
+            self.assertEqual(answer.get("tool"), M.TOOL)
             self.assertNotIn(self.writer, json.dumps(answer))
             self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
         stream = mock.Mock()

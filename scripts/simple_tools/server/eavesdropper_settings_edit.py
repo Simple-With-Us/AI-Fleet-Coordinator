@@ -1567,7 +1567,7 @@ BOOTSTRAP_READER = "OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"
 def bootstrap_request(raw):
     """Private host-to-editor envelope only; the original request owns the transaction."""
     envelope, bootstrap = None, None
-    refused = {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}
+    refused = {"tool": TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}
 
     def pairs(items):
         result = {}
@@ -1629,7 +1629,7 @@ def main(argv=None, stdin=None, out=None):
             )
         except Exception:  # noqa: BLE001 - private input failures have one closed response
             answer, code = (
-                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                {"tool": TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
                 2,
             )
         finally:

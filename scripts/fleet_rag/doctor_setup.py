@@ -30,7 +30,10 @@ def rag_install_root(
 
 
 def _token_file_path(env: dict[str, str]) -> pathlib.Path | None:
-    return core._read_token_file_path(env)
+    try:
+        return core._read_token_file_path(env)
+    except FleetRagError:
+        return None
 
 
 def _pid_alive(pid: int) -> bool:

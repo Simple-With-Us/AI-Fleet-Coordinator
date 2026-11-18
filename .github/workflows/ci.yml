@@ -646,6 +646,11 @@ jobs:
     - name: Board CLI Simple-Tools parity
       timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_parity.py
+    # The board's remote transport (the hosted MCP):  the path a seat's own shell uses.  Its tests
+    # were not in CI, so a change to it was only exercised by hand.
+    - name: Board CLI remote transport
+      timeout-minutes: 10
+      run: python3 scripts/linear-board/test_board_remote.py
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
