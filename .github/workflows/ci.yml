@@ -711,6 +711,11 @@ jobs:
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
       run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
+    # thread-registry-export drain (Operator thread registry): thrown errors are bounded at
+    # 500 chars and redact credential material; failure-path tests, no network.
+    - name: thread-registry-export tests
+      timeout-minutes: 5
+      run: node --test scripts/simple_tools/thread_registry_export.test.mjs
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
