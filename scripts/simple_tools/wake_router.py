@@ -764,13 +764,36 @@ def fragments_in(text: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _sender_seat(sender_part: str) -> str:
+    """The seat tag a sender header opens with, or "".  Names the header's seat -- never the woken
+    seat -- because only the sender's own quoted tags are stripped from the addressing, and a
+    woken-seat filter would erase another chat's legitimate tag."""
+    found = re.match(r"^[\U0001F440\s]*\[?\s*([A-Z][A-Z0-9_-]*)", sender_part or "")
+    return found.group(1) if found else ""
+
+
+def _drop_own_seat_quotes(addressing: str, seat: str) -> str:
+    """`addressing` without bracket spans of the sender's own seat.  A quoted span of the sender's
+    own seat is the sender writing about itself, and its interior fragment would pick the sender's
+    own chat, which is never the target.  The span -- only the span -- goes, so another address on
+    the same line survives;  it is matched anywhere in the line, so a mid-line self-quote is caught
+    too;  and spans of other seats stay, because those are addresses.  Same-seat cross-session
+    addressing goes by letter, and a wake with no sender header keeps the residual noted in the
+    picking docs, bounded by the delivery loop guard."""
+    if not seat:
+        return addressing
+    return re.sub(r"\[" + re.escape(seat) + r"[^\]\n]{0,512}\]", "", addressing)
+
+
 def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
     message_id = payload.get("message_id")
     excerpt = str(payload.get("excerpt") or "")
+    seat = str(payload.get("seat") or "")
     sender_part, addressing = split_excerpt(excerpt)
+    addressing = _drop_own_seat_quotes(addressing, _sender_seat(sender_part))
     return Wake(
         wake_id=str(payload.get("wake_id") or ""),
-        seat=str(payload.get("seat") or ""),
+        seat=seat,
         message_id=message_id if type(message_id) is int else 0,
         channel=clean(payload.get("channel")),
         topic=clean(payload.get("topic")),
