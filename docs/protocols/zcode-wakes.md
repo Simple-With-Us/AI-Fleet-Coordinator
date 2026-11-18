@@ -48,14 +48,16 @@ delivers over the one fixed route.  A chat on the Mac is reached over ssh throu
 `claude_wake.deliver_remote`, and the Mac's own `simple-chat wake-deliver` dispatches to
 `deliver_request` in the module.
 
-The sample `scripts/simple_tools/server/listener.toml` declares the seat's binding, and the live
-file is moved to the sample's block by `apply_live_config.py --apply` once the image carries
+The sample `scripts/simple_tools/server/listener.toml` declares the seat's binding, and the
+live file is moved to the sample's block by `apply_live_config.py --apply` once the image carries
 it:  `wake = "http"` with `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-the one bearer the router checks.  That command runs only after the replacement has been
-explicitly reviewed, is live, and has been verified with a real wake;  a seat that fails any
-of those three keeps the binding it has, and the legacy binding stays active until all three
-hold.  The container is restarted with it, because the environment is read once at
-the container's start.
+the one bearer the router checks.  That apply is the cutover, and it is not this seat's alone:
+the apply writes the sample's block for every seat it manages, and this seat and CODEX are both
+among them, so the first apply after the image carries the new sample moves this seat to the
+router whatever the operator meant to move.  The three gates below are therefore checked before
+that apply runs and not after it, and a seat that fails any of them keeps the binding it has
+only for as long as no apply has moved it.  The container is restarted with it, because the
+environment is read once at the container's start.
 
 The three gates, and what each of them answered on the day of the cutover.
 
@@ -110,15 +112,19 @@ cutover that does not work never leaves the seat without a route.
     or an explicitly unsettled outcome.  Nothing in the live listener changes in this step, so
     the seat's own capture path is untouched and the seat keeps receiving its messages if the
     router's front does not.
-4.  Only then move the live listener's `[seat.ZC]` block to the router's binding.  The
-    sample declares it:  `wake = "http"` with
+4.  Only then deploy the image that carries the new sample and run
+    `apply_live_config.py --apply`, which is the step that performs the cutover.  The apply
+    reads the sample from the image's own copy of it, so an image that still carries the old
+    sample writes the old block, and the image comes first.  The sample declares the binding
+    this seat takes:  `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    and `apply_live_config.py --apply` writes that block into the live file:  the sample is the
-    file of record, and every apply replaces this seat's block with the sample's, so a hand
-    edit of the live file does not survive.  The container is restarted with it, because the
-    routine's URL comes from the environment, which is read once at the container's start, so a
-    reload alone would keep the old URL.  The bearer is now the router's own key, so the key
-    the bridge used is no longer accepted by the router, and the URL names the front.
+    and the apply writes the sample's block into the live file for every seat it manages, this
+    seat and CODEX among them, so one apply moves both of them to the router.  A hand edit of
+    the live file is not the way to do it:  the next apply writes the sample's block over it.
+    The container is restarted with the apply, because the routine's URL comes from the
+    environment, which is read once at the container's start, so a reload alone would keep the
+    old URL.  The bearer is now the router's own key, so the key the bridge used is no longer
+    accepted by the router, and the URL names the front.
 5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
     picked session and a delivered or an explicitly unsettled outcome.  A front that
     misbehaves here is a rollback, and the values a rollback needs are still in place:
@@ -129,19 +135,21 @@ cutover that does not work never leaves the seat without a route.
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
     and `ZC_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's URL again, the value
     `ZC_BRIDGE_ROUTINE_URL` keeps under its own name.  Both names are the seat's own, so the
-    settings-edit path can write that routine as well as the sample.  The change is made in
-    the file of record:  the sample's `[seat.ZC]` block is edited to the bridge's binding and
-    `apply_live_config.py --apply` writes it into the live file, because every apply replaces
-    that block with the sample's.  The container is restarted with it:  the environment is read
-    once at the start, so a reload alone would leave the routine unset and the seat would not
-    be woken at all.  The capture the seat had before the cutover comes back without any of
-    that:  `wake = "inbox"` and a reload alone put the seat back on the live file's own
-    binding.
+    settings-edit path writes that routine, and the daemon picks it up on the reload that
+    write ends with.  The sample has to come back with it:  the sample still carries the
+    router's binding for this seat, so the next apply would move the seat back to the router,
+    and the sample's `[seat.ZC]` block is edited to the bridge's binding before that can
+    happen.  The container is restarted with it:  the environment is read once at the start, so
+    a reload alone would leave the routine unset and the seat would not be woken at all.  The
+    capture the seat had before the cutover comes back without any of that:  `wake = "inbox"`
+    and a reload alone put the seat back on the live file's own binding, and it too is undone
+    by the next apply until the sample says the same.
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
 receipts.  Until then it stays as it is, with `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and
-`ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`.
+`ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`, and the sample keeps carrying the router's binding for
+this seat.
 
 ## What the module guarantees
 

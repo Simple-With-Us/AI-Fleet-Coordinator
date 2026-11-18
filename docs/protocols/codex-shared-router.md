@@ -138,8 +138,12 @@ The three gates, and what each of them answered on the day of the cutover.
 
 The legacy binding that the sample's change removed was the seat's inbox capture on the
 server, and it had delivered nothing:  the server's CODEX inbox holds no wake at all, so
-nothing that worked was removed with it.  The live block is moved to the sample's
-block only after those three gates hold, and it stays on the binding it has otherwise.
+nothing that worked was removed with it.  The live block is moved to the sample's block by the
+apply, and that apply is the cutover:  it writes the sample's block for every seat it manages,
+this seat and ZC among them, so the first apply after the image carries the new sample moves
+both seats to the router whatever the operator meant to move.  The three gates above are
+therefore checked before that apply runs and not after it, and the seat stays on the binding
+it has for as long as no apply has moved it.
 
 The steps, in this order.
 
@@ -153,13 +157,17 @@ The steps, in this order.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
-3.  Move the live listener's `[seat.CODEX]` block to the router's binding, which the sample
-    declares:  `wake = "http"` with
+3.  Only then deploy the image that carries the new sample and run
+    `apply_live_config.py --apply`, which is the step that performs the cutover.  The apply
+    reads the sample from the image's own copy of it, so an image that still carries the old
+    sample writes the old block, and the image comes first.  The sample declares the binding
+    this seat takes:  `wake = "http"` with
     `routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    and `apply_live_config.py --apply` writes the sample's block into the live file, because the
-    sample is the file of record and every apply replaces that block with the sample's.  The
-    container is restarted with it:  the restart carries the name minted in step 1 and the new
-    binding together, and a reload alone would keep the old value.
+    and the apply writes the sample's block into the live file for every seat it manages, this
+    seat and ZC among them, so one apply moves both of them to the router.  A hand edit of the
+    live file is not the way to do it:  the next apply writes the sample's block over it.  The
+    container is restarted with the apply:  the restart carries the name minted in step 1 and
+    the new binding together, and a reload alone would keep the old value.
 4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
     (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
     unsettled outcome.
