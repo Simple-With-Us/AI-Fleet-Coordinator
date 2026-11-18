@@ -21,7 +21,9 @@ test("relay check rows get relay guidance, not the wake route's", () => {
     { kind: "gr_assert", reason: "stale", seat: null, count: 2, ts: NOW - 2000, status: 401 },
     { kind: "gr_assert", reason: "grant_invalid:stale_epoch", seat: "CODEX", count: 1, ts: NOW - 500, status: 200 },
     { kind: "gr_assert", reason: "assertion:bad_signature", seat: null, count: 1, ts: NOW - 300, status: 200 },
+    { kind: "gr_assert", reason: "assertion:future", seat: "CODEX", count: 1, ts: NOW - 200, status: 200 },
   ]);
+  assert.ok(html.includes("The assertion was minted ahead of the Worker's clock."), "the assertion's own window has its own guidance");
   assert.ok(!html.includes("The wake signature is invalid."));
   assert.ok(!html.includes("The wake arrived outside its accepted time window."));
   assert.ok(html.includes("The relay's check call carried a wrong channel signature."));

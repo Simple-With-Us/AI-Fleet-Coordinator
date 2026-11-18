@@ -362,11 +362,9 @@ function recordGrRefusal(env, ctx, entry) {
   const write = recordDiagnostic(env, { ...entry, count }).then((written) => {
     if (!written) GR_REFUSALS.giveBack(entry, count);
   });
-  if (ctx && typeof ctx.waitUntil === "function") {
-    ctx.waitUntil(write);
-    return undefined;
-  }
-  return write;
+  // Never awaited by the route:  a refusal answer must not wait on the log (Kody, PR 2331).
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(write);
+  return undefined;
 }
 
 // ---------------------------------------------------------------- /mcp

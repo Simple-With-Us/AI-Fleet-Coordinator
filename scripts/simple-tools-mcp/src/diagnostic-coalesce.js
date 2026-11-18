@@ -17,6 +17,9 @@
 
 export const DIAGNOSTIC_COALESCE_WINDOW_MS = 60_000;
 const MAX_KEYS = 256;
+// The writer's own ceiling for one write's count (src/seat-state.js recordDiagnosticInner):
+// a count above it would be refused and the whole row lost, so a flood writes the ceiling.
+export const DIAGNOSTIC_MAX_COUNT = 1_000_000;
 
 export class DiagnosticCoalescer {
   constructor({ windowMs = DIAGNOSTIC_COALESCE_WINDOW_MS, now = () => Date.now(), maxKeys = MAX_KEYS } = {}) {
@@ -39,7 +42,7 @@ export class DiagnosticCoalescer {
       state.pending += 1;
       return 0;
     }
-    const count = 1 + (state?.pending ?? 0);
+    const count = Math.min(DIAGNOSTIC_MAX_COUNT, 1 + (state?.pending ?? 0));
     this.keys.delete(key);
     this.keys.set(key, { writtenAt: at, pending: 0 });
     // Oldest key first:  a Map keeps insertion order, and a written key moves to the end.
@@ -56,7 +59,7 @@ export class DiagnosticCoalescer {
     const key = `${kind}\0${reason}\0${seat ?? ""}`;
     const state = this.keys.get(key) ?? { writtenAt: -Infinity, pending: 0 };
     state.writtenAt = -Infinity;
-    state.pending += count;
+    state.pending = Math.min(DIAGNOSTIC_MAX_COUNT, state.pending + count);
     this.keys.set(key, state);
   }
 }

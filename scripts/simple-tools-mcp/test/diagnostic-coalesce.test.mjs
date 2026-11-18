@@ -7,7 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DiagnosticCoalescer, DIAGNOSTIC_COALESCE_WINDOW_MS } from "../src/diagnostic-coalesce.js";
+import { DiagnosticCoalescer, DIAGNOSTIC_COALESCE_WINDOW_MS, DIAGNOSTIC_MAX_COUNT } from "../src/diagnostic-coalesce.js";
 import { diagnosticRow } from "../src/worker-diagnostics.js";
 import * as S from "../src/seat-state.js";
 
@@ -54,6 +54,18 @@ test("a write that did not land gives its occurrences back, and the next one wri
   const fresh = new DiagnosticCoalescer({ now: () => now });
   fresh.giveBack({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }, 2);
   assert.equal(fresh.take({ kind: "gr_assert", reason: "replayed", seat: "CODEX" }), 3);
+});
+
+test("a carried count never passes the writer's ceiling, so a flood still writes a row", () => {
+  let now = NOW;
+  const c = new DiagnosticCoalescer({ now: () => now });
+  const entry = { kind: "gr_bearer", reason: "bad_signature" };
+  assert.equal(c.take(entry), 1);
+  c.giveBack(entry, DIAGNOSTIC_MAX_COUNT + 5);
+  assert.equal(c.take(entry), DIAGNOSTIC_MAX_COUNT);
+  for (let i = 0; i < 3; i += 1) c.take(entry);
+  now += DIAGNOSTIC_COALESCE_WINDOW_MS;
+  assert.equal(c.take(entry), 4);
 });
 
 test("the coalescer's memory is bounded, oldest key first", () => {

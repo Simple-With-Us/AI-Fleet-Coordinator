@@ -231,7 +231,8 @@ test("every refusal records one gr_assert diagnostics row with its reason, statu
   await run("wrong action", token, { body: await bodyFor(token, { action: "merge_pr" }) }, "action_mismatch", row("action_mismatch", 200, "CODEX"));
   await run("wrong body", token, { body: await bodyFor(token, { body_sha256: "0".repeat(64) }) }, "body_mismatch", row("body_mismatch", 200, "CODEX"));
   await run("expired", await mint({ now: Date.now() - 300_000, ttlS: 90 }), {}, "expired", row("expired", 200, "CODEX"));
-  await run("future", await mint({ now: Date.now() + 120_000 }), {}, "future", row("future", 200, "CODEX"));
+  // The assertion's own window, apart from the route's call window (`stale` above).
+  await run("future", await mint({ now: Date.now() + 120_000 }), {}, "future", row("assertion:future", 200, "CODEX"));
   await run("unlisted seat", token, { hostedSeats: ["ECHO"] }, "bad_seat", row("bad_seat", 200, "CODEX"));
   await run("events only", token, { eventsOnlySeats: ["CODEX"] }, "events_only", row("events_only", 200, "CODEX"));
   // grant_invalid keeps its relay-facing reason and records which check refused.

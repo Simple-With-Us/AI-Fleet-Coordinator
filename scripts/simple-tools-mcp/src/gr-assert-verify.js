@@ -42,8 +42,8 @@
 // The row's reason is the answer's, with two refinements that the relay never
 // sees.  A grant_invalid records its cause:  `grant_invalid:no_live_grant` for
 // the provider's grant list, or `grant_invalid:<gate code>` for the SeatGate
-// check.  The assertion's own bad_token, bad_signature and not_configured are
-// `assertion:<code>`, apart from the route-level codes of the same name.  A
+// check.  The assertion's own bad_token, bad_signature, not_configured, stale and
+// future are `assertion:<code>`, apart from the route-level codes of the same name.  A
 // refusal the relay makes without calling here (its 30 s refusal cache, a
 // write by a grant without zulip:write, or a proof mismatch it checks itself)
 // leaves no row, and a Worker error is a `provider` row instead.  Recording
@@ -68,8 +68,10 @@ export const GR_ASSERT_DIAGNOSTIC_KIND = "gr_assert";
 // that does not fit is recorded as none, so the row is still written.
 const DIAGNOSTIC_SEAT_RE = /^[A-Z][A-Z0-9_-]{0,39}$/;
 // Reason codes the assertion check shares with the route's own call checks:  the
-// diagnostics row prefixes them with `assertion:` so the two stay apart.
-const ASSERTION_SHARED_CODES = new Set(["bad_token", "bad_signature", "not_configured"]);
+// diagnostics row prefixes them with `assertion:` so the two stay apart.  The route's
+// `stale` and `future` are about the relay's call window;  the assertion's are about its
+// own iat and exp window (Kody, PR 2331).
+const ASSERTION_SHARED_CODES = new Set(["bad_token", "bad_signature", "not_configured", "stale", "future"]);
 
 function diagnosticSeat(seat) {
   return typeof seat === "string" && DIAGNOSTIC_SEAT_RE.test(seat) ? seat : null;

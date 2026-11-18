@@ -78,6 +78,8 @@ const GR_GUIDANCE = {
   "assertion:bad_signature": ["The assertion was not signed with the Worker's current signing key.", "Look for a signing-key rotation between mint and check, or a forged assertion."],
   "assertion:bad_token": ["The relay presented something that is not a readable assertion.", "Check the caller's credential;  only the Worker mints assertions."],
   "assertion:not_configured": ["The Worker's assertion signing key is not available.", "Restore the signing key in its Fleet-OPS folder."],
+  "assertion:stale": ["The assertion was minted longer ago than its accepted window.", "Look for a slow call between mint and check, or a Worker clock fault."],
+  "assertion:future": ["The assertion was minted ahead of the Worker's clock.", "Look for a clock fault between Worker isolates."],
 };
 
 function errorDetails(record) {
