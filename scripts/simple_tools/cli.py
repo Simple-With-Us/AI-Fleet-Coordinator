@@ -568,7 +568,11 @@ class Delivery:
 
     def _is_self(self, message: Mapping[str, Any], live: bool) -> bool:
         agent = self.agent
-        if agent.is_self(message):
+        if agent.sent_by_this_bot(message):
+            with agent.state.stream_post_guard():
+                if agent.is_self(message):
+                    return True
+        elif agent.is_self(message):
             return True
         if live and agent.sent_by_this_bot(message):
             deadline = time.monotonic() + SELF_GRACE
@@ -1765,9 +1769,15 @@ def _reformatted(agent: Agent, body: str) -> list[str]:
 
 
 def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
+    with agent.state.stream_post_guard():
+        return _send_stream_with_receipt(agent, channel, topic, body)
+
+
+def _send_stream_with_receipt(agent: Agent, channel: str, topic: str, body: str) -> int:
     try:
         result = agent.client.post(
-            "messages", {"type": "stream", "to": channel, "topic": topic, "content": body}
+            "messages",
+            {"type": "stream", "to": channel, "topic": topic, "content": body},
         )
     except NetworkError as exc:
         if exc.maybe_sent:

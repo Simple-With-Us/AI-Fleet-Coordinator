@@ -47,6 +47,8 @@ POSTED_LIMIT = 500
 ENV_STATE_DIR = "SIMPLE_TOOLS_STATE_DIR"
 
 _THREAD_LOCK = threading.RLock()
+_POST_LOCKS_GUARD = threading.Lock()
+_POST_LOCKS: dict[str, threading.RLock] = {}
 
 
 def state_root(env: Mapping[str, str], home: Path | None = None) -> Path:
@@ -215,6 +217,38 @@ class State:
             cursors[key] = current
 
         self._update(self.path, mutate)
+
+    @contextlib.contextmanager
+    def stream_post_guard(self) -> Iterator[None]:
+        """Fence stream publication and its ledger receipt for this session only.
+
+        The event can arrive before the HTTP response. A listener must wait for
+        that receipt, not guess from a short sleep whether an untagged post is
+        its own. The separate lock never holds the global state-update lock
+        across network I/O. Process death releases the advisory lock; an
+        uncertain post is never retried here.
+        """
+        lock_path = self.session_dir / "stream-post.lock"
+        make_private_dir(lock_path.parent)
+        key = str(lock_path.resolve())
+        with _POST_LOCKS_GUARD:
+            local = _POST_LOCKS.setdefault(key, threading.RLock())
+        with local:
+            fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
 
     # ---- posted ledger --------------------------------------------------------------------
     def posted(self) -> set[int]:

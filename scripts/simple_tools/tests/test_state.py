@@ -22,6 +22,36 @@ class StateTests(unittest.TestCase):
     def mode(self, path: Path) -> int:
         return stat.S_IMODE(os.stat(path).st_mode)
 
+    @unittest.skipIf(S.fcntl is None, "POSIX advisory locks required")
+    def test_stream_publication_lock_is_session_scoped_and_released(self) -> None:
+        import subprocess
+        import sys
+
+        state = S.State(self.root, "CLAUDE", "abcd1234")
+        sibling = S.State(self.root, "CLAUDE", "different")
+        probe = (
+            "import fcntl,os,sys; f=os.open(sys.argv[1],os.O_RDWR); "
+            "fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        )
+        path = state.session_dir / "stream-post.lock"
+        with self.assertRaisesRegex(RuntimeError, "fixture stop"):
+            with state.stream_post_guard():
+                with sibling.stream_post_guard():
+                    state.record_posted(42)
+                blocked = subprocess.run(
+                    [sys.executable, "-c", probe, str(path)], capture_output=True
+                )
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn(b"BlockingIOError", blocked.stderr)
+                raise RuntimeError("fixture stop")
+        released = subprocess.run(
+            [sys.executable, "-c", probe, str(path)], capture_output=True
+        )
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertEqual(state.posted(), {42})
+        self.assertEqual(self.mode(path), 0o600)
+
+
     def test_layout_and_modes_even_with_a_permissive_umask(self) -> None:
         old = os.umask(0)
         try:
