@@ -4,7 +4,9 @@ retries, the "??" title, the end-of-turn report and the install;  this file is o
 
 - The hooks are Claude Code shaped, in `~/.minimax/hooks.json`:  SessionStart starts, UserPromptSubmit names the
   chat from its first message, SubagentStart gives a subagent its own letter and Stop ends a turn (the turn end
-  also puts the letter back on a title MiniMax Code regenerated without it).  A SessionStart hook's plain stdout is
+  also puts the letter back on a title MiniMax Code regenerated without it).  The hook does not take a chat's
+  title before the chat has a descriptive one:  a brand-new chat keeps the name MiniMax Code gives it, and the
+  letter goes on that name at the first prompt.  A SessionStart hook's plain stdout is
   the context the model reads (`output="text"`).  A subagent takes the pair after its parent's (parent CC, child
   CD, the next CE), and MiniMax Code sends the PARENT's session id for a subagent event, so the child's own id is
   read from `childSessionId`.  MiniMax Code has no end event, so no hook closes a registration:  the assigner's own
@@ -87,6 +89,9 @@ CLOSE_REASONS: tuple[str, ...] = ()
 CACHE_BYTES = 64 << 10
 CACHE_SCOPES = 200
 CHAT_KINDS = ("conversation", "task")
+#: The row of the session store where the hook remembers the title it last put on the chat, so a name a person
+#: gave is told apart from the hook's own even when the note lost it.  It rides in the store's own extra data.
+HOOK_TITLE_KEY = "hookTitle"
 
 
 def store_file(env: Mapping[str, str]) -> str:
@@ -186,17 +191,31 @@ def _extra(raw: object) -> dict[str, Any]:
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
-    """Write the title into the session store's row, and mark the title as the hook's own.
+    """Put the title on the chat, and mark it as the hook's own.
 
-    Two things happen in one write.  MiniMax Code's own title service auto-titles a chat whose
-    `titleSource` is still `default` and puts its title back over the lettered one, so the row is
-    written with `titleSource` `manual` as well:  the runtime leaves a title that is not `default`
-    alone.  And a title a person chose is never overwritten:  the runtime marks a name a person set
-    as `manual` too, so a `manual` title that is not the one the hook last put on the chat is left
-    exactly as it is.
+    Three things happen in one write.
+
+    - A chat with no descriptive name yet is left alone.  MiniMax Code names a chat itself, from its
+      first message, and the hook took that name away by putting "New Chat" on the thread before the
+      runtime had said anything:  the runtime then put its own title over the lettered one and the
+      letter was gone.  The letter goes on the chat at its first prompt instead, on the words the chat
+      has by then.
+    - MiniMax Code's own title service auto-titles a chat whose `titleSource` is still `default` and puts
+      its title back over the lettered one, so the row is written with `titleSource` `manual` as well:
+      the runtime leaves a title that is not `default` alone.
+    - A title a person chose is never overwritten:  the runtime marks a name a person set as `manual`
+      too, so a `manual` title that is not the hook's own is left exactly as it is.  The hook's own last
+      title is remembered in the row, so a name a person gave is told apart from the hook's own even
+      when the note lost it.  When the hook leaves a person's words alone it says so:  it did not write
+      the title, and it does not claim that it did.
     """
     path = store_file(request.env)
     if not request.session_id or not os.path.isfile(path):
+        return False
+    words = str(request.words or "").strip()
+    if not words or words == PL.PLACEHOLDER:
+        # Nothing descriptive to name the chat with yet:  the runtime's own title service names it, and the
+        # hook's letter goes on that name at the chat's first prompt.
         return False
     try:
         conn = sqlite3.connect(path, timeout=4)
@@ -213,14 +232,20 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
                     return False
                 current = str(row[0] or "")
                 extra = _extra(row[1]) if extra_column else {}
-                if (
-                    extra.get("titleSource") == "manual"
-                    and current
-                    and current != str(getattr(request, "shown", "") or "")
-                ):
-                    return True  # a person named this chat:  their words stay
+                own = str(extra.get(HOOK_TITLE_KEY) or "") if extra_column else ""
+                shown = str(getattr(request, "shown", "") or "")
+                # The title is the hook's own when the row remembers it as such, or when the note remembers it as
+                # the hook's last one.  Either record may be gone, and a title the hook cannot claim is a title
+                # somebody else put there.
+                mine = bool(own and current == own) or bool(shown and current == shown)
+                if extra.get("titleSource") == "manual" and current and not mine:
+                    # A person named this chat:  their words stay, and the hook does not claim that it wrote
+                    # them.  The hook's own last title is in the row, so a name a person gave is still told
+                    # apart from the hook's own when the note lost it.
+                    return False
                 if extra_column:
                     extra["titleSource"] = "manual"
+                    extra[HOOK_TITLE_KEY] = str(request.title)
                     cur = conn.execute(
                         "UPDATE local_runtime_sessions SET title = ?, extra_data_json = ?"
                         " WHERE session_id = ?",
