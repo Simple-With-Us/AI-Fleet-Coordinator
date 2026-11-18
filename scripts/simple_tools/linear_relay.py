@@ -19,9 +19,13 @@ excluded.
 What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
 
   - NOT exactly-once.  The write-ahead ledger and the marker reconciliation narrow duplicates, they
-    do not eliminate them.  A lost ledger file, a second relay process on another host, or an
-    uncertain write outcome (a create that landed while its answer was lost) can each produce a
-    second comment.  The relay reconciles what it can see and says so in the log.
+    do not eliminate them.  A lost ledger file, an archive record dropped at its bound (below), a
+    second relay process on another host, or an uncertain write outcome (a create that landed
+    while its answer was lost) can each produce a second comment.  So can a topic rename or a
+    stream move the worker never saw (one made while it was not running, or while its
+    public-stream set was unloaded): the topic's entry, or its archived record, stays under the
+    old name, and a mention under the new name starts afresh.  The relay reconciles what it can
+    see and says so in the log.
   - Comment-edit permission under the Linear scopes `read` + `comments:create` is UNVERIFIED.  The
     relay is written for it; the sandbox test that proves it comes later, after Jay approves the
     app.
@@ -34,6 +38,52 @@ into it, so the comment covers the whole topic and not only the thread from the 
 (owner ruling, 2026-11-03:  the poster often did not know an issue existed).  The standalone
 process passes no history reader, so it gets no backfill;  the whole-topic continuation above
 applies to both.
+
+The comment map outlives the ledger's bound (AFC-821).  The ledger keeps MAX_ENTRIES live entries
+and prunes the oldest.  A pruned entry that has a comment, or a create whose outcome is unknown,
+leaves a compact record in the ledger's `archive` table under the same key: the conversation's
+first message id, the comment id, the pending flag and when it was last touched, and no topic
+text, stream name, link or quote.  The next message in that topic, whether or not it names the
+issue, restores the entry from that record with its ORIGINAL first message id, so the marker is
+the old comment's own and the old comment is edited instead of a second one being created.  A
+record whose create was never confirmed is looked up by that marker before anything is created,
+and a comment Linear no longer has is recreated once, under that marker.  Hosted, the restored
+entry is refilled from the topic's history first, as a new entry is; when that read fails, the
+record stays in the archive and the old comment is left as it is, and a message at least
+CATCH_UP_RETRY seconds later tries again (the messages in between are in the history it reads).
+Standalone there is no history to read, so a restored entry restarts from the live message and
+its comment is rewritten to list only what follows.  A rename that newly names the issue does
+not restore its comment; the topic's next message does.  Archived records follow a whole-topic
+rename or move, and are dropped with a stream that is not public, by the rules live entries
+obey.  Still NOT guaranteed: a lost ledger file loses the archive with it; the archive is
+bounded at MAX_ARCHIVE records and by the ledger's byte bound, its oldest records are dropped
+first, and the log says how many; a partial move of some of a topic's messages to a private
+stream cannot take them out of an archived comment, which lists no message, so that comment
+keeps their links and quotes until the topic's next message restores and refills it; and the
+build before this one reads a ledger that has an archive, keeps the table as it found it, and
+neither adds to it nor restores from it.
+
+Catch-up (AFC-821, hosted only).  The host replays only part of what it missed while it was
+down (direct messages, mentions, owner posts, leased and followed topics), so a plain message
+posted in the gap never reaches the worker; the same holds for the gap while its event queues
+register again after an expiry, and for a message dropped while the public-stream set was
+unloaded.  Given a second reader (history_since), the worker closes that gap itself: the first
+message that reaches an entry after a restart, after the host reports a queue registered again
+(reopen_catch_up), or after its topic lost a message to an unloaded set, reads the topic's
+messages newer than the newest one the entry has seen, and records the missed ones before the
+live one.  An entry is settled only by a read that reaches the live message: a read cut short
+at its MAX_BACKFILL cap, or one that shows the live message is not the topic's newest (the host
+replaying an older one), is continued from where it stopped by the topic's next message, and
+the whole-topic read of a new or restored entry is judged the same way.  A read that fails is
+logged and tried again by a message at least CATCH_UP_RETRY seconds later; the same message fed
+again for another seat costs no second read.  Still NOT guaranteed: a topic is caught up only
+when its next message arrives, so a topic that stays silent keeps its gap until then; the point
+a failed read retries from lives in memory only, so a restart before a retry succeeds loses the
+gap before the messages recorded meanwhile; a catch-up still open after MAX_BACKFILL further
+messages gives up and says so in the log; a message moved into a public topic from a private
+stream while the worker was not running is recorded like any other message the topic holds,
+as the whole-topic backfill records it; and the standalone process passes no such reader, so it
+catches nothing up.
 
 Run (server instance, stdlib only, Python 3.11+):
 
@@ -56,7 +106,9 @@ for message and update_message events; RelayWorker.start_cycle() before each pol
 RelayWorker.tick(now) after it, so the batch's writes share one budget; and
 RelayWorker.set_public_streams(...) whenever a `stream` event arrives (None first, then the
 reloaded id -> name map, as run() does).  The worker holds no Zulip client, so it cannot reload the
-set itself, and until it is given one it relays and writes nothing.  Zulip text is untrusted data:
+set itself, and until it is given one it relays and writes nothing.  A host that gives the worker
+a catch-up reader also calls RelayWorker.reopen_catch_up() whenever one of its event queues
+registers again, so the gap the old queue left is read.  Zulip text is untrusted data:
 a field that carries anything credential-shaped is withheld whole, never partly redacted, and is
 not logged; every other field is trimmed and escaped so it cannot break out of the comment.  It
 never decides what the relay does beyond which issue ID to name.
@@ -69,6 +121,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -117,6 +170,7 @@ EDIT_INTERVAL = 600  # seconds between edits of one comment (owner: 10 minute ba
 MAX_LINKS_SHOWN = 20
 MAX_SEEN = 200  # message ids remembered per comment, for idempotency
 MAX_BACKFILL = 1000  # topic messages pulled into a new entry (whole-topic scope, owner 2026-11-03)
+CATCH_UP_RETRY = 60.0  # seconds before a history read that failed is tried again for an entry
 MAX_ISSUES_PER_MESSAGE = 5
 QUOTE_CHARS = 280
 LINEAR_URL = "https://api.linear.app/graphql"
@@ -126,6 +180,7 @@ LIVE_STATE = "~/.simple-tools/linear-relay.json"
 DRY_STATE = "~/.simple-tools/linear-relay.dry-run.json"
 LEDGER_VERSION = 2  # 2: the ledger key carries a digest of the topic, never the topic itself
 MAX_ENTRIES = 500  # the ledger is bounded: the oldest entries are pruned
+MAX_ARCHIVE = 20000  # what pruned entries leave behind (root, comment id) is bounded too
 MAX_LEDGER_BYTES = 8 * 1024 * 1024
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 MAX_ATTEMPTS = 5
@@ -280,6 +335,17 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _is_finite(value: Any) -> bool:
+    """A number that can stand for a time: not NaN, not an infinity, and not an integer too large
+    for a float, which would make the archive's oldest-first ordering raise."""
+    if not _is_number(value):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _valid_link(item: Any) -> bool:
     return (
         isinstance(item, dict)
@@ -328,15 +394,55 @@ def valid_entry(key: Any, entry: Any) -> bool:
     )
 
 
+def valid_archived(key: Any, record: Any) -> bool:
+    """The whole shape of one archive record: a ledger key exactly as ledger_key writes it, and
+    the four fields a pruned entry leaves behind (its root message id, its comment id, its
+    pending flag, its last touch), each of them present.  The key is held to its written form
+    because the archive is looked up by key: a key that only parses to the same stream id would
+    never be found.  The last touch must be a finite time, because the bounds order the archive
+    by it."""
+    if not isinstance(key, str) or not isinstance(record, dict):
+        return False
+    try:
+        issue, sid, digest = split_key(key)
+    except ValueError:
+        return False
+    comment_id = record.get("comment_id")
+    return (
+        key == "%s|%d|%s" % (issue, sid, digest)
+        and re.fullmatch(r"[0-9a-f]{32}", digest) is not None
+        and _is_int(record.get("root"))
+        and "comment_id" in record
+        and (comment_id is None or (isinstance(comment_id, str) and comment_id != ""))
+        and isinstance(record.get("pending"), bool)
+        and _is_finite(record.get("at"))
+    )
+
+
 class Ledger:
     """JSON file: key "ISSUE|stream_id|topic digest" -> comment id, links, timing.  Atomic,
-    owner-only writes under an flock so a restart never double-comments."""
+    owner-only writes under an flock so a restart never double-comments.
+
+    The live table is bounded (MAX_ENTRIES), and the comment map outlives that bound (AFC-821):
+    a pruned entry that has a comment, or a create whose outcome is unknown, leaves a compact
+    record in the optional `archive` table under the same key: {"root", "comment_id", "pending",
+    "at"}, and no topic text, stream name, link or quote.  The archive is bounded as well
+    (MAX_ARCHIVE, and the file's byte bound); `archive_dropped` counts the records those bounds
+    cost, each one a standing comment the relay can no longer find.  A full archive renders to
+    about 3.7 MB, a little under half of MAX_LEDGER_BYTES, so from then on the byte bound rather
+    than MAX_ENTRIES can be what limits the live table, and an entry it retires pushes the
+    oldest archive record out."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.data: dict[str, Any] = {"version": LEDGER_VERSION, "entries": {}}
         self._lock_fh: Any = None
         self.pruned = 0
+        self.archive_dropped = 0
+        # stream id -> topic digest -> the archived keys of that topic.  Built at open and kept
+        # in step by archive_put and archive_pop, so finding one topic's archived issues, or one
+        # stream's archived records, never scans the whole archive.
+        self._archive_index: dict[int, dict[str, set[str]]] = {}
         self.dirty = False
 
     def open(self) -> None:
@@ -362,6 +468,7 @@ class Ledger:
                     % (self.path, type(exc).__name__)
                 ) from None
         self._validate()
+        self._index_archive()
 
     def _validate(self) -> None:
         """Fail closed on a ledger whose shape is wrong, before any entry is read or written."""
@@ -382,6 +489,21 @@ class Ledger:
                 raise SystemExit(
                     "the relay ledger %s has a malformed entry (number %d); move the file aside "
                     "to start over" % (self.path, number + 1)
+                )
+        if "archive" not in self.data:
+            return  # optional: a ledger written before the archive existed opens as it always did
+        archive = self.data["archive"]
+        if not isinstance(archive, dict):
+            raise SystemExit(
+                "the relay ledger %s has an archive that is not a table; move the file aside to "
+                "start over" % self.path
+            )
+        for number, (key, record) in enumerate(archive.items()):
+            if not valid_archived(key, record):
+                # As for an entry: the record's position, never its key or fields.
+                raise SystemExit(
+                    "the relay ledger %s has a malformed archive record (number %d); move the "
+                    "file aside to start over" % (self.path, number + 1)
                 )
 
     def mark_dirty(self) -> None:
@@ -429,9 +551,18 @@ class Ledger:
 
     def _render(self) -> str:
         self._prune_entries()
+        self._prune_archive()
         text = json.dumps(self.data, indent=1, sort_keys=True)
-        while len(text.encode("utf-8")) > MAX_LEDGER_BYTES and self.data["entries"]:
-            self._drop_oldest()
+        while len(text.encode("utf-8")) > MAX_LEDGER_BYTES:
+            if self.data["entries"]:
+                # The oldest entry leaves for the archive, where its record is a fraction of
+                # the entry's size, so the file still shrinks.
+                self._drop_oldest()
+                self._prune_archive()
+            elif self.archive:
+                self._drop_oldest_archived()  # no entry is left: the map itself gives way
+            else:
+                break
             text = json.dumps(self.data, indent=1, sort_keys=True)
         return text
 
@@ -442,20 +573,107 @@ class Ledger:
             return
         order = sorted(entries.items(), key=lambda kv: float(kv[1].get("last_touch", 0.0)))
         for key, _ in order[:excess]:
-            entries.pop(key, None)
-            self.pruned += 1
+            self._retire(key)
 
     def _drop_oldest(self) -> None:
         entries = self.data["entries"]
         if not entries:
             return
         oldest = min(entries.items(), key=lambda kv: float(kv[1].get("last_touch", 0.0)))[0]
-        entries.pop(oldest, None)
+        self._retire(oldest)
+
+    def _retire(self, key: str) -> None:
+        """Take one entry out of the live table to keep the ledger bounded.  An entry that has
+        a comment, or a create whose outcome is unknown, leaves a compact record in the
+        archive, so a later message in its topic finds that comment again instead of starting
+        a second one.  An entry with neither has no comment to find, and is simply dropped."""
+        entry = self.data["entries"].pop(key, None)
+        if entry is None:
+            return
         self.pruned += 1
+        comment_id = entry.get("comment_id") or None
+        pending = entry.get("pending") is True
+        if comment_id is None and not pending:
+            return
+        record = {
+            "root": entry["root"],
+            "comment_id": comment_id,
+            "pending": pending,
+            "at": entry["last_touch"],
+        }
+        # Filed under the key as ledger_key writes it, which is the form the archive is looked
+        # up by and the only form it accepts when the file is read back.
+        self.archive_put("%s|%d|%s" % split_key(key), record)
+
+    def _prune_archive(self) -> None:
+        excess = len(self.archive) - MAX_ARCHIVE
+        if excess <= 0:
+            return
+        order = sorted(self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0)))
+        for key, _ in order[:excess]:
+            self.archive_pop(key)
+            self.archive_dropped += 1
+
+    def _drop_oldest_archived(self) -> None:
+        if not self.archive:
+            return
+        oldest = min(self.archive.items(), key=lambda kv: float(kv[1].get("at", 0.0)))[0]
+        self.archive_pop(oldest)
+        self.archive_dropped += 1
 
     @property
     def entries(self) -> dict[str, Any]:
         return self.data["entries"]
+
+    # -- the archive -----------------------------------------------------------------------
+    @property
+    def archive(self) -> dict[str, Any]:
+        """The archived records, by ledger key.  For reading: archive_put and archive_pop are
+        the only writers, records and keys alike, because they keep the index in step with the
+        table."""
+        return self.data.get("archive") or {}
+
+    def _index_archive(self) -> None:
+        self._archive_index = {}
+        for key in self.archive:
+            _issue, sid, digest = split_key(key)
+            self._archive_index.setdefault(sid, {}).setdefault(digest, set()).add(key)
+
+    def archive_put(self, key: str, record: dict[str, Any]) -> None:
+        _issue, sid, digest = split_key(key)
+        self.data.setdefault("archive", {})[key] = record
+        self._archive_index.setdefault(sid, {}).setdefault(digest, set()).add(key)
+
+    def archive_pop(self, key: str) -> dict[str, Any] | None:
+        """Take one record out of the archive; None when the archive has none for the key."""
+        table = self.data.get("archive")
+        record = table.pop(key, None) if table else None
+        if record is None:
+            return None
+        if not table:
+            del self.data["archive"]  # an empty archive is no table, as before the first prune
+        _issue, sid, digest = split_key(key)
+        topics = self._archive_index.get(sid, {})
+        keys = topics.get(digest, set())
+        keys.discard(key)
+        if not keys:
+            topics.pop(digest, None)
+        if not topics:
+            self._archive_index.pop(sid, None)
+        return record
+
+    def archived_for(self, stream_id: int, digest: str) -> list[str]:
+        """The archived keys of one topic (stream id, topic digest), one per issue."""
+        return sorted(self._archive_index.get(stream_id, {}).get(digest, ()))
+
+    def archived_streams(self) -> list[int]:
+        """The ids of the streams the archive holds a record for."""
+        return list(self._archive_index)
+
+    def archived_in_stream(self, stream_id: int) -> list[str]:
+        """Every archived key of one stream."""
+        topics = self._archive_index.get(stream_id, {})
+        return sorted(key for keys in topics.values() for key in keys)
 
 
 def new_entry(issue: str, stream_id: int, stream: str, topic: str, root_mid: int) -> dict[str, Any]:
@@ -832,6 +1050,28 @@ def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
     return SystemExit("%s; the relay stops rather than retry a token that cannot work" % exc)
 
 
+class _CatchUp:
+    """An entry whose catch-up is still open (AFC-821), in memory only.  What its topic got after
+    `start` is unknown to the entry, except the ids in `recorded`: the next read starts there."""
+
+    __slots__ = ("start", "recorded")
+
+    def __init__(self, start: int, recorded: Iterable[int] = ()) -> None:
+        self.start = int(start)
+        # The ids after `start` the entry has recorded since, so a later read never counts one
+        # twice, even once it has left the entry's bounded `seen` list.
+        self.recorded: set[int] = {int(mid) for mid in recorded if int(mid) > self.start}
+
+
+def _by_id(messages: Iterable[Any]) -> list[Mapping[str, Any]]:
+    """The messages a history reader returned that carry an integer id, once each, oldest first."""
+    found: dict[int, Mapping[str, Any]] = {}
+    for message in messages:
+        if isinstance(message, Mapping) and _is_int(message.get("id")):
+            found.setdefault(int(message["id"]), message)
+    return [found[mid] for mid in sorted(found)]
+
+
 class RelayWorker:
     def __init__(
         self,
@@ -846,6 +1086,7 @@ class RelayWorker:
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
         history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
+        history_since: Callable[[int, str, int], Iterable[Mapping[str, Any]]] | None = None,
         byline: str = "the relay",
     ) -> None:
         self.realm = zulip_realm
@@ -857,9 +1098,25 @@ class RelayWorker:
         self.monotonic = monotonic  # for the cycle budget, which a clock step must not move
         self.log = log or (lambda m: print(m, file=sys.stderr, flush=True))
         # A topic-history reader, given by the Operator hosting (operator_linear.py): called
-        # with (stream id, topic) when a first mention creates an entry, so the topic's earlier
-        # messages join the comment.  None in the standalone process: no backfill there.
+        # with (stream id, topic) when a first mention creates an entry, or a message restores
+        # an archived one, so the topic's earlier messages join the comment.  None in the
+        # standalone process: no backfill there.
         self.history = history
+        # A second reader, given by the same hosting: called with (stream id, topic, after id)
+        # for a topic's messages newer than that id, oldest first.  It is how an entry catches
+        # up on what its topic got while the worker was not receiving it (_catch_up).  None in
+        # the standalone process: no catch-up there.
+        self.history_since = history_since
+        # The catch-up's state, in memory only.  _caught_up: the ledger keys whose entries hold
+        # their topic up to the newest message this worker has handled for it.  _catching: the
+        # keys whose catch-up is open, and where the next read starts.  _read_retry: for a key
+        # whose history read failed, the monotonic time before which it is not read for again.
+        # A key in none of them (an entry read from the ledger at start) opens its catch-up at
+        # its topic's next message.
+        self._caught_up: set[str] = set()
+        self._catching: dict[str, _CatchUp] = {}
+        self._read_retry: dict[str, float] = {}
+        self._archive_drops_logged = 0  # how much of ledger.archive_dropped the log has said
         # Whose name the comment footer carries: "the relay" standalone, "the Operator" hosted.
         # The marker line itself never changes, so a hosted worker adopts the comments the
         # standalone relay created instead of stacking new ones.
@@ -896,6 +1153,15 @@ class RelayWorker:
             self.public_streams = {int(sid) for sid in streams}
             self.stream_names = {}
 
+    def reopen_catch_up(self) -> None:
+        """Forget which entries are caught up (AFC-821).  The host calls this when one of its
+        event queues registers again: what the realm got before the new queue existed may never
+        reach the worker (the host's own backfill replays only part of it), so the next message
+        of each topic reads from the newest message its entry holds, as after a restart.  A
+        catch-up still open keeps its point, which is still true.  The cost is one read per
+        topic, at the topic's next message."""
+        self._caught_up.clear()
+
     # -- the public-stream guard -------------------------------------------------------------
     def _is_public(self, sid: Any) -> bool | None:
         """True or False once the public-stream set has loaded; None before, when nothing is
@@ -930,11 +1196,33 @@ class RelayWorker:
             return False
         return True
 
+    def _drop_private_archive(self) -> None:
+        """The archive's side of _drop_if_private.  An archived record obeys the rule its live
+        entry would: once its stream is known to be private, the record is dropped, so the
+        relay never restores an entry for it, and never edits its comment again, even if the
+        stream is made public later.  An unloaded set proves nothing, so nothing is dropped."""
+        if self.public_streams is None:
+            return
+        for sid in self.ledger.archived_streams():
+            if sid in self.public_streams:
+                continue
+            keys = self.ledger.archived_in_stream(sid)
+            for key in keys:
+                self.ledger.archive_pop(key)
+            self.ledger.mark_dirty()
+            self.log(
+                "dropped %d archived relay record(s): their stream is no longer public" % len(keys)
+            )
+
     @staticmethod
     def _label(entry: Mapping[str, Any]) -> str:
         """How the log names an entry: the issue and the conversation's first message id, never
         topic text, which is untrusted and can carry a credential."""
         return "%s (conversation %s)" % (entry.get("issue", "?"), entry.get("root", "?"))
+
+    def _archived_label(self, key: str, record: Mapping[str, Any]) -> str:
+        """How the log names an archived record: as _label names the entry it came from."""
+        return self._label({"issue": split_key(key)[0], "root": record.get("root", "?")})
 
     # -- events ----------------------------------------------------------------------------
     def handle_event(self, event: Mapping[str, Any]) -> None:
@@ -956,6 +1244,10 @@ class RelayWorker:
         if sid is None or self._is_public(sid) is not True:
             # A private stream the bot was added to, or a stream set that has not loaded yet:
             # the relay only ever handles known public streams, so this message is dropped.
+            if sid is not None and self._is_public(sid) is None:
+                # Unloaded, the stream may well be public, and then this message is a gap in
+                # its topic's entries: the topic's next message reads for it (AFC-821).
+                self._reopen_topic(sid, str(msg.get("subject", "")))
             return
         if str(msg.get("sender_email", "")).lower() == self.own_email:
             return
@@ -971,6 +1263,12 @@ class RelayWorker:
         for _key, standing in self._entries_for(int(sid), topic):
             if standing["issue"] not in ids:
                 ids.append(standing["issue"])
+        # A standing comment whose entry was pruned still stands: its issue is named by the
+        # archive, so this message restores the entry and updates that comment (AFC-821).
+        for key in self.ledger.archived_for(int(sid), topic_digest(topic)):
+            issue = split_key(key)[0]
+            if issue not in ids:
+                ids.append(issue)
         if not ids:
             return
         withheld = [
@@ -1023,7 +1321,12 @@ class RelayWorker:
         Both ends must be public before anything moves or is recorded: nothing that lived in a
         private stream is ever named in Linear, whatever stream it moves to.  Only change_all
         moves the standing comment.  A partial move leaves the old topic's comment standing;
-        when the moved messages went to a private stream, they also leave its list."""
+        when the moved messages went to a private stream, they also leave its list.
+
+        An archived record (the comment of a pruned entry) obeys the same rules, each where
+        the live rule is implemented: _migrate_topic carries it, _close_topic drops it, and a
+        partial move leaves it with the old topic.  A rename that newly names an issue whose
+        comment stands archived restores nothing: the topic's next message restores it."""
         if event.get("stream_id") is None:
             return  # not a stream message
         old_topic = event.get("orig_subject", event.get("orig_topic"))
@@ -1061,6 +1364,11 @@ class RelayWorker:
             i
             for i in find_issue_ids(self.regex, new_topic)
             if i not in find_issue_ids(self.regex, old_topic)
+            # A comment that stands archived for the topic waits for the topic's next message,
+            # which restores it with the topic's whole history.  Restored here, by the first
+            # moved message, it would have no history before that message, and its edit would
+            # cut the comment down to one bullet.
+            and ledger_key(i, new_sid, new_topic) not in self.ledger.archive
         ]
         if not fresh or not moved:
             return
@@ -1077,6 +1385,17 @@ class RelayWorker:
                 out.append((key, entry))
         return out
 
+    def _reopen_topic(self, stream_id: Any, topic: str) -> None:
+        """A message of this topic was dropped while the public-stream set was unloaded: the
+        topic's entries are no longer caught up, so its next message reads for what was lost.
+        Only memory changes; nothing is recorded, written or dropped."""
+        try:
+            sid = int(stream_id)
+        except (TypeError, ValueError):
+            return
+        for key, _entry in self._entries_for(sid, topic):
+            self._caught_up.discard(key)
+
     def _close_topic(self, stream_id: int, topic: str) -> None:
         """The whole topic left for a private stream: its entries leave the ledger, so the
         standing comment is never edited again and no link to the moved messages is added."""
@@ -1087,11 +1406,30 @@ class RelayWorker:
                 "closed the relay entry for %s: the topic moved to a stream that is not public"
                 % self._label(entry)
             )
+        # An archived record obeys the same rule: the topic left for a stream that is not
+        # public, so its record leaves the archive, and no later message restores the entry
+        # or edits the comment.
+        for key in self.ledger.archived_for(stream_id, topic_digest(topic)):
+            record = self.ledger.archive_pop(key)
+            if record is None:
+                continue
+            self.ledger.mark_dirty()
+            self.log(
+                "closed the archived relay record for %s: the topic moved to a stream that is "
+                "not public" % self._archived_label(key, record)
+            )
 
     def _detach_messages(self, stream_id: int, topic: str, moved: list[int]) -> None:
         """Some messages left the topic for a private stream (change_one or change_later): the
         topic's comment stays standing, and the moved messages leave its list at the next edit,
-        so it stops linking to messages that now live where the relay may not look."""
+        so it stops linking to messages that now live where the relay may not look.
+
+        An archived record stays with the old topic too, as the live entry does.  It lists no
+        message, so nothing can be taken out of it here, and its comment is not edited until the
+        topic's next message restores it: until then the comment keeps the moved messages'
+        links and quotes, as a pruned topic's comment kept everything before AFC-821.  The
+        entry restored from it is refilled from the topic's history, which no longer holds the
+        moved messages, so its first edit drops them."""
         if not moved:
             return
         gone = set(moved)
@@ -1142,7 +1480,32 @@ class RelayWorker:
                 entry["dirty"] = True
                 entry["last_touch"] = now
                 self.ledger.entries[new_key] = entry
+                self._carry_catch_up(key, new_key)
+                # One record per (issue, stream, topic): the destination topic can have an
+                # archived record of its own for this issue.  Here the mover stands, where a
+                # live target would stand and take the mover in (below), and that difference
+                # is deliberate: the record holds no message while the mover holds them, so
+                # the mover's comment carries on with its list whole.  Letting the record stand
+                # would take a history read inside the move, or an edit that cuts its comment
+                # down to the mover's messages.  Either way one comment is left as it was,
+                # because the app cannot delete one; here it is the archived record's.
+                stale = self.ledger.archive_pop(new_key)
+                if stale is not None:
+                    self.log(
+                        "merged the archived %s into %s; its older comment is left as it was"
+                        % (self._archived_label(new_key, stale), self._label(entry))
+                    )
             else:
+                # The survivor now holds both conversations, so it is complete only as far as
+                # the less complete of the two: its catch-up goes on from the earlier point.
+                # The points are taken before the lists merge, since an unknown point is read
+                # from an entry's own `seen`.
+                points = [
+                    point
+                    for point in (self._point(new_key, target), self._point(key, entry))
+                    if point is not None
+                ]
+                recorded = self._recorded(new_key) | self._recorded(key)
                 target["seen"] = sorted(set(target["seen"]) | set(entry["seen"]))[-MAX_SEEN:]
                 target["links"] = (target["links"] + entry["links"])[-MAX_LINKS_SHOWN:]
                 # Two conversations become one: a message belongs to one topic, so the counts add.
@@ -1150,6 +1513,11 @@ class RelayWorker:
                 target["dirty"] = True
                 target["last_touch"] = now
                 del self.ledger.entries[key]
+                self._forget_catch_up(key)
+                if points:
+                    self._open(new_key, min(points), recorded | set(target["seen"]))
+                else:
+                    self._mark_caught_up(new_key)
                 if entry.get("comment_id"):
                     # The app holds no delete scope, so the moved topic's own comment stays as
                     # it was; the surviving comment now lists both topics' messages.
@@ -1161,6 +1529,84 @@ class RelayWorker:
         if moved:
             self.ledger.mark_dirty()
             self.log("carried %d standing comment(s) over a topic move" % moved)
+        self._migrate_archived(old_sid, new_sid, old_topic, new_topic, now)
+
+    def _carry_catch_up(self, old_key: str, new_key: str) -> None:
+        """What is known about how far an entry is caught up belongs to the entry, so it moves
+        with it to the entry's new key, and nothing a former holder of that key left applies.
+        A whole-topic move keeps every message id, so the point still holds."""
+        caught_up = old_key in self._caught_up
+        state = self._catching.get(old_key)
+        retry = self._read_retry.get(old_key)
+        self._forget_catch_up(old_key)
+        self._forget_catch_up(new_key)
+        if caught_up:
+            self._caught_up.add(new_key)
+        if state is not None:
+            self._catching[new_key] = state
+        if retry is not None:
+            self._read_retry[new_key] = retry
+
+    def _point(self, key: str, entry: Mapping[str, Any]) -> int | None:
+        """How far an entry is known to hold its topic: None when it is caught up (or nothing
+        says where its history stops), else the message id its next catch-up read starts
+        after, which for an entry not yet looked at is the newest message it has seen."""
+        if key in self._caught_up:
+            return None
+        state = self._catching.get(key)
+        if state is not None:
+            return state.start
+        return max(entry["seen"]) if entry["seen"] else None
+
+    def _recorded(self, key: str) -> set[int]:
+        state = self._catching.get(key)
+        return set(state.recorded) if state is not None else set()
+
+    def _migrate_archived(
+        self, old_sid: int, new_sid: int, old_topic: str, new_topic: str, now: float
+    ) -> None:
+        """The archive's side of a whole-topic move (_migrate_topic has checked that both ends
+        are public).  An archived record obeys the rule its live entry would: it is re-keyed
+        to the new stream id and topic digest, so the comment of a pruned topic is still found
+        under the topic's new name or in its new stream.
+
+        One record survives per (issue, stream, topic).  A live entry at the destination
+        stands, as a live target does in _migrate_topic.  Between two archived records the
+        destination's stands, for the same reason: it is the topic the conversation now lives
+        in.  (A live entry that moves onto an archived record stands over it instead, for the
+        reason given in _migrate_topic: a live entry stands over a record, and between two of
+        a kind the destination stands.)  The record that goes names a comment the app cannot
+        delete, so that comment is left as it was."""
+        carried = 0
+        for key in self.ledger.archived_for(old_sid, topic_digest(old_topic)):
+            new_key = ledger_key(split_key(key)[0], new_sid, new_topic)
+            if new_key == key:
+                continue
+            record = self.ledger.archive_pop(key)
+            if record is None:
+                continue
+            self._read_retry.pop(key, None)
+            self.ledger.mark_dirty()
+            moved = self._archived_label(key, record)
+            target = self.ledger.entries.get(new_key)
+            standing = self.ledger.archive.get(new_key)
+            if target is not None:
+                self.log(
+                    "merged the archived %s into %s; its older comment is left as it was"
+                    % (moved, self._label(target))
+                )
+            elif standing is not None:
+                self.ledger.archive_put(new_key, dict(standing, at=now))
+                self.log(
+                    "merged the archived %s into the archived %s; its older comment is left as "
+                    "it was" % (moved, self._archived_label(new_key, standing))
+                )
+            else:
+                record["at"] = now
+                self.ledger.archive_put(new_key, record)
+                carried += 1
+        if carried:
+            self.log("carried %d archived comment record(s) over a topic move" % carried)
 
     def _append(
         self, entry: dict[str, Any], mid: int, sender: str, content: str, when: float
@@ -1184,50 +1630,267 @@ class RelayWorker:
         entry["last_touch"] = self.clock()
         return True
 
-    def _backfill(
-        self,
-        entry: dict[str, Any],
-        stream_id: int,
-        topic: str,
-        before_mid: int,
-        cache: dict[tuple[int, str], list[Mapping[str, Any]]],
-    ) -> None:
-        """Pull a topic's earlier messages into a brand-new entry, so the comment covers the
-        whole topic and not only the thread from its first mention on (owner ruling,
-        2026-11-03).  Best-effort: a history read that fails is logged and the entry keeps
-        what the live path records; a create is never blocked on history.  Only messages
-        older than the mentioning one are taken (later ones arrive live), the writer's own
-        posts are skipped as on the live path, and the fetch is shared by every entry one
-        message creates through the caller's cache."""
+    def _read_topic(
+        self, stream_id: int, topic: str, cache: dict[tuple[int, str], Any]
+    ) -> tuple[list[Mapping[str, Any]] | None, str]:
+        """The whole topic from the history reader, oldest first, read once per message for
+        every entry the message makes or restores (the caller's cache).  (messages, "") when the
+        read succeeded, (None, the error's type name) when it failed, and (None, "") when there
+        is no reader to read with (the standalone process)."""
         if self.history is None:
-            return
+            return None, ""
         cache_key = (stream_id, topic)
         if cache_key not in cache:
             try:
-                cache[cache_key] = list(self.history(stream_id, topic) or [])
-            except Exception as exc:  # noqa: BLE001 - history must never stop a create
-                cache[cache_key] = []
+                cache[cache_key] = (_by_id(self.history(stream_id, topic) or []), "")
+            except Exception as exc:  # noqa: BLE001 - history must never stop a record
+                cache[cache_key] = (None, type(exc).__name__)
+        return cache[cache_key]
+
+    def _enter(
+        self,
+        key: str,
+        issue: str,
+        stream_id: int,
+        stream: str,
+        topic: str,
+        mid: int,
+        cache: dict[tuple[int, str], Any],
+    ) -> dict[str, Any] | None:
+        """The entry the message `mid` makes for a key that has none: restored from the archive
+        when the topic's comment stands there (AFC-821), brand new otherwise.  Either way the
+        topic's messages older than `mid` are pulled into it first, so the comment covers the
+        whole topic and not only the thread from the message on (owner ruling, 2026-11-03).
+        Only older messages are taken (later ones arrive live), the writer's own posts are
+        skipped as on the live path, and one read serves every entry the message makes.
+
+        A create is never held for history: a brand-new entry whose read fails starts at `mid`,
+        and its catch-up starts at the topic's beginning, so a later message fills in the rest.
+        A restore is held: an entry restored without its history would rewrite the standing
+        comment down to the live message.  So when the read fails, now or a moment ago, the
+        record stays archived, the comment stays as it is, and None is returned; a message at
+        least CATCH_UP_RETRY seconds later tries again, and this one is in the history it reads.
+        The standalone process has no reader, so it restores at once, from `mid` on."""
+        archived = key in self.ledger.archive
+        if (
+            archived
+            and self.history is not None
+            and self.monotonic() < self._read_retry.get(key, 0.0)
+        ):
+            return None  # its read failed a moment ago
+        read, error = self._read_topic(stream_id, topic, cache)
+        if error:
+            self._read_retry[key] = self.monotonic() + CATCH_UP_RETRY
+        entry = None
+        if archived:
+            if error:
+                self.log(
+                    "topic history for %s could not be read (%s); its archived comment is left "
+                    "as it is until a later message in the topic"
+                    % (self._archived_label(key, self.ledger.archive[key]), error)
+                )
+                return None
+            entry = self._restore(key, issue, stream_id, stream, topic)
+        if entry is None:
+            entry = new_entry(issue, stream_id, stream, topic, mid)
+            self.ledger.entries[key] = entry
+            if error:
                 self.log(
                     "topic history for %s could not be read (%s); its comment starts at the "
-                    "first mention" % (self._label(entry), type(exc).__name__)
+                    "first mention%s"
+                    % (
+                        self._label(entry),
+                        error,
+                        "; a later message in the topic fills in the rest"
+                        if self.history_since is not None
+                        else "",
+                    )
                 )
-        earlier = [
-            message
-            for message in cache[cache_key]
-            if _is_int(message.get("id")) and int(message["id"]) < before_mid
-        ]
-        for message in sorted(earlier, key=lambda m: int(m["id"]))[:MAX_BACKFILL]:
-            if str(message.get("sender_email", "")).lower() == self.own_email:
+        if read is None:
+            if error:
+                self._open(key, 0, ())  # the catch-up reads the topic from its beginning
+            else:
+                self._mark_caught_up(key)  # no reader: nothing to read now, or later
+            return entry
+        self._read_retry.pop(key, None)
+        self._catching.pop(key, None)  # nothing an earlier life of the key left applies
+        earlier = [message for message in read if int(message["id"]) < mid]
+        taken = earlier[:MAX_BACKFILL]
+        for message in taken:
+            self._append_history(entry, message)
+        if len(earlier) > MAX_BACKFILL:
+            self._open(key, int(taken[-1]["id"]), ())  # cut short here: the catch-up goes on
+        else:
+            self._judge(key, read, 0, mid)
+        return entry
+
+    def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
+        """Record one message read from Zulip's history as the live path would have recorded
+        it: the writer's own posts are skipped, and the message keeps its own timestamp."""
+        if str(message.get("sender_email", "")).lower() == self.own_email:
+            return False
+        stamp = message.get("timestamp")
+        when = float(stamp) if _is_number(stamp) else self.clock()
+        return self._append(
+            entry,
+            int(message["id"]),
+            str(message.get("sender_full_name", "someone")),
+            str(message.get("content", "")),
+            when,
+        )
+
+    def _restore(
+        self, key: str, issue: str, stream_id: int, stream: str, topic: str
+    ) -> dict[str, Any] | None:
+        """The entry of a pruned topic, rebuilt from its archive record (which leaves the
+        archive) and put in the live table, or None when the archive has none for the key
+        (AFC-821).
+
+        The entry is built on the ARCHIVED root, not on the message that brought it back, so
+        its marker is the old comment's own, byte for byte.  With a comment id, the next
+        flush EDITS that comment, and if Linear no longer has it the edit path scans for the
+        marker and recreates exactly one.  Without one (a create whose outcome was never
+        learned), the flush looks for that marker before it creates anything."""
+        record = self.ledger.archive_pop(key)
+        if record is None:
+            return None
+        entry = new_entry(issue, stream_id, stream, topic, int(record["root"]))
+        entry["comment_id"] = record.get("comment_id") or None
+        entry["pending"] = record.get("pending") is True
+        # In the live table before anything else runs, the log line included, so the record
+        # never leaves the archive without its entry taking its place.
+        self.ledger.entries[key] = entry
+        self.log("restored the relay entry for %s from the archive" % self._label(entry))
+        return entry
+
+    def _catch_up(self, keys: list[str], stream_id: int, topic: str, mid: int) -> None:
+        """Record what a topic got while the worker was not receiving it, before the live
+        message `mid` is recorded (AFC-821).
+
+        A restart loses nothing the ledger holds, but a message posted in the gap may never
+        reach the worker: the host replays only part of what it missed, after a restart and
+        after an event queue registers again (reopen_catch_up), and a message that arrives
+        while the public-stream set is unloaded is dropped (_reopen_topic).  So the next
+        message that reaches an entry which is not caught up reads the topic's messages newer
+        than the entry's point (the newest message it has seen, unless a catch-up is already
+        open), and the ones older than the live message are recorded first, in id order, as a
+        backfill records them.  One read serves every entry of the topic: it starts from the
+        oldest point any of them needs, and each entry takes only what is newer than its own
+        point and not recorded already.
+
+        _judge settles the entry, or moves its point to where the next read starts: a read
+        cut short at its cap, or one that shows the live message is not the topic's newest
+        (the host replaying an older one), does not settle it.  A read that fails is logged,
+        does not stop the record, and is not tried again for CATCH_UP_RETRY seconds.  A live
+        message no newer than the entry's point, or one the entry has recorded already (the
+        same message fed again for another seat), shows nothing new about the gap and costs
+        no read."""
+        if self.history_since is None:
+            return
+        now = self.monotonic()
+        waiting: list[tuple[str, dict[str, Any], _CatchUp]] = []
+        for key in keys:
+            entry = self.ledger.entries.get(key)
+            if entry is None or key in self._caught_up:
+                continue  # no entry yet: _enter makes or restores it, and reads the whole topic
+            state = self._catching.get(key)
+            if state is None:
+                if not entry["seen"]:
+                    self._mark_caught_up(key)  # nothing says where its history stops
+                    continue
+                state = self._open(key, max(entry["seen"]), ())
+            if state.start >= mid or mid in entry["seen"] or mid in state.recorded:
                 continue
-            stamp = message.get("timestamp")
-            when = float(stamp) if _is_number(stamp) else self.clock()
-            self._append(
-                entry,
-                int(message["id"]),
-                str(message.get("sender_full_name", "someone")),
-                str(message.get("content", "")),
-                when,
+            if now < self._read_retry.get(key, 0.0):
+                continue  # a read for it failed a moment ago: a later message tries again
+            waiting.append((key, entry, state))
+        if not waiting:
+            return
+        oldest = min(state.start for _key, _entry, state in waiting)
+        try:
+            found = _by_id(self.history_since(stream_id, topic, oldest) or [])
+        except Exception as exc:  # noqa: BLE001 - a catch-up must never stop a record
+            for key, _entry, _state in waiting:
+                self._read_retry[key] = now + CATCH_UP_RETRY
+            self.log(
+                "the messages a topic got while the relay was not receiving it could not be "
+                "read (%s); a message at least %d seconds later tries again"
+                % (type(exc).__name__, CATCH_UP_RETRY)
             )
+            return
+        for key, entry, state in waiting:
+            self._read_retry.pop(key, None)
+            added = 0
+            for message in found:
+                ident = int(message["id"])
+                if (
+                    state.start < ident < mid
+                    and ident not in state.recorded
+                    and self._append_history(entry, message)
+                ):
+                    state.recorded.add(ident)
+                    added += 1
+            if added:
+                # A read that comes after live messages were recorded (a retry after a failed
+                # read, a continued one) records older messages after newer ones, so the lists
+                # go back into id order.
+                entry["seen"].sort()
+                entry["links"].sort(key=lambda item: int(item["mid"]))
+                self.log("caught up %d missed message(s) for %s" % (added, self._label(entry)))
+            self._judge(key, found, state.start, mid)
+
+    def _judge(self, key: str, found: list[Mapping[str, Any]], start: int, mid: int) -> None:
+        """Settle an entry's catch-up, or say where its next read starts, after a read of its
+        topic (`found`, oldest first) that began after `start`, on the way to recording the
+        live message `mid`.  A read that went past `mid` shows `mid` is not the topic's newest
+        (the host replaying an older message): once `mid` is recorded the entry holds the
+        topic up to it, and the next read starts there.  A read that stopped at its cap
+        (MAX_BACKFILL messages) short of `mid` shows nothing about what lies beyond its newest
+        message, so the next read starts there.  Any other read reached the end of the topic,
+        and the entry is caught up."""
+        newest = int(found[-1]["id"]) if found else None
+        state = self._catching.get(key)
+        recorded = state.recorded if state is not None else ()
+        if newest is not None and newest > mid:
+            self._open(key, mid, recorded)
+        elif newest is not None and newest < mid and len(found) >= MAX_BACKFILL:
+            self._open(key, max(start, newest), recorded)
+        else:
+            self._mark_caught_up(key)
+
+    def _open(self, key: str, start: int, recorded: Iterable[int]) -> _CatchUp:
+        """Open (or move) an entry's catch-up: the next read for it starts after `start`."""
+        state = _CatchUp(start, recorded)
+        self._catching[key] = state
+        self._caught_up.discard(key)
+        return state
+
+    def _mark_caught_up(self, key: str) -> None:
+        self._caught_up.add(key)
+        self._catching.pop(key, None)
+        self._read_retry.pop(key, None)
+
+    def _forget_catch_up(self, key: str) -> None:
+        self._caught_up.discard(key)
+        self._catching.pop(key, None)
+        self._read_retry.pop(key, None)
+
+    def _note_recorded(self, key: str, mid: int) -> None:
+        """Remember a live message recorded on an entry whose catch-up is open, so the read
+        that closes the gap does not count it again.  The memory is bounded: a catch-up still
+        open after MAX_BACKFILL such messages gives up, and the gap it leaves is logged."""
+        state = self._catching.get(key)
+        if state is None or mid <= state.start:
+            return
+        state.recorded.add(mid)
+        if len(state.recorded) <= MAX_BACKFILL:
+            return
+        self._mark_caught_up(key)
+        self.log(
+            "gave up catching up %s after %d later messages; what its topic got while the "
+            "relay was not receiving it stays missing"
+            % (self._label(self.ledger.entries.get(key) or {}), MAX_BACKFILL)
+        )
 
     def _record(
         self,
@@ -1242,15 +1905,17 @@ class RelayWorker:
         if not ids:
             return
         now = self.clock()
-        history_cache: dict[tuple[int, str], list[Mapping[str, Any]]] = {}
-        for ident in ids:
-            key = ledger_key(ident, stream_id, topic)
+        reads: dict[tuple[int, str], Any] = {}  # one whole-topic read for the whole message
+        keys = [ledger_key(ident, stream_id, topic) for ident in ids]
+        self._catch_up(keys, stream_id, topic, mid)
+        for ident, key in zip(ids, keys):
             entry = self.ledger.entries.get(key)
             if entry is None:
-                entry = new_entry(ident, stream_id, stream, topic, mid)
-                self.ledger.entries[key] = entry
-                self._backfill(entry, stream_id, topic, mid, history_cache)
+                entry = self._enter(key, ident, stream_id, stream, topic, mid, reads)
+                if entry is None:
+                    continue  # an archived comment whose history could not be read waits
             if self._append(entry, mid, sender, content, now):
+                self._note_recorded(key, mid)
                 self._flush(key, now)  # creates at once; edits wait for the interval
         # tick() writes the whole file once per cycle, not once per message.  A create still
         # writes its intent ahead of the call, inside _flush.
@@ -1385,6 +2050,15 @@ class RelayWorker:
                     self.ledger.mark_dirty()
                     return
                 done = self._adopt_or_create(uuid, entry)
+                if done == "adopted an existing":
+                    # The adopted comment shows what the lost create wrote, not what the entry
+                    # holds now (a message since, or a restored entry's refill), so the entry
+                    # stays dirty and keeps its last edit time: the next tick edits it.
+                    self.log("%s relay comment for %s" % (done, label))
+                    entry["failures"] = 0
+                    entry["retry_after"] = 0.0
+                    self.ledger.mark_dirty()
+                    return
             else:
                 if now - float(entry["last_edit"]) < EDIT_INTERVAL:
                     return  # batched; tick() flushes it later
@@ -1421,6 +2095,7 @@ class RelayWorker:
         try:
             if self.public_streams is None:
                 return  # nothing is known about any stream yet: write nothing, drop nothing
+            self._drop_private_archive()
             for key in list(self.ledger.entries):
                 entry = self.ledger.entries.get(key)
                 if entry is None:
@@ -1441,6 +2116,10 @@ class RelayWorker:
                         "the relay entry for %s failed: %s"
                         % (self._label(entry), type(exc).__name__)
                     )
+            # A create's write-ahead save in the loop can retire an entry of a stream that has
+            # just turned private, into the archive, after the sweep above.  It goes in this
+            # tick, as the live rule drops the entry, not at the next one.
+            self._drop_private_archive()
             self._save_quietly()
         finally:
             self._cycle_deadline = None
@@ -1449,15 +2128,29 @@ class RelayWorker:
         """Write the ledger if anything changed.  A failed write (a full or broken volume) is
         logged and tried again next cycle instead of stopping the relay; a create still needs
         its own write-ahead save to succeed, so nothing is created while the volume fails."""
-        if not self.ledger.dirty:
+        if self.ledger.dirty:
+            try:
+                self.ledger.save()
+            except OSError as exc:
+                self.log(
+                    "could not write the relay ledger (%s); trying again next cycle"
+                    % type(exc).__name__
+                )
+        self._report_archive_drops()
+
+    def _report_archive_drops(self) -> None:
+        """Say so when the archive itself was truncated.  Every record a bound drops is a
+        standing comment the relay can no longer find, so a later message that names the
+        issue in that topic starts a second comment: the one loss the archive exists to
+        prevent, and the log must show when it happens.  A count only, never a key."""
+        dropped = self.ledger.archive_dropped - self._archive_drops_logged
+        if dropped <= 0:
             return
-        try:
-            self.ledger.save()
-        except OSError as exc:
-            self.log(
-                "could not write the relay ledger (%s); trying again next cycle"
-                % type(exc).__name__
-            )
+        self._archive_drops_logged = self.ledger.archive_dropped
+        self.log(
+            "the relay ledger dropped %d archived record(s), oldest first, to stay inside its "
+            "bounds; a topic that lost its record starts a new comment when next named" % dropped
+        )
 
     def reconcile(self) -> None:
         """Adopt the comments of creates whose answer was lost.  Only entries that were written
@@ -1467,6 +2160,7 @@ class RelayWorker:
         pending, and its next write scans for the marker before it creates anything."""
         if self.public_streams is None:
             return  # nothing is known about any stream yet: look up nothing, drop nothing
+        self._drop_private_archive()
         for key, entry in list(self.ledger.entries.items()):
             if self._drop_if_private(key, entry):
                 continue

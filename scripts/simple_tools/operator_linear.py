@@ -28,6 +28,37 @@ rulings (2026-10-21 and 2026-10-23), with the keying stated exactly as the owner
     created again, so a restart or a lost answer never stacks a second comment.  The
     (topic, issue) -> comment id mapping lives in the worker's ledger, a JSON file under
     the Operator's state root, written atomically under an flock.
+  - The mapping outlives the ledger's bound (AFC-821).  The ledger keeps its 500 most
+    recently touched entries.  A pruned entry that has a comment, or a create whose
+    outcome is unknown, leaves its first message id and its comment id in the ledger's
+    archive, under the same (issue, stream id, topic digest) key and with no text at all.
+    The next message in that topic, whether or not it names the issue, restores the
+    entry under its ORIGINAL marker, refills it from the topic's history, and EDITS the
+    old comment instead of creating a second one.  When that history read fails, the
+    record stays archived and the comment as it is, and a message a minute or more later
+    tries again.  Archived records follow a whole-topic rename or move, and are dropped
+    with a stream that is not public, as live entries are.  NOT guaranteed:  a lost
+    ledger file still loses the whole mapping;  the archive is bounded too (20,000
+    records and the ledger's 8 MB;  the oldest are dropped first, and the log says how
+    many);  a rename or move made while the listener was down, or while its stream set
+    was unloaded, is not followed, so a mention under the new name starts a second
+    comment;  and a partial move of messages to a private stream leaves them listed in
+    an archived comment until the topic's next message refills it.
+  - A restart catches up (AFC-821).  The daemon's own backfill replays only direct
+    messages, mentions, owner posts and leased or followed topics, so a plain message
+    posted while the listener was down never reaches the worker, and the same holds for
+    the gap while a seat's event queue registers again.  The worker is given a second
+    reader (below) and closes that gap itself:  the first message that reaches a
+    standing comment's topic after a restart, after the daemon reports a queue
+    registered again (queue_registered), or after a message of the topic was dropped
+    while the stream set was unloaded, reads the topic's messages newer than the newest
+    one the comment has recorded, and records the missed ones before the live one.  A
+    read cut short at its 1000-message cap, or one that shows the live message was a
+    replayed older one, is continued by the topic's next message.  NOT guaranteed:  a
+    topic is caught up only when its next message arrives, so a topic that stays silent
+    keeps its gap until then;  a read that fails is logged and tried again a minute or
+    more later, from a point kept in memory only, so a restart before then loses that
+    gap;  and a catch-up still open after 1000 further messages gives up, in the log.
 
 What is different from the standalone relay:
 
@@ -43,7 +74,10 @@ What is different from the standalone relay:
     several seats counts once.  Nothing in this module ever posts to Zulip.
   - History.  The topic-history reader reads with the routing seat's existing daemon
     client (a read of a public stream); Linear writes are the only writes, and they use
-    the Operator's token alone.
+    the Operator's token alone.  The catch-up reader is the same read started after a
+    message id (fetch_topic_history with after_id), handed to the worker as
+    history_since.  Each read, every page and retry included, has HISTORY_READ_BUDGET
+    seconds, because it runs on the daemon's routing thread.
 
 Credentials (never logged; the developer key lives in memory only):
 
@@ -107,6 +141,7 @@ DRY_RUN_ENV = "OPERATOR_LINEAR_DRY_RUN"
 OWN_EMAIL_ENV = "OPERATOR_ZULIP_EMAIL"
 STATE_NAME = "linear-comments.json"
 PAGE = 500  # messages per history page
+HISTORY_READ_BUDGET = 30.0  # seconds for one topic-history read, every page and retry included
 
 # The Operator's Linear credential seam (docs/operator-linear-comments.md):  constants,
 # never environment overrides, as in linear_project_linkifiers.py.
@@ -314,21 +349,35 @@ def state_path(root: str | Path, env: Mapping[str, str], dry_run: bool) -> Path:
 
 
 def fetch_topic_history(
-    client: ZulipClient, stream_id: int, topic: str, *, max_messages: int = lr.MAX_BACKFILL
+    client: ZulipClient,
+    stream_id: int,
+    topic: str,
+    *,
+    max_messages: int = lr.MAX_BACKFILL,
+    after_id: int | None = None,
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Every message in one public stream topic, oldest first, up to max_messages.
+    """Every message in one public stream topic, oldest first, up to max_messages.  With
+    after_id, only the messages after that message id (the worker's catch-up after a
+    restart reads from the newest message it has recorded).  With deadline (a
+    time.monotonic() value), every page and every retry share it, and a read that runs
+    past it raises.
 
-    Pages forward from the topic's start with the messages API, the same narrow shape the
-    daemon's own backfill uses.  A page that is not a list of messages raises ValueError:
-    the caller (the worker's backfill) treats any failure as "no history" and logs it, so
-    a malformed answer can never half-fill a comment."""
+    Pages forward from the topic's start, or from after_id, with the messages API, the
+    same narrow shape the daemon's own backfill uses.  A page that is not a list of
+    messages raises ValueError:  the caller (the worker's backfill or catch-up) treats any
+    failure as "no history" and logs it, so a malformed answer can never half-fill a
+    comment."""
     narrow = [
         {"operator": "channel", "operand": int(stream_id)},
         {"operator": "topic", "operand": topic},
     ]
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
-    anchor: Any = "oldest"
+    # An id anchors the first page at that message, and include_anchor is false below, so
+    # the page starts with the message after it.
+    anchor: Any = "oldest" if after_id is None else int(after_id)
+    limits: dict[str, Any] = {} if deadline is None else {"deadline": deadline}
     while len(out) < max_messages:
         result = client.get(
             "messages",
@@ -340,6 +389,7 @@ def fetch_topic_history(
                 "include_anchor": False,
                 "apply_markdown": False,
             },
+            **limits,
         )
         page = result.get("messages") if isinstance(result, Mapping) else None
         if not isinstance(page, list) or not all(isinstance(m, Mapping) for m in page):
@@ -364,9 +414,10 @@ class OperatorLinearComments:
     """The daemon's handle on the hosted worker: one lock, one ledger, one worker.
 
     The daemon calls feed_message for every stream message it routes, feed_event for every
-    update_message event, reload_streams when the realm's streams change, and tick on its
-    own cadence.  Every call is best-effort: an exception is logged by the daemon's caller
-    and never reaches routing, and a refused Linear token stops the engine (the worker
+    update_message event, reload_streams when the realm's streams change, queue_registered
+    when a seat's event queue registers again, and tick on its own cadence.  Every call is
+    best-effort: an exception is logged by the daemon's caller and never reaches routing,
+    and a refused Linear token stops the engine (the worker
     raises SystemExit for that, exactly as the standalone relay exits) instead of stopping
     a seat thread — after that, feeds are no-ops and the stop is in the log."""
 
@@ -397,15 +448,38 @@ class OperatorLinearComments:
             monotonic=monotonic,
             log=log,
             history=self._history,
+            history_since=self._history_since,
             byline="the Operator",
         )
 
     # -- plumbing ----------------------------------------------------------------------
     def _history(self, stream_id: int, topic: str) -> list[Mapping[str, Any]]:
+        """The whole topic, oldest first:  the worker's backfill reader, for an entry a
+        message makes or restores.  With no client there is nothing to read with, and that
+        is a failed read, not an empty topic:  an empty answer would let a restored entry
+        rewrite its standing comment down to the live message."""
         client = self._client
         if client is None:
-            return []
-        return fetch_topic_history(client, stream_id, topic)
+            raise RuntimeError("no Zulip client to read the topic with")
+        return fetch_topic_history(
+            client, stream_id, topic, deadline=time.monotonic() + HISTORY_READ_BUDGET
+        )
+
+    def _history_since(self, stream_id: int, topic: str, after_id: int) -> list[Mapping[str, Any]]:
+        """The topic's messages after one message id, oldest first:  the worker's catch-up
+        reader.  With no client there is nothing to read with, and that is a failed read,
+        not an empty topic:  the worker logs it and a later message tries again, where an
+        empty answer would mark the topic caught up."""
+        client = self._client
+        if client is None:
+            raise RuntimeError("no Zulip client to read the topic with")
+        return fetch_topic_history(
+            client,
+            stream_id,
+            topic,
+            after_id=after_id,
+            deadline=time.monotonic() + HISTORY_READ_BUDGET,
+        )
 
     def _ensure_streams(self, client: ZulipClient | None) -> None:
         """Load the public-stream set on first use.  A load that fails leaves the worker
@@ -431,6 +505,17 @@ class OperatorLinearComments:
             if client is not None:
                 self._client = client
             self.worker.set_public_streams(None)
+
+    def queue_registered(self) -> None:
+        """A seat's event queue registered again (the daemon's connect, after a restart, an
+        expiry, a dead queue or a clock jump).  What the realm got while the old queue was
+        gone reaches the daemon only in part, so every standing comment's topic reads for
+        it at its next message (the worker's reopen_catch_up, AFC-821).  Memory only:
+        nothing is read, written or posted here."""
+        with self._lock:
+            if self.stopped is not None:
+                return
+            self.worker.reopen_catch_up()
 
     # -- daemon entry points -------------------------------------------------------------
     def feed_message(self, client: ZulipClient | None, message: Mapping[str, Any]) -> None:

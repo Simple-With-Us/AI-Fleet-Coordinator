@@ -62,14 +62,20 @@ Eavesdropper, and it hosts the mirror.
   and reconciled by marker scan before any re-create, so the design is at-least-once-safe
   against crashes but — as the module itself states — NOT exactly-once:  a lost ledger,
   a second relay process, or a create that landed while its answer was lost can each
-  produce a second comment, narrowed by the marker reconciliation.
+  produce a second comment, narrowed by the marker reconciliation.  Since AFC-821 the
+  ledger keeps an `archive` table:  a pruned entry that has a comment leaves its first
+  message id and comment id there (no text), and the topic's next message restores it
+  and edits the same comment, so pruning no longer starts a second one.  An archived
+  record dropped at the archive's bound (20,000 records, or the file's 8 MB) can, and
+  so can a rename or move made while the worker was not running.
 
 ## The fold-in (this lane)
 
 - `scripts/simple_tools/operator_linear.py` (new):  `OperatorLinearComments` hosts the
   relay's own `RelayWorker` inside the listener daemon.  The daemon feeds it the stream
   messages it already routes (`route_message`) and the `update_message` events it
-  already handles (`handle_events`), and ticks it every 30 seconds;  observation is
+  already handles (`handle_events`), tells it when a seat's event queue registers again
+  (`route_backfill`, AFC-821), and ticks it every 30 seconds;  observation is
   best-effort and can never break routing, and the worker deduplicates by message id, so
   a message routed for several seats counts once.  The public-stream set is loaded with
   a routing seat's existing daemon client (a read);  the only writes anywhere are the
@@ -85,6 +91,19 @@ Eavesdropper, and it hosts the mirror.
   reflects the whole current thread.  Both halves are in `linear_relay.py`, additive and
   covered by tests;  the standalone process passes no history reader and its ingest is
   otherwise unchanged.
+- **The gaps, and the archive (AFC-821).**  The worker also takes a catch-up reader
+  (`history_since`:  the same messages API, paged on after a message id).  The first
+  message that reaches a standing entry after a restart, after a seat's queue registers
+  again, or after a message of its topic was dropped while the stream set was unloaded
+  reads what the topic got in between and records it before the live message;  a read
+  cut short at its 1000-message cap, or one showing the live message was a replayed
+  older one, is continued by the topic's next message, and a failed read is retried a
+  minute or more later.  A pruned entry leaves its comment in the ledger's archive
+  (above), and the topic's next message restores it through half (a), reading the
+  whole topic first;  when that read fails, the record waits and the comment is left
+  as it is.
+  Each history read has one 30-second deadline for all its pages, because it runs on
+  the routing thread.
 - **State:** the hosted ledger is the same format at
   `<state root>/operator/linear-comments.json` (server:  `/data/operator/linear-comments.json`),
   beside the session registry.  The marker line is deliberately unchanged
@@ -157,7 +176,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (40 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (51 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -166,8 +185,11 @@ second create;  no keys → no comment and no entry;  key-shaped false positives
 writer's own posts, orders links oldest first, shares one fetch across the issues one
 message names, and never blocks a create when the history read fails;  a topic-title
 mention backfills from the first routed message;  tracked topics take every later
-message, untracked topics take none;  history paging and narrow shape;  the engine
-end-to-end and across a restart;  silence until the public-stream set loads;  private
+message, untracked topics take none;  history paging and narrow shape, after a message
+id too, with one deadline per read;  a reader with no client fails rather than answering
+empty;  the engine end-to-end, across a restart, catching up after a restart and after a
+seat's queue registers again;  the daemon's backfill telling the engine a queue
+registered;  silence until the public-stream set loads;  private
 streams never commented;  dry run writes nothing;  the ledger path;  the
 `[linear_comments]` config parsing (including `infisical_token_file`);  the credential
 load with the HTTP fetch faked — the service token's sources (bound variable wins,
@@ -177,8 +199,8 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 78 tests) stays green unchanged in behaviour except the
-whole-topic continuation above.
+(`test_linear_relay.py`, 119 tests) covers the worker, the whole-topic continuation
+above, and the AFC-821 archive and catch-up.
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 

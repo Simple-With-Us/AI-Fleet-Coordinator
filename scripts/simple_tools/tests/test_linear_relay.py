@@ -14,6 +14,12 @@ These tests pin the behaviour the owner ruled on and the findings Echo's reviewe
     re-sent blind;
   - a dry run writes nothing to Linear and never touches the live ledger;
   - the ledger is bounded, owner-only, validated on load, and never stores a topic title;
+  - the comment map outlives that bound (AFC-821): a pruned entry leaves its root and comment id
+    in the ledger's archive, the topic's next message restores it and edits the same comment, and
+    an archived record follows a topic move and a stream's privacy as a live entry does;
+  - a restart catches up (AFC-821): given the reader for it, a standing entry records the messages
+    its topic got while the worker was not running, or not receiving it, once each, before the
+    live one, and a read cut short or failed is continued by a later message;
   - a Zulip field that carries anything credential-shaped is withheld whole;
   - a missing issue is not an auth failure, a transient error is retried while a not-found is
     not, and an error never carries the response body or the token.
@@ -29,6 +35,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
@@ -177,6 +184,53 @@ def move(old_sid: int, orig: str, *, new_sid=None, subject=None, mode="change_al
     if subject is not None:
         event["subject"] = subject
     return event
+
+
+def past(mid: int, content: str, sender: str = "a@x") -> dict:
+    """One message as the Zulip messages API returns it: what a history reader hands the worker."""
+    return {
+        "id": mid,
+        "sender_email": sender,
+        "sender_full_name": "Al",
+        "content": content,
+        "timestamp": 900 + mid,
+    }
+
+
+class Topic:
+    """A scripted Zulip topic behind the two readers a hosting gives the worker: `whole` is the
+    history reader (every message), `since` the catch-up reader (the messages after an id).
+    Each records its calls; `whole` raises `whole_error` and `since` raises `error` while it is
+    set, and both answer at most `cap` messages when it is set, as the hosting's reader stops at
+    MAX_BACKFILL.  A topic named in `topics` has its own messages; any other reads `messages`."""
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+        self.topics: dict[str, list[dict]] = {}
+        self.whole_calls = 0
+        self.since_calls: list[tuple[int, str, int]] = []
+        self.error: Exception | None = None
+        self.whole_error: Exception | None = None
+        self.sloppy = False  # answer `since` with the whole topic, as if the id were ignored
+        self.cap: int | None = None
+
+    def whole(self, stream_id: int, topic: str) -> list[dict]:
+        self.whole_calls += 1
+        if self.whole_error is not None:
+            raise self.whole_error
+        return list(self.topics.get(topic, self.messages))[: self.cap]
+
+    def since(self, stream_id: int, topic: str, after_id: int) -> list[dict]:
+        self.since_calls.append((stream_id, topic, after_id))
+        if self.error is not None:
+            raise self.error
+        messages = self.topics.get(topic, self.messages)
+        return [m for m in messages if self.sloppy or m["id"] > after_id][: self.cap]
+
+
+def first_line(body: str) -> str:
+    """The marker line of a rendered comment."""
+    return body.split("\n", 1)[0]
 
 
 class RelayTests(unittest.TestCase):
@@ -1036,6 +1090,836 @@ class RelayTests(unittest.TestCase):
         import zulip_linkifiers
 
         self.assertEqual(set(lr.DEFAULT_TEAMS), set(zulip_linkifiers.LINEAR_TEAMS))
+
+
+class WorkerCase(unittest.TestCase):
+    """A fresh ledger, a faked Linear and a scripted topic, for the AFC-821 tests below."""
+
+    def setUp(self) -> None:
+        self.t = [1000.0]
+        self.lin = FakeLinear()
+        self.logs: list[str] = []
+        self.led = lr.Ledger(Path(tempfile.mkdtemp()) / "state.json")
+        self.led.open()
+        self.topic = Topic()
+
+    def worker(self, **readers) -> lr.RelayWorker:
+        """A worker on the ledger.  A second one on the same ledger is a restart: it starts with
+        the ledger as the first one left it, and with nothing in memory.  Both of its clocks are
+        the test's, so a test moves the retry interval along with the time."""
+        return lr.RelayWorker(
+            "https://z.example", "relay@x", self.lin, self.led,
+            lr.build_regex(lr.DEFAULT_TEAMS), clock=lambda: self.t[0],
+            monotonic=lambda: self.t[0], log=self.logs.append,
+            public_streams={5: "builds", 6: "deploys"}, **readers,
+        )
+
+    def key(self, issue: str, sid: int, topic: str) -> str:
+        return lr.ledger_key(issue, sid, topic)
+
+    def prune(self, count: int = 1) -> None:
+        """Save with the entry bound `count` under what the ledger holds, so the oldest entries
+        are pruned exactly as MAX_ENTRIES prunes them in production."""
+        with mock.patch.object(lr, "MAX_ENTRIES", len(self.led.entries) - count):
+            self.led.save()
+
+
+class ArchiveTests(WorkerCase):
+    """AFC-821, the comment map.  Pruning used to delete an entry whole, so the topic's next
+    mention started a second comment under a new marker, and a message that did not name the
+    issue recorded nothing.  Now a pruned entry leaves its root and comment id in the ledger's
+    archive, and the topic's next message restores it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.w = self.worker(history=self.topic.whole)
+
+    # -- pruning keeps the map -------------------------------------------------------------
+    def test_pruning_moves_a_commented_entry_into_the_archive(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 old", "hello"))
+        self.t[0] += 10
+        self.w.handle_event(message(2, "AFC-1 new", "hello"))
+        with mock.patch.object(lr, "MAX_ENTRIES", 1):
+            self.led.save()
+        old = self.key("AFC-1", 5, "AFC-1 old")
+        self.assertEqual(list(self.led.entries), [self.key("AFC-1", 5, "AFC-1 new")])  # bounded
+        # The record is the root and the comment id, and no topic text, stream name or quote.
+        self.assertEqual(
+            self.led.archive,
+            {old: {"root": 1, "comment_id": "c1", "pending": False, "at": 1000.0}},
+        )
+        text = self.led.path.read_text("utf-8")
+        self.assertEqual(json.loads(text)["archive"], self.led.archive)
+        self.assertNotIn("AFC-1 old", text)
+        # The file round-trips: a restart reads the same map back, index included.
+        again = lr.Ledger(Path(tempfile.mkdtemp()) / "copy.json")
+        again.path.write_text(text, "utf-8")
+        again.open()
+        self.assertEqual(again.archive, self.led.archive)
+        self.assertEqual(again.entries, self.led.entries)
+        self.assertEqual(again.archived_for(5, lr.topic_digest("AFC-1 old")), [old])
+
+    def test_a_pruned_entry_without_a_comment_leaves_no_record(self) -> None:
+        # Linear has no AFC-7, so the entry never got a comment: there is nothing to find again,
+        # and the entry is simply dropped, as it always was.
+        self.w.handle_event(message(1, "AFC-7 early", "hello"))
+        self.assertEqual(len(self.led.entries), 1)
+        self.prune()
+        self.assertEqual(json.loads(self.led.path.read_text("utf-8")),
+                         {"version": lr.LEDGER_VERSION, "entries": {}})
+
+    # -- the next message restores the entry -----------------------------------------------
+    def test_a_pruned_topic_that_names_its_issue_again_edits_the_same_comment(self) -> None:
+        self.topic.messages = [past(1, "setting up"), past(2, "still no issue")]
+        self.w.handle_event(message(3, "deploy thread", "this is AFC-1"))
+        marker = lr.marker_for("AFC-1", 3)
+        self.assertEqual(first_line(self.lin.created[0][1]), marker)
+        self.prune()
+        self.assertEqual(self.led.entries, {})
+        self.topic.messages += [past(3, "this is AFC-1"), past(4, "said while it was pruned")]
+        self.t[0] += 86400
+        self.w.handle_event(message(5, "deploy thread", "back to AFC-1"))
+        self.assertEqual(self.lin.create_calls, 1)  # no second comment
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])  # the old one, edited
+        body = self.lin.updated[0][1]
+        self.assertEqual(first_line(body), marker)  # under the marker it always had
+        entry = self.led.entries[self.key("AFC-1", 5, "deploy thread")]
+        self.assertEqual((entry["root"], entry["comment_id"]), (3, "c1"))
+        self.assertEqual(self.led.archive, {})  # the record left the archive with the entry
+        # Backfilled from the whole topic before the live message, as a new entry is.
+        self.assertEqual(entry["seen"], [1, 2, 3, 4, 5])
+        for mid in (1, 2, 3, 4, 5):
+            self.assertIn("near/%d" % mid, body)
+        restored = [line for line in self.logs if "restored the relay entry" in line]
+        self.assertEqual(restored, ["restored the relay entry for AFC-1 (conversation 3) from "
+                                    "the archive"])
+
+    def test_a_message_that_does_not_name_the_issue_restores_a_pruned_topic_too(self) -> None:
+        self.topic.messages = [past(1, "this is AFC-1")]
+        self.w.handle_event(message(1, "deploy thread", "this is AFC-1"))
+        self.prune()
+        self.t[0] += 86400
+        self.topic.messages.append(past(2, "no key in this one"))
+        self.w.handle_event(message(2, "deploy thread", "no key in this one"))
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])  # the standing comment
+        body = self.lin.updated[0][1]
+        self.assertEqual(first_line(body), lr.marker_for("AFC-1", 1))
+        # Refilled before the edit: the comment keeps what it listed and gains the new message.
+        self.assertIn("near/1", body)
+        self.assertIn("near/2", body)
+        self.assertEqual(self.lin.create_calls, 1)
+        # A topic the archive does not know still records nothing until a real mention.
+        self.w.handle_event(message(3, "another thread", "no key here either"))
+        self.assertEqual(list(self.led.entries), [self.key("AFC-1", 5, "deploy thread")])
+
+    def test_a_pruned_uncertain_create_is_adopted_by_its_original_marker(self) -> None:
+        # The create landed, its answer was lost, and the entry was pruned while still pending.
+        self.lin.create_error = lr.LinearUncertain("linear create outcome unknown")
+        self.lin.create_lands = True
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.lin.create_error = None
+        self.prune()
+        self.assertEqual(self.led.entries, {})
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        # Found by the marker of root 1, not looked for (and missed) under a marker of root 2.
+        self.assertEqual(entry["comment_id"], "c-landed")
+        self.assertEqual(entry["marker"], lr.marker_for("AFC-1", 1))
+        self.assertFalse(entry["pending"])
+        self.assertEqual(self.lin.create_calls, 1)  # never created a second time
+        # The adopted comment shows what the lost create wrote, not the message that brought it
+        # back: the entry stays dirty, and the next tick edits the adopted comment.
+        self.assertTrue(entry["dirty"])
+        self.w.tick()
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c-landed"])
+        self.assertIn("near/2", self.lin.updated[0][1])
+
+    def test_a_restored_entry_whose_comment_is_gone_recreates_it_once(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.prune()
+        self.lin.by_marker.clear()  # the comment was deleted on the Linear side
+        self.lin.update_error = lr.LinearNotFound("linear: not found")
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.assertEqual(len(self.lin.created), 2)
+        self.assertEqual(first_line(self.lin.created[1][1]), lr.marker_for("AFC-1", 1))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertEqual(entry["comment_id"], "c2")
+        # Exactly once: the next message edits the recreated comment and creates nothing.
+        self.lin.update_error = None
+        self.t[0] += 700
+        self.w.handle_event(message(3, "AFC-1 relay", "more"))
+        self.assertEqual(len(self.lin.created), 2)
+        self.assertEqual(self.lin.updated[-1][0], "c2")
+
+    def test_a_restore_whose_history_cannot_be_read_leaves_the_comment_as_it_is(self) -> None:
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3)]
+        for mid in (1, 2, 3):
+            self.w.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        key = self.key("AFC-1", 5, "AFC-1 relay")
+        self.prune()
+        self.topic.whole_error = OSError("zulip is down")
+        self.topic.messages.append(past(4, "m4"))
+        self.t[0] += 86400
+        reads = self.topic.whole_calls
+        self.w.handle_event(message(4, "AFC-1 relay", "m4"))
+        self.w.handle_event(message(4, "AFC-1 relay", "m4"))  # the same message, another seat
+        # Restored without its history, the entry would rewrite the comment down to message 4.
+        # It waits instead: nothing is written, and the record stays in the archive.
+        self.assertEqual(self.lin.updated, [])
+        self.assertEqual(list(self.led.archive), [key])
+        self.assertEqual(self.led.entries, {})
+        self.assertEqual(self.topic.whole_calls, reads + 1)  # one read, not one per feed
+        failed = [line for line in self.logs if "its archived comment is left as it is" in line]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("(OSError)", failed[0])
+        # Inside the retry interval a further message reads nothing either.
+        self.topic.messages.append(past(5, "m5"))
+        self.t[0] += 10
+        self.w.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(self.topic.whole_calls, reads + 1)
+        # Later, with the read working, the next message restores the entry with the whole
+        # topic, the messages that waited included, and edits the one comment.
+        self.topic.whole_error = None
+        self.topic.messages.append(past(6, "m6"))
+        self.t[0] += lr.CATCH_UP_RETRY
+        self.w.handle_event(message(6, "AFC-1 relay", "m6"))
+        self.assertEqual(self.lin.create_calls, 1)
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        self.assertEqual(self.led.entries[key]["seen"], [1, 2, 3, 4, 5, 6])
+        for mid in range(1, 7):
+            self.assertIn("near/%d" % mid, self.lin.updated[0][1])
+
+    def test_a_restore_puts_its_entry_in_place_before_anything_can_fail(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.prune()
+
+        def log(line: str) -> None:
+            if "restored" in line:
+                raise OSError("stderr is closed")
+            self.logs.append(line)
+
+        self.w.log = log
+        self.t[0] += 86400
+        with self.assertRaises(OSError):
+            self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        # The record left the archive and its entry took its place, so no later save can lose
+        # the comment and stack a second one at the topic's next mention.
+        self.assertEqual(self.led.archive, {})
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertEqual((entry["root"], entry["comment_id"]), (1, "c1"))
+
+    # -- renames and moves ---------------------------------------------------------------
+    def test_a_topic_rename_carries_the_archived_record(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.prune()
+        self.w.handle_event(move(5, "AFC-1 relay", subject="AFC-1 relay renamed"))
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "AFC-1 relay renamed", "again"))
+        self.assertEqual(self.lin.create_calls, 1)  # no second comment under the new name
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        self.assertEqual(first_line(self.lin.updated[0][1]), lr.marker_for("AFC-1", 1))
+        self.assertEqual(list(self.led.entries), [self.key("AFC-1", 5, "AFC-1 relay renamed")])
+        self.assertEqual(self.led.archive, {})
+
+    def test_a_rename_that_newly_names_an_archived_issue_waits_for_the_next_message(self) -> None:
+        self.topic.messages = [past(1, "this is AFC-1"), past(2, "m2"), past(3, "m3")]
+        for item in self.topic.messages:
+            self.w.handle_event(message(item["id"], "discussion", item["content"]))
+        self.prune()
+        self.t[0] += 86400
+        self.w.handle_event(move(5, "discussion", subject="AFC-1 discussion", ids=[1, 2, 3]))
+        # The record moves with the topic, and nothing is written: restored by the first moved
+        # message, the entry would have no history before it, and its edit would cut the
+        # comment down to one "topic rename" bullet.
+        key = self.key("AFC-1", 5, "AFC-1 discussion")
+        self.assertEqual(list(self.led.archive), [key])
+        self.assertEqual((self.lin.create_calls, self.lin.updated), (1, []))
+        self.topic.messages.append(past(4, "m4"))
+        self.w.handle_event(message(4, "AFC-1 discussion", "m4"))
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        body = self.lin.updated[0][1]
+        for mid in (1, 2, 3, 4):
+            self.assertIn("near/%d" % mid, body)
+        self.assertNotIn("topic rename", body)
+
+    def test_a_move_between_public_streams_carries_the_archived_record(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.prune()
+        self.w.handle_event(move(5, "AFC-1 relay", new_sid=6, subject="AFC-1 moved"))
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "AFC-1 moved", "again", stream_id=6))
+        self.assertEqual(self.lin.create_calls, 1)
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        entry = self.led.entries[self.key("AFC-1", 6, "AFC-1 moved")]
+        self.assertEqual((entry["root"], entry["stream_id"]), (1, 6))
+        self.assertEqual(self.led.archive, {})
+
+    def test_a_partial_move_leaves_the_archived_record_with_the_old_topic(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.prune()
+        self.w.handle_event(move(5, "AFC-1 relay", subject="AFC-1 split", mode="change_one",
+                                 ids=[2]))
+        self.t[0] += 86400
+        self.w.handle_event(message(3, "AFC-1 relay", "more"))
+        self.assertEqual(self.lin.create_calls, 1)  # the old topic keeps its one comment
+        self.assertEqual([cid for cid, _body in self.lin.updated], ["c1"])
+        self.assertNotIn(self.key("AFC-1", 5, "AFC-1 split"), self.led.entries)
+
+    def test_an_archived_record_that_moves_onto_a_live_entry_gives_way(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 a", "one"))
+        self.prune()
+        self.t[0] += 10
+        self.w.handle_event(message(2, "AFC-1 b", "two"))
+        self.w.handle_event(move(5, "AFC-1 a", subject="AFC-1 b"))
+        # One record for (AFC-1, the stream, topic b): the live one, with its own comment.
+        self.assertEqual(self.led.archive, {})
+        self.assertEqual(list(self.led.entries), [self.key("AFC-1", 5, "AFC-1 b")])
+        self.assertEqual(self.led.entries[self.key("AFC-1", 5, "AFC-1 b")]["comment_id"], "c2")
+        self.assertTrue(any("merged the archived AFC-1 (conversation 1)" in line
+                            for line in self.logs))
+
+    def test_a_live_entry_that_moves_onto_an_archived_record_replaces_it(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 b", "one"))
+        self.prune()
+        self.t[0] += 10
+        self.w.handle_event(message(2, "AFC-1 a", "two"))
+        self.w.handle_event(move(5, "AFC-1 a", subject="AFC-1 b", ids=[2]))
+        self.assertEqual(self.led.archive, {})
+        self.assertEqual(list(self.led.entries), [self.key("AFC-1", 5, "AFC-1 b")])
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 b")]
+        self.assertEqual((entry["root"], entry["comment_id"]), (2, "c2"))
+
+    def test_two_archived_records_that_meet_leave_the_destinations(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 a", "one"))
+        self.t[0] += 10
+        self.w.handle_event(message(2, "AFC-1 b", "two"))
+        self.prune(2)
+        self.w.handle_event(move(5, "AFC-1 a", subject="AFC-1 b"))
+        kept = self.key("AFC-1", 5, "AFC-1 b")
+        self.assertEqual(list(self.led.archive), [kept])
+        self.assertEqual(self.led.archive[kept]["comment_id"], "c2")
+        self.assertEqual(self.led.archived_for(5, lr.topic_digest("AFC-1 a")), [])
+        self.assertEqual(self.led.archived_for(5, lr.topic_digest("AFC-1 b")), [kept])
+
+    # -- private streams -------------------------------------------------------------------
+    def test_a_topic_that_moves_to_a_private_stream_drops_its_archived_record(self) -> None:
+        self.w.handle_event(message(1, "deploy thread", "this is AFC-1"))
+        self.prune()
+        self.w.handle_event(move(5, "deploy thread", new_sid=9))
+        self.assertEqual(self.led.archive, {})
+        self.assertTrue(any("closed the archived relay record for AFC-1" in line
+                            for line in self.logs))
+        # Nothing is restored or written: not where the topic went, and not where it was.
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "deploy thread", "no key in this one", stream_id=9))
+        self.w.handle_event(message(3, "deploy thread", "nor in this one"))
+        self.w.tick()
+        self.assertEqual((self.lin.create_calls, self.lin.updated), (1, []))
+        self.assertEqual(self.led.entries, {})
+
+    def test_a_stream_that_turns_private_drops_its_archived_records(self) -> None:
+        self.w.handle_event(message(1, "deploy thread", "this is AFC-1"))
+        self.prune()
+        key = self.key("AFC-1", 5, "deploy thread")
+        self.w.set_public_streams(None)  # unloaded proves nothing about any stream
+        self.w.tick()
+        self.w.reconcile()
+        self.assertEqual(list(self.led.archive), [key])
+        self.w.set_public_streams({6: "deploys"})  # loaded, and the stream is not public now
+        self.w.tick()
+        self.assertEqual(self.led.archive, {})
+        self.assertIn("dropped 1 archived relay record(s): their stream is no longer public",
+                      self.logs)
+        # Public again later: the old comment is not found again, as a live entry's is not.
+        self.w.set_public_streams({5: "builds", 6: "deploys"})
+        self.t[0] += 86400
+        self.w.handle_event(message(2, "deploy thread", "no key in this one"))
+        self.w.tick()
+        self.assertEqual((self.lin.create_calls, self.lin.updated), (1, []))
+        self.assertEqual(self.led.entries, {})
+
+    def test_the_startup_reconcile_drops_a_private_streams_archived_records(self) -> None:
+        self.w.handle_event(message(1, "deploy thread", "this is AFC-1"))
+        self.prune()
+        self.w.set_public_streams({6: "deploys"})
+        self.w.reconcile()
+        self.assertEqual(self.led.archive, {})
+
+    def test_a_tick_drops_what_its_own_save_archived_for_a_private_stream(self) -> None:
+        # An entry that needs a create, walked first; then an older commented entry of stream
+        # 6, which has just turned private.  The create's write-ahead save prunes the older
+        # entry into the archive after the tick's first sweep has run.
+        fresh = lr.new_entry("AFC-1", 5, "builds", "AFC-1 new", 2)
+        fresh.update(dirty=True, last_touch=2000.0)
+        self.led.entries[self.key("AFC-1", 5, "AFC-1 new")] = fresh
+        old = lr.new_entry("AFC-1", 6, "deploys", "AFC-1 old", 1)
+        old.update(comment_id="c-old", last_touch=1000.0)
+        self.led.entries[self.key("AFC-1", 6, "AFC-1 old")] = old
+        self.w.set_public_streams({5: "builds"})
+        with mock.patch.object(lr, "MAX_ENTRIES", 1):
+            self.w.tick()
+        self.assertEqual(self.lin.create_calls, 1)
+        # Dropped in the same tick, as the live rule drops the entry, so no record of a private
+        # stream outlives the tick, even if the stream is made public again before the next.
+        self.assertEqual(self.led.archive, {})
+        self.assertIn("dropped 1 archived relay record(s): their stream is no longer public",
+                      self.logs)
+        self.assertNotIn("archive", json.loads(self.led.path.read_text("utf-8")))
+
+    # -- the bounds ------------------------------------------------------------------------
+    def test_the_archive_is_bounded_and_the_log_says_what_it_dropped(self) -> None:
+        keys = [self.key("AFC-1", 5, "topic %d" % i) for i in range(4)]
+        for i, key in enumerate(keys):
+            self.led.archive_put(key, {"root": i + 1, "comment_id": "c%d" % (i + 1),
+                                       "pending": False, "at": float(i)})
+        self.led.mark_dirty()
+        with mock.patch.object(lr, "MAX_ARCHIVE", 2):
+            self.w.tick()
+        self.assertEqual(sorted(self.led.archive), sorted(keys[2:]))  # the two oldest went
+        self.assertEqual(self.led.archive_dropped, 2)
+        # The index follows: a dropped record is not found, a kept one is.
+        self.assertEqual(self.led.archived_for(5, lr.topic_digest("topic 0")), [])
+        self.assertEqual(self.led.archived_for(5, lr.topic_digest("topic 3")), [keys[3]])
+        said = [line for line in self.logs if "dropped 2 archived record(s)" in line]
+        self.assertEqual(len(said), 1)
+        self.assertFalse(any(key in line for key in keys for line in self.logs))  # a count only
+        self.logs.clear()
+        self.led.mark_dirty()
+        self.w.tick()
+        self.assertEqual(self.logs, [])  # said once, not at every save
+
+    def test_the_byte_bound_still_converges_with_an_archive(self) -> None:
+        for mid, name in ((1, "AFC-1 a"), (2, "AFC-1 b"), (3, "AFC-1 c")):
+            self.w.handle_event(message(mid, name, "hello"))
+            self.t[0] += 10
+        keys = [self.key("AFC-1", 5, name) for name in ("AFC-1 a", "AFC-1 b", "AFC-1 c")]
+        self.led.save()
+        whole = len(self.led.path.read_bytes())
+        # One byte too many: the oldest entry gives way, and it goes to the archive.
+        with mock.patch.object(lr, "MAX_LEDGER_BYTES", whole - 1):
+            self.led.save()
+        self.assertEqual(list(self.led.entries), keys[1:])
+        self.assertEqual(list(self.led.archive), keys[:1])
+        self.assertLess(len(self.led.path.read_bytes()), whole)
+        # Room for one record and no entry, measured from a saved ledger that holds just the
+        # newest entry's record, so the bound sits between one record and two whatever size a
+        # record renders to.  Every entry is archived, then the oldest records are dropped
+        # until the file fits.
+        newest = self.led.entries[keys[2]]
+        one = lr.Ledger(Path(tempfile.mkdtemp()) / "one.json")
+        one.open()
+        one.archive_put(keys[2], {"root": newest["root"], "comment_id": newest["comment_id"],
+                                  "pending": newest["pending"], "at": newest["last_touch"]})
+        one.save()
+        room = len(one.path.read_bytes()) + 10
+        with mock.patch.object(lr, "MAX_LEDGER_BYTES", room):
+            self.led.save()
+        self.assertEqual(self.led.entries, {})
+        self.assertEqual(list(self.led.archive), keys[2:])  # the newest record is the one kept
+        self.assertEqual(self.led.archive_dropped, 2)
+        self.assertLessEqual(len(self.led.path.read_bytes()), room)
+        # A bound nothing fits in still ends, with nothing left to drop.
+        with mock.patch.object(lr, "MAX_LEDGER_BYTES", 1):
+            self.led.save()
+        self.assertEqual((self.led.entries, self.led.archive), ({}, {}))
+
+    # -- the file --------------------------------------------------------------------------
+    def test_a_ledger_without_an_archive_opens_and_saves_as_before(self) -> None:
+        key = self.key("AFC-1", 5, "AFC-1 relay")
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        entry["comment_id"] = "c1"
+        data = {"version": lr.LEDGER_VERSION, "entries": {key: entry}}
+        path = Path(tempfile.mkdtemp()) / "before.json"
+        path.write_text(json.dumps(data), "utf-8")
+        led = lr.Ledger(path)
+        led.open()
+        self.assertEqual(led.entries, {key: entry})
+        led.save()
+        self.assertEqual(json.loads(path.read_text("utf-8")), data)  # no archive table appears
+
+    def test_a_malformed_archive_stops_the_relay_without_echoing_it(self) -> None:
+        digest = lr.topic_digest("AFC-1 relay")
+        key = self.key("AFC-1", 5, "AFC-1 relay")
+        good = {"root": 1, "comment_id": "comment-id-in-the-file", "pending": False, "at": 5.0}
+
+        def without(field: str) -> dict:
+            return {name: value for name, value in good.items() if name != field}
+
+        cases = (
+            [],  # not a table
+            None,
+            {"no separators": good},
+            {"AFC-1|five|%s" % digest: good},  # the stream id is not an integer
+            {"AFC-1|05|%s" % digest: good},  # not the key ledger_key writes: never looked up
+            {"AFC-1|5|%s" % digest.upper(): good},  # not a lowercase hex digest
+            {"AFC-1|5|abc": good},
+            {key: "not a record"},
+            {key: {**good, "root": "1"}},
+            {key: {**good, "root": True}},
+            {key: {**good, "comment_id": ""}},
+            {key: {**good, "comment_id": 7}},
+            {key: {**good, "pending": "no"}},
+            {key: {**good, "at": "yesterday"}},
+            {key: without("at")},
+            # Every field must be there: a record with no comment id would pass for one whose
+            # create never landed, and its restore would fail after it left the archive.
+            {key: without("comment_id")},
+            {key: without("root")},
+            {key: without("pending")},
+            # A time the archive cannot be ordered by: the bounds would raise on it, or order
+            # the records arbitrarily, at every save.
+            {key: {**good, "at": float("nan")}},
+            {key: {**good, "at": float("inf")}},
+            {key: {**good, "at": 10**400}},
+        )
+        base = Path(tempfile.mkdtemp())
+        for number, archive in enumerate(cases):
+            # A file of its own for each case, so no case can pass on another's held lock.
+            path = base / ("case-%d.json" % number)
+            path.write_text(json.dumps(
+                {"version": lr.LEDGER_VERSION, "entries": {}, "archive": archive}), "utf-8")
+            with self.subTest(case=number):
+                with self.assertRaises(SystemExit) as caught:
+                    lr.Ledger(path).open()
+                said = str(caught.exception)
+                self.assertIn("archive", said)
+                # The position at most: never the key, the issue, the digest or a field.
+                for secret in ("AFC-1", digest, digest.upper(), "comment-id-in-the-file",
+                               "no separators", "yesterday"):
+                    self.assertNotIn(secret, said)
+        # The same record, well formed, opens.
+        path = base / "good.json"
+        path.write_text(json.dumps(
+            {"version": lr.LEDGER_VERSION, "entries": {}, "archive": {key: good}}), "utf-8")
+        led = lr.Ledger(path)
+        led.open()
+        self.assertEqual(led.archive, {key: good})
+
+
+class CatchUpTests(WorkerCase):
+    """AFC-821, the restart.  A message posted while the worker was not running never reached
+    it, and an existing comment missed it for good.  Given the catch-up reader, the first
+    message that reaches a standing entry after a restart records what the topic got in the
+    gap, once each, before the live one."""
+
+    def restart(self) -> lr.RelayWorker:
+        return self.worker(history=self.topic.whole, history_since=self.topic.since)
+
+    def entry(self, issue: str = "AFC-1", topic: str = "AFC-1 relay") -> dict:
+        return self.led.entries[self.key(issue, 5, topic)]
+
+    def test_a_restart_records_what_the_topic_got_while_the_worker_was_down(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        # Down: two plain messages and one of the writer's own land in the topic.
+        self.topic.messages = [
+            past(1, "hello"), past(2, "missed one"), past(3, "the relay's own", sender="relay@x"),
+            past(4, "missed two"), past(5, "live again"),
+        ]
+        second = self.restart()
+        self.t[0] += 3600
+        second.handle_event(message(5, "AFC-1 relay", "live again"))
+        entry = self.entry()
+        self.assertEqual(entry["seen"], [1, 2, 4, 5])  # once each, before the live one
+        self.assertEqual(entry["count"], 4)
+        self.assertEqual([item["mid"] for item in entry["links"]], [1, 2, 4, 5])
+        # One read, from the newest message the entry had seen, and no whole-topic read.
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 1)])
+        self.assertEqual(self.topic.whole_calls, 1)  # the first worker's, for the new entry
+        # A missed message keeps its own time, not the time it was caught up at.
+        self.assertEqual(entry["links"][1]["when"],
+                         time.strftime("%b %d %H:%M UTC", time.gmtime(902)))
+        self.assertEqual(self.lin.create_calls, 1)
+        body = self.lin.updated[-1][1]
+        self.assertIn("near/2", body)
+        self.assertIn("near/4", body)
+        self.assertNotIn("near/3", body)  # the writer's own post is skipped, as on the live path
+        self.assertIn("caught up 2 missed message(s) for AFC-1 (conversation 1)", self.logs)
+        # Caught up: the next message reads nothing.
+        second.handle_event(message(6, "AFC-1 relay", "and on"))
+        self.assertEqual(len(self.topic.since_calls), 1)
+        self.assertEqual(entry["seen"], [1, 2, 4, 5, 6])
+
+    def test_a_message_the_entry_has_seen_is_not_counted_twice(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        first.handle_event(message(2, "AFC-1 relay", "again"))
+        self.topic.messages = [past(1, "hello"), past(2, "again"), past(3, "missed"),
+                               past(4, "live")]
+        self.topic.sloppy = True  # the reader answers with messages the entry already has
+        second = self.restart()
+        second.handle_event(message(4, "AFC-1 relay", "live"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4])
+        self.assertEqual(self.entry()["count"], 4)
+        # A host that replays a message the catch-up recorded changes nothing either.
+        second.handle_event(message(3, "AFC-1 relay", "missed"))
+        self.assertEqual(self.entry()["count"], 4)
+
+    def test_a_failed_catch_up_read_is_logged_and_tried_again(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4, 5)]
+        self.topic.error = RuntimeError("zulip is down, and this text stays out of the log")
+        second = self.restart()
+        second.handle_event(message(3, "AFC-1 relay", "m3"))
+        self.assertEqual(self.entry()["seen"], [1, 3])  # the live message is recorded all the same
+        failed = [line for line in self.logs if "could not be read" in line]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("(RuntimeError)", failed[0])
+        self.assertFalse(any("stays out of the log" in line for line in self.logs))
+        # The same message fed again for another seat, and the next message inside the retry
+        # interval, read nothing: a failing read is not repeated for every feed, on the
+        # host's routing thread.
+        second.handle_event(message(3, "AFC-1 relay", "m3"))
+        self.t[0] += 10
+        second.handle_event(message(4, "AFC-1 relay", "m4"))
+        self.assertEqual(len(self.topic.since_calls), 1)
+        self.topic.error = None
+        self.t[0] += lr.CATCH_UP_RETRY
+        second.handle_event(message(5, "AFC-1 relay", "m5"))
+        # Tried again from the same point, so the missed message is recovered, and in id order.
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 1])
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])
+        self.assertEqual([item["mid"] for item in self.entry()["links"]], [1, 2, 3, 4, 5])
+        self.assertEqual(self.entry()["count"], 5)
+        second.handle_event(message(6, "AFC-1 relay", "and on"))
+        self.assertEqual(len(self.topic.since_calls), 2)  # settled: no third read
+
+    def test_a_retried_read_counts_each_message_once_however_many_came_live(self) -> None:
+        # More live messages arrive while the read keeps failing than the entry's `seen` list
+        # holds, so `seen` alone can no longer tell which of them are recorded.
+        with mock.patch.object(lr, "MAX_SEEN", 4):
+            first = self.restart()
+            first.handle_event(message(1, "AFC-1 relay", "m1"))
+            self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 14)]
+            self.topic.error = RuntimeError("zulip history is down")
+            second = self.restart()
+            for mid in range(3, 13):  # 2 was missed; 3 to 12 arrive live
+                second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+            self.topic.error = None
+            self.t[0] += 3600  # an hour on, the read works again
+            second.handle_event(message(13, "AFC-1 relay", "m13"))
+        entry = self.entry()
+        self.assertEqual(entry["count"], 13)  # 1 to 13, each once
+        self.assertEqual([item["mid"] for item in entry["links"]], list(range(1, 14)))
+        self.assertIn("caught up 1 missed message(s) for AFC-1 (conversation 1)", self.logs)
+
+    def test_a_catch_up_still_open_after_its_bound_gives_up_and_says_so(self) -> None:
+        with mock.patch.object(lr, "MAX_BACKFILL", 3):
+            first = self.restart()
+            first.handle_event(message(1, "AFC-1 relay", "m1"))
+            self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 9)]
+            self.topic.error = RuntimeError("zulip history is down")
+            second = self.restart()
+            for mid in range(3, 7):
+                second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+            gave_up = [line for line in self.logs if "gave up catching up" in line]
+            self.assertEqual(gave_up, ["gave up catching up AFC-1 (conversation 1) after 3 later "
+                                       "messages; what its topic got while the relay was not "
+                                       "receiving it stays missing"])
+            # Given up: the memory is released, and no read is made for it again.
+            self.topic.error = None
+            self.t[0] += lr.CATCH_UP_RETRY
+            second.handle_event(message(7, "AFC-1 relay", "m7"))
+        self.assertEqual(len(self.topic.since_calls), 1)
+        self.assertEqual(self.entry()["seen"], [1, 3, 4, 5, 6, 7])
+
+    def test_a_read_cut_short_at_its_cap_is_continued(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        # Down for longer than one read holds: 2 to 7 land, and a read returns three at most.
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 9)]
+        self.topic.cap = 3
+        second = self.restart()
+        with mock.patch.object(lr, "MAX_BACKFILL", 3):
+            second.handle_event(message(8, "AFC-1 relay", "m8"))
+            self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 8])
+            for mid in (9, 10, 11):
+                self.topic.messages.append(past(mid, "m%d" % mid))
+                second.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        # Each read went on from the newest message the last one returned, until one reached
+        # the live message; then the entry was settled and the next message read nothing.
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 4, 7])
+        self.assertEqual(self.entry()["seen"], list(range(1, 12)))
+        self.assertEqual(self.entry()["count"], 11)
+
+    def test_a_whole_topic_read_cut_short_at_its_cap_is_continued(self) -> None:
+        worker = self.restart()
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 7)]
+        self.topic.cap = 3
+        with mock.patch.object(lr, "MAX_BACKFILL", 3):
+            # The first message to name the issue comes after more than one read holds: the
+            # entry gets the topic's first three, and its catch-up goes on from there.
+            worker.handle_event(message(6, "AFC-1 relay", "m6"))
+            self.assertEqual(self.entry()["seen"], [1, 2, 3, 6])
+            for mid in (7, 8):
+                self.topic.messages.append(past(mid, "m%d" % mid))
+                worker.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [3, 6])
+        self.assertEqual(self.entry()["seen"], list(range(1, 9)))
+        self.assertEqual(self.entry()["count"], 8)
+
+    def test_an_entry_made_by_a_replayed_older_message_reads_on_from_it(self) -> None:
+        worker = self.restart()
+        # The host replays message 2 (an owner post, say) after 3 and 4 were posted, and the
+        # first entry for the issue is made by it.
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4)]
+        worker.handle_event(message(2, "AFC-1 relay", "m2"))
+        self.assertEqual(self.entry()["seen"], [1, 2])
+        # Its whole-topic read showed 3 and 4 after it, so the topic's next message reads on.
+        self.topic.messages.append(past(5, "m5"))
+        worker.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 2)])
+
+    def test_an_entry_restored_by_a_replayed_older_message_reads_on_from_it(self) -> None:
+        first = self.restart()
+        self.topic.messages = [past(1, "this is AFC-1")]
+        first.handle_event(message(1, "AFC-1 relay", "this is AFC-1"))
+        self.prune()
+        # Down: 2 (an owner post), 3 and 4 land, and the host's own backfill replays 2 alone.
+        self.topic.messages += [past(2, "m2"), past(3, "m3"), past(4, "m4")]
+        second = self.restart()
+        self.t[0] += 86400
+        second.handle_event(message(2, "AFC-1 relay", "m2"))
+        self.assertEqual(self.entry()["seen"], [1, 2])
+        self.topic.messages.append(past(5, "m5"))
+        second.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 2)])
+        self.assertEqual(self.lin.create_calls, 1)
+
+    def test_a_new_entry_whose_history_cannot_be_read_is_filled_in_later(self) -> None:
+        worker = self.restart()
+        self.topic.messages = [past(1, "m1"), past(2, "m2"), past(3, "this is AFC-1")]
+        self.topic.whole_error = OSError("zulip is down")
+        worker.handle_event(message(3, "deploy thread", "this is AFC-1"))
+        self.assertEqual(len(self.lin.created), 1)  # a create is never held for history
+        self.assertEqual(self.entry("AFC-1", "deploy thread")["seen"], [3])
+        self.topic.whole_error = None
+        self.topic.messages.append(past(4, "m4"))
+        self.t[0] += 3600  # an hour on, the read works again
+        worker.handle_event(message(4, "deploy thread", "m4"))
+        # The catch-up read the topic from its beginning, so the comment's next edit has the
+        # messages the failed read would have pulled in.
+        self.assertEqual(self.entry("AFC-1", "deploy thread")["seen"], [1, 2, 3, 4])
+        self.assertEqual(self.topic.since_calls, [(5, "deploy thread", 0)])
+        self.assertTrue(any("fills in the rest" in line for line in self.logs))
+
+    def test_a_queue_that_registers_again_reopens_the_catch_up(self) -> None:
+        worker = self.restart()
+        self.topic.messages = [past(1, "m1")]
+        worker.handle_event(message(1, "AFC-1 relay", "m1"))
+        # Every seat's queue expires and registers again in the same process; 2 and 3 land
+        # in between, and the host's own backfill replays neither.
+        self.topic.messages += [past(2, "m2"), past(3, "m3"), past(4, "m4")]
+        worker.reopen_catch_up()
+        worker.handle_event(message(4, "AFC-1 relay", "m4"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 1)])
+
+    def test_a_message_dropped_while_the_stream_set_is_unloaded_is_read_for_later(self) -> None:
+        worker = self.restart()
+        self.topic.messages = [past(1, "m1")]
+        worker.handle_event(message(1, "AFC-1 relay", "m1"))
+        self.topic.messages += [past(2, "m2"), past(3, "m3")]
+        worker.set_public_streams(None)  # a stream event: the set is being reloaded
+        worker.handle_event(message(2, "AFC-1 relay", "m2"))  # dropped: nothing is known yet
+        worker.set_public_streams({5: "builds", 6: "deploys"})
+        worker.handle_event(message(3, "AFC-1 relay", "m3"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 1)])
+
+    def test_two_entries_that_merge_keep_the_earlier_catch_up_point(self) -> None:
+        first = self.restart()
+        self.topic.topics["AFC-1 b"] = [past(1, "m1")]
+        first.handle_event(message(1, "AFC-1 b", "m1"))
+        # Down: 2 and 3 land in topic b.  After the restart a new topic a names the issue, and
+        # is then renamed onto b, so b's entry takes a's in.
+        self.topic.topics["AFC-1 b"] += [past(2, "m2"), past(3, "m3")]
+        second = self.restart()
+        self.topic.topics["AFC-1 a"] = [past(4, "m4")]
+        second.handle_event(message(4, "AFC-1 a", "m4"))
+        second.handle_event(move(5, "AFC-1 a", subject="AFC-1 b", ids=[4]))
+        self.topic.topics["AFC-1 b"] += [past(4, "m4"), past(5, "m5")]
+        second.handle_event(message(5, "AFC-1 b", "m5"))
+        # b's own gap is read from b's own point, not from a's newer one.
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 b", 1)])
+        self.assertEqual(self.entry("AFC-1", "AFC-1 b")["seen"], [1, 2, 3, 4, 5])
+
+    def test_a_replayed_older_message_does_not_settle_the_catch_up(self) -> None:
+        first = self.restart()
+        for mid in (1, 2, 3):
+            first.handle_event(message(mid, "AFC-1 relay", "m%d" % mid))
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4, 5)]
+        second = self.restart()
+        # After its own restart the host replays a message the entry already has.  It proves
+        # nothing about what came after the entry's newest, so it costs no read and settles
+        # nothing.
+        second.handle_event(message(2, "AFC-1 relay", "m2"))
+        self.assertEqual(self.topic.since_calls, [])
+        second.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 3)])
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])
+
+    def test_a_message_that_is_not_the_topics_newest_leaves_the_catch_up_open(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "AFC-1 relay", "m1"))
+        # Down: 2, 3 and 4 land.  The host's own backfill replays 3 alone (an owner post, say).
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4)]
+        second = self.restart()
+        second.handle_event(message(3, "AFC-1 relay", "m3"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3])  # what lay before it is recorded
+        # 4 was posted in the gap too and is never replayed: the next message picks it up.
+        self.topic.messages.append(past(5, "m5"))
+        second.handle_event(message(5, "AFC-1 relay", "m5"))
+        self.assertEqual(self.entry()["seen"], [1, 2, 3, 4, 5])
+        self.assertEqual([after for _sid, _topic, after in self.topic.since_calls], [1, 3])
+        second.handle_event(message(6, "AFC-1 relay", "m6"))
+        self.assertEqual(len(self.topic.since_calls), 2)
+
+    def test_several_issues_in_one_topic_are_caught_up_with_one_read(self) -> None:
+        first = self.restart()
+        first.handle_event(message(1, "deploy thread", "this is AFC-1"))
+        first.handle_event(message(2, "deploy thread", "and OPS-9 too"))
+        first.handle_event(message(3, "deploy thread", "more"))
+        afc, ops = self.entry("AFC-1", "deploy thread"), self.entry("OPS-9", "deploy thread")
+        self.assertEqual((afc["seen"], ops["seen"]), ([1, 2, 3], [2, 3]))
+        # Make the two entries stop at different messages, to show what one read serves.
+        ops["seen"], ops["links"], ops["count"] = [2], ops["links"][:1], 1
+        self.topic.messages = [past(mid, "m%d" % mid) for mid in (1, 2, 3, 4, 5, 6)]
+        second = self.restart()
+        second.handle_event(message(6, "deploy thread", "live"))
+        # One read for the topic, from the older of the two points; each entry takes only what
+        # is newer than its own.
+        self.assertEqual(self.topic.since_calls, [(5, "deploy thread", 2)])
+        self.assertEqual((afc["seen"], afc["count"]), ([1, 2, 3, 4, 5, 6], 6))
+        self.assertEqual((ops["seen"], ops["count"]), ([2, 3, 4, 5, 6], 5))
+        second.handle_event(message(7, "deploy thread", "and on"))
+        self.assertEqual(len(self.topic.since_calls), 1)
+
+    def test_an_entry_made_or_restored_in_this_process_is_not_read_for(self) -> None:
+        worker = self.restart()
+        worker.handle_event(message(1, "AFC-1 relay", "hello"))  # brand-new: backfilled whole
+        worker.handle_event(message(2, "AFC-1 relay", "again"))
+        self.prune()
+        self.t[0] += 86400
+        worker.handle_event(message(3, "AFC-1 relay", "back"))  # restored: backfilled whole
+        worker.handle_event(message(4, "AFC-1 relay", "more"))
+        self.assertEqual(self.topic.since_calls, [])
+        self.assertEqual(self.topic.whole_calls, 2)
+        self.assertEqual(self.lin.create_calls, 1)
+
+    def test_without_the_reader_a_restart_catches_nothing_up(self) -> None:
+        # The standalone relay passes no reader: nothing is read, and nothing breaks.
+        first = self.worker()
+        first.handle_event(message(1, "AFC-1 relay", "hello"))
+        second = self.worker()
+        second.handle_event(message(5, "AFC-1 relay", "live again"))
+        self.assertEqual(self.entry()["seen"], [1, 5])
 
 
 if __name__ == "__main__":

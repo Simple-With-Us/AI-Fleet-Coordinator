@@ -1494,6 +1494,23 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _observe_linear_reconnect(self, runner: SeatRunner) -> None:
+        """A seat's event queue registered again:  its backfill replays only part of what
+        the realm got while the old queue was gone, so the living comments read each
+        standing topic's missed messages at that topic's next message (AFC-821).
+        Best-effort, like the message path."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            return
+        try:
+            engine.queue_registered()
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -2181,6 +2198,7 @@ class Daemon:
                 runner.streams.pop(sub.get("stream_id"), None)
 
     def route_backfill(self, runner: SeatRunner, messages: list[dict[str, Any]]) -> None:
+        self._observe_linear_reconnect(runner)
         for message in sorted(messages, key=lambda m: m.get("id", 0)):
             self.route_message(runner, message)
         for gap in getattr(runner, "gaps", []):
