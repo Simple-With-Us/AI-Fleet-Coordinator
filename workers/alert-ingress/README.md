@@ -267,6 +267,10 @@ python3 scripts/alert-ingress/provision-secrets.py            # dry run
 python3 scripts/alert-ingress/provision-secrets.py --apply    # write
 ```
 
+The provisioner requires the adjacent repository-owned `scripts/fleet_infisical.py` payload and reads named values through its canonical bounded worker; no external secrets app or CLI package is required.  Its existing `ALERT_INGRESS_AFC_READ_TOKEN` binding is for the pinned AFC project, prod `/zulip`; its distinct `ALERT_INGRESS_FLEETOPS_READ_TOKEN` is for Fleet-OPS prod `/`, using the existing Fleet-OPS project-ID resolver.  Other consumer and writer bindings cannot substitute for either read token.  A read-only finite-expiry grant and strict named-record provenance are verified before values are accepted.  Each batch retains the 90-second operation bound and a finite 1 MiB result cap.  Missing requested names remain absent without CLI retries, while required names still stop provisioning.
+
+Existing synced process values retain precedence, and apply mode keeps its separate `ALERT_INGRESS_AFC_WRITE_TOKEN` verification and write-outcome handling.  An actual own binding, registry metadata and installed acceptance must be qualified before use; this source change supplies no grant, store, deployment or activation.
+
 ### Proving it
 
 `scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, that a second alert joins the same standing block as a second row, and that every delivery left its raw copy in `#Alerts-Raw` while `#Alerts` got no alert line.  `--cleanup` resolves the test incidents and deletes the test messages in all three channels, keeping the standing blocks the Worker still points at.

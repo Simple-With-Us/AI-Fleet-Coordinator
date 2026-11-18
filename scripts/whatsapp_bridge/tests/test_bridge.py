@@ -483,26 +483,32 @@ class LaunchTests(unittest.TestCase):
                     "permissions": ["read"],
                     "expiresAt": "2000-01-01T00:00:00Z" if denied else "2099-01-01T00:00:00Z",
                 }
-            self.assertTrue(path.startswith("/v3/secrets/raw?"))
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            parsed = urllib.parse.urlsplit(path)
+            self.assertTrue(
+                parsed.path == "/v3/secrets/raw" or parsed.path.startswith("/v3/secrets/raw/")
+            )
+            query = urllib.parse.parse_qs(parsed.query)
             self.assertEqual(query["workspaceId"], [self.PROJECT])
             self.assertEqual(query["environment"], ["prod"])
             self.assertEqual(query["secretPath"], [folder])
             for field in ("recursive", "include_imports", "expandSecretReferences"):
                 self.assertEqual(query[field], ["false"])
-            return 200, {
-                "secrets": [
-                    {
-                        "secretKey": name,
-                        "secretValue": value,
-                        "type": "shared",
-                        "workspace": self.PROJECT,
-                        "environment": "prod",
-                        "secretPath": folder,
-                    }
-                    for name, value in values.items()
-                ]
-            }
+
+            def row(name):
+                return {
+                    "secretKey": name,
+                    "secretValue": values[name],
+                    "type": "shared",
+                    "workspace": self.PROJECT,
+                    "environment": "prod",
+                    "secretPath": folder,
+                }
+
+            if parsed.path == "/v3/secrets/raw":
+                return 200, {"secrets": [row(name) for name in values]}
+            name = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+            self.assertIn(name, source_names)
+            return (200, {"secret": row(name)}) if name in values else (404, {})
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / launch.CREDENTIAL_NAMES[mode]
@@ -540,7 +546,14 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(len(requests), 1, "wrong folder or expiry stops before secret values")
             self.assertEqual(children, [])
             return
-        self.assertEqual(len(requests), 2)
+        if mode == "poll":
+            self.assertEqual(len(requests), 2)
+        else:
+            self.assertEqual(len(requests), 1 + len(source_names))
+            self.assertCountEqual(
+                [urllib.parse.urlsplit(path).path for _method, path in requests[1:]],
+                ["/v3/secrets/raw/" + name for name in source_names],
+            )
         self.assertEqual(len(children), 1)
         child = children[0][2]
         self.assertTrue(set(core.AUTH_ENV_VARS).isdisjoint(child))
