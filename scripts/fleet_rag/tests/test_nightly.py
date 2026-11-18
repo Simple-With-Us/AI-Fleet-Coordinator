@@ -545,6 +545,8 @@ class NightlyJobTests(unittest.TestCase):
                 root = Path(tmp)
                 env = _ready(root)
                 retired = root / ".secrets" / "fleet-recall-infisical.env"
+                if retired.parent.is_symlink():
+                    raise ValueError(f"refusing symlink: {retired.parent}")
                 retired.parent.mkdir(mode=0o700)
                 retired.write_text(TOKEN)
                 retired.chmod(0o600)

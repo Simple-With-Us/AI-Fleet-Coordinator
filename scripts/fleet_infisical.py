@@ -1973,5 +1973,90 @@ def reconcile_secret(
         raise WriteError("state_unavailable", intent) from None
 
 
+def _check_recovery_identity(raw: str, intent: WriteIntent) -> None:
+    """Surface stored recovery identity when reconcile/clear receives a mismatched purpose or timestamp."""
+    try:
+        stored = _decode_json(raw.encode("utf-8"))
+    except Exception:
+        return
+    if not isinstance(stored, dict):
+        return
+    mismatches = []
+    if stored.get("created_at_ms") != intent.created_at_ms:
+        mismatches.append("created_at_ms")
+    if stored.get("purpose") != intent.purpose:
+        mismatches.append("purpose")
+    if mismatches:
+        raise SecretsError(
+            "write-identity-mismatch (%s): request_id=%s created_at_ms=%s purpose=%s"
+            % (
+                ",".join(mismatches),
+                stored.get("request_id", ""),
+                stored.get("created_at_ms", ""),
+                stored.get("purpose", ""),
+            )
+        )
+
+
+def clear_unsettled_write(
+    name: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    intent: WriteIntent,
+    timeout: float = API_TIMEOUT,
+) -> WriteReceipt:
+    """Explicit operator clear for an unsettled attempt so future folder writes can proceed.
+
+    Preserves the original request_id as a refused tombstone (cancelled) so a late replay of
+    that intent can never mutate Infisical, while clearing the namespace blocker.
+    """
+    env = dict(env)
+    env[ENV_WRITE_PATHS] = path
+    project, provider, namespace, deadline = _write_context(name, path, env, intent, timeout)
+    env[ENV_API] = provider
+    ledger = _write_ledger(intent.state_dir)
+    try:
+        with ledger.serialized(timeout=min(5.0, max(0, deadline - time.monotonic()))):
+            old = _write_lookup(ledger, namespace, intent)
+            if old is None:
+                _write_blocker(ledger, namespace, intent, provider, project, path)
+                raise WriteError("not_found", intent)
+            _check_recovery_identity(old[1], intent)
+            record = _write_cached(old[1], intent, provider, project, path, name, old[0])
+            if old[0] == "ok" and record["phase"] == "verified":
+                return WriteReceipt(
+                    intent.request_id, intent.created_at_ms, record["result"], replayed=True
+                )
+            if old[0] == "refused":
+                if record["phase"] == "cancelled":
+                    return WriteReceipt(
+                        intent.request_id,
+                        intent.created_at_ms,
+                        "cleared",
+                        replayed=True,
+                        outcome="cleared",
+                    )
+                raise _write_refusal(intent, record)
+            if record["phase"] == "acknowledged":
+                raise SecretsError("clear-acknowledged-requires-reconcile")
+            record.update(
+                phase="cancelled",
+                ack_status=0,
+                result="",
+                provider_status=0,
+                retryable=False,
+                failure_kind="",
+            )
+            _write_checkpoint(ledger, namespace, intent, record, "refused")
+            return WriteReceipt(
+                intent.request_id, intent.created_at_ms, "cleared", outcome="cleared"
+            )
+    except SecretsError:
+        raise
+    except Exception:
+        raise WriteError("state_unavailable", intent) from None
+
+
 if __name__ == "__main__":
     raise SystemExit(_bounded_read_worker() if sys.argv[1:] == ["--bounded-read-worker"] else 2)

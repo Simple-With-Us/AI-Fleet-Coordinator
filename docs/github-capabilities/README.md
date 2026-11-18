@@ -20,7 +20,7 @@ Owner request: broad GitHub operation support, without per-tool asks. This is no
 
 ## Current limits
 
-The App registration advertises workflows:write, but installation acceptance and actual minted token permissions have not been exercised for workflow writes. Relay code currently rejects workflow paths; changing only the App permission is not the fix. No live policy, identity or host change is implied by this source proposal. Host/service owner custody must be accepted explicitly.
+The relay conditionally supports workflow file create/update, atomic multi-file, delete and rename through the full-file verbs when the own-seat ceiling permits workflows:write. That permission is requested only for workflow edits. The publish client now admits workflow files to this batch route; provenance-preserving file_patch and git-object push still refuse workflow paths. Own-App installation metadata on AFC and Usage-Monitor reports workflows:write accepted, but this does not prove the relay seat ceiling or an actual workflow write. No live policy, identity or host change is implied by source publication. Exact-head review/CI, immutable client qualification and an authorized write with readback remain separate steps.
 
 No arbitrary generic HTTP proxy, credential return, borrowed identity, or unrestricted default-branch write is introduced to imitate coverage. A tool can be available while a specific requested action still requires the user's authority.
 

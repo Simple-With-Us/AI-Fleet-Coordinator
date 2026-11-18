@@ -103,6 +103,21 @@ class Remote(unittest.TestCase):
         self.assertIn("AFC-12 | Fix the thing", out)
         self.assertIn("AFC-13 | Other", out)
 
+    def test_list_reads_the_text_envelope_when_the_hosted_sends_no_summary(self):
+        # The hosted drops structuredContent for a fenced read (AFC-637):  the envelope may not carry
+        # it, so the text is the result and the read must not refuse.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"content": [{"type": "text", "text": self.LIST_TEXT}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertEqual(code, 0, err)
+        self.assertIn("AFC-12 | Fix the thing", out)
+        self.assertIn("AFC-13 | Other", out)
+
     def test_list_json_keeps_both_parts(self):
         code, out, _, _ = self.run_cli(
             ["list", "--json"], rpc({"count": 1, "ids": ["AFC-1"]}, text=self.LIST_TEXT)
@@ -111,6 +126,113 @@ class Remote(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["structured"], {"count": 1, "ids": ["AFC-1"]})
         self.assertIn("Fix the thing", data["text"])
+
+    def test_an_empty_text_envelope_is_not_a_result(self):
+        # The envelope fallback is for a fenced read that carries text:  an answer with neither
+        # a summary nor text is a failure, never a quiet success that reads as zero issues.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": ""}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_content_part_of_the_wrong_shape_is_refused_before_it_is_read(self):
+        # The hosted's answer is untrusted:  a text part whose text is not a string, a part of
+        # a type the board does not read, and a part that is not an object at all, are refused
+        # at the boundary and never read downstream.
+        cases = (
+            {"type": "text", "text": 7},
+            {"type": "text"},
+            {"type": "image", "data": "AAAA"},
+            "not a part",
+        )
+        for part in cases:
+            with self.subTest(part=part):
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "result": {"content": [part]}}
+                ).encode()
+                code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+                self.assertNotEqual(code, 0)
+                self.assertIn("unexpected shape", err)
+                self.assertEqual(len(calls), 1)
+
+    def test_an_answer_with_a_part_the_board_does_not_read_is_refused(self):
+        # The board reads text parts and nothing else, so a part of another type is a shape it
+        # does not accept:  the answer is refused rather than half-read.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "structuredContent": {"seat": "ZC"},
+                    "content": [
+                        {"type": "text", "text": "the seat is ZC"},
+                        {"type": "image", "data": "AAAA"},
+                    ],
+                },
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_hosted_error_part_without_a_type_still_carries_its_code(self):
+        # The hosted's own error may name no type on the part that carries the error text:  the
+        # code and the hint are read from it, so the error is reported and not refused as an
+        # unexpected shape.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "isError": True,
+                    "content": [{"text": json.dumps({"code": "identity_required"})}],
+                },
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("identity_required", err)
+        self.assertNotIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_error_part_with_a_text_of_the_wrong_type_is_refused(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"isError": True, "content": [{"text": 7}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_content_collection_that_is_not_a_list_is_refused(self):
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": {"type": "text"}}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_tool_that_needs_a_summary_fails_fast_when_the_hosted_sends_none(self):
+        # Only the fenced reads may answer with the text envelope alone:  whoami has to name the
+        # seat and a write has to say what the hosted did, so a missing summary there is a failure
+        # and never a quiet success with nothing in it.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "{}"}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertNotIn("seat:", out)
+        self.assertEqual(len(calls), 1)
 
     def test_list_env_is_refused_because_the_hosted_tool_ignores_it(self):
         code, _, err, calls = self.run_cli(["list", "--env", "Mac"], rpc({"count": 0, "ids": []}))
@@ -536,7 +658,7 @@ class NativeEcho(unittest.TestCase):
             unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
         ):
             status, ctype, data = board._native_echo_post(b"{}", True)
-        result, error = board._remote_answer(ctype, data, "linear_comment", True)
+        result, _parts, error = board._remote_answer(ctype, data, "linear_comment", True)
         self.assertIsNone(result)
         self.assertIn("may or may not", error)
         self.assertNotIn("private transport details", error)
