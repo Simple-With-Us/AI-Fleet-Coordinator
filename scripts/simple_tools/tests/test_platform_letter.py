@@ -5020,3 +5020,165 @@ class LetterlessSeenTests(Base):
         # A name a chat started with (`seen`, set at its start) is untouched by the letter.
         kept = PL._apply(chat, answer, {"state": "failed", "label": "", "seen": "Inherited"})
         self.assertEqual(kept["seen"], "Inherited")
+
+
+class EnglishTitleTests(HookTests):
+    """The words a chat carries under its letter are the ones the whole fleet reads, so they are English (owner,
+    Nov 18, 2026:  a Chinese title in the app is the same violation as a Chinese chat name, and a title with no
+    letter prefix is invisible to the owner's scan).  A chat with no letter keeps its own name in whatever script
+    its owner wrote it in, and the client stays script-neutral there."""
+
+    # A title in a script that is not Latin, mixed with the Latin words a real chat title carries.
+    FOREIGN = "排查 Zulip 到 Linear 转发内容截断"
+
+    def titled_spec(self) -> PL.PlatformSpec:
+        """A spec whose chat carries the title in the payload, the way a platform hands it over."""
+        return make_spec(current_title=PL.from_payload("session_title"))
+
+    def start_foreign(self, spec: PL.PlatformSpec, sid: str = "s-0001") -> dict | None:
+        return self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": sid,
+                "source": "startup",
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+
+    def test_the_words_under_a_letter_are_english(self) -> None:
+        self.assertEqual(PL.lettered_topic("Fix Relay Truncation"), "Fix Relay Truncation")
+        self.assertEqual(PL.lettered_topic(self.FOREIGN), "")
+        self.assertEqual(PL.lettered_topic("Исправь страницу входа"), "")
+        self.assertEqual(PL.lettered_topic(""), "")
+        # A title with no letters at all carries no language, and passes.
+        self.assertEqual(PL.lettered_topic("AFC-564"), "AFC-564")
+
+    def test_a_name_in_another_language_is_never_adopted_as_the_topic(self) -> None:
+        note = {"label": "SS", "title": "Fix Relay Truncation", "shown": "SS: Fix Relay Truncation"}
+        self.assertEqual(PL._renamed(note, self.FOREIGN), ("", "SS: Fix Relay Truncation"))
+        # A chat with no words of its own keeps its letter over the placeholder, and waits to be named, in
+        # English, rather than take the foreign name.
+        waiting = {"label": "SS", "title": "", "shown": "SS: New Chat"}
+        self.assertEqual(PL._renamed(waiting, self.FOREIGN), ("", "SS: New Chat"))
+
+    def test_a_chat_that_started_in_another_language_carries_no_such_topic(self) -> None:
+        spec = self.titled_spec()
+        out = self.start_foreign(spec)
+        label = self.label("s-0001")
+        self.assertNotIn(self.FOREIGN, out["sessionTitle"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(self.note("s-0001").get("title") or "", "")
+        # The registry carries no foreign title either:  it is the sheet the owner reads.
+        self.assertEqual(self.lookup("s-0001").get("title") or "", "")
+
+    def test_a_prompt_in_another_language_never_names_the_chat(self) -> None:
+        spec = self.titled_spec()
+        self.start_foreign(spec)
+        out = self.hook(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s-0001",
+                "prompt": self.FOREIGN,
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+        label = self.label("s-0001")
+        self.assertNotIn(self.FOREIGN, out["sessionTitle"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(self.note("s-0001").get("title") or "", "")
+        # An English prompt names the chat, under the same letter.
+        out = self.hook(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s-0001",
+                "prompt": "fix the zulip relay truncation",
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+        self.assertEqual(out["sessionTitle"], "%s: Fix the Zulip Relay Truncation" % label)
+
+    def test_a_chat_with_no_letter_keeps_its_own_name_in_its_own_script(self) -> None:
+        # The client stays script-neutral for a chat that holds no letter:  the words are the owner's own.
+        self.assertEqual(PL.title_from_prompt(self.FOREIGN), self.FOREIGN)
+
+
+class ReconcileHookFileTests(Base):
+    """A row that gains an event leaves the host's hook file stale, and a stale file is a chat the hook never
+    hears about:  the MiniMax Code host ran no UserPromptSubmit hook, so no chat was ever named under its letter
+    and no sub-thread ever took a letter of its own.  The hook brings the file current itself."""
+
+    def seed(self, events: list[str]) -> str:
+        path = os.path.join(self.home, ".minimax", "hooks.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        command = "%s hook --platform minimax" % os.path.join(self.home, ".local", "bin", "platform-letter")
+        doc = {
+            "enabled": True,
+            "hooks": {
+                ev: [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}] for ev in events
+            },
+        }
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def load(self, path: str) -> dict:
+        with open(path) as fh:
+            return json.load(fh)
+
+    def test_a_missing_event_is_added_to_the_hosts_hook_file(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertEqual(
+            sorted(answer["missing"]), ["SubagentStart", "SubagentStop", "UserPromptSubmit"]
+        )
+        doc = self.load(path)
+        for ev in ("SessionStart", "Stop", "UserPromptSubmit", "SubagentStart", "SubagentStop"):
+            self.assertIn(ev, doc["hooks"], ev)
+        # The entries that were there keep their own timeout.
+        self.assertEqual(doc["hooks"]["SessionStart"][0]["hooks"][0]["timeout"], 10)
+        # A second pass finds nothing missing and leaves the file exactly as it is.
+        with open(path) as fh:
+            before = fh.read()
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        with open(path) as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_a_host_that_never_installed_the_platform_is_left_alone(self) -> None:
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".minimax", "hooks.json")))
+
+    def test_a_file_that_is_not_the_installers_is_left_alone(self) -> None:
+        path = os.path.join(self.home, ".minimax", "hooks.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("not json at all")
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        with open(path) as fh:
+            self.assertEqual(fh.read(), "not json at all")
+
+    def test_the_hook_brings_the_hosts_file_current_itself(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        PL.main(
+            ["hook", "--platform", "minimax"],
+            env={"HOME": self.home},
+            stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001"})),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertIn("UserPromptSubmit", self.load(path)["hooks"])
+
+    def test_the_reconcile_can_be_turned_off(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        with mock.patch.object(PL, "reconcile_hooks") as reconcile:
+            PL.main(
+                ["hook", "--platform", "minimax"],
+                env={"HOME": self.home, PL.ENV_RECONCILE: "0"},
+                stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001"})),
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+        self.assertEqual(reconcile.call_count, 0)
+        self.assertNotIn("UserPromptSubmit", self.load(path)["hooks"])

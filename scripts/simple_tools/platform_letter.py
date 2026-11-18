@@ -131,6 +131,8 @@ ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
 #: The ssh destination of the Mac, for a hook on another host whose adapter must ask the Mac something only it
 #: holds (`mac_ssh`).  The hook's `--mac-ssh DEST` flag sets it, since a hook file has no env block.
 ENV_MAC_SSH = "SESSION_LETTER_MAC_SSH"
+#: Set to "0" to stop the hook from bringing the host's hook file current (the reconcile is on by default).
+ENV_RECONCILE = "SESSION_LETTER_RECONCILE"
 #: What an ssh destination may look like:  a host or user@host, and nothing ssh could read as an option.
 MAC_SSH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 
@@ -585,6 +587,35 @@ def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
 # --------------------------------------------------------------------------------------------
 # Titles
 # --------------------------------------------------------------------------------------------
+
+
+def english_words(text: object) -> bool:
+    """True when every letter in the text is a Latin one, so the text can carry a chat's topic.
+
+    Every title this fleet writes is English (owner, Nov 18, 2026:  a Chinese title in the app is the same
+    violation as a Chinese chat name).  The check reads the Unicode name of every letter, so a title that
+    mixes Latin words with another script is refused as well, and a title with no letters at all passes."""
+    for ch in str(text or ""):
+        if not ch.isalpha():
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            return False
+        if not name.startswith("LATIN"):
+            return False
+    return True
+
+
+def lettered_topic(words: object) -> str:
+    """The words a chat that holds a letter carries under it:  them when they are English, and "" when they are not.
+
+    A chat with no letter keeps its own name in whatever script its owner wrote it in (the client is
+    script-neutral there), but the words under a letter are the ones the whole fleet reads, and every title
+    this fleet writes is English (owner, Nov 18, 2026:  a Chinese title in the app is the same violation as
+    a Chinese chat name, and a title with no letter prefix is invisible to the owner's scan)."""
+    text = one_line(words)
+    return text if english_words(text) else ""
 
 
 def clean_title(text: object) -> str:
@@ -1496,7 +1527,7 @@ def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
     # Rendered copy: a sentence gap is U+00A0 plus a space, and a colon or semicolon takes one space.
     return (
         'Operator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
-        'starts with "%s: "; keep that prefix if the chat is renamed.'
+        'starts with "%s: " in English; keep that prefix if the chat is renamed.'
         % (ref, note.get("location"), spec.display, label, label)
     )
 
@@ -2663,9 +2694,12 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     loose = named
     if not loose and source in ("resume", "fork"):
         loose = clean_title(spec.stored_title(data, chat.env))
+    # The words a chat carries under its letter are the ones the whole fleet reads, so they are English;  the
+    # chat's own name stays in whatever script its owner wrote it in.
+    words = lettered_topic(loose)
     parent = parent_of(chat, note, data)
-    answer = _enroll(chat, loose, parent)
-    start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
+    answer = _enroll(chat, words, parent)
+    start = dict(note, inherited=inherited, title=words or note.get("title", ""), parent=parent)
     if inherited:
         start["seen"] = inherited  # the name the chat started with is not a rename
     note = _apply(chat, answer, start)
@@ -2684,15 +2718,16 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         out.emit("start", context=_join(no_letter(spec, note), fix), title=shown)
         return 0
     label = note["label"]
-    text = loose
+    text = words
     if named:
         # With the letters this chat holds in hand, only those come off its title: an acronym stays.  A carried
         # title is the other chat's, and its letter is not one this chat holds, so the letter-shaped prefix goes.
         text = named if carried else bare(current, held(note, answer.get("previous")))
         if text == PLACEHOLDER:
             text = ""
+        text = lettered_topic(text)
         note["title"] = text
-        if text != loose:
+        if text != words:
             _push(chat, note, "title", text)
     placeholder = compose(label, "")
     note["titled"] = bool(text)
@@ -2721,6 +2756,7 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
         current
         and current not in (placeholder, note.get("inherited") or "")
         and words != PLACEHOLDER
+        and english_words(words)
     ):
         return words or ""  # someone named the chat: keep their words under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt)
@@ -2735,8 +2771,16 @@ def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
     words = bare(current, held(note))
     if not words or words == PLACEHOLDER:
         return "", ""
-    show = "" if current.startswith(label + ": ") else compose(label, words)
-    return (words if words != note.get("title") else ""), show
+    topic = lettered_topic(words)
+    if not topic:
+        # A name in another language is not a topic this chat holds (the words under a letter are English), so
+        # the name the platform put there is never adopted.  The letter goes back on the chat, over the words
+        # it has of its own, or over the placeholder when it has none, and the chat waits to be named, in
+        # English, by the seat that reads it.
+        known = lettered_topic(note.get("title") or "")
+        return ("", compose(label, known))
+    show = "" if current.startswith(label + ": ") else compose(label, topic)
+    return (topic if topic != note.get("title") else ""), show
 
 
 def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
@@ -2767,7 +2811,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     announce = bool(note.pop("announce", False))
     title = None
     answer: dict[str, Any] = {}
-    text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
+    text = "" if note.get("titled") else lettered_topic(_first_title(note, current, data.get("prompt")))
     if announce and not text and not note.get("titled"):
         # A letter that came on a prompt with no words (a bare slash command):  the "??" goes now, the words later.
         title = compose(note["label"], "")
@@ -2807,6 +2851,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         words = str(note.get("title") or "") or bare(current, held(note))
         if words == PLACEHOLDER:
             words = ""
+        words = lettered_topic(words)
         parent = str(note.get("parent") or "")
         note = _apply(chat, _enroll(chat, words, parent), note)
         if note["state"] == "open":
@@ -2863,9 +2908,10 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, words, parent)
         if lettered(note):
-            note["titled"] = True
-            note["title"] = words
-            shown = present(chat, note, compose(str(note["label"]), words), current, data, "rename")
+            topic = lettered_topic(words)
+            note["titled"] = bool(topic)
+            note["title"] = topic
+            shown = present(chat, note, compose(str(note["label"]), topic), current, data, "rename")
             context = reminder(chat.spec, note)
             note.pop("announce", None)
         else:
@@ -4764,6 +4810,55 @@ def install_json_hooks(
     return _emit(stdout, answer, 0)
 
 
+def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
+    """Bring this platform's installed hook file up to what its row declares, and answer what changed.
+
+    A host's hook file is written once, by hand, and a row that gains an event later leaves that file
+    stale:  the event the row now hooks is never delivered, so the hook never runs for it.  A MiniMax Code
+    chat whose UserPromptSubmit entry was never installed kept the name the runtime gave it, in whatever
+    language that name was written, and never carried its letter;  a sub-thread whose SubagentStart entry
+    was never installed held no letter at all.  This is the one place that closes that gap, and it runs
+    from the hook itself, so a host that runs the hook at all is brought current without a person running
+    the installer.
+
+    A missing event is the only thing this adds.  The shared installer replaces an outdated entry and takes
+    a retired hook out, and a hook that rewrites a host's settings file on every event is not a thing this
+    client does;  a file this installer does not own is left exactly as it is.
+    """
+    adapter = load_adapter(platform)
+    installer = getattr(adapter, "INSTALL", None)
+    if not isinstance(installer, JsonHookInstaller):
+        return {}
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}  # no file, or a file this installer does not own:  nothing to reconcile
+    if not isinstance(doc, dict):
+        return {}
+    try:
+        events = installer.locate(doc)
+    except ValueError:
+        return {}
+    missing = [
+        ev
+        for ev in installer.events
+        if not any(installed_command(e, platform) for e in events.get(ev) or [])
+    ]
+    if not missing:
+        return {}
+    out = io.StringIO()
+    install_json_hooks(installer, InstallOptions(platform), env, out)
+    return {
+        "platform": platform,
+        "path": path,
+        "missing": missing,
+        "installed": _last_json(out.getvalue()),
+    }
+
+
 def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     """`install --platform P [--location server|mac] [--mac-ssh DEST] [--check | --remove]`: find the platform's
     adapter and run its installer.  `--mac-ssh` names the ssh destination of the Mac for a host that is not the Mac
@@ -4874,6 +4969,13 @@ def main(
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
                 return 0
+            if _text(env.get(ENV_RECONCILE, "1")) != "0":
+                # The host's hook file is brought current here, so a row that gained an event is delivered
+                # without a person running the installer.  A failure here is never a failure of the chat.
+                try:
+                    reconcile_hooks(flags.get("platform", ""), env)
+                except Exception:  # noqa: BLE001 - a hook never blocks a chat
+                    pass
             # A platform whose hook payload has no event name, or whose hook answers in a shape of its own
             # (Antigravity: an event inferred from the payload, an answer of injected steps), owns its entry:
             # `hook_main` takes what `hook` takes, minus the spec, and calls `hook` itself.
