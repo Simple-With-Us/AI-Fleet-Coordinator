@@ -801,9 +801,10 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
     return (
         "This hook cannot see the title the app shows for this chat, and it was not told that another chat "
         "started it (a slow Mac hides that), so the app may show a title another chat gave it, without this "
-        "chat's letter.  As your first step, unprompted, call %s with session_id \"self\" (load it with "
+        'chat\'s letter.  As your first step, unprompted, call %s with session_id "self" (load it with '
         'ToolSearch if it is deferred).  If the title does not start with "%s: " and is not "%s", call %s with '
-        'session_id "self" and the title "%s: <that title>".' % (READ_TOOL, label, PL.PLACEHOLDER, RENAME_TOOL, label)
+        'session_id "self" and the title "%s: <that title>".'
+        % (READ_TOOL, label, PL.PLACEHOLDER, RENAME_TOOL, label)
     )
 
 
