@@ -1556,10 +1556,11 @@ def render_zcode_seat_shim(tool: str, target: str) -> str:
 def render_zcode_bashrc_block() -> str:
     """The marked block `apply zcode` keeps in ~/.bashrc:  the shim dir at the front of PATH, then the
     same guarded seat default the shims carry, for the interactive shells the CLI's snapshot PATH does
-    not reach.  The PATH prepend guards itself with a case, so re-sourcing the file never grows PATH,
-    and the block carries GENERATED_MARK in both markers so a re-apply replaces it in place instead of
-    stacking a second copy.  The prepend never exports anything, and the only export in the block is the
-    guarded AGENT_SEAT default."""
+    not reach.  The prepend re-fronts the shim dir on every sourcing, so a dotfile line that prepends
+    other dirs cannot leave the seat shims behind it, and an assignment never grows PATH;  the block
+    carries GENERATED_MARK in both markers so a re-apply replaces it in place instead of stacking a
+    second copy.  The prepend exports PATH and nothing else, and the only other export in the block is
+    the guarded AGENT_SEAT default."""
     return (
         f"# --- begin {ZCODE_SEAT_BLOCK_NAME} --- {GENERATED_MARK}.  Do not edit; run "
         "`python3 -m fleet_lanes.install_tools apply zcode`.\n"
@@ -1570,10 +1571,10 @@ def render_zcode_bashrc_block() -> str:
         "# AGENT_SEAT or a chat tag (AGENT_TAG) always wins;  this block never writes AGENT_LAUNCH_SEAT or\n"
         "# AGENT_LAUNCHER.\n"
         '_zc_seat_bin="$HOME/' + ZCODE_SEAT_BIN_DIRNAME + '"\n'
-        'case ":$PATH:" in\n'
-        '  *":$_zc_seat_bin:"*) ;;\n'
-        '  *) export PATH="$_zc_seat_bin:$PATH" ;;\n'
-        "esac\n"
+        '# Re-front the shim dir on every sourcing:  a dotfile line that prepends other dirs would'
+        ' leave the seat shims behind it.  An assignment never grows PATH, so re-sourcing the file'
+        ' is byte-stable.\n'
+        'export PATH="$_zc_seat_bin:$PATH"\n'
         "unset _zc_seat_bin\n"
         'if [ -n "${ZCODE_SESSION_ID:-}" ] || [ -n "${ZCODE_RUNTIME_ENV:-}" ]; then\n'
         '  if [ -z "${AGENT_SEAT:-}" ] && [ -z "${AGENT_LAUNCH_SEAT:-}" ] && [ -z "${AGENT_TAG:-}" ]; then\n'
@@ -4541,16 +4542,15 @@ def apply_platform(
                     + bad[0].detail,
                 )
     seat_note = ""
-    if plat.key == "zcode":
-        # The Bash-tool seat default travels with the zcode platform:  it is decided here, after every
-        # gate that can refuse the platform, so a refused apply writes none of it, and its outcome is
-        # reported in the Result detail of both the unchanged and the written path.
+    if plan.action == "unchanged":
+        # The seat default is decided on this path too:  nothing else is written here, so ordering
+        # cannot leave a partial artifact, and an already-current hooks config still gets its first
+        # seat default installed.
         seat = apply_zcode_seat_default(paths)
         if not seat.ok:
             seat_note = f"; seat default not written: {seat.detail}"
         elif seat.status == "installed":
             seat_note = f"; seat default installed: {seat.detail}"
-    if plan.action == "unchanged":
         note = "".join("; " + n for n in plan.notes)
         return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}{seat_note}")
     cfg = plan.cfg
@@ -4623,6 +4623,15 @@ def apply_platform(
             f"{plan.path} failed validation after the write; the original was restored",
             backup,
         )
+    # The Bash-tool seat default travels LAST on this path:  every refusal gate and the hooks write
+    # and its validation have landed, so a failure above leaves the profile untouched and a seat
+    # default is never installed beside a hooks config that did not land.
+    if plat.key == "zcode":
+        seat = apply_zcode_seat_default(paths)
+        if not seat.ok:
+            seat_note = f"; seat default not written: {seat.detail}"
+        elif seat.status == "installed":
+            seat_note = f"; seat default installed: {seat.detail}"
     detail = f"{plan.path}" + (f" (backup {backup})" if backup else " (new file)")
     if plan.notes:
         detail += "; " + "; ".join(plan.notes)
@@ -8091,6 +8100,12 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
             + (f"begin at line {ours_b[0] + 1}" if ours_b else f"end at line {ours_e[0] + 1}")
             + "); restore or remove the partial block by hand, then re-run"
         )
+    if ours_b and ours_b[0] > ours_e[0]:
+        raise Refused(
+            f"the begin marker of the marked {ZCODE_SEAT_BLOCK_NAME} block (line {ours_b[0] + 1}) comes after "
+            f"its end marker (line {ours_e[0] + 1}); a reversed pair would splice new block lines into the middle "
+            "of unrelated profile text; reorder the pair or remove it by hand, then re-run"
+        )
     hand_line: int | None = None
     hand_b = [i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_BEGIN)]
     hand_e = [i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_END)]
@@ -8099,6 +8114,20 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
             "the earlier hand-written seat block markers cannot be trusted ("
             + f"{len(hand_b)} begin, {len(hand_e)} end); fix them by hand, then re-run"
         )
+    if hand_b and hand_b[0] > hand_e[0]:
+        raise Refused(
+            f"the hand-written seat block's begin marker (line {hand_b[0] + 1}) comes after its end marker "
+            f"(line {hand_e[0] + 1}); reorder the pair or remove it by hand, then re-run"
+        )
+    if ours_b and hand_b:
+        ours_lo, ours_hi = min(ours_b[0], ours_e[0]), max(ours_b[0], ours_e[0])
+        hand_lo, hand_hi = min(hand_b[0], hand_e[0]), max(hand_b[0], hand_e[0])
+        if ours_lo <= hand_hi and hand_lo <= ours_hi:
+            raise Refused(
+                f"the hand-written seat block (lines {hand_lo + 1}-{hand_hi + 1}) overlaps the marked "
+                f"{ZCODE_SEAT_BLOCK_NAME} block (lines {ours_lo + 1}-{ours_hi + 1}); removing both by span would "
+                "duplicate or drop the lines between them; separate the blocks by hand, then re-run"
+            )
     if hand_b:
         hand_line = hand_b[0] + 1
     managed: set[int] = set()
@@ -8107,7 +8136,8 @@ def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
     if hand_b:
         managed.update(range(hand_b[0], hand_e[0] + 1))
     stray = [
-        f"line {i + 1}: {ln.strip()}"
+        # Line number only:  a profile can hold secrets, and the raw text never leaves the host file.
+        f"line {i + 1}: seat-related line (content redacted)"
         for i, ln in enumerate(lines)
         if i not in managed
         and ln.strip()
@@ -8426,7 +8456,18 @@ def verify_zcode_seat_default(paths: Paths) -> list[Check]:
         )
     bashrc = paths.zcode_bashrc
     if os.path.islink(bashrc):
-        out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} is a symlink; apply refuses to manage it"))
+        # A symlinked profile is the owner's choice, and apply refuses to edit through one by design:
+        # the gap is named, the host reads healthy, and remediation replaces the link with a real file.
+        out.append(
+            Check(
+                t,
+                "bashrc block",
+                "WARN",
+                f"{bashrc} is a symlink, so the marked block is not managed here (apply never edits through "
+                "a link); replace the link with a real file and run `apply zcode`, or point the checks at the "
+                "target file",
+            )
+        )
     else:
         raw = _read_regular(bashrc)
         if raw is None:
