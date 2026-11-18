@@ -274,8 +274,9 @@ UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
 #: How much of a registry answer's own words a delivery note carries:  a variable name and a
-#: reason, and never a value.
-NOTE_CHARS = 120
+#: reason, and never a value.  A note crosses to another host, whose readers keep only 80
+#: characters of it, so the source shapes it to that length rather than the reader cutting it.
+NOTE_CHARS = 80
 # A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
 # code for every platform, not one per platform, so it sits in NEVER_RAN here.
 HANDLER_MISSING = "platform-handler-missing"

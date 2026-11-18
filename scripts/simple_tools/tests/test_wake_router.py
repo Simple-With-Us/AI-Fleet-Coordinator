@@ -5418,6 +5418,9 @@ class RegistryNotConfigured(Base):
         self.assertEqual(delivery.note, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY")
         # The whitelist the readers of another host's answer use.
         self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
+        # The source shapes the note to the transport, so no reader has to cut it.
+        self.assertLessEqual(len(delivery.note), 80)
+        self.assertLessEqual(len(WR.registry_note("A" * 200)), 80)
 
     def test_a_pick_stage_failure_names_the_variable_that_is_missing(self) -> None:
         """A host with no registry address or key fails at the pick:  the receipt says which
