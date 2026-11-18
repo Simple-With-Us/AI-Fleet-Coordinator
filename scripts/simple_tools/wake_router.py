@@ -273,13 +273,14 @@ REGISTRY_UNAVAILABLE = "registry-unavailable"
 UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
-#: The name the note carries when the shared loader file itself could not be read:  it is the only
-#: source a loader read can fail on, so it is named whatever the host is.  It is a token the
-#: transport keeps.
-REGISTRY_ENV_SOURCE = "operator-registry-env"
-#: The name the note carries when the registry's own configuration cannot be read and the error names
-#: no setting:  the source this host reads, which is the shared loader file on the Mac and the
-#: router's own environment on the server.  It is a token the transport keeps, so it carries no space.
+#: The name the note carries when the shared loader file itself could not be read:  the loader
+#: file is the one source a loader read can fail on, and it carries the same name on every host.
+#: It is a token the transport keeps.
+REGISTRY_LOADER_SOURCE = "operator-registry-env"
+#: The name the note carries when the registry's own configuration cannot be read and the error
+#: names no setting:  the source this host reads its configuration from, which is the shared
+#: loader file on the Mac and the router's own environment on the server.  It is a token the
+#: transport keeps, so it carries no space.
 REGISTRY_HOST_SOURCE = (
     "operator-registry-env" if sys.platform == "darwin" else "router-environment"
 )
@@ -1876,7 +1877,8 @@ def registry_loader_settings(env: Mapping[str, str]) -> set[str]:
 
     The file is read a line at a time and every line is dropped after it is matched, so a
     value it holds is never kept.  A host with no loader file at all holds none, and
-    `registry_failure` answers that one."""
+    `registry_failure` answers that one.  A loader that is there and cannot be read raises,
+    so the caller can tell a host with no loader from a read that failed."""
     from . import platform_letter as PL
 
     home = str(env.get("HOME") or "")
@@ -1892,7 +1894,8 @@ def registry_loader_settings(env: Mapping[str, str]) -> set[str]:
                 for name in names:
                     if re.match(r"\s*(?:export\s+)?%s\s*=" % re.escape(name), line):
                         found.add(name)
-    except OSError:
+    except FileNotFoundError:
+        # No loader file at all:  the host holds none of the registry's settings.
         return found
     return found
 
@@ -1901,12 +1904,19 @@ def registry_loader_lost(env: Mapping[str, str], registry_env: Mapping[str, str]
     """Whether the shared loader holds the registry's address and the mapping does not carry it.
 
     That is the read that failed:  the file says which settings it holds, and a mapping
-    without the address the file holds lost it on the way.  A loader that was read and holds
-    no address is a host that is not configured, and `registry_failure` answers that one with
-    the variable that is missing."""
+    without the address the file holds lost it on the way.  A loader that is there and cannot
+    be read lost it the same way.  A loader that was read and holds no address is a host that
+    is not configured, and `registry_failure` answers that one with the variable that is
+    missing."""
     if registry_api.base_url(registry_env):
         return False
-    return registry_api.URL_ENV in registry_loader_settings(env)
+    try:
+        held = registry_loader_settings(env)
+    except OSError:
+        # The loader is there and could not be read:  the read lost the address, and the
+        # source that could not be read is named.
+        return True
+    return registry_api.URL_ENV in held
 
 
 def registry_note(text: object) -> str:

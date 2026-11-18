@@ -274,7 +274,7 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
         # no address is a host that is not configured, and `registry_failure` answers that
         # one with the variable that is missing.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
-        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
     try:
         answer = resolve(registry_env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer

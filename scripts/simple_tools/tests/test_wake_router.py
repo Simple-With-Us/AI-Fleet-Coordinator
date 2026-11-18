@@ -5432,7 +5432,7 @@ class RegistryNotConfigured(Base):
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
-        self.assertEqual(delivery.note, WR.REGISTRY_ENV_SOURCE)
+        self.assertEqual(delivery.note, WR.REGISTRY_HOST_SOURCE)
         self.assertNotIn("ABCDEFGHIJKLMNOP", delivery.note)
         self.assertNotIn("MY_API_KEY", delivery.note)
         # The setting's own name is carried when the error names one.
@@ -5450,6 +5450,8 @@ class RegistryNotConfigured(Base):
         say whether the loader holds none or could not be read.  This says which the file
         holds, from its own words and never a value."""
         home = pathlib.Path(self.tmp) / "home"
+        if home.is_symlink():
+            raise RuntimeError("refusing a symlinked directory: %s" % home)
         home.mkdir(mode=0o700, exist_ok=True)
         env = {"HOME": str(home)}
         # No loader file at all:  the host holds none.
@@ -5477,6 +5479,8 @@ class RegistryNotConfigured(Base):
         read failed.  A loader that holds no address is a host that is not configured, and the
         missing variable is named instead."""
         home = pathlib.Path(self.tmp) / "home"
+        if home.is_symlink():
+            raise RuntimeError("refusing a symlinked directory: %s" % home)
         home.mkdir(mode=0o700, exist_ok=True)
         env = {"HOME": str(home)}
         path = home / os.path.join(".local", "bin", "operator-registry-env")
@@ -5496,6 +5500,27 @@ class RegistryNotConfigured(Base):
         # The loader holds no address:  the host is not configured, and the variable is named.
         path.write_text("# a loader with nothing of the registry in it\n")
         self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
+
+    def test_a_loader_that_cannot_be_read_is_told_from_a_loader_that_is_not_there(self) -> None:
+        """A loader that is there and cannot be read lost the read:  the delivery fails closed
+        with the source named.  A host with no loader at all holds none, and the variable that
+        is missing is named instead."""
+        home = pathlib.Path(self.tmp) / "home"
+        if home.is_symlink():
+            raise RuntimeError("refusing a symlinked directory: %s" % home)
+        home.mkdir(mode=0o700, exist_ok=True)
+        env = {"HOME": str(home)}
+        # No loader file at all:  the host holds none of the registry's settings.
+        self.assertFalse(WR.registry_loader_lost(env, {"HOME": str(home)}))
+        # A directory in the loader's place:  the file is there and cannot be read, which is
+        # the read that lost the address.
+        path = home / os.path.join(".local", "bin", "operator-registry-env")
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise RuntimeError("refusing a symlinked directory: %s" % directory)
+            directory.mkdir(mode=0o700, exist_ok=True)
+        path.mkdir(mode=0o700, exist_ok=True)
+        self.assertTrue(WR.registry_loader_lost(env, {"HOME": str(home)}))
 
     def test_the_note_carries_only_the_registrys_own_setting_names(self) -> None:
         """The error text is the registry's, so a free run of capitals in it must not reach
@@ -5522,7 +5547,7 @@ class RegistryNotConfigured(Base):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
         # The note names the source, in the shape the transport keeps.
-        self.assertEqual(delivery.note, WR.REGISTRY_ENV_SOURCE)
+        self.assertEqual(delivery.note, WR.REGISTRY_HOST_SOURCE)
         self.assertNotIn("no_settings_here", delivery.note)
         self.assertRegex(delivery.note, r"^[A-Za-z0-9:_-]{0,80}$")
 

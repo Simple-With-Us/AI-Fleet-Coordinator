@@ -854,7 +854,7 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
         # no address is a host that is not configured, and `registry_failure` answers that
         # one with the variable that is missing.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
-        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
     try:
         answer = WR.registry_api.call(
             registry_env,
@@ -927,7 +927,7 @@ def _module_delivery(
         # one with the variable that is missing.  A registry that was configured and later
         # became unreachable is the outage, and it is `busy`.
         return _answer(
-            request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_ENV_SOURCE)
+            request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
         )
     try:
         answer = handler(request, env=registry_env)
