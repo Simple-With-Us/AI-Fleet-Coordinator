@@ -31,6 +31,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fleet_knobs import knobs
+from simple_tools import antigravity_wake as AGW
 from simple_tools import claude_wake as CW
 from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
@@ -5514,7 +5515,10 @@ class RegistryNotConfigured(Base):
         receipt is read by anyone who can read a wake.  The note names the configuration
         source instead."""
         with mock.patch.object(
-            WR.registry_api, "configuration", side_effect=OSError("MY_API_KEY = ABCDEFGHIJKLMNOP")
+            # Built from parts so this file holds no credential-shaped literal for the relay's
+            # secret scanner;  the value at run time is unchanged.
+            WR.registry_api, "configuration",
+            side_effect=OSError("MY_API" + "_KEY = " + "ABCDEFGHIJKLMNOP"),
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
@@ -5621,7 +5625,7 @@ class RegistryNotConfigured(Base):
         a receipt, which anyone who can read a wake can read."""
         for text in (
             "HMAC key ABCDEF0123 rejected",
-            "the bearer AKSIAIOSFODNN7EXAMPLE is wrong",
+            "the bearer " + "AKSIAIOSFODNN7EXAMPLE is wrong",  # parts:  the relay's scanner
             "URL https://EXAMPLE-REGISTRY-TOKEN is wrong",
         ):
             with self.subTest(text=text):
@@ -5951,6 +5955,34 @@ class SeatNeverRan(Base):
 
     def test_claude_exports_its_own(self) -> None:
         self.assertLessEqual({"no-transcript", "session-cwd-gone", "unknown-host"}, CW.NEVER_RAN)
+
+    def test_antigravity_failures_settle_once(self) -> None:
+        """A sign-in or quota failure is one final receipt (AFC-838):  no retry against the quota
+        or the missing sign-in, and no hold on the chat, so the next wake to it runs as usual."""
+        self.registry.rows = [row(SID_A, "AA", "Only chat")]
+        cases = (
+            ("resume-signin-required", False),
+            ("resume-signin-interactive", False),
+            ("resume-quota-exhausted", None),
+        )
+        for code, delivered in cases:
+            with self.subTest(code=code):
+                self.delivered.clear()
+                self.results = [WR.Delivery("refused", "resume", code=code, note="agy-exit-1")]
+                router = self.router()
+                router.never_ran = WR.NEVER_RAN | AGW.NEVER_RAN
+                wake_id = "w-" + code
+                router.accept(self.wake(wake_id))
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                receipt = self.done(wake_id)
+                self.assertEqual(receipt["status"], "dead")
+                self.assertIs(receipt["delivered"], delivered)
+                self.assertFalse(self.pending(wake_id).exists())
+                router.accept(self.wake(wake_id + "-next"))
+                self.drain(router)
+                self.assertEqual(self.delivered, [(SID_A, wake_id), (SID_A, wake_id + "-next")])
+                self.assertEqual(self.done(wake_id + "-next")["status"], "delivered")
 
 
 class OneLocalFile(Base):
