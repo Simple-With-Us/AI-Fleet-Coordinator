@@ -26,9 +26,7 @@ import unittest
 from datetime import datetime, timezone
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_SPEC = importlib.util.spec_from_file_location(
-    "fleet_api_health", _HERE / "fleet-api-health.py"
-)
+_SPEC = importlib.util.spec_from_file_location("fleet_api_health", _HERE / "fleet-api-health.py")
 api_health = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(api_health)
 
@@ -179,9 +177,7 @@ class CongressTradeMappingTests(unittest.TestCase):
         self.assertIs(row["ingestionAlive"], False)
 
     def test_ct_missing_optional_check_is_unknown_never_green(self):
-        body = ct_payload(
-            components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"}
-        )
+        body = ct_payload(components={"house": "ok", "senate_efd": "ok", "ingestion": "ok"})
         doc = collect_with((200, st_payload(), None), (200, body, None))
         row = app_row(doc, "CT")
         self.assertEqual(row["state"], "unknown")
@@ -192,9 +188,7 @@ class CongressTradeMappingTests(unittest.TestCase):
         self.assertNotEqual(doc["worst"], "ok")
 
     def test_an_ingestion_failure_is_fail_even_with_a_check_unreported(self):
-        body = ct_payload(
-            components={"house": "ok", "senate_efd": "ok", "ingestion": "fail"}
-        )
+        body = ct_payload(components={"house": "ok", "senate_efd": "ok", "ingestion": "fail"})
         doc = collect_with((200, st_payload(), None), (200, body, None))
         row = app_row(doc, "CT")
         self.assertEqual(row["state"], "fail")
@@ -220,12 +214,8 @@ class CongressTradeMappingTests(unittest.TestCase):
 
 class LaunchAgentTests(unittest.TestCase):
     def test_the_agent_runs_the_collector_from_the_managed_runtime(self):
-        plist = pathlib.Path(
-            _HERE, "launchd", "com.jay.fleet-api-health.plist"
-        ).read_text()
-        sibling = pathlib.Path(
-            _HERE, "launchd", "com.jay.fleet-mac-services.plist"
-        ).read_text()
+        plist = pathlib.Path(_HERE, "launchd", "com.jay.fleet-api-health.plist").read_text()
+        sibling = pathlib.Path(_HERE, "launchd", "com.jay.fleet-mac-services.plist").read_text()
         runtime = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/"
         self.assertIn(runtime + "fleet-mac-services.py", sibling)
         self.assertIn(runtime + "fleet-api-health.py", plist)
@@ -350,26 +340,18 @@ class BoundAndStoreTests(unittest.TestCase):
         doc = collect_with((200, st_payload(), None), (200, ct_payload(), None))
         later = NOW + api_health.STORE_MAX_AGE_SECONDS + 1
         self.assertEqual(api_health.store_reading(doc, now=later), "unknown")
-        self.assertEqual(
-            api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown"
-        )
-        self.assertEqual(
-            api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown"
-        )
+        self.assertEqual(api_health.store_reading(dict(doc, schemaVersion=2), now=NOW), "unknown")
+        self.assertEqual(api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown")
         self.assertEqual(api_health.store_reading(None, now=NOW), "unknown")
         self.assertEqual(api_health.store_reading({}, now=NOW), "unknown")
 
 
 class ActualPipelineMappingTests(unittest.TestCase):
     def native(self):
-        return json.loads(
-            (_HERE / "fixtures/api-health/ct-actual-20261118.json").read_text()
-        )
+        return json.loads((_HERE / "fixtures/api-health/ct-actual-20261118.json").read_text())
 
     def test_actual_st_checked_at(self):
-        payload = json.loads(
-            (_HERE / "fixtures/api-health/st-actual-20261118.json").read_text()
-        )
+        payload = json.loads((_HERE / "fixtures/api-health/st-actual-20261118.json").read_text())
         now = api_health.parse_iso("2026-11-18T17:23:23Z")
         row = api_health.map_st_live(payload, 200, now)
         self.assertEqual(row["state"], "ok")
@@ -386,9 +368,7 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertEqual(api_health.map_st_live(payload, 200, NOW)["state"], "unknown")
         for stamp in ("bad", "2026-11-17T11:59:30", "2026-11-17T12:00:30Z"):
             payload["mango"]["checkedAt"] = stamp
-            self.assertEqual(
-                api_health.map_st_live(payload, 200, NOW)["state"], "unknown"
-            )
+            self.assertEqual(api_health.map_st_live(payload, 200, NOW)["state"], "unknown")
 
     def test_st_fractional_gate_boundaries(self):
         payload = {"ok": True, "mango": {"reachable": True, "checkedAt": FRESH_STAMP}}
@@ -408,9 +388,7 @@ class ActualPipelineMappingTests(unittest.TestCase):
     def test_present_invalid_pipeline_never_falls_back(self):
         for native in (None, [], "bad", {}, {"checks": None}):
             self.assertEqual(
-                api_health.map_ct_health(ct_payload(pipeline=native), 200, NOW)[
-                    "state"
-                ],
+                api_health.map_ct_health(ct_payload(pipeline=native), 200, NOW)["state"],
                 "unknown",
             )
 
@@ -426,9 +404,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
             None,
         ):
             payload = self.native()
-            next(
-                c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate"
-            )["status"] = value
+            next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")[
+                "status"
+            ] = value
             row = api_health.map_ct_health(payload, 200, NOW)
             self.assertIsNone(row["ingestionAlive"])
             self.assertEqual(row["state"], "unknown")
@@ -438,9 +416,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
         payload["pipeline"]["checks"] = [
             c for c in payload["pipeline"]["checks"] if c["id"] != "polling_house"
         ]
-        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")[
-            "status"
-        ] = "stalled"
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")["status"] = (
+            "stalled"
+        )
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertFalse(row["ingestionAlive"])
         self.assertEqual(row["state"], "fail")
@@ -468,9 +446,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
     def test_stalled_poll_is_failure_not_unknown_or_canary_warning(self):
         for source in ("polling_house", "polling_senate", "polling_executive"):
             payload = self.native()
-            next(c for c in payload["pipeline"]["checks"] if c["id"] == source)[
-                "status"
-            ] = "stalled"
+            next(c for c in payload["pipeline"]["checks"] if c["id"] == source)["status"] = (
+                "stalled"
+            )
             row = api_health.map_ct_health(payload, 200, NOW)
             self.assertEqual(row["state"], "fail")
             self.assertFalse(row["ingestionAlive"])
@@ -493,9 +471,7 @@ class ActualPipelineMappingTests(unittest.TestCase):
 
     def test_native_malformed_does_not_fall_back_to_legacy_green(self):
         payload = ct_payload(pipeline={"checks": None})
-        self.assertEqual(
-            api_health.map_ct_health(payload, 200, NOW)["state"], "unknown"
-        )
+        self.assertEqual(api_health.map_ct_health(payload, 200, NOW)["state"], "unknown")
 
     def test_other_upstream_degradation_is_not_hidden_by_display_subset(self):
         payload = self.native()
@@ -507,9 +483,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
 
     def test_native_canary_failure_does_not_mean_ingestion_stopped(self):
         payload = self.native()
-        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")[
-            "status"
-        ] = "stalled"
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")["status"] = (
+            "stalled"
+        )
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertEqual(row["state"], "warn")
         self.assertTrue(row["ingestionAlive"])

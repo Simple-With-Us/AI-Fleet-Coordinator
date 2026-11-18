@@ -115,9 +115,7 @@ FETCH_ERROR_CODES = ("timeout", "unreachable", "unparseable", "refused_url")
 
 def utc_stamp(epoch=None):
     """An ISO 8601 UTC stamp in the spelling every collector uses."""
-    moment = datetime.fromtimestamp(
-        time.time() if epoch is None else epoch, timezone.utc
-    )
+    moment = datetime.fromtimestamp(time.time() if epoch is None else epoch, timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -344,9 +342,7 @@ def _ct_pipeline_components(payload):
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
             continue
         name = entry["id"]
-        by_id[name] = (
-            "unknown" if name in by_id else _native_ct_state(entry.get("status"))
-        )
+        by_id[name] = "unknown" if name in by_id else _native_ct_state(entry.get("status"))
     found = {}
     for target, source in (
         ("house", "polling_house"),
@@ -414,8 +410,7 @@ def map_ct_health(payload, http_status, now):
         "upstreamStatus": None,
         "ingestionAlive": None,
         "components": [
-            {"name": name, "state": "unknown", "reported": False}
-            for name in CT_COMPONENTS
+            {"name": name, "state": "unknown", "reported": False} for name in CT_COMPONENTS
         ],
     }
     if http_status != 200 or not isinstance(payload, dict):
@@ -460,9 +455,7 @@ def map_ct_health(payload, http_status, now):
         for entry in components
         if entry["name"] != CT_INGESTION_COMPONENT and entry["state"] == "fail"
     ]
-    warning = [
-        entry["name"] for entry in components if entry["state"] in ("warn", "unknown")
-    ]
+    warning = [entry["name"] for entry in components if entry["state"] in ("warn", "unknown")]
     if failing:
         # senate_efd down is an upstream outage, not stopped ingestion.
         row["state"] = "warn"
@@ -607,9 +600,7 @@ def main(argv=None):
     # Exit 0 only when both apps were actually observed:  a row carrying a
     # fetch error, or still unknown after mapping, means this run proved
     # less than the whole document, and the caller should hear that.
-    observed = all(
-        "error" not in row and row["state"] != "unknown" for row in doc["apps"]
-    )
+    observed = all("error" not in row and row["state"] != "unknown" for row in doc["apps"])
     return 0 if observed else 1
 
 
