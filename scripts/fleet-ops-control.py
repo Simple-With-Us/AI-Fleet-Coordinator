@@ -130,18 +130,22 @@ What it promises:
     `errorCode`.  The `--from-muster` route does not offer it.
   * `server pause TARGET`, `server pause-wakes TARGET` and `server resume TARGET` (AFC-832) run the
     Eavesdropper's own kill switch, `simple-chat daemon pause [--seat SEAT] [--wakes-only]` or
-    `simple-chat daemon resume [--seat SEAT]`, with the same fixed entrypoint argv as test-wake (30
-    seconds, at most 16 KiB).  TARGET is `server` (every seat) or one seat the Eavesdropper's status
-    lists (`seat_unknown` otherwise, `status_unavailable` when the status cannot be read).  `pause`
-    stops wakes and live interrupts, `pause-wakes` wakes only, and capture goes on under both;
-    `resume server` lifts every pause and `resume SEAT` that seat's own, and a resume with nothing to
-    lift is refused (`not_paused`).  Nothing here pauses on its own:  each run is a previewed,
-    deliberate gesture.  `--plan` shows the one command and the pause in force (`pause`:  the
-    fleet-wide entry and each seat's, as booleans, a word for who set it and when) and runs nothing;
-    `--yes` checks the target again under the one action lock, runs it, and reads the result back
-    from the status (up to 30 seconds), never from what the command printed:  `done` when the status
-    shows the change, `failed` with `not_confirmed` when it does not.  One audit row names the verb
-    and the target.  The `--from-muster` route does not offer them.
+    `simple-chat daemon resume [--seat SEAT]`, with the same fixed entrypoint argv and bound as
+    test-wake (90 seconds, at most 16 KiB), then a read-back of up to 30 seconds.  TARGET is `server`
+    (every seat) or one seat the Eavesdropper's status lists (`seat_unknown` otherwise,
+    `status_unavailable` when the status cannot be read).  `pause` stops wakes and live interrupts,
+    `pause-wakes` wakes only, and capture goes on under both;  `resume server` lifts every pause and
+    `resume SEAT` that seat's own.  Refused before anything runs:  a resume with nothing to lift
+    (`not_paused`), a pause file the status shows in another shape (`pause_unreadable`), any change
+    while a drain window is in force (`drain_active`), and a wakes-only pause over a full one
+    (`would_loosen`).  Nothing here pauses on its own:  each run is a previewed, deliberate gesture.
+    `--plan` shows the one command and the pause in force (`pause`:  the fleet-wide entry and each
+    seat's, as booleans, a word for who set it and when) and runs nothing;  `--yes` runs every check
+    again under the one action lock, runs the command, and reads the result back from the status,
+    never from what the command printed:  `done` when the status shows the change, and `unknown`
+    when it may still land (`not_confirmed`, `timeout`, `too_large`, `pause_unreadable`,
+    `pause_failed`).  One audit row names the verb and the target, refusals included.  The
+    `--from-muster` route does not offer them.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -706,7 +710,7 @@ PAUSE_UNAVAILABLE = {
     "timeout": "the pause or resume took too long, and the Eavesdropper's status did not show the change;  it may still take effect",
     "container_not_running": "the eavesdropper container is not running",
     "read_failed": "the pause or resume could not be run in the eavesdropper container",
-    "too_large": "the pause or resume printed more than the allowed size",
+    "too_large": "the pause or resume printed more than the allowed size, and the Eavesdropper's status did not show the change;  it may still take effect",
 }
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
@@ -2878,7 +2882,9 @@ def reduce_pause(status):
             continue
         if key == "*":
             out["all"] = _pause_entry(entry)
-        elif PAUSE_SEAT_RE.fullmatch(key) and len(out["seats"]) < 64:
+        elif PAUSE_SEAT_RE.fullmatch(key):
+            # No cap:  `pause_done` decides from this map, so a dropped seat would read as lifted.
+            # The status read is already bounded (EAVESDROPPER_STATUS_MAX_BYTES).
             out["seats"][key] = _pause_entry(entry)
     return out
 
@@ -3032,7 +3038,11 @@ def run_pause(ctx, verb, seat):
         reason = _docker_failure(err)
         if reason not in PAUSE_UNAVAILABLE:
             reason = "read_failed"
-    if reason is not None and reason != "timeout":
+    # A timeout stops only the docker client, and an answer past the size bound is cut off;  in both
+    # the command may have finished (or may still finish) in the container.  So the status is read
+    # back before either is called anything, and a change it shows is done.
+    may_have_run = ("timeout", "too_large")
+    if reason is not None and reason not in may_have_run:
         return {
             "ok": False,
             "result": "failed",
@@ -3040,14 +3050,23 @@ def run_pause(ctx, verb, seat):
             "errorCode": reason,
             "pause": None,
         }, 1
-    # A timeout stops only the docker client:  the command may still finish in the container, so the
-    # status is read back before the run is called failed, and a change it shows is done.
     deadline = ctx.monotonic() + PAUSE_CONFIRM_SECONDS
     pause = None
     while True:
         document, _reason = read_eavesdropper_status(ctx)
         if document is not None:
-            pause = reduce_pause(document)
+            # The same validated read as the plan's:  a pause file in another shape is not "nothing
+            # paused", so it can never confirm a resume.
+            try:
+                pause = pause_in_force(document)
+            except Refused as exc:
+                return {
+                    "ok": False,
+                    "result": "unknown",
+                    "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS[exc.error_code]}",
+                    "errorCode": exc.error_code,
+                    "pause": None,
+                }, 1
             if pause_done(verb, seat, pause):
                 return {
                     "ok": True,
@@ -3062,12 +3081,12 @@ def run_pause(ctx, verb, seat):
     # Neither ending knows whether the change landed:  the command may still finish in the container,
     # or the status may show it later.  So both are `unknown` (Muster's "may or may not have run"),
     # never `failed`, and the error code says which.
-    if reason == "timeout":
+    if reason in may_have_run:
         return {
             "ok": False,
             "result": "unknown",
-            "detail": PAUSE_UNAVAILABLE["timeout"],
-            "errorCode": "timeout",
+            "detail": PAUSE_UNAVAILABLE[reason],
+            "errorCode": reason,
             "pause": pause,
         }, 1
     return {

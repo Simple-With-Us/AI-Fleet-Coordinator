@@ -1345,7 +1345,10 @@ struct OpsResult: Decodable, Equatable {
         logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
         resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)
         testWake = try? container.decodeIfPresent(OperatorTestWake.self, forKey: .testWake)
-        pause = try? container.decodeIfPresent(OperatorPauseState.self, forKey: .pause)
+        // Strict:  a `pause` block in another shape makes the whole answer unreadable (a plan that
+        // cannot be read runs nothing), never one that shows no pause.  A missing or null block is
+        // still nil.
+        pause = try container.decodeIfPresent(OperatorPauseState.self, forKey: .pause)
     }
 }
 

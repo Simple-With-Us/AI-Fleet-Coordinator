@@ -82,39 +82,3 @@ struct OperatorPauseSection: View {
         .help(OperatorPausePresentation.help(request))
     }
 }
-
-/// The words of the Pause And Resume section.
-enum OperatorPausePresentation {
-    static func fleetLine(_ status: ReducedEavesdropperStatus) -> String {
-        guard let pause = status.pause, let paused = pause.paused else {
-            return "Whether every seat is paused is not reported."
-        }
-        guard paused else { return "Not paused." }
-        var line = pause.wakesOnly == true
-            ? "Wakes are paused for every seat, and live interrupts and capture go on"
-            : "Wakes and live interrupts are paused for every seat, and capture goes on"
-        if let setBy = pause.setBy { line += ", set by \(setBy)" }
-        if let since = pause.sinceText { line += ", since \(since)" }
-        return line + "."
-    }
-
-    static func seatLine(paused: Bool?, fleetPaused: Bool) -> String {
-        if fleetPaused { return "Paused with every seat." }
-        switch paused {
-        case true?: return "Paused."
-        case false?: return "Not paused."
-        case nil: return "Whether it is paused is not reported."
-        }
-    }
-
-    static func help(_ request: OperatorPauseRequest) -> String {
-        switch request.kind {
-        case .pause:
-            return "Plan a pause of wakes and live interrupts for \(request.name).\u{00A0} Nothing runs until you approve the plan."
-        case .pauseWakes:
-            return "Plan a pause of routine wakes for \(request.name).\u{00A0} Nothing runs until you approve the plan."
-        case .resume:
-            return "Plan lifting the pause for \(request.name).\u{00A0} Nothing runs until you approve the plan."
-        }
-    }
-}

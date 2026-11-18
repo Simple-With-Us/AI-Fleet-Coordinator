@@ -48,11 +48,10 @@ final class OperatorPauseTests: XCTestCase {
             .hasPrefix("Resume every seat"))
     }
 
-    func test_the_pause_in_force_decodes_and_drops_what_is_not_a_seat() throws {
+    func test_the_pause_in_force_decodes() throws {
         let json = """
         {"all": {"wakesOnly": true, "setBy": "cli", "since": "2026-11-18T10:00:00Z"},
-         "seats": {"CODEX": {"wakesOnly": false, "setBy": null, "since": null},
-                   "not a seat": {"wakesOnly": true}}}
+         "seats": {"CODEX": {"wakesOnly": false, "setBy": null, "since": null}}}
         """
         let state = try JSONDecoder().decode(OperatorPauseState.self, from: Data(json.utf8))
         XCTAssertEqual(state.all, OperatorPauseEntry(wakesOnly: true, setBy: "cli", since: "2026-11-18T10:00:00Z"))
@@ -71,18 +70,34 @@ final class OperatorPauseTests: XCTestCase {
     /// reported is never shown as a full one.
     func test_a_malformed_pause_is_unreadable_and_an_unreported_kind_is_said_so() throws {
         for json in [#"{"all": null, "seats": ["CODEX"]}"#, #"{"all": "yes", "seats": {}}"#,
-                     #"{"all": null, "seats": {"CODEX": "paused"}}"#] {
+                     #"{"all": null, "seats": {"CODEX": "paused"}}"#,
+                     #"{"all": null, "seats": {"not a seat": {"wakesOnly": true}}}"#] {
             XCTAssertThrowsError(try JSONDecoder().decode(OperatorPauseState.self, from: Data(json.utf8)), json)
         }
+        // No cap:  every seat the helper sends is kept.
+        var many: [String: Any] = [:]
+        for n in 0..<70 { many[String(format: "S%02d", n)] = ["wakesOnly": true] }
+        let manyData = try JSONSerialization.data(withJSONObject: ["all": NSNull(), "seats": many])
+        XCTAssertEqual(try JSONDecoder().decode(OperatorPauseState.self, from: manyData).seats.count, 70)
         let unreported = OperatorPauseEntry(wakesOnly: nil, setBy: nil, since: nil).sentence(for: "CODEX")
         XCTAssertEqual(unreported, "CODEX: paused, and whether live interrupts stop too is not reported.")
-        // The answer's `pause` is then nil:  the sheet shows no block rather than an empty one.
+        // A malformed pause makes the whole answer unreadable, so the plan cannot be approved.
         let action = OpsAction.eavesdropperPause(OperatorPauseRequest(kind: .pause, seat: nil))
         let plan = try parse([
             "ok": true, "verb": "server pause", "target": "server", "result": "planned", "detail": "x",
             "pause": ["all": NSNull(), "seats": ["CODEX"]],
         ], exit: 0, mode: .plan, action: action)
+        XCTAssertEqual(plan.kind, .failed)
         XCTAssertNil(plan.pause)
+        XCTAssertFalse(plan.isSuccess(for: .plan))
+    }
+
+    /// The fleet line never shows a pause whose kind was not reported as a full one.
+    func test_the_fleet_line_says_when_the_pause_kind_was_not_reported() throws {
+        let json = #"{"updated": 1795037000, "pause": {"paused": true, "since": null, "wakes_only": null, "set_by": "cli"}, "seats": []}"#
+        let status = try JSONDecoder().decode(ReducedEavesdropperStatus.self, from: Data(json.utf8))
+        XCTAssertEqual(OperatorPausePresentation.fleetLine(status),
+                       "Paused for every seat, and whether live interrupts stop too is not reported, set by cli.")
     }
 
     func test_a_plan_shows_the_pause_in_force_and_an_answer_for_another_verb_does_not() throws {

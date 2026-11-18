@@ -93,11 +93,15 @@ struct OperatorPauseState: Decodable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         all = try container.decodeIfPresent(OperatorPauseEntry.self, forKey: .all)
         let raw = try container.decodeIfPresent([String: OperatorPauseEntry].self, forKey: .seats) ?? [:]
-        var seats: [String: OperatorPauseEntry] = [:]
-        for key in raw.keys.sorted() where OpsCommandBuilder.isSeatName(key) && seats.count < 64 {
-            seats[key] = raw[key]
+        // Every key must be a seat:  the helper sends nothing else, so another key is a malformed
+        // answer, not one to drop quietly.  No cap, because the answer itself is size-bounded.
+        guard raw.keys.allSatisfy(OpsCommandBuilder.isSeatName) else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: container.codingPath,
+                debugDescription: "A pause seat key is not a seat name."
+            ))
         }
-        self.seats = seats
+        self.seats = raw
     }
 
     /// True when nothing is paused.
@@ -112,5 +116,45 @@ struct OperatorPauseState: Decodable, Equatable {
             if let entry = seats[seat] { lines.append(entry.sentence(for: seat)) }
         }
         return lines
+    }
+}
+
+/// The words of the Pause And Resume section.  In the model so its tests need no view.
+enum OperatorPausePresentation {
+    static func fleetLine(_ status: ReducedEavesdropperStatus) -> String {
+        guard let pause = status.pause, let paused = pause.paused else {
+            return "Whether every seat is paused is not reported."
+        }
+        guard paused else { return "Not paused." }
+        // A pause whose kind was not reported is never shown as the stronger full pause.
+        var line: String
+        switch pause.wakesOnly {
+        case true?: line = "Wakes are paused for every seat, and live interrupts and capture go on"
+        case false?: line = "Wakes and live interrupts are paused for every seat, and capture goes on"
+        case nil: line = "Paused for every seat, and whether live interrupts stop too is not reported"
+        }
+        if let setBy = pause.setBy { line += ", set by \(setBy)" }
+        if let since = pause.sinceText { line += ", since \(since)" }
+        return line + "."
+    }
+
+    static func seatLine(paused: Bool?, fleetPaused: Bool) -> String {
+        if fleetPaused { return "Paused with every seat." }
+        switch paused {
+        case true?: return "Paused."
+        case false?: return "Not paused."
+        case nil: return "Whether it is paused is not reported."
+        }
+    }
+
+    static func help(_ request: OperatorPauseRequest) -> String {
+        switch request.kind {
+        case .pause:
+            return "Plan a pause of wakes and live interrupts for \(request.name).\u{00A0} Nothing runs until you approve the plan."
+        case .pauseWakes:
+            return "Plan a pause of routine wakes for \(request.name).\u{00A0} Nothing runs until you approve the plan."
+        case .resume:
+            return "Plan lifting the pause for \(request.name).\u{00A0} Nothing runs until you approve the plan."
+        }
     }
 }

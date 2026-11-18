@@ -6775,7 +6775,8 @@ class PauseTests(Base):
             (127, b"", False, "docker_unavailable", "failed"),
             # A timeout stops only the docker client, so its outcome is not known.
             (124, b"", False, "timeout", "unknown"),
-            (0, b"", True, "too_large", "failed"),
+            # An answer past the size bound is cut off, so the command may have run:  not known.
+            (0, b"", True, "too_large", "unknown"),
             (
                 1,
                 b"Error response from daemon: container eavesdropper is not running",
@@ -6864,6 +6865,42 @@ class PauseTests(Base):
                     verb, target, mode="--plan", reader=PauseReader([self.status(pause)])
                 )
                 self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_the_read_back_trusts_only_a_pause_it_can_read(self):
+        # A resume whose read-back shows the pause in another shape is never `done`.
+        before = self.status({"*": self.entry()})
+        after = self.status()
+        after["pause"] = "cleared"
+        reader = PauseReader([before, before, after])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_unreadable")
+        )
+        self.assertEqual(len(reader.runs), 1)
+        # An answer past the size bound is read back too, and a change it shows is done.
+        reader = PauseReader(
+            [self.status(), self.status(), self.status({"*": self.entry()})], over=True
+        )
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+
+    def test_the_pause_map_keeps_every_seat(self):
+        # `pause_done` decides from the reduced map, so no seat may be dropped from it.
+        raw = {"S%02d" % n: self.entry() for n in range(70)}
+        reduced = foc.reduce_pause(self.status(raw))
+        self.assertEqual(len(reduced["seats"]), 70)
+        self.assertFalse(foc.pause_done("resume", "S69", reduced))
+
+    def test_a_refused_run_writes_its_one_audit_row(self):
+        drain = dict(self.entry(by="drain"), defer=True)
+        code, answer = self.go("resume", "server", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual((code, answer["errorCode"]), (2, "drain_active"))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["verb"], rows[0]["result"]), ("server resume", "refused"))
+        # A plan writes none.
+        self.go("resume", "server", mode="--plan", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual(len(self.audit_rows()), 1)
 
     def test_the_checks_run_again_under_the_lock(self):
         # The plan saw nothing paused;  by the run a full pause is in force, so nothing runs.
