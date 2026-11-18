@@ -19,6 +19,7 @@ struct OperatorPanelView: View {
     var openControls: () -> Void = {}
 
     @ObservedObject private var store = OperatorPanelStore.shared
+    @ObservedObject private var routerTests = RouterTestWakeStore.shared
     @State private var seatGrouping: OperatorSeatGrouping = .byPlatform
     @State private var seatFilter: OperatorSeatFilter = .all
     @State private var seatSearch: String = ""
@@ -104,7 +105,7 @@ struct OperatorPanelView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 OperatorCardView(card: OperatorPanelPresentation.eavesdropper(store.status, now: now))
-                OperatorCardView(card: OperatorPanelPresentation.router(wakes: store.wakes, status: store.status, now: now))
+                OperatorCardView(card: OperatorPanelPresentation.router(health: store.router, wakes: store.wakes, now: now))
                 OperatorCardView(card: OperatorPanelPresentation.registry(sessions: store.sessions, status: store.status, now: now))
             }
             // One height for the three cards, whatever each says.
@@ -123,8 +124,32 @@ struct OperatorPanelView: View {
                     }
                 }
             }
+            wakeRouter(now: now)
             seatsAndChats(now: now)
             recentWakes(now: now)
+        }
+    }
+
+    /// The seats the wake router serves, each with whether delivery is on, its newest wake and a
+    /// Test Wake button.  The button asks for a dry run:  the router picks the chat it would wake
+    /// and delivers nothing.  The section is not drawn until the router has answered, because
+    /// without its answer there is no seat to name.
+    @ViewBuilder
+    private func wakeRouter(now: Date) -> some View {
+        let rows = RouterPresentation.seatRows(health: store.router, wakes: store.wakes, now: now)
+        if !rows.isEmpty {
+            SectionPanel(
+                title: RouterPresentation.heading,
+                subtitle: "The seats it serves.\(OperatorPanelText.gap)Test Wake is a dry run, so the router picks a chat and delivers nothing."
+            ) {
+                VStack(alignment: .leading, spacing: 4) {
+                    RouterSeatHeader()
+                    Divider()
+                    ForEach(rows) { row in
+                        RouterSeatRowView(row: row, tests: routerTests, now: now)
+                    }
+                }
+            }
         }
     }
 
@@ -537,6 +562,101 @@ private enum OperatorColumns {
     static let wake: CGFloat = 98
     static let router: CGFloat = 108
     static let time: CGFloat = 140
+    static let dryRun: CGFloat = 96
+}
+
+private struct RouterSeatHeader: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            header("Seat", OperatorColumns.seat)
+            header("State", OperatorColumns.router)
+            header("Delivery", OperatorColumns.state)
+            header("Last wake", nil)
+            header("Dry run", OperatorColumns.dryRun)
+        }
+    }
+
+    private func header(_ title: String, _ width: CGFloat?) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: width, alignment: .leading)
+            .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+    }
+}
+
+/// One seat of the router, with its Test Wake button and, under it, what the last dry run said.
+private struct RouterSeatRowView: View {
+    let row: RouterSeatRow
+    @ObservedObject var tests: RouterTestWakeStore
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(row.seat)
+                    .font(.system(size: 11, design: .monospaced).weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: OperatorColumns.seat, alignment: .leading)
+                OperatorCellView(cell: row.state)
+                    .frame(width: OperatorColumns.router, alignment: .leading)
+                OperatorCellView(cell: row.delivery)
+                    .frame(width: OperatorColumns.state, alignment: .leading)
+                Text(row.lastWake)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 4) {
+                    Button("Test Wake") {
+                        Task { await tests.test(seat: row.seat) }
+                    }
+                    .controlSize(.small)
+                    .disabled(!row.canTest || tests.isRunning(row.seat))
+                    .help(row.canTest
+                          ? "Asks the router for a dry run of one wake for this seat.\(OperatorPanelText.gap)It picks the chat it would wake and delivers nothing."
+                          : "The router does not serve this seat yet, so there is nothing to test.")
+                    if tests.isRunning(row.seat) { ProgressView().controlSize(.mini) }
+                }
+                .frame(width: OperatorColumns.dryRun, alignment: .leading)
+            }
+            if let state = tests.states[row.seat] {
+                result(state)
+            }
+        }
+        .padding(.vertical, 2)
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func result(_ state: RouterTestWakeStore.State) -> some View {
+        switch state {
+        case .running:
+            Text("Running the dry run\u{2026}")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 8)
+        case .finished(let reading, let at):
+            let summary = RouterPresentation.summary(reading)
+            VStack(alignment: .leading, spacing: 2) {
+                Label {
+                    Text("\(summary.headline), \(OperatorPanelText.relative(at, now: now))")
+                } icon: {
+                    Image(systemName: summary.tone.symbol).accessibilityHidden(true)
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(summary.tone.tint)
+                ForEach(summary.lines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.leading, 8)
+        }
+    }
 }
 
 private struct OperatorSeatHeader: View {

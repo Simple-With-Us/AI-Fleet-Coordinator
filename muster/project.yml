@@ -161,6 +161,9 @@ targets:
       # The Operator panel's reads (the letter registry and the wake record), its store and every
       # word and cell it shows (OperatorPanelTests).
       - path: Muster/Model/OperatorPanel.swift
+      # The wake router's health, its unit and its dry-run wake, and the words for them
+      # (RouterControlTests).
+      - path: Muster/Model/RouterControl.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift

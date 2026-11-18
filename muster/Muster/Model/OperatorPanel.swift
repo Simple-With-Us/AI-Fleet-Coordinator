@@ -5,12 +5,14 @@ import Foundation
 //
 // The Operator is one service on the server:  the Eavesdropper reads Zulip, one wake router
 // sends the wakes, and one letter registry holds the chats.  Muster asks the server's control
-// helper for three reduced documents over the existing restricted, read-only route
+// helper for four reduced documents over the existing restricted, read-only route
 // (`fleet-ops-ctl`):
 //
 //   * `server eavesdropper-status`   the Eavesdropper's status (`ServerEavesdropperStatus.swift`)
 //   * `server operator-sessions`     the letter registry:  every live chat, newest first
 //   * `server operator-wakes`        the wake record of the last 24 hours, by seat
+//   * `server router-health`         the wake router's own health and its systemd unit
+//                                    (`RouterControl.swift`)
 //
 // Every read is `--plan` only and changes nothing, so none needs a sheet or Touch ID.  Every
 // field of every document is read as optional and a field that is missing, null or of another
@@ -598,7 +600,7 @@ struct OperatorWakesReader {
 
 // MARK: - The store
 
-/// What the Operator panel holds:  the three server reads, each kept on its own, so a read that
+/// What the Operator panel holds:  the four server reads, each kept on its own, so a read that
 /// failed never blanks another.  At most one refresh runs at a time, and a second request while
 /// one runs waits for it and starts nothing.
 @MainActor
@@ -611,10 +613,12 @@ final class OperatorPanelStore: ObservableObject {
     typealias StatusRead = @MainActor () async -> ServerEavesdropperReading
     typealias SessionsRead = @Sendable () async -> OperatorReading<OperatorSessionsDocument>
     typealias WakesRead = @Sendable () async -> OperatorReading<OperatorWakesDocument>
+    typealias RouterRead = @Sendable () async -> RouterHealthReading
 
     @Published private(set) var status: ServerEavesdropperReading?
     @Published private(set) var sessions: OperatorReading<OperatorSessionsDocument>?
     @Published private(set) var wakes: OperatorReading<OperatorWakesDocument>?
+    @Published private(set) var router: RouterHealthReading?
     /// When the last refresh that read at least one answer finished, on this Mac's clock.  Nil when
     /// the last refresh read nothing.
     @Published private(set) var readAt: Date?
@@ -628,6 +632,7 @@ final class OperatorPanelStore: ObservableObject {
     private let statusRead: StatusRead
     private let sessionsRead: SessionsRead
     private let wakesRead: WakesRead
+    private let routerRead: RouterRead
     private let now: () -> Date
 
     init(
@@ -638,11 +643,13 @@ final class OperatorPanelStore: ObservableObject {
         },
         sessionsRead: @escaping SessionsRead = { await OperatorSessionsReader().read() },
         wakesRead: @escaping WakesRead = { await OperatorWakesReader().read() },
+        routerRead: @escaping RouterRead = { await RouterHealthReader().read() },
         now: @escaping () -> Date = { Date() }
     ) {
         self.statusRead = statusRead
         self.sessionsRead = sessionsRead
         self.wakesRead = wakesRead
+        self.routerRead = routerRead
         self.now = now
     }
 
@@ -650,9 +657,10 @@ final class OperatorPanelStore: ObservableObject {
         case status(ServerEavesdropperReading)
         case sessions(OperatorReading<OperatorSessionsDocument>)
         case wakes(OperatorReading<OperatorWakesDocument>)
+        case router(RouterHealthReading)
     }
 
-    /// Reads the three answers together, each stored as it arrives.  Called while a refresh runs,
+    /// Reads the four answers together, each stored as it arrives.  Called while a refresh runs,
     /// it waits for that one.  Either way it returns once every read has ended.
     func refresh() async {
         if let running = inFlight {
@@ -664,6 +672,7 @@ final class OperatorPanelStore: ObservableObject {
         let statusRead = self.statusRead
         let sessionsRead = self.sessionsRead
         let wakesRead = self.wakesRead
+        let routerRead = self.routerRead
         // `inFlight` is set below before this body can run:  both are on the main actor and
         // nothing between them suspends.
         let task = Task { @MainActor [weak self] in
@@ -671,12 +680,14 @@ final class OperatorPanelStore: ObservableObject {
                 group.addTask { @MainActor in .status(await statusRead()) }
                 group.addTask { .sessions(await sessionsRead()) }
                 group.addTask { .wakes(await wakesRead()) }
+                group.addTask { .router(await routerRead()) }
                 for await piece in group {
                     guard let self else { continue }
                     switch piece {
                     case .status(let reading): self.status = reading
                     case .sessions(let reading): self.sessions = reading
                     case .wakes(let reading): self.wakes = reading
+                    case .router(let reading): self.router = reading
                     }
                 }
             }
@@ -684,7 +695,12 @@ final class OperatorPanelStore: ObservableObject {
             let finished = self.now()
             var statusRead = false
             if case .read? = self.status { statusRead = true }
-            let anyRead = statusRead || self.sessions?.value != nil || self.wakes?.value != nil
+            var routerAnswered = false
+            switch self.router {
+            case .answering?, .notAnswering?: routerAnswered = true
+            case .unreachable?, .unavailable?, nil: break
+            }
+            let anyRead = statusRead || self.sessions?.value != nil || self.wakes?.value != nil || routerAnswered
             self.triedAt = finished
             self.readAt = anyRead ? finished : nil
             self.inFlight = nil
@@ -946,62 +962,15 @@ enum OperatorPanelPresentation {
 
     // MARK: The wake router
 
-    /// Whether the seats that wake through the router are ready, from the status's per-seat
-    /// `routine` readiness, and how many wakes the last day held.  The router's own run state is
-    /// not in these reads, so the card never says Running:  it says Ready, Some not ready, or
-    /// Not read here.
+    /// The router's own run state, from its health and the state of its unit:  Running, Stopped
+    /// or Not reporting, with the seats it serves and how many wakes the last day held.  The words
+    /// are `RouterPresentation.card`'s.
     static func router(
+        health: RouterHealthReading?,
         wakes: OperatorReading<OperatorWakesDocument>?,
-        status: ServerEavesdropperReading?,
         now: Date
     ) -> OperatorStatusCard {
-        let title = "Wake router"
-        guard let wakes else {
-            return OperatorStatusCard(title: title, state: "Reading\u{2026}", tone: .neutral, lines: [])
-        }
-        guard let document = wakes.value else {
-            return OperatorStatusCard(title: title, state: "Not read", tone: .warning,
-                                      lines: ["The wake record was not read.",
-                                              shortFailure(wakes, fallback: "The server did not report its wake record.")])
-        }
-        var lines: [String] = []
-        var state = "Not read here"
-        var tone: OperatorTone = .neutral
-        if let current = status?.currentStatus(now: now) {
-            let onRouter = current.seats.filter { seat in
-                switch seat.router {
-                case .ready, .notReady, .readinessNotReported: return true
-                case .captureOnly, .notSaid: return false
-                }
-            }
-            if !onRouter.isEmpty {
-                let notReady = onRouter.filter { $0.router.isProblem }
-                let unknown = onRouter.filter { $0.router == .readinessNotReported }
-                if !notReady.isEmpty {
-                    state = "Some not ready"
-                    tone = .warning
-                    lines.append("\(notReady.count) of \(onRouter.count) seats that wake through it \(notReady.count == 1 ? "is" : "are") not ready.")
-                } else if unknown.isEmpty {
-                    state = "Ready"
-                    tone = .good
-                    lines.append("All \(onRouter.count) seats that wake through it are ready.")
-                } else {
-                    lines.append("Whether \(unknown.count) of its \(onRouter.count) seats are ready is not reported.")
-                }
-            }
-        }
-        if state == "Not read here" {
-            lines.append("The router's own state is not in what the server reports.")
-        }
-        let total = document.totals?.recent
-        let isFloor = !document.unreadable.isEmpty || document.truncated == true
-        if let total {
-            let words = OperatorPanelText.counted(total, "wake", "wakes")
-            lines.append(isFloor ? "At least \(words) in the last 24 hours." : "\(words) in the last 24 hours.")
-        } else {
-            lines.append("The number of wakes in the last 24 hours is not reported.")
-        }
-        return OperatorStatusCard(title: title, state: state, tone: tone, lines: lines)
+        RouterPresentation.card(health: health, wakes: wakes, now: now)
     }
 
     // MARK: The letter registry

@@ -306,7 +306,7 @@ final class OperatorCardTests: XCTestCase {
 
     func test_before_the_first_read_every_card_says_reading() {
         for card in [OperatorPanelPresentation.eavesdropper(nil, now: now),
-                     OperatorPanelPresentation.router(wakes: nil, status: nil, now: now),
+                     OperatorPanelPresentation.router(health: nil, wakes: nil, now: now),
                      OperatorPanelPresentation.registry(sessions: nil, status: nil, now: now)] {
             XCTAssertEqual(card.state, "Reading\u{2026}")
             XCTAssertEqual(card.tone, .neutral)
@@ -367,58 +367,6 @@ final class OperatorCardTests: XCTestCase {
         XCTAssertTrue(unknownPause.lines.contains("Whether it is paused is not reported."))
         let fileError = OperatorPanelPresentation.eavesdropper(try listening(statusDocument(pauseFileError: #""invalid""#)), now: now)
         XCTAssertEqual(fileError.tone, .warning)
-    }
-
-    func test_the_router_is_ready_only_when_every_seat_on_it_is_ready() throws {
-        let allReady = statusDocument(seats: """
-        {"seat": "CLAUDE", "connected": true, "wake": "http", "routine": {"ready": true, "auth": "bearer", "why": null}},
-        {"seat": "CODEX", "connected": true, "wake": "http", "routine": {"ready": true, "auth": "bearer", "why": null}},
-        {"seat": "CURSOR", "connected": true, "wake": "inbox", "routine": null}
-        """)
-        let wakes = OperatorReading.read(try wakesDocument())
-        let ready = OperatorPanelPresentation.router(wakes: wakes, status: try statusReading(allReady), now: now)
-        XCTAssertEqual(ready.state, "Ready")
-        XCTAssertEqual(ready.tone, .good)
-        XCTAssertEqual(ready.lines, ["All 2 seats that wake through it are ready.", "3 wakes in the last 24 hours."])
-        XCTAssertFalse(ready.state.contains("Running"))
-
-        let some = OperatorPanelPresentation.router(wakes: wakes, status: try statusReading(statusDocument()), now: now)
-        XCTAssertEqual(some.state, "Some not ready")
-        XCTAssertEqual(some.tone, .warning)
-        XCTAssertEqual(some.lines.first, "1 of 2 seats that wake through it is not ready.")
-    }
-
-    /// The router's own run state is not in these reads, so with no readiness to go on the card
-    /// says so and still gives the wakes' count.
-    func test_the_router_says_not_read_here_when_the_reads_do_not_say() throws {
-        let wakes = OperatorReading.read(try wakesDocument())
-        let noStatus = OperatorPanelPresentation.router(wakes: wakes, status: nil, now: now)
-        XCTAssertEqual(noStatus.state, "Not read here")
-        XCTAssertEqual(noStatus.tone, .neutral)
-        XCTAssertEqual(noStatus.lines, ["The router's own state is not in what the server reports.", "3 wakes in the last 24 hours."])
-        let oldStatus = OperatorPanelPresentation.router(wakes: wakes, status: try statusReading(statusDocument(updatedAgo: 900)), now: now)
-        XCTAssertEqual(oldStatus.state, "Not read here")
-        let noRoutines = statusDocument(seats: #"{"seat": "CURSOR", "connected": true, "wake": "inbox", "routine": null}"#)
-        XCTAssertEqual(OperatorPanelPresentation.router(wakes: wakes, status: try statusReading(noRoutines), now: now).state, "Not read here")
-    }
-
-    func test_the_router_card_counts_one_wake_and_a_floor_and_a_failure() throws {
-        let one = OperatorReading.read(try wakesDocument(wakesAnswer(totals: #"{"recent": 1, "held_back": 0, "held_back_lost": 0, "owner_queue": 0}"#)))
-        XCTAssertEqual(OperatorPanelPresentation.router(wakes: one, status: nil, now: now).lines, ["The router's own state is not in what the server reports.", "1 wake in the last 24 hours."])
-        let floor = OperatorReading.read(try wakesDocument(wakesAnswer(unreadable: #"["GROK"]"#)))
-        XCTAssertEqual(OperatorPanelPresentation.router(wakes: floor, status: nil, now: now).lines, ["The router's own state is not in what the server reports.", "At least 3 wakes in the last 24 hours."])
-        let noTotals = OperatorReading.read(try wakesDocument(wakesAnswer(totals: "null")))
-        XCTAssertEqual(OperatorPanelPresentation.router(wakes: noTotals, status: nil, now: now).lines,
-                       ["The router's own state is not in what the server reports.", "The number of wakes in the last 24 hours is not reported."])
-        let failed = OperatorPanelPresentation.router(wakes: .unavailable("The Operator's wake record was busy."), status: nil, now: now)
-        // Only the wake record failed, so the card does not say the router is silent.
-        XCTAssertEqual(failed.state, "Not read")
-        XCTAssertEqual(failed.lines, ["The wake record was not read.", "The Operator's wake record was busy."])
-        // A section always gives its own cause:  the banner says what to do, and never replaces it.
-        let down = OperatorPanelPresentation.router(wakes: .unreachable("The server did not answer in time."), status: nil, now: now)
-        XCTAssertEqual(down.lines, ["The wake record was not read.", "The server did not answer in time."])
-        let downRegistry = OperatorPanelPresentation.registry(sessions: .unreachable("The server did not answer in time."), status: nil, now: now)
-        XCTAssertEqual(downRegistry.lines, ["The server did not answer in time."])
     }
 
     func test_the_registry_counts_live_and_gone_and_its_warnings() throws {
@@ -769,6 +717,7 @@ final class OperatorPanelStoreTests: XCTestCase {
             statusRead: { reading },
             sessionsRead: { .read(document) },
             wakesRead: { .read(wakes) },
+            routerRead: { .unavailable("The router was not asked.") },
             now: { now }
         )
         XCTAssertNil(store.status)
@@ -788,6 +737,7 @@ final class OperatorPanelStoreTests: XCTestCase {
             statusRead: { .notRead("x") },
             sessionsRead: { .unreachable("y") },
             wakesRead: { .unreachable("z") },
+            routerRead: { .unavailable("The router was not asked.") },
             now: { now }
         )
         await store.refresh()
@@ -801,7 +751,8 @@ final class OperatorPanelStoreTests: XCTestCase {
         let store = OperatorPanelStore(
             statusRead: { .notRead("The server could not be asked.") },
             sessionsRead: { .unavailable("The registry was busy.") },
-            wakesRead: { .read(wakes) }
+            wakesRead: { .read(wakes) },
+            routerRead: { .unavailable("The router was not asked.") }
         )
         await store.refresh()
         XCTAssertEqual(store.sessions, .unavailable("The registry was busy."))
@@ -812,7 +763,8 @@ final class OperatorPanelStoreTests: XCTestCase {
         let again = OperatorPanelStore(
             statusRead: { .notRead("x") },
             sessionsRead: { .read(document) },
-            wakesRead: { .unreachable("The server did not answer in time.") }
+            wakesRead: { .unreachable("The server did not answer in time.") },
+            routerRead: { .unavailable("The router was not asked.") }
         )
         await again.refresh()
         XCTAssertEqual(again.sessions, .read(document))
@@ -829,7 +781,8 @@ final class OperatorPanelStoreTests: XCTestCase {
                 await gate.wait()
                 return .unavailable("busy")
             },
-            wakesRead: { .unavailable("busy") }
+            wakesRead: { .unavailable("busy") },
+            routerRead: { .unavailable("The router was not asked.") }
         )
         async let first: Void = store.refresh()
         // Let the first refresh start, then ask again while its read is held.

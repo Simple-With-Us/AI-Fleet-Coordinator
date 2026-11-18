@@ -916,6 +916,39 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// The read-only route that asks the server for the wake router's own health and the state of
+    /// the unit that runs it:  `server router-health server --plan --json`.  It changes nothing
+    /// and needs no sheet.
+    func routerHealthInvocation() -> OpsInvocation {
+        serverInvocation(
+            tail: ["server", "router-health", "server", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    /// The route of one dry-run wake:  `server router-test-wake SEAT --plan --json`.  The router
+    /// picks the chat it would wake and delivers nothing, and the helper takes `--plan` only, so
+    /// it needs no sheet and no Touch ID.  The seat is a seat tag (capitals, digits, dash) and
+    /// nothing else, so no word reaches the server that could be read as a flag or a second verb.
+    func routerTestWakeInvocation(seat: String) throws -> OpsInvocation {
+        guard Self.isSeatTag(seat) else {
+            throw OpsControlError.invalidArgument("seat tag")
+        }
+        return serverInvocation(
+            tail: ["server", "router-test-wake", seat, "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    /// A seat tag as the server's helper takes it:  one capital or digit, then up to 31 capitals,
+    /// digits, underscores or dashes.
+    static func isSeatTag(_ text: String) -> Bool {
+        guard (1...32).contains(text.utf8.count), let first = text.unicodeScalars.first else { return false }
+        func upper(_ scalar: Unicode.Scalar) -> Bool { ("A"..."Z").contains(scalar) || ("0"..."9").contains(scalar) }
+        guard upper(first) else { return false }
+        return text.unicodeScalars.allSatisfy { upper($0) || $0 == "_" || $0 == "-" }
+    }
+
     private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
         OpsInvocation(
             executable: OpsControlRoute.ssh,
