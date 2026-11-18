@@ -55,9 +55,7 @@ class WorkerHealthReader(unittest.TestCase):
         old_env = dict(os.environ)
         os.environ.pop("HEALTH_HMAC_KEY", None)
         try:
-            with mock.patch.object(
-                fleet_infisical, "fetch_scoped", return_value=("", "no-token")
-            ):
+            with mock.patch.object(fleet_infisical, "fetch_scoped", return_value=("", "no-token")):
                 self.assertEqual(fwh.read_key(), "")
         finally:
             os.environ.clear()

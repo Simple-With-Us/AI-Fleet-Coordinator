@@ -1551,9 +1551,7 @@ def infisical_names(
             try:
                 project_id = client.infisical_project_id(scoped, HOME, project)
                 names = frozenset(
-                    client.list_project_names(
-                        project_id, folder, scoped, token=token, timeout=60
-                    )
+                    client.list_project_names(project_id, folder, scoped, token=token, timeout=60)
                 )
             except (client.SecretsError, OSError, ValueError):
                 names = None

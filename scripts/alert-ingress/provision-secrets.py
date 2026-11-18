@@ -124,6 +124,7 @@ EXIT_MISSING_EXECUTABLE = 127
 # a write may already have been applied, so it is never a definite failure.
 OUTCOME_UNKNOWN = "outcome_unknown"
 
+
 class ReadError(Exception):
     """A read or write failed.  Carries a reason word only:  no payload kept."""
 
@@ -203,7 +204,6 @@ def scoped_values(names, project, path):
         return scoped_secrets.fetch_project(project_id, path, env, token=token, names=names)
     except scoped_secrets.SecretsError as exc:
         raise ReadError(f"the scoped Infisical read failed ({exc.message})") from None
-
 
 
 def batch_values(names, project, path):

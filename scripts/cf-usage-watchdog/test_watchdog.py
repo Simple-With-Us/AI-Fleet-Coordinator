@@ -1371,7 +1371,9 @@ class HttpSafetyTests(Base):
 
     def test_a_failed_page_credential_read_logs_why_and_stays_false(self):
         self.secret_codes = {"PUSHOVER_APP_TOKEN": 4}
-        conn = wd.Connections(self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=0), env={})
+        conn = wd.Connections(
+            self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=0), env={}
+        )
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.page("title", "text"))
         self.assertIn("credential-fetch-failed", out.getvalue())

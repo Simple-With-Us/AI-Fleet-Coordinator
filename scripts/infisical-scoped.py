@@ -274,16 +274,22 @@ def _parser() -> argparse.ArgumentParser:
     get.add_argument("name", help="the secret's name")
     get.add_argument("--folder", required=True, help="the Infisical folder to read")
     get.add_argument("--project", choices=PROJECTS, default=DEFAULT_PROJECT)
-    get.add_argument("--account", help="the consumer's own token account, when it is not in the table")
+    get.add_argument(
+        "--account", help="the consumer's own token account, when it is not in the table"
+    )
 
     names = verbs.add_parser("names", help="the names in one folder, one per line")
     names.add_argument("--folder", required=True, help="the Infisical folder to list")
     names.add_argument("--project", choices=PROJECTS, default=DEFAULT_PROJECT)
-    names.add_argument("--account", help="the consumer's own token account, when it is not in the table")
+    names.add_argument(
+        "--account", help="the consumer's own token account, when it is not in the table"
+    )
 
     doctor = verbs.add_parser("doctor", help="one JSON report about this Mac's access")
     doctor.add_argument("--project", choices=PROJECTS, default=DEFAULT_PROJECT)
-    doctor.add_argument("--account", help="the consumer's own token account, when it is not in the table")
+    doctor.add_argument(
+        "--account", help="the consumer's own token account, when it is not in the table"
+    )
     return parser
 
 

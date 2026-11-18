@@ -229,7 +229,9 @@ class AccountTableTests(unittest.TestCase):
         self.assertEqual(len(set(reader.ACCOUNTS.values())), len(reader.ACCOUNTS))
 
     def test_the_table_maps_every_folder_the_app_uses(self) -> None:
-        registry = json.loads((SCRIPTS / "fleet_knobs" / "registry.json").read_text(encoding="utf-8"))
+        registry = json.loads(
+            (SCRIPTS / "fleet_knobs" / "registry.json").read_text(encoding="utf-8")
+        )
         folders = {knob["folder"] for knob in registry["knobs"]}
         self.assertIn("/", folders)
         for folder in folders:

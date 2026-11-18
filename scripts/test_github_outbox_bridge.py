@@ -691,15 +691,11 @@ class RuleTests(unittest.TestCase):
 
         with mock.patch.object(fleet_infisical, "fetch_scoped", read):
             client = bridge.ZulipClient()
-            self.assertEqual(
-                (client.email, client.key), ("claude-bot@example.test", "fake-key")
-            )
+            self.assertEqual((client.email, client.key), ("claude-bot@example.test", "fake-key"))
             gone = bridge.ZulipClient(bot="NOBODY")
             self.assertIsNone(gone.email)
             self.assertIsNone(gone.key)
-        self.assertEqual(
-            asked[0], ("CLAUDE_ZULIP_EMAIL", "/zulip", "outbox-bridge-ro")
-        )
+        self.assertEqual(asked[0], ("CLAUDE_ZULIP_EMAIL", "/zulip", "outbox-bridge-ro"))
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)

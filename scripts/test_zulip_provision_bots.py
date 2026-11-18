@@ -15,7 +15,6 @@ import json
 import os
 import re
 import stat
-import sys
 import tempfile
 import threading
 import unittest
@@ -418,9 +417,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o700)
 
     def test_an_empty_value_is_treated_as_absent(self):
-        with mock.patch.object(
-            fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "ok")
-        ):
+        with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "ok")):
             value = prov.admin_secret("ZULIP_OPERATOR_SITE", required=False)
         self.assertEqual(value, "")
 

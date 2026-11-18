@@ -34,9 +34,7 @@ def scoped_secret_get(path, name):
     "refused" for a missing or rejecting store, "retryable" for a timeout."""
     account = TOKEN_ACCOUNTS.get(path)
     if not account:
-        raise RoutingError(
-            name + " unavailable: no scoped token covers " + path, outcome="refused"
-        )
+        raise RoutingError(name + " unavailable: no scoped token covers " + path, outcome="refused")
     try:
         import fleet_infisical as FI
 

@@ -40,9 +40,6 @@ import argparse
 import base64
 import json
 import os
-import pathlib
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse

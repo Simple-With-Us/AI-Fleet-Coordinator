@@ -10,7 +10,6 @@ no token, and the status must say which refusal it was.
 from __future__ import annotations
 
 import os
-import stat
 import sys
 import tempfile
 import unittest
@@ -102,7 +101,9 @@ class KeychainStoreTests(unittest.TestCase):
                 return fi.token_from_store("consumer-ro")
 
     def test_the_item_is_the_token(self) -> None:
-        result = mock.Mock(returncode=0, stdout="st.abcdefghijklmnop.qrstuvwx.yz012345\n", stderr="")
+        result = mock.Mock(
+            returncode=0, stdout="st.abcdefghijklmnop.qrstuvwx.yz012345\n", stderr=""
+        )
         token, status = self.read(result)
         self.assertEqual(status, "ok")
         self.assertTrue(token.startswith("st."))
@@ -135,24 +136,36 @@ class FetchScopedTests(unittest.TestCase):
         fetch.assert_not_called()
 
     def test_a_good_read_returns_the_value(self) -> None:
-        with mock.patch.object(fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")):
-            with mock.patch.object(fi, "fetch_verified", return_value="value") as fetch:
-                value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
+        with (
+            mock.patch.object(
+                fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")
+            ),
+            mock.patch.object(fi, "fetch_verified", return_value="value") as fetch,
+        ):
+            value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
         self.assertEqual((value, status), ("value", "ok"))
         self.assertEqual(fetch.call_args.args[:2], ("NAME", "/folder"))
 
     def test_an_absent_name_says_absent(self) -> None:
         error = fi.SecretsError("key NAME is not in Infisical at /folder", 3)
-        with mock.patch.object(fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")):
-            with mock.patch.object(fi, "fetch_verified", side_effect=error):
-                value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
+        with (
+            mock.patch.object(
+                fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")
+            ),
+            mock.patch.object(fi, "fetch_verified", side_effect=error),
+        ):
+            value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
         self.assertEqual((value, status), ("", "absent"))
 
     def test_a_refused_grant_says_forbidden(self) -> None:
         error = fi.SecretsError("token-verification-failed")
-        with mock.patch.object(fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")):
-            with mock.patch.object(fi, "fetch_verified", side_effect=error):
-                value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
+        with (
+            mock.patch.object(
+                fi, "token_from_store", return_value=("st.abcdefghijklmnop.qrstuvwx", "ok")
+            ),
+            mock.patch.object(fi, "fetch_verified", side_effect=error),
+        ):
+            value, status = fi.fetch_scoped("NAME", "/folder", "consumer-ro")
         self.assertEqual((value, status), ("", "forbidden"))
 
 

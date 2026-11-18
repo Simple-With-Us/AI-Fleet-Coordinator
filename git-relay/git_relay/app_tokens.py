@@ -346,9 +346,7 @@ class InfisicalSource:
         client = self._module()
         env = self._scope()
         try:
-            value = client.fetch_verified(
-                name, self._path, env, token=self._token
-            )
+            value = client.fetch_verified(name, self._path, env, token=self._token)
         except client.SecretsError as exc:
             if exc.code == 3:
                 self._missing.add(name)
@@ -375,9 +373,7 @@ class InfisicalSource:
         env = self._scope()
         project = self._project_id()
         try:
-            values = client.fetch_project(
-                project, self._path, env, token=self._token, names=wanted
-            )
+            values = client.fetch_project(project, self._path, env, token=self._token, names=wanted)
         except client.SecretsError:
             raise AppTokenError(f"the store lookup failed for {wanted[0]}") from None
         for name in wanted:

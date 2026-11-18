@@ -1,10 +1,8 @@
 """Capacity startup policy uses the existing source before touching durable state."""
 
 import contextlib
-import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -243,9 +241,7 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
             ):
                 server._outcome_capacity_from_source(self.source)
             # No value is read once the grant refuses:  only the grant is asked.
-            self.assertEqual(
-                [request for request in self.api.requests if "/raw/" in request], []
-            )
+            self.assertEqual([request for request in self.api.requests if "/raw/" in request], [])
 
 
 if __name__ == "__main__":

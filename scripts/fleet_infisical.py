@@ -445,9 +445,7 @@ def token_scopes(token: str, env: Mapping[str, str]) -> tuple[str, ...]:
     if refusal:
         raise SecretsError(refusal, 2)
     check_service_token(token)
-    status, metadata = _api_json(
-        "GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024
-    )
+    status, metadata = _api_json("GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024)
     if status != 200 or not isinstance(metadata, dict):
         raise SecretsError("token-verification-failed")
     scopes = metadata.get("scopes")
@@ -1118,7 +1116,10 @@ def _token_from_keychain(account: str) -> tuple[str, str]:
     detail = (result.stderr or "").lower()
     if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
         return "", "no-token"
-    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
         return "", "keychain-locked"
     return "", "token-unreadable"
 

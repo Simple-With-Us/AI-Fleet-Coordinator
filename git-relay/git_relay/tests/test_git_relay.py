@@ -1330,7 +1330,6 @@ class TestInfisicalSource(unittest.TestCase):
         self.assertEqual(len(reads), 1)
 
     def test_the_credential_file_is_the_only_token_source(self):
-        from git_relay.app_tokens import AppTokenError
 
         with tempfile.TemporaryDirectory() as tmp:
             source = self._source(
@@ -2613,9 +2612,7 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
         with (
             self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"),
-            unittest.mock.patch.object(
-                server, "_require_infisical_client", return_value=object()
-            ),
+            unittest.mock.patch.object(server, "_require_infisical_client", return_value=object()),
             unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
         ):
             os.chdir(directory)
@@ -2637,9 +2634,7 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
         with (
             self._app_mint_env(GIT_RELAY_SECRETS_PATH=""),
-            unittest.mock.patch.object(
-                server, "_require_infisical_client", return_value=object()
-            ),
+            unittest.mock.patch.object(server, "_require_infisical_client", return_value=object()),
         ):
             os.chdir(directory)
             try:
@@ -2792,9 +2787,7 @@ class TestVerifiedSecret(unittest.TestCase):
     def test_an_unreadable_credential_file_fails_closed(self):
         from git_relay.app_tokens import AppTokenError
 
-        source, _ = self._source(
-            path="/git-relay-owner", credential_file="/nonexistent/credential"
-        )
+        source, _ = self._source(path="/git-relay-owner", credential_file="/nonexistent/credential")
         with self.assertRaises(AppTokenError) as ctx:
             source.verified_secret("GITHUB_TOKEN")
         self.assertNotIn("credential-value", str(ctx.exception))
@@ -2897,9 +2890,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
                 GIT_RELAY_APPS_CREDENTIAL_FILE=str(directory / "git-relay-apps-token"),
                 GIT_RELAY_VERIFY_URL="https://sync.example/gr-internal/verify-bearer",
             ),
-            unittest.mock.patch.object(
-                server, "_require_infisical_client", return_value=object()
-            ),
+            unittest.mock.patch.object(server, "_require_infisical_client", return_value=object()),
             unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
             unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40),
         ):

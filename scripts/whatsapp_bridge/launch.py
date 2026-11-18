@@ -226,11 +226,10 @@ if __name__ == "__main__":
         sys.exit(1)
     except ImportError:
         print(
-            '{"state":"isolated_start_failed","source":"infisical_client_dependency"}', file=sys.stderr
+            '{"state":"isolated_start_failed","source":"infisical_client_dependency"}',
+            file=sys.stderr,
         )
         sys.exit(1)
     except Exception:  # noqa: BLE001 - never expose credential-bearing loader exceptions
-        print(
-            '{"state":"isolated_start_failed","source":"infisical_client"}', file=sys.stderr
-        )
+        print('{"state":"isolated_start_failed","source":"infisical_client"}', file=sys.stderr)
         sys.exit(1)
