@@ -45,7 +45,13 @@ PLATFORM = "minimax"
 SEAT = "MM"
 SOURCE = "minimax-letter-hook"
 DISPLAY = "MiniMax"
-EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SubagentStart": "start", "SubagentStop": "turn", "Stop": "turn"}
+EVENTS = {
+    "SessionStart": "start",
+    "UserPromptSubmit": "prompt",
+    "SubagentStart": "start",
+    "SubagentStop": "turn",
+    "Stop": "turn",
+}
 #: The timeouts of the two hook entries, in seconds.  MiniMax Code's runtime takes a command hook's
 #: timeout from 1 to 10 seconds and refuses anything longer with HOOK_SCHEMA_INVALID, so an entry over 10
 #: is never run at all:  the hook file reads as installed and no letter note is written and no title is
@@ -55,7 +61,13 @@ EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SubagentStart"
 #: makes at most three registry calls (the parent, the chat, the title), and the shared call timeout is
 #: three seconds, so the chain's worst case is nine seconds and the hook finishes before the runtime
 #: stops it.
-HOOK_TIMEOUTS = {"SessionStart": 10, "UserPromptSubmit": 10, "SubagentStart": 10, "SubagentStop": 10, "Stop": 10}
+HOOK_TIMEOUTS = {
+    "SessionStart": 10,
+    "UserPromptSubmit": 10,
+    "SubagentStart": 10,
+    "SubagentStop": 10,
+    "Stop": 10,
+}
 #: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
@@ -212,7 +224,11 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
                     cur = conn.execute(
                         "UPDATE local_runtime_sessions SET title = ?, extra_data_json = ?"
                         " WHERE session_id = ?",
-                        (request.title, json.dumps(extra, separators=(",", ":")), request.session_id),
+                        (
+                            request.title,
+                            json.dumps(extra, separators=(",", ":")),
+                            request.session_id,
+                        ),
                     )
                 else:
                     cur = conn.execute(
