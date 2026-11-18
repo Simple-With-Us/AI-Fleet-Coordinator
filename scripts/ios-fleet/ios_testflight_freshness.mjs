@@ -17,6 +17,12 @@
  * Exit codes:  0 every checked app is current;  1 something is behind (or a
  * catch-up ship is still running or processing);  2 the check itself failed.
  *
+ * INTERNAL LANDING (AFC-753).  A VALID build missing from an internal beta
+ * group, or assigned to one with zero internal testers, is behind with
+ * behindReason "internalLanding".  That finding does not dispatch
+ * --ship-behind.  An unreadable internal tester count is lookupUnknown and
+ * does not flip a code-current app.  External groups (AFC-434) are unchanged.
+ *
  * HOW "SHIPPED" IS DECIDED.  App Store Connect never records a git sha.  The
  * build number is the repo commit count, so a current build carries no cut
  * time and the ship workflow run whose start-to-end window contains the
@@ -48,10 +54,15 @@
  * run), or the check itself failing.  One digest post per run, at most one
  * post per app per six hours, and never twice for the same commit and reason.
  *
- * Credentials:  this file never reads one.  App Store Connect calls go through
- * the fleet's asc-api.mjs (which reads the ASC_* env or Infisical /asc through fleet-secrets), and
- * its stderr is never echoed, because a crash there can name the key path.
- * GitHub calls go through the gh CLI;  Zulip through simple-chat.
+ * Credentials:  App Store Connect reads use the owned scoped binding in
+ * asc_scoped_creds.mjs (a read-only Infisical service token for exactly
+ * prod:/asc, verified before any call).  The three ASC_* values are passed to
+ * asc-api.mjs.  A missing binding or a scope that does not match fails the
+ * run and does not fall back to fleet-secrets /asc or a legacy key folder.
+ * --allow-legacy-asc-creds or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1 opts back into
+ * that helper fallback.  asc-api.mjs stderr is never echoed, because a crash
+ * there can name a key path.  GitHub calls go through the gh CLI;  Zulip
+ * through simple-chat.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -59,6 +70,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ascChildEnv, legacyAscAllowed, resolveFreshnessAscCredentials } from "./asc_scoped_creds.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const EXIT_CURRENT = 0;
@@ -236,8 +248,9 @@ function ghError(err) {
 // ---------------------------------------------------------------------------
 // App Store Connect calls
 //
-// Every asc-api.mjs call signs in to Infisical through fleet-secrets (three `get`s, each a
-// login plus an export), so one call is a handful of process launches.  On 2026-10-20 the Mac
+// Each asc-api.mjs child used to sign in through fleet-secrets (three `get`s, each a login
+// plus an export), so one call was a handful of process launches.  The scoped binding is
+// verified once per run now, and the child receives ASC_* instead.  On 2026-10-20 the Mac
 // was memory-thrashing (load average 100 to 200, kernel_task near 50% system time) and the
 // 2:20pm and 4:20pm runs lost every call to the 120 second kill timeout:  Node reports a killed
 // child as `code: null`, which the report printed as "asc-api.mjs exit ?" with nothing to say
@@ -326,9 +339,27 @@ export async function ascRequest(run, apiPath, guard = makeAscGuard(), { timeout
   });
 }
 
-export function makeDeps(env = process.env) {
+export function makeDeps(env = process.env, options = {}) {
   const sdir = stateDir(env);
   const ascGuard = makeAscGuard();
+  const allowLegacy = legacyAscAllowed(env, options.allowLegacyAsc === true);
+  const run = options.runCmd || runCmd;
+  let prepared = null;
+  const ascEnvironment = () => {
+    if (allowLegacy) return Promise.resolve(env);
+    if (!prepared) {
+      prepared = resolveFreshnessAscCredentials({
+        env,
+        fetchImpl: options.fetchImpl,
+        readFileImpl: options.readFileImpl,
+        statImpl: options.statImpl,
+        execFileImpl: options.execFileImpl,
+        home: options.home,
+        nowMs: options.nowMs,
+      }).then((creds) => ascChildEnv(env, creds));
+    }
+    return prepared;
+  };
   const deps = {
     now: () => new Date(),
     async gh(apiPath) {
@@ -350,10 +381,14 @@ export function makeDeps(env = process.env) {
         throw new Error(`gh workflow run ${workflow}: ${ghError(err)}`);
       }
     },
+    async prepareAsc() {
+      await ascEnvironment();
+    },
     async asc(apiPath) {
       const script = resolveFleetFile("asc-api.mjs", env);
       if (!script) throw new Error("asc-api.mjs not found (set IOS_FLEET_DIR or install ~/apps/ios-fleet)");
-      return ascRequest((opts) => runCmd(process.execPath, [script, "GET", apiPath], { env, ...opts }), apiPath, ascGuard);
+      const childEnv = await ascEnvironment();
+      return ascRequest((opts) => run(process.execPath, [script, "GET", apiPath], { env: childEnv, ...opts }), apiPath, ascGuard);
     },
     async buildWindow(appKey) {
       const script = resolveFleetFile("build-window.sh", env);
@@ -472,6 +507,343 @@ function buildView(b) {
     processingState: b.processingState,
     expired: b.expired,
   };
+}
+
+/** Paging total from a betaTesters list response; falls back to the first page length. */
+export function betaTesterCountFromJson(json) {
+  const total = json?.meta?.paging?.total;
+  if (typeof total === "number" && !Number.isNaN(total)) return total;
+  return Array.isArray(json?.data) ? json.data.length : 0;
+}
+
+export const PRERELEASE_BULK_MAX_IDS = 50;
+export const PRERELEASE_FETCH_CONCURRENCY = 5;
+export const PRERELEASE_ATTACH_TIMEOUT_MS = 30_000;
+
+export function preReleaseVersionsBulkPath(ids) {
+  const slice = ids.slice(0, PRERELEASE_BULK_MAX_IDS).map(encodeURIComponent).join(",");
+  return `/v1/preReleaseVersions?limit=200&filter[id]=${slice}&fields[preReleaseVersions]=version,platform`;
+}
+
+/**
+ * Mark each external group with findings and build one reason string when something is wrong.
+ * Read-only inspection:  compares group builds to the app's newest VALID build.
+ */
+export function annotateExternalGroups(validBuild, groups) {
+  const validAt = validBuild?.uploadedAt ?? null;
+  const out = [];
+  const parts = [];
+  for (const g of groups || []) {
+    const row = { ...g };
+    const findings = [];
+    const buildKnown = row.newestBuildKnown === true;
+    const testersKnown = row.testerCountKnown === true;
+    if (!buildKnown || !testersKnown) {
+      findings.push("lookupUnknown");
+    } else if (!row.newestBuild) {
+      findings.push("noBuilds");
+      parts.push(`external group "${row.name}" has no builds`);
+    } else if (validAt != null) {
+      const groupAt = Date.parse(row.newestBuild.uploadedAt || "");
+      if (!Number.isNaN(groupAt) && groupAt < validAt - 1000) {
+        findings.push("staleBuild");
+        const gv = row.newestBuild.marketingVersion || "?";
+        const gb = row.newestBuild.build || "?";
+        const vv = validBuild.marketingVersion || validBuild.build || "?";
+        parts.push(`external group "${row.name}" serves ${gv} (${gb}), older than the valid build ${vv} (${validBuild.build})`);
+      }
+    }
+    if (buildKnown && testersKnown && row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`external group "${row.name}" has zero testers`);
+    }
+    if (findings.length) row.findings = findings;
+    if (findings.includes("lookupUnknown")) row.lookupUnknown = true;
+    out.push(row);
+  }
+  return { groups: out, reason: parts.length ? parts.join(";  ") : null };
+}
+
+/**
+ * Mark each internal group with findings for the current VALID build.
+ * Read-only.  A group is a proven miss when assignment is known and the build
+ * is absent, or the tester count is known and zero, even if the other lookup
+ * failed.  installable is false only when every group is a proven miss.  A
+ * group that is neither a proven hit nor a proven miss stays unknown, and one
+ * unknown group leaves installable null.
+ */
+export function annotateInternalLanding(validBuild, groups) {
+  const out = [];
+  const parts = [];
+  let anyInstallable = false;
+  let anyKnownFailure = false;
+  let anyUnknown = false;
+  const label = `${validBuild?.marketingVersion || validBuild?.build || "?"} (${validBuild?.build || "?"})`;
+  if (!validBuild) {
+    return {
+      groups: (groups || []).map((g) => ({ ...g })),
+      reason: null,
+      installable: null,
+    };
+  }
+  for (const g of groups || []) {
+    const row = { ...g };
+    const findings = [];
+    const assignedKnown = row.assignedKnown === true;
+    const testersKnown = row.testerCountKnown === true;
+    const provenMiss = (assignedKnown && !row.assigned) || (testersKnown && row.testerCount === 0);
+    const provenHit = assignedKnown && testersKnown && row.assigned && row.testerCount > 0;
+    if (!assignedKnown || !testersKnown) findings.push("lookupUnknown");
+    if (assignedKnown && !row.assigned) {
+      findings.push("notAssigned");
+      parts.push(`internal group "${row.name}" does not include valid build ${label}`);
+    }
+    if (testersKnown && row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`internal group "${row.name}" has zero internal testers`);
+    }
+    if (provenHit) anyInstallable = true;
+    else if (provenMiss) anyKnownFailure = true;
+    else anyUnknown = true;
+    if (findings.length) row.findings = findings;
+    if (findings.includes("lookupUnknown")) row.lookupUnknown = true;
+    out.push(row);
+  }
+  let installable = null;
+  if (anyInstallable) installable = true;
+  else if (anyKnownFailure && !anyUnknown) installable = false;
+  const reason = installable === false && parts.length ? parts.join(";  ") : null;
+  return { groups: out, reason, installable };
+}
+
+const ASC_BUILD_FILTER_FIELDS =
+  "&fields[builds]=version,uploadedDate,processingState,expired" +
+  "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform";
+
+/** Relationship list:  no include or sort (ASC returns PARAMETER_ERROR.ILLEGAL). */
+const ASC_BUILD_RELATIONSHIP_FIELDS = "&fields[builds]=version,uploadedDate,processingState,expired";
+
+/** App Store Connect list path for beta groups (no filter[isInternalGroup] on this relationship). */
+export function externalBetaGroupsListPath(appleId) {
+  return (
+    `/v1/apps/${appleId}/betaGroups?limit=200` +
+    "&fields[betaGroups]=name,isInternalGroup,publicLinkEnabled"
+  );
+}
+
+export function buildsFilterForBetaGroupPath(groupId) {
+  return (
+    `/v1/builds?filter[betaGroups]=${encodeURIComponent(groupId)}&sort=-uploadedDate&limit=10${ASC_BUILD_FILTER_FIELDS}`
+  );
+}
+
+export function buildsRelationshipForBetaGroupPath(groupId) {
+  return `/v1/betaGroups/${groupId}/builds?limit=200${ASC_BUILD_RELATIONSHIP_FIELDS}`;
+}
+
+/**
+ * Fill `included` preReleaseVersions when a relationship response omits include=.
+ * One bulk filter[id] call when possible; otherwise bounded parallel fetches.
+ */
+export async function attachPreReleaseVersions(ctx, json, {
+  concurrency = PRERELEASE_FETCH_CONCURRENCY,
+  timeoutMs = PRERELEASE_ATTACH_TIMEOUT_MS,
+} = {}) {
+  const included = [...(json.included || [])];
+  const have = new Set(included.filter((x) => x.type === "preReleaseVersions").map((x) => x.id));
+  const ids = [...new Set((json.data || [])
+    .map((b) => b.relationships?.preReleaseVersion?.data?.id)
+    .filter((id) => id && !have.has(id)))];
+  if (!ids.length) return { ...json, included };
+
+  const enrich = async () => {
+    try {
+      const bulk = await ctx.asc(preReleaseVersionsBulkPath(ids));
+      for (const entry of bulk.data || []) {
+        if (entry?.id && !have.has(entry.id)) {
+          included.push(entry);
+          have.add(entry.id);
+        }
+      }
+      const missing = ids.filter((id) => !have.has(id));
+      if (!missing.length) return { ...json, included };
+      ids.length = 0;
+      ids.push(...missing);
+    } catch {
+      /* bulk filter unsupported or partial:  fall through per id */
+    }
+    const fetched = await pool(ids, concurrency, async (prId) => {
+      try {
+        const pr = await ctx.asc(`/v1/preReleaseVersions/${prId}?fields[preReleaseVersions]=version,platform`);
+        return pr.data || null;
+      } catch {
+        return null;
+      }
+    });
+    for (const entry of fetched) {
+      if (entry?.id && !have.has(entry.id)) {
+        included.push(entry);
+        have.add(entry.id);
+      }
+    }
+    return { ...json, included };
+  };
+
+  let timer;
+  try {
+    return await Promise.race([
+      enrich(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`preReleaseVersion enrich timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch {
+    return { ...json, included };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Builds assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
+async function listBuildsInBetaGroup(ctx, groupId, platform) {
+  let filterOk = false;
+  try {
+    const byFilter = await ctx.asc(buildsFilterForBetaGroupPath(groupId));
+    filterOk = true;
+    if (!(byFilter.data || []).length) return [];
+    let normalized = normalizeBuilds(byFilter, platform);
+    if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
+    return normalized;
+  } catch {
+    /* fall through to the relationship list */
+  }
+  if (filterOk) return [];
+  const byRel = await ctx.asc(buildsRelationshipForBetaGroupPath(groupId));
+  const enriched = await attachPreReleaseVersions(ctx, byRel);
+  let normalized = normalizeBuilds(enriched, platform);
+  if (!normalized.length) normalized = normalizeBuilds(enriched, null);
+  return normalized;
+}
+
+/** Newest build assigned to a beta group. */
+async function newestBuildInBetaGroup(ctx, groupId, platform) {
+  const builds = await listBuildsInBetaGroup(ctx, groupId, platform);
+  return builds[0] || null;
+}
+
+async function loadExternalBetaGroups(ctx, appleId, platform) {
+  const list = await ctx.asc(externalBetaGroupsListPath(appleId));
+  const rows = [];
+  for (const g of list.data || []) {
+    const attrs = g.attributes || {};
+    if (attrs.isInternalGroup) continue;
+    const base = {
+      name: attrs.name || g.id,
+      id: g.id,
+      newestBuild: null,
+      newestBuildKnown: false,
+      testerCount: null,
+      testerCountKnown: false,
+      publicLinkEnabled: Boolean(attrs.publicLinkEnabled),
+    };
+    const warnings = [];
+    try {
+      const newest = await newestBuildInBetaGroup(ctx, g.id, platform);
+      base.newestBuildKnown = true;
+      base.newestBuild = buildView(newest);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    try {
+      const testersJson = await ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`);
+      base.testerCountKnown = true;
+      base.testerCount = betaTesterCountFromJson(testersJson);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+      base.testerCount = null;
+    }
+    if (warnings.length) base.lookupWarning = warnings.join(";  ");
+    rows.push(base);
+  }
+  return rows;
+}
+
+/** Internal beta groups only.  External rows stay in loadExternalBetaGroups. */
+async function loadInternalBetaGroups(ctx, appleId, platform, validBuild) {
+  const list = await ctx.asc(externalBetaGroupsListPath(appleId));
+  const rows = [];
+  for (const g of list.data || []) {
+    const attrs = g.attributes || {};
+    if (!attrs.isInternalGroup) continue;
+    const base = {
+      name: attrs.name || g.id,
+      id: g.id,
+      assigned: false,
+      assignedKnown: false,
+      testerCount: null,
+      testerCountKnown: false,
+    };
+    const warnings = [];
+    try {
+      const builds = await listBuildsInBetaGroup(ctx, g.id, platform);
+      base.assignedKnown = true;
+      base.assigned = Boolean(validBuild) && builds.some((b) => b.build === validBuild.build);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    try {
+      const testersJson = await ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`);
+      base.testerCountKnown = true;
+      base.testerCount = betaTesterCountFromJson(testersJson);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+      base.testerCount = null;
+    }
+    if (warnings.length) base.lookupWarning = warnings.join(";  ");
+    rows.push(base);
+  }
+  return rows;
+}
+
+/** True when `--ship-behind` may dispatch a workflow for this result. */
+export function shouldRemedyApp(r) {
+  if (!REMEDIABLE.has(r.status)) return false;
+  if (r.externalGroupsOnly) return false;
+  if (r.internalLandingOnly) return false;
+  return true;
+}
+
+/** Raise BEHIND (or extend the reason) when an external beta group is stale or empty. */
+function applyExternalGroupStaleness(r, validNorm, externalRows) {
+  const { groups, reason } = annotateExternalGroups(validNorm, externalRows);
+  r.externalGroups = groups;
+  if (!reason) return;
+  if (r.status === "current") {
+    r.status = "behind";
+    r.externalGroupsOnly = true;
+    r.behindReason = "externalGroups";
+    r.reason = reason;
+  } else if (r.status && r.status !== "skipped" && r.status !== "error") {
+    r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
+  }
+}
+
+/** Raise BEHIND when the VALID build is not installable by internal testers. */
+function applyInternalLanding(r, validBuild, internalRows) {
+  const { groups, reason, installable } = annotateInternalLanding(validBuild, internalRows);
+  r.internalLanding = { installable, groups };
+  if (!reason || installable !== false) return;
+  if (r.status === "current") {
+    r.status = "behind";
+    r.internalLandingOnly = true;
+    r.behindReason = "internalLanding";
+    r.reason = reason;
+  } else if (r.status && r.status !== "skipped" && r.status !== "error") {
+    r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
+  }
 }
 
 /** Context shared by every app in one run:  caches per repo. */
@@ -718,6 +1090,21 @@ export async function evaluateApp(ctx, key, app, now) {
         r.reason += `;  a ship run in flight for ${oldest.ageHours}h looks stuck (${oldest.url})`;
       }
     }
+
+    try {
+      const externalRows = await loadExternalBetaGroups(ctx, app.appleId, app.platform);
+      applyExternalGroupStaleness(r, valid, externalRows);
+    } catch (err) {
+      r.externalGroups = [];
+      r.externalGroupsWarning = String(err.message || err).slice(0, 300);
+    }
+    try {
+      const internalRows = await loadInternalBetaGroups(ctx, app.appleId, app.platform, valid);
+      applyInternalLanding(r, valid, internalRows);
+    } catch (err) {
+      r.internalLanding = { installable: null, groups: [] };
+      r.internalLandingWarning = String(err.message || err).slice(0, 300);
+    }
   } catch (err) {
     r.status = "error";
     r.reason = String(err.message || err).slice(0, 300);
@@ -744,7 +1131,18 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
   state.apps = state.apps || {};
   const fleetInflight = [...results.filter((r) => r.pipeline?.inflight?.length).map((r) => r.key), ...extraInflight];
   let dispatched = 0;
-  const candidates = results.filter((r) => REMEDIABLE.has(r.status)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
+  const GROUP_ONLY_BLOCK =
+    "behind only from external beta groups; a ship workflow cannot fix group membership or testers";
+  const INTERNAL_ONLY_BLOCK =
+    "behind only from internal tester access; a ship workflow cannot fix group membership or testers";
+  for (const r of results) {
+    if (REMEDIABLE.has(r.status) && r.externalGroupsOnly) {
+      r.remedy = { action: "blocked", reason: GROUP_ONLY_BLOCK };
+    } else if (REMEDIABLE.has(r.status) && r.internalLandingOnly) {
+      r.remedy = { action: "blocked", reason: INTERNAL_ONLY_BLOCK };
+    }
+  }
+  const candidates = results.filter((r) => shouldRemedyApp(r)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
   for (const r of candidates) {
     const app = registry.apps[r.key];
     const s = (state.apps[r.key] = state.apps[r.key] || {});
@@ -928,7 +1326,10 @@ export function renderTable(report) {
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-  const opts = { apps: null, repos: null, json: false, shipBehind: false, dryRun: false, alert: false, maxShips: 1, registry: null, concurrency: 4, help: false };
+  const opts = {
+    apps: null, repos: null, json: false, shipBehind: false, dryRun: false, alert: false,
+    maxShips: 1, registry: null, concurrency: 4, help: false, allowLegacyAsc: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => {
@@ -944,6 +1345,7 @@ export function parseArgs(argv) {
     else if (a === "--max-ships") opts.maxShips = Math.max(0, parseInt(val(), 10) || 0);
     else if (a === "--registry") opts.registry = val();
     else if (a === "--concurrency") opts.concurrency = Math.max(1, parseInt(val(), 10) || 1);
+    else if (a === "--allow-legacy-asc-creds") opts.allowLegacyAsc = true;
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -963,9 +1365,49 @@ export function loadRegistry(file) {
   return reg;
 }
 
+/**
+ * Every non-skipped app's `paths` must exist on that repo's default branch (main).
+ * Stale directory names (for example a retired `native/ios` tree) make the freshness
+ * check think no commit ever touches the app.
+ */
+export async function assertRegistryPathsExist(registry, gh) {
+  const missing = [];
+  for (const [key, app] of Object.entries(registry.apps)) {
+    if (app.skip) continue;
+    const repo = `${registry.owner}/${app.repo}`;
+    for (const p of app.paths || []) {
+      const enc = p.split("/").map(encodeURIComponent).join("/");
+      try {
+        await gh(`repos/${repo}/contents/${enc}?ref=main`);
+      } catch (err) {
+        const detail = err.notFound ? "not found on main" : String(err.message || err);
+        missing.push(`${key}: ${repo}/${p} (${detail})`);
+      }
+    }
+  }
+  if (missing.length) throw new Error(`testflight-apps.json paths:  ${missing.join(";  ")}`);
+}
+
 export async function runCheck(opts, deps, registry) {
   const now = deps.now();
   const errors = [];
+  if (typeof deps.prepareAsc === "function") {
+    try {
+      await deps.prepareAsc();
+    } catch (err) {
+      errors.push(String(err.message || err).slice(0, 500));
+      return {
+        schemaVersion: 1,
+        generatedAt: now.toISOString(),
+        mode: { shipBehind: opts.shipBehind, dryRun: opts.dryRun, alert: opts.alert, apps: opts.apps, repos: opts.repos },
+        exitCode: exitCodeFor([], errors),
+        summary: summarize([]),
+        apps: [],
+        unmapped: [],
+        errors,
+      };
+    }
+  }
   let keys = Object.keys(registry.apps);
   if (opts.apps) {
     const unknown = opts.apps.filter((k) => !registry.apps[k]);
@@ -1070,11 +1512,15 @@ async function findUnmapped(ctx, registry) {
 const HELP = `usage: ios_testflight_freshness.mjs [--app KEY[,KEY]] [--repo REPO] [--json]
                                    [--ship-behind [--dry-run] [--max-ships N]] [--alert]
                                    [--registry PATH] [--concurrency N]
+                                   [--allow-legacy-asc-creds]
 
 Exit 0 every checked app is current, 1 something is behind, 2 the check failed.
+App Store Connect reads need the scoped ios-testflight-freshness-ro binding.
+--allow-legacy-asc-creds (or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1) opts into the
+asc-api.mjs fleet-secrets /asc and legacy key-folder fallback.
 See docs/ios-testflight-freshness.md in AI-Fleet-Coordinator.`;
 
-export async function main(argv = process.argv.slice(2), deps = makeDeps(), out = process.stdout) {
+export async function main(argv = process.argv.slice(2), deps = undefined, out = process.stdout) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -1082,6 +1528,7 @@ export async function main(argv = process.argv.slice(2), deps = makeDeps(), out 
     out.write(`${err.message}\n${HELP}\n`);
     return EXIT_FAILED;
   }
+  if (deps === undefined) deps = makeDeps(process.env, { allowLegacyAsc: opts.allowLegacyAsc });
   if (opts.help) {
     out.write(`${HELP}\n`);
     return EXIT_CURRENT;

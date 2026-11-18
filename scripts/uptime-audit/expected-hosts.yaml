@@ -1,0 +1,162 @@
+# Reviewed public hosts for the Sentry uptime coverage audit.
+# certainty certain: a documented public health URL.
+# certainty uncertain: the host or the health path is not established in this repo.
+# excluded: retired, private, or not the production host.
+# The audit reads this file. It does not discover hosts at runtime.
+
+version: 1
+org: simple-with-us
+
+entries:
+  - id: socratic-trade
+    owner: Socratic.Trade
+    host: socratictrade.com
+    health_url: https://socratictrade.com/api/health
+    certainty: certain
+    source: skills/deploy-verify/SKILL.md
+    note: "Production health URL in the deploy-verify table."
+
+  - id: congress-trade
+    owner: Congress.Trade
+    host: congress.trade
+    health_url: https://congress.trade/api/health
+    certainty: certain
+    source: skills/deploy-verify/SKILL.md
+    note: "Deploy-verify uses a browser User-Agent. A bare client has historically received 403."
+
+  - id: usage-monitor-health
+    owner: Usage-Monitor
+    host: usage.jays.services
+    health_url: https://usage.jays.services/api/health
+    certainty: certain
+    source: skills/deploy-verify/SKILL.md
+    note: "Primary health URL in the deploy-verify table and in fleet-sentry-monitor PROD_HEALTH_ENDPOINTS."
+
+  - id: usage-monitor-ready
+    owner: Usage-Monitor
+    host: usage.jays.services
+    health_url: https://usage.jays.services/api/ready?strict=1
+    certainty: certain
+    source: skills/deploy-verify/SKILL.md
+    note: "Second probe in the same deploy-verify row. Not a substitute for /api/health."
+
+  - id: dealdex
+    owner: DealDex
+    host: dealdex.net
+    health_url: https://dealdex.net/
+    certainty: certain
+    source: docs/rollouts/2026-09-01-dealdex-net-health.md
+    note: "Production host since the 2026-09-01 cutover from dealdex.online. Root URL. deploy-verify checks it with a header request."
+
+  - id: personal-site
+    owner: Personal-Site
+    host: jays.services
+    health_url: https://jays.services/
+    certainty: certain
+    source: skills/deploy-verify/SKILL.md
+    note: "Vercel site behind Cloudflare. The 2026-09-01 Sentry rollout left Personal-Site without an error project. The public site is still a black-box HTTP target."
+
+  - id: fleet-digest
+    owner: AI-Fleet-Coordinator
+    host: simple-with-us.github.io
+    health_url: https://simple-with-us.github.io/AI-Fleet-Coordinator/
+    certainty: certain
+    source: .github/workflows/fleet-activity-site.yml
+    note: "GitHub Pages digest. deploy-verify names the same URL."
+
+  - id: botfleet
+    owner: BotFleet
+    host: botfleet.app
+    health_url: https://botfleet.app/
+    certainty: certain
+    source: fleet-sentry-monitor/monitor.py
+    note: "PROD_HEALTH_ENDPOINTS. fleet-apps.json display name is BotFleet.app."
+
+  - id: contactlogo
+    owner: ContactLogo
+    host: contactlogo.com
+    health_url: https://contactlogo.com/
+    certainty: certain
+    source: docs/DNS-AND-REGISTRARS.md
+    note: "DNS doc names contactlogo.com as ContactLogo's apex zone. The 2026-09-01 Sentry rollout probed the site root. No separate health path is written down."
+
+  - id: autorotate-apex
+    owner: Autorotate
+    host: autorotate.codes
+    health_url: https://autorotate.codes/
+    certainty: uncertain
+    source: docs/rollouts/2026-09-01-sentry-org-rollout.md
+    note: "Intended apex. The rollout says to point uptime here once DNS exists. This repo does not confirm that DNS is live. fleet-apps.json display name is Autorotate.Codes."
+
+  - id: autorotate-vercel
+    owner: Autorotate
+    host: autorotate.vercel.app
+    health_url: https://autorotate.vercel.app/
+    certainty: uncertain
+    source: docs/rollouts/2026-09-01-sentry-org-rollout.md
+    note: "Temporary public host until autorotate.codes DNS exists. Not the production apex."
+
+  - id: fleetlink-online
+    owner: FleetLink
+    host: fleetlink.online
+    health_url: https://fleetlink.online/
+    certainty: uncertain
+    source: fleet-apps.json
+    note: "fleet-apps.json says the live worker serves fleetlink.online. No health path is documented, so the row uses the site root."
+
+  - id: fleetlink-app
+    owner: FleetLink
+    host: fleetlink.app
+    health_url: https://fleetlink.app/
+    certainty: uncertain
+    source: fleet-apps.json
+    note: "The legacy worker routes fleetlink.app as well as fleetlink.online. No health path is documented."
+
+  - id: coolify-dashboard
+    owner: Fleet-OPS
+    host: host.jays.services
+    certainty: uncertain
+    source: skills/deploy-verify/SKILL.md
+    note: "Coolify dashboard. The same skill says it has sat behind a Cloudflare allowlist, and it names no public health path."
+
+  - id: usage-fleet-aggregator
+    owner: Usage-Monitor
+    host: usage.jays.services
+    health_url: https://usage.jays.services/api/health/fleet
+    certainty: uncertain
+    source: site/digest.md
+    note: "The digest records Usage-Monitor PR 1483 adding GET /api/health/fleet. No health-contract doc says it is a required public probe."
+
+  - id: simple-with-us-catalog
+    owner: Simple-With-Us
+    certainty: uncertain
+    source: fleet-apps.json
+    note: "The marketing catalog URL is redacted in fleet-apps.json. It is not guessed."
+
+excluded:
+  - host: mac.jays.services
+    reason: "Retired 2026-10-19 (AFC-363). docs/MAC-LOCAL-PROCESSES.md says the hostname answers 404."
+
+  - host: dealdex.online
+    reason: "Superseded by dealdex.net on 2026-09-01. docs/rollouts/2026-09-01-dealdex-net-health.md."
+
+  - host: dealdex.vercel.app
+    reason: "deploy-verify says this is a different Next.js site, not DealDex production."
+
+  - host: 127.0.0.1
+    reason: "fleet-sentry-monitor probes simple-tools and cloudflared on loopback. Not public."
+
+  - host: localhost
+    reason: "Loopback is not a public host."
+
+  - host: agents.jays.services
+    reason: "Public hop is Cloudflare Access plus a bearer. scripts/seat-mcp/README.md. Not an anonymous health target."
+
+  - host: start.jays.services
+    reason: "Private, behind a login. scripts/safari-start/README.md."
+
+  - host: home.jays.services
+    reason: "Protected operator page. scripts/safari-start/README.md."
+
+  - host: jaywedgeworth22.github.io
+    reason: "Older Pages host still named in site/digest.md. deploy-verify names simple-with-us.github.io."

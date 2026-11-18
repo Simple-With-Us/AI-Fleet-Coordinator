@@ -33,7 +33,7 @@ class Variables(unittest.TestCase):
                 self.assertNotIn(action, _REAPPLY_STATE_ACTIONS)
             else:
                 self.assertIn(action, _REAPPLY_STATE_ACTIONS)
-            self.assertEqual(SPECS[action][0], {"variables": "write"})
+            self.assertEqual(SPECS[action][0], {"actions_variables": "write"})
 
     def test_nonsecret_closed_bounded(self):
         a = {"repo": REPO, "name": "BUILD_MODE", "value": "release"}
@@ -94,7 +94,7 @@ class Variables(unittest.TestCase):
     def test_supported_permission_key_not_a_configured_grant(self):
         from git_relay.app_tokens import MINT_PERMISSION_CEILING
 
-        self.assertIn("variables", MINT_PERMISSION_CEILING)
+        self.assertIn("actions_variables", MINT_PERMISSION_CEILING)
         self.test_permission_never_assumed_from_shared_ceiling()
 
     def test_read_blocks_external_credential_and_create_201_empty_object(self):

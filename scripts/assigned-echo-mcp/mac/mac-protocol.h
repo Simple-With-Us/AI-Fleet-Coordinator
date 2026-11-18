@@ -443,9 +443,22 @@ static int mp_frame_allowed(const unsigned char *frame, size_t len) {
 
 static int mp_token_echo(const unsigned char *body, size_t body_len,
                          const char *token, size_t token_len) {
+    /* Tokens are bounded by the custody contract. Refuse oversized tokens rather than
+     * allocating from an untrusted length; the normal request path uses exactly 52 bytes. */
+    if (!token_len || token_len > 256) return 1;
     if (body_len < token_len) return 0;
-    for (size_t i = 0; i + token_len <= body_len; ++i)
-        if (!memcmp(body + i, token, token_len)) return 1;
+    size_t prefix[256];
+    prefix[0] = 0;
+    for (size_t i = 1, matched = 0; i < token_len; ++i) {
+        while (matched && token[i] != token[matched]) matched = prefix[matched - 1];
+        if (token[i] == token[matched]) ++matched;
+        prefix[i] = matched;
+    }
+    for (size_t i = 0, matched = 0; i < body_len; ++i) {
+        while (matched && body[i] != (unsigned char)token[matched]) matched = prefix[matched - 1];
+        if (body[i] == (unsigned char)token[matched]) ++matched;
+        if (matched == token_len) return 1;
+    }
     return 0;
 }
 

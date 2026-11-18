@@ -81,6 +81,24 @@ static size_t handle(const char *frame) {
 }
 
 int main(void) {
+    /* Linear token search: bounded patterns, overlapping prefixes and large responses. */
+    CHECK("token at start", mp_token_echo((const unsigned char *)"abczzz", 6, "abc", 3));
+    CHECK("token at end", mp_token_echo((const unsigned char *)"zzzabc", 6, "abc", 3));
+    CHECK("overlapping token prefix", mp_token_echo((const unsigned char *)"aaaaab", 6, "aaab", 4));
+    CHECK("missing overlapping token", !mp_token_echo((const unsigned char *)"aaaaaa", 6, "aaab", 4));
+    CHECK("short body", !mp_token_echo((const unsigned char *)"a", 1, "abc", 3));
+    CHECK("empty token fails closed", mp_token_echo((const unsigned char *)"abc", 3, "", 0));
+    CHECK("oversized token fails closed", mp_token_echo((const unsigned char *)"abc", 3, "x", 257));
+    unsigned char *search_body = malloc(MP_MAX_BYTES);
+    CHECK("large search allocation", search_body != NULL);
+    if (search_body) {
+        memset(search_body, 'a', MP_MAX_BYTES);
+        CHECK("large repeated-prefix miss", !mp_token_echo(search_body, MP_MAX_BYTES, "aaaaaaaaab", 10));
+        search_body[MP_MAX_BYTES - 1] = 'b';
+        CHECK("large repeated-prefix end match", mp_token_echo(search_body, MP_MAX_BYTES, "aaaaaaaaab", 10));
+        free(search_body);
+    }
+
     /* 1. initialize: session + protocol learned, response verbatim */
     script_reset();
     script_push(200, "sess-abc", "application/json",

@@ -10,7 +10,7 @@ Owner: space sections apart; format Coding notes so they are readable on iPhone.
 
 - MD converter emits `<div><br></div>` for blank lines, after headings/code/hr, after lists, and between consecutive list items.
 - Skills (`docs/fleet-skills/apple-notes`, Grok `~/.grok/skills/apple-notes`, Desktop Monet pack) now have a Layout section: prefer `--html` with a spacer after every heading, paragraph, and bullet.
-- AGENT-SYNC + TEMPLATE-AGENTS match.
+- FLEET-PROTOCOL + TEMPLATE-AGENTS match.
 - Live helper copied to `~/apps/apple-notes-coding.sh`.
 - Incident note `[FLEET, Grok] Mac total service degradation` rewritten as `--html` with spacers.
 

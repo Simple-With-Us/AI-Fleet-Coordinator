@@ -10,7 +10,7 @@ name: Hold guard
 #
 # Stated limits (not bugs, not fail-closed claims):
 #   - Enforcement is ASYNCHRONOUS.  A hold placed while a merge is already
-#     in GitHub's auto-merge pipeline can complete before this run's disarm
+#     in GitHub's auto-merge pipeline can complete before this run's conditional disarm
 #     lands; a previously-green merge-gate on an unchanged head SHA stays
 #     green until this run rewrites it.  The window is Actions scheduling
 #     latency; wiring merge-gate as a required check narrows the window and

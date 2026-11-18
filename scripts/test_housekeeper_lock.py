@@ -90,11 +90,21 @@ def _mac_block(text: str) -> str:
 
 
 def _skill_copies() -> list:
-    """Every rendered copy of the housekeeper skill in the tree."""
+    """Every rendered copy of the housekeeper skill among tracked files."""
     found = []
-    for path in ROOT.rglob("SKILL.md"):
-        if ".git" in path.parts:
-            continue
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "--", "*SKILL.md"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        names = out.stdout.splitlines() if out.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        names = []
+    for name in names:
+        path = ROOT / name
         if path.parent.name == "housekeeper":
             found.append(path)
     return sorted(found)

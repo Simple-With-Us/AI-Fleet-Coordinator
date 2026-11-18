@@ -161,13 +161,21 @@ test("P1 and P2 outrank the urgency;  low urgency reads MODERATE", () => {
   assert.equal(fromPagerDuty(incident("triggered", { urgency: "low" })).severity, "MODERATE");
 });
 
-test("an incident with no identity, or one shaped like a credential, is refused", () => {
+test("an incident with no identity is refused", () => {
   const none = incident("triggered");
   delete none.event.data.id;
   assert.throws(() => fromPagerDuty(none), /no identity/);
   assert.throws(() => validatePagerDutyPayload(none), /missing identity/);
-  const secret = incident("triggered", { id: "sk-ant-abcdefghijklmnopqrstuvwxyz" });
-  assert.throws(() => fromPagerDuty(secret), (error) => error.code === "invalid_identity");
+});
+
+test("an incident whose identity is shaped like a credential is filed under a digest", () => {
+  const token = "sk-" + "ant-abcdefghijklmnopqrstuvwxyz";
+  const event = normalize("pagerduty", incident("triggered", { id: token }));
+  assert.match(event.key, /^pagerduty:redacted-[0-9a-z]+$/);
+  assert.equal(event.identityRedacted, true);
+  // The same incident's resolve finds the same row, and another incident stays apart.
+  assert.equal(normalize("pagerduty", incident("resolved", { id: token })).key, event.key);
+  assert.notEqual(normalize("pagerduty", incident("triggered", { id: `${token}x` })).key, event.key);
 });
 
 test("the validator refuses a body without the v3 envelope or with a mistyped field", () => {
@@ -190,6 +198,31 @@ test("a fresh firing incident with no vendor severity opens SEVERE, not INFO", (
   // An open incident keeps its own severity when an update names none.
   const open = { phase: "alerting", severity: "MODERATE", since: 0, updated: 0, text: "down", link: "" };
   assert.equal(decide(open, { firing: true, text: "down", link: "" }, 2000).state.severity, "MODERATE");
+});
+
+test("the route records a credential-shaped incident, and its resolve finds the same row", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const token = "sk-" + "ant-abcdefghijklmnopqrstuvwxyz";
+  const auth = { "x-pagerduty-token": "header-fixture" };
+  try {
+    const held = await handler.fetch(post(incident("triggered", { id: token }), auth), env, {});
+    assert.equal(held.status, 200);
+    assert.equal((await held.json()).action, "hold");
+    const named = (prefix) => [...kv.store.keys()].filter((name) => name.startsWith(`${prefix}:pagerduty:redacted-`));
+    const [row] = named("state");
+    assert.ok(row);
+    const resolved = await handler.fetch(post(incident("resolved", { id: token }), auth), env, {});
+    assert.equal(resolved.status, 200);
+    // The resolve closed that same row:  it is pruned to the tombstone of its key.
+    assert.deepEqual(named("state"), []);
+    assert.deepEqual(named("closed"), [row.replace(/^state:/, "closed:")]);
+    assert.doesNotMatch(JSON.stringify([...kv.store]), /sk-ant-/);
+    for (const call of zulip.calls) assert.doesNotMatch(call.form?.toString() ?? "", /sk-ant-/);
+  } finally {
+    zulip.restore();
+  }
 });
 
 test("the route accepts the static header and holds the incident", async () => {

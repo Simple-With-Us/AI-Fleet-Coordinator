@@ -429,17 +429,50 @@ def _write_dry_run(folder: Path, files: Mapping[str, bytes]) -> None:
         _write_private(target, data)
 
 
+def load_relay() -> repomod.ContentsRelay | None:
+    """The configured git-relay, or None when `FLEET_FACTS_RELAY_URL` is empty.
+
+    A URL with no usable `FLEET_FACTS_RELAY_TOKEN` or `FLEET_FACTS_RELAY_BRANCH` is a refusal.
+    It is not a reason to publish through `gh`.  The token is never cached and never logged.
+    """
+    try:
+        from fleet_knobs import knobs
+    except ImportError:
+        return None
+    url = str(knobs.get("FLEET_FACTS_RELAY_URL") or "").strip()
+    if not url:
+        return None
+    branch = str(knobs.get("FLEET_FACTS_RELAY_BRANCH") or "").strip()
+    try:
+        token = str(knobs.get("FLEET_FACTS_RELAY_TOKEN")).strip()
+    except knobs.SecretUnavailable:
+        raise repomod.Refused(
+            "the facts relay URL is set and FLEET_FACTS_RELAY_TOKEN is unavailable"
+        ) from None
+    except knobs.KnobError:
+        raise repomod.Refused(
+            "the facts relay URL is set and FLEET_FACTS_RELAY_TOKEN is unavailable"
+        ) from None
+    if not token or not branch:
+        raise repomod.Refused("the facts relay URL is set and its token or branch is empty")
+    return repomod.ContentsRelay(url, token, branch)
+
+
 def _revoke_full_copy(
-    run: Runner, gh: str | None, repo: str, sleep: Callable[[float], None]
+    run: Runner,
+    gh: str | None,
+    repo: str,
+    sleep: Callable[[float], None],
+    relay: repomod.ContentsRelay | None = None,
 ) -> dict[str, str]:
     """With the full copy off, delete `mac-facts.json` from the branch if it is there.  {path: result} (and "reason" when it failed).
-    It needs only `gh`, not the key, the load, the gatherers or the repository gate:  a repository that stopped being safe is exactly
+    It needs only `gh` (or the relay, when one is configured), not the key, the load, the gatherers or the repository gate:  a repository that stopped being safe is exactly
     when a path-bearing file must not stay readable."""
     gh_path = gh or which("gh")
-    if gh_path is None:
+    if relay is None and gh_path is None:
         return {FULL_FACTS: "not checked:  gh is not installed"}
     try:
-        done = repomod.Writer(run, gh_path, repo, sleep=sleep).remove(
+        done = repomod.Writer(run, gh_path or "gh", repo, sleep=sleep, relay=relay).remove(
             FULL_FACTS, "mac-facts: remove %s (the full copy is off)" % FULL_FACTS
         )
     except (repomod.WriteFailed, repomod.Refused) as exc:
@@ -465,6 +498,7 @@ def _cycle(
     dry_run_dir: Path | None,
     deadline: Deadline,
     load_limit: float,
+    relay: repomod.ContentsRelay | None = None,
 ) -> Outcome:
     try:
         load = float(load1())
@@ -552,7 +586,7 @@ def _cycle(
         return Outcome(
             "refused", "nothing was published:  %s" % exc.reason, EXIT_REFUSED, extra=extra
         )
-    writer = repomod.Writer(run, gh_path, repo, sleep=sleep)
+    writer = repomod.Writer(run, gh_path, repo, sleep=sleep, relay=relay)
     stamp = facts.get("generated_at") or now.strftime("%Y-%m-%dT%H:%M:%SZ")
     results: dict[str, str] = {}
     failure: str | None = None
@@ -600,6 +634,7 @@ def run_cycle(
     dry_run_dir: Path | None = None,
     limits_provider: Callable[[], tuple[int, float]] = _default_limits,
     clock: Callable[[], float] = time.monotonic,
+    relay: repomod.ContentsRelay | None = None,
 ) -> Outcome:
     """One publish cycle.  Never raises for a condition it knows;  the Outcome says what happened and the exit status to use."""
     current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -620,7 +655,7 @@ def run_cycle(
                 revoked = (
                     {}
                     if include_full or dry_run_dir is not None
-                    else _revoke_full_copy(run, gh, repo, sleep)
+                    else _revoke_full_copy(run, gh, repo, sleep, relay)
                 )
                 if revoked.get(FULL_FACTS) == "failed":
                     outcome = Outcome(
@@ -640,6 +675,7 @@ def run_cycle(
                         dry_run_dir=dry_run_dir,
                         deadline=deadline,
                         load_limit=load_limit,
+                        relay=relay,
                     )
                     if revoked:
                         outcome.files = {**revoked, **outcome.files}
@@ -700,6 +736,7 @@ def publish_file(
     full_copy_provider: Callable[[], bool] = _default_full_copy,
     sleep: Callable[[float], None] = time.sleep,
     dry_run: bool = False,
+    relay: repomod.ContentsRelay | None = None,
 ) -> Outcome:
     """Sign (a .json file) or scan (anything else) one local file and write it to `rel`.  The same gate as the cycle."""
     try:
@@ -770,7 +807,9 @@ def publish_file(
         return Outcome("refused", "nothing was published:  gh is not installed", EXIT_REFUSED)
     try:
         notes = repomod.guard(run, gh_path, repo, allowed_apps=apps_provider())
-        done = repomod.Writer(run, gh_path, repo, sleep=sleep).put(rel, data, "mac-facts: %s" % rel)
+        done = repomod.Writer(run, gh_path, repo, sleep=sleep, relay=relay).put(
+            rel, data, "mac-facts: %s" % rel
+        )
     except repomod.Refused as exc:
         return Outcome("refused", "nothing was published:  %s" % exc.reason, EXIT_REFUSED)
     except repomod.WriteFailed as exc:

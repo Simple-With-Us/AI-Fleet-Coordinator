@@ -2,7 +2,7 @@
 """simple-notes: write Apple Notes in the owner's Coding folder.
 
 The verbs are the ones the MCP `notes_*` tools expose (`create`, `update`, `pin`, `unpin`,
-`status`), implemented by scripts/agent_sync/notes_cli.py.  This file is symlinked as
+`status`), implemented by scripts/simple_tools/notes_cli.py.  This file is symlinked as
 ~/.local/bin/simple-notes, so it resolves its own real path before it puts the scripts
 directory on sys.path.
 
@@ -23,7 +23,7 @@ if sys.version_info < (3, 11):
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-from agent_sync.cli import main  # noqa: E402
+from simple_tools.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:], prog="simple-notes"))

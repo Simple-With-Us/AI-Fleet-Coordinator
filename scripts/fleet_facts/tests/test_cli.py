@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 from .builders import (
     board_row,
@@ -43,17 +44,17 @@ class Sandbox(unittest.TestCase):
         return write_shim(self.bin, name, source)
 
     def install_fake_infisical(self, key=None, fail=False):
-        """A fake `infisical` first on PATH:  K1 finds it before any real CLI (and so never reaches the real Infisical)."""
-        body = (
-            "#!/bin/sh\nexit 1\n"
-            if fail
-            else '#!/bin/sh\nprintf \'{"FLEET_FACTS_SIGNING_KEY": "%s", "FLEET_FACTS_PUBLISH_FULL_COPY": "%s"}\' '
-            '"$FAKE_SIGNING_KEY" "${FAKE_FULL_COPY:-false}"\n'
-        )
+        """The real scoped reader talks only to this loopback fixture."""
+        self.api = ScopedReadAPI({
+            "FLEET_FACTS_SIGNING_KEY": key or "",
+            "FLEET_FACTS_PUBLISH_FULL_COPY": "false",
+        })
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__)
+        self.api.status = 503 if fail else 200
         path = self.bin / "infisical"
-        path.write_text(body)
+        path.write_text("#!/bin/sh\necho unexpected-cli-fallback >&2\nexit 99\n")
         path.chmod(0o755)
-        self.fake_key = key
 
     def install_fake_gh_404(self):
         """A `gh` that answers every call with a 404:  a publish run (not a dry run) always looks for a left-over full copy first,
@@ -73,12 +74,11 @@ class Sandbox(unittest.TestCase):
             "FF_LOG": str(self.log),
             "FF_STATE": str(self.state),
             "LANG": "C",
-            # The fake infisical cannot log in a machine identity:  never let the real System keychain one be tried.
-            "FLEET_KNOBS_AUTH": "session",
         }
-        if getattr(self, "fake_key", None):
-            env["FAKE_SIGNING_KEY"] = self.fake_key
         env.update(env_extra or {})
+        if hasattr(self, "api"):
+            env.update(self.api.env)
+            self.api.values["FLEET_FACTS_PUBLISH_FULL_COPY"] = (env_extra or {}).get("FAKE_FULL_COPY", "false")
         return subprocess.run(
             [sys.executable, "-I", str(entry), *args],
             capture_output=True,
@@ -307,6 +307,21 @@ class Errors(Sandbox):
         )
         self.assertEqual(refused.returncode, 3)
         self.assertIn("not one this job writes", refused.stderr)
+
+    def test_extra_environment_cannot_replace_the_loopback_reader_binding(self):
+        self.install_fake_infisical(key=SIGNER)
+        local = self.root / "a.json"
+        local.write_text('{"n": 1}')
+        proc = self.run_cli(
+            "publish", "--path", "gb/a.json", "--file", str(local), "--dry-run",
+            env_extra={
+                "FLEET_SECRETS_API": "http://127.0.0.1:1/api",
+                "FLEET_KNOBS_INFISICAL_TOKEN": "st.synthetic-override-not-authorized",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(any(path.startswith("/api/v3/secrets/raw/FLEET_FACTS_SIGNING_KEY?") for path in self.api.requests))
 
     def test_verify_exit_codes_through_the_real_entry_point(self):
         from fleet_facts import signing

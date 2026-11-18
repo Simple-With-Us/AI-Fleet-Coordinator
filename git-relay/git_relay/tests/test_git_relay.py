@@ -22,6 +22,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+import uuid
 from http.server import ThreadingHTTPServer
 
 from git_relay.audit import AuditLog
@@ -56,8 +57,13 @@ class FakeResponse:
     def __init__(self, payload: dict):
         self._raw = json.dumps(payload).encode()
 
-    def read(self, _limit: int) -> bytes:
-        return self._raw
+    _pos = 0
+
+    def read(self, limit: int) -> bytes:
+        # Like a real response:  at most limit bytes, then empty once the body is consumed.
+        piece = self._raw[self._pos : self._pos + limit]
+        self._pos += len(piece)
+        return piece
 
     def __enter__(self):
         return self
@@ -256,7 +262,15 @@ class TestAudit(unittest.TestCase):
 
 class TestClient(unittest.TestCase):
     def test_open_pr_posts_to_pulls_with_auth(self):
-        opener = FakeOpener({"number": 7, "html_url": "https://x/pr/7"})
+        # One payload answers both the create and the read-back of the same pull request.
+        opener = FakeOpener(
+            {
+                "number": 7,
+                "html_url": "https://github.com/o/r/pull/7",
+                "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+                "head": {"ref": "feat", "label": "o:feat"},
+            }
+        )
         client = GitHubClient("tok", base_url="https://api.test", opener=opener)
         result = client.open_pr("o/r", "main", "feat", "t", "b")
         req = opener.requests[0]
@@ -264,7 +278,15 @@ class TestClient(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.get_header("Authorization"), "Bearer tok")
         self.assertEqual(json.loads(req.data)["head"], "feat")
-        self.assertEqual(result, {"number": 7, "url": "https://x/pr/7"})
+        self.assertEqual(
+            result, {"number": 7, "url": "https://github.com/o/r/pull/7", "verified": True}
+        )
+        readback = opener.requests[1]
+        self.assertEqual(len(opener.requests), 2)
+        self.assertEqual(readback.full_url, "https://api.test/repos/o/r/pulls/7")
+        self.assertEqual(readback.get_method(), "GET")
+        self.assertEqual(readback.get_header("Authorization"), "Bearer tok")
+        self.assertIsNone(readback.data)
 
     def test_reply_thread_carries_in_reply_to(self):
         opener = FakeOpener({"id": 5, "html_url": "u"})
@@ -370,7 +392,7 @@ class TestHttpSurface(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["number"], 1)
 
-    def test_unauthenticated_gets_401_and_no_audit_row(self):
+    def test_unauthenticated_gets_401(self):
         status, _ = self._post(
             "/v1/comment_pr",
             {"repo": "example/other-repo", "number": 1, "body": "x"},
@@ -571,7 +593,7 @@ class TestMcpWrapper(unittest.TestCase):
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
-        return RelayMcp("http://relay.test", SEAT_TOKEN, opener=opener)
+        return RelayMcp("https://relay.test", SEAT_TOKEN, opener=opener)
 
     def test_initialize_and_tools_list(self):
         server = self._server()
@@ -579,8 +601,11 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
+        # The original seven come first and unchanged;  create_repo follows them;
+        # the wf verbs follow that (AFC-664 item 6, tested in test_mcp_wf_verbs).
+        # mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
-            names,
+            names[:7],
             [
                 "open_pr",
                 "edit_pr",
@@ -589,8 +614,14 @@ class TestMcpWrapper(unittest.TestCase):
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
-            ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
+            ],
         )
+        self.assertEqual(names[7], "create_repo")
+        # mint_token stays HTTP-only: raw App tokens never cross stdio
+        from git_relay.mcp_server import WF_ACTIONS
+
+        self.assertEqual(set(names[8:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
+        self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})
@@ -613,7 +644,7 @@ class TestMcpWrapper(unittest.TestCase):
             }
         )
         req = opener.requests[0]
-        self.assertEqual(req.full_url, "http://relay.test/v1/open_pr")
+        self.assertEqual(req.full_url, "https://relay.test/v1/open_pr")
         self.assertEqual(req.get_header("Authorization"), "Bearer " + SEAT_TOKEN)
         self.assertIn('"number": 9', reply["result"]["content"][0]["text"])
 
@@ -657,7 +688,7 @@ class TestMcpWriteUncertainty(unittest.TestCase):
     def call(self, opener):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "private-seat-token", opener=opener).handle(
+        return RelayMcp("https://relay.test", "private-seat-token", opener=opener).handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -1463,14 +1494,36 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
         finally:
             sys.path.remove(scripts)
 
-        def fake_export(path, env, project_name=None, token=None):
-            return dict(self.FOLDER)
+        project = "00000000-0000-4000-8000-000000000001"
+        binding = "st.synthetic-" + uuid.uuid4().hex
+
+        def fake_fetch(project_id, path, env, *, names):
+            self.assertEqual(project_id, project)
+            self.assertEqual(path, "/github-apps")
+            self.assertEqual(env[core.ENV_TOKEN], binding)
+            self.assertIn(
+                names,
+                (
+                    ("GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"),
+                    ("GH_APP_X_ID", "GH_APP_X_ID_OLD"),
+                    ("GH_APP_X_ID",),
+                ),
+            )
+            return {name: self.FOLDER[name] for name in names if name in self.FOLDER}
 
         def runner(argv, capture_output, timeout):
             calls.append(argv)
             out, err = io.StringIO(), io.StringIO()
-            with unittest.mock.patch.object(core, "fetch_all", fake_export):
-                code = cli.main(argv[1:], env={}, out=out, err=err)
+            with (
+                unittest.mock.patch.object(core, "fetch_project", fake_fetch),
+                unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
+            ):
+                code = cli.main(
+                    argv[1:],
+                    env={core.ENV_PROJECT: project, core.ENV_TOKEN: binding},
+                    out=out,
+                    err=err,
+                )
             return subprocess.CompletedProcess(
                 argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
             )
@@ -2060,7 +2113,7 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def _server(self):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "seat-token", opener=None)
+        return RelayMcp("https://relay.test", "seat-token", opener=None)
 
     def _call(self, name, args):
         return self._server().handle(
@@ -2702,7 +2755,9 @@ class LegacyStateAdoption(unittest.TestCase):
 
         def fake_source(**kwargs):
             captured.update(kwargs)
-            return real_source(runner=lambda *a, **k: None, **kwargs)
+            source = real_source(runner=lambda *a, **k: None, **kwargs)
+            source.verified_secret = unittest.mock.Mock(return_value="20000")
+            return source
 
         origin = pathlib.Path.cwd()
         with (
@@ -2910,7 +2965,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
         self.assertNotIn("ENVIRONMENT", child)
         self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
         self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
 
     def test_unreadable_credential_file_fails_closed(self):
@@ -3015,7 +3070,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
             class _Source:
                 def verified_secret(self, name):
-                    return "v"
+                    return "20000" if name == server.OUTCOMES_CAPACITY_KEY else "v"
 
                 def secret(self, name):
                     return "k" * 32
@@ -3067,7 +3122,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 class TestScopedChildProjectBinding(unittest.TestCase):
     """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.agent-sync file resolution."""
+    names and cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())
@@ -3138,3 +3193,217 @@ class TestRateEnvironmentErrors(unittest.TestCase):
                     self.assertIn("git-relay config:", str(raised.exception))
                     self.assertIn("not-a-number", str(raised.exception))
                     self.assertNotIn("file seat policy", str(raised.exception))
+
+
+CORR_SEAT = json.dumps(
+    {
+        "swu-echo": {
+            "token": SEAT_TOKEN,
+            "actions": ["comment_pr"],
+            "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"pull_requests": "write", "issues": "write"},
+        }
+    }
+)
+CORR_ARGS = {"repo": "example/fixture-repo", "number": 1, "body": "hi"}
+
+
+class TestOutcomeCorrAuditStamp(unittest.TestCase):
+    """An audit row's outcome_corr must always join to an outcome row.
+
+    Regression for the dangling-corr finding:  the corr was minted before
+    begin(), so the caller-error (400) and capacity-refusal (503) arms - which
+    write no outcome row - still stamped it on the audit row.  Refusals now
+    stamp no corr;  accepted and replayed attempts stamp the corr of the real
+    row the attempt joined.
+    """
+
+    def setUp(self):
+        from git_relay.outcomes import OutcomeStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.audit_path = os.path.join(self.tmp.name, "a.jsonl")
+        self.store_path = os.path.join(self.tmp.name, "outcomes.json")
+        self.relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(self.audit_path),
+            app_minter=FakeMinter(),
+            outcomes=OutcomeStore(self.store_path),
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def audit_rows(self):
+        with open(self.audit_path) as stream:
+            return [json.loads(line) for line in stream]
+
+    def stored_outcome_row(self):
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        return next(iter(store.values()))
+
+    def test_accepted_write_stamps_the_outcome_row_corr(self):
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 200)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(outcome_row["state"], "ok")
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+
+    def test_replay_stamps_the_original_corr(self):
+        first = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        second = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual((first[0], second[0]), (200, 200))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 2)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+        self.assertEqual(rows[1]["outcome_corr"], outcome_row["corr"])
+
+    def test_capacity_refusal_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStoreError
+
+        def full(key, **kwargs):
+            raise OutcomeStoreError("full")
+
+        self.relay.outcomes.begin = full
+        status, body = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 503)
+        self.assertTrue(body["retryable"])
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
+
+    def test_caller_error_stamps_no_outcome_corr(self):
+        def malformed(key, **kwargs):
+            raise ValueError("corr must be a non-empty string when supplied")
+
+        self.relay.outcomes.begin = malformed
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 400)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
+
+
+class TestOutcomeCorrUnexpectedFailure(unittest.TestCase):
+    """The generic failure path binds only a corr the stored row carries.
+
+    Regression for the Kody follow-up on the outcome_corr fix:  an
+    UNEXPECTED begin() failure (e.g. OSError from the durable write) used to
+    reach the generic handler with the minted attempt_corr still set, so the
+    audit row advertised a corr no stored row carried.  The handler now binds
+    corr_of(key) after the release:  nothing when begin() wrote no row, the
+    stored row's corr when one exists.
+    """
+
+    def setUp(self):
+        from git_relay.outcomes import OutcomeStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.audit_path = os.path.join(self.tmp.name, "a.jsonl")
+        self.store_path = os.path.join(self.tmp.name, "outcomes.json")
+        self.store = OutcomeStore(self.store_path)
+        self.relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(self.audit_path),
+            app_minter=FakeMinter(),
+            outcomes=self.store,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def audit_rows(self):
+        with open(self.audit_path) as stream:
+            return [json.loads(line) for line in stream]
+
+    def test_begin_oserror_before_any_row_stamps_no_outcome_corr(self):
+        def broken(key, **kwargs):
+            raise OSError("disk full")
+
+        self.relay.outcomes.begin = broken
+        status, body = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {"error": "internal relay error"})
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["result"], "error")
+        self.assertNotIn("outcome_corr", rows[0])
+        # The fail-closed release still writes an unknown row, with no corr.
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        outcome_row = next(iter(store.values()))
+        self.assertEqual(outcome_row["state"], "unknown")
+        self.assertNotIn("corr", outcome_row)
+
+    def test_begin_failure_after_row_insert_binds_the_stored_corr(self):
+        original_save = self.store._save
+        calls = []
+
+        def fail_once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("transient")
+            original_save()
+
+        self.store._save = fail_once
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 500)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        outcome_row = next(iter(store.values()))
+        self.assertEqual(outcome_row["state"], "unknown")
+        stored = self.store.corr_of(next(iter(store)))
+        self.assertIsNotNone(stored)
+        self.assertEqual(rows[0]["outcome_corr"], stored)
+
+
+class TestOutcomeCorrReleaseFailure(unittest.TestCase):
+    """A failed release must not leave the minted corr on the audit row.
+
+    Regression for the reviewer cascade residual:  when begin() fails AND
+    the fail-closed release's own durable write also fails, the release
+    exception propagates - and the audit row recorded in finally must not
+    advertise the minted corr, which no stored row is known to carry.
+    """
+
+    def test_release_failure_after_begin_failure_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStore
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        audit_path = os.path.join(tmp.name, "a.jsonl")
+        store = OutcomeStore(os.path.join(tmp.name, "outcomes.json"))
+        relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(audit_path),
+            app_minter=FakeMinter(),
+            outcomes=store,
+        )
+
+        def broken_begin(key, **kwargs):
+            raise OSError("begin save failed")
+
+        def broken_finish(key, state, result=None):
+            raise OSError("release save failed")
+
+        relay.outcomes.begin = broken_begin
+        relay.outcomes.finish = broken_finish
+        with self.assertRaises(OSError):
+            relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        with open(audit_path) as stream:
+            rows = [json.loads(line) for line in stream]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])

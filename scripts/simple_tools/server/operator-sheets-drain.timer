@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Operator Sheets export drain 5 minutes after the last run ends (OPS-1037)
+
+[Timer]
+OnBootSec=2min
+# Measured from the end of the last run, not its start, so a long run is always
+# followed by 5 quiet minutes: the cooldown in which an uncertain write settles
+# before the next run reconciles it by ID.
+OnUnitInactiveSec=5min
+Persistent=true
+Unit=operator-sheets-drain.service
+
+[Install]
+WantedBy=timers.target

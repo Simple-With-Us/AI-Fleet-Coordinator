@@ -7,7 +7,7 @@
 # no pip install step.  The one binary added is gitleaks (pinned via GITLEAKS_VERSION), so the
 # contribute gate in the container matches the Mac seats; the build fails if it cannot be
 # installed (override with --build-arg RECALL_GITLEAKS_REQUIRED=0 to tolerate that).
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG GITLEAKS_VERSION=8.30.1
 ARG RECALL_GITLEAKS_REQUIRED=1
@@ -19,6 +19,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY fleet_rag /app/fleet_rag
 COPY fleet-recall-service /app/fleet-recall-service
+COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/
+COPY fleet_infisical.py /app/
 
 # Same installer as the Coolify bootstrap path (RECALL_GITLEAKS_ONLY=1 runs only that step):
 # pinned release tarball for `uname -m`, size check, `gitleaks version` must print the pin,

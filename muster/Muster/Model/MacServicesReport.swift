@@ -43,9 +43,21 @@ struct MacAgent: Decodable, Identifiable, Equatable {
     /// timed out),  or nil when it read it.  A value that is not text reads as
     /// `unreadable`:  the key's presence alone says the agent was not observed.
     let error: String?
+    /// `reporting` or `updater`,  when the allowlist says what depends on this agent.  Any
+    /// other word is not reported.
+    let role: String?
+    /// What stopping this agent costs,  in owner copy:  one printable-ASCII line of 1 to 200
+    /// characters,  as the allowlist gives it.  Text of any other shape is not reported.
+    let stopConsequence: String?
+
+    /// The roles the allowlist can give an agent,  the same words the server's units use.
+    static let roles: Set<String> = ["reporting", "updater"]
+    /// The longest stop consequence the collector carries.
+    static let stopConsequenceLimit = 200
 
     enum CodingKeys: String, CodingKey {
         case label, plistInRepo, installed, loaded, pid, lastExitStatus, controllable, error
+        case role, stopConsequence
     }
 
     /// An agent decodes field by field.  A flag that is missing or unreadable is false:
@@ -61,6 +73,45 @@ struct MacAgent: Decodable, Identifiable, Equatable {
         lastExitStatus = try? container.decodeIfPresent(Int.self, forKey: .lastExitStatus)
         controllable = (try? container.decodeIfPresent(Bool.self, forKey: .controllable)) == true
         error = MacServicesReport.decodeError(container, forKey: .error)
+        let roleWord = try? container.decodeIfPresent(String.self, forKey: .role)
+        role = roleWord.flatMap { MacAgent.roles.contains($0) ? $0 : nil }
+        let consequence = try? container.decodeIfPresent(String.self, forKey: .stopConsequence)
+        stopConsequence = consequence.flatMap { MacAgent.isStopConsequence($0) ? $0 : nil }
+    }
+
+    /// One printable-ASCII line of 1 to `stopConsequenceLimit` characters.
+    static func isStopConsequence(_ text: String) -> Bool {
+        (1...stopConsequenceLimit).contains(text.unicodeScalars.count)
+            && text.unicodeScalars.allSatisfy { (0x20...0x7E).contains($0.value) }
+    }
+
+    /// What depends on this agent,  from its role,  in a sentence;  nil when it has no role.
+    var roleSentence: String? {
+        switch role {
+        case "reporting": return "This agent writes a report Muster reads."
+        case "updater": return "This agent keeps the fleet tools on the Mac up to date."
+        default: return nil
+        }
+    }
+
+    /// What a plan to stop this agent says beyond the general stop warning:  what depends on
+    /// it,  then what stopping it costs,  as the allowlist gives them.  Nil when it says neither.
+    var stopNote: String? {
+        let parts = [roleSentence, stopConsequence].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ServerStatusCopy.sentenceGap)
+    }
+
+    /// The stop note for the plan of `action`,  from the agents the Mac last read:  only for a
+    /// stop of a LaunchAgent,  and only from the row of that label.
+    static func stopNote(for action: OpsAction, agents: [MacAgent]) -> String? {
+        guard case .macAgent(let verb, let label) = action, verb == .stop else { return nil }
+        return agents.first { $0.label == label }?.stopNote
+    }
+
+    /// True when the plan of `action` may carry a stop note,  so the sheet reads the agents.
+    static func mayHaveStopNote(_ action: OpsAction?) -> Bool {
+        guard case .macAgent(let verb, _)? = action else { return false }
+        return verb == .stop
     }
 
     /// True when the collector read this agent's launchd state,  so `loaded` is an
@@ -152,6 +203,17 @@ struct MacServicesReading {
 
     /// How many agents the collector could not read.
     var unreadCount: Int { agents.filter { !$0.isObserved }.count }
+
+    /// Re-evaluate the displayed evidence instead of freezing its original age.
+    func aged(at now: Date) -> MacServicesReading {
+        var reading = self
+        guard let generatedAt else { return reading }
+        reading.age = FleetTime.ageText(since: generatedAt, now: now)
+        let seconds = now.timeIntervalSince(generatedAt)
+        reading.isCurrent = seconds >= -60 && seconds <= Double(MacServicesContract.maxAgeSeconds)
+        if !reading.isCurrent { reading.state = .unknown }
+        return reading
+    }
 }
 
 // MARK: - The reader
@@ -181,9 +243,18 @@ enum MacServicesReportReader {
                 return reading
             }
         } else {
-            reading.problem = "The file could not be read:\(gap)the file is not there"
+            reading.problem = "No saved Mac LaunchAgents report exists at \(url.path).\(gap)Choose Read The Mac's Agents in Background Agents to collect a read-only snapshot; the scheduled collector may not be installed or running."
             return reading
         }
+
+        return parse(data, path: url.path, now: now)
+    }
+
+    /// Saved reports and on-demand collector answers use the same contract.
+    static func parse(_ data: Data, path: String, now: Date = Date()) -> MacServicesReading {
+        var reading = MacServicesReading()
+        reading.path = path
+        let gap = ServerStatusCopy.sentenceGap
 
         let report: MacServicesReport
         do {
@@ -244,5 +315,78 @@ enum MacServicesReportReader {
             worst = agent.state
         }
         return worst
+    }
+}
+
+/// Retains refresh requests before deciding whether another metadata reader owns them.
+struct OperationsRefreshRequests {
+    private(set) var metadataRequested = false
+    private(set) var agentsRequested = false
+    private(set) var metadataDrainScheduled = false
+
+    mutating func request(collectAgents: Bool) {
+        metadataRequested = true
+        agentsRequested = agentsRequested || collectAgents
+    }
+
+    mutating func beginMetadataRead() { metadataRequested = false }
+    mutating func beginAgentRead() { agentsRequested = false }
+
+    func shouldRepeatMetadataRead(completedPasses: Int) -> Bool {
+        metadataRequested && completedPasses < 2
+    }
+
+    mutating func scheduleMetadataDrainIfNeeded() -> Bool {
+        guard metadataRequested, !metadataDrainScheduled else { return false }
+        metadataDrainScheduled = true
+        return true
+    }
+
+    mutating func beginScheduledMetadataDrain() { metadataDrainScheduled = false }
+}
+
+/// --dry-run reads launchd and prints JSON without writing a report, installing an
+/// agent, or starting or stopping a service.
+struct MacServicesCollector {
+    var repoRoot: URL
+    var home: URL = FileManager.default.homeDirectoryForCurrentUser
+    var runner: OpsRunning = OpsProcessRunner()
+    static let timeout: TimeInterval = 150
+
+    func invocation(fileManager: FileManager = .default) throws -> OpsInvocation {
+        switch TrustedCheckout.lookup(repoRoot: repoRoot, script: "scripts/fleet-mac-services.py", fileManager: fileManager) {
+        case .missing(let path):
+            throw OpsControlError.helperNotFound(path)
+        case .unsafe(let path):
+            throw OpsControlError.launchFailed(
+                "The Mac services collector is missing or unsafe at \(path).\(ServerStatusCopy.sentenceGap)Choose a repository containing scripts/fleet-mac-services.py in Settings."
+            )
+        case .found(let root, let script):
+            return OpsInvocation(
+                executable: OpsControlRoute.interpreter,
+                arguments: ["-I", script.path, "--dry-run", "--agents-dir", home.appendingPathComponent("Library/LaunchAgents").path],
+                workingDirectory: root.path,
+                environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+                timeout: Self.timeout
+            )
+        }
+    }
+
+    func collect(now: Date? = nil) async -> MacServicesReading {
+        var reading = MacServicesReading()
+        reading.path = MacServicesReportReader.reportURL(home: home).path
+        do {
+            let result = try await runner.run(invocation())
+            if result.timedOut {
+                reading.problem = "The Mac services collector timed out; no current agent state was obtained."
+            } else if result.exitCode != 0 {
+                reading.problem = "The Mac services collector failed (exit \(result.exitCode)); no current agent state was obtained."
+            } else {
+                reading = MacServicesReportReader.parse(Data(result.stdout.utf8), path: "On-demand Mac collection", now: now ?? Date())
+            }
+        } catch {
+            reading.problem = error.localizedDescription
+        }
+        return reading
     }
 }

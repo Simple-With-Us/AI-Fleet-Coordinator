@@ -133,7 +133,7 @@ class GitUpdateTests(unittest.TestCase):
         self.work = root / "work"
         run(root, "init", "-q", "--bare", "-b", "main", str(self.origin))
         run(root, "clone", "-q", str(self.origin), str(self.work))
-        self.commit(agent_sync=PY_OK)
+        self.commit(simple_tools=PY_OK)
         self.remote = U.REMOTE
         U.REMOTE = str(self.origin)
 
@@ -141,9 +141,9 @@ class GitUpdateTests(unittest.TestCase):
         U.REMOTE = self.remote
         self.tmp.cleanup()
 
-    def commit(self, agent_sync: str = PY_OK) -> str:
+    def commit(self, simple_tools: str = PY_OK) -> str:
         files = {
-            "scripts/simple-chat": agent_sync,
+            "scripts/simple-chat": simple_tools,
             "scripts/simple-notes": PY_OK,
             "scripts/simple-board": BOARD,
             "scripts/simple-git": GITCLI,
@@ -180,10 +180,51 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(result["wrappers_written"], ["recall"])
         self.assertTrue((self.home / ".local/bin/recall").exists())
 
+    def test_an_update_rewrites_an_older_managed_platform_letter_wrapper_and_nothing_else(
+        self,
+    ) -> None:
+        # The server's hooks get their registry settings through this wrapper, so an older managed one is rewritten.
+        self.home = (
+            self.home.resolve()
+        )  # the release module refuses a home behind a symlink (macOS /var)
+        U.setup(self.home)
+        bin_dir = self.home / ".local/bin"
+        wrapper = bin_dir / "platform-letter"
+        marker = "# fleet-cli managed wrapper v1"
+        wrapper.write_text("#!/usr/bin/python3 -I\n" + marker + "\nimport os\n")
+        other = bin_dir / "recall"
+        other.write_text("#!/usr/bin/python3 -I\n" + marker + "\n# an older recall wrapper\n")
+        spec = importlib.util.spec_from_file_location(
+            "_real_release", HERE / "fleet-cli-release.py"
+        )
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        with (
+            mock.patch.object(U, "release_module", return_value=real),
+            mock.patch.object(U, "write_new_wrappers", return_value=[]),
+        ):
+            result = U.update(self.home)
+            second = U.update(self.home)
+        self.assertEqual(result["wrappers_refreshed"], ["platform-letter"])
+        self.assertTrue(wrapper.read_text().startswith("#!/bin/bash\n" + marker))
+        self.assertIn("platform-letter-registry-env", wrapper.read_text())
+        self.assertIn(
+            "an older recall wrapper", other.read_text()
+        )  # every other wrapper is only ever written when missing
+        self.assertNotIn("wrappers_refreshed", second)  # and it is not rewritten again
+        # A wrapper the host wrote itself (no marker) is never touched.
+        wrapper.write_text("#!/bin/sh\n# the host's own\n")
+        with (
+            mock.patch.object(U, "release_module", return_value=real),
+            mock.patch.object(U, "write_new_wrappers", return_value=[]),
+        ):
+            self.assertNotIn("wrappers_refreshed", U.update(self.home))
+        self.assertIn("the host's own", wrapper.read_text())
+
     def test_update_moves_to_a_good_commit_and_reports_unchanged_after(self) -> None:
         U.setup(self.home)
         old = run(self.work, "rev-parse", "HEAD")
-        new = self.commit(agent_sync=PY_OK)
+        new = self.commit(simple_tools=PY_OK)
         result = U.update(self.home)
         self.assertEqual(result, {"status": "updated", "commit": new, "previous": old})
         self.assertEqual(U.update(self.home)["status"], "unchanged")
@@ -191,16 +232,16 @@ class GitUpdateTests(unittest.TestCase):
     def test_a_commit_that_fails_the_smoke_test_is_skipped_until_main_moves(self) -> None:
         U.setup(self.home)
         good = run(self.work, "rev-parse", "HEAD")
-        bad = self.commit(agent_sync=PY_BROKEN)
+        bad = self.commit(simple_tools=PY_BROKEN)
         result = U.update(self.home)
         self.assertEqual(result["status"], "smoke_failed")
         self.assertEqual(result["reason"], "smoke_exit_mismatch_simple_chat_version")
         self.assertEqual(U.status(self.home)["commit"], good)
         self.assertEqual(U.status(self.home)["bad"], bad)
         self.assertEqual(U.update(self.home)["status"], "skipped_bad")
-        self.commit(agent_sync=PY_BROKEN)
+        self.commit(simple_tools=PY_BROKEN)
         self.assertEqual(U.main(["update", "--home", str(self.home)]), 1)
-        fixed = self.commit(agent_sync=PY_OK)
+        fixed = self.commit(simple_tools=PY_OK)
         self.assertEqual(U.update(self.home)["status"], "updated")
         self.assertEqual(U.status(self.home)["commit"], fixed)
         self.assertIsNone(U.status(self.home)["bad"])
@@ -242,7 +283,7 @@ class GitUpdateTests(unittest.TestCase):
     def test_rollback_returns_to_the_previous_commit_and_skips_the_current_one(self) -> None:
         U.setup(self.home)
         first = run(self.work, "rev-parse", "HEAD")
-        second = self.commit(agent_sync=PY_OK)
+        second = self.commit(simple_tools=PY_OK)
         U.update(self.home)
         self.assertEqual(
             U.rollback(self.home), {"status": "rolled_back", "commit": first, "bad": second}
@@ -256,7 +297,7 @@ class GitUpdateTests(unittest.TestCase):
     ) -> None:
         U.setup(self.home)
         good = run(self.work, "rev-parse", "HEAD")
-        new = self.commit(agent_sync=PY_OK)
+        new = self.commit(simple_tools=PY_OK)
         repo = self.base() / "repo"
         run(repo, "fetch", "-q", "origin", "main")
         run(repo, "checkout", "-q", "--detach", new)  # as if a run died during its smoke test
@@ -273,7 +314,7 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(result["wrappers_written"], ["recall"])
 
     def test_setup_with_a_broken_main_leaves_current_alone(self) -> None:
-        self.commit(agent_sync=PY_BROKEN)
+        self.commit(simple_tools=PY_BROKEN)
         with self.assertRaises(U.Failed):
             U.setup(self.home)
         self.assertFalse((self.base() / "current").exists())
@@ -283,7 +324,7 @@ class GitUpdateTests(unittest.TestCase):
         # still points `current`, so only the never-validated case above is a failure.
         U.setup(self.home)
         good = run(self.work, "rev-parse", "HEAD")
-        bad = self.commit(agent_sync=PY_BROKEN)
+        bad = self.commit(simple_tools=PY_BROKEN)
         result = U.setup(self.home)
         self.assertEqual(result["status"], "smoke_failed")
         self.assertEqual(U.status(self.home)["commit"], good)

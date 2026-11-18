@@ -29,6 +29,7 @@ class NotFound(NeedsOwnerError):
 class BoardFailed(NeedsOwnerError):
     """A `board` write failed.  `exit_code` is board's own code when it is one of 4 to 6."""
 
-    def __init__(self, message: str, code: int = 1) -> None:
+    def __init__(self, message: str, code: int = 1, *, outcome_unknown: bool = False) -> None:
         super().__init__(message)
         self.exit_code = code if code in (4, 5, 6) else 1
+        self.outcome_unknown = outcome_unknown

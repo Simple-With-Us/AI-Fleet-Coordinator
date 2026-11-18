@@ -65,7 +65,7 @@ class RegistryCheckerManifestTests(unittest.TestCase):
         try:
             self.checker = _load_checker()
         except ImportError as exc:
-            # The repo's checker imports the agent_sync package,  and that package
+            # The repo's checker imports the simple_tools package,  and that package
             # needs a newer interpreter than this one.  The fleet_config package itself
             # is Python 3.9 safe;  this test is about the repo's checker,  so it is
             # skipped here rather than failing for a reason that is not this lane's.

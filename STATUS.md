@@ -1,5 +1,21 @@
 # Status
 
+## 2026-11-16 — fleet-health-recover probes /api/live and waits for ST strategy runs ([ST-4635](https://linear.app/simple-with-us/issue/ST-4635))
+
+`fleet-health-recover@socratic-app` now probes `/api/live` instead of `/api/health`, with the same 12s limit and the same 2-failure threshold.  A new opt-in run guard (`RUN_GUARD_DB`) defers a due restart while a strategy run or an unexpired run lease is in the DB, for at most 15 minutes, then restarts as before.  `usage-monitor` is unchanged.  The host was applied 2026-11-16 6:30pm CT, with backups under `/root/backups/fleet-health-recover-st4635-20261117T003012Z/`.  Rollout: `docs/rollouts/2026-11-16-fleet-health-recover-live-run-guard.md`.
+
+## 2026-11-12 CURSOR — Agent config reconcile ([AFC-370](https://linear.app/simple-with-us/issue/AFC-370))
+
+One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lane Map blocks, guard hooks and MCP config on a host with this checkout.  Check is the default and exits 1 on managed drift.  `--apply` calls the existing installers.  `~/.claude/CLAUDE.md` and `~/AGENTS.md` stay report-only.  The doctor grows an `agent-config` row from the same check and does not apply.  Hosts are not reconciled by this change.  Rollout: `docs/rollouts/2026-11-12-afc-370-agent-config-reconcile.md`.
+
+## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
+
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+
+## 2026-11-01 MC — Muster Fleet Overhaul Sweep
+
+Ten audited fix batches plus a follow-up: hosted board identity, recall and backup correctness, Muster performance and control breadth (Settings scene, wake confirmations, knob unset, Secret Names and masked Recall panels), relay secret hardening, CI and site honesty, and hosted chat/board parity.  All gates green in the lane (Muster 617, simple-tools-mcp 1080, relay 199, knobs 113, board 30, visual 17).  Next action: merge, then file the Linear issue the broken hosted board blocked at claim time.  Rollout: `docs/rollouts/2026-11-01-muster-fleet-overhaul-sweep.md`.
+
 ## 2026-10-30 CODEX — Per-Repository Document Library (AFC-580)
 
 Adds an on-demand tracked-document collector, a shared report-storage convention and per-repository report entry points.  The central layout uses `Code/Docs/<Exact-GitHub-Repo-Name>/`; existing historical paths remain canonical.  Collection previews and validation run from owned lanes, with no background job or integration-checkout edits.  The owner-approved Docs-only lane-guard exception is installed and tested; sibling Git checkouts remain protected.
@@ -14,7 +30,7 @@ Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
 
 ## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
 
-Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
+Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane) and Z Code (the Z Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
 
 ## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
 
@@ -46,7 +62,7 @@ Rollout: `docs/rollouts/2026-10-15-fleet-work-backup-mac-watch.md`.
 
 ## 2026-10-11 CODEX — Coolify fleet CLI distribution (OPS-933)
 
-Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Agent-Sync runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
+Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Simple-Tools runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
 
 Updated: 2026-10-10 (CLAUDE — Linear replaces THE BOARD)
 
@@ -61,8 +77,7 @@ Updated: 2026-10-08 (MM — top-level fleet docs moved from Slack to Zulip)
 `TEMPLATE-AGENTS.md`, `FLEET-UI-COPY.md`, `EFFORT-LOG-PROTOCOL.md`, `README.md`, and this
 file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:  the
 `simple-chat` CLI (`~/.local/bin/simple-chat`), the `[SEAT·session8]` tag, and posting by
-channel plus topic.  The retired Slack path — `slack-sync.sh`, `agent-sync-poll.py`,
-`agent-sync-websocket.py`, the pm2 `agent-sync-push` relay, `consumer.mjs`, the
+channel plus topic.  The retired Slack path — `slack-sync.sh`, `consumer.mjs`, the
 `slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
 those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Chat: The Zulip Contract and
 `docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
@@ -225,7 +240,7 @@ Updated: 2026-09-01 (GROK pickup — fleet RAG operational, `claude/fleet-rag-op
 
 ## 2026-09-01 GROK pickup — fleet RAG operational (Claude cap)
 
-Adopted Claude's uncommitted recall CLI + ingest + MCP + seat-mcp tools + `fleet-recall` skill pack on `claude/fleet-rag-operational` (worktree `~/apps/fleet-claude-rag`).  Boards `c799b564` / `9c75471c` / `0f9a13b1`.  Installer registers MCP configs and puts `recall` on PATH like `board`.  First full ingest and Oracle routines are operational follow-through after the code lands.  Do **not** restart `qdrant-st` during RTH.  Slack `#agent-sync` skipped (`account_inactive`).  Co-authored with Claude.
+Adopted Claude's uncommitted recall CLI + ingest + MCP + seat-mcp tools + `fleet-recall` skill pack on `claude/fleet-rag-operational` (worktree `~/apps/fleet-claude-rag`).  Boards `c799b564` / `9c75471c` / `0f9a13b1`.  Installer registers MCP configs and puts `recall` on PATH like `board`.  First full ingest and Oracle routines are operational follow-through after the code lands.  Do **not** restart `qdrant-st` during RTH.  Slack `#Work-In-Progress` skipped (`account_inactive`).  Co-authored with Claude.
 
 Updated: 2026-09-01 (GROK — Sentry fleet adoption standing split)
 

@@ -88,10 +88,9 @@ static OSStatus lookup(SecKeychainRef keychain, UInt32 *size, void **bytes,
 }
 
 static int ingress(SecKeychainRef keychain) {
-    SecKeychainItemRef existing = NULL;
-    OSStatus status = lookup(keychain, NULL, NULL, &existing);
-    if (existing) CFRelease(existing);
-    if (status != errSecItemNotFound) return 3;
+    /* Create is the atomic uniqueness boundary. A preflight lookup would race another
+     * ingress; never update, delete, or retry an existing item, including an ACL denial. */
+    OSStatus status;
     unsigned char secret[257] = {0};
     size_t size = fread(secret, 1, sizeof(secret), stdin);
     if (ferror(stdin) || size > 256) { mp_wipe(secret, sizeof(secret)); return 3; }
@@ -122,6 +121,7 @@ static int ingress(SecKeychainRef keychain) {
     mp_wipe(secret, sizeof(secret));
     if (access) CFRelease(access);
     if (trusted) CFRelease(trusted);
+    /* errSecDuplicateItem is a refusal, as is every other create error. */
     return status == errSecSuccess ? 0 : 3;
 }
 

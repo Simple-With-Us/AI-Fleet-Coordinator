@@ -8,6 +8,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -16,6 +17,11 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    from .coding_resources import CPUManager, policy_revision, public_snapshot, publish_snapshot
+except ImportError:  # Installed as sibling scripts, rather than an imported package.
+    from coding_resources import CPUManager, policy_revision, public_snapshot, publish_snapshot
 
 POLICY_CMD = ["get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"]
 POLICY_FIELDS = {
@@ -38,15 +44,84 @@ POLICY_FIELDS = {
     "production_container_prefixes",
     "production_name_prefixes",
 }
+OPTIONAL_POLICY_FIELDS = {"cpu_cores", "cpu_weight", "allow_borrowing"}
 CGROOT = Path("/sys/fs/cgroup")
 STATE_DIR = Path("/var/lib/fleet-coding-memory")
+EXCLUDE_FILE = Path("/etc/fleet-coding-memory/exclude-units")
 MIB = 1024 * 1024
+UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]*$")
+
+
+def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, warn=None) -> set[str]:
+    """Load the host-local exclude list; untrusted files are ignored entirely."""
+    warn = warn or (lambda msg: print(msg, file=sys.stderr))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+        return set()
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
+        try:
+            parent_info = os.stat(path.parent)
+        except OSError:
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != expected_uid
+            or parent_info.st_mode & 0o022
+        ):
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            fd = -1  # fdopen owns it now
+            units = set()
+            for lineno, line in enumerate(f, start=1):
+                name = line.strip()
+                if not name or name.startswith("#"):
+                    continue
+                if UNIT_NAME_RE.match(name):
+                    units.add(name)
+                else:
+                    warn(
+                        f"fleet-coding-memory: ignoring invalid exclude unit "
+                        f"on line {lineno}: {repr(name)[:80]}"
+                    )
+            return units
+    except UnicodeDecodeError:
+        warn(f"fleet-coding-memory: ignoring unreadable exclude file {path} (not UTF-8)")
+        return set()
+    except OSError:
+        warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+        return set()
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def validate_policy(raw: str) -> dict[str, Any]:
     obj = json.loads(raw)
-    if not isinstance(obj, dict) or set(obj) != POLICY_FIELDS or obj.get("schema_version") != 1:
+    if (
+        not isinstance(obj, dict)
+        or not POLICY_FIELDS <= set(obj)
+        or set(obj) - POLICY_FIELDS - OPTIONAL_POLICY_FIELDS
+        or obj.get("schema_version") != 1
+    ):
         raise ValueError("invalid policy schema")
+    for key in ("cpu_cores", "cpu_weight"):
+        if key in obj and (type(obj[key]) is not int or obj[key] < 1):
+            raise ValueError(f"invalid {key}")
+    if "cpu_weight" in obj and obj["cpu_weight"] > 10000:
+        raise ValueError("invalid cpu_weight")
+    if "allow_borrowing" in obj and type(obj["allow_borrowing"]) is not bool:
+        raise ValueError("invalid allow_borrowing")
     ints = POLICY_FIELDS - {
         "schema_version",
         "pressure_some_avg10",
@@ -75,6 +150,9 @@ def validate_policy(raw: str) -> dict[str, Any]:
             or any(not isinstance(x, str) or not x or "/" in x for x in obj[k])
         ):
             raise ValueError(f"invalid {k}")
+    for key in ("coding_units", "coding_containers"):
+        if any(not UNIT_NAME_RE.fullmatch(name) for name in obj[key]):
+            raise ValueError(f"invalid {key}")
     if (
         obj["critical_budget_bytes"] > obj["budget_bytes"]
         or obj["recovery_available_bytes"] < obj["pressure_available_bytes"]
@@ -236,9 +314,9 @@ def cg_path(root: Path, rel: str) -> Path | None:
         return None
 
 
-def unit_cgroups(policy: dict[str, Any], root: Path, runner=subprocess.run) -> list[Path]:
+def resolve_unit_cgroups(units, root: Path, runner=subprocess.run) -> list[Path]:
     found = []
-    for unit in policy["coding_units"]:
+    for unit in units:
         try:
             r = runner(
                 ["systemctl", "show", "--value", "-pControlGroup", unit],
@@ -253,6 +331,19 @@ def unit_cgroups(policy: dict[str, Any], root: Path, runner=subprocess.run) -> l
         except Exception:
             continue
     return found
+
+
+def unit_cgroups(
+    policy: dict[str, Any], root: Path, runner=subprocess.run, excluded=None
+) -> list[Path]:
+    excluded = excluded or set()
+    return resolve_unit_cgroups(
+        [u for u in policy["coding_units"] if u not in excluded], root, runner=runner
+    )
+
+
+def _is_excluded_path(path: Path, excluded_cgroups) -> bool:
+    return any(path == ex or ex in path.parents for ex in excluded_cgroups)
 
 
 def docker_groups(
@@ -404,9 +495,20 @@ def allocate(
     return alloc
 
 
-def write_owned(path: Path, key: str, value: int, state: dict[str, Any], persist=None) -> bool:
+def write_owned(
+    path: Path,
+    key: str,
+    value: int,
+    state: dict[str, Any],
+    persist=None,
+    suspended=None,
+) -> bool:
     f = path / key
     record_key = f"{path}:{key}"
+    if is_suspended(record_key, suspended):
+        # The operator owns this control now.
+        state.get("owned", {}).pop(record_key, None)
+        return True
     previous: dict[str, Any] | None = None
     try:
         inode = path.stat().st_ino
@@ -486,10 +588,74 @@ def write_owned(path: Path, key: str, value: int, state: dict[str, Any], persist
         return landed
 
 
-def reconcile_owned(state: dict[str, Any], persist=None) -> None:
-    """Drop stale records for vanished cgroups and writes that never took effect."""
+def platform_default(key: str, value: str) -> bool:
+    """The value a platform puts on a control it manages itself.
+
+    systemd writes its own unit memory settings on every daemon-reload, and
+    Docker writes the container's own settings whenever the container is
+    recreated, so a control this controller owns can be reset to the platform
+    default without anybody asking for it.  A memory.high of "max" is no limit
+    and a memory.low of "0" is no protection.
+    """
+    if key == "memory.high":
+        return value == "max"
+    if key == "memory.low":
+        return value == "0"
+    return False
+
+
+def suspended_controls(state_dir: Path) -> set[str]:
+    """The controls an operator took out of this controller's hands.
+
+    The file "suspended" in the state directory lists one control per line,
+    either the full "path:key" record name or the cgroup directory that holds
+    it, and "*" for every control.  A suspended control is left exactly as it
+    is:  it is not written, it is not re-asserted after a platform reset, and
+    it is not counted as a failure.
+    """
+    try:
+        lines = (Path(state_dir) / "suspended").read_text().splitlines()
+    except OSError:
+        return set()
+    out: set[str] = set()
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        out.add(line)
+    return out
+
+
+def is_suspended(record: str, suspended: set[str] | None) -> bool:
+    """True when a control record was taken out of the controller's hands."""
+    if not suspended:
+        return False
+    if "*" in suspended:
+        return True
+    if record in suspended:
+        return True
+    path = record.rsplit(":", 1)[0]
+    return path in suspended
+
+
+def reconcile_owned(state: dict[str, Any], persist=None, suspended=None) -> int:
+    """Drop stale records for vanished cgroups and writes that never took effect.
+
+    Returns how many controls were reset to a value this controller did not
+    write:  the platform default, or the value the control had before this
+    controller owned it.  Those records are dropped, so the next write takes
+    the control over again and re-asserts the policy.  A control that holds
+    some other value keeps its record, so an outside edit stays refused.
+    """
     changed = False
+    reasserted = 0
     for name, rec in list(state.get("owned", {}).items()):
+        if is_suspended(name, suspended):
+            # An operator took this control out of the controller's hands:  the
+            # controller forgets it and leaves the value alone.
+            del state["owned"][name]
+            changed = True
+            continue
         try:
             pth, key = name.rsplit(":", 1)
             p = Path(pth)
@@ -514,14 +680,20 @@ def reconcile_owned(state: dict[str, Any], persist=None) -> None:
                     rec.pop("pending", None)
                     rec.pop("observed", None)
                 changed = True
-            elif current == rec["baseline"] and current != rec.get("last"):
+            elif (
+                current != rec.get("last")
+                and platform_default(key, current)
+                and platform_default(key, rec["baseline"])
+            ):
                 del state["owned"][name]
                 changed = True
+                reasserted += 1
         except OSError:
             del state["owned"][name]
             changed = True
     if changed and persist:
         persist()
+    return reasserted
 
 
 def restore_owned(state: dict[str, Any], persist=None) -> None:
@@ -545,6 +717,56 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
                     persist()
         except (OSError, ValueError):
             continue
+
+
+def restore_excluded(state: dict[str, Any], excluded_cgroups, persist=None, suspended=None) -> int:
+    """Hand back owned controls on now-excluded cgroups (external edit wins)."""
+    if not excluded_cgroups:
+        return 0
+    failures = 0
+    excluded = set(excluded_cgroups)
+    for name, rec in list(state.get("owned", {}).items()):
+        try:
+            pth, key = name.rsplit(":", 1)
+            p = Path(pth)
+            if not _is_excluded_path(p, excluded):
+                continue
+            if is_suspended(name, suspended):
+                # The operator owns this control: leave its value alone.
+                # reconcile_owned drops the record without re-asserting it.
+                continue
+            if p.stat().st_ino != rec["inode"]:
+                del state["owned"][name]
+                if persist:
+                    persist()
+                continue
+            f = p / key
+            current = f.read_text().strip()
+            if current == rec["last"] and current != rec["baseline"]:
+                try:
+                    write_control(f, str(rec["baseline"]))
+                except OSError:
+                    failures += 1
+                    print(
+                        f"fleet-coding-memory: failed to hand back {name}",
+                        file=sys.stderr,
+                    )
+                    continue
+                del state["owned"][name]
+                if persist:
+                    persist()
+            elif current != rec.get("last"):
+                # External edit wins: drop ownership without writing.
+                del state["owned"][name]
+                if persist:
+                    persist()
+            elif current == rec["baseline"]:
+                del state["owned"][name]
+                if persist:
+                    persist()
+        except (OSError, ValueError, KeyError):
+            continue
+    return failures
 
 
 def oom_kill_delta(paths: list[Path], state: dict[str, Any]) -> int:
@@ -582,6 +804,7 @@ def protected_lows(
     state: dict[str, Any],
     limits: dict[Path, int] | None = None,
     persist=None,
+    suspended=None,
 ) -> int:
     # The supported common ancestor is system.slice; set child protection and a sufficient parent protection.
     limit = max(0, total - reserve - budget)
@@ -598,8 +821,12 @@ def protected_lows(
     total_caps = sum(sizes.values())
     scale = min(1.0, limit / total_caps) if total_caps else 0
     wanted = {p: int(n * scale) for p, n in sizes.items()}
-    failures = int(not write_owned(parent, "memory.low", sum(wanted.values()), state, persist))
-    failures += sum(not write_owned(p, "memory.low", n, state, persist) for p, n in wanted.items())
+    failures = int(
+        not write_owned(parent, "memory.low", sum(wanted.values()), state, persist, suspended)
+    )
+    failures += sum(
+        not write_owned(p, "memory.low", n, state, persist, suspended) for p, n in wanted.items()
+    )
     return failures
 
 
@@ -628,17 +855,29 @@ def step(
     now: float | None = None,
     discovered: tuple[Any, ...] | None = None,
     persist=None,
+    excluded_units=None,
+    excluded_cgroups=None,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     now = time.monotonic() if now is None else now
     avail, total = mem_available(proc)
     some = psi_avg(proc / "pressure" / "memory", "some")
     full = psi_avg(proc / "pressure" / "memory", "full")
+    excluded_units = set(excluded_units or set())
+    excluded_cgroups = set(excluded_cgroups or set())
     if discovered is None:
         containers, prod, production_limits = docker_groups(policy, root)
-        code = unit_cgroups(policy, root) + containers
+        code = unit_cgroups(policy, root, excluded=excluded_units) + containers
     else:
         code, prod = discovered[:2]
         production_limits = discovered[2] if len(discovered) > 2 else {}
+    if excluded_units and not excluded_cgroups:
+        excluded_cgroups = set(resolve_unit_cgroups(sorted(excluded_units), root))
+    suspended = suspended_controls(state_dir if state_dir is not None else STATE_DIR)
+    restore_failures = 0
+    if excluded_cgroups:
+        restore_failures = restore_excluded(state, excluded_cgroups, persist, suspended)
+        code = [p for p in code if not _is_excluded_path(p, excluded_cgroups)]
     code = dedupe_nested(code)
     mode = state.get("mode", "normal")
     if not isinstance(mode, str) or mode not in ("normal", "pressure", "critical"):
@@ -684,13 +923,19 @@ def step(
                     - policy["reserve_bytes"],
                 ),
             )
-            if mode == "normal"
+            if mode == "normal" and policy.get("allow_borrowing", True)
             else min(total, budget)
         )
     )
+    # Ownership is reconciled on every tick, not only at start:  a systemd
+    # daemon-reload or a container recreation resets a control this controller
+    # owns to the platform default, and the limit has to come back on its own
+    # instead of staying off until the next restart.
+    reasserted = reconcile_owned(state, persist, suspended)
     allocations = allocate(target, code, state)
-    write_failures = sum(
-        not write_owned(p, "memory.high", n, state, persist) for p, n in allocations.items()
+    write_failures = restore_failures + sum(
+        not write_owned(p, "memory.high", n, state, persist, suspended)
+        for p, n in allocations.items()
     )
     write_failures += protected_lows(
         prod,
@@ -701,11 +946,20 @@ def step(
         state,
         production_limits,
         persist,
+        suspended,
     )
     oom_delta = oom_kill_delta(code + prod, state)
     production_protected, production_unprotected = production_protection_counts(
         prod, root, production_limits
     )
+    high_mismatches = len(code) - len(allocations)
+    for path, desired_high in allocations.items():
+        try:
+            actual_high = (path / "memory.high").read_text().strip()
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            high_mismatches += int(actual_high != str(desired_high // page_size * page_size))
+        except OSError:
+            high_mismatches += 1
     state["mode"] = mode
     state["last_status"] = {
         "mode": mode,
@@ -720,12 +974,20 @@ def step(
         "production_unprotected_groups": production_unprotected,
         "oom_kill_delta": oom_delta,
         "control_write_failures": write_failures,
+        "actual_high_mismatches": high_mismatches,
+        "excluded_units": len(excluded_units),
+        "control_reasserted": reasserted,
+        "control_suspended": len(suspended),
     }
     return state["last_status"]
 
 
 def refresh_worker(
-    state_dir: Path, current: list[Any], wake: threading.Event, stop: threading.Event
+    state_dir: Path,
+    current: list[Any],
+    wake: threading.Event,
+    stop: threading.Event,
+    exclude_file: Path = EXCLUDE_FILE,
 ) -> None:
     """Refresh one immutable policy snapshot off the controller's time-sensitive loop."""
     while not stop.is_set():
@@ -734,6 +996,11 @@ def refresh_worker(
             wake.clear()
         if stop.is_set():
             return
+        # Reload the exclude file on the same cadence; this is the only
+        # place (besides startup) it is read, so an untrusted-file warning
+        # fires once per refresh, not per tick.
+        if len(current) > 2:
+            current[2] = load_excluded_units(exclude_file)
         try:
             fresh = fetch_policy()
             atomic_json(state_dir / "policy.json", fresh)
@@ -755,10 +1022,14 @@ def refresh_worker(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--public-status", type=Path, default=Path("/run/fleet-coding-resources/status.json")
+    )
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--state-dir", type=Path, default=STATE_DIR)
     ap.add_argument("--cgroot", type=Path, default=CGROOT)
+    ap.add_argument("--exclude-file", type=Path, default=EXCLUDE_FILE)
     args = ap.parse_args()
     state_path = args.state_dir / "state.json"
     if args.status:
@@ -811,10 +1082,15 @@ def main() -> int:
         ):
             print("state ownership record invalid; refusing cgroup changes", file=sys.stderr)
             return 1
+    try:
+        cpu = CPUManager(args.cgroot, state, lambda: atomic_json(state_path, state))
+    except ValueError:
+        print("CPU ownership cache invalid; refusing control changes", file=sys.stderr)
+        return 1
     reconcile_owned(state, lambda: atomic_json(state_path, state))
     reset_transient_state(state)
     policy, stale = load_lkg(args.state_dir)
-    live = [policy, stale]
+    live: list[Any] = [policy, stale, load_excluded_units(args.exclude_file)]
     quit_flag = False
     refresh = threading.Event()
     stop_refresh = threading.Event()
@@ -830,17 +1106,30 @@ def main() -> int:
     signal.signal(signal.SIGINT, onterm)
     signal.signal(signal.SIGHUP, onsighup)
     worker = threading.Thread(
-        target=refresh_worker, args=(args.state_dir, live, refresh, stop_refresh), daemon=True
+        target=refresh_worker,
+        args=(args.state_dir, live, refresh, stop_refresh, args.exclude_file),
+        daemon=True,
     )
     worker.start()
     last_discovery = 0.0
     groups: tuple[list[Path], list[Path], dict[Path, int]] = ([], [], {})
+    excluded_cgroups: set[Path] = set()
+    seen_excluded: set[str] | None = None
     discovered_once = False
+    seen_policy_revision = None
     try:
         while True:
             if quit_flag:
                 break
             policy, stale = live[0], live[1]
+            excluded_units = set(live[2]) if len(live) > 2 else set()
+            if excluded_units != seen_excluded:
+                discovered_once = False
+                seen_excluded = set(excluded_units)
+            revision = policy_revision(policy)
+            if revision != seen_policy_revision:
+                discovered_once = False
+                seen_policy_revision = revision
             state["policy_stale"] = stale
             try:
                 if (
@@ -848,23 +1137,43 @@ def main() -> int:
                     or time.monotonic() - last_discovery >= policy["discovery_seconds"]
                 ):
                     containers, production, limits = docker_groups(policy, args.cgroot)
-                    groups = (unit_cgroups(policy, args.cgroot) + containers, production, limits)
+                    groups = (
+                        unit_cgroups(policy, args.cgroot, excluded=excluded_units) + containers,
+                        production,
+                        limits,
+                    )
+                    excluded_cgroups = set(
+                        resolve_unit_cgroups(sorted(excluded_units), args.cgroot)
+                    )
+                    cpu.discover(policy, excluded_units, excluded_cgroups)
                     last_discovery = time.monotonic()
                     discovered_once = True
+                cpu.apply(policy, suspended_controls(args.state_dir))
                 report = step(
                     policy,
                     args.cgroot,
                     state,
                     discovered=groups,
                     persist=lambda: atomic_json(state_path, state),
+                    excluded_units=excluded_units,
+                    excluded_cgroups=excluded_cgroups,
+                    state_dir=args.state_dir,
                 )
                 state["updated_at"] = int(time.time())
                 atomic_json(state_path, state)
+                publish_snapshot(public_snapshot(policy, state, cpu), args.public_status)
                 if args.once:
                     print(json.dumps(report))
                     break
             except Exception as e:
                 print(f"controller tick failed: {type(e).__name__}", file=sys.stderr)
+                # A failed tick must invalidate the previous public receipt.
+                try:
+                    receipt = public_snapshot(policy, state, cpu)
+                    receipt["status"] = "unavailable"
+                    publish_snapshot(receipt, args.public_status)
+                except Exception:
+                    pass
                 if args.once:
                     return 1
             if quit_flag:
@@ -875,9 +1184,16 @@ def main() -> int:
         refresh.set()
         worker.join(timeout=1)
         if quit_flag:
+            cpu.restore(suspended_controls(args.state_dir))
             restore_owned(state, lambda: atomic_json(state_path, state))
             reset_transient_state(state)
             atomic_json(state_path, state)
+            try:
+                receipt = public_snapshot(policy, state, cpu)
+                receipt["status"] = "unavailable"
+                publish_snapshot(receipt, args.public_status)
+            except Exception:
+                pass
         os.close(lock_fd)
     return 0
 

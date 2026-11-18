@@ -89,7 +89,6 @@ BACKUP_MODE = 0o600
 TOOL = "fleet_lanes.install_mcp"
 FLEET_RECALL = "fleet-recall"
 SIMPLE_CHAT = "simple-chat"
-LEGACY_SERVER = "agent-sync"        # the pre-rename registration name this tool used to write; retired on apply/remove
 SERVER_ORDER = (FLEET_RECALL, SIMPLE_CHAT)
 
 
@@ -192,8 +191,11 @@ JSON_TARGETS: Tuple[JsonTarget, ...] = (
                     "has answered it.  OpenCode also reads a project .opencode/opencode.json; "
                     "this is the global file"),
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
-               _build_kimi, _command_args_of,
-               note="engine-only CLI with no default seat: fleet-recall only"),
+               _build_kimi, _command_args_of, seat="KIMI",
+               note="Moonshot AI Kimi Code CLI, seat KIMI"),
+    JsonTarget("zcode", "Z Code", ".zcode", ".zcode/cli/config.json", ("mcpServers",),
+               _build_kimi, _command_args_of, seat="ZC",
+               note="Z Code desktop IDE, seat ZC"),
     JsonTarget("copilot", "GitHub Copilot CLI", ".copilot", ".copilot/mcp-config.json", ("mcpServers",),
                _build_copilot, _command_args_of,
                note="no default seat: fleet-recall only.  Copilot already holds about a dozen servers"),
@@ -212,11 +214,10 @@ CLUTCH_SEAT = "CLUTCH"
 CLUTCH_DIR = ".clutch/dsh"
 CLUTCH_PATCH = ".clutch/dsh/cordis.patch.yml"
 CLUTCH_BLOCK = "mcp-simple-chat"
-LEGACY_CLUTCH_BLOCK = "mcp-agent-sync"
 MCP_CLIENT_PLUGIN = "@deepseek-ai/dsh-mcp-client"
 TARGET_KEYS = tuple(t.key for t in JSON_TARGETS) + (CLUTCH_KEY,)
 ALIASES = {"muse-code": "muse", "mc": "muse", "mm": "minimax", "kimi-code": "kimi", "copilot-cli": "copilot",
-           "dsh": "clutch"}
+           "dsh": "clutch", "z-code": "zcode", "zc": "zcode"}
 
 
 # --------------------------------------------------------------------------- one config, one server
@@ -331,26 +332,6 @@ def edit_json_target(target: JsonTarget, text: Optional[str], names_argv: Sequen
             else:
                 out.append(Outcome(target.key, name, "skipped-not-ours",
                                    "the entry is not exactly what apply writes; left alone", warnings))
-    for name, argv in names_argv:
-        if name != SIMPLE_CHAT:
-            continue
-        # Retire the pre-rename `agent-sync` registration this tool wrote for the same command.  A different
-        # command under that name is the owner's and is left alone.
-        old_entry = servers.get(LEGACY_SERVER)
-        if old_entry is None:
-            continue
-        landed = next((o.status for o in out if o.server == name), None)
-        if action == "add" and landed not in ("added", "unchanged", "present"):
-            # The replacement was refused:  keep the working legacy entry and say why.
-            out.append(Outcome(target.key, LEGACY_SERVER, "skipped-not-ours",
-                               "kept:  the %s entry was not written (%s), so the pre-rename one stays" % (name, landed)))
-            continue
-        if old_entry == target.build(LEGACY_SERVER, argv) or target.argv_of(old_entry) == argv:
-            del servers[LEGACY_SERVER]
-            out.append(Outcome(target.key, LEGACY_SERVER, "removed", "retired the pre-rename registration"))
-        else:
-            out.append(Outcome(target.key, LEGACY_SERVER, "skipped-not-ours",
-                               "an entry named %s runs a different command; left alone" % LEGACY_SERVER))
     if doc == original:
         return out, None
     return out, _dump(doc, indent)
@@ -387,25 +368,13 @@ def edit_clutch_patch(text: Optional[str], argv: List[str], action: str) -> Tupl
             return Outcome(CLUTCH_KEY, name, "skipped-bad-shape",
                            "the cordis patch is not a top-level list; left alone"), None, False
         if action == "add":
-            retired = False
-            if text is not None:
-                stripped, legacy_act = CP.remove(text, LEGACY_CLUTCH_BLOCK)
-                if legacy_act != "none":
-                    text, retired = stripped or None, True                # retire the pre-rename block
             new, act = CP.upsert(text, CLUTCH_BLOCK, TOOL, clutch_block_body(argv))
             if act == "none":
-                if retired:    # the new block was already current:  the removal is the whole change, so write it
-                    return Outcome(CLUTCH_KEY, name, "added", "pre-rename block removed"), text, False
                 return Outcome(CLUTCH_KEY, name, "unchanged"), None, False
             return Outcome(CLUTCH_KEY, name, "added", "block replaced in place" if act == "replace" else ""), new, False
         if text is None:
             return Outcome(CLUTCH_KEY, name, "absent"), None, False
-        legacy_new, legacy_act = CP.remove(text, LEGACY_CLUTCH_BLOCK)
-        if legacy_act != "none":
-            text = legacy_new or None
         new, act = CP.remove(text, CLUTCH_BLOCK)
-        if act == "none" and legacy_act != "none":
-            new, act = (legacy_new, legacy_act)
         if act == "none":
             return Outcome(CLUTCH_KEY, name, "absent"), None, False
         if new is None:

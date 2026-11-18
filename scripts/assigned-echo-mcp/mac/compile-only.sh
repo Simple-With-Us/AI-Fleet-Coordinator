@@ -6,6 +6,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 SAN='-fsanitize=address,undefined'
+# Exact ingress body with fake Security functions only; never a Keychain call.
+python3 "$here/test-ingress-source.py"
 # Pure-C protocol core: behavioral fixture (42 checks), plain and sanitized.
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror -I"$here" "$here/mac-fixture.c" -o "$tmp/mac-fixture"
 "$tmp/mac-fixture"

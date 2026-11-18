@@ -52,3 +52,24 @@ AFTER source review and actual owner storage/signing permission, Echo alone:
    designated requirement, code ownership and path.
 2. Runs the synthetic ACL fixtures in an isolated test Keychain first.
 3. Only then provisions the one fixed ECHO item through the preserved ingress flow.
+
+## Review remediation, November 18, 2026
+
+The ingress now performs one Keychain create without a lookup first. An existing
+item is refused by the Keychain create operation itself, including a concurrent
+create returning errSecDuplicateItem. There is no update, delete or retry.
+The exact production ingress body passes a stubbed Security-function fixture for
+success, duplicate, denied and generic error outcomes, including one create and
+cleanup on each path. This does not qualify Apple duplicate enforcement or real
+Keychain concurrency. No Keychain operation was executed.
+
+Token-echo detection now uses bounded KMP matching, linear in response plus token
+length, with a fixed 256-entry prefix table and fail-closed invalid lengths.
+The pure-C fixture includes overlapping-prefix cases and a 4 MiB repeated-prefix
+response, with both a missing token and a match at the end.
+
+The current main branch removed the native simple-git custody selection in PR
+1209. Conflict resolution preserves that current bearer-only CLI and its tests.
+This draft does not revive, select, sign or install a native credential route.
+The helper remains isolated source and synthetic fixtures. Existing owner
+storage/signing and runtime qualification gates are unchanged.

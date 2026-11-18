@@ -9,6 +9,10 @@ public enum ManagedServiceState: Equatable {
     case failed
     /// The service is not installed on this Mac.
     case notInstalled
+    /// pm2 on this Mac answered,  and it has no record of the application.  That is not
+    /// the same as stopped:  a stopped application is one pm2 knows and holds down,  and
+    /// an application pm2 never heard of may belong to another machine.
+    case notInPM2
     case unknown
 
     public var label: String {
@@ -17,6 +21,7 @@ public enum ManagedServiceState: Equatable {
         case .stopped: return "stopped"
         case .failed: return "failed"
         case .notInstalled: return "not installed"
+        case .notInPM2: return "not in this Mac's pm2"
         case .unknown: return "unknown"
         }
     }
@@ -47,23 +52,22 @@ public struct ManagedServiceEntry: Equatable {
     }
 }
 
-/// The change the Control app should make to bring one entry in line with
-/// its wanted state.
+/// A change to one service.
 public enum ManagedServiceAction: Equatable {
     case start
     case stop
-    /// The service is stopped and started again.  This is never an
-    /// automatic action: a wanted state says whether a service runs, not that
-    /// it has to run again.
+    /// The service is stopped and started again.  Muster never does this on its own:
+    /// its own start is only ever a start (`ServiceReconcileEngine`).
     case restart
     case none
 }
 
-/// The BotFleet services the Control app keeps in step with the BotFleet
-/// Server.
+/// The BotFleet services whose state follows the BotFleet Server.
 ///
 /// The wanted state is derived from the server's own state, so it never has to
-/// be stored and it cannot drift away from the truth.
+/// be stored and it cannot drift away from the truth.  It is a fact about what the
+/// service is for.  What Muster does about a service that is not running is the
+/// policy in `ServicePolicyTable`,  and not this.
 public struct ManagedServices: Equatable {
     public static let mcpServerID = "botfleet-mcp"
     public static let mcpServerTitle = "BotFleet MCP Server"
@@ -132,33 +136,10 @@ public struct ManagedServices: Equatable {
                           wanted: mcpServerWanted, state: mcpServerState)]
     }
 
-    /// The action that brings one entry in line with its wanted state.
-    ///
-    /// An unknown wanted state is never acted on, and an unknown observed
-    /// state is never acted on either: the Control app does not stop a service
-    /// it cannot see, and it does not start one it cannot prove is missing.
-    public static func action(for entry: ManagedServiceEntry) -> ManagedServiceAction {
-        action(wanted: entry.wanted, state: entry.state)
-    }
-
-    /// The action that brings one service in line with its wanted state.
-    ///
-    /// A service that failed is brought back up when it is wanted: it is not
-    /// running and nothing asked it to stop.  A service that was stopped is
-    /// not brought back: something did ask it to stop, and the Control app
-    /// does not undo that on its own.
-    public static func action(wanted: Bool?, state: ManagedServiceState) -> ManagedServiceAction {
-        switch (wanted, state) {
-        case (.some(true), .stopped): return .start
-        case (.some(true), .failed): return .start
-        case (.some(false), .running): return .stop
-        default: return .none
-        }
-    }
-
     /// A short description of a service for the menu.
     ///
-    /// The wanted state is optional, so the patterns spell out `.some` and
+    /// It states facts only:  what the service is doing,  and whether it should be doing
+    /// something else.  The wanted state is optional, so the patterns spell out `.some` and
     /// `.none` rather than leaning on a bare `true` or `nil`.  A literal
     /// pattern matched against an `Optional` is only understood as exhaustive
     /// by newer Swift compilers; the explicit form is understood by every one
@@ -167,20 +148,23 @@ public struct ManagedServices: Equatable {
     public static func summary(wanted: Bool?, state: ManagedServiceState) -> String {
         switch (wanted, state) {
         case (.some(true), .running): return "running"
-        case (.some(true), .stopped): return "stopped — wanted running"
-        case (.some(true), .failed): return "failed — wanted running"
+        case (.some(true), .stopped): return "stopped, should be running"
+        case (.some(true), .failed): return "failed, should be running"
         case (.some(true), .notInstalled): return "not installed"
-        case (.some(true), .unknown): return "unknown — wanted running"
-        case (.some(false), .running): return "running — not wanted"
+        case (.some(true), .notInPM2): return "not in this Mac's pm2"
+        case (.some(true), .unknown): return "not known, should be running"
+        case (.some(false), .running): return "running, should be stopped"
         case (.some(false), .stopped): return "stopped"
         case (.some(false), .failed): return "failed"
         case (.some(false), .notInstalled): return "not installed"
-        case (.some(false), .unknown): return "unknown"
-        case (.none, .running): return "running — wanted state unknown"
-        case (.none, .stopped): return "stopped — wanted state unknown"
-        case (.none, .failed): return "failed — wanted state unknown"
+        case (.some(false), .notInPM2): return "not in this Mac's pm2"
+        case (.some(false), .unknown): return "not known"
+        case (.none, .running): return "running, not sure if it should be"
+        case (.none, .stopped): return "stopped, not sure if it should be"
+        case (.none, .failed): return "failed, not sure if it should be"
         case (.none, .notInstalled): return "not installed"
-        case (.none, .unknown): return "unknown"
+        case (.none, .notInPM2): return "not in this Mac's pm2"
+        case (.none, .unknown): return "not known"
         }
     }
 
@@ -228,8 +212,10 @@ public struct ManagedServices: Equatable {
         while true {
             let next = await observe()
             if next == wanted { return next }
-            if Date() >= deadline { return next }
-            try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return next }
+            // The last sleep is only what is left,  so a long step does not run past the budget.
+            try? await Task.sleep(nanoseconds: UInt64(min(step, remaining) * 1_000_000_000))
         }
     }
 }

@@ -18,9 +18,8 @@
  * residential-proxy, senate-relay, senate-tunnel.  Senate/residential stay
  * off this Mac; Coolify/Texas paths own them.
  *
- * Slack retired (hard cut to Zulip, owner 2026-10-07): agent-sync-push and
- * cursor-slack-sync are removed.  Do not resurrect them; coordination runs
- * through the `simple-chat` CLI and its always-on listener.
+ * Coordination runs through the `simple-chat` CLI and its always-on listener;
+ * no Slack relay runs here (cursor-slack-sync is removed, do not resurrect it).
  */
 const home = "/Users/jay";
 const logs = `${home}/.pm2/logs`;

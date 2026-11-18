@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -83,9 +84,9 @@ class Remote(unittest.TestCase):
         self.assertIn("seat: CODEX", out)
         self.assertNotIn(BEARER, out + err + json.dumps(msg))
 
-    LIST_TEXT = "agent-sync linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
+    LIST_TEXT = "simple-tools linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
     SHOW_TEXT = (
-        "agent-sync linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
+        "simple-tools linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
         "comment by CODEX: the comment body\nduplicate_of: AFC-9"
     )
 
@@ -103,6 +104,21 @@ class Remote(unittest.TestCase):
         self.assertIn("AFC-12 | Fix the thing", out)
         self.assertIn("AFC-13 | Other", out)
 
+    def test_list_reads_the_text_envelope_when_the_hosted_sends_no_summary(self):
+        # The hosted drops structuredContent for a fenced read (AFC-637):  the envelope may not carry
+        # it, so the text is the result and the read must not refuse.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"content": [{"type": "text", "text": self.LIST_TEXT}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertEqual(code, 0, err)
+        self.assertIn("AFC-12 | Fix the thing", out)
+        self.assertIn("AFC-13 | Other", out)
+
     def test_list_json_keeps_both_parts(self):
         code, out, _, _ = self.run_cli(
             ["list", "--json"], rpc({"count": 1, "ids": ["AFC-1"]}, text=self.LIST_TEXT)
@@ -111,6 +127,113 @@ class Remote(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["structured"], {"count": 1, "ids": ["AFC-1"]})
         self.assertIn("Fix the thing", data["text"])
+
+    def test_an_empty_text_envelope_is_not_a_result(self):
+        # The envelope fallback is for a fenced read that carries text:  an answer with neither
+        # a summary nor text is a failure, never a quiet success that reads as zero issues.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": ""}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_content_part_of_the_wrong_shape_is_refused_before_it_is_read(self):
+        # The hosted's answer is untrusted:  a text part whose text is not a string, a part of
+        # a type the board does not read, and a part that is not an object at all, are refused
+        # at the boundary and never read downstream.
+        cases = (
+            {"type": "text", "text": 7},
+            {"type": "text"},
+            {"type": "image", "data": "AAAA"},
+            "not a part",
+        )
+        for part in cases:
+            with self.subTest(part=part):
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "result": {"content": [part]}}
+                ).encode()
+                code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+                self.assertNotEqual(code, 0)
+                self.assertIn("unexpected shape", err)
+                self.assertEqual(len(calls), 1)
+
+    def test_an_answer_with_a_part_the_board_does_not_read_is_refused(self):
+        # The board reads text parts and nothing else, so a part of another type is a shape it
+        # does not accept:  the answer is refused rather than half-read.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "structuredContent": {"seat": "ZC"},
+                    "content": [
+                        {"type": "text", "text": "the seat is ZC"},
+                        {"type": "image", "data": "AAAA"},
+                    ],
+                },
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_hosted_error_part_without_a_type_still_carries_its_code(self):
+        # The hosted's own error may name no type on the part that carries the error text:  the
+        # code and the hint are read from it, so the error is reported and not refused as an
+        # unexpected shape.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "isError": True,
+                    "content": [{"text": json.dumps({"code": "identity_required"})}],
+                },
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("identity_required", err)
+        self.assertNotIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_error_part_with_a_text_of_the_wrong_type_is_refused(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"isError": True, "content": [{"text": 7}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_content_collection_that_is_not_a_list_is_refused(self):
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": {"type": "text"}}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_tool_that_needs_a_summary_fails_fast_when_the_hosted_sends_none(self):
+        # Only the fenced reads may answer with the text envelope alone:  whoami has to name the
+        # seat and a write has to say what the hosted did, so a missing summary there is a failure
+        # and never a quiet success with nothing in it.
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "{}"}]}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("no structured result", err)
+        self.assertNotIn("seat:", out)
+        self.assertEqual(len(calls), 1)
 
     def test_list_env_is_refused_because_the_hosted_tool_ignores_it(self):
         code, _, err, calls = self.run_cli(["list", "--env", "Mac"], rpc({"count": 0, "ids": []}))
@@ -145,11 +268,26 @@ class Remote(unittest.TestCase):
         it = iter(answers)
         return it
 
+    IDANS = {
+        "default_identity": "CODEX",
+        "authenticated_seat": "CODEX",
+        "identities": [{"identity": "CODEX"}],
+    }
+
     def run_writes(self, argv, answers, env=None):
         calls, it = [], iter(answers)
 
         def fake(url, headers, body, timeout):
-            calls.append(json.loads(body)["params"])
+            params = json.loads(body)["params"]
+            calls.append(params)
+            args = params.get("arguments") or {}
+            if params["name"] in (
+                "linear_file",
+                "linear_claim",
+                "linear_comment",
+                "linear_status",
+            ) and not args.get("identity"):
+                return rpc({"code": "identity_required"}, is_error=True)
             return next(it)
 
         out, err = io.StringIO(), io.StringIO()
@@ -166,8 +304,6 @@ class Remote(unittest.TestCase):
                 code = e.code
         return code, out.getvalue(), err.getvalue(), calls
 
-    WHO = {"seat": "CODEX", "authenticated_seat": "CODEX", "app": "Codex"}
-
     def test_writes_need_their_own_switch(self):
         code, _, err, calls = self.run_cli(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], rpc({})
@@ -180,22 +316,22 @@ class Remote(unittest.TestCase):
             (
                 ["comment", "AFC-1", "--by", "codex", "--text", "hi"],
                 "linear_comment",
-                {"id": "AFC-1", "body": "hi"},
+                {"id": "AFC-1", "body": "hi", "identity": "CODEX"},
             ),
             (
                 ["claim", "AFC-1", "--by", "CODEX", "--comment", "on it"],
                 "linear_claim",
-                {"id": "AFC-1", "comment": "on it"},
+                {"id": "AFC-1", "comment": "on it", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "done", "--by", "CODEX"],
                 "linear_status",
-                {"id": "AFC-1", "status": "done"},
+                {"id": "AFC-1", "status": "done", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "duplicate", "--of", "AFC-2"],
                 "linear_status",
-                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2"},
+                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2", "identity": "CODEX"},
             ),
             (
                 [
@@ -219,39 +355,115 @@ class Remote(unittest.TestCase):
                     "severity": "P2",
                     "description": "d",
                     "label": ["needs-owner"],
+                    "identity": "CODEX",
                 },
             ),
         ]
         for argv, tool, args in cases:
             with self.subTest(argv=argv):
-                answers = ([rpc(self.WHO)] if "--by" in argv else []) + [
-                    rpc({"id": "1"}, text="done")
-                ]
+                answers = [rpc(self.IDANS), rpc({"id": "1"}, text="done")]
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
                 self.assertEqual(calls[-1], {"name": tool, "arguments": args})
 
+    def test_write_without_by_still_sends_identity_after_identities(self):
+        """Regression (AFC-587): hosted writes must name identity even when --by is omitted."""
+        answers = [rpc(self.IDANS), rpc({"id": "AFC-9"}, text="done")]
+        code, _, err, calls = self.run_writes(["status", "AFC-9", "done"], answers)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            calls,
+            [
+                {"name": "identities", "arguments": {}},
+                {
+                    "name": "linear_status",
+                    "arguments": {"id": "AFC-9", "status": "done", "identity": "CODEX"},
+                },
+            ],
+        )
+
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertEqual(code, 2)
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        self.assertEqual([c["name"] for c in calls], ["identities"])
 
     def test_by_mismatch_names_the_seat_the_server_reported(self):
         _, _, err, _ = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertIn("(CODEX)", err)
 
     def test_a_credential_shaped_comment_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4],
-            [rpc(self.WHO)],
+            [rpc(self.IDANS)],
         )
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        # The scan runs before even the identities lookup:  nothing is sent.
+        self.assertEqual([c["name"] for c in calls], [])
         self.assertIn("secret_scan:body", err)
         self.assertNotIn("ghp_", err)
+
+    def test_identity_answer_mismatch_refuses_before_the_write(self):
+        bad = {
+            "default_identity": "ECHO",
+            "authenticated_seat": "CODEX",
+            "identities": [{"identity": "ECHO"}],
+        }
+        code, _, err, calls = self.run_writes(
+            ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], [rpc(bad)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_list_single_label_maps_and_multiple_or_combined_are_refused(self):
+        code, _, err, calls = self.run_cli(
+            ["list", "--label", "needs-owner"], rpc({"count": 0, "ids": []})
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0][2]["params"]["arguments"], {"label": "needs-owner", "limit": 60})
+        for argv in (
+            ["list", "--label", "needs-owner", "--label", "ask-capture"],
+            ["list", "--label", "needs-owner,ask-capture"],
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn("single", err)
+
+    def test_list_comma_status_and_severity_are_refused_naming_single_value(self):
+        for argv, flag in (
+            (["list", "--status", "open,completed"], "--status"),
+            (["list", "--severity", "P0,P1"], "--severity"),
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn(flag, err)
+            self.assertIn("single value", err)
+
+    def test_file_comma_severity_is_refused_before_any_call(self):
+        code, _, err, calls = self.run_writes(
+            ["file", "--title", "T", "--severity", "P0,P1"], [rpc(self.IDANS)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("single value", err)
+
+    def test_remote_error_hints_are_static_and_do_not_echo_server_text(self):
+        for code_name in (
+            "identity_required",
+            "session_required",
+            "writes_disabled",
+            "not_configured",
+        ):
+            code, _, err, _ = self.run_cli(
+                ["list"], rpc({"code": code_name}, is_error=True, text="server-private-word")
+            )
+            self.assertEqual(code, board.EXIT_ERROR)
+            self.assertIn(code_name, err)
+            self.assertNotIn("server-private-word", err)
 
     def test_show_with_no_text_prints_the_structured_result_and_text_is_escaped(self):
         code, out, _, _ = self.run_cli(["show", "AFC-1"], rpc({"id": "AFC-1"}))
@@ -264,15 +476,231 @@ class Remote(unittest.TestCase):
     def test_write_options_with_no_hosted_equivalent_are_refused(self):
         for argv in (
             ["claim", "AFC-1", "--by", "CODEX", "--steal", "--reason", "r"],
-            ["comment", "AFC-1", "--by", "CODEX", "--text-file", "-"],
-            ["status", "AFC-1", "done", "--resolution", "fixed"],
             ["file", "--title", "T", "--fix", "f"],
             ["file", "--title", "T", "--by", "X"],
         ):
             with self.subTest(argv=argv):
-                code, _, _, calls = self.run_writes(argv, [rpc(self.WHO)] * 2)
+                code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)] * 2)
                 self.assertEqual(code, 2)
                 self.assertNotIn("linear_comment", [c["name"] for c in calls])
+
+    def test_remote_text_file_uses_private_file_and_scans_before_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body"
+            path.write_text("A file body with a full tail")
+            path.chmod(0o600)
+            code, _, err, calls = self.run_writes(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)],
+                [rpc(self.IDANS), rpc({"ok": True, "id": "comment"})],
+            )
+            self.assertEqual(code, 0, err)
+            self.assertEqual(calls[-1]["arguments"]["body"], path.read_text())
+            for content in (" ", "x" * 10001, "token ghp_" + "A1b2C3d4E5" * 4):
+                path.write_text(content)
+                code, _, _, calls = self.run_writes(
+                    ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], []
+                )
+                self.assertNotEqual(code, 0)
+                self.assertEqual(calls, [])
+
+    def test_remote_text_file_refuses_unsafe_mode_utf8_and_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body"
+            path.write_bytes(b"\xff")
+            path.chmod(0o600)
+            for mode in (0o600, 0o644):
+                path.chmod(mode)
+                code, _, _, calls = self.run_writes(
+                    ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(path)], []
+                )
+                self.assertEqual((code, calls), (2, []))
+            link = Path(tmp) / "link"
+            link.symlink_to(path)
+            code, _, _, calls = self.run_writes(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", str(link)], []
+            )
+            self.assertEqual((code, calls), (2, []))
+
+    def test_file_not_read_when_remote_writes_gated_off(self):
+        with unittest.mock.patch.object(board, "read_text_input") as reader:
+            code, _, _, calls = self.run_cli(
+                ["comment", "AFC-1", "--by", "CODEX", "--text-file", "missing"], rpc({})
+            )
+        reader.assert_not_called()
+        self.assertEqual((code, calls), (2, []))
+
+    def test_resolution_orders_state_then_comment_and_identical_retry_sends_neither(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-1", "completed", "--resolution", "Fixed with tests"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, err, calls = self.run_writes(
+                argv,
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-1", "status": "completed"}),
+                    rpc({"ok": True, "id": "c1"}),
+                ],
+                env,
+            )
+            self.assertEqual(code, 0, err)
+            self.assertEqual(
+                [c["name"] for c in calls], ["identities", "linear_status", "linear_comment"]
+            )
+            self.assertEqual(
+                calls[-1]["arguments"]["body"], "Resolution (completed): Fixed with tests"
+            )
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+            self.assertNotIn("Fixed with tests", (Path(tmp) / "remote-resolution.json").read_text())
+
+    def test_resolution_comment_failure_preserves_state_and_blocks_uncertain_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-2", "completed", "--resolution", "Fixed"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, err, calls = self.run_writes(
+                argv,
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-2", "status": "completed"}),
+                    rpc({"code": "outcome_unknown"}, is_error=True),
+                ],
+                env,
+            )
+            self.assertNotEqual(code, 0)
+            self.assertIn("state change completed", err)
+            code, _, err, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertNotEqual(code, 0)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+            self.assertIn("inspect the issue", err)
+
+    def test_resolution_state_failure_never_sends_comment_or_repeats_unknown_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-3", "completed", "--resolution", "Fixed"]
+            env = {"LINEAR_BOARD_CACHE_DIR": tmp}
+            code, _, _, calls = self.run_writes(
+                argv, [rpc(self.IDANS), rpc({"code": "outcome_unknown"}, is_error=True)], env
+            )
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("linear_comment", [c["name"] for c in calls])
+            code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)], env)
+            self.assertNotEqual(code, 0)
+            self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_duplicate_resolution_derives_target_and_formats_comment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, calls = self.run_writes(
+                ["status", "AFC-4", "duplicate", "--resolution", "dup of AFC-2"],
+                [
+                    rpc(self.IDANS),
+                    rpc({"id": "AFC-4", "status": "duplicate"}),
+                    rpc({"ok": True, "id": "c"}),
+                ],
+                {"LINEAR_BOARD_CACHE_DIR": tmp},
+            )
+            self.assertEqual(code, 0, err)
+            self.assertEqual(calls[1]["arguments"]["of"], "AFC-2")
+            self.assertEqual(
+                calls[2]["arguments"]["body"], "Resolution (duplicate of AFC-2): dup of AFC-2"
+            )
+        for resolution in (
+            "fixed",
+            "dup of AFC-2 and duplicate of AFC-3",
+            "ghp_" + "A1b2C3d4E5" * 4,
+        ):
+            code, _, _, calls = self.run_writes(
+                ["status", "AFC-4", "duplicate", "--resolution", resolution], []
+            )
+            self.assertEqual((code, calls), (2, []))
+
+    def test_resolution_definitive_rejections_allow_retry_without_repeating_state(self):
+        for stage in ("state", "comment"):
+            for status in (401, 403):
+                with (
+                    self.subTest(stage=stage, status=status),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    argv = [
+                        "status",
+                        "AFC-8",
+                        "completed",
+                        "--resolution",
+                        "Fixed the defect",
+                    ]
+                    first = [rpc(self.IDANS)]
+                    if stage == "comment":
+                        first.append(rpc({"ok": True}))
+                    first.append((status, "application/json", b"{}"))
+                    code, _, err, _ = self.run_writes(
+                        argv, first, {"LINEAR_BOARD_CACHE_DIR": tmp}
+                    )
+                    self.assertNotEqual(code, 0)
+                    retry = [rpc(self.IDANS), rpc({"ok": True})]
+                    if stage == "state":
+                        retry.append(rpc({"ok": True}))
+                    code, _, err, calls = self.run_writes(
+                        argv, retry, {"LINEAR_BOARD_CACHE_DIR": tmp}
+                    )
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(
+                        [c["name"] for c in calls],
+                        (
+                            ["identities", "linear_status", "linear_comment"]
+                            if stage == "state"
+                            else ["identities", "linear_comment"]
+                        ),
+                    )
+
+    def test_resolution_unknown_state_retry_does_not_claim_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["status", "AFC-8", "completed", "--resolution", "Fixed the defect"]
+            for status in (408, 422, 429, 503):
+                with tempfile.TemporaryDirectory() as cache:
+                    self.run_writes(
+                        argv,
+                        [rpc(self.IDANS), (status, "application/json", b"{}")],
+                        {"LINEAR_BOARD_CACHE_DIR": cache},
+                    )
+                    code, _, err, calls = self.run_writes(
+                        argv, [rpc(self.IDANS)], {"LINEAR_BOARD_CACHE_DIR": cache}
+                    )
+                    self.assertNotEqual(code, 0)
+                    self.assertIn("may or may not have applied", err)
+                    self.assertNotIn("completed state change", err)
+                    self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_resolution_journal_never_keeps_hosted_echoed_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, _ = self.run_writes(
+                ["status", "AFC-8", "completed", "--resolution", "Private resolution tail"],
+                [
+                    rpc(self.IDANS),
+                    rpc({"body": "Private resolution tail"}, text="Private resolution tail"),
+                    rpc({"body": "Private resolution tail"}, text="Private resolution tail"),
+                ],
+                {"LINEAR_BOARD_CACHE_DIR": tmp},
+            )
+            self.assertEqual(code, 0, err)
+            self.assertNotIn(
+                "Private resolution tail", (Path(tmp) / "remote-resolution.json").read_text()
+            )
+
+    def test_resolution_journal_busy_and_existing_ttl_boundary(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            unittest.mock.patch.dict(os.environ, {"LINEAR_BOARD_CACHE_DIR": tmp}),
+        ):
+            store = board.RemoteResolutionStore("CODEX", "binding", {"id": "AFC-9"}, "state")
+            with unittest.mock.patch.object(board.time, "time", return_value=1000):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "send")
+                self.assertEqual(store.begin("digest", "linear_status")[0], "busy")
+                store.finish({"structured": {"completed": True}, "text": ""})
+            with unittest.mock.patch.object(board.time, "time", return_value=1001):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "duplicate")
+            with unittest.mock.patch.object(
+                board.time, "time", return_value=1000 + board.IDEM_TTL_S + 1
+            ):
+                self.assertEqual(store.begin("digest", "linear_status")[0], "send")
 
     def test_remote_with_mac_collab_backend_fails_closed_without_exec_or_call(self):
         with unittest.mock.patch.object(board.os, "execv") as ex:
@@ -394,9 +822,16 @@ class NativeEcho(unittest.TestCase):
         def run(argv, **kwargs):
             call = json.loads(kwargs["input"].splitlines()[-1])
             name = call["params"]["name"]
-            result = (
-                {"seat": "ECHO", "app": "FleetOPS"} if name == "linear_whoami" else {"ok": True}
-            )
+            if name == "identities":
+                result = {
+                    "default_identity": "ECHO",
+                    "authenticated_seat": "ECHO",
+                    "identities": [{"identity": "ECHO"}],
+                }
+            elif name == "linear_whoami":
+                result = {"seat": "ECHO", "app": "FleetOPS"}
+            else:
+                result = {"ok": True}
             response = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -440,7 +875,7 @@ class NativeEcho(unittest.TestCase):
             unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
         ):
             status, ctype, data = board._native_echo_post(b"{}", True)
-        result, error = board._remote_answer(ctype, data, "linear_comment", True)
+        result, _parts, error = board._remote_answer(ctype, data, "linear_comment", True)
         self.assertIsNone(result)
         self.assertIn("may or may not", error)
         self.assertNotIn("private transport details", error)
