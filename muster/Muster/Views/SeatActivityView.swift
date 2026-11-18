@@ -708,7 +708,7 @@ struct SeatActivityView: View {
         .help(server.isCurrent
             ? ApplyCopy.join(
                 "The provider quota the server's eavesdropper publishes for this seat.",
-                "Today's eavesdropper runs no model and publishes none, so this reads Not reported."
+                "Today's eavesdropper runs no model and publishes none."
             )
             : SeatActivityText.display(server.help))
     }
@@ -813,7 +813,7 @@ struct SeatActivityView: View {
         .frame(width: quotaWidth, alignment: .leading)
         .help(cellHelp(row.quota, known: ApplyCopy.join(
             "The provider quota the Mac's eavesdropper publishes for this seat.",
-            "Today's eavesdropper runs no model and publishes none, so this reads Not reported."
+            "Today's eavesdropper runs no model and publishes none, so a reading here comes from an older one."
         )))
     }
 
