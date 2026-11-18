@@ -34,6 +34,7 @@ RUN groupadd --system --gid 10001 simpletools \
 WORKDIR /app
 # The entry script and the package must be siblings:  the script puts its own directory on sys.path.
 COPY scripts/simple-chat /app/scripts/simple-chat
+COPY scripts/fleet_infisical_bootstrap.py /app/scripts/
 COPY scripts/simple_tools /app/scripts/simple_tools
 COPY scripts/fleet-ops-eavesdropper-settings.json /app/scripts/
 COPY scripts/fleet_infisical.py /app/scripts/

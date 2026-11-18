@@ -5,6 +5,7 @@ import os
 import secrets
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -30,7 +31,7 @@ class RetiredSessionTests(unittest.TestCase):
         api.assert_not_called()
 
     def test_legacy_allow_session_argument_never_authorizes_a_tokenless_read(self):
-        env = {client.ENV_PROJECT: "00000000-0000-4000-8000-000000000042"}
+        env = {client.ENV_PROJECT: str(uuid.UUID(int=42, version=4))}
         with (
             mock.patch.object(client.sys.stdin, "isatty", return_value=True),
             mock.patch.object(
