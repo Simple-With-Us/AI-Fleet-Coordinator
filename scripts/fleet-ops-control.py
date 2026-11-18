@@ -1265,6 +1265,17 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _declared_length(response):
+    """The response's Content-Length as a non-negative int, or None when it has none."""
+    headers = getattr(response, "headers", None)
+    try:
+        value = headers.get("Content-Length") if headers is not None else None
+        length = int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return length if length is not None and length >= 0 else None
+
+
 def _read_router_health_body(response, max_bytes, deadline):
     """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
     raw_fp = getattr(response, "fp", None)
@@ -1273,10 +1284,14 @@ def _read_router_health_body(response, max_bytes, deadline):
     chunks = bytearray()
     limit = max_bytes + 1
     is_closed = getattr(response, "isclosed", None)
+    declared = _declared_length(response)
     while len(chunks) < limit:
-        # With a Content-Length, http.client closes the response, and its socket, as soon as
-        # that many bytes are read:  the body is complete, and a timeout set on the closed
-        # socket would fail with a bad file descriptor.
+        # A body with a Content-Length is complete once that many bytes are read.  Reading on
+        # would wait on a kept-alive socket (Python 3.9's read1 never closes a known-length
+        # response), or set a timeout on the socket http.client already closed (3.11 and
+        # later), which fails with a bad file descriptor.
+        if declared is not None and len(chunks) >= declared:
+            break
         if chunks and is_closed is not None and is_closed():
             break
         remaining = deadline - time.monotonic()
@@ -1284,7 +1299,10 @@ def _read_router_health_body(response, max_bytes, deadline):
             raise TimeoutError("router health read deadline exceeded")
         if sock is not None and hasattr(sock, "settimeout") and sock.fileno() != -1:
             sock.settimeout(remaining)
-        chunk = read_fn(min(4096, limit - len(chunks)))
+        size = min(4096, limit - len(chunks))
+        if declared is not None:
+            size = min(size, declared - len(chunks))
+        chunk = read_fn(size)
         if not chunk:
             break
         chunks.extend(chunk)
