@@ -242,9 +242,10 @@ wake = "inbox"
 # ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like
 # every other seat with a module:  the router owns the capture, the target selection, the durable
 # queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
-# only after its own path had answered a real wake.  The legacy bridge's own URL and its
-# own key are read through the approved route (fleet-secrets get ZC_ROUTINE_URL --path /zulip),
-# so a rollback has a value to point at.  The cutover is in docs/protocols/zcode-wakes.md.
+# only after its own path had answered a real wake.  The legacy bridge's own URL is read
+# through the approved route (fleet-secrets get ZC_ROUTINE_URL --path /zulip) and its own key
+# is already in the loader's secondary read, so a rollback has a value to point at.  The
+# cutover is in docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
