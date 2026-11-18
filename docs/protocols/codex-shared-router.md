@@ -141,9 +141,18 @@ server, and it had delivered nothing:  the server's wake ledger holds no wake fo
 nothing that worked was removed with it.  The live block is moved to the sample's block by the
 apply, and that apply is the cutover:  it writes the sample's block for every seat it manages,
 this seat and ZC among them, so the first apply after the image carries the new sample moves
-both seats to the router whatever the operator meant to move.  The three gates above are
-therefore checked before that apply runs and not after it, and the seat stays on the binding
+both seats to the router whatever the operator meant to move.  Both seats' three gates are
+therefore checked before that apply runs and not after it, and each seat stays on the binding
 it has for as long as no apply has moved it.
+
+One apply moves both seats, so each seat's own gates are the ones that authorize it, and one
+seat's evidence is never the other's:  this seat's three gates are the ones above, and ZC's
+three gates are the ones in `docs/protocols/zcode-wakes.md`, where the ZC seat's own review,
+its own live answer and its own real wake are recorded.  Neither seat's legacy binding had
+delivered anything when the apply replaced it:  the server's wake ledger holds no wake for
+this seat at all, and the legacy bridge's own ledger on the server holds 83 wakes for ZC and
+not one of them was delivered, so no path that worked was removed before a replacement had
+answered one.
 
 The steps, in this order.
 

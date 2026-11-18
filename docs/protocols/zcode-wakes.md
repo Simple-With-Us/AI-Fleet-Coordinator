@@ -137,11 +137,14 @@ cutover that does not work never leaves the seat without a route.
     and `ZC_ROUTINE_URL` in AFC prod `/zulip` is re-pointed at the bridge's URL that Fleet-OPS
     `/zulip` holds, which is the one write the rollback needs outside the server.  Both names
     are the seat's own, so the settings-edit path writes that routine, and the daemon picks it
-    up on the reload that write ends with.  The sample has to come back with it:  the sample
+    up on the reload that write ends with.  The sample has to come back with it:  the sample
     still carries the router's binding for this seat, so the next apply would move the seat
-    back to the router,
-    and the sample's `[seat.ZC]` block is edited to the bridge's binding before that can
-    happen.  The container is restarted with it:  the environment is read once at the start, so
+    back to the router, and the sample's `[seat.ZC]` block is edited to the bridge's binding
+    in the repo's `scripts/simple_tools/server/listener.toml`, the file of record, and an
+    image carrying that edit is deployed, before that can happen:  the apply reads the sample
+    from the image's own copy of it, so an edit inside the running container is lost at the
+    next image refresh and the next apply writes the router's binding back.
+    The container is restarted with it:  the environment is read once at the start, so
     a reload alone would leave the routine unset and the seat would not be woken at all.  The
     capture the seat had before the cutover comes back without any of that:  `wake = "inbox"`
     and a reload alone put the seat back on the live file's own binding, and it too is undone
@@ -241,7 +244,8 @@ one wake router's, and the names below are the bridge's.
     and `ZC_ROUTINE_URL` in AFC prod `/zulip` holds the bridge's tailnet URL,
     `http://<jay-server tailnet ip>:8791/wake/ZC`.  The bridge's own URL is also kept in
     Fleet-OPS `/zulip` under `ZC_ROUTINE_URL` (its TLS front on the same bridge), so a
-    rollback has a URL to copy.  The change is made in the sample, the file of record, and
+    rollback has a URL to copy.  The change is made in the repo's
+    `scripts/simple_tools/server/listener.toml`, the file of record, and
     `apply_live_config.py --apply` writes it into the live file.  The server loader reads the
     key from Fleet-OPS `/zulip` (its secondary read, `INFISICAL_LISTENER_READ_PROJECT_ID` in
     `server/infisical_env.py`, whose name set `_secondary_names` builds) and the URL from AFC
