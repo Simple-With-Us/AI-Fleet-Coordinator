@@ -5,6 +5,7 @@ Compiles the exact production ingress body with fake Security functions. This pr
 one create attempt, no lookup/update/delete/retry, duplicate refusal and cleanup.
 It does not qualify Apple's duplicate enforcement or live Keychain custody.
 """
+
 import pathlib
 import subprocess
 import tempfile
@@ -17,7 +18,7 @@ body = source[start:end]
 for forbidden in ("lookup(", "SecKeychainFind", "SecKeychainItemModify", "SecKeychainItemDelete"):
     assert forbidden not in body, forbidden
 assert body.count("SecKeychainItemCreateFromContent(") == 1
-preamble = r'''
+preamble = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,8 +51,8 @@ static void CFRelease(void *v) { (void)v;++releases; }
 static OSStatus SecKeychainItemCreateFromContent(int c, void *l, UInt32 n, const void *s, void *k, void *a, void *v) {
     (void)c;(void)l;(void)n;(void)s;(void)k;(void)a;(void)v;++attempts;return outcome;
 }
-'''
-main = r'''
+"""
+main = r"""
 int main(int argc, char **argv) {
     if (argc != 2) return 10;
     outcome = atoi(argv[1]);
@@ -60,12 +61,14 @@ int main(int argc, char **argv) {
     if (attempts != 1 || wipes != 1 || releases != 3) return 12;
     return 0;
 }
-'''
+"""
 with tempfile.TemporaryDirectory() as tmp:
     c = pathlib.Path(tmp) / "ingress.c"
     exe = pathlib.Path(tmp) / "ingress"
     c.write_text(preamble + body + main)
-    subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+    subprocess.run(
+        ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True
+    )
     for outcome in (0, -25299, -25293, -1):
         subprocess.run([str(exe), str(outcome)], input=b"x", check=True)
 print("PASS: exact ingress body, one create, duplicate/error refusal, cleanup; stubs only")
