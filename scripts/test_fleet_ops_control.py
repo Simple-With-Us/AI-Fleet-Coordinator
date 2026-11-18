@@ -379,6 +379,11 @@ class AllowlistNotesTests(Base):
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
         ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
+        ),
         "com.jay.fleet-mac-services": (
             "reporting",
             "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "
