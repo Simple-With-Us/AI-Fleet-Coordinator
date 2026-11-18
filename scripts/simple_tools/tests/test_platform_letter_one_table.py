@@ -28,7 +28,9 @@ class Base(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
-        os.makedirs(self.home)
+        if os.path.islink(self.home):
+            raise RuntimeError("refusing a symlinked directory: %s" % self.home)
+        os.makedirs(self.home, mode=0o700)
         self.fake = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
         self.addCleanup(self.fake.uninstall)
 
@@ -227,9 +229,9 @@ class UnletteredSessionsTests(MiniMaxRow):
         conn.close()
         self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
 
-    def test_a_malformed_session_id_is_an_error_and_not_a_skipped_row(self) -> None:
-        """An incomplete inventory must not read as a finished scan, so a malformed id is an
-        error."""
+    def test_a_malformed_session_id_is_skipped_and_not_silent(self) -> None:
+        """One corrupt row neither stops the pass nor passes unnoticed:  it is skipped and said
+        out loud, so the inventory that was taken is never read as a complete one."""
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(
@@ -238,8 +240,15 @@ class UnletteredSessionsTests(MiniMaxRow):
                 (None, "A Broken Row", "conversation", None, 0, int((time.time() - 3600) * 1000)),
             )
         conn.close()
-        with self.assertRaises(ValueError):
-            PM.minimax_unlettered_sessions(self.env())
+        self.add("m-4100", "The One That Needs A Letter", age=7200)
+        import sys
+        from unittest import mock
+
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found, ["m-4100"])
+        self.assertIn("malformed", stderr.getvalue())
 
     def test_a_row_with_no_timestamp_is_of_unknown_age_and_is_a_candidate(self) -> None:
         """The chat that predates the hook is the one with no timestamp, so the age window must
@@ -264,11 +273,90 @@ class UnletteredSessionsTests(MiniMaxRow):
         self.add("m-2000", "The One That Needs A Letter", age=7200)
         self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-2000"])
 
+    def test_the_rows_of_unknown_age_come_first(self) -> None:
+        """A row with no timestamp is the chat that predates the hook, and it is the one a repair
+        pass can least afford to miss:  it is read before the dated rows, so the scan's limit of
+        candidates cannot be spent on the dated ones first."""
+        for n in range(25):
+            sid = "m-2%03d" % n
+            self.add(sid, "Dated", age=3600 + n)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-untimed", "From Before The Hook", "conversation", None, 0, None),
+            )
+        conn.close()
+        found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found[0], "m-untimed")
+        self.assertIn("m-untimed", found)
+        # The scan still stops at its own limit of candidates.
+        self.assertLessEqual(len(found), PM.UNLETTERED_SCAN)
+
+    def test_the_scan_reads_bounded_batches(self) -> None:
+        """The scan asks the store for one bounded batch at a time, so a busy host is not read
+        whole, and it stops as soon as it holds the candidates it needs."""
+        for n in range(25):
+            sid = "m-3%03d" % n
+            self.add(sid, "Lettered", age=3600 + n)
+            self.write_note(sid)
+        self.add("m-3999", "The One That Needs A Letter", age=7200)
+        from unittest import mock
+
+        real_connect = sqlite3.connect
+        seen: list[str] = []
+
+        class Recording:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, params=()):
+                seen.append(sql)
+                return self._conn.execute(sql, params)
+
+            def close(self):
+                self._conn.close()
+
+        def connect(*args, **kwargs):
+            return Recording(real_connect(*args, **kwargs))
+
+        with mock.patch.object(PM.sqlite3, "connect", side_effect=connect):
+            found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found, ["m-3999"])
+        self.assertTrue(seen, "the scan asked the store for nothing")
+        for sql in seen:
+            self.assertIn("LIMIT", sql, sql)
+
+    def test_a_malformed_session_id_is_skipped_and_said(self) -> None:
+        """One corrupt row does not silence the pass:  the chat that needs a letter is still
+        found, and the corrupt row is said out loud so it never reads as a chat that was
+        considered and left alone."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("", "Corrupt", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        self.add("m-4000", "The One That Needs A Letter", age=7200)
+        import sys
+        from unittest import mock
+
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found, ["m-4000"])
+        self.assertIn("malformed", stderr.getvalue())
+
     def test_a_store_path_with_punctuation_is_still_read(self) -> None:
         """The store is opened by a URI that percent-encodes the path, so a folder whose name
         holds a question mark or a hash is read and not skipped."""
         home = os.path.join(self.tmp.name, "home?with#punctuation")
-        os.makedirs(home)
+        if os.path.islink(home):
+            raise RuntimeError("refusing a symlinked directory: %s" % home)
+        os.makedirs(home, mode=0o700)
         store = os.path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
         os.makedirs(os.path.dirname(store))
         conn = sqlite3.connect(store)

@@ -34,6 +34,7 @@ import os
 import pathlib
 import re
 import sqlite3
+import sys
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -222,6 +223,9 @@ def minimax_chat_payload(sid: str) -> Mapping[str, Any]:
 #: chat this pass was never about.  The window is wide because the candidates are the chats that started
 #: before the hook was installed, and those are as old as the gap between the two.
 UNLETTERED_SCAN = 20
+#: How many rows one query reads at a time.  The scan reads batches and stops as soon as it
+#: holds the candidates it needs, so a busy host is not read whole.
+UNLETTERED_BATCH = 200
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 90 * 86400
 #: How long a read of the session store waits for a locked one before it reads nothing.
@@ -240,9 +244,9 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     what the pass looks for.
 
     Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the columns
-    it needs) answers None:  no pass this time.  A row whose session id is malformed is an error and not a
-    skipped row, so an incomplete inventory never reads as a finished scan.  A chat's note is read again
-    in its own replayed start before anything changes."""
+    it needs) answers None:  no pass this time.  A row whose session id is malformed is skipped and said
+    out loud on stderr, so one corrupt row neither stops the pass nor passes unnoticed.  A chat's note is
+    read again in its own replayed start before anything changes."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return None
@@ -253,38 +257,57 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         )
     except (sqlite3.Error, OSError, ValueError):
         return None
+    found: list[str] = []
+    malformed = 0
+    offset = 0
     try:
-        # The window applies to a chat whose age is known:  a row with no timestamp is of unknown age,
-        # and it is the chat that predates the hook, so the window must not drop it.
-        rows = conn.execute(
-            "SELECT session_id FROM local_runtime_sessions"
-            " WHERE session_kind IN (?, ?)"
-            " AND (parent_session_id IS NULL OR parent_session_id = '')"
-            " AND (archived IS NULL OR archived = 0)"
-            " AND (created_at_ms IS NULL"
-            " OR (created_at_ms >= ? AND created_at_ms <= ?))"
-            " ORDER BY created_at_ms DESC",
-            (
-                *CHAT_KINDS,
-                (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
-                (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
-            ),
-        ).fetchall()
+        while len(found) < UNLETTERED_SCAN:
+            # The window applies to a chat whose age is known:  a row with no timestamp is of unknown age,
+            # and it is the chat that predates the hook, so the window must not drop it.  Those rows come
+            # first, because a row whose age is unknown is the one a repair pass can least afford to miss,
+            # and the newest of the known rows come after them.  The query reads one bounded batch at a
+            # time, so a busy host is not read whole.
+            rows = conn.execute(
+                "SELECT session_id FROM local_runtime_sessions"
+                " WHERE session_kind IN (?, ?)"
+                " AND (parent_session_id IS NULL OR parent_session_id = '')"
+                " AND (archived IS NULL OR archived = 0)"
+                " AND (created_at_ms IS NULL"
+                " OR (created_at_ms >= ? AND created_at_ms <= ?))"
+                " ORDER BY created_at_ms IS NULL DESC, created_at_ms DESC"
+                " LIMIT ? OFFSET ?",
+                (
+                    *CHAT_KINDS,
+                    (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
+                    (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+                    UNLETTERED_BATCH,
+                    offset,
+                ),
+            ).fetchall()
+            if not rows:
+                break
+            offset += len(rows)
+            for (sid,) in rows:
+                if not isinstance(sid, str) or not sid:
+                    # A row the store cannot name is skipped, and it is said:  a corrupt row must not
+                    # read as a chat that was considered and left alone.
+                    malformed += 1
+                    continue
+                if os.path.isfile(PL.note_path(env, SEAT, sid)):
+                    continue  # lettered already:  the pass has nothing to do for it
+                found.append(sid)
+                if len(found) >= UNLETTERED_SCAN:
+                    break
+            if len(rows) < UNLETTERED_BATCH:
+                break  # the store is read to its end
     except sqlite3.Error:
         return None  # a store this old cannot say what it holds:  no pass
     finally:
         conn.close()
-    found: list[str] = []
-    for (sid,) in rows:
-        if not isinstance(sid, str) or not sid:
-            raise ValueError(
-                "invalid session_id in local_runtime_sessions: %s" % type(sid).__name__
-            )
-        if os.path.isfile(PL.note_path(env, SEAT, sid)):
-            continue  # lettered already:  the pass has nothing to do for it
-        found.append(sid)
-        if len(found) >= UNLETTERED_SCAN:
-            break  # the limit counts candidates:  the rows above them are already lettered
+    if malformed:
+        sys.stderr.write(
+            "platform-letter minimax: %d malformed session id(s) skipped\n" % malformed
+        )
     return found
 
 
