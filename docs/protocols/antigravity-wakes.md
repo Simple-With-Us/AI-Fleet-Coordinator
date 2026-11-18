@@ -171,11 +171,13 @@ reads `ssh:resume`.
   the rest of start-up has no known bound, so a turn may have run.  It was refused and dead before.
 - `resume-capture-<Error>`:  failed, a counted retry, since nothing ran.  The pipe or its thread
   could not be made.
+- `resume-<Error>`:  failed, a counted retry, since nothing ran.  `agy` could not be started
+  (an `OSError` from starting the process, such as `resume-PermissionError`).
 
 A quota, new-chat or timeout code keeps `delivered` null, because a turn had started or may
-have.  Only `resume-capture-<Error>` is `failed`, since nothing ran.  None of the others is
-`failed`, `busy` or `unreachable`, since each of those would retry against the quota or the
-missing sign-in, or run a turn twice.
+have.  Only `resume-capture-<Error>` and `resume-<Error>` are `failed`, since nothing ran.  None
+of the others is `failed`, `busy` or `unreachable`, since each of those would retry against the
+quota or the missing sign-in, or run a turn twice.
 
 **Why a quota ending is final, not `busy` (PR 2320).**  In the router, `busy` uses up no
 attempt and comes back every `busy_retry_seconds` (30 by default) until the wake is
