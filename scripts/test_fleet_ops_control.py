@@ -5881,6 +5881,14 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
+                    # The real router sends a Content-Length:  http.client closes the response,
+                    # and its socket, as soon as that many bytes are read.  The reader must stop
+                    # there, not set a timeout on the closed socket (read_failed on the server).
+                    state["headers"] = {"Content-Length": str(len(state["body"]))}
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state["headers"] = {}
                     state.update(
                         status=503,
                         body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',

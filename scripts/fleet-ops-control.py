@@ -1272,11 +1272,17 @@ def _read_router_health_body(response, max_bytes, deadline):
     read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
     chunks = bytearray()
     limit = max_bytes + 1
+    is_closed = getattr(response, "isclosed", None)
     while len(chunks) < limit:
+        # With a Content-Length, http.client closes the response, and its socket, as soon as
+        # that many bytes are read:  the body is complete, and a timeout set on the closed
+        # socket would fail with a bad file descriptor.
+        if chunks and is_closed is not None and is_closed():
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("router health read deadline exceeded")
-        if sock is not None and hasattr(sock, "settimeout"):
+        if sock is not None and hasattr(sock, "settimeout") and sock.fileno() != -1:
             sock.settimeout(remaining)
         chunk = read_fn(min(4096, limit - len(chunks)))
         if not chunk:
@@ -2640,10 +2646,14 @@ def test_wake_detail(reduced, chat):
     name = _test_wake_name(chat)
     answer = reduced["answer"]
     router = reduced["router"]
-    delivery = {True: "on", False: "off, so a real wake would be held"}.get(router["delivery"], "unknown")
+    delivery = {True: "on", False: "off, so a real wake would be held"}.get(
+        router["delivery"], "unknown"
+    )
     if reduced["passed"]:
         why = ", ".join(
-            f"{label} {value}" for label, value in (("pick", answer["pick"]), ("reason", answer["reason"])) if value
+            f"{label} {value}"
+            for label, value in (("pick", answer["pick"]), ("reason", answer["reason"]))
+            if value
         )
         return (
             f"the router accepted the dry run for {name} and picked that chat"
@@ -3954,7 +3964,9 @@ def handle(
                     result="planned",
                     detail=f"sends the wake router one dry-run wake addressed to {_test_wake_name(chat)};  "
                     "the router picks as for a real wake, delivers nothing and logs one test receipt",
-                    testWakeTarget={key: chat[key] for key in ("seat", "letter", "generation", "host")},
+                    testWakeTarget={
+                        key: chat[key] for key in ("seat", "letter", "generation", "host")
+                    },
                 )
                 return answer, 0
             with contextlib.ExitStack() as held:
@@ -3966,13 +3978,16 @@ def handle(
                 try:
                     fields, code = run_test_wake(ctx, chat)
                 except Exception:  # noqa: BLE001 - a run that may have sent still gets its one audit row
-                    fields, code = {
-                        "ok": False,
-                        "result": "failed",
-                        "detail": TEST_WAKE_ERRORS["test_wake_failed"],
-                        "errorCode": "test_wake_failed",
-                        "testWake": None,
-                    }, 1
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "failed",
+                            "detail": TEST_WAKE_ERRORS["test_wake_failed"],
+                            "errorCode": "test_wake_failed",
+                            "testWake": None,
+                        },
+                        1,
+                    )
             answer.update(fields)
             audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
