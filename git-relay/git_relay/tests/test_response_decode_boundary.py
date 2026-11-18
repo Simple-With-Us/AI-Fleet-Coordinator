@@ -2,7 +2,12 @@
 
 import unittest
 
-from git_relay.github_client import (GitHubClient, MAX_RESPONSE_DEPTH, MAX_RESPONSE_NODES, _reject_surrogates)
+from git_relay.github_client import (
+    MAX_RESPONSE_DEPTH,
+    MAX_RESPONSE_NODES,
+    GitHubClient,
+    _reject_surrogates,
+)
 from git_relay.server import RelayGitHubError
 
 
@@ -62,8 +67,10 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
 
     def test_total_nodes_count_array_elements_and_object_keys(self):
         _reject_surrogates([0] * (MAX_RESPONSE_NODES - 1))
-        for value in ([0] * MAX_RESPONSE_NODES,
-                      {str(i): 0 for i in range(MAX_RESPONSE_NODES // 2)}):
+        for value in (
+            [0] * MAX_RESPONSE_NODES,
+            {str(i): 0 for i in range(MAX_RESPONSE_NODES // 2)},
+        ):
             with self.subTest(kind=type(value).__name__):
                 with self.assertRaises(RelayGitHubError) as raised:
                     _reject_surrogates(value)
