@@ -5957,6 +5957,324 @@ class RouterHealthTests(Base):
                 srv.shutdown()
 
 
+class RouterUnitAndTestWakeTests(Base):
+    """The router's unit state in `server router-health` and the dry run `server router-test-wake`."""
+
+    ROUTER_SHOW = show_text(
+        "LoadState=loaded",
+        "ActiveState=active",
+        "SubState=running",
+        "Result=success",
+        "ExecMainExitTimestamp=",
+    )
+
+    def with_router_unit(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"]["watch"] = [{"unit": foc.ROUTER_UNIT, "scope": "user"}]
+        self.config_path.write_text(json.dumps(config))
+
+    def health(self, runner=None):
+        context = self.ctx(runner=runner)
+        context.router_health = lambda: ({"healthy": True, "seats": {"CLAUDE": {}}}, None)
+        return self.run_main(["server", "router-health", "server", "--plan", "--json"], context)
+
+    def test_router_health_carries_the_routers_unit_state(self):
+        self.with_router_unit()
+        runner = ShowRunner(self.ROUTER_SHOW)
+        code, answer = self.health(runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            answer["routerUnit"],
+            {
+                "unit": "afc-wake-router.service",
+                "activeState": "active",
+                "subState": "running",
+                "unitResult": "success",
+                "lastExitAt": None,
+                "checkedAt": stamp(NOW),
+            },
+        )
+        (call,) = runner.calls
+        self.assertIn("--user", call["argv"])
+        self.assertEqual(call["argv"][-1], "afc-wake-router.service")
+        self.assertNotIn(foc.SUDO, call["argv"])
+
+    def test_the_unit_is_still_answered_when_the_router_does_not_answer(self):
+        self.with_router_unit()
+        runner = ShowRunner(
+            show_text(
+                "LoadState=loaded",
+                "ActiveState=failed",
+                "SubState=failed",
+                "Result=exit-code",
+                "ExecMainExitTimestamp=@1794126615",
+            )
+        )
+        context = self.ctx(runner=runner)
+        context.router_health = lambda: (None, "router_not_running")
+        code, answer = self.run_main(
+            ["server", "router-health", "server", "--plan", "--json"], context
+        )
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["errorCode"]),
+            (1, False, "unavailable", "router_not_running"),
+        )
+        self.assertEqual(
+            (answer["routerUnit"]["activeState"], answer["routerUnit"]["unitResult"]),
+            ("failed", "exit-code"),
+        )
+
+    def test_a_unit_that_cannot_be_read_is_null_and_the_health_still_answers(self):
+        for label, prepare, runner in (
+            ("not in the allowlist", lambda: None, ShowRunner(self.ROUTER_SHOW)),
+            ("systemctl fails", self.with_router_unit, ShowRunner(b"", status=1)),
+            ("systemctl is odd", self.with_router_unit, ShowRunner(b"not a property list\n")),
+        ):
+            with self.subTest(label):
+                prepare()
+                code, answer = self.health(runner)
+                self.assertEqual((code, answer["ok"]), (0, True))
+                self.assertIsNone(answer["routerUnit"])
+                self.assertIn("routerHealth", answer)
+
+    def test_the_repo_allowlist_lists_the_routers_unit_as_a_user_watch_entry(self):
+        config = foc.load_config()
+        self.assertEqual(config["watch"][foc.ROUTER_UNIT], {"scope": "user"})
+        self.assertNotIn(foc.ROUTER_UNIT, config["units"])
+
+    # -- router-test-wake --
+
+    def report(self, **changes):
+        document = {
+            "seat": "CLAUDE",
+            "routine": {
+                "url_env": "CLAUDE_ROUTINE_URL",
+                "key_env": "WAKE_ROUTER_KEY",
+                "auth": "bearer",
+                "method": "POST",
+                "host": "127.0.0.1:8794",
+            },
+            "router_health": {"healthy": True, "delivery": False, "reason": None},
+            "request": {"content": "the whole request body is never copied"},
+            "http_status": 200,
+            "answer": {
+                "test": True,
+                "status": "test",
+                "wake_id": "test-wake-20261117T010203Z-abcd1234",
+                "receipt_id": "0123456789abcdef",
+                "seat": "CLAUDE",
+                "letter": "II",
+                "letter_live": True,
+                "picked": "II",
+                "picked_letter": "II",
+                "picked_generation": 2,
+                "session_id": "native-session-0000-secret",
+                "host": "mac",
+                "thread_link": "https://private.example/thread/1",
+                "reason": "letter",
+                "candidates": ["II", "CC"],
+                "link_note": "free text the router wrote",
+                "delivered": False,
+                "error": "free text error",
+            },
+            "dry_run": True,
+            "picked": True,
+            "addressed": True,
+            "passed": True,
+        }
+        document.update(changes)
+        return document
+
+    def dry_run(self, reader, seat="CLAUDE", argv=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        context.reader = reader
+        return self.run_main(
+            argv or ["server", "router-test-wake", seat, "--plan", "--json"], context
+        )
+
+    def test_the_dry_run_runs_one_fixed_argv_and_reduces_the_report(self):
+        reader = StatusReader(out=json.dumps(self.report()).encode())
+        code, answer = self.dry_run(reader)
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["verb"], answer["target"]),
+            (0, True, "planned", "server router-test-wake", "CLAUDE"),
+        )
+        (call,) = reader.calls
+        self.assertTrue(call["argv"][0].endswith("/docker"))
+        self.assertEqual(
+            call["argv"][1:],
+            [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/app/scripts/simple_tools/server/entrypoint.sh",
+                "daemon",
+                "test-wake",
+                "--seat",
+                "CLAUDE",
+                "--json",
+            ],
+        )
+        self.assertEqual(call["timeout"], foc.ROUTER_TEST_WAKE_TIMEOUT)
+        self.assertEqual(call["max_bytes"], foc.ROUTER_TEST_WAKE_MAX_BYTES)
+        self.assertTrue(call["config_is_empty_and_private"])
+        reduced = answer["routerTestWake"]
+        self.assertEqual(
+            reduced,
+            {
+                "schema": 1,
+                "seat": "CLAUDE",
+                "passed": True,
+                "dry_run": True,
+                "picked": True,
+                "addressed": True,
+                "http_status": 200,
+                "error": None,
+                "routine": {
+                    "url_env": "CLAUDE_ROUTINE_URL",
+                    "key_env": "WAKE_ROUTER_KEY",
+                    "auth": "bearer",
+                    "method": "POST",
+                    "host": "127.0.0.1:8794",
+                },
+                "router_health": {"healthy": True, "delivery": False, "reason": None},
+                "answer": {
+                    "test": True,
+                    "status": "test",
+                    "wake_id": "test-wake-20261117T010203Z-abcd1234",
+                    "receipt_id": "0123456789abcdef",
+                    "seat": "CLAUDE",
+                    "letter": "II",
+                    "letter_live": True,
+                    "picked": True,
+                    "picked_letter": "II",
+                    "picked_generation": 2,
+                    "host": "mac",
+                    "reason": "letter",
+                    "delivered": False,
+                },
+            },
+        )
+        text = json.dumps(answer)
+        for leaked in ("native-session", "private.example", "free text", "whole request body"):
+            self.assertNotIn(leaked, text)
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_a_failed_dry_run_is_a_normal_answer_with_its_error_word(self):
+        for exit_status, error, expect in (
+            (1, "router_unreachable", "router_unreachable"),
+            (1, "not_the_router", "not_the_router"),
+            (1, "routine_not_configured: CLAUDE_ROUTINE_URL is not set", "routine_not_configured"),
+            (1, "a private sentence", "other"),
+        ):
+            with self.subTest(error=error):
+                document = self.report(passed=False, error=error, answer={}, router_health=None)
+                document.pop("http_status")
+                reader = StatusReader(status=exit_status, out=json.dumps(document).encode())
+                code, answer = self.dry_run(reader)
+                self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+                reduced = answer["routerTestWake"]
+                self.assertEqual((reduced["passed"], reduced["error"]), (False, expect))
+                self.assertIsNone(reduced["http_status"])
+                self.assertIsNone(reduced["router_health"])
+                self.assertNotIn("private sentence", json.dumps(answer))
+
+    def test_a_report_that_cannot_be_used_is_unavailable_with_a_word(self):
+        cases = (
+            ("docker missing", StatusReader(status=127), "docker_unavailable"),
+            ("timeout", StatusReader(status=124), "timeout"),
+            ("usage refusal", StatusReader(status=2, out=b"{}"), "seat_unknown"),
+            (
+                "container down",
+                StatusReader(status=1, err=b"Error: No such container: eavesdropper"),
+                "container_not_running",
+            ),
+            ("other failure", StatusReader(status=3, err=b"odd"), "read_failed"),
+            ("not json", StatusReader(out=b"not json"), "not_json"),
+            ("not an object", StatusReader(out=b"[1]"), "not_json"),
+            (
+                "other seat",
+                StatusReader(out=json.dumps(self.report(seat="AG")).encode()),
+                "not_json",
+            ),
+            (
+                "passed is not a bool",
+                StatusReader(out=json.dumps(self.report(passed="yes")).encode()),
+                "not_json",
+            ),
+            (
+                "too large",
+                StatusReader(out=b"x" * (foc.ROUTER_TEST_WAKE_MAX_BYTES + 1)),
+                "too_large",
+            ),
+        )
+        for label, reader, expect in cases:
+            with self.subTest(label):
+                code, answer = self.dry_run(reader)
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "unavailable", expect),
+                )
+                self.assertNotIn("odd", json.dumps(answer))
+
+    def test_hostile_values_are_dropped(self):
+        document = self.report()
+        document["routine"]["url_env"] = "lower case"
+        document["routine"]["host"] = "evil host with spaces"
+        document["router_health"]["reason"] = "A Private Sentence"
+        document["answer"]["reason"] = "Free Text"
+        document["answer"]["picked_generation"] = -3
+        document["answer"]["letter"] = "lowercase"
+        document["http_status"] = "200"
+        code, answer = self.dry_run(StatusReader(out=json.dumps(document).encode()))
+        self.assertEqual(code, 0)
+        reduced = answer["routerTestWake"]
+        self.assertIsNone(reduced["routine"]["url_env"])
+        self.assertIsNone(reduced["routine"]["host"])
+        self.assertEqual(reduced["router_health"]["reason"], "other")
+        self.assertIsNone(reduced["answer"]["reason"])
+        self.assertIsNone(reduced["answer"]["picked_generation"])
+        self.assertIsNone(reduced["answer"]["letter"])
+        self.assertIsNone(reduced["http_status"])
+
+    def test_refusals(self):
+        reader = StatusReader(out=json.dumps(self.report()).encode())
+        for seat in ("claude", "BAD SEAT", "X" * 40):
+            with self.subTest(seat=seat):
+                code, answer = self.dry_run(
+                    reader, argv=["server", "router-test-wake", seat, "--plan", "--json"]
+                )
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+        code, answer = self.dry_run(reader, platform="darwin")
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(reader.calls, [])
+        self.assertEqual(self.audit_rows(), [])
+        code, answer = self.dry_run(
+            reader, argv=["server", "router-test-wake", "CLAUDE", "--yes", "--json"]
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(reader.calls, [])
+        self.assertEqual(
+            [(r["verb"], r["result"]) for r in self.audit_rows()],
+            [("server router-test-wake", "refused")],
+        )
+
+    def test_ssh_forced_command_accepts_router_test_wake(self):
+        text = "server router-test-wake CLAUDE --plan --json"
+        self.assertEqual(
+            foc.parse_ssh_command(text),
+            ["server", "router-test-wake", "CLAUDE", "--plan", "--json"],
+        )
+        ctx = self.ctx(environ={"SSH_ORIGINAL_COMMAND": text})
+        ctx.reader = StatusReader(out=json.dumps(self.report()).encode())
+        out = io.StringIO()
+        code = foc.main(["--from-ssh"], ctx=ctx, out=out)
+        answer = json.loads(out.getvalue())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertIn("routerTestWake", answer)
+
+
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()

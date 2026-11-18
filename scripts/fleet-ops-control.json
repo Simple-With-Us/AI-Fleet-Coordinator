@@ -49,6 +49,7 @@
       {"unit": "fleet-housekeep.timer", "scope": "system"},
       {"unit": "box-disk-hygiene.timer", "scope": "system"},
       {"unit": "docker.service", "scope": "system"},
+      {"unit": "afc-wake-router.service", "scope": "user"},
       {"unit": "tailscaled.service", "scope": "system"}
     ],
     "updates": [

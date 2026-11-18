@@ -17,6 +17,7 @@
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
+  python3 scripts/fleet-ops-control.py server router-test-wake SEAT    --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -108,7 +109,25 @@ What it promises:
     URL, key or free text).  Like `eavesdropper-status` it takes no lock, writes no audit row for a
     plan, refuses `--yes` and any target but `server`, needs no allowlist entry, and answers
     `unavailable` with an `errorCode` word and exit status 1 when the router cannot be reached or
-    answers unexpectedly.  The `--from-muster` route does not offer it.
+    answers unexpectedly.  The answer, unavailable or not, also carries `routerUnit`, the state of the router's systemd
+    user unit (`afc-wake-router.service`, an allowlist `watch` entry) from the same fixed
+    `systemctl show` that `unit-status` runs, or null when that read cannot be made:  the router
+    can be listening with its unit not active, and the unit can be active while the router does
+    not answer, so each is said on its own.  The `--from-muster` route does not offer it.
+  * `server router-test-wake SEAT --plan` is a dry run of one wake for one seat:  one fixed
+    `docker exec --user simpletools eavesdropper /app/scripts/simple_tools/server/entrypoint.sh
+    daemon test-wake --seat SEAT --json` (the same pinned docker environment, at most 256 KiB, 40
+    seconds), which sends the seat's router one signed `"test": true` wake.  The router picks the
+    chat it would wake and delivers nothing (it appends one test receipt to its own record), and
+    the listener keeps no ledger row, inbox item or pin.  Only the seat word is taken from the
+    request, and only when it is a seat tag (capitals, digits, dash, at most 32);  everything else is
+    a constant of this file.  The command's JSON report is reduced to fixed shapes (words, booleans,
+    letters, counts, the routine's variable names and host), and the chat's native session id, its
+    thread link, its candidate list and every free-text note are dropped.  Like the other reads it
+    takes no lock, writes no audit row for a plan, refuses `--yes` and answers `unavailable` with an
+    `errorCode` word and exit status 1 when the report cannot be had;  a report that says the dry
+    run failed (the router is down, the seat has no routine) is a normal answer with `passed`
+    false.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -144,8 +163,8 @@ the one request that stores the trust list, so the route stays inert (every appr
 `no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
-eavesdropper-status`, `server operator-sessions`, `server operator-wakes` and
-`server router-health` alone, the store or router could not be read: result `unavailable`, with no
+eavesdropper-status`, `server operator-sessions`, `server operator-wakes`,
+`server router-health` and `server router-test-wake` alone, the store or router could not be read: result `unavailable`, with no
 command failed), 2 refused.
 """
 
@@ -569,6 +588,27 @@ ROUTER_HEALTH_UNAVAILABLE = {
     "not_json": "the wake router health answer is not a JSON object",
     "read_failed": "the wake router health could not be read",
 }
+ROUTER_UNIT = "afc-wake-router.service"
+# `server router-test-wake SEAT --plan`:  one fixed `daemon test-wake` in the Eavesdropper's container
+# (the listener's own command, which refuses to send to anything that is not the wake router).
+ROUTER_TEST_WAKE_VERB = "router-test-wake"
+ROUTER_TEST_WAKE_ENTRY = "/app/scripts/simple_tools/server/entrypoint.sh"
+ROUTER_TEST_WAKE_TIMEOUT = 40
+ROUTER_TEST_WAKE_MAX_BYTES = 256 * 1024
+ROUTER_TEST_WAKE_UNAVAILABLE = {
+    "docker_unavailable": "the server could not run docker, so the router test did not run",
+    "timeout": "the router test took too long, so the server gave up",
+    "container_not_running": "the Eavesdropper is not running on the server",
+    "read_failed": "the router test could not be run",
+    "too_large": "the router test report is larger than the allowed size",
+    "not_json": "the router test report is not a JSON object",
+    "seat_unknown": "the Eavesdropper does not hold that seat",
+}
+ROUTER_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+ROUTER_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.:\[\]-]{0,79}")
+ROUTER_WORD_RE = re.compile(r"[a-z][a-z0-9_:-]{0,47}")
+ROUTER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")
+ROUTER_TEST_WAKE_ERRORS = ("not_the_router", "router_unreachable", "routine_not_configured")
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -2358,7 +2398,28 @@ def reduce_router_health(document, now):
     }
 
 
-def router_health_read(ctx, target, mode):
+def router_unit_state(ctx, config):
+    """The `routerUnit` object of `server router-health`, or None when the unit cannot be read.
+
+    The same fixed `systemctl show` as `unit-status`, for the one unit this file names.  A unit
+    the allowlist does not list, a failed `systemctl` or an answer this reader does not accept is
+    None:  the router's own health is then still answered, and the caller says the unit is not
+    reported."""
+    try:
+        fields = unit_status(ctx, config, ROUTER_UNIT, "plan")
+    except Refused:
+        return None
+    return {
+        "unit": ROUTER_UNIT,
+        "activeState": fields["activeState"],
+        "subState": fields["subState"],
+        "unitResult": fields["unitResult"],
+        "lastExitAt": fields["lastExitAt"],
+        "checkedAt": fields["checkedAt"],
+    }
+
+
+def router_health_read(ctx, target, mode, config=None):
     """`(fields, exit_status)` of `server router-health server --plan`, or Refused."""
     _server_only(ctx)
     if mode != "plan":
@@ -2373,17 +2434,178 @@ def router_health_read(ctx, target, mode):
             document, reason = None, "not_json"
     if document is None:
         reason_code = reason if reason in ROUTER_HEALTH_UNAVAILABLE else "read_failed"
+        # The unit is the one fact that can still be said when the router is not answering:  a unit
+        # that is not active is a stopped router, and an active unit with no answer is not.
         return {
             "ok": False,
             "result": "unavailable",
             "detail": ROUTER_HEALTH_UNAVAILABLE[reason_code],
             "errorCode": reason_code,
+            "routerUnit": router_unit_state(ctx, config) if config is not None else None,
         }, 1
     return {
         "ok": True,
         "result": "planned",
         "detail": "read-only health of the server's wake router",
         "routerHealth": reduced,
+        "routerUnit": router_unit_state(ctx, config) if config is not None else None,
+    }, 0
+
+
+def _router_flag(value):
+    return value if isinstance(value, bool) else None
+
+
+def _router_match(value, pattern):
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+
+def _router_count(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10**9:
+        return None
+    return value
+
+
+def reduce_router_test_wake(document, seat):
+    """The `routerTestWake` object of `server router-test-wake`, from `daemon test-wake --json`.
+
+    {"schema": 1, "seat": name, "passed": bool, "dry_run": bool | null, "picked": bool | null,
+     "addressed": bool | null, "http_status": int | null, "error": word | null,
+     "routine": {"url_env", "key_env", "auth", "method", "host"},
+     "router_health": {"healthy", "delivery", "reason"} | null,
+     "answer": {"test", "status", "wake_id", "receipt_id", "seat", "letter", "letter_live",
+                "picked", "picked_letter", "picked_generation", "host", "reason", "delivered"}}
+
+    Every value is a bool, a count, a pattern-checked word or id, or null.  The chat's session id,
+    thread link, candidate list, link note and the command's free-text error are never copied."""
+    if not isinstance(document, dict) or document.get("seat") != seat:
+        raise ValueError("not_json")
+    passed = document.get("passed")
+    if not isinstance(passed, bool):
+        raise ValueError("not_json")
+    error_raw = document.get("error")
+    error = None
+    if isinstance(error_raw, str) and error_raw:
+        head = error_raw.split(":", 1)[0].strip()
+        error = head if head in ROUTER_TEST_WAKE_ERRORS else "other"
+    routine_raw = document.get("routine")
+    routine_raw = routine_raw if isinstance(routine_raw, dict) else {}
+    routine = {
+        "url_env": _router_match(routine_raw.get("url_env"), ROUTER_ENV_NAME_RE),
+        "key_env": _router_match(routine_raw.get("key_env"), ROUTER_ENV_NAME_RE),
+        "auth": _router_match(routine_raw.get("auth"), ROUTER_WORD_RE),
+        "method": _router_match(routine_raw.get("method"), re.compile(r"[A-Z]{3,8}")),
+        "host": _router_match(routine_raw.get("host"), ROUTER_HOST_RE),
+    }
+    health_raw = document.get("router_health")
+    health = None
+    if isinstance(health_raw, dict):
+        health = {
+            "healthy": _router_flag(health_raw.get("healthy")),
+            "delivery": _router_flag(health_raw.get("delivery")),
+            "reason": _router_match(health_raw.get("reason"), ROUTER_WORD_RE)
+            or ("other" if isinstance(health_raw.get("reason"), str) else None),
+        }
+    answer_raw = document.get("answer")
+    answer_raw = answer_raw if isinstance(answer_raw, dict) else {}
+    picked_raw = answer_raw.get("picked")
+    answer = {
+        "test": _router_flag(answer_raw.get("test")),
+        "status": _router_match(answer_raw.get("status"), ROUTER_WORD_RE),
+        "wake_id": _router_match(answer_raw.get("wake_id"), ROUTER_ID_RE),
+        "receipt_id": _router_match(answer_raw.get("receipt_id"), ROUTER_ID_RE),
+        "seat": _router_match(answer_raw.get("seat"), OPERATOR_SEAT_RE),
+        "letter": _router_match(answer_raw.get("letter"), OPERATOR_LETTER_RE),
+        "letter_live": _router_flag(answer_raw.get("letter_live")),
+        "picked": bool(picked_raw) if picked_raw is not None else None,
+        "picked_letter": _router_match(answer_raw.get("picked_letter"), OPERATOR_LETTER_RE),
+        "picked_generation": _router_count(answer_raw.get("picked_generation")),
+        "host": _router_match(answer_raw.get("host"), OPERATOR_WORD_RE),
+        "reason": _router_match(answer_raw.get("reason"), ROUTER_WORD_RE),
+        "delivered": _router_flag(answer_raw.get("delivered")),
+    }
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "seat": seat,
+        "passed": passed,
+        "dry_run": _router_flag(document.get("dry_run")),
+        "picked": _router_flag(document.get("picked")),
+        "addressed": _router_flag(document.get("addressed")),
+        "http_status": _router_count(document.get("http_status")),
+        "error": error,
+        "routine": routine,
+        "router_health": health,
+        "answer": answer,
+    }
+
+
+def router_test_wake_read(ctx, target, mode):
+    """`(fields, exit_status)` of `server router-test-wake SEAT --plan`, or Refused.
+
+    One fixed `docker exec` of the listener's own `daemon test-wake` (see the module text).  The
+    command exits 0 when the dry run passed and 1 when it did not, and prints its report as JSON
+    either way, so both are read;  any other exit (2 is a usage refusal, such as a seat the
+    Eavesdropper does not hold) or output that is not that report is `unavailable`."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("router-test-wake only reads: pass --plan")
+    if not OPERATOR_SEAT_RE.fullmatch(target or ""):
+        raise Refused("the seat is not a valid seat tag")
+    argv = [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        ROUTER_TEST_WAKE_ENTRY,
+        "daemon",
+        "test-wake",
+        "--seat",
+        target,
+        "--json",
+    ]
+
+    def unavailable(code):
+        return {
+            "ok": False,
+            "result": "unavailable",
+            "detail": ROUTER_TEST_WAKE_UNAVAILABLE[code],
+            "errorCode": code,
+        }, 1
+
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        return unavailable("docker_unavailable")
+    with scratch as config_dir:
+        status, out, err, over = ctx.reader(
+            argv,
+            timeout=ROUTER_TEST_WAKE_TIMEOUT,
+            env=_docker_env(config_dir),
+            max_bytes=ROUTER_TEST_WAKE_MAX_BYTES,
+        )
+    if over:
+        return unavailable("too_large")
+    if status == 127:
+        return unavailable("docker_unavailable")
+    if status == 124:
+        return unavailable("timeout")
+    if status == 2:
+        return unavailable("seat_unknown")
+    if status not in (0, 1):
+        return unavailable(_docker_failure(err))
+    try:
+        document = json.loads((out or b"").decode("utf-8"))
+        reduced = reduce_router_test_wake(document, target)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # Exit 1 with no report is docker's own failure (a container that is not running), and
+        # exit 0 with no report is a command that did not print one.
+        return unavailable("not_json" if status == 0 else _docker_failure(err))
+    return {
+        "ok": True,
+        "result": "planned",
+        "detail": "a dry run of one wake for the seat:  the router delivers nothing",
+        "routerTestWake": reduced,
     }, 0
 
 
@@ -3583,7 +3805,13 @@ def handle(
             answer.update(fields)
             return answer, code
         if scope == "server" and action == ROUTER_HEALTH_VERB:
-            fields, code = router_health_read(ctx, target, mode)
+            fields, code = router_health_read(ctx, target, mode, config)
+            answer.update(fields)
+            return answer, code
+        if scope == "server" and action == ROUTER_TEST_WAKE_VERB:
+            # A dry run of one wake through the router:  no lock, no audit row for a plan, `--yes`
+            # refused (audited, like every refused `--yes`).
+            fields, code = router_test_wake_read(ctx, target, mode)
             answer.update(fields)
             return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
@@ -4142,6 +4370,7 @@ def parse_ssh_command(text):
         "operator-sessions",
         "operator-wakes",
         ROUTER_HEALTH_VERB,
+        ROUTER_TEST_WAKE_VERB,
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
