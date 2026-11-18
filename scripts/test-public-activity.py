@@ -246,7 +246,15 @@ class PublicActivityTests(unittest.TestCase):
             env = {
                 key: value
                 for key, value in os.environ.items()
-                if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS", "GITHUB_TOKEN"}
+                if key
+                not in {
+                    "FLEET_OWNER",
+                    "SITE_BASE_URL",
+                    "FLEET_REPOS",
+                    "GITHUB_TOKEN",
+                    "LINEAR_API_KEY",
+                    "FLEET_LINEAR_API_KEY",
+                }
             }
             env.update(
                 {
@@ -391,7 +399,14 @@ class PublicActivityTests(unittest.TestCase):
             env = {
                 key: value
                 for key, value in os.environ.items()
-                if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS"}
+                if key
+                not in {
+                    "FLEET_OWNER",
+                    "SITE_BASE_URL",
+                    "FLEET_REPOS",
+                    "LINEAR_API_KEY",
+                    "FLEET_LINEAR_API_KEY",
+                }
             }
             env.update(
                 {"SITE_OUT": str(Path(tmp) / "site"), "ICS_OUT": str(Path(tmp) / "daily.ics")}
@@ -478,7 +493,14 @@ class PublicActivityTests(unittest.TestCase):
             env = {
                 key: value
                 for key, value in os.environ.items()
-                if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS"}
+                if key
+                not in {
+                    "FLEET_OWNER",
+                    "SITE_BASE_URL",
+                    "FLEET_REPOS",
+                    "LINEAR_API_KEY",
+                    "FLEET_LINEAR_API_KEY",
+                }
             }
             env.update(
                 {"SITE_OUT": str(Path(tmp) / "site"), "ICS_OUT": str(Path(tmp) / "daily.ics")}
@@ -552,6 +574,304 @@ class PublicActivityTests(unittest.TestCase):
         ):
             with self.subTest(title=title):
                 self.assertEqual(digest.strip_redundant_repo_label(title, "Clutch"), "fix startup")
+
+    def test_public_team_map_excludes_private_teams(self) -> None:
+        mapping = digest.load_public_team_map(["BotFleet", "codecaps", "AI-Fleet-Coordinator"])
+        self.assertEqual(
+            mapping,
+            {
+                "BF": "BotFleet",
+                "CC": "codecaps",
+                "AFC": "AI-Fleet-Coordinator",
+            },
+        )
+        self.assertNotIn("OPS", mapping)
+        self.assertNotIn("FLL", mapping)
+
+    def test_linear_issue_churn_enforces_public_boundary_and_pagination(self) -> None:
+        tz = ZoneInfo("America/Chicago")
+        since = date(2026, 11, 17)
+        pages = [
+            {
+                "issues": {
+                    "nodes": [
+                        {
+                            "identifier": "AFC-843",
+                            "number": 843,
+                            "title": "Hosted eavesdropper_status: Pass wake outcomes on",
+                            "url": "https://linear.app/simple-with-us/issue/AFC-843/hosted",
+                            "createdAt": "2026-11-18T15:16:09Z",
+                            "completedAt": "2026-11-18T17:39:05Z",
+                            "canceledAt": None,
+                            "state": {"name": "Done", "type": "completed"},
+                            "team": {"key": "AFC"},
+                            "delegate": {"name": "Claude"},
+                            "creator": {"name": "Claude"},
+                            "labels": {"nodes": [{"name": "claimed:CLAUDE"}]},
+                        },
+                        {
+                            "identifier": "OPS-1093",
+                            "number": 1093,
+                            "title": "Private ops issue must never appear",
+                            "url": "https://linear.app/simple-with-us/issue/OPS-1093/private",
+                            "createdAt": "2026-11-18T15:00:00Z",
+                            "completedAt": "2026-11-18T16:00:00Z",
+                            "canceledAt": None,
+                            "state": {"name": "Done", "type": "completed"},
+                            "team": {"key": "OPS"},
+                            "delegate": {"name": "Claude"},
+                            "creator": {"name": "Claude"},
+                            "labels": {"nodes": []},
+                        },
+                        {
+                            "identifier": "AFC-8",
+                            "number": 8,
+                            "title": "Old issue updated today",
+                            "url": "https://linear.app/simple-with-us/issue/AFC-8/old",
+                            "createdAt": "2026-08-20T18:05:54Z",
+                            "completedAt": "2026-09-13T07:50:39Z",
+                            "canceledAt": None,
+                            "state": {"name": "Done", "type": "completed"},
+                            "team": {"key": "AFC"},
+                            "delegate": None,
+                            "creator": {"name": "Jay Wedgeworth"},
+                            "labels": {"nodes": []},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "cur-1"},
+                }
+            },
+            {
+                "issues": {
+                    "nodes": [
+                        {
+                            "identifier": "CC-530",
+                            "number": 530,
+                            "title": "Fix CodeCaps timeline",
+                            "url": "https://linear.app/simple-with-us/issue/CC-530/fix",
+                            "createdAt": "2026-11-18T02:00:00Z",  # 2026-11-17 20:00 CST
+                            "completedAt": None,
+                            "canceledAt": None,
+                            "state": {"name": "Todo", "type": "unstarted"},
+                            "team": {"key": "CC"},
+                            "delegate": None,
+                            "creator": {"name": "Antigravity (AG)"},
+                            "labels": {"nodes": [{"name": "seat:AG"}]},
+                        },
+                        {
+                            "identifier": "BF-2686",
+                            "number": 2686,
+                            "title": "BF-2559 Scope 3: Editable minFreeDiskMb",
+                            "url": "https://linear.app/simple-with-us/issue/BF-2686/scope-3",
+                            "createdAt": "2026-11-10T12:00:00Z",
+                            "completedAt": None,
+                            "canceledAt": "2026-11-18T14:00:00Z",
+                            "state": {"name": "Duplicate", "type": "duplicate"},
+                            "team": {"key": "BF"},
+                            "delegate": {"name": "Echo (Instinct)"},
+                            "creator": {"name": "Jay Wedgeworth"},
+                            "labels": {"nodes": [{"name": "claimed:ECHO"}]},
+                        },
+                        {
+                            "identifier": "BF-2687",
+                            "number": 2687,
+                            "title": "Owner filed and closed with Codex",
+                            "url": "https://linear.app/simple-with-us/issue/BF-2687/owner-filed",
+                            "createdAt": "2026-11-18T12:00:00Z",
+                            "completedAt": "2026-11-18T13:00:00Z",
+                            "canceledAt": None,
+                            "state": {"name": "Done", "type": "completed"},
+                            "team": {"key": "BF"},
+                            "delegate": None,
+                            "creator": {"name": "Jay Wedgeworth"},
+                            "labels": {"nodes": [{"name": "claimed:CODEX"}]},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": "cur-2"},
+                }
+            },
+        ]
+        seen_vars: list[dict[str, object]] = []
+
+        def fake_graphql(_query: str, variables: dict[str, object], _tok: str) -> dict[str, object]:
+            seen_vars.append(variables)
+            return pages[len(seen_vars) - 1]
+
+        with patch.object(digest, "linear_graphql", side_effect=fake_graphql):
+            opened, closed = digest.fetch_linear_issue_churn(
+                ["AI-Fleet-Coordinator", "BotFleet", "codecaps"], since, "lin_api_fixture", tz
+            )
+
+        self.assertEqual(len(seen_vars), 2)
+        self.assertEqual(seen_vars[0]["teamKeys"], ["AFC", "BF", "CC"])
+        self.assertEqual(seen_vars[1]["cursor"], "cur-1")
+
+        opened_ids = [(d, it["identifier"], it["repo"], it["agents"]) for d, it in opened]
+        closed_ids = [
+            (d, it["identifier"], it["repo"], it["agents"], it["state"]) for d, it in closed
+        ]
+        self.assertEqual(
+            opened_ids,
+            [
+                (date(2026, 11, 18), "AFC-843", "AI-Fleet-Coordinator", ["claude"]),
+                (date(2026, 11, 17), "CC-530", "codecaps", ["ag"]),
+                (date(2026, 11, 18), "BF-2687", "BotFleet", []),
+            ],
+        )
+        self.assertEqual(
+            closed_ids,
+            [
+                (date(2026, 11, 18), "AFC-843", "AI-Fleet-Coordinator", ["claude"], "Done"),
+                (date(2026, 11, 18), "BF-2686", "BotFleet", ["instinct"], "Duplicate"),
+                (date(2026, 11, 18), "BF-2687", "BotFleet", ["codex"], "Done"),
+            ],
+        )
+
+    def test_linear_issues_render_in_html_markdown_and_ics(self) -> None:
+        day = date(2026, 11, 18)
+        opened = [
+            (
+                day,
+                {
+                    "repo": "codecaps",
+                    "number": 530,
+                    "identifier": "CC-530",
+                    "title": "Fix CodeCaps timeline",
+                    "url": "https://linear.app/simple-with-us/issue/CC-530/fix",
+                    "agents": ["ag"],
+                    "source": "linear",
+                },
+            )
+        ]
+        closed = [
+            (
+                day,
+                {
+                    "repo": "AI-Fleet-Coordinator",
+                    "number": 843,
+                    "identifier": "AFC-843",
+                    "title": "Hosted eavesdropper_status: Pass wake outcomes on",
+                    "url": "https://linear.app/simple-with-us/issue/AFC-843/hosted",
+                    "state": "Done",
+                    "state_type": "completed",
+                    "agents": ["claude"],
+                    "source": "linear",
+                },
+            ),
+            (
+                day,
+                {
+                    "repo": "BotFleet",
+                    "number": 2686,
+                    "identifier": "BF-2686",
+                    "title": "BF-2559 Scope 3: Editable minFreeDiskMb",
+                    "url": "https://linear.app/simple-with-us/issue/BF-2686/scope-3",
+                    "state": "Duplicate",
+                    "state_type": "duplicate",
+                    "agents": ["instinct"],
+                    "source": "linear",
+                },
+            ),
+        ]
+        days = sorted(digest.bucket_all([], opened, closed).values(), key=lambda d: d.day, reverse=True)
+        now = datetime(2026, 11, 18, 20, 0, tzinfo=UTC)
+        tz = ZoneInfo("America/Chicago")
+
+        md = digest.build_markdown(days, now, tz, "https://example.com")
+        html_doc = digest.build_html(days, now, tz, "https://example.com")
+        ics_doc = digest.build_daily_ics(days, now, "https://example.com")
+
+        self.assertIn("0 PRs merged · 1 issues opened · 2 issues closed", md)
+        self.assertIn("**AFC** `Claude` [AFC-843](https://linear.app/simple-with-us/issue/AFC-843/hosted):", md)
+        self.assertIn("BF-2559 Scope 3: Editable minFreeDiskMb _(Duplicate)_", md)
+
+        self.assertIn('<a href="https://linear.app/simple-with-us/issue/AFC-843/hosted">AFC-843</a>', html_doc)
+        self.assertIn('agent-logos/claude.svg', html_doc)
+        self.assertIn('agent-logos/ag.svg', html_doc)
+        self.assertIn('title="Instinct">Instinct</span>', html_doc)
+        self.assertIn('agent-logos/app-cc.png', html_doc)
+        self.assertIn("BF-2559 Scope 3: Editable minFreeDiskMb", html_doc)
+        self.assertIn('<span class="issue-state">(Duplicate)</span>', html_doc)
+        self.assertNotIn("#843", html_doc)
+
+        unfolded_ics = re.sub(r"\r?\n[ \t]", "", ics_doc)
+        self.assertIn("SUMMARY:Fleet: 0 merged · 1 opened · 2 closed", unfolded_ics)
+        self.assertIn("[AFC-843] (claude) Hosted eavesdropper_status", unfolded_ics)
+        self.assertIn("[BF-2686] (instinct) BF-2559 Scope 3: Editable minFreeDiskMb (Duplicate)", unfolded_ics)
+
+    def test_main_fetches_linear_issues_when_key_set_and_fails_on_linear_error(self) -> None:
+        day = date(2026, 11, 18)
+        lin_item = {
+            "repo": "BotFleet",
+            "number": 2686,
+            "identifier": "BF-2686",
+            "title": "Fix Mac build",
+            "url": "https://linear.app/simple-with-us/issue/BF-2686/fix",
+            "state": "Done",
+            "state_type": "completed",
+            "agents": ["claude"],
+            "source": "linear",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "SITE_OUT": str(root / "site"),
+                "ICS_OUT": str(root / "calendar" / "daily-digest.ics"),
+                "GITHUB_TOKEN": "fixture",
+                "LINEAR_API_KEY": "lin_api_fixture",
+            }
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(digest, "select_public_repos", return_value=["BotFleet"]),
+                    patch.object(digest, "fetch_merged_prs", return_value=[]),
+                    patch.object(digest, "fetch_issue_churn", return_value=([], [])),
+                    patch.object(
+                        digest,
+                        "fetch_linear_issue_churn",
+                        return_value=([(day, lin_item)], [(day, lin_item)]),
+                    ),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(digest.main(), 0)
+            finally:
+                os.chdir(cwd)
+            assert_public_artifact_boundary(root, ("site/index.html", "site/digest.md"))
+            self.assertIn("BF-2686", (root / "site" / "index.html").read_text())
+            self.assertIn("1 issues opened · 1 issues closed", (root / "site" / "digest.md").read_text())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "SITE_OUT": str(Path(tmp) / "site"),
+                "ICS_OUT": str(Path(tmp) / "daily.ics"),
+                "GITHUB_TOKEN": "fixture",
+                "LINEAR_API_KEY": "lin_api_fixture",
+            }
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(digest, "select_public_repos", return_value=["BotFleet"]),
+                patch.object(digest, "fetch_merged_prs", return_value=[]),
+                patch.object(digest, "fetch_issue_churn", return_value=([], [])),
+                patch.object(digest, "linear_graphql", side_effect=RuntimeError("Linear down")),
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(RuntimeError),
+            ):
+                digest.main()
+
+    def test_fleet_activity_workflow_wires_scoped_infisical_linear_fetch(self) -> None:
+        wf = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "fleet-activity-site.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("INFISICAL_SECRET_PATH: /fleet-activity", wf)
+        self.assertIn("INFISICAL_NAMES: LINEAR_API_KEY", wf)
+        self.assertIn("INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN", wf)
+        self.assertIn("scripts/infisical-fetch.mjs", wf)
+        self.assertIn("LINEAR_API_KEY:", wf)
 
 
 if __name__ == "__main__":

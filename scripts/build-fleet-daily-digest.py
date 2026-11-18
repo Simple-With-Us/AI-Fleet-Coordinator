@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build a public day-by-day activity digest: Markdown, HTML, and all-day ICS.
 
-Sources (verified-public GitHub repositories only):
-  - Merged pull requests
-  - Issues opened / closed / reopened
+Sources (verified-public repositories only):
+  - Merged GitHub pull requests
+  - Linear issues opened / closed (completed or canceled) for mapped public teams
+  - GitHub issues opened / closed (if any)
 
 Outputs (under site/ and calendar/):
   site/index.html          — browsable day outline
@@ -12,6 +13,7 @@ Outputs (under site/ and calendar/):
 
 Env:
   GITHUB_TOKEN / FLEET_GITHUB_TOKEN
+  LINEAR_API_KEY / FLEET_LINEAR_API_KEY (optional; omits Linear issues if unset)
   FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
   DIGEST_LOOKBACK_DAYS (default 21)
@@ -29,6 +31,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +47,37 @@ from ics_utils import ics_escape, join_ics
 from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos
 
 DEFAULT_REPOS = PUBLIC_REPOS
+DEFAULT_APPS_PATH = Path(__file__).resolve().parent.parent / "fleet-apps.json"
+LINEAR_GRAPHQL = "https://api.linear.app/graphql"
+_LINEAR_ISSUES_QUERY = """
+query($cursor: String, $since: DateTimeOrDuration!, $teamKeys: [String!]!) {
+  issues(
+    first: 100
+    after: $cursor
+    orderBy: updatedAt
+    filter: {
+      team: { key: { in: $teamKeys } }
+      updatedAt: { gte: $since }
+    }
+  ) {
+    nodes {
+      identifier
+      number
+      title
+      url
+      createdAt
+      completedAt
+      canceledAt
+      state { name type }
+      team { key }
+      delegate { name }
+      creator { name }
+      labels(first: 20) { nodes { name } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+""".strip()
 
 
 @dataclass
@@ -77,6 +111,79 @@ def token() -> str:
     if not t:
         raise SystemExit("error: set GITHUB_TOKEN or FLEET_GITHUB_TOKEN")
     return t
+
+
+def linear_token() -> str:
+    return (
+        os.environ.get("LINEAR_API_KEY", "").strip()
+        or os.environ.get("FLEET_LINEAR_API_KEY", "").strip()
+    )
+
+
+def _linear_headers(tok: str) -> dict[str, str]:
+    auth = f"Bearer {tok}" if tok.startswith("lin_oauth_") else tok
+    return {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+        "User-Agent": "AI-Fleet-Coordinator-daily-digest",
+    }
+
+
+def linear_graphql(query: str, variables: dict[str, Any], tok: str) -> dict[str, Any]:
+    """Execute a Linear GraphQL query with bounded transient retries."""
+    payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+    headers = _linear_headers(tok)
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        req = urllib.request.Request(LINEAR_GRAPHQL, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            last_exc = RuntimeError(f"Linear GraphQL HTTP {exc.code}: {body}")
+            if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(attempt + 1)
+                continue
+            raise last_exc from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_exc = RuntimeError(f"Linear GraphQL request failed: {exc}")
+            if attempt < 2:
+                time.sleep(attempt + 1)
+                continue
+            raise last_exc from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Linear GraphQL returned non-object response")
+        if data.get("errors"):
+            raise RuntimeError(f"Linear GraphQL errors: {data['errors'][:3]}")
+        result = data.get("data")
+        if not isinstance(result, dict):
+            raise RuntimeError("Linear GraphQL missing data payload")
+        return result
+    raise last_exc or RuntimeError("Linear GraphQL failed")
+
+
+def load_public_team_map(
+    repos: list[str], apps_path: Path | None = None
+) -> dict[str, str]:
+    """Map uppercase Linear team keys to verified-public GitHub repo names."""
+    path = apps_path or DEFAULT_APPS_PATH
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    public_by_lower = {r.casefold(): r for r in repos}
+    mapping: dict[str, str] = {}
+    for app in data.get("apps", []):
+        if not isinstance(app, dict):
+            continue
+        repo_name = str(app.get("repo") or "").strip()
+        acronym = str(app.get("acronym") or "").strip().upper()
+        if not repo_name or not acronym:
+            continue
+        canonical = public_by_lower.get(repo_name.casefold())
+        if canonical:
+            mapping[acronym] = canonical
+    return mapping
 
 
 def gh_get(url: str, tok: str) -> Any:
@@ -201,6 +308,103 @@ def fetch_issue_churn(
     return opened, closed
 
 
+def fetch_linear_issue_churn(
+    repos: list[str],
+    since: date,
+    tok: str,
+    tz: ZoneInfo,
+    apps_path: Path | None = None,
+    max_pages: int = 50,
+) -> tuple[list[tuple[date, dict[str, Any]]], list[tuple[date, dict[str, Any]]]]:
+    """Fetch Linear issues opened or closed since `since` for verified-public repos."""
+    team_map = load_public_team_map(repos, apps_path)
+    if not team_map:
+        return [], []
+
+    opened: list[tuple[date, dict[str, Any]]] = []
+    closed: list[tuple[date, dict[str, Any]]] = []
+    since_iso = datetime.combine(since, datetime.min.time(), tzinfo=tz).astimezone(UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    team_keys = sorted(team_map.keys())
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+
+    for _page in range(max_pages):
+        data = linear_graphql(
+            _LINEAR_ISSUES_QUERY,
+            {"cursor": cursor, "since": since_iso, "teamKeys": team_keys},
+            tok,
+        )
+        issues_conn = data.get("issues") or {}
+        nodes = issues_conn.get("nodes") or []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            team_key = str((node.get("team") or {}).get("key") or "").strip().upper()
+            # Defense in depth: ignore any issue outside the verified-public team map.
+            repo = team_map.get(team_key)
+            if not repo:
+                continue
+            identifier = str(node.get("identifier") or "").strip()
+            number = node.get("number")
+            title = str(node.get("title") or "").strip()
+            url = str(node.get("url") or "").strip()
+            state_obj = node.get("state") or {}
+            state_name = str(state_obj.get("name") or "").strip()
+            state_type = str(state_obj.get("type") or "").strip().lower()
+            created = parse_iso(node.get("createdAt"))
+            completed = parse_iso(node.get("completedAt"))
+            canceled = parse_iso(node.get("canceledAt"))
+            base = {
+                "repo": repo,
+                "number": number,
+                "identifier": identifier,
+                "title": title,
+                "url": url,
+                "state": state_name,
+                "state_type": state_type,
+                "source": "linear",
+            }
+            if created and to_local_day(created, tz) >= since:
+                opened.append(
+                    (
+                        to_local_day(created, tz),
+                        {
+                            **base,
+                            "when": created,
+                            "agents": _linear_issue_agents(node, closed=False),
+                        },
+                    )
+                )
+            closed_at: datetime | None = None
+            if state_type == "completed":
+                closed_at = completed
+            elif state_type in ("canceled", "duplicate"):
+                closed_at = canceled or completed
+            if closed_at and to_local_day(closed_at, tz) >= since:
+                closed.append(
+                    (
+                        to_local_day(closed_at, tz),
+                        {
+                            **base,
+                            "when": closed_at,
+                            "agents": _linear_issue_agents(node, closed=True),
+                        },
+                    )
+                )
+        page_info = issues_conn.get("pageInfo") or {}
+        next_cursor = page_info.get("endCursor")
+        if not page_info.get("hasNextPage") or not isinstance(next_cursor, str) or not next_cursor:
+            break
+        if next_cursor in seen_cursors:
+            break
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    return opened, closed
+
+
 def bucket_all(
     prs: list[tuple[date, dict[str, Any]]],
     opened: list[tuple[date, dict[str, Any]]],
@@ -220,10 +424,13 @@ def bucket_all(
     for d, item in closed:
         b(d).issues_closed.append(item)
 
+    def sort_key(x: dict[str, Any]) -> tuple[str, str, int]:
+        return (str(x.get("repo") or ""), str(x.get("source") or ""), int(x.get("number") or 0))
+
     for day in buckets.values():
-        day.merged_prs.sort(key=lambda x: (x["repo"], x.get("number") or 0))
-        day.issues_opened.sort(key=lambda x: (x["repo"], x.get("number") or 0))
-        day.issues_closed.sort(key=lambda x: (x["repo"], x.get("number") or 0))
+        day.merged_prs.sort(key=sort_key)
+        day.issues_opened.sort(key=sort_key)
+        day.issues_closed.sort(key=sort_key)
     return buckets
 
 
@@ -438,12 +645,13 @@ def strip_redundant_repo_label(text: str, repo: str) -> str:
             s = s[m.end() :].lstrip(" :-–—|/")
             changed = True
             continue
-        # bare Repo: or Repo -
-        m = re.match(r"^(" + alias_re.pattern + r")\s*[:\-–—|/]\s*", s, re.IGNORECASE)
-        if m:
-            s = s[m.end() :].lstrip()
-            changed = True
-            continue
+        # bare Repo: or Repo - (preserve issue keys like BF-2559 or ST-4600)
+        if not re.match(r"^(?:" + alias_re.pattern + r")-\d+\b", s, re.IGNORECASE):
+            m = re.match(r"^(" + alias_re.pattern + r")\s*[:\-–—|/]\s*", s, re.IGNORECASE)
+            if m:
+                s = s[m.end() :].lstrip()
+                changed = True
+                continue
         # bare Repo followed by whitespace then non-empty rest (not the whole title)
         m = re.match(r"^(" + alias_re.pattern + r")\s+", s, re.IGNORECASE)
         if m and len(s) > m.end() + 3:
@@ -617,6 +825,88 @@ def _split_agent_chain(raw: str) -> list[str]:
     """Split 'CURSOR/AG' or 'Codex / Claude' into individual seat tokens."""
     parts = re.split(r"\s*/\s*", (raw or "").strip())
     return [p for p in parts if p]
+
+
+def _normalize_linear_actor(raw: str) -> str:
+    """Resolve a Linear seat label or app display name to an AGENT_LOGO slug (or '')."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    for prefix in ("claimed:", "seat:"):
+        if low.startswith(prefix):
+            s = s[len(prefix) :].strip()
+            low = s.lower()
+            break
+    # Linear app names look like 'Echo (Instinct)', 'Antigravity (AG)', 'Jet (OpenAI dot)'.
+    base = re.sub(r"\s*\([^)]*\)\s*$", "", s).strip()
+    for candidate in (base, s):
+        if not candidate:
+            continue
+        low_cand = candidate.lower()
+        if low_cand.startswith("echo") or low_cand.startswith("wise"):
+            key = "instinct"
+        elif low_cand.startswith("jet"):
+            key = "jet"
+        else:
+            key = _normalize_agent_token(candidate)
+        if key in AGENT_LOGO:
+            return AGENT_LOGO[key][0]
+    return ""
+
+
+def _dedupe_slugs(slugs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for slug in slugs:
+        if slug and slug not in seen:
+            seen.add(slug)
+            out.append(slug)
+    return out
+
+
+def _linear_issue_agents(node: dict[str, Any], *, closed: bool) -> list[str]:
+    """Extract coding-seat slugs from Linear labels, delegate, and creator."""
+    claimed: list[str] = []
+    seat_labels: list[str] = []
+    labels = ((node.get("labels") or {}).get("nodes") or [])
+    for lbl in labels:
+        if not isinstance(lbl, dict):
+            continue
+        name = str(lbl.get("name") or "").strip()
+        low = name.lower()
+        if low.startswith("claimed:"):
+            slug = _normalize_linear_actor(name)
+            if slug:
+                claimed.append(slug)
+        elif low.startswith("seat:"):
+            slug = _normalize_linear_actor(name)
+            if slug:
+                seat_labels.append(slug)
+
+    delegate_slug = _normalize_linear_actor(str((node.get("delegate") or {}).get("name") or ""))
+    creator_slug = _normalize_linear_actor(str((node.get("creator") or {}).get("name") or ""))
+
+    if not closed:
+        return [creator_slug] if creator_slug else []
+    primary = _dedupe_slugs(claimed + ([delegate_slug] if delegate_slug else []))
+    if primary:
+        return primary
+    return _dedupe_slugs(seat_labels + ([creator_slug] if creator_slug else []))
+
+
+def _extract_item_agents_and_clean(item: dict[str, Any]) -> tuple[list[str], str]:
+    title_agents, clean = extract_agents_and_clean(
+        str(item.get("title") or ""), str(item.get("repo") or "")
+    )
+    extra = [str(s) for s in (item.get("agents") or []) if s]
+    return _dedupe_slugs(title_agents + extra), clean
+
+
+def _issue_state_note(item: dict[str, Any]) -> str:
+    if item.get("state_type") in ("canceled", "duplicate") and item.get("state"):
+        return str(item["state"])
+    return ""
 
 
 def extract_agents_and_clean(text: str, repo: str = "") -> tuple[list[str], str]:
@@ -819,18 +1109,24 @@ def day_description(day: DayBucket) -> str:
     if day.issues_closed:
         lines.append("Issues closed:")
         for p in day.issues_closed[:30]:
-            _a, title = extract_agents_and_clean(
-                str(p.get("title") or ""), str(p.get("repo") or "")
-            )
-            lines.append(f"- [{p['repo']}#{p['number']}] {title}")
+            agents, title = _extract_item_agents_and_clean(p)
+            agent_bit = f" ({', '.join(agents)})" if agents else ""
+            ref = str(p.get("identifier") or f"{p['repo']}#{p['number']}")
+            state_note = _issue_state_note(p)
+            state_bit = f" ({state_note})" if state_note else ""
+            lines.append(f"- [{ref}]{agent_bit} {title}{state_bit}")
+        if len(day.issues_closed) > 30:
+            lines.append(f"  … +{len(day.issues_closed) - 30} more")
         lines.append("")
     if day.issues_opened:
         lines.append("Issues opened:")
         for p in day.issues_opened[:30]:
-            _a, title = extract_agents_and_clean(
-                str(p.get("title") or ""), str(p.get("repo") or "")
-            )
-            lines.append(f"- [{p['repo']}#{p['number']}] {title}")
+            agents, title = _extract_item_agents_and_clean(p)
+            agent_bit = f" ({', '.join(agents)})" if agents else ""
+            ref = str(p.get("identifier") or f"{p['repo']}#{p['number']}")
+            lines.append(f"- [{ref}]{agent_bit} {title}")
+        if len(day.issues_opened) > 30:
+            lines.append(f"  … +{len(day.issues_opened) - 30} more")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -841,7 +1137,7 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
         "",
         f"_Generated {generated.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')} · timezone {tz.key}_",
         "",
-        "Sources: merged PRs and issues opened/closed in verified public repositories.",
+        "Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.",
         "Agent names are stripped from titles; HTML site shows logos instead.",
         "",
     ]
@@ -878,18 +1174,26 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
             lines.append("")
             for p in day.issues_closed:
                 repo = str(p.get("repo") or "")
-                _a, title = extract_agents_and_clean(str(p.get("title") or ""), repo)
+                agents, title = _extract_item_agents_and_clean(p)
+                agent_md = agent_icons_md(agents)
+                prefix = f"{agent_md} " if agent_md else ""
                 short, _cls = repo_badge(repo)
-                lines.append(f"- **{short}** [#{p['number']}]({p['url']}): {title}")
+                ref = str(p.get("identifier") or f"#{p['number']}")
+                state_note = _issue_state_note(p)
+                state_suffix = f" _({state_note})_" if state_note else ""
+                lines.append(f"- **{short}** {prefix}[{ref}]({p['url']}): {title}{state_suffix}")
             lines.append("")
         if day.issues_opened:
             lines.append("### Issues opened")
             lines.append("")
             for p in day.issues_opened:
                 repo = str(p.get("repo") or "")
-                _a, title = extract_agents_and_clean(str(p.get("title") or ""), repo)
+                agents, title = _extract_item_agents_and_clean(p)
+                agent_md = agent_icons_md(agents)
+                prefix = f"{agent_md} " if agent_md else ""
                 short, _cls = repo_badge(repo)
-                lines.append(f"- **{short}** [#{p['number']}]({p['url']}): {title}")
+                ref = str(p.get("identifier") or f"#{p['number']}")
+                lines.append(f"- **{short}** {prefix}[{ref}]({p['url']}): {title}")
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -930,9 +1234,13 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         title_raw: str,
         *,
         number: Any = None,
+        identifier: str = "",
         url: str = "",
+        extra_agents: list[str] | None = None,
+        state_note: str = "",
     ) -> str:
-        agents, clean = extract_agents_and_clean(title_raw, repo)
+        title_agents, clean = extract_agents_and_clean(title_raw, repo)
+        agents = _dedupe_slugs(title_agents + [str(s) for s in (extra_agents or []) if s])
         short, css = repo_badge(repo)
         icons = agent_icons_html(agents)
         title_t = esc(clean)
@@ -946,14 +1254,16 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
             )
         else:
             repo_html = f'<span class="repo {esc(css)}" title="{esc(repo)}">{esc(short)}</span>'
-        if number is not None and url:
-            link = f'<a href="{esc(url)}">#{esc(str(number))}</a>'
+        ref = identifier or (f"#{number}" if number is not None else "")
+        if ref and url:
+            link = f'<a href="{esc(url)}">{esc(ref)}</a>'
             mid = f"{link}: " if clean else f"{link}"
         else:
             mid = ""
+        state_html = f' <span class="issue-state">({esc(state_note)})</span>' if state_note else ""
         # lead stacks repo above agent logos so the body keeps more horizontal width
         lead = f'<span class="item-lead">{repo_html}{icons}</span>'
-        body = f'<span class="item-body">{mid}{title_t}</span>'
+        body = f'<span class="item-body">{mid}{title_t}{state_html}</span>'
         return f"<li>{lead}{body}</li>"
 
     sections: list[str] = []
@@ -971,7 +1281,10 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
                     str(p.get("repo") or ""),
                     str(p.get("title") or ""),
                     number=p.get("number"),
+                    identifier=str(p.get("identifier") or ""),
                     url=str(p.get("url") or ""),
+                    extra_agents=p.get("agents"),
+                    state_note=_issue_state_note(p) if kind == "closed" else "",
                 )
                 for p in items
             ]
@@ -1066,6 +1379,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     details.day > summary {{ cursor: pointer; }}
     .meta {{ color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }}
+    .issue-state {{ color: var(--muted); font-size: 0.85em; }}
     ul {{ margin: 0.25rem 0 0; padding-left: 0; list-style: none; }}
     li {{
       margin: 0.35rem 0;
@@ -1270,7 +1584,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         "X-WR-CALNAME:Jay's Daily Coding-Related Activities",
-        "X-WR-CALDESC:One all-day entry per day: merged PRs and issues opened/closed in public repositories. Hosted by AI-Fleet-Coordinator.",
+        "X-WR-CALDESC:One all-day entry per day: merged PRs and Linear/GitHub issues opened/closed for public repositories. Hosted by AI-Fleet-Coordinator.",
         "X-WR-TIMEZONE:America/Chicago",
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
         "X-PUBLISHED-TTL:PT6H",
@@ -1331,9 +1645,19 @@ def main() -> int:
     print("fetching merged PRs…")
     prs = fetch_merged_prs(owner, repos, since, tok, tz)
     print(f"  {len(prs)} merged PRs")
-    print("fetching issue churn…")
-    opened, closed = fetch_issue_churn(owner, repos, since, tok, tz)
-    print(f"  {len(opened)} opened, {len(closed)} closed")
+    print("fetching GitHub issue churn…")
+    gh_opened, gh_closed = fetch_issue_churn(owner, repos, since, tok, tz)
+    print(f"  {len(gh_opened)} GitHub opened, {len(gh_closed)} GitHub closed")
+    ltok = linear_token()
+    if ltok:
+        print("fetching Linear issue churn…")
+        lin_opened, lin_closed = fetch_linear_issue_churn(repos, since, ltok, tz)
+        print(f"  {len(lin_opened)} Linear opened, {len(lin_closed)} Linear closed")
+    else:
+        print("warn: LINEAR_API_KEY not set; skipping Linear issues", file=sys.stderr)
+        lin_opened, lin_closed = [], []
+    opened = gh_opened + lin_opened
+    closed = gh_closed + lin_closed
     buckets = bucket_all(prs, opened, closed)
     days = sorted(buckets.values(), key=lambda d: d.day, reverse=True)
 
