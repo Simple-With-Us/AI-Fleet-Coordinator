@@ -55,6 +55,15 @@ The wire is the router's envelope (see `claude_wake.py`):  a request
 an answer that repeats `wake_id`, `session_id` and `generation` exactly, plus the delivery.
 A request that names no generation to check against is not this module's to deliver.
 
+Turns (wake_router, Turns).  This module takes them (`TURNS`), and only by the Mac
+dispatcher's mark:  a request marked `turn_dispatch` puts its valid riders into the same one
+headless run, as the router's turn text with this module's prefix, given the resume limit once
+per wake it carries, and the answer echoes them:
+every rider as carried once the run may have started, none when it never started, and every
+one as confirmed when the turn id shows up in the transcript.  `router_platform` declares
+`deliver_turn`, by the same routes as `deliver`.  A request without the mark is delivered
+exactly as before.
+
 Python 3.11+, standard library only.
 """
 
@@ -108,7 +117,11 @@ DEFAULTS: dict[str, Any] = {
 
 # The router's own fixed text, as `command_platform` uses:  only the wake id, the router's
 # link note and the message id can vary, so no Zulip-authored field reaches the prompt.
-WAKE_TEXT = "[MC wake] " + WR.COMMAND_TEXT
+PREFIX = "[MC wake] "
+WAKE_TEXT = PREFIX + WR.COMMAND_TEXT
+#: This module takes turns (wake_router, Turns):  the Mac dispatcher reads this before it hands
+#: a turn's offer to `deliver_request`.
+TURNS = WR.TURN_CONTRACT
 
 Runner = Callable[..., Any]
 Resolve = Callable[[Mapping[str, str], str], Any]
@@ -533,8 +546,15 @@ def _via_exec(
     wake: WR.Wake,
     runner: Runner,
     sleep: Callable[[float], None] = time.sleep,
+    *,
+    riders: tuple[WR.Wake, ...] = (),
+    turn_id: str = "",
+    echo: dict[str, Any] | None = None,
 ) -> WR.Delivery:
-    """One headless prompt in an unheld chat, in that same session."""
+    """One headless prompt in an unheld chat, in that same session.  With riders it is the
+    router's turn text, run for the resume limit once per wake it carries, and `echo` records
+    what the prompt carried and what the chat recorded:  every rider once the run may have
+    started, none when it never did."""
     try:
         resume_timeout = int(config["resume_timeout_seconds"])
         confirm_seconds = int(config["confirm_seconds"])
@@ -560,11 +580,20 @@ def _via_exec(
         return WR.Delivery("failed", "exec", code="store-unreadable")
     if not stat.S_ISDIR(info.st_mode):
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
-    argv = [binary, "exec", "--session-id", session_id, wake_text(wake)]
+    text = WR.turn_text(PREFIX, wake, riders, turn_id) if riders else wake_text(wake)
+    argv = [binary, "exec", "--session-id", session_id, text]
+    transcript = os.path.join(session_dir, "session.jsonl")
+    # A retry must not run a turn the transcript already recorded:  the turn id for a batched turn,
+    # the wake id for a single wake.  Either way the earlier run is the hand-over.
+    needle = turn_id if riders else wake.wake_id
+    if needle and _wake_seen(transcript, needle):
+        return WR.Delivery("sent", "exec", ack="confirmed")
     try:
         offset = os.path.getsize(transcript)
     except OSError:
         offset = 0
+    if echo is not None:
+        echo["carried"] = tuple(rider.wake_id for rider in riders)
     try:
         proc = runner(
             argv,
@@ -573,7 +602,7 @@ def _via_exec(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=resume_timeout,
+            timeout=resume_timeout * (1 + len(riders)),
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -581,21 +610,31 @@ def _via_exec(
         return WR.Delivery("refused", "exec", code="exec-timeout")
     except OSError as exc:
         # It never started:  the one failure here that is safe to try again.
+        if echo is not None:
+            echo["carried"] = ()
         return WR.Delivery("failed", "exec", code="exec-%s" % type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return WR.Delivery("refused", "exec", code="exec-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
         # The turn already ran:  a ledger failure must not turn this handoff into a retryable `failed`
         # (the router would run the turn twice), so the mark is best-effort and the transcript stays
-        # the hand-over record.
+        # the hand-over record.  Every carried wake is marked, so neither the head nor a rider is
+        # injected again afterwards.
         try:
-            WP.mark_delivered(WP.state_dir(_pending_home(env)), session_id, wake.wake_id)
+            state = WP.state_dir(_pending_home(env))
+            WP.mark_delivered(state, session_id, wake.wake_id)
+            for rider in riders:
+                WP.mark_delivered(state, session_id, rider.wake_id)
         except OSError:
             pass
-        if _seen_appended(transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep):
+        # A turn's text carries the turn id, as a single wake's carries its wake id.
+        needle = turn_id if riders else wake.wake_id
+        if _seen_appended(transcript, offset, needle, confirm_seconds, sleep=sleep):
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
             # `completed` would claim the turn finished, so this is `sent`, confirmed.
+            if riders and echo is not None:
+                echo["confirmed"] = echo["carried"]
             return WR.Delivery("sent", "exec", ack="confirmed")
         # It ran and may have done the work, but nothing in the chat proves it:  handed over,
         # never counted as delivered, and never retried.
@@ -642,13 +681,15 @@ def deliver_local(
     runner: Runner = subprocess.run,
     sleep: Callable[[float], None] = time.sleep,
     _locked: bool = False,
+    _turn: Mapping[str, Any] | None = None,
 ) -> WR.Delivery:
     """Deliver one wake to a Muse chat on this host.  Not knowing whether a process
     holds it is `busy`, and a sub-agent's session is never a target.  A held chat gets
     the wake parked for its next prompt and the same `busy`, and an already-handed-over
     wake is `sent` without running anything twice.  `_locked` is for
     `deliver_request`, which already holds this session's lock:  taking it again on a
-    second file description would refuse itself."""
+    second file description would refuse itself.  `_turn` is a turn's, for `_via_exec`."""
+    turn = dict(_turn or {})
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
     chat_env = _chat_env(env, session_id)
@@ -679,7 +720,7 @@ def deliver_local(
             return handed
         return WR.Delivery("sent", "hook", ack="unknown")
     if _locked:
-        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep, **turn)
     try:
         folder = state_dir(env) / "locks"
         WR.private_dir(folder)
@@ -697,7 +738,7 @@ def deliver_local(
             return WR.Delivery("busy", code="holder-unknown")
         if held:
             return WR.Delivery("busy", code="chat-live")
-        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep, **turn)
 
 
 def deliver_request(
@@ -717,6 +758,13 @@ def deliver_request(
         wake = _wake_from(request["wake"])
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
+    # A turn (wake_router, Turns) only when the dispatcher marked it, and only its valid riders.
+    riders: tuple[WR.Wake, ...] = ()
+    if request.get("turn_dispatch") == WR.TURN_CONTRACT:
+        riders = WR.turn_riders_from(request.get("turn"), wake.wake_id)
+    turn_id = request["turn"]["id"] if riders else ""
+    echo: dict[str, Any] = {"carried": (), "confirmed": ()}
+    turn = {"riders": riders, "turn_id": turn_id, "echo": echo}
     config = _config(settings)
     if settings is None:
         # This entry point is the Mac-side handler (`wake-deliver`); a server router passes
@@ -743,11 +791,15 @@ def deliver_request(
             return _answer(request, stale)
         try:
             delivery = deliver_local(
-                here, config, target.session_id, wake, runner=runner, sleep=sleep, _locked=True
+                here, config, target.session_id, wake, runner=runner, sleep=sleep, _locked=True,
+                _turn=turn,
             )
         except OSError as exc:
             delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)
-    return _answer(request, delivery)
+    answer = _answer(request, delivery)
+    if riders:
+        answer["turn"] = WR.turn_echo(turn_id, echo["carried"], echo["confirmed"])
+    return answer
 
 
 def router_platform(
@@ -792,6 +844,39 @@ def router_platform(
             code=_short(delivery.get("code")),
             note=_short(delivery.get("note")),
         )
+
+    def turn(
+        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
+    ) -> WR.Turn:
+        """One idle turn (wake_router, Turns), by the same routes as `deliver`.  Once the local
+        delivery may have started, an error in it cannot say what the turn carried."""
+        if target.host == "mac" and local_host != "mac":
+            return CW.deliver_remote_turn(
+                here, config, target, head, riders, turn_id, platform=PLATFORM, runner=runner
+            )
+        if target.host != local_host:
+            return WR.Turn(WR.Delivery("refused", code="unknown-host"))
+        request = {
+            "platform": PLATFORM,
+            "target": {
+                "session_id": target.session_id,
+                "letter": target.letter,
+                "host": target.host,
+                "generation": target.generation,
+            },
+            "wake": asdict(head),
+            "turn": WR.turn_offer(turn_id, riders),
+            "turn_dispatch": WR.TURN_CONTRACT,
+        }
+        try:
+            answer = deliver_request(
+                request, env=here, settings=config, runner=runner, sleep=sleep
+            )
+        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+            error = WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+            return WR.Turn(error, unreadable=True)
+        echo = answer.get("turn") if isinstance(answer, Mapping) else None
+        return WR.turn_result(_read_answer(answer), echo, turn_id, riders)
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         # One walk per distinct store root (glob hides its own errors, and delivery
@@ -838,6 +923,21 @@ def router_platform(
         target_re=SESSION_RE,
         deliver=deliver,
         exclude=exclude,
+        deliver_turn=turn,
+    )
+
+
+def _read_answer(answer: object) -> WR.Delivery:
+    """The Delivery a `deliver_request` answer carries, its codes kept only if code-shaped."""
+    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
+        return WR.Delivery("refused", code="platform-bad-answer")
+    return WR.Delivery(
+        str(delivery["outcome"]),
+        _short(delivery.get("route")),
+        ack=_short(delivery.get("ack")) or "unknown",
+        code=_short(delivery.get("code")),
+        note=_short(delivery.get("note")),
     )
 
 

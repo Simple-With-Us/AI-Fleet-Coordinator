@@ -346,6 +346,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `WAKE_ROUTER_DELIVERY_SEATS` | W2 | list | empty | no | nothing | in folder `/wake-router`;  the seats the wake router may deliver for;  empty means none, whatever WAKE_ROUTER_DELIVERY_ENABLED says |
 | `WAKE_ROUTER_WORKERS` | W2 | int 1 to 64 | `4` | no | only lower it | in folder `/wake-router`;  wake router worker threads;  read when the router starts, so a new value needs a restart |
 | `WAKE_ROUTER_MAX_DELIVERIES` | W2 | int 1 to 256 | `16` | no | only lower it | in folder `/wake-router`;  deliveries that may run at once, each of which may be a whole headless turn |
+| `WAKE_ROUTER_TURN_MAX_WAKES` | W2 | int 1 to 8 | `1` | no | only lower it | in folder `/wake-router`;  most wakes one idle turn may carry for one chat;  1 is off, and only a platform that declares turns uses more;  a turn may run the resume limit once per wake it carries, so it can outlast the shutdown wait |
 | `WAKE_ROUTER_MAX_ATTEMPTS` | W2 | int 1 to 50 | `5` | no | only lower it | in folder `/wake-router`;  failed tries before a wake ends in a dead receipt;  a busy or unreachable chat uses up none |
 | `WAKE_ROUTER_RETRY_BACKOFF` | W2 | str | `30,120,300,900` | no | nothing | in folder `/wake-router`;  seconds to wait after each failed try, in order;  the last repeats |
 | `WAKE_ROUTER_BUSY_RETRY_SECONDS` | W2 | int 1 to 3600 | `30` | no | only raise it | in folder `/wake-router`;  seconds before asking a busy chat again |
