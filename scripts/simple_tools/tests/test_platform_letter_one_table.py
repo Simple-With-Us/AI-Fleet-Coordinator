@@ -44,6 +44,17 @@ class Base(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.getvalue()
 
+    def slow_transport(self, seconds: float):
+        """A registry that takes its time:  the walk's budget is spent on the calls it really makes."""
+
+        def transport(argv):
+            time.sleep(seconds)
+            out = io.StringIO()
+            PL.registry_main(list(argv), env=getattr(self, "env")(), stdout=out)
+            return json.loads(out.getvalue())
+
+        return transport
+
     def note(self, seat: str, sid: str) -> dict:
         with open(os.path.join(self.state, seat, "letters", sid + ".json"), encoding="utf-8") as fh:
             return json.load(fh)
@@ -150,6 +161,183 @@ class MiniMaxRow(Base):
     def test_the_row_is_in_the_table(self) -> None:
         self.assertIs(PL.load_spec("minimax"), PM.SPEC)
         self.assertEqual((PM.SPEC.seat, PM.SPEC.output, PM.SPEC.events["Stop"]), ("MM", "text", "turn"))
+
+    def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
+        # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
+        # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
+        # note is written and no title is renamed.  The cap is the runtime's, so the timeouts stay under it.
+        self.assertEqual(PM.HOOK_TIMEOUT_CAP, 10)
+        for event, timeout in PM.HOOK_TIMEOUTS.items():
+            self.assertGreaterEqual(timeout, 1, event)
+            self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
+        self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
+        self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
+        # And the chain fits inside the budget:  the chat's own calls at the row's own deadlines, and
+        # the ancestor walk may spend what is left of the budget after them.  An ancestor's
+        # registration chains three calls (the register, the reopen and the title update), so what
+        # bounds the walk is the time it may spend, not a count of calls.
+        self.assertLessEqual(
+            PL.REGISTER_CALLS * PM.CALL_TIMEOUT + PL.walk_allowance(PM.SPEC),
+            min(PM.HOOK_TIMEOUTS.values()),
+        )
+        self.assertLess(PM.CALL_TIMEOUT, PL._API_TIMEOUT)
+        self.assertEqual(PM.SPEC.call_timeout, PM.CALL_TIMEOUT)
+        self.assertEqual(PM.SPEC.parent_call_timeout, PM.PARENT_CALL_TIMEOUT)
+        self.assertEqual(PM.SPEC.hook_budget, PM.HOOK_BUDGET)
+        self.assertEqual(PL.walk_allowance(PM.SPEC), PM.HOOK_BUDGET - PL.REGISTER_CALLS * PM.CALL_TIMEOUT)
+        # The rows that keep the shared depth and the shared deadline are bounded the same way:  the
+        # walk may spend what their budget leaves, and no row's ancestor registration outlives its
+        # hook.
+        self.assertEqual(PL.PARENT_DEPTH, 3)
+        self.assertEqual(PC.SPEC.hook_budget, 0)
+        self.assertEqual(
+            PL.walk_allowance(PC.SPEC), PL.SHARED_HOOK_BUDGET - PL.REGISTER_CALLS * PL._API_TIMEOUT
+        )
+        self.assertLessEqual(
+            PL.REGISTER_CALLS * PL._API_TIMEOUT + PL.walk_allowance(PC.SPEC),
+            min(PL.HOOK_TIMEOUTS.values()),
+        )
+
+    def test_the_parent_walk_registers_the_ancestors_the_budget_allows(self) -> None:
+        # The row's budget is ten seconds, the chat's own chain is six of them, and the walk may spend
+        # the four that are left:  a parent and a grandparent are registered while that lasts.
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0001").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
+
+    def test_the_parent_walk_stops_when_its_budget_is_spent(self) -> None:
+        # A slow registry can cost a parent its registration, but not the chat's own letter:  the walk
+        # may spend only what the row's budget leaves after the chat's own chain, and it stops when
+        # less than one ancestor's chain is left.  Three seconds of allowance fit one generation
+        # (the register, the reopen that may follow it, the title update) and no more.
+        import dataclasses
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=12, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 3.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            spec,
+            {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"},
+            transport=self.slow_transport(0.6),
+        )
+        self.assertTrue(self.note("MM", "m-0001").get("label"), "the first ancestor fits in the budget")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk stops when its budget is spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_the_ancestors_chain_calls_share_what_is_left_of_the_budget(self) -> None:
+        # The chain is the register, the reopen that may follow it, and the title update, so each of
+        # its calls gets a share of what is left of the walk's budget:  the chain cannot outlast the
+        # allowance, however slow the registry is.
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=14, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 5.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[tuple[str, str, int]] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append((op, str(params.get("session_id") or ""), timeout))
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        # The chat's own registration is not the walk's, so only the ancestors' calls are read here:
+        # the chat's call would satisfy this assertion even if the walk's share were wrong.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertLessEqual(max(ancestors), 1, "an ancestor's chain call outlasted the allowance")
+
+    def test_an_ancestor_with_no_deadline_of_its_own_gets_the_shared_one(self) -> None:
+        # A row that declares no deadline of its own gets the shared one, not a one-second clamp:
+        # the sentinel of zero means "not declared".
+        import dataclasses
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=30, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 21.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        seen: list[tuple[str, str, int]] = []
+        real = registry_api.call
+
+        def capture(env, op, params, timeout=25):
+            seen.append((op, str(params.get("session_id") or ""), timeout))
+            return real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(registry_api, "call", capture):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        # Only the ancestors' calls are read:  the chat's own registration carries the shared
+        # deadline by itself, so an assertion over every call would pass even if the ancestor's
+        # call were clamped to a second.
+        ancestors = [timeout for op, sid, timeout in seen if sid != "m-0003"]
+        self.assertTrue(ancestors, "the walk made no call of its own")
+        self.assertIn(PL._API_TIMEOUT, ancestors, "the shared deadline was clamped away")
+
+    def test_a_failing_ancestor_call_is_charged_to_the_walk(self) -> None:
+        # A failing call that took its time is spent time:  the walk must not be told its budget is
+        # untouched, or the next generation starts with the whole allowance again.
+        import dataclasses
+        from unittest import mock
+
+        spec = dataclasses.replace(PM.SPEC, hook_budget=13, call_timeout=0, parent_call_timeout=0)
+        self.assertEqual(PL.walk_allowance(spec), 4.0)
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        real = PL._apply
+
+        def failing(chat, answer, note):
+            if chat.session_id == "m-0003":
+                return real(chat, answer, note)
+            time.sleep(1.2)
+            raise RuntimeError("the registry call failed")
+
+        with mock.patch.object(PL, "_apply", failing):
+            self.run_hook(
+                spec, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+            )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")),
+            "the walk started another generation with a budget it had already spent",
+        )
+        self.assertTrue(self.note("MM", "m-0003").get("label"), "the chat's own letter is not the walk's to lose")
+
+    def test_an_ancestor_that_is_not_a_chat_does_not_break_the_walk(self) -> None:
+        # An ancestor whose own kind is neither a chat nor a subagent ends that branch with a number,
+        # so the generation above it is still registered.
+        self.add("m-0001", "Grandparent", kind="cron")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
 
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")
@@ -391,6 +579,89 @@ class SharedBehaviour(Base):
 
     spec = make_spec()
 
+    def test_thread_link_capability_scans_before_registry_configuration_or_transport(self) -> None:
+        import secrets
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        private = "synthetic-" + secrets.token_hex(20)
+        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=private)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "scan-1", now=1.0))
+        unsafe = "sk-" + secrets.token_urlsafe(32)  # Fresh synthetic shape, never a credential.
+        for case, value in (("pattern", unsafe), ("parent binding", private)):
+            link = "https://example.test/thread?key=" + value
+            with self.subTest(case=case), mock.patch.object(RA, "base_url") as configured, mock.patch.object(RA, "call") as call:
+                answer = record(link)
+                self.assertEqual(answer, {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"})
+                self.assertNotIn(link, json.dumps(answer))
+                self.assertNotIn(private, json.dumps(answer))
+                configured.assert_not_called()
+                call.assert_not_called()
+        self.assertEqual(env, original)
+
+    def test_thread_link_capability_uses_parent_configuration_and_bound_location(self) -> None:
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        env = self.env(SESSION_LETTER_LOCATION="mac")
+        chat = PL.Chat(self.spec, env, "server", "bound-1", now=1.0)
+        record = PL._thread_link_recorder(chat)
+        with mock.patch.object(RA, "call", return_value={"ok": True}) as call:
+            self.assertEqual(record("zcode://session/bound-1"), {"ok": True})
+        self.assertIs(call.call_args.args[0], env)
+        self.assertEqual(call.call_args.args[2]["location"], "server")
+        self.assertNotIn(RA.KEY_VAR, PL.child_process_env(env))
+
+    def test_optional_thread_link_callback_without_parent_url_is_quiet(self) -> None:
+        import contextlib
+        from unittest import mock
+        from simple_tools import platform_letter_zcode as PZ, registry_api as RA
+
+        env = self.env()
+        env.pop(RA.URL_ENV)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "optional-1", now=1.0))
+        error = io.StringIO()
+        with mock.patch.object(RA, "call") as call, contextlib.redirect_stderr(error):
+            PZ._record_thread_link(PL.child_process_env(env), "optional-1", record=record)
+        call.assert_not_called()
+        self.assertEqual(error.getvalue(), "")
+        self.assertEqual(env, original)
+
+    def test_advice_receives_only_the_child_environment_and_preserves_parent_context(self) -> None:
+        seen = []
+
+        def advise(request):
+            seen.append(request)
+            return "Keep the assigned title."
+
+        spec = make_spec(title_advice=advise)
+        private = {
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+            "FLEET_KNOBS_INFISICAL_TOKEN": "fake.knobs",
+            "FLEET_KNOBS_WRITE_TOKEN": "fake.writer",
+            "INFISICAL_TOKEN": "fake.project",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "fake.afc",
+            "FLEET_RECALL_INFISICAL_TOKEN": "fake.recall",
+        }
+        env = self.env(AGENT_LAUNCHER="platform-launcher", **private)
+        original = dict(env)
+        chat = PL.Chat(spec, env, "server", "advice-1", now=1.0)
+        note = {"state": "open", "label": "AA", "title": "Words"}
+        self.assertEqual(PL.advice(chat, note, "Words", {}, "start"), "Keep the assigned title.")
+        request = seen[-1]
+        self.assertEqual(request.env["AGENT_LAUNCHER"], "platform-launcher")
+        for name in (*private, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, request.env)
+        self.assertTrue(callable(request.record_thread_link))
+        self.assertEqual(env, original)
+        self.assertNotIn("fake.bootstrap", repr(request))
+        from dataclasses import asdict
+        serialized = json.dumps(asdict(request), default=str)
+        for value in private.values():
+            self.assertNotIn(value, serialized)
+
     def hook(self, payload: dict, *, now: float, transport=None) -> dict:
         return hook_answer(self.run_hook(self.spec, payload, env=self.env(SESSION_LETTER_LOCATION="server"),
                                          now=now, transport=transport or Calls(self)))
@@ -507,9 +778,11 @@ class RequestCommand(Base):
 
     def test_the_title_writer_is_given_the_chats_own_payload(self) -> None:
         seen = []
+        title_envs = []
 
         def writer(request):
             seen.append(dict(request.data))
+            title_envs.append(dict(request.env))
             return True
 
         spec = make_spec(platform="faux", seat="CODEX", title_in_output=False, title_writer=writer,
@@ -522,10 +795,19 @@ class RequestCommand(Base):
                                                     "source": "startup"})), io.StringIO(), platform="linux")
         seen.clear()
         out = io.StringIO()
-        code = PL.request_main(["--session-id", "f-0001"], self.env(SESSION_LETTER_LOCATION="server"), out,
+        env = self.env(SESSION_LETTER_LOCATION="server", AGENT_LAUNCHER="platform-launcher",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
+        code = PL.request_main(["--session-id", "f-0001"], env, out,
                                platform="linux")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(seen[-1], {"session_id": "f-0001", "source": "startup"})
+        self.assertEqual(title_envs[-1]["AGENT_LAUNCHER"], "platform-launcher")
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                     "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, title_envs[-1])
+        self.assertEqual(env, original)  # The registry successfully used the parent's own signing key.
 
     def test_simple_chat_letter_is_the_same_command(self) -> None:
         out = io.StringIO()

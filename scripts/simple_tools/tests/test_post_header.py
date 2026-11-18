@@ -14,6 +14,7 @@ if not isinstance(FIXTURES, list) or not FIXTURES or not all(
     isinstance(case, dict)
     and all(isinstance(case.get(key), str) for key in ("name", "input", "expected"))
     and (case.get("seat") is None or isinstance(case["seat"], str))
+    and case.get("context", "message") in ("message", "github-pr", "github-pr-body", "github-pr-title")
     and all(key not in case or (isinstance(case[key], list) and all(isinstance(v, str) for v in case[key]))
             for key in ("repos", "peers"))
     for case in FIXTURES
@@ -22,12 +23,33 @@ if not isinstance(FIXTURES, list) or not FIXTURES or not all(
 
 
 class HeaderSpacingTests(unittest.TestCase):
+    def test_pr_body_prefix_has_exact_line_and_utf8_byte_bounds(self):
+        full = "[CODEX: EE.1.S 📁AFC] Body"
+        compact = "[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+        for prefix, accepted in (
+            ("- Wait\n" * 31 + "\n", True),
+            ("- Wait\n" * 32 + "\n", False),
+            ("1. Wait\n" * 31 + "\n", True),
+            ("1. Wait\n" * 32 + "\n", False),
+            ("- " + "é" * 4094 + "\n\n", True),
+            ("- " + "é" * 4094 + "x\n\n", False),
+        ):
+            for command in ("", "@kody start-review\r\n"):
+                with self.subTest(
+                    lines=prefix.count("\n"), bytes=len(prefix.encode("utf-8")), command=command
+                ):
+                    self.assertEqual(
+                        post_header.normalize_header(command + prefix + full, context="github-pr-body"),
+                        command + prefix + (compact if accepted else full),
+                    )
+
     def test_shared_golden_headers_survive_json_utf8_and_legacy_parsing(self):
         for case in FIXTURES:
             with self.subTest(case=case["name"]):
-                result = post_header.normalize_header(case["input"], seat=case.get("seat"))
+                options = {"seat": case.get("seat"), "context": case.get("context", "message")}
+                result = post_header.normalize_header(case["input"], **options)
                 self.assertEqual(result, case["expected"])
-                self.assertEqual(post_header.normalize_header(result, seat=case.get("seat")), result)
+                self.assertEqual(post_header.normalize_header(result, **options), result)
                 wire = json.dumps({"content": result}, ensure_ascii=False).encode("utf-8")
                 self.assertEqual(json.loads(wire)["content"], case["expected"])
                 if "repos" in case:

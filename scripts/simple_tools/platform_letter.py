@@ -54,7 +54,10 @@ What the hook does.
 Chats that are gone for good.  A platform's app can end a chat with no hook event of its own (a desktop app that
 archives one), so its letter would stay taken until the assigner's idle sweep.  An adapter that can tell names
 those chats, and a chat's start reports them:  one `report-gone` call to the assigner for the platform and a
-location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  `gone_sessions` answers for this
+location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  A chat's start also replays the
+start of this host's chats still showing "??: " (an app-driven chat's hook never runs, so a letter lost between
+the assigner and the note would otherwise stay lost), at most once per REPAIR_SWEEP_SECONDS (`repair_unlettered`).
+`gone_sessions` answers for this
 host's own chats whose hook has been quiet for an hour, however long ago that was.  `gone_elsewhere` answers for
 chats the platform's app on this host runs at another location, whose notes this host does not hold;  they go in
 a report of their own for that location.  The assigner closes the open rows named, and refuses a report that
@@ -93,6 +96,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import os
 import pkgutil
 import re
@@ -146,6 +150,20 @@ GONE_REPORT_IDS = 500
 #: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
 GONE_JSON_BYTES = 256 * 1024
 GONE_SENT_IDS = 2000
+# The unlettered repair (`repair_unlettered`):  the hosts' scheduled carriers replay the start of this host's
+# chats that still show the "??: " placeholder, at most this often (a stamp beside the notes).  An app-driven
+# chat's hook never runs, so a letter whose hook run died after the register - or an ask that never reached the
+# assigner - would otherwise keep a chat "??: " until its next CLI or Desktop event;  the pass is the way back
+# for those chats.  The pass never rides a chat's own start:  one replay can chain a register's three API
+# calls, its parents' ensures and a rename past any hook's budget, so only the carriers pay for it.
+REPAIR_SWEEP_SECONDS = 3600
+# The most wall-clock time one repair pass spends STARTING replays, so a carrier tick stays quick.  One replay
+# in flight can outlast this gate - a register call is up to _API_TIMEOUT seconds, a parent's ensure a second
+# one, a rename up to the adapter's RPC_SECONDS - so the gate leaves room for that one replay instead of
+# pretending to bound the whole pass.  A candidate the budget cuts waits for the next pass.
+REPAIR_PASS_SECONDS = 5
+#: The most chats one pass replays:  the repair is real work on a live chat's start budget.
+REPAIR_MAX_CHATS = 5
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -304,6 +322,29 @@ def payload_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = No
     return one_line(payload.get("session_title") or payload.get("title"))
 
 
+# Registry credentials belong to the letter client, never a platform's title or inspection process.
+_OPERATOR_CHILD_SECRETS = frozenset(
+    {
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN",
+        "FLEET_KNOBS_INFISICAL_TOKEN",
+        "FLEET_KNOBS_WRITE_TOKEN",
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "FLEET_RECALL_INFISICAL_TOKEN",
+    }
+)
+
+
+def child_process_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Keep the platform's launcher environment while removing the Operator's private credentials.
+
+    The parent mapping stays intact for registry calls.  All adapters share this boundary, including
+    direct RPC callers that do not enter through a TitleRequest."""
+    source = os.environ if env is None else env
+    return {name: value for name, value in source.items() if name not in _OPERATOR_CHILD_SECRETS}
+
+
 @dataclass(frozen=True)
 class TitleRequest:
     """One title for an adapter's `title_writer` to put on the chat natively.  `title` is the whole "XX: Words",
@@ -324,6 +365,10 @@ class TitleRequest:
     env: Mapping[str, str]
     shown: str = ""
     held: tuple[str, ...] = ()
+    # Parent-only registry capability; no credential mapping is part of the request.
+    record_thread_link: Callable[[str], dict[str, Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 TitleWriter = Callable[[TitleRequest], bool]
@@ -337,6 +382,10 @@ GoneSessions = Callable[[Mapping[str, str], frozenset[str]], Iterable[str] | Non
 #: of chats that run there and are gone for good, as this host's own records of them say (a platform's app on
 #: one host can run chats on another).  Ids only, bounded by the adapter, and any doubt leaves a chat out.
 GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
+#: An adapter's `unlettered_sessions`:  from the environment, the session ids of this host's chats that still
+#: carry the "??: " placeholder title, newest first.  Ids only, bounded by the adapter, and any doubt leaves a
+#: chat out.
+UnletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
 
 
 @dataclass(frozen=True)
@@ -362,6 +411,16 @@ class PlatformSpec:
     title_sources              the start sources after which a hook-output title is applied
     locations                  the fleet locations the platform runs on (Grok and Antigravity: only "mac"); a hook
                                on any other takes no letter
+    call_timeout               for a platform whose runtime stops its hook sooner than the shared budget
+                               allows:  how long one registry call from that platform's hook may take, in
+                               seconds (0 for the shared one), so the row's chain of calls fits inside its
+                               own hook's timeout
+    parent_call_timeout        the deadline for one ancestor's best-effort registration (0 for the row's
+                               own):  an ancestor that cannot be registered does not stop the chat's own
+                               registration, so it must not eat the chat's budget
+    hook_budget               how many seconds this platform's hook has before its runtime stops it:
+                               the row's own budget (0 for the shared one), which is what the ancestor
+                               walk may spend, the chat's own chain being reserved out of it
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -401,12 +460,16 @@ class PlatformSpec:
     launchers: tuple[str, ...] = ()
     title_sources: tuple[str, ...] = TITLE_SOURCES
     locations: tuple[str, ...] = LOCATIONS
+    call_timeout: int = 0
+    parent_call_timeout: int = 0
+    hook_budget: int = 0
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
+    unlettered_sessions: UnletteredSessions | None = None
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
     retired_env: Mapping[str, str] = field(default_factory=dict)
     retired_files: tuple[str, ...] = ()
@@ -723,12 +786,30 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
-#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
-#: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
-#: a healthy call to the listener answers in well under a second.  An unsettled parent is
-#: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
+#: 20 seconds (HOOK_TIMEOUTS) and a registration chains at most three calls (register, reopen,
+#: update), so one call gets three seconds:  the chain's worst case stays inside the tightest
+#: budget, and a healthy call to the listener answers in well under a second.  A
+#: platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An
+#: unsettled parent is registered first, at most once per RETRY_SECONDS (`_ensure_parent`), and the
+#: ancestor walk may spend only what the row's own hook budget leaves after this chain is reserved
+#: out of it (PlatformSpec.hook_budget).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
-_API_TIMEOUT = 4
+_API_TIMEOUT = 3
+#: The calls one registration makes:  the register, the reopen that may follow it, and the title
+#: update that carries the lettered title.  A chat's own registration and an ancestor's are the same
+#: call, so one number describes both:  the chat's own chain is reserved out of the row's hook
+#: budget, and the ancestor walk may spend what is left of it.
+REGISTER_CALLS = 3
+#: The seconds a hook has before its runtime stops it, when a row declares none of its own:  the
+#: tightest of the shared budgets (HOOK_TIMEOUTS).  The ancestor walk may spend what is left of this
+#: after the chat's own chain is reserved out of it.
+SHARED_HOOK_BUDGET = min(HOOK_TIMEOUTS.values())
+#: The calls one ancestor's best-effort registration makes are the calls any registration makes
+#: (REGISTER_CALLS):  its register, the reopen that may follow it when the registry says that
+#: ancestor is closed, and the title update that carries the lettered title.  An ancestor that was
+#: registered before and came back closed is exactly the ancestor this path registers,  so the
+#: reopen and the update are on it.  That is the worst case, and what bounds the walk is the time
+#: it may spend (walk_allowance), not a count of calls.
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -783,10 +864,12 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     return merged
 
 
-def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+def _call_api(
+    env: Mapping[str, str], op: str, params: Mapping[str, Any], timeout: int = 0
+) -> dict[str, Any]:
     from . import registry_api
 
-    return registry_api.call(env, op, params, timeout=_API_TIMEOUT)
+    return registry_api.call(env, op, params, timeout=timeout or _API_TIMEOUT)
 
 
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -823,7 +906,9 @@ def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
     return "all %d %s main-chat pairs (AA to ZZ) are live:  %s" % (limit, platform, REFUSED_TAIL)
 
 
-def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+def _register_api(
+    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0
+) -> dict[str, Any]:
     """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
 
     The registry's register answers for a fresh chat and for a resume (its resume stamps the session seen), a
@@ -849,7 +934,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
     }
     if parent:
         params["parent_session_id"] = parent
-    out = _call_api(env, "register", params)
+    out = _call_api(env, "register", params, timeout=timeout)
     if out.get("code") == "labels_exhausted":
         return {"error": refused_text(OR, args.platform), "code": "labels_exhausted", "swept": 0}
     error = _api_error(out)
@@ -864,7 +949,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         }
         if parent:
             reopen_params["parent_session_id"] = parent
-        reopened = _call_api(env, "reopen", reopen_params)
+        reopened = _call_api(env, "reopen", reopen_params, timeout=timeout)
         if reopened.get("code") == "labels_exhausted":
             return {
                 "error": refused_text(OR, args.platform),
@@ -889,7 +974,9 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             "title_display": OR.display_title(reopened["label"], title),
         }
     if title and out.get("outcome") in ("resumed", "reopened"):
-        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title})
+        updated = _call_api(
+            env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout
+        )
         error = _api_error(updated)
         if error is not None:
             return error
@@ -902,7 +989,9 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
     return out
 
 
-def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+def _on_record_api(
+    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0
+) -> dict[str, Any]:
     """title, touch, close and show for one chat through the registry API.
 
     No record is NO_REGISTRATION and a closed one is retired, before any op writes.  The API's ops are addressed by
@@ -915,7 +1004,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     if args.op == "show":
         # The API has no show op:  `held` answers the letter side of the record (its id and
         # the letters it has held), which is what a show is asked for.
-        held = _call_api(env, "held", identity)
+        held = _call_api(env, "held", identity, timeout=timeout)
         if "error" in held:
             if held.get("code") == "not_registered":
                 return {"error": NO_REGISTRATION}
@@ -929,13 +1018,21 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if shown["label"]:
             # The rest of the row (its seat and title) from the letter's own live holder, when that is this record:
             # a caller that closes only what is its own (the fx sync) reads the seat here.
-            row = _call_api(env, "resolve", {"platform": args.platform, "letter": shown["label"]})
+            row = _call_api(
+                env,
+                "resolve",
+                {"platform": args.platform, "letter": shown["label"]},
+                timeout=timeout,
+            )
             if "error" not in row and row.get("record_id") == shown["record_id"]:
                 shown.update({k: row[k] for k in ("seat", "title", "generation") if k in row})
         return shown
     if args.op == "close":
         out = _call_api(
-            env, "close", {**identity, "reason": "session ended", "source": args.source}
+            env,
+            "close",
+            {**identity, "reason": "session ended", "source": args.source},
+            timeout=timeout,
         )
         error = _api_error(out)
         if error is not None:
@@ -944,8 +1041,8 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
     if args.op == "issues":
-        return record_issues_api(env, identity, args.issues)
-    probe = _call_api(env, "touch", identity)
+        return record_issues_api(env, identity, args.issues, timeout=timeout)
+    probe = _call_api(env, "touch", identity, timeout=timeout)
     error = _api_error(probe)
     if error is not None:
         return error
@@ -954,7 +1051,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
         return _touch_answer(probe)
-    updated = _call_api(env, "update", {**identity, "title": title})
+    updated = _call_api(env, "update", {**identity, "title": title}, timeout=timeout)
     error = _api_error(updated)
     if error is not None:
         return error
@@ -984,7 +1081,7 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
+def _report_gone_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
     """The `report-gone` op:  one call that names the chats of one platform and host that are gone for good, and
     has the assigner close their rows.
 
@@ -1030,6 +1127,7 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
             "scope": SCOPE,
             "native_session_ids": ids,
         },
+        timeout=timeout,
     )
     if "error" in out:
         return dict(out)
@@ -1089,7 +1187,12 @@ def _make_parser() -> Any:
 
 
 def registry_main(
-    argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
+    argv: list[str],
+    *,
+    env: Mapping[str, str],
+    stdout: TextIO,
+    now: float | None = None,
+    call_timeout: int = 0,
 ) -> int:
     """`registry OP --platform P --location L --session-id S [--seat SEAT] [--title T] [--source SRC]
     [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.  The
@@ -1118,13 +1221,13 @@ def registry_main(
         return _emit(stdout, {"error": "bad arguments"}, 2)
     try:
         if args.op == "report-gone":
-            out = _report_gone_api(env, args)
+            out = _report_gone_api(env, args, timeout=call_timeout)
         else:
             sid = SI.check(args.session_id, "the session id")
             if args.op == "register":
-                out = _register_api(OR, env, args, sid)
+                out = _register_api(OR, env, args, sid, timeout=call_timeout)
             else:
-                out = _on_record_api(OR, env, args, sid)
+                out = _on_record_api(OR, env, args, sid, timeout=call_timeout)
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
     except (KeyError, TypeError):
@@ -1309,30 +1412,42 @@ class Chat:
         return argv
 
     def registry(
-        self, op: str, title: str = "", parent: str = "", issues: str = ""
+        self,
+        op: str,
+        title: str = "",
+        parent: str = "",
+        issues: str = "",
+        timeout: int = 0,
     ) -> dict[str, Any]:
         """One call to the registry side, answered as its JSON.  Whatever goes wrong, on the way or in the registry
         side, is an error answer: a hook never blocks a chat, and never stops on a call that failed."""
         try:
-            return self._registry(op, title, parent, issues)
+            return self._registry(op, title, parent, issues, timeout)
         except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat
             return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
-    def _registry(self, op: str, title: str, parent: str, issues: str = "") -> dict[str, Any]:
+    def _registry(
+        self, op: str, title: str, parent: str, issues: str = "", timeout: int = 0
+    ) -> dict[str, Any]:
         if not self.location:
             return {"error": NO_LOCATION}
-        return _registry_side(self.argv(op, title, parent, issues), self.env, self.transport)
+        return _registry_side(
+            self.argv(op, title, parent, issues),
+            self.env,
+            self.transport,
+            timeout or self.spec.call_timeout,
+        )
 
 
 def _registry_side(
-    argv: list[str], env: Mapping[str, str], transport: Transport | None
+    argv: list[str], env: Mapping[str, str], transport: Transport | None, call_timeout: int = 0
 ) -> dict[str, Any]:
     """The registry side's answer to one command line:  through the test's transport when there is one, else in
     process, where it makes its one API call."""
     if transport is not None:
         return _answer(dict(transport(argv)))
     out = io.StringIO()
-    registry_main(argv, env=env, stdout=out)
+    registry_main(argv, env=env, stdout=out, call_timeout=call_timeout)
     return _answer(_last_json(out.getvalue()))
 
 
@@ -1514,6 +1629,35 @@ def _join(*parts: str) -> str:
     return "  ".join(part for part in parts if part)
 
 
+def _thread_link_recorder(chat: Chat) -> Callable[[str], dict[str, Any]]:
+    """Keep the parent's registry credentials behind one identity-bound in-process update."""
+
+    def record(link: str) -> dict[str, Any]:
+        from . import registry_api
+
+        if not isinstance(link, str):
+            return {"code": "thread_link_invalid", "error": "thread_link_invalid"}
+        known = tuple(chat.env.get(name, "") for name in _OPERATOR_CHILD_SECRETS)
+        if secretscan.scan(link, known):
+            return {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"}
+        if not registry_api.base_url(chat.env):
+            return {}
+        return registry_api.call(
+            chat.env,
+            "update",
+            {
+                "platform": chat.spec.platform,
+                "location": chat.location,
+                "scope": SCOPE,
+                "session_id": chat.session_id,
+                "thread_link": link,
+            },
+            timeout=2,
+        )
+
+    return record
+
+
 def advice(
     chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any], reason: str
 ) -> str:
@@ -1541,7 +1685,8 @@ def advice(
         current=current,
         reason=reason,
         data=data,
-        env=chat.env,
+        env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
@@ -2250,10 +2395,10 @@ def _issues_value(text: str) -> Any:
 
 
 def record_issues_api(
-    env: Mapping[str, str], identity: Mapping[str, Any], text: str
+    env: Mapping[str, str], identity: Mapping[str, Any], text: str, timeout: int = 0
 ) -> dict[str, Any]:
     """The `issues` op through the registry API: its update, with the list it carries."""
-    out = _call_api(env, "update", {**identity, "issues": _issues_value(text)})
+    out = _call_api(env, "update", {**identity, "issues": _issues_value(text)}, timeout=timeout)
     error = _api_error(out)
     if error is not None:
         return error
@@ -2283,7 +2428,8 @@ def _write_title(
         current=current,
         reason=reason,
         data=data,
-        env=chat.env,
+        env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
@@ -2403,7 +2549,22 @@ def _settled(note: Mapping[str, Any]) -> bool:
     )
 
 
-def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
+def walk_allowance(spec: PlatformSpec) -> float:
+    """The seconds the ancestor walk may spend on one hook:  the row's own hook budget less the
+    chat's own chain, which is reserved for it.
+
+    A call count alone cannot say whether a walk fits:  an ancestor's registration chains up to three
+    calls (register, reopen, update), and how long each takes is not a number the code knows.  What
+    the hook's deadline is spent on is the time the calls really take, so the walk carries the
+    seconds it may still spend, every ancestor's call is capped by what is left of them, and the walk
+    stops when they are spent:  a slow registry can cost a parent its registration, never the chat's
+    own letter."""
+    budget = spec.hook_budget or SHARED_HOOK_BUDGET
+    chain = REGISTER_CALLS * (spec.call_timeout or _API_TIMEOUT)
+    return max(0.0, float(budget - chain))
+
+
+def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0.0) -> float:
     """Register a sub-thread's parent before the sub-thread, when the parent holds no live registration.
 
     The registry gives a sub-thread the pair after its parent's only when it knows the parent; a parent it has never
@@ -2411,10 +2572,16 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
     ahead of it.  The parent's note says what the hook last got: open is left alone and costs no hop, anything else
     (no note, failed, closed) is registered now, with the parent's own parent first.  The parent's title and the
     model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
-    does nothing here, and nothing here ever stops the sub-thread's own registration."""
+    does nothing here, and nothing here ever stops the sub-thread's own registration.
+
+    The walk may spend `allowance` seconds and no more (see `walk_allowance`):  each call of an
+    ancestor's chain gets a share of what is left of them, so the chain (the register, the reopen
+    that may follow it, the title update) cannot outlast the allowance, and the walk stops when it
+    is spent.  It returns the seconds it spent, so the generation above it knows what is left."""
     spec = chat.spec
-    if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH:
-        return
+    if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH or allowance <= 0:
+        return 0.0
+    frame_started = time.monotonic()
     try:
         sid = SI.check(parent, "the parent session id")
         mother = Chat(
@@ -2431,30 +2598,47 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
             return
         payload = spec.chat_payload(sid)
         if _text(spec.kind(payload, chat.env)) not in ("chat", "subagent"):
-            return
+            return 0.0
         grand = _text(spec.parent_id(payload, chat.env)) or str(note.get("parent") or "")
-        _ensure_parent(mother, grand, depth + 1)
+        spent = _ensure_parent(mother, grand, depth + 1, allowance)
         note = (
             mother.read()
         )  # the grandparents' turn may have registered this one (a store that names a loop)
         if _settled(note):
-            return
+            return spent
+        left = allowance - spent
+        if left < REGISTER_CALLS:
+            return spent  # less than an ancestor's chain is left:  the chat's own registration is what is left
+        # The chain is the register, the reopen that may follow it, and the title update, so each of
+        # its calls gets a share of what is left and the chain cannot outlast the allowance.  A row
+        # that declares no deadline of its own gets the shared one, not a one-second clamp.
+        cap = spec.parent_call_timeout or spec.call_timeout or _API_TIMEOUT
         mother.write(dict(note, failed_at=chat.now))
+        started = time.monotonic()
         done = _apply(
             mother,
-            mother.registry("register", title=str(note.get("title") or ""), parent=grand),
+            mother.registry(
+                "register",
+                title=str(note.get("title") or ""),
+                parent=grand,
+                timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
+            ),
             dict(note, parent=grand),
         )
+        spent += time.monotonic() - started
         if done["state"] == "open":
             done["announce"] = True
         mother.write(done)
+        return spent
     except Exception:  # noqa: BLE001 - the sub-thread is registered whether or not its parent could be
-        return
+        # The seconds this frame spent are gone with it, so the caller must not be told the budget
+        # is untouched:  a failing call that took its time is charged to the walk.
+        return time.monotonic() - frame_started
 
 
 def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
     """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`)."""
-    _ensure_parent(chat, parent)
+    _ensure_parent(chat, parent, 0, walk_allowance(chat.spec))
     return chat.registry("register", title=title, parent=parent)
 
 
@@ -3238,6 +3422,13 @@ def gone_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str
     return os.path.join(folder, ".gone-%s-%s" % (platform, where))
 
 
+def repair_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str) -> str:
+    """Where a host keeps the time of its last unlettered repair for one platform and location:  beside the
+    seat's letter notes, under a name no session id can have (a session id never starts with a dot)."""
+    folder = os.path.dirname(note_path(env, seat, "stamp"))
+    return os.path.join(folder, ".repair-%s-%s" % (platform, where))
+
+
 def _read_json(path: str) -> dict[str, Any]:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -3485,7 +3676,7 @@ def _send_gone(
         "--gone=" + json.dumps(ids),
     ]
     try:
-        return _registry_side(argv, env, transport)
+        return _registry_side(argv, env, transport, spec.call_timeout)
     except Exception as exc:  # noqa: BLE001 - a report never blocks a chat
         return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
@@ -3637,6 +3828,184 @@ def report_gone_elsewhere(
     return {"gone": fresh, "closed": closed, "kept": sorted(in_use)}
 
 
+def repair_unlettered(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    *,
+    now: float,
+    transport: Transport | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Replay the start of each of this host's chats that still shows the "??: " placeholder, at most once per
+    REPAIR_SWEEP_SECONDS (the stamp beside the notes;  `force` repairs whatever the stamp says).  The stamp is
+    written before anything else, so a pass that fails, or a hook killed inside it, is tried again after the
+    window and never on every start.  A finished pass also leaves its outcome beside the time (chats found,
+    replayed and lettered, and each replay that failed with its session id and exception type - or the
+    listing's error):  a stamp with no outcome is a pass that never finished, which a host check can tell from a
+    healthy quiet window.  A candidate the hook itself would refuse (`in_scope`), or whose note says closed or
+    mismatch, is left alone, and a pass starts no new replay once REPAIR_PASS_SECONDS have gone by.
+
+    A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
+    still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
+    chat lettered meanwhile is left alone (its start reads the title fresh).  What the repaired chats' starts
+    print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
+    if (
+        spec.unlettered_sessions is None
+        or spec.chat_payload is None
+        or not seat
+        or where not in LOCATIONS
+    ):
+        return {"skipped": "this platform names no unlettered chats on this host"}
+    path = repair_stamp_path(env, seat, spec.platform, where)
+    stamp = _read_json(path)
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
+        return {"skipped": "not due"}
+    if not _save_json(path, {"at": now}):
+        # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
+        return {"skipped": "the stamp could not be saved", "recorded": False}
+    try:
+        found = [
+            sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
+        ]
+    except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
+        mark = {"at": now, "outcome": {"error": "the adapter could not list them"}}
+        recorded = _save_json(path, mark)
+        if not recorded:
+            # One retry:  an unsaved outcome reads as a pass that never finished.
+            recorded = _save_json(path, mark)
+        return {"skipped": "the adapter could not list them", "recorded": recorded}
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    started = time.monotonic()
+    asked: list[str] = []
+    repaired: list[str] = []
+    failures: list[dict[str, str]] = []
+    for sid in found:
+        if len(asked) >= REPAIR_MAX_CHATS:
+            continue
+        if time.monotonic() - started >= REPAIR_PASS_SECONDS:
+            break  # the rest wait for the next pass:  no chat's start may stretch for the others
+        try:
+            payload = dict(spec.chat_payload(sid))
+            sid = _text(payload.get("session_id")) or sid
+            if not in_scope(spec, env, payload):
+                continue  # what the hook itself would refuse (headless, another launcher's, a bare sub-agent)
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            if chat.read().get("state") in ("closed", "mismatch"):
+                continue  # a settled no-letter state:  replaying it would re-register it every pass
+            on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
+        except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
+            failures.append({"sid": sid, "error": type(exc).__name__})
+            continue
+        asked.append(sid)
+        try:
+            if lettered(chat.read()):
+                repaired.append(sid)
+        except Exception:  # noqa: BLE001 - the note read is a report detail only
+            pass
+    outcome = {
+        "found": len(found),
+        "asked": len(asked),
+        "repaired": len(repaired),
+        "failed": len(failures),
+        "failures": failures,
+    }
+    recorded = _save_json(path, {"at": now, "outcome": outcome})
+    if not recorded:
+        # One retry with a bare marker:  an unsaved outcome must not read as a pass that never finished.
+        recorded = _save_json(
+            path, {"at": now, "outcome": {"error": "the outcome could not be saved"}}
+        )
+    return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
+
+
+def repair_main(
+    argv: list[str],
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    *,
+    now: float | None = None,
+    platform: str = sys.platform,
+    transport: Transport | None = None,
+) -> int:
+    """`repair [--platform P] [--location L] [--force]`:  replay the start of this host's chats still showing
+    "??: ", for the platform named or for every platform whose adapter names them.  This is the verb a host's
+    own schedule ticks:  an app-driven chat's hook never runs, so only a scheduled tick reaches it.  One line
+    per chat names the first 8 characters of its session id and whether its letter is back, never a title.  The
+    stamp beside the notes throttles the pass to once per REPAIR_SWEEP_SECONDS unless --force, and keeps the
+    last pass's outcome (see repair_unlettered), so a scheduled tick's work stays visible after the fact.
+    Exit 0, 2 for bad arguments."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    force = "--force" in argv
+    try:
+        flags = _flags([word for word in argv if word != "--force"], ("--platform", "--location"))
+    except ValueError:
+        stdout.write(REPAIR_USAGE)
+        return 2
+    where = location(env, platform, flags.get("location", ""))
+    if where is None:
+        stdout.write("unlettered repair:  %s\n" % NO_LOCATION)
+        return 2
+    specs: list[PlatformSpec] = []
+    if "platform" in flags:
+        name = flags["platform"]
+        spec = load_spec(name) if valid_platform(name) else None
+        if spec is None:
+            stdout.write("unlettered repair:  no adapter for the platform %r\n" % name)
+            return 2
+        if spec.unlettered_sessions is None:
+            stdout.write("unlettered repair:  the %s adapter names no unlettered chats\n" % name)
+            return 2
+        specs.append(spec)
+    else:
+        for name in adapter_platforms():
+            try:
+                spec = load_spec(name)
+            except Exception:  # noqa: BLE001 - an adapter that cannot load has nothing to repair
+                continue
+            if spec is None or spec.unlettered_sessions is None:
+                continue
+            specs.append(spec)
+    if not specs:
+        stdout.write("unlettered repair:  no platform here names its unlettered chats\n")
+        return 0
+    stamp = time.time() if now is None else now
+    for spec in specs:
+        seat = spec.seat_for({}, env)
+        if not seat:
+            continue
+        try:
+            done = repair_unlettered(
+                spec, env, seat, where, now=stamp, transport=transport, force=force
+            )
+        except Exception as exc:  # noqa: BLE001 - the verb reports, it never fails the caller's job
+            stdout.write(
+                "%s unlettered repair, %s:  could not run (%s)\n"
+                % (spec.display, where, type(exc).__name__)
+            )
+            continue
+        head = "%s unlettered repair, %s:  " % (spec.display, where)
+        if "skipped" in done:
+            stdout.write(head + "skipped (%s)\n" % done["skipped"])
+            if done.get("recorded") is False:
+                sys.stderr.write(head + "the pass's outcome could not be recorded\n")
+            continue
+        asked = done.get("asked") or []
+        fixed = set(done.get("repaired") or [])
+        for sid in asked:
+            stdout.write(
+                head + "%s %s\n" % (sid[:8], "letter back" if sid in fixed else "still unlettered")
+            )
+        for failed_chat in done.get("failures") or []:
+            stdout.write(head + "%s failed (%s)\n" % (failed_chat["sid"][:8], failed_chat["error"]))
+        stdout.write(head + "%d replayed, %d lettered\n" % (len(asked), len(fixed)))
+        if done.get("recorded") is False:
+            sys.stderr.write(head + "the pass's outcome could not be recorded\n")
+    return 0
+
+
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
     """The gone reports a chat's start makes, after the chat's own answer is out:  this host's own chats, then the
     chats the platform's app runs at each other location.  Nothing here reaches the chat:  whatever goes wrong is
@@ -3668,6 +4037,7 @@ def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
 
 
 GONE_USAGE = "usage: platform-letter gone [--platform P] [--location L] [--apply]\n"
+REPAIR_USAGE = "usage: platform-letter repair [--platform P] [--location L] [--force]\n"
 
 
 def gone_main(
@@ -4011,6 +4381,21 @@ def _command_objects(node: Any, platform: str) -> list[dict[str, Any]]:
     return found
 
 
+def _entry_timeouts(node: Any, platform: str) -> list[float]:
+    """The timeouts, in seconds, of the hook entries that hold this platform's command.  A timeout that is not whole seconds is rounded up, so an entry the runtime refuses is never  rounded down into the range it accepts."""
+    out: list[float] = []
+    for obj in _command_objects(node, platform):
+        value = obj.get("timeout")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            ms = obj.get("timeoutMs")
+            if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+                continue
+            out.append(float(math.ceil(ms / 1000)))
+            continue
+        out.append(float(value))
+    return out
+
+
 def _strip(
     node: Any, platform: str, ours: Callable[[dict[str, Any], str], bool] | None = None
 ) -> Any:
@@ -4113,6 +4498,10 @@ class JsonHookInstaller:
     trust        what the platform needs after a hook is added (Codex trusts each new entry by hash, Muse needs
                  its plugin approved): reported in the install answer for the owner or the orchestrator to run;
                  the installer never runs it
+    timeout_cap  the largest timeout this platform's runtime accepts for one command hook, in seconds (0 when
+                 the limit is not known):  a runtime that refuses a longer timeout never runs that hook, so an
+                 entry over the cap is a hook that looks installed and does nothing.  The installer refuses to
+                 write one and `--check` reports a longer installed one as not current
     """
 
     path: str
@@ -4121,6 +4510,7 @@ class JsonHookInstaller:
     build: Callable[[str, int, str], Any] = command_entry
     whole_file: bool = False
     trust: str = ""
+    timeout_cap: int = 0
 
 
 @dataclass(frozen=True)
@@ -4222,6 +4612,21 @@ def install_json_hooks(
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (path, exc)}, 2)
     platform = opts.platform
+    cap = installer.timeout_cap
+    over = {ev: t for ev, t in installer.events.items() if cap and t > cap}
+    if over and not opts.remove and not opts.check:
+        # A runtime that refuses this timeout never runs the hook, so the installer writes nothing at all.
+        return _emit(
+            stdout,
+            {
+                "platform": platform,
+                "path": path,
+                "refused": "timeout_over_cap",
+                "cap": cap,
+                "timeouts": over,
+            },
+            1,
+        )
     already = [
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
@@ -4258,9 +4663,22 @@ def install_json_hooks(
         }
     if opts.check:
         current = {}
+        over_cap = {}
         for ev, timeout in installer.events.items():
             new, entries = _plan_event(installer, events, ev, timeout, command, platform, False)
             current[ev] = have[ev] and new == entries  # an install would change nothing
+            if cap:
+                longer = [t for t in _entry_timeouts(entries, platform) if t > cap]
+                if timeout > cap:
+                    # The adapter's own timeout is one this platform's runtime refuses, so an install
+                    # would write an entry that never runs:  the entry is not current either, and the
+                    # answer names the timeout.
+                    longer = longer + [timeout]
+                if longer:
+                    # Installed, and a timeout this platform's runtime refuses:  the entry never runs, so the
+                    # hook is not current however close it is to the wanted one.
+                    current[ev] = False
+                    over_cap[ev] = longer
         from . import registry_api as RA
 
         # What a hook launched from this environment would find:  the registry settings, by name and never by value.
@@ -4271,6 +4689,7 @@ def install_json_hooks(
             "installed": have,
             "current": current,
             "registry": RA.configuration(env),
+            **({"over_cap": over_cap} if over_cap else {}),
             **key,
         }
         if stray or files:
@@ -4387,6 +4806,7 @@ USAGE = (
     "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
     "                        | request [--session-id S]\n"
     "                        | gone [--platform P] [--location L] [--apply]\n"
+    "                        | repair [--platform P] [--location L] [--force]\n"
     "                        | parent --platform P --session-id S [--app-id A] [--source SRC]\n"
     "                        | parent-ssh-gate\n"
     "                        | parent-key-line [--from SOURCE]}\n"
@@ -4521,6 +4941,8 @@ def main(
         return parent_ssh_gate_main(env, stdout, stderr)
     if argv[0] in ("gone", "sweep-archived"):  # the second is the verb's name before this client
         return gone_main(argv[1:], env, stdout, transport=transport)
+    if argv[0] == "repair":
+        return repair_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)
     return 2
 

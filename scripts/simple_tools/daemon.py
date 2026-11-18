@@ -2032,6 +2032,7 @@ class Daemon:
             operator_user_id=OPV.pinned_user_id(self.env),
             seat_has_routine=runner.cfg.routine is not None,
             topic_ledger=self.topic_ledger,
+            bracket_recipient_wakes=runner.cfg.bracket_recipient_wakes,
         )
 
     def fleet_bot_names(self, runner: SeatRunner) -> dict[str, str]:
@@ -2314,9 +2315,10 @@ class Daemon:
             or message_id in runner.edit_ring
         ):
             return
-        if not R.tags_seat(str(event.get("content") or ""), runner.me) or R.tags_seat(
-            str(event.get("orig_content") or ""), runner.me
-        ):
+        bracket_ok = runner.cfg.bracket_recipient_wakes
+        if not R.tags_seat(
+            str(event.get("content") or ""), runner.me, bracket_ok=bracket_ok
+        ) or R.tags_seat(str(event.get("orig_content") or ""), runner.me, bracket_ok=bracket_ok):
             return
         try:
             fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
@@ -2330,7 +2332,7 @@ class Daemon:
             return
         message = dict(fetched.get("message") or {})
         if message.get("type") == "private" or not R.tags_seat(
-            str(message.get("content") or ""), runner.me
+            str(message.get("content") or ""), runner.me, bracket_ok=bracket_ok
         ):
             return  # a DM, or edited again since:  the newer edit's own event decides
         message["id"] = message_id
@@ -5968,16 +5970,22 @@ class Daemon:
         owner: bool = True,
     ) -> dict[str, Any]:
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}, "targets": {}}
+        places = places or FAN.ChatPlaces()
         try:
             # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
             # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
             rows = self.chat_catalog().discover(
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
-            chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
+            chosen = FAN.select(rows, self.clock.time(), where, places)
         except Exception:
             self.log.write("fanout-error", id=message_id, error="catalog discovery failed")
             return dict(result, error="catalog")
+        # A chat left out because its folder could not be asked is named in the receipt:  an alert
+        # that quietly loses a chat looks the same as one that never reached it.
+        unplaced = list(getattr(places, "unplaced", []) or [])
+        if unplaced:
+            result["unplaced"] = unplaced
         targets: dict[str, str] = result["targets"]
         for row in chosen:
             platform = str(row.get("platform") or "")
@@ -8218,6 +8226,8 @@ class Daemon:
                 "wakes_24h": len(day),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
+                # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
+                "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
                 # never a real signal, while the COUNT caps are what actually bound a seat.
                 "budget": runner.cfg.budget,

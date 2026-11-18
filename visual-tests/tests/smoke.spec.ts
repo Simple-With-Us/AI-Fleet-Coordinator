@@ -23,9 +23,11 @@ test.describe('digest page (pinned fixture)', () => {
       await page.setViewportSize(viewport);
       await serveRepo(page);
       await page.goto(DIGEST_FIXTURE_PATH);
-      for (const label of ['Socratic.Trade', 'Congress.Trade', 'BotFleet.app', 'Hog Hunter']) {
+      for (const label of ['Socratic.Trade', 'Congress.Trade', 'BotFleet.app', 'Hog Hunter', 'Muster', 'FleetLink', 'Simple With Us', 'OpenCode', 'Instinct', 'Z Code', 'Fx', 'Clutch']) {
         await expect(page.locator('.legend')).toContainText(label);
       }
+      await expect(page.locator('link[rel="icon"][type="image/png"]')).toHaveAttribute('href', 'agent-logos/app-afc.png');
+      await expect(page.locator('link[rel="icon"][media]')).toHaveAttribute('href', 'agent-logos/app-afc-dark.webp');
       expect(serveErrors(page)).toEqual([]);
     });
   }

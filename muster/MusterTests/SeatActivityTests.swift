@@ -1256,6 +1256,55 @@ final class SeatActivityTests: XCTestCase {
         }
         XCTAssertTrue(SeatActivityText.display(SeatPlaceGroup.server.explanation).contains("seats.\u{00A0} Muster"))
     }
+
+    func test_row_sorts_sessions_live_first_groups_by_platform_and_filters_by_family_and_search() {
+        let deadClaude = SeatSession(id: "s1", letter: "AA", title: "Old", platform: "claude", alive: false)
+        let liveCodex = SeatSession(id: "s2", letter: "BB", title: "ActiveWork", platform: "codex", alive: true)
+        let liveClaude = SeatSession(id: "s3", letter: "CC", title: "LiveClaude", platform: "claude-code", alive: true)
+
+        let ccRow = SeatActivityRow(
+            seat: "CLAUDE",
+            botName: "Claude Bot",
+            place: .mac,
+            openSessions: .known(2),
+            sessions: [deadClaude, liveCodex, liveClaude],
+            listener: .known(.connected(jobs: 0)),
+            lastPost: .known(.none)
+        )
+        let gbRow = SeatActivityRow(
+            seat: "GB-ALPHA",
+            place: .server,
+            openSessions: .known(0),
+            listener: .known(.skipped("paused")),
+            lastPost: .known(.none)
+        )
+        let bfRow = SeatActivityRow(
+            seat: "BF-ONE",
+            place: .noEavesdropper,
+            openSessions: .known(0),
+            listener: .known(.connected(jobs: 0)),
+            lastPost: .known(.post(at: Date(timeIntervalSince1970: 100), channel: "Work-In-Progress", label: "#Work-In-Progress > demo", isAtQuota: false))
+        )
+
+        XCTAssertEqual(ccRow.sortedSessions.map(\.id), ["s2", "s3", "s1"])
+        XCTAssertEqual(ccRow.sessionsByPlatform.map(\.platform), ["Codex", "Claude"])
+        XCTAssertEqual(ccRow.sessionsByPlatform.last?.sessions.map(\.id), ["s3", "s1"])
+
+        var model = SeatActivityModel()
+        model.rows = [ccRow, gbRow, bfRow]
+
+        let workingGroups = model.filteredGroups(filter: .working, search: "")
+        XCTAssertEqual(workingGroups.flatMap(\.rows).map(\.seat), ["CLAUDE"])
+
+        let searchedGroups = model.filteredGroups(filter: .all, search: "Work-In-Progress")
+        XCTAssertEqual(searchedGroups.flatMap(\.rows).map(\.seat), ["BF-ONE"])
+
+        let sections = model.familySections(filter: .all, search: "")
+        XCTAssertEqual(sections.map(\.kind), [.core, .grokBots, .botFleet])
+        XCTAssertEqual(sections[0].rows.map(\.seat), ["CLAUDE"])
+        XCTAssertEqual(sections[1].rows.map(\.seat), ["GB-ALPHA"])
+        XCTAssertEqual(sections[2].rows.map(\.seat), ["BF-ONE"])
+    }
 }
 
 /// The app-level store:  one reading,  one read in flight,  and no reading in the

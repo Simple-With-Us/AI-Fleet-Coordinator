@@ -147,11 +147,9 @@ class RegisterPathTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     OR.register_session(db, **kwargs)
 
-    def test_the_register_cli_prints_the_letter_and_the_title_form(self) -> None:
+    def test_the_register_cli_refuses_local_db_writes_without_the_registry_api(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
-            # The CLI never brings a registry into being, so the file is there first:
-            # the Operator's own service is what creates one, in process.
             OR.SessionRegistry(db).close_db()
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
@@ -174,12 +172,13 @@ class RegisterPathTests(unittest.TestCase):
                         "test",
                         "--title",
                         "Work",
-                    ]
+                    ],
+                    env={},
                 )
-            self.assertEqual(code, 0)
-            self.assertEqual(json.loads(buffer.getvalue())["label"], "AA")
-            found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
-            self.assertEqual(found["label"], "AA")
+            self.assertEqual(code, 2)
+            out = json.loads(buffer.getvalue())
+            self.assertEqual(out["code"], "not_configured")
+            self.assertEqual(OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc"), {})
 
 
     def test_a_letter_names_its_session(self) -> None:
@@ -431,7 +430,8 @@ class RegisterPathTests(unittest.TestCase):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = OR.main(
-                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "AA"]
+                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "AA"],
+                    env={},
                 )
             self.assertEqual(code, 0)
             out = json.loads(buffer.getvalue())
