@@ -18,6 +18,7 @@
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
   python3 scripts/fleet-ops-control.py server test-wake SEAT.LETTER.GEN.HOST (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server pause|pause-wakes|resume server|SEAT (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                        (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -127,6 +128,20 @@ What it promises:
     request body, a topic, a session id, a link, a routine's host or its variable names).  A dry run
     that picked the addressed chat is `done`;  any other is `failed` with the reason word as
     `errorCode`.  The `--from-muster` route does not offer it.
+  * `server pause TARGET`, `server pause-wakes TARGET` and `server resume TARGET` (AFC-832) run the
+    Eavesdropper's own kill switch, `simple-chat daemon pause [--seat SEAT] [--wakes-only]` or
+    `simple-chat daemon resume [--seat SEAT]`, with the same fixed entrypoint argv as test-wake (30
+    seconds, at most 16 KiB).  TARGET is `server` (every seat) or one seat the Eavesdropper's status
+    lists (`seat_unknown` otherwise, `status_unavailable` when the status cannot be read).  `pause`
+    stops wakes and live interrupts, `pause-wakes` wakes only, and capture goes on under both;
+    `resume server` lifts every pause and `resume SEAT` that seat's own, and a resume with nothing to
+    lift is refused (`not_paused`).  Nothing here pauses on its own:  each run is a previewed,
+    deliberate gesture.  `--plan` shows the one command and the pause in force (`pause`:  the
+    fleet-wide entry and each seat's, as booleans, a word for who set it and when) and runs nothing;
+    `--yes` checks the target again under the one action lock, runs it, and reads the result back
+    from the status (up to 30 seconds), never from what the command printed:  `done` when the status
+    shows the change, `failed` with `not_confirmed` when it does not.  One audit row names the verb
+    and the target.  The `--from-muster` route does not offer them.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -643,6 +658,44 @@ TEST_WAKE_UNAVAILABLE = {
 # A router's pick and reason words (`picked`, `reason`, a health `reason`):  lower-case words joined
 # by `-` or `_`, read up to the first `:` (`seat-not-served:start-error` is `seat-not-served`).
 TEST_WAKE_WORD_RE = re.compile(r"[a-z][a-z0-9_-]{0,47}")
+# `server pause TARGET`, `server pause-wakes TARGET` and `server resume TARGET` (AFC-832):  the
+# Eavesdropper's own kill switch, `simple-chat daemon pause [--seat S] [--wakes-only]` and
+# `simple-chat daemon resume [--seat S]`, run inside its container through the same entrypoint as
+# test-wake.  TARGET is `server` (every seat) or one seat the Eavesdropper's status lists.  `pause`
+# stops wakes and live interrupts and `pause-wakes` stops wakes only;  capture goes on under both.
+# `resume server` lifts every pause and `resume SEAT` lifts that seat's own.  Pausing is only ever
+# a deliberate, previewed gesture (Jay, Nov 17:  a Mac sign-in popup is not a reason to pause wake
+# delivery), so nothing in this helper pauses on its own.  A run is a `--yes` under the action lock
+# with one audit row, and its result is read back from the status the Eavesdropper publishes, never
+# from what the command printed.  Every word of the argv is a constant here except the checked seat.
+PAUSE_VERB = "pause"
+PAUSE_WAKES_VERB = "pause-wakes"
+RESUME_VERB = "resume"
+PAUSE_VERBS = (PAUSE_VERB, PAUSE_WAKES_VERB, RESUME_VERB)
+# A seat word is the Operator's own seat shape (`OPERATOR_SEAT_RE`, which Muster's
+# `OpsCommandBuilder.isSeatName` mirrors).
+PAUSE_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+# The command writes the pause file and returns;  the Eavesdropper publishes the state it then holds
+# in its status within seconds.  The read-back waits for it at most this long.
+PAUSE_TIMEOUT = 30
+PAUSE_MAX_BYTES = 16 * 1024
+PAUSE_CONFIRM_SECONDS = 30
+PAUSE_CONFIRM_EVERY = 2
+PAUSE_ERRORS = {
+    "seat_unknown": "the Eavesdropper's status lists no such seat",
+    "status_unavailable": "the Eavesdropper's status could not be read, so the target is not confirmed",
+    "not_paused": "that target has no pause to lift",
+    "not_confirmed": "the command ran, but the Eavesdropper's status did not show the change in time",
+    "usage": "the Eavesdropper refused the request",
+    "pause_failed": "the pause or resume stopped without an answer this helper could read;  it may have run",
+}
+PAUSE_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "the pause or resume took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the pause or resume could not be run in the eavesdropper container",
+    "too_large": "the pause or resume printed more than the allowed size",
+}
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -2777,6 +2830,186 @@ def run_test_wake(ctx, chat):
     }, 1
 
 
+PAUSE_SET_BY_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+
+def _pause_entry(entry):
+    """One pause file entry, reduced:  whether it stops wakes only, a word for who set it, and when."""
+    wakes_only = entry.get("wakes_only")
+    by = entry.get("by")
+    ts = entry.get("ts")
+    since = None
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) and 0 < ts < 1e11:
+        try:
+            since = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except (OverflowError, OSError, ValueError):
+            since = None
+    return {
+        "wakesOnly": wakes_only if isinstance(wakes_only, bool) else None,
+        # A word such as `cli`, `owner-dm` or `drain`;  an address or any other text is not kept.
+        "setBy": by if isinstance(by, str) and PAUSE_SET_BY_RE.fullmatch(by) else None,
+        "since": since,
+    }
+
+
+def reduce_pause(status):
+    """The pause a status document shows:  {"all": entry | None, "seats": {SEAT: entry}}, where an
+    entry is `_pause_entry`'s.  `all` is the fleet-wide pause (`*` in the pause file)."""
+    raw = status.get("pause") if isinstance(status, dict) else None
+    out = {"all": None, "seats": {}}
+    if not isinstance(raw, dict):
+        return out
+    for key in sorted(k for k in raw if isinstance(k, str)):
+        entry = raw[key]
+        if not isinstance(entry, dict):
+            continue
+        if key == "*":
+            out["all"] = _pause_entry(entry)
+        elif PAUSE_SEAT_RE.fullmatch(key) and len(out["seats"]) < 64:
+            out["seats"][key] = _pause_entry(entry)
+    return out
+
+
+def pause_target(ctx, target):
+    """(the seat a pause verb names, or None for every seat, the status read) or Refused.
+
+    `server` is every seat.  A seat must be one the Eavesdropper's own status lists, read here:  a
+    status that cannot be read refuses, so nothing runs against a target that is not confirmed."""
+    if target == OPERATOR_TARGET:
+        seat = None
+    elif isinstance(target, str) and PAUSE_SEAT_RE.fullmatch(target):
+        seat = target
+    else:
+        raise Refused(PAUSE_ERRORS["seat_unknown"], error_code="seat_unknown")
+    status, _reason = read_eavesdropper_status(ctx)
+    if status is None:
+        raise Refused(PAUSE_ERRORS["status_unavailable"], error_code="status_unavailable")
+    seats = status.get("seats")
+    if seat is not None and (not isinstance(seats, dict) or seat not in seats):
+        raise Refused(PAUSE_ERRORS["seat_unknown"], error_code="seat_unknown")
+    return seat, status
+
+
+def pause_argv(verb, seat):
+    """The one argv of a pause or a resume:  every word a constant of this file but the checked seat."""
+    argv = [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        TEST_WAKE_ENTRYPOINT,
+        "daemon",
+        "resume" if verb == RESUME_VERB else "pause",
+    ]
+    if seat is not None:
+        argv += ["--seat", seat]
+    if verb == PAUSE_WAKES_VERB:
+        argv.append("--wakes-only")
+    return argv
+
+
+def pause_done(verb, seat, pause):
+    """Whether the reduced pause shows what the verb asked for."""
+    entry = pause["all"] if seat is None else pause["seats"].get(seat)
+    if verb == PAUSE_VERB:
+        return entry is not None and entry["wakesOnly"] is False
+    if verb == PAUSE_WAKES_VERB:
+        return entry is not None and entry["wakesOnly"] is True
+    if seat is None:
+        return pause["all"] is None and not pause["seats"]
+    return seat not in pause["seats"]
+
+
+def pause_name(seat):
+    return "every seat" if seat is None else seat
+
+
+def pause_detail(verb, seat):
+    """The plain sentence for what a pause verb does, for a plan and for its result."""
+    name = pause_name(seat)
+    if verb == PAUSE_VERB:
+        return f"{name}:  wakes and live interrupts stop;  capture goes on, and resume lifts it"
+    if verb == PAUSE_WAKES_VERB:
+        return f"{name}:  routine wakes stop;  live interrupts and capture go on, and resume lifts it"
+    if seat is None:
+        return "every pause is lifted, the fleet-wide one and each seat's"
+    return f"{name}'s own pause is lifted;  a fleet-wide pause, if any, stays"
+
+
+def run_pause(ctx, verb, seat):
+    """(the answer fields of a pause or a resume, the exit status).  One `docker exec`, no shell, no
+    sudo, the pinned docker environment and a bounded run, then the Eavesdropper's status read again
+    until it shows the change or PAUSE_CONFIRM_SECONDS pass.  What the command printed is not kept."""
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        scratch = None
+    if scratch is None:
+        status, err, over = 127, b"", False
+    else:
+        with scratch as config_dir:
+            status, _out, err, over = ctx.reader(
+                pause_argv(verb, seat),
+                timeout=PAUSE_TIMEOUT,
+                env=_docker_env(config_dir),
+                max_bytes=PAUSE_MAX_BYTES,
+            )
+    reason = None
+    if over:
+        reason = "too_large"
+    elif status == 127:
+        reason = "docker_unavailable"
+    elif status == 124:
+        reason = "timeout"
+    elif status == 2:
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS['usage']}",
+            "errorCode": "usage",
+            "pause": None,
+        }, 1
+    elif status != 0:
+        reason = _docker_failure(err)
+        if reason not in PAUSE_UNAVAILABLE:
+            reason = "read_failed"
+    if reason is not None:
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": PAUSE_UNAVAILABLE[reason],
+            "errorCode": reason,
+            "pause": None,
+        }, 1
+    deadline = ctx.monotonic() + PAUSE_CONFIRM_SECONDS
+    pause = None
+    while True:
+        document, _reason = read_eavesdropper_status(ctx)
+        if document is not None:
+            pause = reduce_pause(document)
+            if pause_done(verb, seat, pause):
+                return {
+                    "ok": True,
+                    "result": "done",
+                    "detail": pause_detail(verb, seat),
+                    "pause": pause,
+                }, 0
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        ctx.sleep(min(PAUSE_CONFIRM_EVERY, remaining))
+    return {
+        "ok": False,
+        "result": "failed",
+        "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS['not_confirmed']}",
+        "errorCode": "not_confirmed",
+        "pause": pause,
+    }, 1
+
+
 def _pm2_prefix(ctx):
     node = ctx.pm2_node
     if node is None:
@@ -4009,6 +4242,50 @@ def handle(
             answer.update(fields)
             audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
+        if scope == "server" and action in PAUSE_VERBS:
+            # The Eavesdropper's kill switch (AFC-832).  Both `--plan` and `--yes` confirm the target
+            # against the Eavesdropper's status first, and a resume with nothing to lift is refused;
+            # `--plan` then shows the one command and the pause in force and runs nothing, and `--yes`
+            # confirms again under the one action lock, runs it, reads the result back from the
+            # status and writes one audit row.  The `--from-muster` route has no approval form for
+            # it, so it is refused there.
+            if require_approval:
+                raise Refused(f"{action} is not offered on this route")
+            _server_only(ctx)
+            seat, status = pause_target(ctx, target)
+            answer["commands"] = [pause_argv(action, seat)]
+            current = reduce_pause(status)
+            if action == RESUME_VERB and pause_done(RESUME_VERB, seat, current):
+                raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
+            if mode == "plan":
+                answer.update(
+                    ok=True, result="planned", detail=pause_detail(action, seat), pause=current
+                )
+                return answer, 0
+            with contextlib.ExitStack() as held:
+                if not lock_held:
+                    held.enter_context(action_lock(ctx))
+                seat, status = pause_target(ctx, target)
+                if action == RESUME_VERB and pause_done(RESUME_VERB, seat, reduce_pause(status)):
+                    raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
+                if isinstance(reason_out, dict):
+                    reason_out["started"] = True
+                try:
+                    fields, code = run_pause(ctx, action, seat)
+                except Exception:  # noqa: BLE001 - a run that may have changed the pause still gets its one audit row
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "failed",
+                            "detail": PAUSE_ERRORS["pause_failed"],
+                            "errorCode": "pause_failed",
+                            "pause": None,
+                        },
+                        1,
+                    )
+            answer.update(fields)
+            audit_run(ctx, scope, action, target, target, answer, None, extra)
+            return answer, code
         if scope == "server" and action in OPERATOR_READS:
             # A read of the server Operator's session registry or wake records, reduced to
             # letters, names, counts, ids, code words and times.  Like eavesdropper-status it
@@ -4578,7 +4855,7 @@ def parse_ssh_command(text):
         "operator-wakes",
         ROUTER_HEALTH_VERB,
         TEST_WAKE_VERB,
-    ):
+    ) + PAUSE_VERBS:
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")
