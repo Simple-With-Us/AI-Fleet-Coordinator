@@ -206,7 +206,10 @@ class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
     def test_durable_record_binds_registry(self):
         root = Path(__file__).resolve().parents[3]
         record = json.loads(
-            (root / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json").read_text()
+            (
+                root
+                / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json"
+            ).read_text()
         )
         doc = record["reviewed_file"]
         self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
@@ -231,11 +234,13 @@ class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
         self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
 
     def test_loaded_credential_and_dedicated_pattern_stay_absolute(self):
-        with patch.object(
-            relay, "_REVIEWED_GENERIC_MATCHES", {self.key: self.census}
-        ):
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {self.key: self.census}):
             self.assertEqual(
-                relay.scan_file(self.key[0], self.key[1], "prefix " + "KnownCredentialValue123", known=("KnownCredentialValue123",)),
+                relay.scan_file(
+                    self.key[0],
+                    self.key[1],
+                    "prefix " + "KnownCredentialValue123",
+                    known=("KnownCredentialValue123",),
+                ),
                 "a loaded credential",
             )
-
