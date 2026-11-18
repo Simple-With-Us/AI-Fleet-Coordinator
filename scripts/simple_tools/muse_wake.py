@@ -255,9 +255,9 @@ def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.
     try:
         answer = resolve(env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
+        return WR.registry_outage()
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.registry_delivery(WR.registry_trouble(answer))
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed MC chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)

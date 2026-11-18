@@ -35,9 +35,10 @@ then the topic's words in a chat's title;  then recency.  A tie within a step go
 recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
 recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
 and an unreadable registry do not deliver.  `no-live-session` is a bounded retry, because a chat
-may register before `max_attempts` runs out;  an unreadable registry is not counted against the
-wake's attempts at all, because the registry may come back long after `max_attempts` would have
-been spent, and it is bounded by `max_age_seconds` alone.  The receiving chat
+may register before `max_attempts` runs out;  a registry that could not be read is not counted
+against the wake's attempts at all, because the registry may come back long after `max_attempts`
+would have been spent, and it is bounded by `max_age_seconds` alone.  An answer that is not an
+answer is malformed data rather than an outage, so it keeps the bounded attempts.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
@@ -256,14 +257,23 @@ EXPIRED = "wake-expired"
 RELEASED = "target-released"
 # A live registry row the check before delivery cannot read as a chat of this seat.
 UNREADABLE_ROW = "registry-row-unreadable"
-# The registry has no address or no key on this host:  a bounded retry, as an outage is.
+# The registry has no address or no key on this host:  a deployment fault, and not an outage.
+# It is answered `failed`, so the retry is counted and the wake ends with the code that says so,
+# and the note names the variable that is missing.
 NOT_CONFIGURED = "registry-not-configured"
 # The registry could not be read at all:  an outage, and not a deployment fault.  Every platform
 # answers it the same way, and the router retries it without spending one of the wake's five
 # attempts, so an outage cannot kill a wake the registry would have carried.
 REGISTRY_UNAVAILABLE = "registry-unavailable"
+# The registry answered with something that is not an answer:  malformed external data, and not
+# an outage.  It is answered `failed` as well, so the wake ends after the bounded attempts
+# instead of waiting on a registry that is broken rather than down.
+UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+#: How much of a registry answer's own words a delivery note carries:  a variable name and a
+#: reason, and never a value.
+NOTE_CHARS = 120
 # A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
 # code for every platform, not one per platform, so it sits in NEVER_RAN here.
 HANDLER_MISSING = "platform-handler-missing"
@@ -1781,25 +1791,51 @@ def registry_configured(env: Mapping[str, str]) -> bool:
 
 
 def registry_trouble(answer: object) -> str:
-    """The retry code for a registry answer that is not a reading:  `registry-not-configured`
-    when this host has no registry address or key (registry_api's `not_configured`), else
-    `registry-unavailable`.  Either way nothing is delivered on it."""
-    if isinstance(answer, Mapping) and answer.get("code") == "not_configured":
+    """The code for a registry answer that is not a usable reading.
+
+    `registry-not-configured` when this host has no registry address or key (registry_api's
+    `not_configured`);  `registry-unavailable` when the registry could not be read, which is an
+    outage and spends no attempt;  `registry-answer-unreadable` when the answer is not a
+    reading at all, which is malformed external data and not an outage.  Nothing is delivered on
+    any of them, and the shape of the answer is checked here, before any other code reads a
+    field of it."""
+    if not isinstance(answer, Mapping):
+        return UNREADABLE_ANSWER
+    if "error" not in answer:
+        return UNREADABLE_ANSWER
+    if answer.get("code") == "not_configured":
         return NOT_CONFIGURED
     return REGISTRY_UNAVAILABLE
 
 
-def registry_delivery(code: str, route: str = "") -> Delivery:
-    """The one answer every platform gives when the registry cannot be read.
+def registry_outage(route: str = "") -> Delivery:
+    """The answer every platform gives when the registry could not be reached at all.
 
-    An outage is `busy`:  nothing ran, nothing is the chat's fault, and the router retries the
-    wake without spending one of its five attempts, so an outage of twenty minutes does not
-    kill the wake.  A host with no registry address or key is a deployment fault rather than an
-    outage, so it is `failed` and the wake ends with the code that says so.  The outcome says
-    how the router treats the answer;  the code says what actually happened."""
-    if code == NOT_CONFIGURED:
-        return Delivery("failed", route, code=code)
-    return Delivery("busy", route, code=code)
+    Nothing ran and nothing is the chat's fault, so the router retries the wake without
+    spending one of its five attempts, and the wake waits for the registry to come back."""
+    return Delivery("busy", route, code=REGISTRY_UNAVAILABLE)
+
+
+def registry_delivery(answer: object, route: str = "") -> Delivery:
+    """The answer every platform gives when the registry answered something that is not a
+    usable reading.
+
+    The shape of the answer is checked before any field of it is read.  An answer that is not
+    a mapping is malformed external data:  it is `failed` with the code that names it, so the
+    wake ends after the bounded attempts instead of waiting on a registry that is broken
+    rather than down.
+
+    An answer that carries an error is a trouble.  A host with no registry address or key is
+    `failed`, because a retry does not fix a deployment fault, and the note carries the
+    registry's own words about which variable is missing.  Anything else is an outage:  it is
+    `busy`, it spends none of the wake's attempts, and it waits for the registry."""
+    code = registry_trouble(answer)
+    if code == REGISTRY_UNAVAILABLE:
+        return Delivery("busy", route, code=code)
+    note = ""
+    if isinstance(answer, Mapping):
+        note = str(answer.get("error", ""))[:NOTE_CHARS]
+    return Delivery("failed", route, code=code, note=note)
 
 
 def _closed(row: Mapping[str, Any]) -> bool:

@@ -2216,15 +2216,16 @@ class Generations(Base):
                 self.assertEqual(len(self.delivered), 1)
                 saved = json.loads(self.pending().read_text(encoding="utf-8"))
                 self.assertNotIn("in_flight", saved)
-                # An outage spends no attempt, so the wake is waiting rather than failing.
-                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (0, 0))
+                # An answer that is not an answer is malformed data, so it is a counted
+                # failure:  the wake keeps its bounded attempts.
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
                 self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
                 self.clock.now += 2000
                 self.drain(router)
                 self.assertEqual(len(self.delivered), 2)
                 self.assertEqual(self.done()["status"], "delivered")
 
-    def test_a_resolve_answer_that_is_not_a_mapping_is_an_outage_and_spends_no_attempt(
+    def test_a_resolve_answer_that_is_not_a_mapping_is_a_bad_answer_and_not_an_outage(
         self,
     ) -> None:
         router = self.lettered(max_attempts=2)
@@ -2237,13 +2238,11 @@ class Generations(Base):
             for _ in range(6):
                 self.drain(router)
                 self.clock.now += 2000
-        # The check before delivery could not read the registry:  an outage.  It spent no
-        # attempt, so the wake is still waiting and nothing was delivered.
-        saved = json.loads(self.pending().read_text(encoding="utf-8"))
-        self.assertEqual(saved["failures"], 0)
+        # The registry answered something that is not an answer:  malformed data, so the wake
+        # ends after the bounded attempts instead of waiting on a registry that is broken.
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.UNREADABLE_ANSWER))
         self.assertEqual(len(self.delivered), 1)
-        self.assertFalse((self.state / "done" / "w-1.json").exists())
-        self.assertIn(WR.REGISTRY_UNAVAILABLE, self.stderr.getvalue())
 
     def test_a_pick_on_an_answer_that_is_not_a_mapping_is_a_retry(self) -> None:
         for op_odd in ("resolve", "history"):
@@ -2257,7 +2256,9 @@ class Generations(Base):
                     wake = self.wake(letter="AA") if op_odd == "resolve" else self.wake()
                     with mock.patch.object(WR.registry_api, "call", call):
                         pick = self.router().pick(wake)
-                    self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+                    self.assertEqual(
+                        (pick.reason, pick.retry), (WR.UNREADABLE_ANSWER, True)
+                    )
 
     # `found` values that are not the registry's own True or False.  "absent" drops the key.
     ODD_FOUND = ("absent", None, 0, 1, 1.0, "", "true", "false", [True])
@@ -2307,7 +2308,7 @@ class Generations(Base):
         for odd in self.ODD_FOUND:
             with self.subTest(found=odd), self.resolve_with_found(odd):
                 pick = self.router().pick(self.wake(letter="AA"))
-                self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+                self.assertEqual((pick.reason, pick.retry), (WR.UNREADABLE_ANSWER, True))
 
     def test_holds_needs_found_to_be_exactly_a_boolean(self) -> None:
         target = WR.Target(SID_A, letter="AA", generation=3)
@@ -4895,7 +4896,7 @@ class Remote(RemoteBase):
                     _, answer = self.run_main(self.envelope())
                 self.assertEqual(
                     (answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                    ("busy", "registry-unavailable"),
+                    ("failed", WR.UNREADABLE_ANSWER),
                 )
                 spy.assert_not_called()
 
@@ -5345,14 +5346,26 @@ class RegistryNotConfigured(Base):
 
     def test_an_outage_is_still_unavailable(self) -> None:
         self.assertEqual(WR.registry_trouble({"error": "x", "code": "timeout"}), "registry-unavailable")
-        self.assertEqual(WR.registry_trouble(None), "registry-unavailable")
+        # An answer that is not an answer is malformed data, not an outage.
+        self.assertEqual(WR.registry_trouble(None), WR.UNREADABLE_ANSWER)
+        self.assertEqual(WR.registry_trouble(["found"]), WR.UNREADABLE_ANSWER)
+        self.assertEqual(WR.registry_trouble({"found": True}), WR.UNREADABLE_ANSWER)
+
+    def test_a_missing_key_names_the_variable_that_is_missing(self) -> None:
+        answer = {
+            "error": "the registry key is not set (SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY)",
+            "code": "not_configured",
+        }
+        delivery = WR.registry_delivery(answer)
+        self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+        self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", delivery.note)
 
     def test_the_shared_answer_is_busy_for_an_outage_and_failed_for_a_missing_key(self) -> None:
-        outage = WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
+        outage = WR.registry_outage()
         self.assertEqual((outage.outcome, outage.code), ("busy", WR.REGISTRY_UNAVAILABLE))
-        missing = WR.registry_delivery(WR.NOT_CONFIGURED)
+        missing = WR.registry_delivery({"error": "no key", "code": "not_configured"})
         self.assertEqual((missing.outcome, missing.code), ("failed", WR.NOT_CONFIGURED))
-        routed = WR.registry_delivery(WR.REGISTRY_UNAVAILABLE, route="codex-desktop")
+        routed = WR.registry_outage(route="codex-desktop")
         self.assertEqual(routed.route, "codex-desktop")
 
     def test_health_says_so(self) -> None:

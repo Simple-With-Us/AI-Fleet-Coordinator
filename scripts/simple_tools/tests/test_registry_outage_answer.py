@@ -85,23 +85,30 @@ class RegistryOutageAnswer(unittest.TestCase):
 
     def test_every_platform_answers_a_missing_key_the_same_way(self) -> None:
         """A host with no registry address or key is a deployment fault:  `failed`, with the
-        house code, in every platform."""
-        answers = self._answers({"error": "no key", "code": "not_configured"})
+        house code, in every platform, and the note names the variable that is missing."""
+        answers = self._answers(
+            {
+                "error": "the registry key is not set (SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY)",
+                "code": "not_configured",
+            }
+        )
         self.assertEqual(len(answers), 7)
         for name, delivery in answers.items():
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
                 self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
+                self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", delivery.note)
 
     def test_every_platform_names_an_odd_answer_the_same_way(self) -> None:
-        """An answer that is not a mapping is an outage, in every platform."""
+        """An answer that is not a mapping is malformed data:  `failed`, with the house code,
+        in every platform."""
         answers = self._answers([])
         for name, delivery in answers.items():
             with self.subTest(platform=name):
                 self.assertIsNotNone(delivery)
                 self.assertEqual(
                     (delivery.outcome, delivery.code),
-                    ("busy", WR.REGISTRY_UNAVAILABLE),
+                    ("failed", WR.UNREADABLE_ANSWER),
                 )
 
 

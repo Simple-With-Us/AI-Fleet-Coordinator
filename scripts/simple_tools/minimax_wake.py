@@ -373,10 +373,10 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
+        return WR.registry_outage()
     if not isinstance(answer, Mapping) or "error" in answer:
         # A host with no registry address or key is not an outage, and the house code says so.
-        return WR.registry_delivery(WR.registry_trouble(answer))
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
