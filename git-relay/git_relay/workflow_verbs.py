@@ -812,14 +812,24 @@ def _validate_read(action, result):
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
         "wf_repo_collaborators": {
-            "collaborators": lambda v: seq(v, lambda x: fields(x, {
-                "id": positive, "login": text,
-                "type": lambda x: x in ("User", "Bot", "Organization"),
-                "role_name": text,
-                "permissions": lambda v: fields(v, {k: boolean for k in
-                    ("pull", "triage", "push", "maintain", "admin")}),
-            }), 50),
-            "page": positive, "has_more": boolean,
+            "collaborators": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "login": text,
+                        "type": lambda x: x in ("User", "Bot", "Organization"),
+                        "role_name": text,
+                        "permissions": lambda v: fields(
+                            v, {k: boolean for k in ("pull", "triage", "push", "maintain", "admin")}
+                        ),
+                    },
+                ),
+                50,
+            ),
+            "page": positive,
+            "has_more": boolean,
             "affiliation": lambda x: x in ("all", "direct", "outside"),
         },
         "wf_repo_teams": {
@@ -1915,7 +1925,12 @@ class WorkflowVerbs:
             raise Refused("invalid affiliation")
         permission = args.get("permission")
         if "permission" in args and permission not in (
-            "pull", "triage", "moderate", "push", "maintain", "admin"
+            "pull",
+            "triage",
+            "moderate",
+            "push",
+            "maintain",
+            "admin",
         ):
             raise Refused("invalid permission")
         path = f"/repos/{repo}/collaborators?per_page={limit}&page={page}&affiliation={affiliation}"
@@ -1931,25 +1946,39 @@ class WorkflowVerbs:
             ident, login = item.get("id"), item.get("login")
             role, perms = item.get("role_name"), item.get("permissions")
             keys = ("pull", "triage", "push", "maintain", "admin")
-            if (type(ident) is not int or not 1 <= ident <= 9007199254740991
-                or ident in ids or not isinstance(login, str)
+            if (
+                type(ident) is not int
+                or not 1 <= ident <= 9007199254740991
+                or ident in ids
+                or not isinstance(login, str)
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", login)
                 or login.casefold() in logins
                 or item.get("type") not in ("User", "Bot", "Organization")
                 or not isinstance(perms, dict)
                 or any(type(perms.get(k)) is not bool for k in keys)
-                or not isinstance(role, str) or not role.strip()):
+                or not isinstance(role, str)
+                or not role.strip()
+            ):
                 raise RelayGitHubError(502, "collaborator metadata unverifiable")
             self._metadata_name(login, 105)
             self._metadata_name(role, 100)
             ids.add(ident)
             logins.add(login.casefold())
-            collaborators.append({
-                "id": ident, "login": login, "type": item["type"],
-                "role_name": role, "permissions": {k: perms[k] for k in keys},
-            })
-        return {"collaborators": collaborators, "page": page,
-                "has_more": len(collaborators) == limit, "affiliation": affiliation}
+            collaborators.append(
+                {
+                    "id": ident,
+                    "login": login,
+                    "type": item["type"],
+                    "role_name": role,
+                    "permissions": {k: perms[k] for k in keys},
+                }
+            )
+        return {
+            "collaborators": collaborators,
+            "page": page,
+            "has_more": len(collaborators) == limit,
+            "affiliation": affiliation,
+        }
 
     def wf_repo_teams(self, repo, args):
         """One bounded visible-team page, never a full access inventory claim."""

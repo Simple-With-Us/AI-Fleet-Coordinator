@@ -2,8 +2,10 @@
 
 import copy
 import unittest
+
+from git_relay.workflow_verbs import SPECS, Refused, RelayGitHubError, WorkflowVerbs
+
 from .test_workflow_verbs import REPO, Client, Minter, Policy
-from git_relay.workflow_verbs import WorkflowVerbs, Refused, RelayGitHubError, SPECS
 
 ROW = {
     "id": 1,
