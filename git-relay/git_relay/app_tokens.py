@@ -216,7 +216,7 @@ def load_infisical_client():
         sys.modules["fleet_infisical"] = module
         try:
             spec.loader.exec_module(module)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a client that will not import is one refusal, named by the name only
             sys.modules.pop("fleet_infisical", None)
             raise AppTokenError("the shared Infisical client could not be loaded") from None
         _CLIENT = module
@@ -381,15 +381,20 @@ class InfisicalSource:
         # than coerced into a credential.
         if not isinstance(values, dict):
             raise AppTokenError(f"the store lookup returned no map for {wanted[0]}")
+        # The absence is remembered for the process lifetime,  so an incomplete App
+        # pair cannot drive one folder read per request:  add the secret and restart
+        # the relay to pick it up.  Every name the store did not answer is remembered,
+        # and the first one is the one named.
+        absent = [
+            name
+            for name in wanted
+            if not isinstance(values.get(name), str) or not values.get(name, "").strip()
+        ]
+        if absent:
+            self._missing.update(absent)
+            raise AppTokenError(f"there is no value for {absent[0]}")
         for name in wanted:
-            raw = values.get(name)
-            if not isinstance(raw, str) or not raw.strip():
-                raise AppTokenError(f"there is no value for {name}")
-            value = raw.strip()
-            if not value:
-                self._missing.add(name)
-                raise AppTokenError(f"there is no value for {name}")
-            self._cache[name] = value
+            self._cache[name] = values[name].strip()
 
 
 class AppTokenMinter:
