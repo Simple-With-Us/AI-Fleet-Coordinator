@@ -796,6 +796,39 @@ class AutosaveTests(unittest.TestCase):
         self.assertFalse(failed_read["ok"])
         self.assertEqual(ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])[0], "ok")
 
+    def test_repeat_verification_does_not_downgrade_ok_row_or_settle_unverified_replay(self):
+        identity = self.identity_args()
+        self.save(**identity)
+        self.confirm()
+        ledger = settings._ledger(self.path)
+        observed = []
+
+        def inspect_during_read(*args, **kwargs):
+            row = ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])
+            observed.append((row[0], ledger.has_unsettled(settings.REQUEST_NAMESPACE, "other")))
+            return copy.deepcopy(self.store.document)
+
+        with mock.patch.object(self.store, "read", side_effect=inspect_during_read):
+            repeated = self.save(**identity)
+        self.assertTrue(repeated["ok"])
+        self.assertEqual(observed, [("ok", False)])
+        # If a prior row was left in 'replay' with phase 'complete', failed verification must not settle it to 'ok'.
+        claimed = ledger.begin(
+            settings.REQUEST_NAMESPACE,
+            identity["request_id"],
+            identity["created_at"] / 1000 + settings.REQUEST_TTL_SECONDS,
+            time.time(),
+            settings.REQUEST_CAPACITY,
+        )
+        self.assertEqual(claimed[0], "repeat-claimed")
+        with mock.patch.object(self.store, "read", side_effect=settings.SettingsError("provider_read_failed")):
+            unverified = self.save(**identity)
+        self.assertFalse(unverified["ok"])
+        self.assertEqual(ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])[0], "replay")
+        verified = self.save(**identity)
+        self.assertTrue(verified["ok"])
+        self.assertEqual(ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])[0], "ok")
+
     def test_same_id_with_changed_fingerprint_cannot_write_or_read_credentials(self):
         identity = self.identity_args()
         self.save(**identity)
