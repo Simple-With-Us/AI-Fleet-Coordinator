@@ -70,7 +70,12 @@ class Drive:
         if kind == self.fail_on:
             raise subprocess.TimeoutExpired(argv, timeout)
         if kind == "list":
-            payload = {"ok": True, "count": len(self.sessions), "sessions": self.sessions}
+            payload = {
+                "ok": True,
+                "count": len(self.sessions),
+                "sessions": self.sessions,
+                "complete": True,
+            }
             return 0, json.dumps(payload), ""
         if kind == "prompt":
             return 0, json.dumps(self.prompt), ""
@@ -308,6 +313,17 @@ class GrokWake(unittest.TestCase):
         self.assertIn("not-live", GW.NEVER_RAN)
         ready = SVC.prepare("GROK", SVC.BUILDERS["GROK"], self.env)
         self.assertIn("not-live", ready.never_ran)
+
+    def test_a_fallback_list_without_a_completeness_signal_is_retried(self) -> None:
+        # The plain-list fallback of an older helper names no `complete`:  a one-page
+        # answer cannot prove the chat absent, so it retries instead of refusing
+        # (Kody, PR 2306 round 3).
+        def runner(argv, timeout):
+            return 0, json.dumps({"ok": True, "count": 0, "sessions": []}), ""
+
+        answer = GW.deliver_request(request(), env=self.env, runner=runner)
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["code"], "drive-list-unavailable")
 
     def test_an_incomplete_list_without_the_chat_is_retried(self) -> None:
         drive = Drive([])

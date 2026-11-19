@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -303,8 +304,13 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
             break
     if found is not None:
         return found
-    # An incomplete list is not proof the chat is gone.
+    # An incomplete list is not proof the chat is gone — and neither is a list whose
+    # helper never said it was whole (the plain-list fallback of an older helper answers
+    # one page and names no `complete`):  both retry, and only a list the helper called
+    # complete can refuse (Kody, PR 2306 round 3).
     if payload.get("ok") is not True or payload.get("partial") is True:
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+    if payload.get("complete") is not True:
         return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
     return WR.Delivery("refused", "grok-drive", code=NOT_LISTED)
 
@@ -401,10 +407,16 @@ def deliver_request(
             # fetched (Kody, PR 2306).  An incomplete list answers drive-list-unavailable.
             # The installed helper on a host can be older than this checkout and reject the
             # flag, so an answer without a session list falls back to the plain list the
-            # older helper speaks, with its older one-page semantics (Kody, PR 2306 round 2).
-            _code, payload = _invoke(env, ["list", "--all-pages"], LIST_TIMEOUT, runner)
+            # older helper speaks (Kody, PR 2306 round 2) — inside the same absolute
+            # deadline, never a second full budget (Kody, PR 2306 round 3).
+            deadline = time.monotonic() + LIST_TIMEOUT
+            _code, payload = _invoke(
+                env, ["list", "--all-pages"], max(0.001, deadline - time.monotonic()), runner
+            )
             if payload is None or not isinstance(payload.get("sessions"), list):
-                _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    _code, payload = _invoke(env, ["list"], remaining, runner)
         except subprocess.TimeoutExpired:
             return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
