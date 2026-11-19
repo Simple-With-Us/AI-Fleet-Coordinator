@@ -213,6 +213,9 @@ RENDER_VERSION = 2
 # How many standing comments are re-rendered from Zulip in one cycle, and how long an
 # entry whose topic could not be read waits before it is tried again.
 REFRESH_PER_CYCLE = 1
+# The pages a repair read goes through, so it reaches the messages of a busy topic
+# (Jet, PR 2340).
+MAX_REPAIR_PAGES = 8
 REFRESH_RETRY = 900.0
 LINEAR_URL = "https://api.linear.app/graphql"
 USER_AGENT = "simple-tools-linear-relay/1 (fleet)"
@@ -1283,6 +1286,21 @@ def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the rela
     lines = [entry["marker"], heading, ""]
     if entry.get("refreshed"):
         lines += ["_Re-rendered from Zulip on %s._" % entry["refreshed"], ""]
+        unread = sum(
+            1 for item in entry["links"] if not _item_current(item) and item.get("gone") is not True
+        )
+        gone = sum(1 for item in entry["links"] if item.get("gone") is True)
+        if unread:
+            lines += [
+                "_%d message(s) were not read back from Zulip and keep their earlier text._"
+                % unread,
+                "",
+            ]
+        if gone:
+            lines += [
+                "_%d message(s) are no longer in Zulip and keep their earlier text._" % gone,
+                "",
+            ]
     if earlier > 0:
         lines += ["_%d earlier message(s) not listed._" % earlier, ""]
     # What the messages share of the body:  the marker, the heading, the notes and the
@@ -1307,6 +1325,28 @@ def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the rela
     # Rendered copy: the sentence gap is a no-break space plus a space.
     lines += ["_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
     return "\n".join(lines)
+
+
+def _item_current(item: Mapping[str, Any]) -> bool:
+    """True when a message's quote in an entry is the whole post and not a cut.
+
+    An entry an older build wrote holds quotes that were cut at 280 characters, and the
+    cut text is gone:  only Zulip holds the whole post.  Every message carries the
+    format its own quote was rendered in, so a message that was not read back yet says
+    so on its own (Jet, PR 2340)."""
+    try:
+        return int(item.get("format", 0)) >= RENDER_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def _item_done(item: Mapping[str, Any]) -> bool:
+    """True when a message in an entry needs nothing more.
+
+    A message is done when its quote is the whole post, and also when it is no longer
+    in Zulip:  no read can bring it back, so waiting for one would wait for ever (Jet,
+    PR 2340)."""
+    return _item_current(item) or item.get("gone") is True
 
 
 def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
@@ -1960,6 +2000,9 @@ class RelayWorker:
                 "sender": safe_text(sender),
                 "when": time.strftime("%b %d %H:%M UTC", time.gmtime(when)),
                 "quote": post_text(content),
+                # The format this quote was rendered in:  a message an older build
+                # recorded has none, and its quote is the cut one (Jet, PR 2340).
+                "format": RENDER_VERSION,
             }
         )
         self._trim_entry(entry)
@@ -1981,7 +2024,7 @@ class RelayWorker:
         silent topic is not read once a message (Kody, PR 2340)."""
         if self.monotonic() < self._refresh_retry.get(key, 0.0):
             return  # the topic is waiting to be tried again
-        read, _error = self._read_topic(stream_id, topic, cache)
+        read = self._read_for_repair(entry, stream_id, topic, cache)
         if read is None:
             self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             return
@@ -2123,11 +2166,60 @@ class RelayWorker:
         """True when the entry's quotes were rendered by an older build.
 
         An entry written before this build holds quotes that were cut at 280 characters
-        and escaped, and the cut text is gone:  only Zulip holds the whole post."""
+        and escaped, and the cut text is gone:  only Zulip holds the whole post.  The
+        entry is stale while any of its messages still holds such a quote, so a repair
+        that covered only part of the topic does not pass for a whole repair (Jet, PR
+        2340)."""
         try:
-            return int(entry.get("format", 0)) < RENDER_VERSION
+            if int(entry.get("format", 0)) < RENDER_VERSION:
+                return True
         except (TypeError, ValueError):
             return True
+        return any(not _item_done(item) for item in entry["links"])
+
+    def _read_for_repair(
+        self,
+        entry: Mapping[str, Any],
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+    ) -> list[Mapping[str, Any]] | None:
+        """The topic's messages, read far enough to hold the entry's own messages.
+
+        A reader answers the oldest messages of a topic first, up to its cap, so the
+        messages of a busy topic are not in the first read.  The read goes on, page by
+        page, until the entry's newest message is in it, and the pages it took are
+        shared with the other entries of the topic (Jet, PR 2340)."""
+        read, _error = self._read_topic(stream_id, topic, cache)
+        if read is None:
+            return None
+        wanted = max((int(item["mid"]) for item in entry["links"]), default=0)
+        pages = 0
+        while (
+            wanted
+            and self.history_since is not None
+            and pages < MAX_REPAIR_PAGES
+            and (not read or max(int(message["id"]) for message in read) < wanted)
+        ):
+            newest = max(int(message["id"]) for message in read)
+            try:
+                found, malformed, over = _by_id(self.history_since(stream_id, topic, newest))
+            except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
+                self.log(
+                    "the messages of %s could not be read further (%s)"
+                    % (self._label(entry), type(exc).__name__)
+                )
+                break
+            self._log_malformed(malformed, over)
+            if not found:
+                break
+            known = {int(message["id"]) for message in read}
+            read = list(read) + [message for message in found if int(message["id"]) not in known]
+            pages += 1
+        if pages:
+            # The pages are shared with the other entries of the topic in this cycle.
+            cache[(stream_id, topic)] = (read, "")
+        return read
 
     def _refresh(self, entry: dict[str, Any], read: list[Mapping[str, Any]]) -> bool:
         """Render the entry's recorded quotes again from the messages the topic holds.
@@ -2155,11 +2247,20 @@ class RelayWorker:
             if quote != item["quote"]:
                 item["quote"] = quote
                 changed += 1
+            item["format"] = RENDER_VERSION
         if not covered:
             # The read is of another topic, or it holds none of this entry's messages:
             # the entry keeps the format it had and waits for a later try.
             return False
-        entry["format"] = RENDER_VERSION
+        # The read held a message of this topic, so it is a read of this topic:  a message
+        # of the entry that the read passed and did not hold is gone from Zulip, and no
+        # read can bring it back (Jet, PR 2340).
+        newest = max((int(message["id"]) for message in read), default=0)
+        for item in entry["links"]:
+            if not _item_done(item) and int(item["mid"]) < newest:
+                item["gone"] = True
+        if all(_item_done(item) for item in entry["links"]):
+            entry["format"] = RENDER_VERSION
         # The text an entry holds is bounded the way a new message bounds it:  the whole
         # posts do not push the entry past what a comment can show (Kody, PR 2340).
         trimmed = self._trim_entry(entry)

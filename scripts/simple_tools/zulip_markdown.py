@@ -200,16 +200,6 @@ def _strip_control(value: str) -> str:
     return "".join(ch for ch in (value or "") if ch not in "\r\n\t")
 
 
-def _plain_attribute(value: str) -> str:
-    """An attribute value as plain text:  no line break, and no character that would
-    change the shape of the comment.
-
-    The attributes of a rendered post are the sender's own text and a sender can put
-    anything in them, so they are escaped the way the rest of the text is (Kody, PR
-    2340)."""
-    return _escape_text(_strip_control(value))
-
-
 def _indent(text: str, width: int = 2) -> str:
     """A block indented under the line above it, so a nested list reads as nested."""
     pad = " " * width
@@ -414,9 +404,10 @@ class _Converter(HTMLParser):
         ctx = self.lists[-1]
         if ctx.in_embed:
             # The list belongs to the embedded message, so it is dropped with it (Kody,
-            # PR 2340).
+            # PR 2340).  The inline buffers close with it (Kody, PR 2340).
             if self.embed is not None:
                 self._keep_only_links()
+            self._close_inline()
             ctx.item = None
             self.lists.pop()
             return
@@ -617,9 +608,11 @@ class _Converter(HTMLParser):
             ctx = self.lists[-1]
             if ctx.in_embed:
                 # The item belongs to the embedded message, so it is dropped with it
-                # (Kody, PR 2340).
+                # (Kody, PR 2340).  The inline buffers close with it, so nothing open
+                # survives into the outer document (Kody, PR 2340).
                 if self.embed is not None:
                     self._keep_only_links()
+                self._close_inline()
                 ctx.item = None
                 return
             self._close_inline()  # the text of an open link stays in the item
@@ -669,7 +662,7 @@ class _Converter(HTMLParser):
             # The placeholder is one text part, so its brackets are escaped here as they
             # are on the path that closes the embed (Kody, PR 2340).
             self._append_part(
-                "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]",
+                "[embedded link: %s]" % _strip_control(url) if url else "[embedded content]",
                 _PART_TEXT,
             )
 

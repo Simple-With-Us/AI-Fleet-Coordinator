@@ -382,6 +382,20 @@ class NestingTests(unittest.TestCase):
         html = '<div class="message_embed_header">H</div>'
         self.assertEqual(zm.to_markdown(html), "H")
 
+    def test_the_text_after_an_embedded_list_item_is_not_swallowed(self) -> None:
+        # The inline buffers close when the item of an embedded list is dropped, so a code
+        # span that was open does not swallow the text of the outer document (Kody, PR
+        # 2340).
+        html = '<div class="message_embed"><ul><li><code>y</div></ul>outer'
+        self.assertEqual(zm.to_markdown(html), "outer")
+
+    def test_the_url_of_an_unclosed_embed_is_escaped_once(self) -> None:
+        # The URL of the placeholder is escaped once, by the part that carries it, and
+        # not twice (Kody, PR 2340).
+        html = '<div class="message_embed"><a href="https://example.com/a<b">x</a>'
+        out = zm.to_markdown(html)
+        self.assertEqual(out, "\\[embedded link: https://example.com/a\\<b\\]")
+
 
 class CodeTests(unittest.TestCase):
     """The code of a post is shown as the sender wrote it."""

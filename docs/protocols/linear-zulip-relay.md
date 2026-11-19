@@ -140,12 +140,20 @@ sign is left as the sender wrote it.
 
 The comments that were written before this change hold posts that were cut at 280 characters, and
 the cut text is gone: only Zulip has the whole post.  Those comments are repaired, not left as
-they are.  An entry records the format its quotes were rendered in; an entry without one is read
+they are.  Every message carries the format its own quote was rendered in, and an entry is
+due for repair while any of its messages still holds a cut quote.  An entry without one is read
 from Zulip again (the topic's history), its quotes are rendered again, and the comment is edited
 with the whole posts and says that it was re-rendered.  A topic's next message repairs its
 comment, and a topic that stays silent is repaired by the cycle, one comment per cycle.  The
 standalone relay has no history reader, so its comments keep what they have until the topic speaks
 again.
+
+A repair that covered only part of the entry is not a whole repair:  the entry stays due, so a
+later cycle tries again, and the comment says how many messages were not read back.  A reader
+answers the oldest messages of a topic first, up to its cap, so the repair read goes on, page by
+page, until it reaches the entry's own messages.  A message the read passed and did not hold is
+no longer in Zulip:  no read can bring it back, so it stops waiting, and the comment says that it
+is gone and keeps its earlier text.
 
 ## Environment
 

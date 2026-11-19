@@ -2537,6 +2537,62 @@ class ReadablePostTests(WorkerCase):
         self.assertEqual(entry["links"][0]["quote"], "the whole post")
         self.assertIn("the whole post", self.lin.updated[-1][1])
 
+    def test_a_repair_that_covers_only_part_of_the_entry_is_not_a_whole_repair(self) -> None:
+        # The entry holds two messages and the read holds one of them:  the entry stays
+        # stale, so a later cycle tries again, and the comment says what was not read
+        # back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)  # a later try is due
+        self.assertEqual(entry["links"][0]["quote"], "the whole post")
+        self.assertEqual(entry["links"][1]["quote"], "the other cut text")
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) were not read back from Zulip", body)
+
+    def test_a_repair_reads_past_the_first_page_of_a_busy_topic(self) -> None:
+        # A reader answers the oldest messages of a topic first, up to its cap, so the
+        # repair goes on, page by page, until it reaches the entry's own messages (Jet,
+        # PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 3
+        entry["seen"] = [1, 2, 3]
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut %d" % mid}
+            for mid in (1, 2, 3)
+        ]
+        self.topic.messages = [past(1, "one"), past(2, "two"), past(3, "three")]
+        self.topic.cap = 2
+        self.w = self.worker(history=self.topic.whole, history_since=self.topic.since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two", "three"])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 2)])
+
+    def test_a_message_that_is_no_longer_in_zulip_stops_waiting(self) -> None:
+        # The read held a message of this topic, so it is a read of this topic, and a
+        # message of the entry that it passed and did not hold is gone from Zulip:  no
+        # read can bring it back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the gone cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post"), past(3, "a later message")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
+        self.assertNotIn("were not read back", body)  # it is gone, not waiting
+
     def test_a_repair_that_cannot_read_the_topic_leaves_the_comment_as_it_is(self) -> None:
         entry = self.old_entry()
         self.topic.whole_error = RuntimeError("the topic cannot be read")
