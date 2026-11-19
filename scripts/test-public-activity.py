@@ -1029,10 +1029,7 @@ class PublicActivityTests(unittest.TestCase):
             / "workflows"
             / "fleet-activity-site.yml"
         ).read_text(encoding="utf-8")
-        steps = [
-            m.group(0)
-            for m in re.finditer(r"(?ms)^ {6}-[ \t]+.*?(?=^ {6}-[ \t]+|\Z)", wf)
-        ]
+        steps = [m.group(0) for m in re.finditer(r"(?ms)^ {6}-[ \t]+.*?(?=^ {6}-[ \t]+|\Z)", wf)]
         infisical_steps = [
             step
             for step in steps
