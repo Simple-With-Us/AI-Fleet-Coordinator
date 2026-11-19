@@ -31,8 +31,8 @@ _TEXT_SPECIALS = "\\`[]<"
 
 # The kinds of part the typed buffers hold.  A text part is escaped once, when the
 # buffer that holds it closes or when it lands in the prose;  a code part keeps the
-# markers of a code span;  a raw part is the sender's own markup, kept as it is
-# (Kody, PR 2340).
+# markers of a code span;  a raw part is markup the converter itself generates, such as
+# the brackets of a placeholder, kept as it is (Kody, PR 2340).
 _PART_TEXT = "text"
 _PART_CODE = "code"
 _PART_RAW = "raw"
@@ -234,6 +234,17 @@ def _inline_code(text: str) -> str:
     return "%s%s%s" % (marker, text, marker)
 
 
+class _Typed:
+    """One typed buffer:  a mention or a link, and the parts it holds."""
+
+    __slots__ = ("kind", "parts", "href")
+
+    def __init__(self, kind: str, href: str = "") -> None:
+        self.kind = kind
+        self.parts: list[tuple[str, str]] = []
+        self.href = href
+
+
 class _List:
     """One list being read:  its finished items and the item being read."""
 
@@ -253,9 +264,7 @@ class _Converter(HTMLParser):
         self.buf: list[str] = []
         self.pre: list[str] | None = None
         self.code: list[str] | None = None
-        self.link: list[tuple[str, str]] | None = None
-        self.href = ""
-        self.mention: list[tuple[str, str]] | None = None
+        self.typed: list[_Typed] = []
         self.embed: list[str] | None = None
         self.embed_url = ""
         self.lists: list[_List] = []
@@ -279,21 +288,21 @@ class _Converter(HTMLParser):
         return self.buf
 
     def _parts(self) -> list[tuple[str, str]] | None:
-        """The typed buffer the text belongs to:  a mention inside a link, or the link
-        itself.  The innermost one that is open wins (Kody, PR 2340)."""
-        if self.mention is not None:
-            return self.mention
-        if self.link is not None:
-            return self.link
-        return None
+        """The typed buffer the text belongs to:  the innermost one that is open,  whether
+        it is a mention or a link (Kody, PR 2340)."""
+        return self.typed[-1].parts if self.typed else None
+
+    def _open_typed(self, kind: str, href: str = "") -> None:
+        """Open a typed buffer:  a mention or a link."""
+        self.typed.append(_Typed(kind, href))
 
     def _append_part(self, text: str, kind: str = _PART_TEXT) -> None:
         """Put a part of text where it belongs.
 
         Code is code:  it is never escaped.  A part that goes into a typed buffer is kept
         as it is and escaped when that buffer closes,  so every part is escaped exactly
-        once;  a part that lands in the prose is escaped here.  A raw part is the
-        sender's own markup and is left as it is (Kody, PR 2340)."""
+        once;  a part that lands in the prose is escaped here.  A raw part is markup the
+        converter itself generates and is left as it is (Kody, PR 2340)."""
         if self.code is not None or self.pre is not None:
             self._sink().append(text)  # code is code:  it is not markdown
             return
@@ -303,14 +312,14 @@ class _Converter(HTMLParser):
             return
         self._sink().append(_escape_text(text) if kind == _PART_TEXT else text)
 
-    def _link_text(self) -> str:
+    def _link_text(self, parts: list[tuple[str, str]]) -> str:
         """The text of a link:  its text parts escaped once, and its code and raw parts
         left as they are, so a code span inside a link stays a code span (Kody, PR
         2340)."""
-        parts = [
-            _escape_text(text) if kind == _PART_TEXT else text for text, kind in (self.link or [])
-        ]
-        return "".join(parts).strip()
+        text = "".join(
+            _escape_text(part) if kind == _PART_TEXT else part for part, kind in parts
+        )
+        return text.strip()
 
     def _append_text(self, text: str) -> None:
         """Put text where it belongs:  it is escaped exactly once (Kody, PR 2340)."""
@@ -331,41 +340,61 @@ class _Converter(HTMLParser):
         if text:
             self._append_code(_inline_code(text))
 
-    def _close_mention(self) -> None:
-        """Close an open mention:  its name becomes plain text, and the parts it holds
-        move to the buffer that is open now, keeping their kind, so the name is escaped
-        exactly once and a code span inside it keeps its markers (Kody, PR 2340)."""
-        if self.mention is None:
-            return
-        parts = list(self.mention)
-        self.mention = None
+    def _close_mention(self, parts: list[tuple[str, str]]) -> None:
+        """Close a mention:  its name becomes plain text, and the parts it holds move to
+        the buffer that is open now, keeping their kind, so the name is escaped exactly
+        once and a code span inside it keeps its markers (Kody, PR 2340)."""
         if not parts:
             return
-        head, kind = parts[0]
-        parts[0] = (head.lstrip(), kind)
-        tail, kind = parts[-1]
-        parts[-1] = (tail.rstrip(), kind)
+        # The edges of the name are trimmed on its text parts, so a code span at the
+        # edge of a mention is not cut in half (Kody, PR 2340).
+        texts = [index for index, (_part, kind) in enumerate(parts) if kind == _PART_TEXT]
+        if texts:
+            head_index = texts[0]
+            tail_index = texts[-1]
+            if head_index == tail_index:
+                head, kind = parts[head_index]
+                parts[head_index] = (head.strip(), kind)
+            else:
+                head, kind = parts[head_index]
+                parts[head_index] = (head.lstrip(), kind)
+                tail, kind = parts[tail_index]
+                parts[tail_index] = (tail.rstrip(), kind)
         name = "".join(text for text, _kind in parts).strip()
         if not name:
             return
         if not name.startswith("@"):
-            head, kind = parts[0]
-            parts[0] = ("@" + head, kind)
+            if texts:
+                head_index = texts[0]
+                head, kind = parts[head_index]
+                parts[head_index] = ("@" + head, kind)
+            else:
+                parts.insert(0, ("@", _PART_TEXT))
         for text, kind in parts:
             self._append_part(text, kind)
 
+    def _close_typed(self) -> None:
+        """Close the innermost typed buffer and put its text where it belongs."""
+        if not self.typed:
+            return
+        buffer = self.typed.pop()
+        if buffer.kind == "mention":
+            self._close_mention(buffer.parts)
+            return
+        text = self._link_text(buffer.parts)
+        if not text or self.embed is not None:
+            return
+        # The label is finished Markdown:  it is kept as it is wherever it lands.
+        self._append_part("[%s](%s)" % (text, _escape_url(buffer.href)), _PART_RAW)
+
     def _close_inline(self) -> None:
-        """Close an open inline element into the place its text belongs.
+        """Close the open inline elements into the place their text belongs.
 
         The innermost element closes first, so the text of a code span inside a link lands
         in the link and the link keeps its URL (Kody, PR 2340)."""
         self._close_code()
-        self._close_mention()
-        if self.link is not None:
-            text = self._link_text()
-            self.link = None
-            if text and self.embed is None:
-                self._sink().append("[%s](%s)" % (text, _escape_url(self.href)))
+        while self.typed:
+            self._close_typed()
 
     def _close_list(self) -> None:
         """Close the innermost open list:  its items become blocks.
@@ -444,12 +473,11 @@ class _Converter(HTMLParser):
         if tag == "a":
             if self.embed is not None and not self.embed_url:
                 self.embed_url = attrd.get("href", "")
-            self.link = []
-            self.href = attrd.get("href", "")
+            self._open_typed("link", attrd.get("href", ""))
             return
         if tag == "span":
             if "user-mention" in classes or "user-group-mention" in classes:
-                self.mention = []
+                self._open_typed("mention")
                 return
             if "emoji" in classes:
                 name = _strip_control(self._emoji_name(attrd, classes))
@@ -482,12 +510,9 @@ class _Converter(HTMLParser):
             return
         if tag == "img":
             alt = _strip_control(attrd.get("alt", "").strip())
-            if alt:
-                self._append_part("[image: ", _PART_RAW)
-                self._append_part(alt, _PART_TEXT)
-                self._append_part("]", _PART_RAW)
-            else:
-                self._append_part("[image]", _PART_RAW)
+            # The placeholder is one text part:  its brackets are escaped, so a link
+            # that holds it still shows as a link and never as a live one (Kody, PR 2340).
+            self._append_part("[image: %s]" % alt if alt else "[image]", _PART_TEXT)
             return
 
     def handle_endtag(self, tag: str) -> None:
@@ -501,13 +526,18 @@ class _Converter(HTMLParser):
             self._close_code()
             return
         if tag == "a":
-            # The link closes last:  a code span or a mention inside it lands in the text
-            # of the link first, and the link keeps its URL (Kody, PR 2340).
-            if self.link is not None:
-                self._close_inline()
+            # The link closes last:  a code span inside it lands in the text of the link
+            # first, and the link keeps its URL (Kody, PR 2340).
+            self._close_code()
+            if self.typed and self.typed[-1].kind == "link":
+                self._close_typed()
             return
         if tag == "span":
-            self._close_mention()
+            # Only a mention closes what is open:  the end of an emoji span says nothing
+            # about the code span that may hold it (Kody, PR 2340).
+            if self.typed and self.typed[-1].kind == "mention":
+                self._close_code()
+                self._close_typed()
             return
         if tag == "div":
             if self.embed is not None:
@@ -515,11 +545,9 @@ class _Converter(HTMLParser):
                 self.embed = None
                 self.embed_url = ""
                 if url:
-                    self._append_part("[embedded link: ", _PART_RAW)
-                    self._append_part(_strip_control(url), _PART_TEXT)
-                    self._append_part("]", _PART_RAW)
+                    self._append_part("[embedded link: %s]" % _strip_control(url), _PART_TEXT)
                 else:
-                    self._append_part("[embedded content]", _PART_RAW)
+                    self._append_part("[embedded content]", _PART_TEXT)
             return
         if tag == "blockquote":
             self._flush()

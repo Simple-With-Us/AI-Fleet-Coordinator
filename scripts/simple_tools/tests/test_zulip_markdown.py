@@ -231,8 +231,10 @@ class LinkPartsTests(unittest.TestCase):
         self.assertEqual(zm.to_markdown(html), "[:tada:](https://x)")
 
     def test_an_image_inside_a_link_keeps_its_placeholder(self) -> None:
+        # The brackets of the placeholder are escaped, so the link opener survives the
+        # scan that defangs a link and the link never goes live (Kody, PR 2340).
         html = '<p><a href="https://x"><img src="s" alt="pic"></a></p>'
-        self.assertEqual(zm.to_markdown(html), "[[image: pic]](https://x)")
+        self.assertEqual(zm.to_markdown(html), "[\\[image: pic\\]](https://x)")
 
     def test_a_mention_and_a_code_span_inside_a_link_keep_their_own_shape(self) -> None:
         html = (
@@ -247,8 +249,10 @@ class BufferTests(unittest.TestCase):
 
     def test_a_code_span_inside_a_mention_keeps_its_place(self) -> None:
         # The innermost buffer that is open takes the code marker, so the words of the
-        # post keep their order (Kody, PR 2340).
-        html = '<p><a href="https://x"><span class="user-mention">@A<code>c</code></span></a></p>'
+        # post keep their order (Kody, PR 2340).  The name in the markup carries no at
+        # sign, so the at sign in the result is the mention's own work:  the test fails
+        # if the mention buffer or its place in the stack is broken.
+        html = '<p><a href="https://x"><span class="user-mention">A<code>c</code></span></a></p>'
         self.assertEqual(zm.to_markdown(html), "[@A`c`](https://x)")
 
     def test_a_code_block_keeps_its_text_inside_the_fence(self) -> None:
@@ -267,6 +271,32 @@ class BufferTests(unittest.TestCase):
     def test_an_emoji_inside_a_code_span_stays_in_the_code(self) -> None:
         html = '<p><a href="https://x"><code>a<span class="emoji" title="tada"></span>b</code></a></p>'
         self.assertEqual(zm.to_markdown(html), "[`a:tada:b`](https://x)")
+
+
+class NestingTests(unittest.TestCase):
+    """The buffer that is open takes the text, and the buffers close from the inside out."""
+
+    def test_a_link_inside_a_mention_keeps_both(self) -> None:
+        # The innermost buffer that is open takes the text, so the mention keeps its
+        # name and the link keeps its URL (Kody, PR 2340).
+        html = '<p><span class="user-mention">@A<a href="https://x">B</a></span></p>'
+        self.assertEqual(zm.to_markdown(html), "@A[B](https://x)")
+
+    def test_a_mention_whose_name_has_no_at_sign_gets_one(self) -> None:
+        out = zm.to_markdown('<p><span class="user-mention">Alice</span></p>')
+        self.assertEqual(out, "@Alice")
+
+    def test_the_edges_of_a_mention_are_trimmed(self) -> None:
+        out = zm.to_markdown('<p><span class="user-mention">  Alice  </span></p>')
+        self.assertEqual(out, "@Alice")
+
+    def test_an_embedded_placeholder_keeps_its_brackets_escaped(self) -> None:
+        # The brackets of the placeholder are escaped, so a link that holds one shows as
+        # a link and never as a live one (Kody, PR 2340).
+        html = '<p><a href="https://x"><div class="message_embed">P</div></a></p>'
+        out = zm.to_markdown(html)
+        self.assertNotIn("[[", out)
+        self.assertIn("\\[", out)
 
 
 class CodeTests(unittest.TestCase):
@@ -355,7 +385,7 @@ class UnclosedTests(unittest.TestCase):
         # A void element is closed by itself, so a post of them alone has no closing
         # tag and is still rendered HTML (Kody, PR 2340).
         out = zm.to_markdown('<img src="x" alt="pic">')
-        self.assertEqual(out, "[image: pic]")
+        self.assertEqual(out, "\\[image: pic\\]")
 
     def test_the_text_of_an_unclosed_link_keeps_its_place(self) -> None:
         # The text of a link the sender never closed stays where the sender wrote it,
