@@ -64,6 +64,26 @@ def to_markdown(content: str) -> str:
     return _source_to_markdown(text)
 
 
+def close_code_fence(text: str) -> str:
+    """Close a code fence the text leaves open.
+
+    A post that is cut in the middle of a fenced code block would otherwise render the
+    rest of the comment as code, so the fence is closed where the text stops."""
+    fence = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            continue
+        run = len(stripped) - len(stripped.lstrip("`"))
+        if not fence:
+            fence = "`" * run
+        elif run >= len(fence):
+            fence = ""
+    if not fence:
+        return text
+    return "%s\n%s" % (text.rstrip("\n"), fence)
+
+
 def _escape_text(text: str) -> str:
     """Text as Markdown text:  only the characters that would change the shape of the
     document are escaped, and the reader still sees them as they are."""

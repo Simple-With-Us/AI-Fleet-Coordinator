@@ -330,6 +330,26 @@ def neutralise(text: str) -> str:
     return text
 
 
+# A link opener in the converted text:  a bracket a link follows.  The brackets of the
+# text around it are already escaped by the conversion.
+_LINK_OPENER = re.compile(r"(?P<slashes>\\*)(?P<bracket>\[)(?=[^\]\n]*\]\()")
+
+
+def _escape_link_openers(text: str) -> str:
+    """Escape the bracket that opens a link, so the link is shown and never live.
+
+    The backslashes in front of it decide how it reads:  an odd count escapes the
+    bracket already, and an even count does not, so a bracket behind two backslashes is
+    a live link again unless it is escaped here (Sentry, PR 2340)."""
+    def replace(match: re.Match[str]) -> str:
+        slashes = match.group("slashes")
+        if len(slashes) % 2:
+            return slashes + match.group("bracket")
+        return slashes + "\\" + match.group("bracket")
+
+    return _LINK_OPENER.sub(replace, text)
+
+
 def defang(text: str) -> str:
     """Markdown that a Linear comment can hold:  its links are shown, not live, and an at
     sign never starts a live mention.
@@ -338,7 +358,7 @@ def defang(text: str) -> str:
     and a reader should see it as the sender wrote it;  a link is shown as the text and
     the URL, never as a link that can be clicked.  A bracket that opens no link (one in a
     code span, say) is left alone."""
-    text = re.sub(r"(?<!\\)\[(?=[^\]\n]*\]\()", r"\\[", text)
+    text = _escape_link_openers(text)
     return text.replace("@", "@\u200b")
 
 
@@ -358,10 +378,10 @@ def post_text(content: str) -> str:
     text = defang(converted)
     if len(text) > MESSAGE_CHARS:
         left_out = len(text) - MESSAGE_CHARS
-        text = "%s\n\n_%d characters of this message are not shown._" % (
-            text[:MESSAGE_CHARS].rstrip(),
-            left_out,
-        )
+        # The cut must not leave a code fence open:  the rest of the comment would
+        # render as code (Sentry, PR 2340).
+        cut = zulip_markdown.close_code_fence(text[:MESSAGE_CHARS].rstrip())
+        text = "%s\n\n_%d characters of this message are not shown._" % (cut, left_out)
     return text
 
 
@@ -2024,13 +2044,15 @@ class RelayWorker:
                 item["quote"] = quote
                 changed += 1
         if not covered:
-            return False  # the read is of another topic, or it holds none of its messages
+            # The read is of another topic, or it holds none of this entry's messages:
+            # the entry keeps the format it had and waits for a later try.
+            return False
         entry["format"] = RENDER_VERSION
         if changed:
             entry["refreshed"] = time.strftime("%b %d %H:%M UTC", time.gmtime(self.clock()))
             entry["dirty"] = True
             self.log("re-rendered the quotes of %s from Zulip" % self._label(entry))
-        return bool(changed)
+        return True
 
     def _refresh_stale(self) -> None:
         """Re-render the standing comments an older build wrote.
@@ -2044,25 +2066,32 @@ class RelayWorker:
         if self.history is None:
             return  # no reader: the standalone process cannot read a topic back
         now = self.monotonic()
-        done = 0
+        attempts = 0
         for key, entry in sorted(
             self.ledger.entries.items(),
             key=lambda item: float(item[1].get("last_touch", 0.0)),
         ):
-            if done >= REFRESH_PER_CYCLE:
+            if attempts >= REFRESH_PER_CYCLE:
                 break
             if not self._needs_refresh(entry) or not entry.get("comment_id"):
                 continue
             if self._is_public(int(entry["stream_id"])) is not True:
                 continue  # a stream that turned private is dropped, not repaired
+            if entry["topic"] == WITHHELD:
+                continue  # a topic whose title carried a credential cannot be read back
             if now < self._refresh_retry.get(key, 0.0):
                 continue  # its topic could not be read a moment ago
+            # Every read counts, not every repair:  an entry whose topic cannot be read
+            # must not make the cycle read every stale entry, every cycle (Sentry, PR 2340).
+            attempts += 1
             read, _error = self._read_topic(int(entry["stream_id"]), entry["topic"], {})
             if read is None:
                 self._refresh_retry[key] = now + REFRESH_RETRY
                 continue
-            if self._refresh(entry, read):
-                done += 1
+            if not self._refresh(entry, read):
+                # The read held none of this entry's messages:  the entry waits before it
+                # is tried again, so a topic that cannot be read is not read every cycle.
+                self._refresh_retry[key] = now + REFRESH_RETRY
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live

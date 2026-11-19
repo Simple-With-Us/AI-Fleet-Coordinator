@@ -140,5 +140,22 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(zm.to_markdown("   \n  "), "")
 
 
+class FenceTests(unittest.TestCase):
+    """A code fence the text leaves open is closed where the text stops."""
+
+    def test_an_open_fence_is_closed(self) -> None:
+        self.assertEqual(zm.close_code_fence("```\ncode"), "```\ncode\n```")
+
+    def test_a_closed_fence_is_left_alone(self) -> None:
+        self.assertEqual(zm.close_code_fence("```\ncode\n```"), "```\ncode\n```")
+
+    def test_text_without_a_fence_is_left_alone(self) -> None:
+        self.assertEqual(zm.close_code_fence("no code here"), "no code here")
+
+    def test_a_shorter_run_inside_the_block_does_not_close_it(self) -> None:
+        text = "````\n```\nstill code\n"
+        self.assertEqual(zm.close_code_fence(text), "````\n```\nstill code\n````")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

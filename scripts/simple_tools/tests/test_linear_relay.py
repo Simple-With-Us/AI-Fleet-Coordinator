@@ -2416,6 +2416,28 @@ class ReadablePostTests(WorkerCase):
         body = self.lin.created[0][1]
         self.assertIn("@\u200bMiniMax", body)
 
+    def test_a_link_behind_an_escaped_backslash_is_never_live(self) -> None:
+        # Two backslashes in front of a link do not escape it:  the bracket has to be
+        # escaped again, or the link is live (Sentry, PR 2340).
+        raw = "a " + chr(92) * 2 + "[b](http://evil) and [ok](http://x)"
+        text = lr.post_text(raw)
+        for marker in ("[b]", "[ok]"):
+            index = text.index(marker)
+            slashes = 0
+            back = index - 1
+            while back >= 0 and text[back] == chr(92):
+                slashes += 1
+                back -= 1
+            self.assertEqual(slashes % 2, 1, marker)  # an odd count escapes the bracket
+
+    def test_a_cut_inside_a_code_block_closes_the_fence(self) -> None:
+        # A post cut in the middle of a code block must not leave the fence open:  the
+        # rest of the comment would render as code (Sentry, PR 2340).
+        raw = "```python\n" + ("print(1)\n" * 900)
+        text = lr.post_text(raw)
+        self.assertEqual(text.count("```"), 2)  # the fence is closed where the post stops
+        self.assertTrue(text.endswith("characters of this message are not shown._"))
+
     # -- the credential scan runs over the converted text ---------------------------------
     def test_a_markup_attribute_cannot_trip_the_credential_scan(self) -> None:
         # A long hex run in an attribute is markup, not text:  the conversion drops it, so
@@ -2487,6 +2509,25 @@ class ReadablePostTests(WorkerCase):
         self.w.tick()
         self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
         self.assertEqual(entry["links"][0]["quote"], "the old cut text")
+
+    def test_the_repair_reads_one_topic_a_cycle_and_a_topic_it_cannot_read_waits(self) -> None:
+        # A topic the read does not cover is not read again in the next cycle, and it does
+        # not make the cycle read every stale entry (Sentry, PR 2340).
+        self.old_entry()
+        second = lr.new_entry("AFC-1", 6, "builds", "AFC-1 other", 2)
+        del second["format"]
+        second["comment_id"] = "c2"
+        second["count"] = 1
+        second["seen"] = [2]
+        second["links"] = [{"mid": 2, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}]
+        self.led.entries[self.key("AFC-1", 6, "AFC-1 other")] = second
+        self.topic.messages = [past(9, "a different topic")]
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 1)  # one read a cycle, not one an entry
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 2)  # the second entry is read next
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 2)  # both wait before they are tried again
 
     def test_without_a_reader_nothing_is_re_rendered(self) -> None:
         # The standalone relay has no history reader:  its comments keep what they have.
