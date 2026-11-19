@@ -1,3 +1,7 @@
+import ast
+import contextlib
+import io
+import sys
 import importlib.util
 import json
 import tempfile
@@ -26,7 +30,10 @@ class ServiceSenderTests(unittest.TestCase):
             calls.append((method, path, fields))
             if path.endswith("/users/me"):
                 d = dict(
-                    result="success", user_id=m.SERVICE_USER_ID, email=m.SERVICE_EMAIL, is_bot=True
+                    result="success",
+                    user_id=m.SERVICE_USER_ID,
+                    email=m.SERVICE_EMAIL,
+                    is_bot=True,
                 )
                 d.update(mismatch or {})
                 return d
@@ -55,7 +62,12 @@ class ServiceSenderTests(unittest.TestCase):
     def test_bound_key_in_message_refused_before_request(self):
         calls = []
         with self.assertRaises(m.Refused):
-            m.send("doctor", "synthetic-test-only", env=self.env(), request=self.fake(calls))
+            m.send(
+                "doctor",
+                "synthetic-test-only",
+                env=self.env(),
+                request=self.fake(calls),
+            )
         self.assertEqual(calls, [])
 
     def test_agent_email_refused_even_with_service_prefix(self):
@@ -98,7 +110,12 @@ class ServiceSenderTests(unittest.TestCase):
                 (
                     "POST",
                     "/api/v1/messages",
-                    {"type": "stream", "to": channel, "topic": topic, "content": "body"},
+                    {
+                        "type": "stream",
+                        "to": channel,
+                        "topic": topic,
+                        "content": "body",
+                    },
                 ),
             )
 
@@ -119,7 +136,12 @@ class ServiceSenderTests(unittest.TestCase):
     def test_uncertain_send_is_not_retried(self):
         calls = []
         with self.assertRaises(m.Unknown):
-            m.send("doctor", "body", env=self.env(), request=self.fake(calls, error=m.Unknown()))
+            m.send(
+                "doctor",
+                "body",
+                env=self.env(),
+                request=self.fake(calls, error=m.Unknown()),
+            )
         self.assertEqual([c[0] for c in calls], ["GET", "POST"])
 
     def test_redirect_never_follows_credentials(self):
@@ -132,6 +154,68 @@ class ServiceSenderTests(unittest.TestCase):
         calls = []
         m.send("doctor", "body", env=env, request=self.fake(calls))
         self.assertEqual(len(calls), 2)
+
+
+class CliTests(unittest.TestCase):
+    def invoke(self, arguments):
+        with (
+            patch.object(sys, "argv", ["service_zulip.py"] + arguments),
+            patch.object(m, "send", return_value={"id": 17}) as send,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = m.main()
+        return result, send
+
+    def test_edit_interleaved_id_preserves_body_and_message_id(self):
+        body = "same check, changed detail\nsecond line"
+        result, send = self.invoke(["--service", "doctor", "edit", "--id", "17", body])
+        self.assertEqual(result, 0)
+        send.assert_called_once_with("doctor", body, 17)
+
+    def test_post_positional_body_is_unchanged(self):
+        for service in m.SERVICES:
+            result, send = self.invoke(["--service", service, "post", "alert body"])
+            self.assertEqual(result, 0)
+            send.assert_called_once_with(service, "alert body", None)
+
+    def test_edit_body_file_after_id_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body_file = Path(tmp) / "body.txt"
+            body_file.write_text("file body")
+            result, send = self.invoke(
+                [
+                    "--service",
+                    "doctor",
+                    "edit",
+                    "--id",
+                    "17",
+                    "--body-file",
+                    str(body_file),
+                ]
+            )
+        self.assertEqual(result, 0)
+        send.assert_called_once_with("doctor", "file body", 17)
+
+    def test_invalid_id_action_and_extra_argument_never_send(self):
+        cases = [
+            ["edit", "body"],
+            ["edit", "--id", "0", "body"],
+            ["post", "--id", "17", "body"],
+            ["post", "body", "extra"],
+            ["edit", "--id", "17", "--unknown", "body"],
+        ]
+        for arguments in cases:
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(sys, "argv", ["service_zulip.py", "--service", "doctor"] + arguments),
+                patch.object(m, "send") as send,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    m.main()
+                self.assertEqual(error.exception.code, 2)
+                send.assert_not_called()
 
 
 class BindingFileTests(unittest.TestCase):
@@ -179,13 +263,25 @@ class WiringTests(unittest.TestCase):
         doctor = (root / "fleet-tools-doctor.py").read_text()
         reaper = (root / "sim-idle-reaper.py").read_text()
         tf = (root / "ios-fleet/ios_testflight_freshness.mjs").read_text()
-        self.assertIn('"--service", "doctor", "post"', doctor)
-        self.assertIn('"--service", "sim-reaper", "post"', reaper)
+        for source, service in [(doctor, "doctor"), (reaper, "sim-reaper")]:
+            lists = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.List)]
+            self.assertTrue(
+                any(
+                    any(
+                        [getattr(value, "value", None) for value in node.elts[i : i + 3]]
+                        == ["--service", service, "post"]
+                        for i in range(len(node.elts) - 2)
+                    )
+                    for node in lists
+                ),
+                service,
+            )
         self.assertIn('"--service", "testflight", "post"', tf)
         self.assertNotIn("IOS_TF_FRESHNESS_SEAT ||", tf)
         self.assertNotIn('[chat, "--as", "MA"', reaper)
         self.assertNotIn(
-            "Environment=AGENT_SEAT=", (root / "systemd/fleet-tools-doctor.service").read_text()
+            "Environment=AGENT_SEAT=",
+            (root / "systemd/fleet-tools-doctor.service").read_text(),
         )
         self.assertNotIn("--seats", (root / "systemd/fleet-tools-doctor.service").read_text())
 

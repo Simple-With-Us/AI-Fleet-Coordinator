@@ -207,7 +207,8 @@ def main():
     parser.add_argument("--id", type=int)
     parser.add_argument("--body-file", type=Path)
     parser.add_argument("body", nargs="?")
-    args = parser.parse_args()
+    # Callers place --id between the action and optional positional body.
+    args = parser.parse_intermixed_args()
     if args.action == "status":
         try:
             binding(args.service, os.environ)
