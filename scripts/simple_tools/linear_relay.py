@@ -341,6 +341,7 @@ def _escape_link_openers(text: str) -> str:
     The backslashes in front of it decide how it reads:  an odd count escapes the
     bracket already, and an even count does not, so a bracket behind two backslashes is
     a live link again unless it is escaped here (Sentry, PR 2340)."""
+
     def replace(match: re.Match[str]) -> str:
         slashes = match.group("slashes")
         if len(slashes) % 2:
