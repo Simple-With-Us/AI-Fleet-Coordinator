@@ -1027,6 +1027,12 @@ def _extract_item_agents_and_clean(item: dict[str, Any]) -> tuple[list[str], str
 def _issue_state_note(item: dict[str, Any]) -> str:
     if item.get("state_type") in ("canceled", "duplicate") and item.get("state"):
         return str(item["state"])
+    if (
+        item.get("source") == "linear"
+        and item.get("state_type") not in ("completed", "canceled", "duplicate")
+        and item.get("state")
+    ):
+        return "closed that day; now " + str(item["state"])
     return ""
 
 
