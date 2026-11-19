@@ -968,9 +968,14 @@ class PublicActivityTests(unittest.TestCase):
 
     def test_past_linear_close_keeps_event_and_labels_current_reopened_state(self) -> None:
         item = {
-            "repo": "BotFleet", "number": 9906, "identifier": "BF-9906",
-            "title": "Past closure fixture", "url": "https://linear.example.test/issue/BF-9906",
-            "state": "In Progress <review>", "state_type": "started", "source": "linear",
+            "repo": "BotFleet",
+            "number": 9906,
+            "identifier": "BF-9906",
+            "title": "Past closure fixture",
+            "url": "https://linear.example.test/issue/BF-9906",
+            "state": "In Progress <review>",
+            "state_type": "started",
+            "source": "linear",
         }
         day = digest.DayBucket(day=date(2026, 11, 18), issues_closed=[item])
         now = datetime(2026, 11, 19, 20, 0, tzinfo=UTC)
