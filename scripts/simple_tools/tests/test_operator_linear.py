@@ -593,11 +593,15 @@ class EngineTests(unittest.TestCase):
         eng = self.engine(zulip)
         eng.reload_streams(zulip)  # the client the readers read with
         before = time.monotonic()
-        eng._history(5, "thread", deadline=before + opl.HISTORY_READ_BUDGET * 10)
+        # The caller's deadline is shorter than the Operator's own budget, so the read
+        # must show the caller's bound and not the budget (Kody, PR 2340).
+        caller = before + opl.HISTORY_READ_BUDGET / 4
+        eng._history(5, "thread", deadline=caller)
         after = time.monotonic()
         deadlines = [options["deadline"] for options in zulip.message_options]
         self.assertTrue(deadlines)
         for deadline in deadlines:
+            self.assertLessEqual(deadline, caller)
             self.assertLessEqual(deadline, after + opl.HISTORY_READ_BUDGET)
 
     def test_a_caller_deadline_never_gets_more_time_than_the_operator_budget(self) -> None:
@@ -607,11 +611,15 @@ class EngineTests(unittest.TestCase):
         eng = self.engine(zulip)
         eng.reload_streams(zulip)  # the client the readers read with
         before = time.monotonic()
-        eng._history_since(5, "thread", 1, deadline=before + opl.HISTORY_READ_BUDGET * 10)
+        # The caller's deadline is shorter than the Operator's own budget, so the read
+        # must show the caller's bound and not the budget (Kody, PR 2340).
+        caller = before + opl.HISTORY_READ_BUDGET / 4
+        eng._history_since(5, "thread", 1, deadline=caller)
         after = time.monotonic()
         deadlines = [options["deadline"] for options in zulip.message_options]
         self.assertTrue(deadlines)
         for deadline in deadlines:
+            self.assertLessEqual(deadline, caller)
             self.assertLessEqual(deadline, after + opl.HISTORY_READ_BUDGET)
 
     def test_each_history_read_has_one_deadline_for_all_its_pages(self) -> None:
