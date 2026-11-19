@@ -998,9 +998,26 @@ if [ "${REAP_WORKTREES:-0}" = "1" ]; then
   janitor_heartbeat "wt-retire-done n_reap=${n_reap}"
 fi
 
+# 2026-11-19 (MA): permanent delete for the low-free branch.  `find -delete`
+# unlinks directly, so no Trash-parking layer (the CleanMyMac CLI's
+# move-to-Trash semantics, the mavis-trash harness interception) can turn a
+# delete into a move that frees nothing -- the loop closed at lowfree-done.
+janitor_purge() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  find "$1" -depth -delete 2>/dev/null
+}
+janitor_purge_contents() {
+  [ -d "$1" ] || return 0
+  find "$1" -mindepth 1 -depth -delete 2>/dev/null
+}
+
 # --- LOW FREE: clear regenerable caches + prod/dev build caches ---
 if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   janitor_heartbeat "lowfree-start"
+  # 2026-11-19 (MA): snapshot Trash; the end of this branch permanently
+  # deletes whatever the sweeps park there (see lowfree trash-purge below).
+  trash_snap="$(mktemp -t janitor-trash-snap 2>/dev/null || echo "/tmp/janitor-trash-snap.$$")"
+  ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_snap"
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
   if [ -x "$HOGHUNTER_CLEAN" ]; then
     # 2026-09-30 (BF-HOUSEKEEPER): this ran the CleanMyMac CLI's dev/ai/trash
@@ -1061,7 +1078,7 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
       printf '%s  CMM-SKIP cleanmymac not on PATH\n' "$(date '+%Y-%m-%d %H:%M')" >> "$LOG"
     fi
   fi
-  rm -rf "$HOME_DIR/.npm/_cacache" 2>/dev/null
+  janitor_purge "$HOME_DIR/.npm/_cacache"
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
   # sentry, pinecone, uptimerobot, coolify) are launched via `uvx`, which keeps that
   # process's venv under .cache/uv/archive-v0/<hash>/ for as long as it runs. Wiping
@@ -1112,16 +1129,39 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
         uv cache clean >/dev/null 2>&1 && { actions="${actions}uv-clean "; uv_branch="${uv_branch}+clean"; }
       fi
     elif [ "$free" -lt "$CRIT_FREE" ]; then
-      rm -rf "$uv_cache" 2>/dev/null && { actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli; }
+      janitor_purge "$uv_cache" && { actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli; }
     fi
     printf '%s  uv-cache branch=%s free=%sG crit=%sG\n' "$now" "$uv_branch" "$free" "$CRIT_FREE" >> "$LOG"
   fi
-  rm -rf "$HOME_DIR/Library/Caches/ms-playwright/"* 2>/dev/null
-  rm -rf "$HOME_DIR/.cache/chrome-devtools-mcp" 2>/dev/null
-  rm -rf "$HOME_DIR/Library/Developer/CoreSimulator/Caches"/* 2>/dev/null
-  rm -rf /Users/jay/apps/trading-live/.next/cache 2>/dev/null
-  rm -rf /Users/jay/apps/trading-codex/.next/cache 2>/dev/null
+  janitor_purge_contents "$HOME_DIR/Library/Caches/ms-playwright"
+  janitor_purge "$HOME_DIR/.cache/chrome-devtools-mcp"
+  janitor_purge_contents "$HOME_DIR/Library/Developer/CoreSimulator/Caches"
+  janitor_purge /Users/jay/apps/trading-live/.next/cache
+  janitor_purge /Users/jay/apps/trading-codex/.next/cache
   actions="${actions}caches "
+  # 2026-11-19 (MA): close the Trash loop.  On 2026-11-17/18 this branch
+  # fired at 26-28G free and its sweeps parked the same cache dirs in
+  # ~/.Trash over and over (~150 copies/day; the CLI dev sweep alone
+  # was verified live on 2026-11-19 to move swept items into Trash
+  # instead of deleting them), so free space never rose, LOW_FREE stayed
+  # crossed, and the branch refired every tick.  Permanently delete only
+  # what appeared in Trash during THIS branch; whatever was already in
+  # Trash beforehand is untouched.
+  if [ -d "$HOME_DIR/.Trash" ] && [ -n "${trash_snap:-}" ] && [ -f "$trash_snap" ]; then
+    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null || echo "/tmp/janitor-trash-after.$$")"
+    ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
+    parked_n=0
+    while IFS= read -r parked_item; do
+      [ -n "$parked_item" ] || continue
+      janitor_purge "$HOME_DIR/.Trash/$parked_item" && parked_n=$((parked_n + 1))
+    done < <(comm -13 "$trash_snap" "$trash_after")
+    if [ "$parked_n" -gt 0 ]; then
+      actions="${actions}trash-purge(${parked_n}) "
+      printf '%s  lowfree trash-purge: permanently deleted %s items parked during this branch\n' "$now" "$parked_n" >> "$LOG"
+    fi
+    rm -f "$trash_after"
+  fi
+  [ -n "${trash_snap:-}" ] && rm -f "$trash_snap"
   janitor_heartbeat "lowfree-done"
 fi
 
