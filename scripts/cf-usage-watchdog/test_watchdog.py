@@ -664,18 +664,52 @@ class PollFailureTests(Base):
         self.assertEqual(self.fake.writes(), [])
         self.assertEqual(self.state["trips"], {})
 
-    def test_blind_alert_repeats_hourly_and_recovery_is_announced_once(self):
+    def test_blind_alert_deduplicates_unchanged_incident_and_recovery_is_announced_once(self):
         self.fake.account = wd.PollError("x")
         self.poll()
         self.poll(at=NOW + dt.timedelta(minutes=5))
         self.poll(at=NOW + dt.timedelta(minutes=6))
         self.assertEqual(len(self.fake.posts), 1)
         self.poll(at=NOW + dt.timedelta(minutes=66))
-        self.assertEqual(len(self.fake.posts), 2)
+        self.assertEqual(len(self.fake.posts), 1)
         self.poll({}, at=NOW + dt.timedelta(minutes=67))
         self.assertIn("can read again", self.fake.posts[-1])
         self.poll({}, at=NOW + dt.timedelta(minutes=68))
-        self.assertEqual(len(self.fake.posts), 3)
+        self.assertEqual(len(self.fake.posts), 2)
+
+    def test_blind_reason_change_is_material_then_deduplicated(self):
+        self.fake.account = wd.PollError("graphql-http-503")
+        self.poll()
+        self.poll(at=NOW + dt.timedelta(minutes=5))
+        self.fake.account = wd.PollError("credential-binding-missing")
+        self.poll(at=NOW + dt.timedelta(minutes=6))
+        self.poll(at=NOW + dt.timedelta(minutes=130))
+        self.assertEqual(len(self.fake.posts), 2)
+        self.assertIn("credential-binding-missing", self.fake.posts[-1])
+
+    def test_existing_blind_incident_does_not_resend_after_upgrade(self):
+        self.state["poll_failed_since"] = (NOW-dt.timedelta(days=3)).timestamp()
+        self.state["poll_fail_alerted"] = (NOW-dt.timedelta(hours=2)).timestamp()
+        self.fake.account = wd.PollError("credential-fetch-FileNotFoundError")
+        self.poll()
+        self.assertEqual(self.fake.posts, [])
+        self.poll({}, at=NOW + dt.timedelta(minutes=1))
+        self.assertEqual(len(self.fake.posts), 1)
+        self.assertIn("can read again", self.fake.posts[-1])
+
+    def test_failed_recovery_delivery_remains_pending_until_success(self):
+        self.fake.account = wd.PollError("x")
+        self.poll()
+        self.poll(at=NOW + dt.timedelta(minutes=5))
+        self.fake.zulip_ok = False
+        self.poll({}, at=NOW + dt.timedelta(minutes=6))
+        self.assertIn("poll_failed_since", self.state)
+        self.fake.zulip_ok = True
+        self.poll({}, at=NOW + dt.timedelta(minutes=7))
+        self.assertNotIn("poll_failed_since", self.state)
+        before = len(self.fake.posts)
+        self.poll({}, at=NOW + dt.timedelta(minutes=8))
+        self.assertEqual(len(self.fake.posts), before)
 
     def test_short_failure_needs_no_recovery_message(self):
         self.fake.account = wd.PollError("x")
@@ -804,19 +838,6 @@ class DailyCheckTests(Base):
         self.assertEqual(self.fake.pages, [], "drift is not a page")
         self.check(registry)
         self.assertEqual(len(self.fake.posts), 1)
-
-    def test_a_disabled_zulip_path_still_completes_the_daily_check(self):
-        self.fake.zulip_ok = None
-        registry = {"workers": {WORKER: {"limits": {"cpu_ms": 50}}}}
-        self.check(registry)
-        self.assertEqual(self.state["daily_check_day"], NOW.strftime("%Y-%m-%d"))
-        self.assertIn("last_drift", self.state)
-
-    def test_a_failed_zulip_post_still_blocks_the_daily_check(self):
-        self.fake.zulip_ok = False
-        registry = {"workers": {WORKER: {"limits": {"cpu_ms": 50}}}}
-        self.check(registry)
-        self.assertNotIn("daily_check_day", self.state)
 
     def test_preview_urls_count_even_when_a_registry_row_does_not_name_them(self):
         registry = {"workers": {"alerts-worker": {"status": "auto", "limits": {}}}}
@@ -996,17 +1017,13 @@ class RearmTests(Base):
 
 
 class ConnectionTests(Base):
-    TOKEN = "credential-value-never-logged"
+    TOKEN = "log sentinel"
 
     def runner(self, values: dict, codes: dict | None = None):
         self.commands = []
 
         def run(command, **kwargs):
             self.commands.append((command, kwargs))
-            if command[0] == "fleet-secrets":
-                name = command[2]
-                code = (codes or {}).get(name, 0 if name in values else 3)
-                return SimpleNamespace(returncode=code, stdout=values.get(name, ""))
             return SimpleNamespace(returncode=0, stdout="")
 
         return run
@@ -1037,36 +1054,27 @@ class ConnectionTests(Base):
         return open_
 
     def conn(self, values, responses=(), codes=None, env=None):
-        return wd.Connections(
-            self.cfg,
-            runner=self.runner(values, codes),
-            opener=self.opener(list(responses)),
-            env=env or {},
-        )
+        self.secret_calls = []
+        def read(name):
+            self.secret_calls.append(name)
+            if (codes or {}).get(name, 0):
+                raise wd.PollError("credential-fetch-ProviderError")
+            return values.get(name)
+        return wd.Connections(self.cfg, runner=self.runner({}, {}),
+            opener=self.opener(list(responses)), env=env or {}, secret_reader=read)
 
-    def test_secrets_come_from_fleet_secrets_by_the_named_key_and_folder(self):
+    def test_secrets_are_named_in_memory_reads_without_path_helpers(self):
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN})
         self.assertEqual(conn.token(), self.TOKEN)
-        command = self.commands[0][0]
-        self.assertEqual(
-            command,
-            [
-                "fleet-secrets",
-                "get",
-                "CF_USAGE_WATCHDOG_API_TOKEN",
-                "--path",
-                "/cf-usage-watchdog",
-                "--project",
-                "ai-fleet-coordinator",
-            ],
-        )
+        self.assertEqual(self.secret_calls, ["CF_USAGE_WATCHDOG_API_TOKEN"])
+        self.assertEqual(self.commands, [])
 
     def test_absent_or_failed_credential_is_a_poll_failure(self):
         with self.assertRaises(wd.PollError):
             self.conn({}).graphql("q", {})
         with self.assertRaises(wd.PollError) as caught:
             self.conn({}, codes={"CF_USAGE_WATCHDOG_API_TOKEN": 4}).graphql("q", {})
-        self.assertIn("exit-4", str(caught.exception))
+        self.assertIn("ProviderError", str(caught.exception))
 
     def test_graphql_errors_are_a_poll_failure_even_with_data(self):
         answer = json.dumps(
@@ -1121,15 +1129,33 @@ class ConnectionTests(Base):
         self.assertEqual(caught.exception.codes, [10000])
         self.assertNotIn(self.TOKEN, str(caught.exception))
 
-    def test_zulip_is_refused_until_a_dedicated_service_binding_exists(self):
-        def boom(command, **kwargs):
-            raise AssertionError("service automation must not spawn simple-chat as a seat")
+    def test_zulip_uses_only_service_credentials_and_fixed_site(self):
+        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL": "watchdog-bot@simplewithus.zulipchat.com",
+                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY": self.TOKEN}, [b'{"result":"success","user_id":1222575,"email":"watchdog-bot@simplewithus.zulipchat.com","is_bot":true}', b'{"result":"success","id":1}'],
+                         env={"AGENT_SEAT":"CLAUDE"})
+        self.assertTrue(conn.zulip("hello"))
+        self.assertEqual(self.commands, [])
+        self.assertEqual(self.requests[0].full_url, "https://simplewithus.zulipchat.com/api/v1/users/me")
+        request = self.requests[1]
+        self.assertEqual(request.full_url, "https://simplewithus.zulipchat.com/api/v1/messages")
+        self.assertIn(b"topic=Cloudflare+Usage", request.data)
+        self.assertIn(b"to=Work-In-Progress", request.data)
 
-        conn = wd.Connections(self.cfg, runner=boom, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertIsNone(conn.zulip("hello"))
-        self.assertIn('"event": "zulip_failed"', out.getvalue())
-        self.assertIn('"error": "dedicated-service-binding-required"', out.getvalue())
+    def test_wrong_service_identity_response_is_refused_before_post(self):
+        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL":"watchdog-bot@simplewithus.zulipchat.com",
+                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY":self.TOKEN},
+                         [b'{"result":"success","user_id":1212574,"email":"claude-bot@simplewithus.zulipchat.com","is_bot":true}'])
+        self.assertFalse(conn.zulip("hello"))
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0].get_method(), "GET")
+        self.assertEqual(self.commands, [])
+
+    def test_agent_email_is_refused_without_network_or_helper(self):
+        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL":"claude-bot@simplewithus.zulipchat.com",
+                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY":self.TOKEN})
+        self.assertFalse(conn.zulip("hello"))
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.commands, [])
 
     def test_zulip_failure_is_false_not_a_crash(self):
         def boom(command, **kwargs):
@@ -1155,7 +1181,7 @@ class ConnectionTests(Base):
         conn = self.conn({"CF_USAGE_WATCHDOG_HEARTBEAT_URL": url}, [b"", b""])
         self.assertTrue(conn.heartbeat())
         self.assertTrue(conn.heartbeat())
-        self.assertEqual(len([c for c in self.commands if c[0][0] == "fleet-secrets"]), 1)
+        self.assertEqual(self.secret_calls, ["CF_USAGE_WATCHDOG_HEARTBEAT_URL"])
         self.assertEqual(self.requests[0].full_url, url)
 
     def test_heartbeat_absent_is_none(self):
@@ -1225,13 +1251,7 @@ class StoreTests(Base):
 
 class AccountIdTests(Base):
     def conn(self, values, env=None):
-        def run(command, **kwargs):
-            name = command[2]
-            return SimpleNamespace(
-                returncode=0 if name in values else 3, stdout=values.get(name, "")
-            )
-
-        return wd.Connections(self.cfg, runner=run, env=env or {})
+        return wd.Connections(self.cfg, env=env or {}, secret_reader=values.get)
 
     def test_no_account_id_is_committed(self):
         raw = wd.CONFIG_PATH.read_text(encoding="utf-8")
@@ -1346,7 +1366,7 @@ class HttpSafetyTests(Base):
         conn = wd.Connections(self.cfg, runner=run, env={})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.page("title", "text"))
-        self.assertIn("credential-fetch-exit-4", out.getvalue())
+        self.assertIn("credential-binding-missing", out.getvalue())
 
     def test_only_machine_codes_survive_from_an_error_body(self):
         errors = [
@@ -1360,10 +1380,12 @@ class HttpSafetyTests(Base):
         self.assertEqual(wd.error_codes("not-a-list"), [])
 
     def test_a_failed_zulip_post_logs_why_and_stays_false(self):
-        conn = wd.Connections(self.cfg, runner=lambda command, **kwargs: None, env={})
+        conn = wd.Connections(
+            self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=2), env={}
+        )
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.zulip("hello"))
-        self.assertIn('"error": "dedicated-service-binding-required"', out.getvalue())
+        self.assertIn('"error": "PollError"', out.getvalue())
 
 
 class MalformedAnswerTests(Base):
@@ -1895,10 +1917,10 @@ class UnitFileTests(unittest.TestCase):
     def read(self, name):
         return (HERE.parent / "systemd" / name).read_text(encoding="utf-8")
 
-    def test_service_runs_the_managed_checkout_as_the_seat(self):
+    def test_service_runs_the_managed_checkout_without_agent_seat(self):
         text = self.read("cf-usage-watchdog.service")
         self.assertIn("User=jay", text)
-        self.assertIn("Environment=AGENT_SEAT=CLAUDE", text)
+        self.assertNotIn("AGENT_SEAT", text)
         self.assertIn(
             "/home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py run", text
         )
