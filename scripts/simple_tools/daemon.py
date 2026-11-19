@@ -97,6 +97,13 @@ AGENTS_CACHE_SECONDS = 30.0
 LEASE_HEARTBEAT_LIMIT = 15 * 60.0
 POST_SPACING = 3.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
+# The wake router's receipts (AFC-824, receipt_pass):  a pass starts at most this often, and only
+# while some wake is waiting on one;  it makes at most this many reads, oldest due first, and starts
+# no read once it has spent this long.  It runs on its own thread, so a router that hangs costs that
+# thread and never the routing;  what a pass leaves undone is due again at the next one.
+RECEIPT_TICK_SECONDS = 15.0
+RECEIPT_READS_PER_PASS = 20
+RECEIPT_PASS_BUDGET_SECONDS = 20.0
 # AFC-652 F8 (re-drive liveness):  a pass completes probes for at most this many parked ids
 # and spends at most this many synchronous REST attempts overall, each capped at
 # REDRIVE_PROBE_TIMEOUT_SECONDS.  One pass therefore blocks the routing thread on at most
@@ -309,6 +316,13 @@ class SeatRunner:
         self.jobs_cond = threading.Condition()
         self.running: W.Pending | None = None
         self.ledger = W.Ledger(self.paths.wakes)
+        # The wakes the router accepted whose receipt is still to be read (AFC-824):  wake id ->
+        # {"done_at", "read_at", "last", "routine", "inferred"}.  Rebuilt from the ledger at start
+        # and for a seat a reload adds (_recover_receipts), and guarded by the daemon's
+        # _receipt_lock:  the wake worker adds, the receipt pass reads and settles.  `routine` is
+        # the routine the wake was sent with (Daemon._await_receipt), and `inferred` is true for a
+        # wake whose `done` row does not say it went to the router (Daemon._receipt_final).
+        self.receipt_waits: dict[str, dict[str, Any]] = {}
         # Highest event id routed from the outgoing-webhook spool this boot (AFC-652):  those
         # routes do not advance the native cursor, so a restart before the cursor passes them
         # would replay them.  status exposes it;  the drain waits for cursor >= high-water.
@@ -647,6 +661,7 @@ class Daemon:
         operator_client_factory: OPV.Factory | None = None,
     ) -> None:
         self.env = dict(os.environ if env is None else env)
+        self.env.pop("OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN", None)
         self.home = home or self.env.get("HOME") or os.path.expanduser("~")
         self.root = root or L.state_root(self.env)
         self.clock = clock or Clock()
@@ -681,6 +696,7 @@ class Daemon:
             sleep=self.clock.sleep, clock=self.clock.monotonic, should_stop=self.stop.is_set
         )
         self.config_path = L.config_path(self.root, self.env)
+        self._operator_settings_lock_fd: int | None = None
         self.partition_file = partition_file or C.partition_path(self.env)
         # Eligible senders' tags (owner 2026-10-09):  every partition seat plus FLEET_SEATS, refreshed
         # with the partition on every check, so a seat added to the partition is eligible without a re-init.
@@ -688,7 +704,7 @@ class Daemon:
         self.partition: dict[
             str, str
         ] = {}  # seat -> instance, from the last partition check (route checks)
-        self.config = C.load(self.root, self.config_path)
+        self.config = C.load(self.root, self.config_path, environ=self.env)
         # The Operator's identity pins are the host's own settings:  the environment wins, and a
         # host whose LaunchAgent carries no OPERATOR_ZULIP_* names (the Mac's) falls back to the
         # `[daemon] operator_user_id` and `operator_email` it pinned in listener.toml.  Without
@@ -821,7 +837,14 @@ class Daemon:
             "prune": -1e9,
             "held": -1e9,
             "linear_comments": -1e9,
+            "receipts": -1e9,
         }
+        # The router's receipts (AFC-824):  the lock over every runner's receipt_waits, the pass's
+        # own thread (one at a time), and the seats whose routine URL could not give a receipt URL,
+        # so that refusal is logged once per seat.
+        self._receipt_lock = threading.Lock()
+        self._receipt_thread: threading.Thread | None = None
+        self._receipt_url_refused: set[str] = set()
         self.config_notified = False
         self.reload_requested = False
         # Reports to Sentry Crons that this instance is running (heartbeat.py);  off with no DSN.
@@ -886,8 +909,29 @@ class Daemon:
         )
 
     # ---- config ------------------------------------------------------------------------------
+    def _remember_operator_settings(self) -> None:
+        if (
+            self._operator_settings_lock_fd is None
+            or getattr(self, "deferred", False)
+            or self.refusal
+            or self.config.errors
+            or self.config.operator_settings_source != "infisical"
+            or self.config.operator_settings_document is None
+        ):
+            return
+        from .server import operator_settings
+
+        try:
+            operator_settings.remember_verified(
+                Path(self.config_path), self.config.operator_settings_document, self.env
+            )
+        except (OSError, operator_settings.SettingsError) as exc:
+            self.log.write("operator-settings-copy-failed", reason=type(exc).__name__)
+
     def partition_check(self, cfg: C.Config) -> list[str]:
         """Why this config must not run here (the seat partition), or []."""
+        if cfg.operator_settings_error:
+            return ["canonical Operator settings unavailable; retain the accepted configuration"]
         partition, error = C.load_partition(self.partition_file)
         if error:
             return [error + "; cannot check the seat partition, so no seat is held"]
@@ -983,15 +1027,23 @@ class Daemon:
         self.coalescer.window = cfg.coalesce_seconds
         self.coalescer.max_window = cfg.coalesce_max_seconds
         self.coalescer.owner_window = cfg.owner_coalesce_seconds
+        added: list[SeatRunner] = []
         for seat, seat_cfg in cfg.seats.items():
             if seat in self.seats:
                 self.seats[seat].cfg = seat_cfg
             else:
                 self.seats[seat] = SeatRunner(self, seat_cfg)
+                added.append(self.seats[seat])
         for seat in [s for s in self.seats if s not in cfg.seats]:
             gone = self.seats.pop(seat)
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
+        # A seat a reload adds, or adds back, gets a runner with no receipt reads (AFC-824):  its
+        # ledger says which of its wakes still wait on the router.  At start and after waiting for
+        # the lock, _recover_ledgers does this once the listener holds the state directory.
+        if getattr(self, "deferred", True) is False:
+            for runner in added:
+                self._recover_receipts(runner)
         for runner in self.seats.values():
             # A reload re-checks every connected seat's role against admin_allowed:  an administrator key on any seat
             # but OPERATOR loses its queue at once, the same as a promotion.
@@ -1410,6 +1462,23 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _observe_linear_reconnect(self, runner: SeatRunner) -> None:
+        """A seat's event queue registered again:  its backfill replays only part of what
+        the realm got while the old queue was gone, so the living comments read each
+        standing topic's missed messages at that topic's next message (AFC-821).
+        Best-effort, like the message path."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            return
+        try:
+            engine.queue_registered()
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -1664,7 +1733,7 @@ class Daemon:
 
     def reload(self) -> None:
         self.reload_at = self.clock.time()
-        new = C.load(self.root, self.config_path)
+        new = C.load(self.root, self.config_path, environ=self.env)
         refused = self.partition_check(new)
         if refused:
             # Never a runner for a seat this instance may not hold:  the running config stays.
@@ -1686,6 +1755,7 @@ class Daemon:
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_linear_comments()
+        self._remember_operator_settings()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -1725,6 +1795,7 @@ class Daemon:
                         kind="wake-crashed",
                         key="crash:%s" % view.get("wake_id"),
                     )
+            self._recover_receipts(runner)
 
     def lock_path(self) -> str:
         return os.path.join(L.listener_dir(self.root), "daemon.lock")
@@ -1755,13 +1826,14 @@ class Daemon:
             runner.stop.set()
         self.seats = {}
         self.coalescer.pending.clear()
-        self.config = C.load(self.root, self.config_path)
+        self.config = C.load(self.root, self.config_path, environ=self.env)
         self.refusal = self.partition_check(self.config)
         if self.refusal:
             self.config.seats = {}
         self.reload_refused = []
         self.config_notified = False
         self._apply_config()
+        self._remember_operator_settings()
         self._recover_ledgers()
         self.deferred = False
         self.log.write("rebuilt-after-wait", seats=sorted(self.seats))
@@ -1779,10 +1851,9 @@ class Daemon:
 
         It runs only the pinned realpath, only when the seat's wake pin file already carries
         `agents_ok` for that binary, and never while a pause covers the Claude seat, so the daemon
-        never starts an unchecked claude binary on its own.  Nothing in the listener writes that
-        pin any more (`daemon test-wake --pin` is gone), so the listing runs only on a host whose
-        old pin still matches the installed claude;  elsewhere liveness rests on the pid and its
-        start time."""
+        never starts an unchecked claude binary on its own.  `simple-chat daemon pin-claude`
+        writes that pin (it runs the listing once and pins the binary only when it answers);  on a
+        host where nobody has run it, liveness rests on the pid and its start time."""
         at, cached = self.agents_cache
         now = self.clock.monotonic()
         if now - at < AGENTS_CACHE_SECONDS:
@@ -2014,13 +2085,18 @@ class Daemon:
                 if kind == "message" and isinstance(event.get("message"), dict):
                     self.route_message(runner, event["message"])
                 elif kind == "update_message":
-                    self.handle_update(runner, event)
+                    # The living comments see the event first, and on their own (each observer
+                    # logs its own failure), as route_message has them see a message:  a
+                    # failure in the daemon's own rename handling must not leave a standing
+                    # comment's entry, or its archived record, under the old topic name (Kody,
+                    # PR 2298), nor a stream event leave them on a stale public-stream set.
                     self._observe_linear_event(runner, event)
+                    self.handle_update(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
                 elif kind == "stream":
-                    self.handle_stream_event(runner, event)
                     self._observe_linear_stream_event(runner, event)
+                    self.handle_stream_event(runner, event)
                 elif kind == "subscription":
                     self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":
@@ -2108,6 +2184,7 @@ class Daemon:
                 runner.streams.pop(sub.get("stream_id"), None)
 
     def route_backfill(self, runner: SeatRunner, messages: list[dict[str, Any]]) -> None:
+        self._observe_linear_reconnect(runner)
         for message in sorted(messages, key=lambda m: m.get("id", 0)):
             self.route_message(runner, message)
         for gap in getattr(runner, "gaps", []):
@@ -5214,6 +5291,20 @@ class Daemon:
                 if answer
                 else {}
             )
+            # The one wake router's 2xx says only that it stored the wake (AFC-824):  the row says
+            # a receipt is awaited, and the receipt pass appends the outcome once the router has it.
+            # It also records the routine it was sent with (variable and header names, timeout,
+            # and the host and port, never the URL), so a restart reads with it (_sent_routine).
+            sent = runner.cfg.routine
+            router = C.routes_to_router(sent)
+            if router:
+                worker["receipt_awaited"] = True
+                worker["receipt_routine"] = {
+                    "url_env": sent.url_env,
+                    "header": sent.header,
+                    "timeout": sent.timeout,
+                    "origin": target.origin,
+                }
             runner.ledger.append(
                 pending.row(
                     "done",
@@ -5231,6 +5322,8 @@ class Daemon:
                     **worker,
                 )
             )
+            if router:
+                self._await_receipt(runner, pending.wake_id, done, sent)
             if surfaced:
                 self._surface(runner, pending, listed, lost, done)
             elif (
@@ -5931,6 +6024,7 @@ class Daemon:
         for runner in self.seats.values():
             runner.flush_cursor()
         self._maybe_start_registry_sweep(now)
+        self._maybe_start_receipt_pass(now)
         if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
@@ -6208,6 +6302,20 @@ class Daemon:
             # SIGHUP can tell a refused reload from an accepted one with soft config errors.
             "reload_refused": [self.scrub(e) for e in self.reload_refused],
             "reload_at": self.reload_at,
+            "channel_names": sorted(
+                {
+                    name
+                    for runner in self.seats.values()
+                    for name in getattr(runner, "streams", {}).values()
+                    if isinstance(name, str) and 0 < len(name) <= 60
+                }
+            )[:500],
+            "operator_settings_revision": (
+                self.config.operator_settings_revision
+                if not self.refusal and not self.config.errors
+                else None
+            ),
+            "operator_settings_snapshot_revision": self.config.operator_settings_snapshot_revision,
             # Which partition this listener goes by, so a tool that decides who holds a seat reads
             # this copy and not whichever one its own checkout has.
             "partition_file": self.partition_file,
@@ -6263,6 +6371,315 @@ class Daemon:
         if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
             return None
         return sweeper.last
+
+    # ---- the wake router's receipts (AFC-824) ---------------------------------------------------
+    def _await_receipt(
+        self,
+        runner: SeatRunner,
+        wake_id: str,
+        done_at: float,
+        routine: C.RoutineConfig | None = None,
+    ) -> None:
+        """Note that this wake's router receipt is to be read, counting from its 2xx (`done_at`).
+        `routine` is the routine the wake was sent with, so a reload that moves the seat off the
+        router does not stop its reads:  the environment that holds the router's URL and bearer
+        is the same until a restart, and after one the `done` row's `receipt_routine` restores
+        it (_sent_routine).  A wait with no routine (one _recover_receipts found with no routine
+        to restore while its seat was not the router's) reads with the seat's routine at the
+        time of the read."""
+        with self._receipt_lock:
+            runner.receipt_waits.setdefault(
+                wake_id,
+                {
+                    "done_at": float(done_at),
+                    "read_at": None,
+                    "last": None,
+                    "routine": routine,
+                    "inferred": False,
+                },
+            )
+
+    def _recover_receipts(self, runner: SeatRunner) -> None:
+        """One seat's router receipts still to read, from its ledger (W.awaiting_receipts):  at
+        start, and for a seat a reload adds or adds back, whose new runner has none.  The ledger
+        is their only record, so a restart reads on from each `done` time, and a wake with an
+        outcome row is never read again.  While the seat routes to the router by its config, that
+        includes its `done` wakes from before the listener read receipts (no `receipt_awaited`),
+        for as long as the router keeps a receipt (W.RECEIPT_BACKFILL).  Nothing on such a row
+        says which routine answered it, so its wait is `inferred`:  only a terminal receipt that
+        names it settles it, and with none by its deadline it is left as it was (_receipt_final).
+        A wake whose row says it went to the router is read with the routine it was sent with,
+        as _await_receipt keeps it, so a seat moved off the router before the restart still
+        reads it (_sent_routine);  without one, with the seat's routine while that is the
+        router's.  The ledger is read under _receipt_lock, the lock _receipt_settle appends
+        under, so an outcome an earlier runner of the seat was writing is either in the ledger
+        read here or never written (that runner is no longer the seat's)."""
+        routine = runner.cfg.routine if C.routes_to_router(runner.cfg.routine) else None
+        with self._receipt_lock:
+            views = runner.ledger.wakes()
+            found = W.awaiting_receipts(views, backfill=routine is not None, now=self.clock.time())
+            for wake_id, done_at in found.items():
+                awaited = views[wake_id].get("receipt_awaited") is True
+                sent = self._sent_routine(runner, views[wake_id]) if awaited else None
+                runner.receipt_waits.setdefault(
+                    wake_id,
+                    {
+                        "done_at": float(done_at),
+                        "read_at": None,
+                        "last": None,
+                        "routine": sent or routine,
+                        "inferred": not awaited,
+                    },
+                )
+
+    def _sent_routine(self, runner: SeatRunner, view: Mapping[str, Any]) -> C.RoutineConfig | None:
+        """The router routine a wake was sent with, rebuilt from its `done` row's
+        `receipt_routine` (C.router_routine), or None:  for a row with none, and when the
+        variable it names no longer resolves, from the environment the daemon started with, to
+        the host and port the wake went to, so the router's bearer is never sent anywhere else."""
+        sent = view.get("receipt_routine")
+        routine = C.router_routine(runner.seat, sent)
+        if routine is None:
+            return None
+        target, _why, _detail = A.resolve_routine(routine, self.env)
+        if target is None or target.origin != sent.get("origin"):
+            return None
+        return routine
+
+    def _maybe_start_receipt_pass(self, now: float) -> None:
+        """Start a receipt pass on its own thread, at most every RECEIPT_TICK_SECONDS and only
+        while some wake waits on its receipt.  One pass at a time:  while one runs no other starts.
+        A pass reads over the network, so the routing thread never waits on it."""
+        if getattr(self, "deferred", False):
+            return
+        if now - self.last_tick["receipts"] < RECEIPT_TICK_SECONDS:
+            return
+        running = self._receipt_thread
+        if running is not None and running.is_alive():
+            return
+        with self._receipt_lock:
+            waiting = any(runner.receipt_waits for runner in list(self.seats.values()))
+        if not waiting:
+            return
+        self.last_tick["receipts"] = now
+        thread = threading.Thread(
+            target=self._receipt_pass_guarded, args=(now,), name="wake-receipts", daemon=True
+        )
+        self._receipt_thread = thread
+        thread.start()
+
+    def _receipt_pass_guarded(self, now: float) -> None:
+        try:
+            self.receipt_pass(now)
+        except Exception as exc:  # noqa: BLE001 - a receipt pass must never take the daemon down
+            self.log.write("wake-receipt-error", error=type(exc).__name__)
+
+    def receipt_pass(self, now: float | None = None) -> dict[str, int]:
+        """One pass over the wakes waiting on the wake router's receipt (AFC-824), oldest due
+        first.
+
+        A wake is due on the schedule wakes.receipt_next_read gives from its 2xx.  A due wake gets
+        one read, at most RECEIPT_READS_PER_PASS in a pass and none started once
+        RECEIPT_PASS_BUDGET_SECONDS are spent;  what is left is due at the next pass, and is not
+        even resolved in this one.  Each routine is resolved once in a pass.  A terminal
+        receipt appends the wake's one outcome row and ends its reads.  Every other answer is read
+        again at the next slot:  `accepted` (still pending there), a 401 (its key and this
+        listener's differ while a rotation reaches one before the other), a 404 (the router has no
+        record of it:  the seat is not registered there, or its state folder lost the wake;  it is
+        read again only because a read costs nothing before the deadline), a 503 (the seat is not
+        served yet, or its key is not loaded), a redirect (never followed), a 5xx, a timeout or an
+        error.  At the deadline a wake gets one last read and, with no terminal
+        answer, the outcome `unknown`, never `delivered`.  A wake is read with the routine it
+        was sent with (else its seat's);  one whose routine is not the router's, or whose routine
+        URL gives no receipt URL, is not read, and reaches `unknown` at its deadline.  A wake
+        taken up from a `done` row that does not say it went to the router (`inferred`,
+        _recover_receipts) is settled only by a terminal receipt that names it:  at its deadline
+        it is left as it was instead (_receipt_final).  Returns the counts `due`, `reads` and
+        `outcomes`."""
+        now = self.clock.time() if now is None else float(now)
+        began = self.clock.monotonic()
+        due: list[tuple[float, float, str, SeatRunner, C.RoutineConfig | None, bool]] = []
+        with self._receipt_lock:
+            for runner in list(self.seats.values()):
+                for wake_id, wait in runner.receipt_waits.items():
+                    at = W.receipt_next_read(wait["done_at"], wait["read_at"])
+                    if at <= now:
+                        sent_with, inferred = wait.get("routine"), wait.get("inferred") is True
+                        due.append((at, wait["done_at"], wake_id, runner, sent_with, inferred))
+        due.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+        with self.hidden_lock:
+            known = list(self.hidden)
+        resolved: dict[tuple[int, int], tuple[Any, ...]] = {}
+        reads = outcomes = 0
+        for _at, done_at, wake_id, runner, sent_with, inferred in due:
+            if self.stop.is_set():
+                break
+            if self.seats.get(runner.seat) is not runner:
+                continue  # a reload removed the seat
+            final = now >= done_at + W.RECEIPT_DEADLINE
+            capped = (
+                reads >= RECEIPT_READS_PER_PASS
+                or self.clock.monotonic() - began >= RECEIPT_PASS_BUDGET_SECONDS
+            )
+            if capped and not final:
+                continue  # due again at the next pass, and resolved there
+            routine = sent_with if sent_with is not None else runner.cfg.routine
+            target, url, why = self._receipt_source(runner, wake_id, routine, resolved)
+            if target is None:
+                if final:
+                    outcomes += self._receipt_final(runner, wake_id, why, inferred)
+                else:
+                    self._receipt_note(runner, wake_id, now, why)
+                continue
+            if capped:
+                continue  # a wake at its deadline gets its last read at the next pass
+            reads += 1
+            try:
+                read = self.routine_runner.read_receipt(target, url)
+            except Exception:  # noqa: BLE001 - a failed read stops neither the pass nor a seat
+                read = A.ReceiptRead(error="error")
+            settled = W.receipt_outcome(
+                read.status, read.body, seat=runner.seat, wake_id=wake_id, known=known
+            )
+            if settled is not None:
+                outcomes += self._receipt_settle(runner, wake_id, *settled)
+                continue
+            last = W.receipt_read_word(read.status, read.body, read.error)
+            if final:
+                outcomes += self._receipt_final(runner, wake_id, last, inferred)
+            else:
+                self._receipt_note(runner, wake_id, now, last)
+        return {"due": len(due), "reads": reads, "outcomes": outcomes}
+
+    def _receipt_source(
+        self,
+        runner: SeatRunner,
+        wake_id: str,
+        routine: C.RoutineConfig | None,
+        resolved: dict[tuple[int, int], tuple[Any, ...]],
+    ) -> tuple[A.RoutineTarget | None, str, str]:
+        """(the routine to read with, this wake's receipt URL, "") or
+        (None, "", why).  The routine must be the router's
+        (config.routes_to_router) and resolve from the environment the daemon started with, as
+        Daemon.routine resolves a seat's (once in a pass for each runner and routine:  `resolved`,
+        which also holds the routine, so its id is not reused while the pass runs), and its URL
+        must end in `/wake/<SEAT>` (A.receipt_url).  That last refusal is logged once
+        per seat, with the name of the URL's variable and never the URL, which may hold a token."""
+        key = (id(runner), id(routine))
+        if key not in resolved:
+            if routine is None or not C.routes_to_router(routine):
+                resolved[key] = (routine, None, "not_router")
+            else:
+                target, why, _detail = A.resolve_routine(routine, self.env)
+                if target is not None:
+                    self.hide_values(target.secrets())
+                resolved[key] = (routine, target, why or "routine_not_configured")
+        _held, target, why = resolved[key]
+        if target is None:
+            return None, "", why
+        url = A.receipt_url(target.url, runner.seat, wake_id)
+        if url is None:
+            if runner.seat not in self._receipt_url_refused:
+                self._receipt_url_refused.add(runner.seat)
+                self.log.write(
+                    "wake-receipt-url-refused",
+                    seat=runner.seat,
+                    url_env=routine.url_env,
+                    reason="the routine URL does not end in /wake/<SEAT> with no query",
+                )
+            return None, "", "receipt_url_refused"
+        return target, url, ""
+
+    def _receipt_note(self, runner: SeatRunner, wake_id: str, now: float, last: str) -> None:
+        """A read that settled nothing:  the next one is due at the slot after `now`."""
+        with self._receipt_lock:
+            wait = runner.receipt_waits.get(wake_id)
+            if wait is not None:
+                wait["read_at"] = now
+                wait["last"] = last
+
+    def _receipt_final(self, runner: SeatRunner, wake_id: str, last: str, inferred: bool) -> int:
+        """A wake at its deadline with no terminal receipt.  One whose `done` row said it went to
+        the router gets the outcome `unknown`, with `last` as its `receipt_last`.  One taken up on
+        a guess (`inferred`, _recover_receipts) may never have gone to the router at all:  a
+        Worker's or another routine's 202 whose body was not the Worker's answer reads the same
+        on its row.  So it gets no row and stays `done` (accepted), its reads end, and one
+        `wake-receipt-unclaimed` line says so;  a restart reads it once more while the router
+        keeps receipts (W.RECEIPT_BACKFILL).  Returns 1 for an outcome row, else 0."""
+        if not inferred:
+            return self._receipt_settle(runner, wake_id, "unknown", {"receipt_last": last})
+        with self._receipt_lock:
+            if (
+                self.stop.is_set()
+                or self.seats.get(runner.seat) is not runner
+                or runner.receipt_waits.pop(wake_id, None) is None
+            ):
+                return 0
+        self.log.write(
+            "wake-receipt-unclaimed", seat=runner.seat, wake_id=wake_id, receipt_last=last
+        )
+        return 0
+
+    def _receipt_settle(
+        self, runner: SeatRunner, wake_id: str, state: str, fields: Mapping[str, Any]
+    ) -> int:
+        """Append the wake's one outcome row (only the receipt fields wakes.receipt_row_fields let
+        through, or the daemon's own `receipt_last`), end its reads, and log every outcome but
+        `delivered`.  The check and the append run under _receipt_lock, so a wake
+        is settled once:  not once shutdown began (the next listener reads it from the ledger),
+        not for a runner a reload replaced (the new one recovered it from the ledger), and not
+        when it no longer waits.  A row that cannot be written leaves the wake waiting, unless
+        the ledger shows that it landed (an error after the write, such as a failed
+        fsync).  Returns 1 or 0."""
+        row: dict[str, Any] = {
+            "ts": self.clock.time(),
+            "wake_id": wake_id,
+            "seat": runner.seat,
+            "state": state,
+        }
+        row.update(fields)
+        failed: str | None = None
+        with self._receipt_lock:
+            if (
+                self.stop.is_set()
+                or self.seats.get(runner.seat) is not runner
+                or wake_id not in runner.receipt_waits
+            ):
+                return 0
+            try:
+                runner.ledger.append(row)
+            except OSError as exc:
+                if not self._outcome_written(runner, wake_id):
+                    failed = type(exc).__name__
+                    wait = runner.receipt_waits[wake_id]
+                    wait["read_at"] = self.clock.time()
+                    wait["last"] = "ledger_unwritable"
+            if failed is None:
+                runner.receipt_waits.pop(wake_id, None)
+        if failed is not None:
+            self.log.write("wake-receipt-error", seat=runner.seat, wake_id=wake_id, error=failed)
+            return 0
+        if state != W.DELIVERED:
+            self.log.write(
+                "wake-outcome",
+                seat=runner.seat,
+                wake_id=wake_id,
+                outcome=state,
+                receipt_status=fields.get("receipt_status"),
+                receipt_code=fields.get("receipt_code"),
+                receipt_last=fields.get("receipt_last"),
+            )
+        return 1
+
+    @staticmethod
+    def _outcome_written(runner: SeatRunner, wake_id: str) -> bool:
+        """Whether the ledger already holds an outcome row for this wake:  read only after an
+        append failed, since a failed fsync comes after the row was written."""
+        try:
+            view = runner.ledger.wakes().get(wake_id) or {}
+        except Exception:  # noqa: BLE001 - an unreadable ledger is a row not written
+            return False
+        return view.get("state") in W.OUTCOME_STATES
 
     def _drain_status(self) -> dict[str, Any]:
         """The planned-drain observability surface (AFC-652, F1):  every field a qualified
@@ -6746,6 +7163,7 @@ class Daemon:
         while True:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._operator_settings_lock_fd = lock_fd
                 break
             except OSError:
                 if waiting and self.stop.is_set():
@@ -6768,8 +7186,10 @@ class Daemon:
         if waiting or self.deferred:
             self.rebuild_from_disk()
             if self.refusal:  # the config changed while this listener waited
+                self._operator_settings_lock_fd = None
                 os.close(lock_fd)
                 return self.refuse_start()
+        self._remember_operator_settings()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_linear_comments()
@@ -6856,6 +7276,7 @@ class Daemon:
                 self.tick()
         finally:
             self.shutdown()
+            self._operator_settings_lock_fd = None
             os.close(lock_fd)
         return 0
 
@@ -6875,6 +7296,13 @@ class Daemon:
             runner.flush_cursor(force=True)
         self.write_status()
         self.log.write("stopped")
+        # A receipt read in flight (AFC-824) ends within its own timeout.  Waiting for it here,
+        # after everything else is saved, keeps it ahead of the next listener, which takes the
+        # lock once run() closes it;  a read that is still running after that settles nothing,
+        # because `stop` is set (_receipt_settle).
+        thread = getattr(self, "_receipt_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(A.RECEIPT_TIMEOUT + 1.0)
 
 
 # --------------------------------------------------------------------------------------------

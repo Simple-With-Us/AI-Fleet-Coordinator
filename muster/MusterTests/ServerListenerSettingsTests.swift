@@ -29,6 +29,7 @@ private func sampleValue(_ spec: ServerSettingSpec) -> ServerSettingValue {
     case .choice(let values): return values.first.map(ServerSettingValue.text) ?? .null
     case .text: return .text("x")
     case .pairs: return .list([.list([.text("fleet"), .text("presence")])])
+    case .seats: return .list([.text("JET"), .text("CLAUDE")])
     case .seatEnv: return .text("CLAUDE_ROUTINE_URL")
     case .table(let keys): return .table(keys.mapValues(sampleValue))
     }
@@ -66,6 +67,11 @@ private let allowlistJSON = """
       "presence_topics": {"type": "pairs"}
     },
     "linear_comments": {"enabled": {"type": "bool"}},
+    "notes_queue": {
+      "enabled": {"type": "bool"},
+      "worker_seats": {"type": "seats", "maxItems": 64, "maxLength": 32},
+      "server_seats": {"type": "seats", "maxItems": 64, "maxLength": 32}
+    },
     "webhook": {"callback_url": {"type": "string", "pattern": ".*", "maxLength": 64}}
   }
 }
@@ -80,6 +86,9 @@ private let getAnswer = """
    "daemon.coalesce_seconds": 30.0,
    "daemon.held_back_catch_up": false,
    "linear_comments.enabled": true,
+   "notes_queue.enabled": true,
+   "notes_queue.worker_seats": ["JET", "CLAUDE"],
+   "notes_queue.server_seats": [],
    "seat.CLAUDE.budget": {"wakes_per_day": 40, "wakes_per_hour": 6, "usd_per_day": 5.0},
    "seat.CLAUDE.enabled": true,
    "seat.CLAUDE.routine": {"url_env": "CLAUDE_ROUTINE_URL", "method": "POST", "timeout_seconds": 15},
@@ -334,6 +343,20 @@ final class ServerListenerSettingsTests: XCTestCase {
             mode: .plan))
     }
 
+    /// The notes_queue seat lists parse as a known type and show read only, with the list the
+    /// server holds.  Without a `seats` case the allowlist parser silently dropped them.
+    func test_a_seats_list_is_shown_read_only_with_its_reason() throws {
+        let worker = try row("notes_queue.worker_seats")
+        XCTAssertEqual(worker.current, .list([.text("JET"), .text("CLAUDE")]))
+        XCTAssertNil(worker.control)
+        XCTAssertEqual(worker.readOnlyReason, ServerSettingsCopy.seats)
+        let server = try row("notes_queue.server_seats")
+        XCTAssertEqual(server.current, .list([]))
+        XCTAssertEqual(server.readOnlyReason, ServerSettingsCopy.seats)
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["notes_queue.worker_seats": "ZC"], rows: try rows()),
+                       .failure(.readOnly(worker.title)))
+    }
+
     /// Owner's rule (Nov 11, 2026):  a knob's home is Infisical, so Muster never writes one into the
     /// server's listener file.  Only a seat's sendable keys are editable here:  its `enabled`
     /// and `wake` routing and its optional wake switches (`bracket_recipient_wakes`).
@@ -417,9 +440,9 @@ final class ServerListenerSettingsTests: XCTestCase {
     func test_a_value_the_allowlist_does_not_take_plans_nothing() throws {
         let rows = try rows()
         XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.wake": "pager"], rows: rows),
-                       .failure(.notAValue("Wake must be one of inbox, http.")))
+                       .failure(.notAValue("invalid_settings: seat.CLAUDE.wake must be one of the offered choices.")))
         XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "maybe"], rows: rows),
-                       .failure(.notAValue("Enabled must be on or off.")))
+                       .failure(.notAValue("invalid_settings: seat.CLAUDE.enabled must be on or off.")))
         // One bad value sinks the whole request, so nothing is half planned.
         let mixed = ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "Off", "seat.CLAUDE.wake": "pager"], rows: rows)
         guard case .failure(.notAValue) = mixed else { return XCTFail("\(mixed)") }
@@ -487,7 +510,7 @@ final class ServerListenerSettingsTests: XCTestCase {
                        .success(ServerListenerSettingsRequest(set: ["seat.AMP.bracket_recipient_wakes": .bool(true)])))
         // Anything but On or Off is refused, and one bad value sinks the whole request.
         XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "maybe"], rows: rows),
-                       .failure(.notAValue("Bracket Recipient Wakes must be on or off.")))
+                       .failure(.notAValue("invalid_settings: seat.AMP.bracket_recipient_wakes must be on or off.")))
         let mixed = ServerSettingsBuilder.request(
             edits: ["seat.AMP.bracket_recipient_wakes": "On", "seat.AMP.enabled": "maybe"], rows: rows)
         guard case .failure(.notAValue) = mixed else { return XCTFail("\(mixed)") }
@@ -920,13 +943,13 @@ final class ServerListenerSettingsTests: XCTestCase {
             XCTAssertLessThanOrEqual(value.count, 256)
             XCTAssertTrue(ServerSettingsBuilder.looksLikeCredential(value))
             let result = ServerSettingsBuilder.value(value, for: free)
-            XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped("Label"))))
+            XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped("seat.CLAUDE.label"))))
             guard case .failure(let problem) = result else { continue }
-            XCTAssertTrue(problem.sentence.hasPrefix("Label has the shape of a credential"), problem.sentence)
+            XCTAssertTrue(problem.sentence.hasPrefix("secret_refused: seat.CLAUDE.label"), problem.sentence)
             assertNeverEchoes(problem.sentence, value)
             // Spaces around the value do not hide it.
             XCTAssertEqual(ServerSettingsBuilder.value("  \(value)  ", for: free),
-                           .failure(.notAValue(ServerSettingsCopy.credentialShaped("Label"))))
+                           .failure(.notAValue(ServerSettingsCopy.credentialShaped("seat.CLAUDE.label"))))
         }
         // An ordinary value still passes.
         XCTAssertEqual(ServerSettingsBuilder.value("presence-topic", for: free), .success(.text("presence-topic")))
@@ -938,15 +961,14 @@ final class ServerListenerSettingsTests: XCTestCase {
         let rows = try rows()
         for value in credentialShapedValues {
             for id in ["seat.CLAUDE.wake", "seat.CLAUDE.enabled"] {
-                let title = try row(id).title
                 let result = ServerSettingsBuilder.request(edits: [id: value], rows: rows)
-                XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped(title))), id)
+                XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped(id))), id)
                 guard case .failure(let problem) = result else { continue }
                 assertNeverEchoes(problem.sentence, value)
             }
             // Beside a good edit it still sinks the request.
             let mixed = ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "Off", "seat.CLAUDE.wake": value], rows: rows)
-            XCTAssertEqual(mixed, .failure(.notAValue(ServerSettingsCopy.credentialShaped("Wake"))))
+            XCTAssertEqual(mixed, .failure(.notAValue(ServerSettingsCopy.credentialShaped("seat.CLAUDE.wake"))))
         }
         // The values the two controls take are never read as credentials.
         for value in ["On", "Off", "true", "false", "inbox", "http"] {
@@ -1218,7 +1240,7 @@ final class ServerListenerSettingsStoreTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
         guard case .read(let answer)? = store.reading else { return XCTFail("\(String(describing: store.reading))") }
         XCTAssertEqual(reads.count, 2)
-        let expected = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: list)
+        let expected = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: list, editable: true)
         XCTAssertFalse(expected.isEmpty)
         XCTAssertEqual(store.groups, expected)
         XCTAssertTrue(store.groups.flatMap(\.rows).contains { $0.id == "seat.CLAUDE.enabled" && $0.isEditable })
