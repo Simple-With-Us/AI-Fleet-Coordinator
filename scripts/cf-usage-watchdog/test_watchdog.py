@@ -703,13 +703,27 @@ class PollFailureTests(Base):
         self.poll(at=NOW + dt.timedelta(minutes=5))
         self.fake.zulip_ok = False
         self.poll({}, at=NOW + dt.timedelta(minutes=6))
-        self.assertIn("poll_failed_since", self.state)
+        self.assertNotIn("poll_failed_since", self.state)
+        self.assertTrue(self.state["poll_recovery_pending"])
         self.fake.zulip_ok = True
         self.poll({}, at=NOW + dt.timedelta(minutes=7))
         self.assertNotIn("poll_failed_since", self.state)
+        self.assertNotIn("poll_recovery_pending", self.state)
         before = len(self.fake.posts)
         self.poll({}, at=NOW + dt.timedelta(minutes=8))
         self.assertEqual(len(self.fake.posts), before)
+
+    def test_failed_recovery_does_not_suppress_a_new_same_reason_outage(self):
+        self.fake.account = wd.PollError("x")
+        self.poll()
+        self.poll(at=NOW + dt.timedelta(minutes=5))
+        self.fake.zulip_ok = False
+        self.poll({}, at=NOW + dt.timedelta(minutes=6))
+        self.fake.zulip_ok = True
+        self.fake.account = wd.PollError("x")
+        self.poll(at=NOW + dt.timedelta(minutes=7))
+        self.poll(at=NOW + dt.timedelta(minutes=12))
+        self.assertEqual(sum("is blind" in post for post in self.fake.posts), 2)
 
     def test_short_failure_needs_no_recovery_message(self):
         self.fake.account = wd.PollError("x")

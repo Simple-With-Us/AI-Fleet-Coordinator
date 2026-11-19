@@ -1545,14 +1545,17 @@ class Watchdog:
             breaches = evaluate(self.cfg, self.profile, usage)
         self.apply_breaches(breaches, inventory)
         self.daily_check_if_due(inventory)
-        # Keep recovery pending until its service alert is delivered.
-        if self.state.get("poll_failed_since") is not None:
-            if not self.state.get("poll_fail_alerted") or self.notify(
-                "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
-            ):
-                self.state.pop("poll_failed_since", None)
-                self.state.pop("poll_fail_alerted", None)
-                self.state.pop("poll_fail_reason", None)
+        # A successful read closes the active blind incident even if its recovery
+        # message is not delivered. Keep delivery pending separately, so a later
+        # outage with the same cause starts a new five-minute alert window.
+        if self.state.pop("poll_failed_since", None) is not None:
+            if self.state.pop("poll_fail_alerted", None):
+                self.state["poll_recovery_pending"] = True
+            self.state.pop("poll_fail_reason", None)
+        if self.state.get("poll_recovery_pending") and self.notify(
+            "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
+        ):
+            self.state.pop("poll_recovery_pending", None)
         self.prune()
         self.store.save(self.state)
         failed = self.undelivered or self.worker_failed or self.state.get("inventory_failed")
