@@ -38,6 +38,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -120,6 +121,29 @@ def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     return dict(row) if row is not None else {}
 
 
+#: How long a hook waits for a subagent's own row to appear in the session store.  The runtime writes
+#: that row a moment AFTER the event that announces the child, so a hook that read the store straight
+#: away could see no row at all, leave the child with no parent, and drop the child out of the letter's
+#: scope:  it never took a letter.  The wait is short and bounded, and it is spent on the store, not on
+#: the registry's own calls, so the hook's budget for those is untouched.
+CHILD_ROW_WAIT = 1.5
+
+
+def _wait_for_parent(env: Mapping[str, str], sid: str, seconds: float) -> str:
+    """The child's parent session id, waiting briefly for the child's own row to appear.
+
+    The session store writes a child's row a moment after the event that announces it.  A hook that read
+    the row straight away found nothing, left the child with no parent, and the child never took a letter.
+    The wait is bounded:  a row that never appears is not waited for forever.
+    """
+    end = time.monotonic() + seconds
+    while True:
+        parent = str(_row(env, sid).get("parent_session_id") or "")
+        if parent or time.monotonic() >= end:
+            return parent
+        time.sleep(0.1)
+
+
 #: The payload keys the runtime may spell a subagent's OWN session id out under.  MiniMax Code builds the
 #: user hook payload with `session_id: event.sessionId`, and a subagent event's session id IS the child's own
 #: id, so the payload's `session_id` is the child's.  A runtime that spells the child out under its own key is
@@ -130,7 +154,9 @@ CHILD_ID_KEYS = ("childSessionId", "child_session_id")
 #: payload does not carry the parent at all today:  the parent lives in the event's `subagentContext`, which
 #: the payload builder does not copy into the payload.  The session store has the parent on the child's own
 #: row, so that is where the parent is read from; these keys are a fallback for a runtime that does carry it.
-PARENT_ID_KEYS = ("parentSessionId", "parent_session_id", "parentId", "parent_id")
+#: `parentId` and `parent_id` are deliberately not here:  they name an AGENT (the seat's worker name), not
+#: a session, and reading one as a session id points the letter at a session that does not exist.
+PARENT_ID_KEYS = ("parentSessionId", "parent_session_id")
 
 
 def _event(payload: Mapping[str, Any]) -> str:
@@ -175,8 +201,9 @@ def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
         # `subagentContext`, which the payload builder does not copy, and the payload's own session id is the
         # CHILD's own id.  Reading the parent's id out of the payload therefore made a subagent its own
         # parent, and the child took a letter from the wrong place in the tree.  The session store has the
-        # parent on the child's own row, so it is read from there.
-        parent = str(_row(env, _sid(payload, env)).get("parent_session_id") or "")
+        # parent on the child's own row, so it is read from there, after a short wait for that row:  the
+        # store writes it a moment after the event, and a child read too early had no parent at all.
+        parent = _wait_for_parent(env, _sid(payload, env), CHILD_ROW_WAIT)
         if parent:
             return parent
         for key in PARENT_ID_KEYS:
