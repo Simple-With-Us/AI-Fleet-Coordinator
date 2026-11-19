@@ -1,7 +1,7 @@
 """The native wire fixture must name the actual helper, transaction and schema bytes."""
 
-import importlib.util
 import hashlib
+import importlib.util
 import json
 import pathlib
 import unittest
