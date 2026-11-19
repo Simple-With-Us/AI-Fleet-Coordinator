@@ -4898,7 +4898,9 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
     inherited = next((w for w in already if w), [])
-    command = command_for(home, platform, _flag(inherited, "--location"), _flag(inherited, "--mac-ssh"))
+    command = command_for(
+        home, platform, _flag(inherited, "--location"), _flag(inherited, "--mac-ssh")
+    )
     missing = []
     stale = []
     for ev, timeout in installer.events.items():
