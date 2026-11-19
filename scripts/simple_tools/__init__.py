@@ -13,8 +13,9 @@ The listener (docs/protocols/simple-tools-listener.md):
   live          leases, live inboxes, claiming, untrusted wrapping, light config (hook fast path)
   attach        `simple-chat attach` and `detach`: the Claude Code hooks, rewake, drain and wait
   router        pure routing and the wake prefilter
-  wakes         the wake ledger, budgets, coalescing, the loop guard, the validator and the prompt
-  adapters      the Claude headless wake, notify-owner and board filing
+  wakes         the wake ledger, budgets, coalescing, the loop guard and the model gate's record
+  adapters      the routine wake (`http`), notify-owner, the `claude agents` liveness probe and
+                the decider's OpenRouter transport (the listener starts no model)
   daemon        the always-on daemon (`simple-chat daemon run`)
   config        listener.toml with defaults and validation
   launchd       `daemon install` and `uninstall` (writes files, never runs launchctl)
