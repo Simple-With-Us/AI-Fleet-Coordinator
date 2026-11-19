@@ -308,8 +308,7 @@ class _Converter(HTMLParser):
         left as they are, so a code span inside a link stays a code span (Kody, PR
         2340)."""
         parts = [
-            _escape_text(text) if kind == _PART_TEXT else text
-            for text, kind in (self.link or [])
+            _escape_text(text) if kind == _PART_TEXT else text for text, kind in (self.link or [])
         ]
         return "".join(parts).strip()
 
