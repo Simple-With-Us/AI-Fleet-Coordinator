@@ -63,7 +63,7 @@ peer_broadcast_reminder_minutes = 10   # the peer-broadcast reminder (owner, Oct
                                        # outage of about twenty minutes);  a bot that uses it without approval DMs
                                        # Jay why.  0 is off.  The reminder is the Operator's DM, never a
                                        # post in a channel, and it never carries the message content.
-presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+presence_topics = [["Work-In-Progress", "roll call"], ["Work-In-Progress", "fleet"], ["Builds", "gates"], ["Alerts", "*"]]
 
 # Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its
 # wake is "http" (see its block).  Each holds a queue,

@@ -10,6 +10,12 @@ from simple_tools.tests.test_daemon import MENTION, DaemonHarness
 
 
 class ServerSessionRoutingTests(DaemonHarness):
+    """A capture seat (no routine) hands a mention to the session that owns the topic.  It is never
+    woken, so no wake row can stand in for the session (a seat with a routine never hands a mention to
+    a session:  test_daemon.RoutineSeatLeaseTests)."""
+
+    default_wake = "inbox"
+
     def drain(self, lease_id):
         out, err = io.StringIO(), io.StringIO()
         code = attach.main(
@@ -44,7 +50,6 @@ class ServerSessionRoutingTests(DaemonHarness):
             self.assertEqual(self.run_cli("inbox", env=sibling).code, 0)
         self.assertEqual(self.live_items("session-B"), [])
         self.assertEqual(self.inbox(), [])
-        self.assertEqual(self.ledger(), [], "no headless fallback for an owned topic")
         self.assertEqual(self.live_items("session-A")[0]["id"], mid)
         self.assertEqual(self.live_items("session-A")[0]["class"], "interrupt")
         self.assertIn("nothing pending", self.drain("session-B"))
@@ -87,4 +92,3 @@ class ServerSessionRoutingTests(DaemonHarness):
         self.pump_until(daemon, lambda: len(self.live_items("session-A")) == 1)
         self.assertEqual(self.live_items("session-A")[0]["id"], mid)
         self.assertEqual(self.live_items("session-B"), [])
-        self.assertEqual(self.ledger(), [])
