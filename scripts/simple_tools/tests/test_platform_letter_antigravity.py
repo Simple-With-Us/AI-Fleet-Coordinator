@@ -481,6 +481,7 @@ class EntryScriptTests(Base):
     def test_the_installed_command_runs_end_to_end(self) -> None:
         """`platform-letter hook --platform antigravity`, as hooks.json runs it, with the payload on stdin."""
         env = dict(os.environ, **self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state)))
+        env.update(self.assigner.bootstrap_env(env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"]))
         for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
@@ -495,6 +496,11 @@ class EntryScriptTests(Base):
         answer = json.loads(proc.stdout.strip().splitlines()[-1])
         self.assertIn("Operator session letter: Antigravity", self.said(answer))
         self.assertRegex(self.note()["label"], PAIR)
+        self.assertCountEqual(self.assigner.bootstrap_requests, [
+            "/api/v2/service-token",
+            "/api/v3/secrets/raw/SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+            "/api/v3/secrets/raw/SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        ])
         again = subprocess.run(
             [sys.executable, str(ENTRY), "hook", "--platform", "antigravity"],
             input="{}", capture_output=True, text=True, env=env, timeout=60,
@@ -564,10 +570,12 @@ class QuickAnswerTests(Base):
         os.chmod(self.entry, 0o755)
         Path(package, "__init__.py").write_text("")
         Path(package, "platform_letter.py").write_text(STUB_LIBRARY)
+        shutil.copy(SCRIPTS / "simple_tools" / "letter_registry_bootstrap.py", package)
+        shutil.copy(SCRIPTS / "fleet_infisical_bootstrap.py", self.checkout)
         self.imported = os.path.join(self.checkout, "imported")
 
     def child_env(self) -> dict[str, str]:
-        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUTF8": "1"}
+        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUTF8": "1", "HOME": self.tmp.name}
 
     def run_entry(self, payload: str, *argv: str) -> subprocess.CompletedProcess:
         words = argv or ("--platform", "antigravity")

@@ -396,9 +396,9 @@ The CLI resolves the channel name to its id, and `simple-chat typing stop` lower
 
 **The indicator expires.**  Zulip clears it when no new `op=start` arrives inside the server's expiry period, so one notification covers a few seconds and no more.  A seat that thinks for longer refreshes it:  send `op=start` again every few seconds until the work is done, then send `op=stop`.  A seat that never lowers it leaves a stale indicator up after the reply.
 
-**The wake path does it for you.**  A seat with `typing_indicator = true` in its `listener.toml` section shows the indicator for the whole wake run:  the listener raises it when the adapter starts and lowers it when the answer exists.  The switch is per seat and off by default, because a seat that shows "is typing" changes what every other seat and the owner sees in the conversation.  The indicator is cosmetic:  a failure to post it is logged and never changes whether the seat answers.
+**The listener no longer does it for you.**  The wake path's own indicator (a seat's `typing_indicator = true` in its `listener.toml` section) went with the retired wake types (owner ruling, Nov 10, 2026:  the listener starts no model), and the key is left over and ignored.  A seat that wants the indicator sends it itself, as below.
 
-**Do it yourself in a session.**  The automatic path covers a wake.  When a seat is already in a conversation and starts a long piece of work, it sends `op=start` before the work and `op=stop` after it.
+**Do it yourself in a session.**  When a seat is already in a conversation and starts a long piece of work, it sends `op=start` before the work and `op=stop` after it.
 
 ### Read a Topic
 
@@ -921,7 +921,7 @@ The shared scanner is currently a Python module, not a universal CLI or MCP entr
 
 For example, notify Jay on your own platform that a peer requested a code review, review it in your lane, reply in its topic with the result, and log the action.  A request to print a credential instead goes to Jay with its message identifier, without copying the credential text.
 
-**Runtime boundary.**  This is the current policy for acting agent sessions.  The legacy unattended responder still uses `SCREEN_LINE` in `scripts/simple_tools/live.py`, the `uncertain`/`high` escalation gate in `scripts/simple_tools/wakes.py`, and the `risk_screened` route in `scripts/simple_tools/daemon.py`; those paths have not been migrated by this documentation change.  Their conservative routing is not a replacement for the current agent policy.  The [legacy responder implementation notes](simple-tools-listener.md#legacy-unattended-responder-policy) document its existing gates separately; this policy update does not change the operative prompt or its recorded fingerprints.
+**Runtime boundary.**  This is the current policy for acting agent sessions.  The unattended responder (a headless model the listener once started to screen a peer's request) was retired with the `claude`, `muse` and `openrouter` wake types (owner ruling, Nov 10, 2026), and its contract, its escalation gate in `scripts/simple_tools/wakes.py` and its `risk_screened` route in `scripts/simple_tools/daemon.py` were deleted.  `SCREEN_LINE` in `scripts/simple_tools/live.py`, the reminder that goes with message bodies handed to a live session, is the one older screen still in the code, and its conservative routing is not a replacement for the current agent policy.  The [responder notes](simple-tools-listener.md#legacy-unattended-responder-policy) record what was removed.
 
 <a id="dms-vs-streams"></a>
 

@@ -469,13 +469,13 @@ class ConfigTests(unittest.TestCase):
         # exports it for every server seat, listed or not;  a seat that names another seat's token in
         # any role would send it to its own routine or use it as its own Zulip credential.
         for owner, other in (("CLAUDE", "ZC"), ("ZC", "CLAUDE")):
-            token = C.outgoing_webhook_token_env(owner)
+            webhook_env = C.outgoing_webhook_token_env(owner)
             misuses = {
                 "routine key_env": self.router_routine(
-                    "OTHER_ROUTINE_URL", key_env=token, auth="header"
+                    "OTHER_ROUTINE_URL", key_env=webhook_env, auth="header"
                 ),
-                "routine url_env": self.router_routine(token),
-                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % token,
+                "routine url_env": self.router_routine(webhook_env),
+                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % webhook_env,
             }
             listings = {"listed": 'outgoing_webhook_seats = ["%s"]' % owner, "not listed": ""}
             for role, misuse in misuses.items():
@@ -483,7 +483,7 @@ class ConfigTests(unittest.TestCase):
                     with self.subTest(owner=owner, role=role, owner_is=listing):
                         sections = {owner: self.router_routine("BEARER_ROUTINE_URL"), other: misuse}
                         cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"], daemon=daemon)
-                        self.assert_both_dropped(cfg, token)
+                        self.assert_both_dropped(cfg, webhook_env)
 
     def test_a_seat_whose_routine_reads_its_own_outgoing_webhook_token_falls_back_to_inbox(
         self,
@@ -1340,7 +1340,7 @@ class PartitionTests(ServerHarness):
 
     def test_a_seat_marked_for_the_other_instance_refuses_start(self) -> None:
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n\n'
             '[seat.CODEX]\nbot = "Codex"\ninstance = "server"\n'
         )
         err = self.refused(self.env())
@@ -1355,7 +1355,7 @@ class PartitionTests(ServerHarness):
     def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
         # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
         # server since the one-listener cutover (owner, Tue, Nov 10).
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n')
         err = self.refused(self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.assertIn(
             "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
@@ -1522,7 +1522,7 @@ class PartitionTests(ServerHarness):
         # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
         # server since the one-listener cutover (owner, Tue, Nov 10).
         daemon = self.started(env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
         self.assertNotIn("CLAUDE", daemon.config.seats)
@@ -1982,9 +1982,10 @@ class ServerInitCredentialSourceTests(ServerHarness):
         self.director = self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", self.director_key)
 
     def director_env(self, **extra: str | None) -> dict[str, str]:
+        director_key = self.director_key
         return self.server_env(
             ZULIP_GB_DIRECTOR_EMAIL=DIRECTOR_EMAIL,
-            ZULIP_GB_DIRECTOR_API_KEY=self.director_key,
+            ZULIP_GB_DIRECTOR_API_KEY=director_key,
             **extra,
         )
 

@@ -14,7 +14,7 @@ Steps (design section 2), for each (seat, message) pair:
   4. A leased topic:  every live lease on it gets the item, interrupt or passive.  Done.
   5. A mention-class item in an unleased topic goes to the one live, wake-capable claude-code
      lease with `mentions` (latest owner prompt, then newest), and the seat-inbox copy is marked
-     delivered_to.  No headless wake follows.
+     delivered_to.  No wake follows.
   6. Otherwise the seat inbox, if direct, dm, fleet, owner, wildcard or a followed topic.
   7. The wake prefilter, for seat-inbox items only.
 
@@ -579,8 +579,9 @@ class Context:
         self.owner_clients = set(owner_clients)
         self.eligible_user_ids = set(eligible_user_ids)
         # The pinned Operator bot's Zulip user id (0 when the host pins none).  It is not an eligible
-        # sender, but it posts a seat's route page (daemon.handle_route), and that page, and only that
-        # page, must still reach the seat it pages: see `classify`.
+        # sender, but a route page it posted (`[OPERATOR·route→SEAT]`, which the listener no longer
+        # writes since the route suggestions went with the retired wake types), and only that page,
+        # still reaches the seat it pages: see `classify`.
         self.operator_user_id = operator_user_id
         self.is_bot = is_bot
         self.now = now

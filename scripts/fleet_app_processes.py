@@ -93,6 +93,7 @@ EXPLICIT_RULES = (
     ("BF", "pm2", "botfleet-mcp", True),
     # AI-Fleet-Coordinator's own LaunchAgents and units.
     ("AFC", "launchd", "com.jay.simple-tools-runtime-sync", True),
+    ("AFC", "launchd", "com.jay.fleet-api-health", True),
     ("AFC", "launchd", "com.jay.fleet-gdrive-backup", True),
     ("AFC", "launchd", "com.jay.fleet-mac-services", True),
     ("AFC", "launchd", "com.jay.fleet-rag-mirror", True),
