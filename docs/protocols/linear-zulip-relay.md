@@ -111,7 +111,11 @@ A post is shown as the sender wrote it.  Zulip's message content is converted t
 Zulip's Markdown source both become Markdown, with the paragraphs, the lists, the quotes, the code
 and the links kept.  The relay reads the message source (`apply_markdown=false`), so a post
 arrives as Markdown already; the same reader handles the rendered HTML a host that reads the
-messages API with its default gets.
+messages API with its default gets.  The shape is read from the start of a post, so a post
+that shows markup in its own text or inside a code block keeps that text, and only a post
+that opens with a tag is read as HTML.  The sender's own attribute values (an
+image's text, an emoji's name, an embedded link's URL) are escaped like the rest of the
+text, so they cannot carry markup into the comment.
 
 The comment is bounded, and every cut is said in the comment itself:
 
@@ -128,8 +132,9 @@ The comment is bounded, and every cut is said in the comment itself:
   line structure the reader gets.
 
 A link in a post is shown, with its text and its URL, and it is not a live link: the opener is
-escaped, so a reader cannot click a link out of a post they did not read.  A mention is never a
-live mention either.
+escaped, so a reader cannot click a link out of a post they did not read.  A link whose own text
+holds a bracket is shown the same way.  A mention is never a live
+mention either.
 
 The comments that were written before this change hold posts that were cut at 280 characters, and
 the cut text is gone: only Zulip has the whole post.  Those comments are repaired, not left as
@@ -243,8 +248,8 @@ The archive is optional, so a ledger without one opens as it always did, and the
 When it is there it is checked on load like the entries: a table, every key exactly as the relay
 writes it, and every record with all four fields of the right type and a finite time.  A malformed
 record stops the relay, and the message names its position only.  The archive is bounded at 20,000
-records and by the file's 8 MB: its oldest records are dropped first, and the log says how many
-("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 32 MB.
+records and by the file's 48 MB: its oldest records are dropped first, and the log says how many
+("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 48 MB.
 A build from before AFC-821 reads a ledger that has an archive, writes the table back as it found
 it, and neither adds to it nor restores from it, so a rollback loses only the restores.
 

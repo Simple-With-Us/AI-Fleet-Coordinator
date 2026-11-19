@@ -59,9 +59,22 @@ def to_markdown(content: str) -> str:
     text = content or ""
     if not text.strip():
         return ""
-    if _HTML_SIGNATURE.search(text):
+    if _looks_like_html(text):
         return _html_to_markdown(text)
     return _source_to_markdown(text)
+
+
+def _looks_like_html(text: str) -> bool:
+    """Whether the content is Zulip's rendered HTML rather than the sender's own source.
+
+    The shape is read from the start of the post and not from a match anywhere in it:  a
+    source post that talks about markup ("a <p> tag") or shows it inside a code block
+    keeps its own text, and only a post that opens with a tag is read as HTML (Kody, PR
+    2340)."""
+    stripped = text.lstrip()
+    if stripped.startswith("```") or stripped.startswith("~~~"):
+        return False  # a code block:  its body may hold markup
+    return bool(_HTML_SIGNATURE.match(stripped))
 
 
 def close_code_fence(text: str) -> str:
@@ -94,10 +107,28 @@ def _escape_url(url: str) -> str:
     """A URL as a Markdown link target:  its own markdown specials escaped, so it cannot
     close the link early and become a link of its own."""
     text = (url or "").strip()
+    text = text.replace("\r", "").replace("\n", "")
     text = text.replace("\\", "\\\\")
     text = text.replace("(", "\\(").replace(")", "\\)")
     text = text.replace("<", "\\<").replace(">", "\\>")
     return text.replace(" ", "%20")
+
+
+def _plain_attribute(value: str) -> str:
+    """An attribute value as plain text:  no line break, and no character that would
+    change the shape of the comment.
+
+    The attributes of a rendered post are the sender's own text and a sender can put
+    anything in them, so they are escaped the way the rest of the text is (Kody, PR
+    2340)."""
+    text = "".join(ch for ch in (value or "") if ch not in "\r\n\t")
+    return _escape_text(text)
+
+
+def _indent(text: str, width: int = 2) -> str:
+    """A block indented under the line above it, so a nested list reads as nested."""
+    pad = " " * width
+    return "\n".join(pad + line if line else line for line in text.split("\n"))
 
 
 def _fence(code: str) -> str:
@@ -118,6 +149,15 @@ def _inline_code(text: str) -> str:
     return "%s%s%s" % (marker, text, marker)
 
 
+class _List:
+    """One list being read:  its finished items and the item being read."""
+
+    def __init__(self, ordered: bool) -> None:
+        self.ordered = ordered
+        self.items: list[str] = []
+        self.item: list[str] | None = None
+
+
 class _Converter(HTMLParser):
     """Zulip's rendered HTML as Markdown blocks."""
 
@@ -132,16 +172,14 @@ class _Converter(HTMLParser):
         self.mention: list[str] | None = None
         self.embed: list[str] | None = None
         self.embed_url = ""
-        self.item: list[str] | None = None
-        self.items: list[str] | None = None
-        self.ordered = False
+        self.lists: list[_List] = []
         self.quote = 0
 
     # -- the block and the inline buffers ------------------------------------------------
     def _sink(self) -> list[str]:
         """Where the text of the element being read goes."""
-        if self.item is not None:
-            return self.item
+        if self.lists and self.lists[-1].item is not None:
+            return self.lists[-1].item
         if self.embed is not None:
             return self.embed
         if self.mention is not None:
@@ -207,7 +245,7 @@ class _Converter(HTMLParser):
                 self.mention = []
                 return
             if "emoji" in classes:
-                self.buf.append(":%s:" % self._emoji_name(attrd, classes))
+                self._sink().append(":%s:" % _plain_attribute(self._emoji_name(attrd, classes)))
                 return
             return
         if tag == "blockquote":
@@ -216,13 +254,12 @@ class _Converter(HTMLParser):
             return
         if tag in ("ul", "ol"):
             self._flush()
-            self.items = []
-            self.ordered = tag == "ol"
+            self.lists.append(_List(tag == "ol"))
             return
         if tag == "li":
-            if self.items is None:
-                self.items = []
-            self.item = []
+            if not self.lists:
+                self.lists.append(_List(False))
+            self.lists[-1].item = []
             return
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._flush()
@@ -233,8 +270,8 @@ class _Converter(HTMLParser):
             self.blocks.append(self._quoted("---"))
             return
         if tag == "img":
-            alt = attrd.get("alt", "").strip()
-            self.buf.append("[image: %s]" % alt if alt else "[image]")
+            alt = _plain_attribute(attrd.get("alt", "").strip())
+            self._sink().append("[image: %s]" % alt if alt else "[image]")
             return
 
     def handle_endtag(self, tag: str) -> None:
@@ -248,14 +285,18 @@ class _Converter(HTMLParser):
             if self.code is not None:
                 text = "".join(self.code)
                 self.code = None
-                self.buf.append(_inline_code(text))
+                self._sink().append(_inline_code(text))
             return
         if tag == "a":
             if self.link is not None:
                 text = "".join(self.link).strip()
                 self.link = None
                 if self.embed is None:
-                    self.buf.append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
+                    # The text was kept raw while the link was read and is escaped once,
+                    # here, so the reader sees it as the sender wrote it (Kody, PR 2340).
+                    self._sink().append(
+                        "[%s](%s)" % (_escape_text(text), _escape_url(self.href))
+                    )
             return
         if tag == "span":
             if self.mention is not None:
@@ -263,14 +304,18 @@ class _Converter(HTMLParser):
                 self.mention = None
                 if not name.startswith("@"):
                     name = "@" + name
-                self.buf.append(name)
+                self._sink().append(_escape_text(name))
             return
         if tag == "div":
             if self.embed is not None:
                 url = self.embed_url
                 self.embed = None
                 self.embed_url = ""
-                self.buf.append("[embedded link: %s]" % url if url else "[embedded content]")
+                self._sink().append(
+                    "[embedded link: %s]" % _plain_attribute(url)
+                    if url
+                    else "[embedded content]"
+                )
             return
         if tag == "blockquote":
             self._flush()
@@ -278,19 +323,30 @@ class _Converter(HTMLParser):
                 self.quote -= 1
             return
         if tag == "li":
-            if self.item is not None:
-                text = "".join(self.item).strip()
-                self.item = None
-                if self.items is not None:
-                    marker = "%d. " % (len(self.items) + 1) if self.ordered else "- "
-                    self.items.append(self._quoted(marker + text))
+            if not self.lists:
+                return
+            ctx = self.lists[-1]
+            if ctx.item is None:
+                return
+            text = "".join(ctx.item).strip()
+            ctx.item = None
+            marker = "%d. " % (len(ctx.items) + 1) if ctx.ordered else "- "
+            ctx.items.append(self._quoted(marker + text))
             return
         if tag in ("ul", "ol"):
             self._flush()
-            items = self.items or []
-            self.items = None
-            if items:
-                self.blocks.append("\n".join(items))
+            if not self.lists:
+                return
+            ctx = self.lists.pop()
+            if not ctx.items:
+                return
+            rendered = "\n".join(ctx.items)
+            if self.lists and self.lists[-1].item is not None:
+                # A nested list belongs under the item that holds it, and is indented so
+                # it reads as part of that item (Kody, PR 2340).
+                self.lists[-1].item.append("\n" + _indent(rendered))
+            else:
+                self.blocks.append(self._quoted(rendered))
             return
         if tag in ("p", "tr", "table", "section", "article", "thead", "tbody"):
             self._flush()
@@ -302,6 +358,9 @@ class _Converter(HTMLParser):
             return
         if self.mention is not None:
             self.mention.append(data)
+            return
+        if self.link is not None:
+            self.link.append(data)  # the link text is escaped once, when the link closes
             return
         self._sink().append(_escape_text(data))
 

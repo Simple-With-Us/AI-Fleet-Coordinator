@@ -157,5 +157,55 @@ class FenceTests(unittest.TestCase):
         self.assertEqual(zm.close_code_fence(text), "````\n```\nstill code\n````")
 
 
+class ReviewTests(unittest.TestCase):
+    """The findings of the Kody review on PR 2340.
+
+    Each test here pins one finding:  the shape of a post is read from its start, the
+    sender's own attribute values are escaped like the rest of the text, a nested list
+    keeps the text of the item that holds it, and a link's text is escaped once.
+    """
+
+    def test_a_source_post_that_talks_about_markup_keeps_its_text(self) -> None:
+        # The shape is read from the start of the post:  a post that mentions a <p> tag
+        # is the sender's own text and is not read as HTML.
+        out = zm.to_markdown("a <p> tag opens a paragraph")
+        self.assertIn("\\<p>", out)
+        self.assertIn("tag opens a paragraph", out)
+
+    def test_a_code_block_that_shows_markup_keeps_its_text(self) -> None:
+        out = zm.to_markdown("```html\n<p>hello</p>\n```")
+        self.assertIn("<p>hello</p>", out)
+
+    def test_rendered_html_is_still_read_as_html(self) -> None:
+        self.assertEqual(zm.to_markdown("<p>first</p><p>second</p>"), "first\n\nsecond")
+
+    def test_an_image_alt_cannot_carry_raw_html_into_the_text(self) -> None:
+        out = zm.to_markdown('<p><img src="x" alt="a < b"></p>')
+        self.assertNotIn("a < b", out)
+        self.assertIn("a \\< b", out)
+
+    def test_an_emoji_name_cannot_carry_raw_html_into_the_text(self) -> None:
+        html = '<p><span class="emoji emoji-1z602" title="a < b"></span></p>'
+        out = zm.to_markdown(html)
+        self.assertNotIn("a < b", out)
+        self.assertIn(":a \\< b:", out)
+
+    def test_an_embedded_url_cannot_carry_raw_html_into_the_text(self) -> None:
+        html = '<div class="message_embed"><a href="https://example.com/a<b">x</a></div>'
+        out = zm.to_markdown(html)
+        self.assertNotIn("a<b", out)
+        self.assertIn("a\\<b", out)
+
+    def test_a_nested_list_keeps_the_text_of_the_item_that_holds_it(self) -> None:
+        out = zm.to_markdown("<ul><li>one<ul><li>a</li></ul></li></ul>")
+        self.assertIn("one", out)
+        self.assertIn("a", out)
+        self.assertIn("- one", out)
+
+    def test_a_link_text_is_escaped_once(self) -> None:
+        out = zm.to_markdown('<p><a href="https://example.com/x">a [b] c</a></p>')
+        self.assertEqual(out, "[a \\[b\\] c](https://example.com/x)")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

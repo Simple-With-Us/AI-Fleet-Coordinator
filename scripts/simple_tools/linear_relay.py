@@ -336,8 +336,10 @@ def neutralise(text: str) -> str:
 
 
 # A link opener in the converted text:  a bracket a link follows.  The brackets of the
-# text around it are already escaped by the conversion.
-_LINK_OPENER = re.compile(r"(?P<slashes>\\*)(?P<bracket>\[)(?=[^\]\n]*\]\()")
+# text around it are already escaped by the conversion, and the text of a link can hold
+# an escaped bracket of its own, so the closing bracket is looked for behind them
+# (Kody, PR 2340).
+_LINK_OPENER = re.compile(r"(?P<slashes>\\*)(?P<bracket>\[)(?=(?:\\.|[^\]\\\n])*\]\()")
 
 
 def _escape_link_openers(text: str) -> str:
@@ -383,10 +385,13 @@ def post_text(content: str) -> str:
         return WITHHELD
     text = defang(converted)
     if len(text) > MESSAGE_CHARS:
-        left_out = len(text) - MESSAGE_CHARS
+        shown = text[:MESSAGE_CHARS].rstrip()
+        # The count is what the comment really leaves out:  the tail and the whitespace
+        # the cut trims (Kody, PR 2340).
+        left_out = len(text) - len(shown)
         # The cut must not leave a code fence open:  the rest of the comment would
         # render as code (Sentry, PR 2340).
-        cut = zulip_markdown.close_code_fence(text[:MESSAGE_CHARS].rstrip())
+        cut = zulip_markdown.close_code_fence(shown)
         text = "%s\n\n_%d characters of this message are not shown._" % (cut, left_out)
     return text
 
@@ -554,7 +559,7 @@ class Ledger:
     "at"}, and no topic text, stream name, link or quote.  The archive is bounded as well
     (MAX_ARCHIVE, and the file's byte bound); `archive_dropped` counts the records those bounds
     cost, each one a standing comment the relay can no longer find.  A full archive renders to
-    about 3.7 MB, a little under half of MAX_LEDGER_BYTES, so from then on the byte bound rather
+    about 3.7 MB, well under MAX_LEDGER_BYTES, so from then on the byte bound rather
     than MAX_ENTRIES can be what limits the live table, and an entry it retires pushes the
     oldest archive record out."""
 
@@ -2080,6 +2085,7 @@ class RelayWorker:
             return  # no reader: the standalone process cannot read a topic back
         now = self.monotonic()
         attempts = 0
+        cache: dict[tuple[int, str], Any] = {}
         for key, entry in sorted(
             self.ledger.entries.items(),
             key=lambda item: float(item[1].get("last_touch", 0.0)),
@@ -2097,7 +2103,7 @@ class RelayWorker:
             # Every read counts, not every repair:  an entry whose topic cannot be read
             # must not make the cycle read every stale entry, every cycle (Sentry, PR 2340).
             attempts += 1
-            read, _error = self._read_topic(int(entry["stream_id"]), entry["topic"], {})
+            read, _error = self._read_topic(int(entry["stream_id"]), entry["topic"], cache)
             if read is None:
                 self._refresh_retry[key] = now + REFRESH_RETRY
                 continue

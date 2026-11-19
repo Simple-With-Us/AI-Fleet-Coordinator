@@ -85,7 +85,7 @@ Eavesdropper, and it hosts the mirror.
   ledger keeps an `archive` table:  a pruned entry that has a comment leaves its first
   message id and comment id there (no text), and the topic's next message restores it
   and edits the same comment, so pruning no longer starts a second one.  An archived
-  record dropped at the archive's bound (20,000 records, or the file's 8 MB) can, and
+  record dropped at the archive's bound (20,000 records, or the file's 48 MB) can, and
   so can a rename or move made while the worker was not running.
 
 ## The fold-in (this lane)
@@ -237,12 +237,12 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 148 tests) covers the worker, the whole-topic continuation
+(`test_linear_relay.py`, 158 tests) covers the worker, the whole-topic continuation
 above, and the AFC-821 archive and catch-up, malformed history messages and reads that
 answer no list at all included, and the whole post (the conversion, the bounds and the
 notes, the credential scan over the converted text, and the repair of the comments an
 older build wrote).  The conversion itself has its own suite
-(`test_zulip_markdown.py`, 26 tests).
+(`test_zulip_markdown.py`, 38 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 

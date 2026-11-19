@@ -2573,12 +2573,44 @@ class ReadablePostTests(WorkerCase):
         self.w.tick()
         self.assertEqual(self.topic.whole_calls, 2)  # both wait before they are tried again
 
+    def test_a_link_whose_text_holds_a_bracket_is_never_live(self) -> None:
+        # The text of a link can hold a bracket of its own, escaped by the conversion:  the
+        # opener is still found and escaped, so the link is shown and never live
+        # (Kody, PR 2340).
+        text = lr.post_text('<p><a href="https://evil.example">a] b</a></p>')
+        self.assertTrue(text.startswith("\\["), text)
+        self.assertIn("a\\] b", text)
+
+    def test_the_cut_says_how_many_characters_are_really_left_out(self) -> None:
+        # The count covers the whitespace the cut trims as well as the tail (Kody, PR
+        # 2340).
+        raw = "y" * (lr.MESSAGE_CHARS - 2) + "   " + "z" * 50
+        text = lr.post_text(raw)
+        self.assertIn("53 characters of this message are not shown.", text)
+
     def test_without_a_reader_nothing_is_re_rendered(self) -> None:
         # The standalone relay has no history reader:  its comments keep what they have.
         worker = self.worker()
         entry = self.old_entry()
         worker.tick()
         self.assertNotIn("format", entry)
+
+    def test_the_repair_reads_a_topic_once_for_two_entries_of_it(self) -> None:
+        # Two entries of one topic share the read of that topic (Kody, PR 2340).
+        self.old_entry()
+        second = lr.new_entry("AFC-2", 5, "builds", "AFC-1 relay", 2)
+        del second["format"]
+        second["comment_id"] = "c2"
+        second["count"] = 1
+        second["seen"] = [1]
+        second["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}
+        ]
+        self.led.entries[self.key("AFC-2", 5, "AFC-1 relay")] = second
+        self.topic.messages = [past(1, "the whole post")]
+        with mock.patch.object(lr, "REFRESH_PER_CYCLE", 2):
+            self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 1)  # one read for the topic, not one an entry
 
 
 if __name__ == "__main__":
