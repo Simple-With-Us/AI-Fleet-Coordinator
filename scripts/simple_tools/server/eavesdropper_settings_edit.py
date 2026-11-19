@@ -102,12 +102,14 @@ SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{0,39}")
 NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,95}")
+# A seat's canonical upper-case name, the daemon's _SEAT_RE in config.py.
+SEAT_NAME_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REMOVAL_RE = re.compile(r"[A-Za-z0-9_-]{1,48}(\.[A-Za-z0-9_-]{1,48}){2,3}")
 _ASSIGN_RE = re.compile(r"^(\s*)([A-Za-z0-9_-]+)\s*=")
 _HEADER_LINE_RE = re.compile(r"^\s*\[")
 
-SPEC_TYPES = ("bool", "int", "number", "enum", "string", "table", "pairs", "seat-env")
+SPEC_TYPES = ("bool", "int", "number", "enum", "string", "table", "pairs", "seats", "seat-env")
 
 # Never allowlisted, whatever the allowlist file says.  A table name maps to the keys in it;
 # "seat" stands for every `[seat.X]`.
@@ -228,7 +230,7 @@ def _check_spec(spec, where, nested=False):
         limit = spec.get("maxLength")
         if type(limit) is not int or not 0 <= limit <= 256:
             raise Refusal("allowlist_invalid", "%s needs a maxLength of 0 to 256" % where)
-    elif kind == "pairs":
+    elif kind in ("pairs", "seats"):
         known |= {"maxItems", "maxLength"}
         for bound in ("maxItems", "maxLength"):
             if type(spec.get(bound)) is not int or not 1 <= spec[bound] <= 256:
@@ -417,6 +419,20 @@ def check_value(spec, value, where, seat=None, current=None, sub=None):
                 )
             for part in pair:
                 _check_string(part, where)
+    elif kind == "seats":
+        if not isinstance(value, list) or len(value) > spec["maxItems"]:
+            raise Refusal("value_not_allowed", "%s must be a list of seat names" % where)
+        for item in value:
+            if (
+                not isinstance(item, str)
+                or not 0 < len(item) <= spec["maxLength"]
+                or not SEAT_NAME_RE.fullmatch(item)
+            ):
+                raise Refusal(
+                    "value_not_allowed",
+                    "%s must be a list of seat names such as CLAUDE" % where,
+                )
+            _check_string(item, where)
     elif kind == "seat-env":
         if not isinstance(value, str) or not ENV_NAME_RE.fullmatch(value):
             raise Refusal("value_not_allowed", "%s must be an environment variable name" % where)
