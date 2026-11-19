@@ -237,7 +237,7 @@ def _inline_code(text: str) -> str:
 class _Typed:
     """One typed buffer:  a mention or a link, and the parts it holds."""
 
-    __slots__ = ("kind", "parts", "href")
+    __slots__ = ("href", "kind", "parts")
 
     def __init__(self, kind: str, href: str = "") -> None:
         self.kind = kind
@@ -316,9 +316,7 @@ class _Converter(HTMLParser):
         """The text of a link:  its text parts escaped once, and its code and raw parts
         left as they are, so a code span inside a link stays a code span (Kody, PR
         2340)."""
-        text = "".join(
-            _escape_text(part) if kind == _PART_TEXT else part for part, kind in parts
-        )
+        text = "".join(_escape_text(part) if kind == _PART_TEXT else part for part, kind in parts)
         return text.strip()
 
     def _append_text(self, text: str) -> None:
