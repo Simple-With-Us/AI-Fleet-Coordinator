@@ -631,12 +631,14 @@ class Connections:
             if str(HERE.parent) not in sys.path:
                 sys.path.insert(0, str(HERE.parent))
             import fleet_infisical as fi
+
             token = (self.env.get("INFISICAL_TOKEN") or "").strip()
             if not token:
                 raise PollError("credential-binding-missing")
             project = fi.infisical_project_id(self.env, fi.home_dir(self.env), conf["project"])
-            values = fi.fetch_project(project, conf["path"], self.env,
-                                      token=token, names=[name], timeout=30)
+            values = fi.fetch_project(
+                project, conf["path"], self.env, token=token, names=[name], timeout=30
+            )
         except PollError:
             raise
         except Exception as exc:
@@ -727,24 +729,45 @@ class Connections:
                 raise PollError("dedicated-service-binding-required")
             auth = base64.b64encode(f"{email}:{key}".encode()).decode("ascii")
             headers = {"Authorization": "Basic " + auth}
-            _, identity_raw = self._request("GET", "https://simplewithus.zulipchat.com/api/v1/users/me",
-                                            headers=headers)
+            _, identity_raw = self._request(
+                "GET", "https://simplewithus.zulipchat.com/api/v1/users/me", headers=headers
+            )
             identity = json.loads(identity_raw)
-            if (not isinstance(identity, dict) or identity.get("result") != "success"
-                    or identity.get("user_id") != 1222575 or identity.get("email") != email
-                    or identity.get("is_bot") is not True):
+            if (
+                not isinstance(identity, dict)
+                or identity.get("result") != "success"
+                or identity.get("user_id") != 1222575
+                or identity.get("email") != email
+                or identity.get("is_bot") is not True
+            ):
                 raise PollError("dedicated-service-identity-mismatch")
-            body = urllib.parse.urlencode({"type": "stream", "to": conf["channel"],
-                                          "topic": conf["topic"], "content": text}).encode()
-            _, raw = self._request("POST", "https://simplewithus.zulipchat.com/api/v1/messages",
-                                   body, {"Authorization": "Basic " + auth,
-                                          "Content-Type": "application/x-www-form-urlencoded"})
+            body = urllib.parse.urlencode(
+                {"type": "stream", "to": conf["channel"], "topic": conf["topic"], "content": text}
+            ).encode()
+            _, raw = self._request(
+                "POST",
+                "https://simplewithus.zulipchat.com/api/v1/messages",
+                body,
+                {
+                    "Authorization": "Basic " + auth,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
             answer = json.loads(raw)
             if not isinstance(answer, dict) or answer.get("result") != "success":
                 raise PollError("service-post-refused")
-            print(json.dumps({"event": "zulip_sent", "sender": email,
-                              "channel": conf["channel"], "topic": conf["topic"],
-                              "message_id": answer.get("id")}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "event": "zulip_sent",
+                        "sender": email,
+                        "channel": conf["channel"],
+                        "topic": conf["topic"],
+                        "message_id": answer.get("id"),
+                    }
+                ),
+                flush=True,
+            )
             return True
         except Exception as exc:
             print(json.dumps({"event": "zulip_failed", "error": type(exc).__name__}), flush=True)
@@ -1430,7 +1453,10 @@ class Watchdog:
         self.store.event("poll_failed", reason=reason, minutes=round((self.epoch - since) / 60, 1))
         if self.epoch - since < self.limits["poll_fail_alert_minutes"] * 60:
             return
-        if self.state.get("poll_fail_alerted") and self.state.get("poll_fail_reason") in (None, reason):
+        if self.state.get("poll_fail_alerted") and self.state.get("poll_fail_reason") in (
+            None,
+            reason,
+        ):
             return
         minutes = round((self.epoch - since) / 60)
         if self.notify(

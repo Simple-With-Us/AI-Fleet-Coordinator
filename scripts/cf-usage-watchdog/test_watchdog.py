@@ -688,8 +688,8 @@ class PollFailureTests(Base):
         self.assertIn("credential-binding-missing", self.fake.posts[-1])
 
     def test_existing_blind_incident_does_not_resend_after_upgrade(self):
-        self.state["poll_failed_since"] = (NOW-dt.timedelta(days=3)).timestamp()
-        self.state["poll_fail_alerted"] = (NOW-dt.timedelta(hours=2)).timestamp()
+        self.state["poll_failed_since"] = (NOW - dt.timedelta(days=3)).timestamp()
+        self.state["poll_fail_alerted"] = (NOW - dt.timedelta(hours=2)).timestamp()
         self.fake.account = wd.PollError("credential-fetch-FileNotFoundError")
         self.poll()
         self.assertEqual(self.fake.posts, [])
@@ -1055,13 +1055,20 @@ class ConnectionTests(Base):
 
     def conn(self, values, responses=(), codes=None, env=None):
         self.secret_calls = []
+
         def read(name):
             self.secret_calls.append(name)
             if (codes or {}).get(name, 0):
                 raise wd.PollError("credential-fetch-ProviderError")
             return values.get(name)
-        return wd.Connections(self.cfg, runner=self.runner({}, {}),
-            opener=self.opener(list(responses)), env=env or {}, secret_reader=read)
+
+        return wd.Connections(
+            self.cfg,
+            runner=self.runner({}, {}),
+            opener=self.opener(list(responses)),
+            env=env or {},
+            secret_reader=read,
+        )
 
     def test_secrets_are_named_in_memory_reads_without_path_helpers(self):
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN})
@@ -1130,29 +1137,49 @@ class ConnectionTests(Base):
         self.assertNotIn(self.TOKEN, str(caught.exception))
 
     def test_zulip_uses_only_service_credentials_and_fixed_site(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL": "watchdog-bot@simplewithus.zulipchat.com",
-                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY": self.TOKEN}, [b'{"result":"success","user_id":1222575,"email":"watchdog-bot@simplewithus.zulipchat.com","is_bot":true}', b'{"result":"success","id":1}'],
-                         env={"AGENT_SEAT":"CLAUDE"})
+        conn = self.conn(
+            {
+                "CF_USAGE_WATCHDOG_ZULIP_EMAIL": "watchdog-bot@simplewithus.zulipchat.com",
+                "CF_USAGE_WATCHDOG_ZULIP_API_KEY": self.TOKEN,
+            },
+            [
+                b'{"result":"success","user_id":1222575,"email":"watchdog-bot@simplewithus.zulipchat.com","is_bot":true}',
+                b'{"result":"success","id":1}',
+            ],
+            env={"AGENT_SEAT": "CLAUDE"},
+        )
         self.assertTrue(conn.zulip("hello"))
         self.assertEqual(self.commands, [])
-        self.assertEqual(self.requests[0].full_url, "https://simplewithus.zulipchat.com/api/v1/users/me")
+        self.assertEqual(
+            self.requests[0].full_url, "https://simplewithus.zulipchat.com/api/v1/users/me"
+        )
         request = self.requests[1]
         self.assertEqual(request.full_url, "https://simplewithus.zulipchat.com/api/v1/messages")
         self.assertIn(b"topic=Cloudflare+Usage", request.data)
         self.assertIn(b"to=Work-In-Progress", request.data)
 
     def test_wrong_service_identity_response_is_refused_before_post(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL":"watchdog-bot@simplewithus.zulipchat.com",
-                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY":self.TOKEN},
-                         [b'{"result":"success","user_id":1212574,"email":"claude-bot@simplewithus.zulipchat.com","is_bot":true}'])
+        conn = self.conn(
+            {
+                "CF_USAGE_WATCHDOG_ZULIP_EMAIL": "watchdog-bot@simplewithus.zulipchat.com",
+                "CF_USAGE_WATCHDOG_ZULIP_API_KEY": self.TOKEN,
+            },
+            [
+                b'{"result":"success","user_id":1212574,"email":"claude-bot@simplewithus.zulipchat.com","is_bot":true}'
+            ],
+        )
         self.assertFalse(conn.zulip("hello"))
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.requests[0].get_method(), "GET")
         self.assertEqual(self.commands, [])
 
     def test_agent_email_is_refused_without_network_or_helper(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_ZULIP_EMAIL":"claude-bot@simplewithus.zulipchat.com",
-                          "CF_USAGE_WATCHDOG_ZULIP_API_KEY":self.TOKEN})
+        conn = self.conn(
+            {
+                "CF_USAGE_WATCHDOG_ZULIP_EMAIL": "claude-bot@simplewithus.zulipchat.com",
+                "CF_USAGE_WATCHDOG_ZULIP_API_KEY": self.TOKEN,
+            }
+        )
         self.assertFalse(conn.zulip("hello"))
         self.assertEqual(self.requests, [])
         self.assertEqual(self.commands, [])
