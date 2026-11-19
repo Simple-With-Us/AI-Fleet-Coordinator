@@ -305,8 +305,13 @@ class UnclosedTests(unittest.TestCase):
 
     def test_an_unclosed_list_keeps_its_items(self) -> None:
         out = zm.to_markdown("<ul><li>one</li><li>two")
-        self.assertIn("one", out)
-        self.assertIn("two", out)
+        self.assertEqual(out, "- one\n- two")
+
+    def test_a_code_span_inside_an_unclosed_link_keeps_the_url(self) -> None:
+        # The innermost element closes first, so the code's text lands in the link and
+        # the link keeps its URL (Kody, PR 2340).
+        out = zm.to_markdown('<p>see <a href="https://example.com/x">the <code>docs</p>')
+        self.assertEqual(out, "see [the \\`docs\\`](https://example.com/x)")
 
     def test_an_unclosed_link_in_a_list_item_keeps_its_url(self) -> None:
         out = zm.to_markdown('<ul><li>see <a href="https://example.com/x">the docs</li></ul>')

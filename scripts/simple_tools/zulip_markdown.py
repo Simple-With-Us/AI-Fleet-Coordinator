@@ -273,13 +273,13 @@ class _Converter(HTMLParser):
     def _close_inline(self) -> None:
         """Close an open inline element into the place its text belongs.
 
-        A link keeps its text and its URL, a mention keeps its name, and a code span keeps
-        its text (Kody, PR 2340)."""
-        if self.link is not None:
-            text = "".join(self.link).strip()
-            self.link = None
-            if text and self.embed is None:
-                self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
+        The innermost element closes first, so the text of a code span inside a link lands
+        in the link and the link keeps its URL (Kody, PR 2340)."""
+        if self.code is not None:
+            text = "".join(self.code)
+            self.code = None
+            if text:
+                self._sink().append(_inline_code(text))
         if self.mention is not None:
             name = "".join(self.mention).strip()
             self.mention = None
@@ -287,11 +287,11 @@ class _Converter(HTMLParser):
                 if not name.startswith("@"):
                     name = "@" + name
                 self._sink().append(_escape_text(name))
-        if self.code is not None:
-            text = "".join(self.code)
-            self.code = None
-            if text:
-                self._sink().append(_inline_code(text))
+        if self.link is not None:
+            text = "".join(self.link).strip()
+            self.link = None
+            if text and self.embed is None:
+                self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
 
     def _close_list(self) -> None:
         """Close the innermost open list:  its items become blocks.
