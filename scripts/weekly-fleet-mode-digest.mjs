@@ -118,7 +118,9 @@ function log(message) {
  *  nothing. */
 const TOKEN_ACCOUNT = "fleet-mode-digest-ro";
 const SECRET_FOLDER = "/global-api-keys";
-const INFISICAL_API = process.env.INFISICAL_API_BASE || "https://app.infisical.com";
+// The API base is pinned:  an inherited INFISICAL_API_BASE must never be able to
+// send this consumer's scoped token to another host.
+const INFISICAL_API = "https://app.infisical.com";
 
 /** The scoped token from the owner's login keychain, or null.  Never printed or logged. */
 function serviceToken() {

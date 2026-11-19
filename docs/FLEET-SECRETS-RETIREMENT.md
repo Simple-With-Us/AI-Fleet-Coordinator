@@ -61,6 +61,7 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | --- | --- | --- | --- | --- |
 | `operator-github-apps-ro` | Fleet-OPS | `/github-apps` | the GitHub relay's App credentials | server |
 | `operator-github-callers-ro` | Fleet-OPS | `/operator-github/callers` | the GitHub relay's caller HMACs | server |
+| `github-pat-ro` | Fleet-OPS | `/github` | the fleet's write-capable GitHub credential:  the shell's `GH_TOKEN` and the iOS publish's fallback | Mac |
 | `zulip-ro` | Fleet-OPS | `/zulip` | `simple-chat`, `simple-board` | both |
 | `zulip-operator-ro` | Fleet-OPS | `/zulip_operator` | the Operator's Zulip admin credential | both |
 | `wake-ro` | Fleet-OPS | `/wake` | the wake router | both |
@@ -115,6 +116,9 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `botfleet-server-ro` | Fleet-OPS | `/` | the BotFleet harness start script's identity names | Mac |
 | `usage-monitor-collectors-ro` | Fleet-OPS | `/global-api-keys` | the Usage Monitor collectors | Mac |
 | `usage-monitor-collectors-global-ro` | Fleet-OPS | `/` | the Usage Monitor collectors' root-level names | Mac |
+
+`github-pat-ro` is the one account two callers share:  the shell's `GH_TOKEN` resolution and the iOS publish's
+fallback read the same credential from the same folder on the same host,  so they are rotated together.
 
 A grant covers exactly its folder and no other:  a token scoped to `/` does not reach a subfolder, so a consumer that
 reads two folders holds two tokens.  The Fleet-OPS project root is a cross-folder alias layer, so a name at the root

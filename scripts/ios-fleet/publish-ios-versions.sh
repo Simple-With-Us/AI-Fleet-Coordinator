@@ -97,48 +97,24 @@ done
 
 [[ -n "$BUNDLE_ID" && -n "$VERSION" ]] || { echo "need --bundle-id and --version" >&2; exit 2; }
 
-# One secret from Infisical, through this consumer's own scoped read-only service token.
-#
-# The token lives in the owner's login keychain as one generic-password item per token:  the
-# service is infisical-service-token and the account is the token's registry name.  The read
-# is the raw-secret route, and the answer's own provenance (the name, the folder, the
-# environment and the shared type) is checked before the value is used.  There is no shared
-# reader, no machine identity and no cached copy:  a missing token, a locked keychain or a
-# refused grant yields nothing.  The value is never logged.
-_infisical_secret() {
-  local name="$1" folder="$2" account="$3" token project value=""
-  token="$(/usr/bin/security find-generic-password -s infisical-service-token -a "$account" -w 2>/dev/null || true)"
-  project="${INFISICAL_FLEET_OPS_PROJECT_ID:-}"
-  if [[ -z "$project" && -r "${HOME}/.simple-tools/fleet-ops-project-id" ]]; then
-    project="$(/usr/bin/head -n 1 "${HOME}/.simple-tools/fleet-ops-project-id" 2>/dev/null | /usr/bin/tr -d '[:space:]')"
-  fi
-  if [[ -z "$token" || -z "$project" ]]; then
-    return 0
-  fi
-  value="$(/usr/bin/curl -sS --max-time 30 \
-    -H "Authorization: Bearer ${token}" \
-    "${INFISICAL_API_BASE:-https://app.infisical.com}/api/v3/secrets/raw/${name}?workspaceId=${project}&environment=prod&secretPath=${folder}&viewSecretValue=true&expandSecretReferences=false&recursive=false&include_imports=false" \
-    2>/dev/null | /usr/bin/python3 -c '
-import json, sys
-try:
-    answer = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(1)
-secret = answer.get("secret") if isinstance(answer, dict) else None
-if not isinstance(secret, dict):
-    raise SystemExit(1)
-if secret.get("secretKey") != sys.argv[1]:
-    raise SystemExit(1)
-if secret.get("environment") != "prod" or secret.get("type") != "shared":
-    raise SystemExit(1)
-if secret.get("secretPath") != sys.argv[2].replace("%2F", "/"):
-    raise SystemExit(1)
-value = secret.get("secretValue")
-if not isinstance(value, str) or not value:
-    raise SystemExit(1)
-sys.stdout.write(value)
-' "$name" "$folder" 2>/dev/null)" || value=""
-  printf '%s' "$value"
+# The shared scoped reader is the one implementation of a scoped Infisical read:
+# the owner's shared client, the consumer's own service token, and the grant that
+# token actually holds.  It pins the API base,  checks the grant against the
+# folder asked for,  and checks the answer's own provenance,  so no token ever
+# reaches an argument list and no inherited API base can redirect it.
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
+
+# One value on standard output.  The reader's own reason goes to standard error
+# and its exit code says whether the name was absent (3), the grant refused the
+# read (4) or the usage was wrong (2).
+_scoped_secret() {
+  local name="$1" folder="$2" account="$3"
+  [[ -x "$INFISICAL_SCOPED_READER" ]] || {
+    echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
+    return 4
+  }
+  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+    --folder "$folder" --project fleet-ops --account "$account"
 }
 
 # The token the publish uses.  GITHUB_TOKEN is the workflow's own token:  it is
@@ -160,10 +136,18 @@ resolve_token() {
   fi
   # No token in the environment:  read the fleet GH_PAT.  A bare gh login is
   # not used, because it may be a personal or read-only credential.
+  #
+  # GH_PAT is a plain secret in the Fleet-OPS prod /global-api-keys folder;  the project
+  # root holds the same key as an alias reference, which the raw route does not expand.
+  # The account is one the token registry names for exactly that folder.  The registry
+  # carries no row for this consumer yet, so the read uses the account documented for
+  # that folder until the registry has one of its own for the iOS publish.
   local pat=""
-  pat="$(_infisical_secret GH_PAT "%2F" "ios-publish-ro")"
+  # GITHUB_PAT is the fleet's write-capable GitHub credential, in the Fleet-OPS
+  # prod /github folder, read with this consumer's own scoped service token.
+  pat="$(_scoped_secret GITHUB_PAT "/github" "github-pat-ro" 2>/dev/null || true)"
   if [[ -z "$pat" ]]; then
-    echo "error: no GH_TOKEN and this consumer's scoped token could not return GH_PAT; cannot publish the manifest" >&2
+    echo "error: no GH_TOKEN and the github-pat-ro service token could not return GITHUB_PAT from Infisical Fleet-OPS prod /github;  cannot publish the manifest" >&2
     return 1
   fi
   TOKEN="$pat"
