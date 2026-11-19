@@ -5104,6 +5104,16 @@ class EnglishTitleTests(HookTests):
         # The client stays script-neutral for a chat that holds no letter:  the words are the owner's own.
         self.assertEqual(PL.title_from_prompt(self.FOREIGN), self.FOREIGN)
 
+    def test_a_letterless_chat_keeps_its_own_name_on_the_chat_and_out_of_the_registry(self) -> None:
+        # The hook itself, not the helper:  a chat that gets no letter shows its own name in its own
+        # script, and the registry holds no title for it.
+        spec = self.titled_spec()
+        with mock.patch.object(PL, "_enroll", return_value={"outcome": "failed", "state": "failed"}):
+            out = self.start_foreign(spec)
+        # The chat keeps its own name in its own script, under the mark a chat with no letter carries.
+        self.assertEqual(out["sessionTitle"], "??: " + self.FOREIGN)
+        self.assertEqual(self.lookup("s-0001"), None)
+
 
 class ReconcileHookFileTests(Base):
     """A row that gains an event leaves the host's hook file stale, and a stale file is a chat the hook never
@@ -5112,7 +5122,11 @@ class ReconcileHookFileTests(Base):
 
     def seed(self, events: list[str]) -> str:
         path = os.path.join(self.home, ".minimax", "hooks.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        folder = os.path.dirname(path)
+        # The hooks directory is private, and a symlinked parent never redirects the file out of it.
+        self.assertFalse(os.path.islink(folder))
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        self.assertEqual(os.stat(folder).st_mode & 0o777, 0o700)
         command = "%s hook --platform minimax" % os.path.join(self.home, ".local", "bin", "platform-letter")
         doc = {
             "enabled": True,

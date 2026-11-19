@@ -2756,10 +2756,23 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
         current
         and current not in (placeholder, note.get("inherited") or "")
         and words != PLACEHOLDER
-        and english_words(words)
     ):
+        # The name a chat carries is the owner's own, in whatever script they wrote it in;  the caller that
+        # puts it under a letter filters it there.
         return words or ""  # someone named the chat: keep their words under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt)
+
+
+def _first_lettered_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
+    """The words a chat that holds a letter takes as its topic:  the name someone gave it when that name is
+    English, else the topic the chat already has, else its first prompt.
+
+    A name in another script is not a topic this chat carries, so it never becomes one here:  the chat keeps
+    the topic it has, or is named from what it says instead."""
+    topic = lettered_topic(_first_title(note, current, prompt))
+    if topic:
+        return topic
+    return lettered_topic(note.get("title") or "") or lettered_topic(title_from_prompt(prompt))
 
 
 def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
@@ -2794,7 +2807,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
         # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
         parent = parent_of(chat, note, data)
-        note = ask_again(chat, note, _first_title(note, current, data.get("prompt")), parent)
+        # The registry holds the words the whole fleet reads, so a name in another language is never
+        # registered;  the chat keeps its own name for itself.
+        note = ask_again(
+            chat, note, lettered_topic(_first_title(note, current, data.get("prompt"))), parent
+        )
         if not lettered(note):
             shown = unlettered(
                 chat, note, _first_title(note, current, data.get("prompt")), current, data, "prompt"
@@ -2811,11 +2828,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     announce = bool(note.pop("announce", False))
     title = None
     answer: dict[str, Any] = {}
-    text = (
-        ""
-        if note.get("titled")
-        else lettered_topic(_first_title(note, current, data.get("prompt")))
-    )
+    text = "" if note.get("titled") else _first_lettered_title(note, current, data.get("prompt"))
     if announce and not text and not note.get("titled"):
         # A letter that came on a prompt with no words (a bare slash command):  the "??" goes now, the words later.
         title = compose(note["label"], "")
@@ -2910,11 +2923,17 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             return 0
         note["unlettered_seen"] = current
         parent = parent_of(chat, note, data)
-        note = ask_again(chat, note, words, parent)
+        note = ask_again(chat, note, lettered_topic(words), parent)
         if lettered(note):
             topic = lettered_topic(words)
-            note["titled"] = bool(topic)
-            note["title"] = topic
+            if topic:
+                note["titled"] = True
+                note["title"] = topic
+            else:
+                # A rename in another language is never adopted, and it never erases the topic the chat
+                # already had.
+                topic = lettered_topic(note.get("title") or "")
+                note["titled"] = bool(topic)
             shown = present(chat, note, compose(str(note["label"]), topic), current, data, "rename")
             context = reminder(chat.spec, note)
             note.pop("announce", None)
@@ -4825,9 +4844,15 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
     from the hook itself, so a host that runs the hook at all is brought current without a person running
     the installer.
 
-    A missing event is the only thing this adds.  The shared installer replaces an outdated entry and takes
-    a retired hook out, and a hook that rewrites a host's settings file on every event is not a thing this
-    client does;  a file this installer does not own is left exactly as it is.
+    The reconcile goes through the shared installer, so it does exactly what an install of this platform
+    does:  it adds the event that is missing, replaces an entry of this platform that is outdated, and takes
+    a retired hook of this platform out.  A file this installer does not own is left exactly as it is, and a
+    platform with no installer is left alone.
+
+    A platform whose runtime trusts a hook entry by hash (Codex, Clutch) needs that step run by the owner
+    before the new event is delivered.  The installer's answer names it, and the reconcile writes it beside
+    the hook file as `<file>.letter-trust` and keeps reconciling while that marker is there, so the step
+    stays visible instead of being forgotten;  removing the marker says it is done.
     """
     adapter = load_adapter(platform)
     installer = getattr(adapter, "INSTALL", None)
@@ -4851,15 +4876,33 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
         for ev in installer.events
         if not any(installed_command(e, platform) for e in events.get(ev) or [])
     ]
-    if not missing:
+    marker = path + ".letter-trust"
+    pending = ""
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            pending = fh.read(4096).strip()
+    except (OSError, ValueError):
+        pending = ""
+    if not missing and not pending:
         return {}
     out = io.StringIO()
     install_json_hooks(installer, InstallOptions(platform), env, out)
+    answer = _last_json(out.getvalue()) or {}
+    trust = str(answer.get("trust") or "")
+    if missing and trust:
+        # The runtime needs the new entry trusted before it runs it, and that step is the owner's.  The
+        # marker keeps the requirement visible, and the reconcile keeps running while it is there.
+        try:
+            _write_private(marker, (trust + "\n").encode("utf-8"), 0o600)
+        except OSError:
+            pass
     return {
         "platform": platform,
         "path": path,
         "missing": missing,
-        "installed": _last_json(out.getvalue()),
+        "trust_pending": bool(pending),
+        "trust": trust or pending,
+        "installed": answer,
     }
 
 
