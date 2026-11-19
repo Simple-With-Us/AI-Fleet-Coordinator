@@ -220,7 +220,9 @@ class Topic:
             raise self.whole_error
         return list(self.topics.get(topic, self.messages))[: self.cap]
 
-    def since(self, stream_id: int, topic: str, after_id: int) -> list[dict]:
+    def since(
+        self, stream_id: int, topic: str, after_id: int, deadline: float | None = None
+    ) -> list[dict]:
         self.since_calls.append((stream_id, topic, after_id))
         if self.error is not None:
             raise self.error
@@ -1833,8 +1835,10 @@ class CatchUpTests(WorkerCase):
         self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 7)]
         stops = [3]  # the next read stops after this message, once
 
-        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
-            got = self.topic.since(stream_id, topic, after_id)
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            got = self.topic.since(stream_id, topic, after_id, deadline)
             if stops:
                 limit = stops.pop()
                 got = [item for item in got if item["id"] <= limit]
@@ -2142,8 +2146,10 @@ class CatchUpTests(WorkerCase):
             first.handle_event(message(10 * n + 1, topic, "hello"))
         bad: list = []
 
-        def since(stream_id: int, topic: str, after_id: int) -> object:
-            return bad[0] if bad else self.topic.since(stream_id, topic, after_id)
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> object:
+            return bad[0] if bad else self.topic.since(stream_id, topic, after_id, deadline)
 
         second = self.worker(history=self.topic.whole, history_since=since)
         for n, answer in enumerate(answers):
@@ -2555,6 +2561,63 @@ class ReadablePostTests(WorkerCase):
         self.assertEqual(entry["links"][1]["quote"], "the other cut text")
         body = self.lin.updated[-1][1]
         self.assertIn("1 message(s) were not read back from Zulip", body)
+
+    def test_a_repair_read_that_runs_out_of_time_leaves_the_entry_due(self) -> None:
+        # The pages of the repair read share one deadline, so a walk that runs out of
+        # time stops there and the entry stays due for a later try (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 3
+        entry["seen"] = [1, 2, 3]
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut %d" % mid}
+            for mid in (1, 2, 3)
+        ]
+        self.topic.messages = [past(1, "one"), past(2, "two"), past(3, "three")]
+        self.topic.cap = 1
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            self.t[0] += 40  # the page takes the clock past the deadline
+            return self.topic.since(stream_id, topic, after_id, deadline)
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][1]["quote"], "two")  # the page before the deadline
+        self.assertEqual(entry["links"][2]["quote"], "cut 3")  # the one after it
+
+    def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
+        # The flag comes out of the ledger, so a number means the same as a boolean
+        # (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "gone", "gone": 1},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+
+    def test_a_deleted_newest_message_ends_the_repair(self) -> None:
+        # The read reached the end of the topic, so a message the entry holds that is
+        # newer than that end is gone from Zulip, and the repair ends instead of going
+        # round for ever (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the deleted cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w = self.worker(history=self.topic.whole, history_since=self.topic.since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
 
     def test_the_note_about_a_message_that_was_not_read_back_reaches_the_comment(self) -> None:
         # The re-render changed nothing, but the comment still says that a message was

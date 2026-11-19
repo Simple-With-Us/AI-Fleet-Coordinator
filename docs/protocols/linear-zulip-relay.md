@@ -151,9 +151,11 @@ again.
 A repair that covered only part of the entry is not a whole repair:  the entry stays due, so a
 later cycle tries again, and the comment says how many messages were not read back.  A reader
 answers the oldest messages of a topic first, up to its cap, so the repair read goes on, page by
-page, until it reaches the entry's own messages.  A message the read passed and did not hold is
-no longer in Zulip:  no read can bring it back, so it stops waiting, and the comment says that it
-is gone and keeps its earlier text.
+page, until it reaches the entry's own messages.  Every page of that walk shares one deadline,
+so the walk is bounded in time and not only in pages.  A message the read passed and did not
+hold is no longer in Zulip:  no read can bring it back, so it stops waiting, and the comment says
+that it is gone and keeps its earlier text.  A message the entry holds that is newer than the end
+of the topic the read reached is gone as well.
 
 ## Environment
 

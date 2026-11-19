@@ -216,6 +216,8 @@ REFRESH_PER_CYCLE = 1
 # The pages a repair read goes through, so it reaches the messages of a busy topic
 # (Jet, PR 2340).
 MAX_REPAIR_PAGES = 8
+# The seconds one repair read takes, every page of it included (Kody, PR 2340).
+REPAIR_READ_BUDGET = 30.0
 REFRESH_RETRY = 900.0
 LINEAR_URL = "https://api.linear.app/graphql"
 USER_AGENT = "simple-tools-linear-relay/1 (fleet)"
@@ -1334,10 +1336,8 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     A message that was not read back keeps the text it had, and the reader is told
     that, so a cut post never shows in the comment as if it were the whole one (Jet,
     PR 2340)."""
-    unread = sum(
-        1 for item in entry["links"] if not _item_current(item) and item.get("gone") is not True
-    )
-    gone = sum(1 for item in entry["links"] if item.get("gone") is True)
+    unread = sum(1 for item in entry["links"] if not _item_current(item) and not _item_gone(item))
+    gone = sum(1 for item in entry["links"] if _item_gone(item))
     lines = []
     if unread:
         lines.append(
@@ -1348,13 +1348,22 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _item_gone(item: Mapping[str, Any]) -> bool:
+    """True when a message is marked as no longer in Zulip.
+
+    The flag comes out of the ledger, so it is read as a value and not as an identity:
+    a number, a string and a boolean all mean the same thing here (Kody, PR 2340)."""
+    value = item.get("gone")
+    return value is not None and bool(value)
+
+
 def _item_done(item: Mapping[str, Any]) -> bool:
     """True when a message in an entry needs nothing more.
 
     A message is done when its quote is the whole post, and also when it is no longer
     in Zulip:  no read can bring it back, so waiting for one would wait for ever (Jet,
     PR 2340)."""
-    return _item_current(item) or item.get("gone") is True
+    return _item_current(item) or _item_gone(item)
 
 
 def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
@@ -1465,7 +1474,7 @@ class RelayWorker:
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
         history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
-        history_since: Callable[[int, str, int], list[Mapping[str, Any]]] | None = None,
+        history_since: Callable[..., list[Mapping[str, Any]]] | None = None,
         byline: str = "the relay",
     ) -> None:
         self.realm = zulip_realm
@@ -2032,11 +2041,11 @@ class RelayWorker:
         silent topic is not read once a message (Kody, PR 2340)."""
         if self.monotonic() < self._refresh_retry.get(key, 0.0):
             return  # the topic is waiting to be tried again
-        read = self._read_for_repair(entry, stream_id, topic, cache)
+        read, complete = self._read_for_repair(entry, stream_id, topic, cache)
         if read is None:
             self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             return
-        if not self._refresh(entry, read):
+        if not self._refresh(entry, read, complete):
             # The read held none of this entry's messages:  the entry waits as well.
             self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             return
@@ -2191,27 +2200,39 @@ class RelayWorker:
         stream_id: int,
         topic: str,
         cache: dict[tuple[int, str], Any],
-    ) -> list[Mapping[str, Any]] | None:
-        """The topic's messages, read far enough to hold the entry's own messages.
+    ) -> tuple[list[Mapping[str, Any]] | None, bool]:
+        """The topic's messages, read far enough to hold the entry's own messages, and
+        whether the read reached the end of the topic.
 
         A reader answers the oldest messages of a topic first, up to its cap, so the
         messages of a busy topic are not in the first read.  The read goes on, page by
         page, until the entry's newest message is in it, and the pages it took are
-        shared with the other entries of the topic (Jet, PR 2340)."""
+        shared with the other entries of the topic (Jet, PR 2340).
+
+        Every page of the walk shares one deadline, so the walk is bounded in time and
+        not only in pages, and a walk that runs out of time leaves the entry due for a
+        later try (Kody, PR 2340)."""
         read, _error = self._read_topic(stream_id, topic, cache)
         if read is None:
-            return None
+            return None, False
         wanted = max((int(item["mid"]) for item in entry["links"]), default=0)
+        deadline = self.monotonic() + REPAIR_READ_BUDGET
         pages = 0
+        complete = False
         while (
             wanted
             and self.history_since is not None
             and pages < MAX_REPAIR_PAGES
             and (not read or max(int(message["id"]) for message in read) < wanted)
         ):
+            if self.monotonic() >= deadline:
+                self.log("the repair read of %s ran out of time" % self._label(entry))
+                break
             newest = max((int(message["id"]) for message in read), default=0)
             try:
-                found, malformed, over = _by_id(self.history_since(stream_id, topic, newest))
+                found, malformed, over = _by_id(
+                    self.history_since(stream_id, topic, newest, deadline)
+                )
             except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
                 self.log(
                     "the messages of %s could not be read further (%s)"
@@ -2220,6 +2241,9 @@ class RelayWorker:
                 break
             self._log_malformed(malformed, over)
             if not found:
+                # The topic ends here:  a message the entry holds that is newer than
+                # this is gone from Zulip (Kody, PR 2340).
+                complete = True
                 break
             known = {int(message["id"]) for message in read}
             read = list(read) + [message for message in found if int(message["id"]) not in known]
@@ -2227,9 +2251,11 @@ class RelayWorker:
         if pages:
             # The pages are shared with the other entries of the topic in this cycle.
             cache[(stream_id, topic)] = (read, "")
-        return read
+        return read, complete
 
-    def _refresh(self, entry: dict[str, Any], read: list[Mapping[str, Any]]) -> bool:
+    def _refresh(
+        self, entry: dict[str, Any], read: list[Mapping[str, Any]], complete: bool = False
+    ) -> bool:
         """Render the entry's recorded quotes again from the messages the topic holds.
 
         The quotes are replaced only for the messages the read actually holds, so a read
@@ -2265,7 +2291,10 @@ class RelayWorker:
         # read can bring it back (Jet, PR 2340).
         newest = max((int(message["id"]) for message in read), default=0)
         for item in entry["links"]:
-            if not _item_done(item) and int(item["mid"]) < newest:
+            if _item_done(item):
+                continue
+            mid = int(item["mid"])
+            if mid < newest or (complete and mid > newest):
                 item["gone"] = True
         if all(_item_done(item) for item in entry["links"]):
             entry["format"] = RENDER_VERSION
