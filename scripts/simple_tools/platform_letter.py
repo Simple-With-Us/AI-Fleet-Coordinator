@@ -3124,9 +3124,7 @@ class NoNote(str):
     `request` then looks for the chat through the platforms' own session ids (`find_new_chat`)."""
 
 
-def find_chat(
-    env: Mapping[str, str], sid: str = "", only: str = ""
-) -> tuple[PlatformSpec, str, str] | str:
+def find_chat(env: Mapping[str, str], sid: str = "", only: str = "") -> tuple[PlatformSpec, str, str] | str:
     """(spec, session id, seat) of the chat a `request` is about, or why there is none.
 
     With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
@@ -3172,7 +3170,7 @@ def find_chat(
                 )
             return spec, sid, seat
         return NoNote("no chat with the session id %s has a letter note on this host" % sid)
-    for platform in [only] if only else adapter_platforms():
+    for platform in ([only] if only else adapter_platforms()):
         spec = load_spec(platform)
         if spec is None:
             continue
@@ -3269,9 +3267,9 @@ def find_new_chat(
                 "this shell names chats of more than one platform (%s); pass --platform P"
                 % ", ".join(platforms)
             )
-        return "this shell names more than one %s chat (%s); pass --session-id S" % (
-            matches[0][0].platform,
-            ", ".join(sid for _, sid in matches),
+        return (
+            "this shell names more than one %s chat (%s); pass --session-id S"
+            % (matches[0][0].platform, ", ".join(sid for _, sid in matches))
         )
     spec, found = matches[0]
     seat = spec.seat_for({}, env)
@@ -3368,9 +3366,7 @@ def request_main(
     try:
         flags = _flags(argv, ("--session-id", "--platform", "--location"))
     except ValueError:
-        stdout.write(
-            "usage: simple-chat letter request [--session-id S] [--platform P] [--location L]\n"
-        )
+        stdout.write("usage: simple-chat letter request [--session-id S] [--platform P] [--location L]\n")
         return 2
     named = flags.get("platform", "")
     if named and (not valid_platform(named) or load_spec(named) is None):
@@ -3379,6 +3375,16 @@ def request_main(
         stdout.write("usage: no adapter for the platform %r\n" % named)
         return 2
     where_flag = flags.get("location", "")
+    if where_flag:
+        # The flag takes the same validation `location()` gives the environment's own
+        # value, so a bogus or wrong-cased host is bad arguments, not a registry error
+        # later (Kody, PR 2307 round 2).
+        where_flag = where_flag.lower()
+        if where_flag not in LOCATIONS:
+            stdout.write(
+                "usage: --location must be one of %s\n" % ", ".join(sorted(LOCATIONS))
+            )
+            return 2
     found = find_chat(env, flags.get("session-id", ""), only=named)
     if isinstance(found, NoNote):
         new = find_new_chat(env, flags.get("session-id", ""), named)
@@ -4188,7 +4194,9 @@ def repair_unlettered(
     recorded = _record_outcome(path, now, outcome)
     if not recorded:
         # One retry with a bare marker:  an unsaved outcome must not read as a pass that never finished.
-        recorded = _record_outcome(path, now, {"error": "the outcome could not be saved"})
+        recorded = _record_outcome(
+            path, now, {"error": "the outcome could not be saved"}
+        )
     return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
 
 

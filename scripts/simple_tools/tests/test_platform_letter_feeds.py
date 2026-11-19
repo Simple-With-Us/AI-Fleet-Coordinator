@@ -479,6 +479,19 @@ class RequestSelectorTests(Base):
         )
         self.assertEqual(code, 0, line)
         self.assertEqual(self.note("s-0303")["location"], "server")
+        # A bogus host is bad arguments, not a registry error later;  a wrong-cased one is
+        # lower-cased and accepted (Kody, PR 2307 round 2).
+        code, line = self.request(
+            "--session-id", "s-0306", "--platform", "codex", "--location", "bogus", env=env
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("--location", line)
+        self.assertIsNone(self.lookup("s-0306"))
+        code, line = self.request(
+            "--session-id", "s-0307", "--platform", "codex", "--location", "Server", env=env
+        )
+        self.assertEqual(code, 0, line)
+        self.assertEqual(self.note("s-0307")["location"], "server")
 
     def test_one_platform_naming_two_ids_is_told_to_name_one(self) -> None:
         # Every id the platform names counts, never only the first (Cursor names two);
