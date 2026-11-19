@@ -80,6 +80,13 @@ const GR_GUIDANCE = {
   "assertion:not_configured": ["The Worker's assertion signing key is not available.", "Restore the signing key in its Fleet-OPS folder."],
   "assertion:stale": ["The assertion was minted longer ago than its accepted window.", "Look for a slow call between mint and check, or a Worker clock fault."],
   "assertion:future": ["The assertion was minted ahead of the Worker's clock.", "Look for a clock fault between Worker isolates."],
+  bad_contract: ["The relay's assertion check call named a contract version this Worker does not speak.", "Update git-relay and the Worker together;  one of them is older than the contract the other sends."],
+  bad_token: ["The relay's check call carried an unreadable assertion token.", "Check the caller's credential;  only the Worker mints assertions."],
+  bad_action: ["The assertion's action claim does not match the route asked.", "Check that the relay names the action the assertion was minted for;  an assertion reused for another route reads this way."],
+  bad_body_sha256: ["The assertion is bound to a different request body.", "The caller changed the body after minting, or minted for another call;  mint a fresh assertion."],
+  bad_sent_at: ["The relay's check call carried an unreadable sent_at.", "Check the relay host's clock and its relay version."],
+  too_large: ["The relay's check call body was larger than the route accepts.", "Look for a caller posting something other than the check contract."],
+  method_not_allowed: ["The relay's check route was called with a method other than POST.", "Look for a caller that is not the git relay's own check client."],
 };
 
 function errorDetails(record) {

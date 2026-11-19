@@ -62,7 +62,9 @@ const KNOWN = new Set([...GB_IDENTITIES, ...BEARER_SEATS]);
 export const GR_BEARER_DIAGNOSTIC_KIND = "gr_bearer";
 // Refusals that come only after the presented bearer's hash matched the seat's
 // own:  the one case where the row may name the seat.
-const HOLDER_REASONS = new Set(["expired", "paused", "events_only"]);
+// `none` is identity-scoped (the identity comes from the channel-signed body), so its
+// row names the seat, like the other holder reasons (Kody, PR 2331 round 4).
+const HOLDER_REASONS = new Set(["expired", "paused", "events_only", "none"]);
 
 // The signed payload's strict shape.  sent_at is an epoch-seconds integer.
 const GrVerifySchema = z

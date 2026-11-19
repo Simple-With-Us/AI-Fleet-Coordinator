@@ -410,7 +410,7 @@ test("every refusal records one gr_bearer diagnostics row, naming the seat only 
   };
   await run("live", hash, fakeGates(store), {}, undefined, null);
   await run("mismatch", "0".repeat(64), fakeGates(store), {}, "mismatch", row("mismatch", 200));
-  await run("no bearer", hash, fakeGates(memStore()), {}, "none", row("none", 200));
+  await run("no bearer", hash, fakeGates(memStore()), {}, "none", row("none", 200, ID));
   await run("expired", hash, fakeGates(expiredStore), {}, "expired", row("expired", 200, ID));
   await run("paused", hash, fakeGates(store, { paused: true }), {}, "paused", row("paused", 200, ID));
   await run("events only", hash, fakeGates(store, { paused: false }), { eventsOnlySeats: [ID] }, "events_only", row("events_only", 200, ID));
