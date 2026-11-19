@@ -28,9 +28,7 @@ class DestinationIsAPathTests(unittest.TestCase):
             installed = pathlib.Path(tmp) / "-weird"
             self.assertTrue((installed / "fleet_infisical.py").is_file())
             self.assertTrue((installed / "infisical-scoped.py").is_file())
-            self.assertEqual(
-                (installed / "fleet_infisical.py").read_bytes(), CLIENT.read_bytes()
-            )
+            self.assertEqual((installed / "fleet_infisical.py").read_bytes(), CLIENT.read_bytes())
 
     def test_a_destination_that_begins_with_a_dash_is_not_an_option(self):
         # The child must never see the destination as a flag:  the install lands under

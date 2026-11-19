@@ -301,16 +301,11 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
     if not wanted:
         return {}
     source = {
-        key: value
-        for key in FLEET_OPS_ENV_NAMES
-        if (value := os.environ.get(key)) is not None
+        key: value for key in FLEET_OPS_ENV_NAMES if (value := os.environ.get(key)) is not None
     }
     token = (source.get(FLEET_OPS_TOKEN_ENV) or "").strip()
     if not token:
-        eprint(
-            "fleet_rag: the Fleet-OPS root reader has no "
-            f"{FLEET_OPS_TOKEN_ENV} binding"
-        )
+        eprint(f"fleet_rag: the Fleet-OPS root reader has no {FLEET_OPS_TOKEN_ENV} binding")
         return {}
     try:
         import fleet_infisical as secrets

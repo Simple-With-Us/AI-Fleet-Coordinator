@@ -118,9 +118,9 @@ class ScopedReadContract(ServiceTokenTestCase):
             mock.patch.object(
                 provision.scoped_secrets, "_api_json", return_value=(200, {"secret": record})
             ),
+            self.assertRaises(provision.ReadError) as caught,
         ):
-            with self.assertRaises(provision.ReadError) as caught:
-                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+            provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
         self.assertIn("unverified-source", caught.exception.reason)
         self.assertEqual(caught.exception.code, 1)
 
