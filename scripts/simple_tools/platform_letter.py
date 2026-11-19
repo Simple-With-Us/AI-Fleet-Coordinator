@@ -618,6 +618,16 @@ def lettered_topic(words: object) -> str:
     return text if english_words(text) else ""
 
 
+def chat_name(text: object) -> str:
+    """The name a chat carries, as the fleet may keep it:  one line, at most TITLE_CHARS characters, and nothing in
+    it that looks like a credential.
+
+    A chat's own name is the owner's, and the app shows it;  the client keeps it in its private note and relays it
+    to the registry, and neither may hold a credential (owner rule:  user-supplied text is secret-scanned before it
+    is persisted or relayed).  A name that is only a credential is dropped whole, and the chat waits to be named."""
+    return clean_title(text)
+
+
 def clean_title(text: object) -> str:
     """One line, at most TITLE_CHARS characters, cut at a word boundary, with any secret-shaped word dropped.
 
@@ -1788,13 +1798,18 @@ def ask_again(
     the new letter (`titled` is false, so the next title the hook sets is "<letter>: <words>")."""
     if not force and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
         return note
+    # The words a chat carries under its letter are the ones the whole fleet reads, so they are English
+    # (owner, Nov 18, 2026):  a name in another script is never registered and never goes under a letter.  The
+    # chat's own name stays in its own script, in the note, for a chat that holds no letter.
+    words = lettered_topic(words)
     # Stamped before the chain:  a hook killed inside it (a hung assigner) does not repeat it on the next prompt.
     chat.write(dict(note, failed_at=chat.now))
     fresh = _apply(chat, _enroll(chat, words, parent), dict(note, parent=parent))
     if lettered(fresh):
         fresh.update(announce=True, placeholder=compose(str(fresh["label"]), ""))
-        if words:
-            fresh["title"] = words
+        # The chat holds a letter now, so the topic it carries is English:  the words it asked with, or the
+        # English topic it already had, and never a name in another script.
+        fresh["title"] = words or lettered_topic(str(fresh.get("title") or ""))
     return fresh
 
 
@@ -2388,7 +2403,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
         if lettered(note) and note.get("announce"):
-            current = tidy(chat.spec.current_title(data, chat.env))
+            current = chat_name(chat.spec.current_title(data, chat.env))
             title = compose(str(note["label"]), str(note.get("title") or ""))
             present(chat, note, title, current, data, "retry", settable=False)
             note["titled"] = note.get("shown") == title
@@ -2650,7 +2665,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
             mother,
             mother.registry(
                 "register",
-                title=str(note.get("title") or ""),
+                title=lettered_topic(str(note.get("title") or "")),
                 parent=grand,
                 timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
             ),
@@ -2668,15 +2683,18 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
 
 
 def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
-    """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`)."""
+    """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`).
+
+    The registry is the sheet the whole fleet reads, so the words it holds are English (owner, Nov 18, 2026):
+    a name in another script is never registered, whichever path asks for the letter."""
     _ensure_parent(chat, parent, 0, walk_allowance(chat.spec))
-    return chat.registry("register", title=title, parent=parent)
+    return chat.registry("register", title=lettered_topic(title), parent=parent)
 
 
 def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     spec = chat.spec
     source = _text(data.get("source")) or "startup"
-    current = tidy(spec.current_title(data, chat.env))
+    current = chat_name(spec.current_title(data, chat.env))
     note = chat.read()
     if source == "compact":
         if note.get("state") == "open" and note.get("label"):
@@ -2802,7 +2820,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     state = note.get("state")
     if state in ("mismatch", "closed"):
         return 0
-    current = tidy(spec.current_title(data, chat.env))
+    current = chat_name(spec.current_title(data, chat.env))
     if not lettered(note):  # a note that says open with no letter is not one to trust
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
         # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
@@ -2911,7 +2929,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
 def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     """A platform that says when a chat was renamed: keep the letter on its title and the Operator's words current."""
     note = chat.read()
-    current = tidy(chat.spec.current_title(data, chat.env))
+    current = chat_name(chat.spec.current_title(data, chat.env))
     if note and not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         # A chat with no letter keeps its "??" over a new name, and asks again when the stamp says it is due.
         words = bare(current, held(note))
@@ -4847,7 +4865,9 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
     The reconcile goes through the shared installer, so it does exactly what an install of this platform
     does:  it adds the event that is missing, replaces an entry of this platform that is outdated, and takes
     a retired hook of this platform out.  A file this installer does not own is left exactly as it is, and a
-    platform with no installer is left alone.
+    platform with no installer is left alone.  Only this platform's own entries are ever touched:  an entry
+    of another tool in the same file is left where it is, and one of this platform that another tool owns
+    is not taken out either.
 
     A platform whose runtime trusts a hook entry by hash (Codex, Clutch) needs that step run by the owner
     before the new event is delivered.  The installer's answer names it, and the reconcile writes it beside
@@ -4871,11 +4891,24 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
         events = installer.locate(doc)
     except ValueError:
         return {}
-    missing = [
-        ev
-        for ev in installer.events
-        if not any(installed_command(e, platform) for e in events.get(ev) or [])
+    # What an install of this platform would write here, and what the file holds now:  an event with no entry
+    # of ours is missing, and an event whose entry is not the one this row declares is stale.  A stale entry
+    # looks installed and does nothing, so it is brought current as well.
+    already = [
+        installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
+    inherited = next((w for w in already if w), [])
+    command = command_for(home, platform, _flag(inherited, "--location"), _flag(inherited, "--mac-ssh"))
+    missing = []
+    stale = []
+    for ev, timeout in installer.events.items():
+        entries = list(events.get(ev) or [])
+        if not any(installed_command(e, platform) for e in entries):
+            missing.append(ev)
+            continue
+        planned, _ = _plan_event(installer, events, ev, timeout, command, platform, False)
+        if planned != entries:
+            stale.append(ev)
     marker = path + ".letter-trust"
     pending = ""
     try:
@@ -4883,24 +4916,29 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
             pending = fh.read(4096).strip()
     except (OSError, ValueError):
         pending = ""
-    if not missing and not pending:
+    if not missing and not stale and not pending:
         return {}
     out = io.StringIO()
     install_json_hooks(installer, InstallOptions(platform), env, out)
     answer = _last_json(out.getvalue()) or {}
     trust = str(answer.get("trust") or "")
-    if missing and trust:
+    wrote = ""
+    if (missing or stale) and trust:
         # The runtime needs the new entry trusted before it runs it, and that step is the owner's.  The
         # marker keeps the requirement visible, and the reconcile keeps running while it is there.
+        wrote = trust
         try:
             _write_private(marker, (trust + "\n").encode("utf-8"), 0o600)
         except OSError:
-            pass
+            wrote = ""
     return {
         "platform": platform,
         "path": path,
         "missing": missing,
-        "trust_pending": bool(pending),
+        "stale": stale,
+        # The marker is there after this pass, whether it was there before or this pass wrote it:  the
+        # owner's step is still the owner's.
+        "trust_pending": bool(pending or wrote),
         "trust": trust or pending,
         "installed": answer,
     }
