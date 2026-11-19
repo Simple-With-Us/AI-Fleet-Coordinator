@@ -12,12 +12,14 @@
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-settings server    (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py eavesdropper-settings get|plan|apply [--set KEY=VALUE ...]
+  python3 scripts/fleet-ops-control.py --receive-operator-settings-bootstrap  (local stdin handoff only)
                                        [--remove KEY.SUBKEY ...] [--file PATH]
                                        [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
   python3 scripts/fleet-ops-control.py server test-wake SEAT.LETTER.GEN.HOST (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server pause|pause-wakes|resume server|SEAT (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                        (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -47,9 +49,9 @@ What it promises:
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    `fleet-secrets` into memory, sent in one request header and never printed, logged or
-    passed in an argv.  A forced command has only the environment sshd gives it, so
-    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    the adjacent shared Infisical reader into memory, sent in one request header and never
+    printed, logged or passed in an argv.  The reader accepts only the control consumer's
+    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
     `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
@@ -127,6 +129,24 @@ What it promises:
     request body, a topic, a session id, a link, a routine's host or its variable names).  A dry run
     that picked the addressed chat is `done`;  any other is `failed` with the reason word as
     `errorCode`.  The `--from-muster` route does not offer it.
+  * `server pause TARGET`, `server pause-wakes TARGET` and `server resume TARGET` (AFC-832) run the
+    Eavesdropper's own kill switch, `simple-chat daemon pause [--seat SEAT] [--wakes-only]` or
+    `simple-chat daemon resume [--seat SEAT]`, with the same fixed entrypoint argv and bound as
+    test-wake (90 seconds, at most 16 KiB), then a read-back of up to 30 seconds.  TARGET is `server`
+    (every seat) or one seat the Eavesdropper's status lists (`seat_unknown` otherwise,
+    `status_unavailable` when the status cannot be read).  `pause` stops wakes and live interrupts,
+    `pause-wakes` wakes only, and capture goes on under both;  `resume server` lifts every pause and
+    `resume SEAT` that seat's own.  Refused before anything runs:  a resume with nothing to lift
+    (`not_paused`), a pause file the status shows in another shape (`pause_unreadable`), any change
+    while a drain window is in force (`drain_active`), and a wakes-only pause over a full one
+    (`would_loosen`).  Nothing here pauses on its own:  each run is a previewed, deliberate gesture.
+    `--plan` shows the one command and the pause in force (`pause`:  the fleet-wide entry and each
+    seat's, as booleans, a word for who set it and when) and runs nothing;  `--yes` runs every check
+    again under the one action lock, runs the command, and reads the result back from the status,
+    never from what the command printed:  `done` when the status shows the change, and `unknown`
+    when it may still land (`not_confirmed`, `timeout`, `too_large`, `pause_unreadable`,
+    `pause_failed`).  One audit row names the verb and the target, refusals included.  The
+    `--from-muster` route does not offer them.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -182,6 +202,7 @@ import re
 import secrets
 import selectors
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -190,6 +211,7 @@ import time
 import types
 import urllib.error
 import urllib.parse
+import uuid
 from pathlib import Path
 
 TOOL = "fleet-ops-control"
@@ -274,7 +296,8 @@ REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # container the module is at its image path.  Every word of the docker argv is a constant here.
 EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
 EAVESDROPPER_SETTINGS_TARGET = "server"
-EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply")
+# The server-route action set; direct CLI choices remain get/plan/apply.
+EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize", "reconcile")
 EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
 EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
 EAVESDROPPER_SETTINGS_EDITOR_PARTS = ("simple_tools", "server", "eavesdropper_settings_edit.py")
@@ -286,10 +309,27 @@ EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES = 512 * 1024
 EAVESDROPPER_SETTINGS_EDIT_TIMEOUT = 180
 EAVESDROPPER_SETTINGS_STDIN_TIMEOUT = 5
 EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
+SETTINGS_RECEIVE = "--receive-operator-settings-bootstrap"
+SETTINGS_PROJECT = "INFISICAL_OPERATOR_SETTINGS_PROJECT_ID"
+SETTINGS_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
+SETTINGS_STORE = "operator-settings.env"
+SETTINGS_IMAGE = "operator-settings-image.json"
+SETTINGS_BOOTSTRAP_MAX = 64 * 1024
+SETTINGS_IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
+SETTINGS_CID_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 # The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
 EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
+EAVESDROPPER_SETTINGS_RESULTS = (
+    "read",
+    "planned",
+    "unchanged",
+    "applied",
+    "saved",
+    "initialized",
+    "refused",
+    "failed",
+)
 
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -643,6 +683,56 @@ TEST_WAKE_UNAVAILABLE = {
 # A router's pick and reason words (`picked`, `reason`, a health `reason`):  lower-case words joined
 # by `-` or `_`, read up to the first `:` (`seat-not-served:start-error` is `seat-not-served`).
 TEST_WAKE_WORD_RE = re.compile(r"[a-z][a-z0-9_-]{0,47}")
+# `server pause TARGET`, `server pause-wakes TARGET` and `server resume TARGET` (AFC-832):  the
+# Eavesdropper's own kill switch, `simple-chat daemon pause [--seat S] [--wakes-only]` and
+# `simple-chat daemon resume [--seat S]`, run inside its container through the same entrypoint as
+# test-wake.  TARGET is `server` (every seat) or one seat the Eavesdropper's status lists.  `pause`
+# stops wakes and live interrupts and `pause-wakes` stops wakes only;  capture goes on under both.
+# `resume server` lifts every pause and `resume SEAT` lifts that seat's own.  Pausing is only ever
+# a deliberate, previewed gesture (Jay, Nov 17:  a Mac sign-in popup is not a reason to pause wake
+# delivery), so nothing in this helper pauses on its own.  A run is a `--yes` under the action lock
+# with one audit row, and its result is read back from the status the Eavesdropper publishes, never
+# from what the command printed.  Every word of the argv is a constant here except the checked seat.
+PAUSE_VERB = "pause"
+PAUSE_WAKES_VERB = "pause-wakes"
+RESUME_VERB = "resume"
+PAUSE_VERBS = (PAUSE_VERB, PAUSE_WAKES_VERB, RESUME_VERB)
+# A seat word is the Operator's own seat shape (`OPERATOR_SEAT_RE`, which Muster's
+# `OpsCommandBuilder.isSeatName` mirrors).
+PAUSE_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+# The command runs through the container's entrypoint, which loads the listener's variables from
+# Infisical before it starts (up to about 18 seconds a request when Infisical is slow), so it gets
+# the bound `server test-wake` has.  It writes the pause file and returns;  the Eavesdropper
+# publishes the state it then holds in its status within seconds, and the read-back waits for that
+# at most PAUSE_CONFIRM_SECONDS.  The worst case, with both status reads, stays inside Muster's
+# 180-second wait for a server run.
+PAUSE_TIMEOUT = TEST_WAKE_TIMEOUT
+PAUSE_MAX_BYTES = 16 * 1024
+PAUSE_CONFIRM_SECONDS = 30
+PAUSE_CONFIRM_EVERY = 2
+PAUSE_ERRORS = {
+    "seat_unknown": "the Eavesdropper's status lists no such seat",
+    "status_unavailable": "the Eavesdropper's status could not be read, so the target is not confirmed",
+    "not_paused": "that target has no pause to lift",
+    "pause_unreadable": "the pause in force could not be read from the Eavesdropper's status, so nothing runs",
+    # The drain procedure (docs/protocols/listener-drain.md) owns the pause file while its marker is
+    # set:  `daemon pause` and `daemon resume` would replace or clear the marker, and its restore
+    # would put back the bytes it saved over any other change.
+    "drain_active": "a drain window is in force, and only the drain procedure's own restore lifts it",
+    # `daemon pause` replaces the target's entry, so a wakes-only pause over a full one would let
+    # live interrupts through again.
+    "would_loosen": "a full pause is already in force there, and a wakes-only pause would loosen it",
+    "not_confirmed": "the command ran, but the Eavesdropper's status did not show the change in time",
+    "usage": "the Eavesdropper refused the request",
+    "pause_failed": "the pause or resume stopped without an answer this helper could read;  it may have run",
+}
+PAUSE_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "the pause or resume took too long, and the Eavesdropper's status did not show the change;  it may still take effect",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the pause or resume could not be run in the eavesdropper container",
+    "too_large": "the pause or resume printed more than the allowed size, and the Eavesdropper's status did not show the change;  it may still take effect",
+}
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -712,17 +802,18 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
+COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
+INFISICAL_READER_NAME = "fleet_infisical.py"
+INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
-# The Infisical identity fleet-secrets may be handed from the credential file, and nothing
-# else from it.
+# The control consumer's Infisical binding, and nothing else from its credential file.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this boundary independent of optional fleet-secrets imports.
+# Keep this custody boundary independent of the optional shared reader.
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -1265,6 +1356,17 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _declared_length(response):
+    """The response's Content-Length as a non-negative int, or None when it has none."""
+    headers = getattr(response, "headers", None)
+    try:
+        value = headers.get("Content-Length") if headers is not None else None
+        length = int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return length if length is not None and length >= 0 else None
+
+
 def _read_router_health_body(response, max_bytes, deadline):
     """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
     raw_fp = getattr(response, "fp", None)
@@ -1272,13 +1374,26 @@ def _read_router_health_body(response, max_bytes, deadline):
     read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
     chunks = bytearray()
     limit = max_bytes + 1
+    is_closed = getattr(response, "isclosed", None)
+    declared = _declared_length(response)
     while len(chunks) < limit:
+        # A body with a Content-Length is complete once that many bytes are read.  Reading on
+        # would wait on a kept-alive socket (Python 3.9's read1 never closes a known-length
+        # response), or set a timeout on the socket http.client already closed (3.11 and
+        # later), which fails with a bad file descriptor.
+        if declared is not None and len(chunks) >= declared:
+            break
+        if chunks and is_closed is not None and is_closed():
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("router health read deadline exceeded")
-        if sock is not None and hasattr(sock, "settimeout"):
+        if sock is not None and hasattr(sock, "settimeout") and sock.fileno() != -1:
             sock.settimeout(remaining)
-        chunk = read_fn(min(4096, limit - len(chunks)))
+        size = min(4096, limit - len(chunks))
+        if declared is not None:
+            size = min(size, declared - len(chunks))
+        chunk = read_fn(size)
         if not chunk:
             break
         chunks.extend(chunk)
@@ -1373,7 +1488,6 @@ class Context:
         config_path=CONFIG_PATH,
         status_path=None,
         audit_path=None,
-        fleet_secrets=None,
         credentials_path=None,
         pm2_node=None,
         pm2_script=None,
@@ -1394,7 +1508,6 @@ class Context:
         self.status_path = status_path or (
             self.home / ".local" / "state" / "fleet-tools" / "server-status.json"
         )
-        self.fleet_secrets = fleet_secrets
         self.credentials_path = credentials_path or (
             self.home / ".config" / "fleet-tools" / "ops-control.env"
         )
@@ -1799,15 +1912,296 @@ def _load_eavesdropper_settings_editor(ctx):
     return module
 
 
+def _settings_refusal():
+    return Refused("the settings bootstrap is unavailable", error_code="bootstrap_unavailable")
+
+
+def _settings_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise _settings_refusal()
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw, object_pairs_hook=pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise _settings_refusal() from None
+
+
+@contextlib.contextmanager
+def _settings_directory(ctx, create=False):
+    import pwd
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    opened = []
+    try:
+        home = Path(pwd.getpwuid(ctx.uid).pw_dir)
+        if not home.is_absolute() or ".." in home.parts:
+            raise _settings_refusal()
+        fd = os.open("/", flags)
+        opened.append(fd)
+        components = (*home.parts[1:], ".config", "fleet-tools")
+        for index, name in enumerate(components):
+            if create and index >= len(home.parts) - 1:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            fd = os.open(name, flags, dir_fd=fd)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, ctx.uid)
+                or info.st_mode & 0o022
+            ):
+                raise _settings_refusal()
+        info = os.fstat(fd)
+        if info.st_uid != ctx.uid or stat.S_IMODE(info.st_mode) != 0o700:
+            raise _settings_refusal()
+        yield fd
+    except OSError:
+        raise _settings_refusal() from None
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+
+
+def _settings_read(parent, name, uid):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > SETTINGS_BOOTSTRAP_MAX
+        ):
+            raise _settings_refusal()
+        raw = bytearray()
+        while chunk := os.read(fd, 4096):
+            raw.extend(chunk)
+            if len(raw) > SETTINGS_BOOTSTRAP_MAX:
+                raise _settings_refusal()
+        after = os.fstat(fd)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if len(raw) > SETTINGS_BOOTSTRAP_MAX or any(
+            getattr(info, field) != getattr(after, field) for field in fields
+        ):
+            raise _settings_refusal()
+        return bytes(raw), info.st_ino
+    finally:
+        os.close(fd)
+
+
+def _settings_publish(parent, name, raw):
+    temporary = ".operator-settings-" + secrets.token_hex(16)
+    fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        remaining = memoryview(raw)
+        while remaining:
+            count = os.write(fd, remaining)
+            if count <= 0:
+                raise _settings_refusal()
+            remaining = remaining[count:]
+        os.fsync(fd)
+        # link is atomic and refuses an existing destination; replace would overwrite it.
+        os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(fd)
+        os.unlink(temporary, dir_fd=parent)
+        os.fsync(parent)
+
+
+def _settings_values(raw):
+    try:
+        values = {}
+        for line in raw.decode("ascii").splitlines():
+            key, separator, value = line.partition("=")
+            if (
+                not separator
+                or key not in (SETTINGS_PROJECT, SETTINGS_WRITER)
+                or key in values
+                or not value
+                or any(c.isspace() or c in "\"'" for c in value)
+            ):
+                raise _settings_refusal()
+            values[key] = value
+        if (
+            set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", values[SETTINGS_PROJECT]
+            )
+            or not values[SETTINGS_WRITER].startswith("st.")
+            or not 20 <= len(values[SETTINGS_WRITER]) <= 8192
+        ):
+            raise _settings_refusal()
+        return values
+    except (UnicodeError, KeyError, TypeError):
+        raise _settings_refusal() from None
+
+
+def _settings_container(ctx, target=EAVESDROPPER_CONTAINER):
+    with tempfile.TemporaryDirectory(prefix="fleet-ops-docker-") as scratch:
+        status, out, _, over = ctx.reader(
+            [_docker(), "inspect", "--format", "{{.Id}} {{.Image}} {{.State.Running}}", target],
+            timeout=5,
+            env=_docker_env(scratch),
+            max_bytes=256,
+        )
+    try:
+        cid, image, running = out.decode("ascii").strip().split(" ")
+    except (ValueError, UnicodeError):
+        raise _settings_refusal() from None
+    if (
+        status
+        or over
+        or not SETTINGS_CID_RE.fullmatch(cid)
+        or not SETTINGS_IMAGE_RE.fullmatch(image)
+        or running != "true"
+    ):
+        raise _settings_refusal()
+    return cid, image
+
+
+def _settings_writer_request(ctx, request):
+    """Image/CID qualification precedes the only writer-store open."""
+    values = {}
+    try:
+        with _settings_directory(ctx) as parent:
+            raw, _ = _settings_read(parent, SETTINGS_IMAGE, ctx.uid)
+            image = _settings_json(raw)
+            if (
+                not isinstance(image, dict)
+                or set(image) != {"protocol", "imageID", "storeInode"}
+                or image["protocol"] != "operator-settings-image/1"
+                or not isinstance(image["imageID"], str)
+                or not SETTINGS_IMAGE_RE.fullmatch(image["imageID"])
+                or type(image["storeInode"]) is not int
+                or image["storeInode"] <= 0
+            ):
+                raise _settings_refusal()
+            cid, actual_image = _settings_container(ctx)
+            if actual_image != image["imageID"]:
+                raise _settings_refusal()
+            raw, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
+            if inode != image["storeInode"]:
+                raise _settings_refusal()
+            values = _settings_values(raw)
+            if _settings_container(ctx, cid) != (cid, actual_image):
+                raise _settings_refusal()
+            envelope = json.dumps(
+                dict(protocol="operator-settings-bootstrap/1", request=request, bootstrap=values),
+                separators=(",", ":"),
+            ).encode()
+            if len(envelope) > SETTINGS_BOOTSTRAP_MAX:
+                raise _settings_refusal()
+            return cid, envelope
+    except OSError:
+        raise _settings_refusal() from None
+    finally:
+        values.clear()
+        raw = envelope = b""
+
+
+def receive_settings_bootstrap(ctx):
+    """Local installer only; credentials remain unusable until grant/image checks pass."""
+    values = {}
+    raw = None
+    try:
+        raw = ctx.stdin()
+        if not ctx.platform.startswith("linux") or ctx.uid == 0:
+            raise _settings_refusal()
+        if raw is None or len(raw) > SETTINGS_BOOTSTRAP_MAX:
+            raise _settings_refusal()
+        envelope = _settings_json(raw)
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"protocol", "imageID", "bootstrap"}
+            or envelope["protocol"] != "operator-settings-install/1"
+            or not isinstance(envelope["imageID"], str)
+            or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
+            or not isinstance(envelope["bootstrap"], dict)
+            or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or any(not isinstance(value, str) for value in envelope["bootstrap"].values())
+        ):
+            raise _settings_refusal()
+        payload = "".join(
+            key + "=" + envelope["bootstrap"][key] + "\n"
+            for key in (SETTINGS_PROJECT, SETTINGS_WRITER)
+        ).encode("ascii")
+        values = _settings_values(payload)
+        cid, image = _settings_container(ctx)
+        if image != envelope["imageID"]:
+            raise _settings_refusal()
+        reader = _load_infisical_reader(ctx)
+        with _settings_directory(ctx, create=True) as parent:
+            # Do not overwrite either half of an existing or incomplete handoff.
+            for name in (SETTINGS_STORE, SETTINGS_IMAGE):
+                try:
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise _settings_refusal()
+            _settings_publish(parent, SETTINGS_STORE, payload)
+            stored, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
+            values.clear()
+            values = _settings_values(stored)
+            original = reader.validate_service_metadata
+
+            def finite_grant(metadata, project, paths, permissions):
+                original(metadata, project, paths, permissions)
+                expiry = datetime.datetime.fromisoformat(
+                    metadata["expiresAt"].replace("Z", "+00:00")
+                )
+                if expiry > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                    days=90
+                ):
+                    raise _settings_refusal()
+
+            reader.validate_service_metadata = finite_grant
+            try:
+                reader.verify_service_token(
+                    values[SETTINGS_WRITER],
+                    values[SETTINGS_PROJECT],
+                    "/operator-settings",
+                    {},
+                    writer=True,
+                    deadline=time.monotonic() + 20,
+                )
+            finally:
+                reader.validate_service_metadata = original
+            if _settings_container(ctx, cid) != (cid, image):
+                raise _settings_refusal()
+            metadata = dict(protocol="operator-settings-image/1", imageID=image, storeInode=inode)
+            _settings_publish(parent, SETTINGS_IMAGE, json.dumps(metadata).encode())
+        return {"ok": True, "result": "installed"}, 0
+    except Exception:  # noqa: BLE001 - no input, provider prose or credential can become an answer
+        return {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+    finally:
+        values.clear()
+        raw = payload = stored = b""
+        if "envelope" in locals() and isinstance(envelope, dict):
+            if isinstance(envelope.get("bootstrap"), dict):
+                envelope["bootstrap"].clear()
+            envelope.clear()
+
+
 def run_eavesdropper_settings_editor_in_container(ctx, request):
     """(the editor's answer document, its exit status) for `request`, run inside the eavesdropper
     container, or Failed.
 
-    One argv, no shell, no sudo:  `docker exec -i --user simpletools eavesdropper
-    /usr/local/bin/python3 -I <the image's editor> --request-stdin`.  The request goes in on
-    standard input, so no setting, value or path from a caller is ever a word of the argv, and the
-    file it edits is the one the container's own SIMPLE_TOOLS_CONFIG names.  The environment is
-    the pinned docker one.  Docker's own words are only classified, never kept."""
+    No shell or sudo; requests travel on stdin with a pinned Docker environment.
+    Writer actions additionally require the private store and qualified image, use the
+    captured container ID, and pass one private envelope to the same editor process.
+    No caller or credential selects an argv, file path or destination."""
     try:
         payload = json.dumps(
             request, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -1823,30 +2217,37 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
         ) from None
     if len(payload) > EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES:
         raise Refused("the request is too large", error_code="request_too_large")
+    target, flag = EAVESDROPPER_CONTAINER, "--request-stdin"
+    if request.get("action") in ("save", "initialize", "reconcile"):
+        target, payload = _settings_writer_request(ctx, request)
+        flag = "--bootstrap-request-stdin"
     argv = [
         _docker(),
         "exec",
         "-i",
         "--user",
         EAVESDROPPER_USER,
-        EAVESDROPPER_CONTAINER,
+        target,
         EAVESDROPPER_SETTINGS_EDITOR_PYTHON,
         "-I",
         EAVESDROPPER_SETTINGS_EDITOR_PATH,
-        "--request-stdin",
+        flag,
     ]
     try:
         scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
     except OSError:
         raise Failed("docker cannot be run", error_code="docker_unavailable") from None
     with scratch as config_dir:
-        status, out, err, over = ctx.reader(
-            argv,
-            timeout=EAVESDROPPER_SETTINGS_EDIT_TIMEOUT,
-            env=_docker_env(config_dir),
-            max_bytes=EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES,
-            data=payload,
-        )
+        try:
+            status, out, err, over = ctx.reader(
+                argv,
+                timeout=EAVESDROPPER_SETTINGS_EDIT_TIMEOUT,
+                env=_docker_env(config_dir),
+                max_bytes=EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES,
+                data=payload,
+            )
+        finally:
+            payload = b""
     if over:
         raise Failed("the editor's answer is too large", error_code="too_large")
     if status == 127:
@@ -1870,22 +2271,28 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
-def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None):
+def eavesdropper_settings(
+    ctx, action, changes, expect=None, file=None, remove=None, request_id=None, created_at=None
+):
     """(answer fields, exit status) of one eavesdropper-settings request, or Refused / Failed.
 
     `file` runs the editor in this process on that file;  without it the editor runs in the
     server's container.  The fields are the usual `ok`, `result`, `detail` (and `errorCode`), the
     editor's whole answer as `eavesdropperSettings`, and a plain-text `output` for a terminal."""
     if action not in EAVESDROPPER_SETTINGS_ACTIONS:
-        raise Refused("the eavesdropper settings action is get, plan or apply")
+        raise Refused("unsupported eavesdropper settings action")
     request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
-    if action != "get":
+    if action in ("save", "initialize", "reconcile"):
+        request.update(requestID=request_id, requestCreatedAt=created_at)
+    if action not in ("get", "initialize", "reconcile"):
         if not isinstance(changes, dict) or not changes:
             raise Refused("name at least one setting to change", error_code="usage")
         request["set"] = changes
         if remove:
             request["remove"] = list(remove)
-    if action == "apply" and expect is not None:
+    if action in ("save", "initialize") and expect is not None:
+        request["expectBaseSHA256"] = expect
+    elif action == "apply" and expect is not None:
         request["expectPlanSHA256"] = expect
     if file is not None:
         module = _load_eavesdropper_settings_editor(ctx)
@@ -1925,6 +2332,12 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                     "take" if check.get("ok") else "NOT take",
                 )
             )
+        elif result == "initialized":
+            fields["detail"] = (
+                "canonical settings initialized and read back; runtime source is not activated"
+            )
+        elif result == "saved":
+            fields["detail"] = "saved to Infisical and verified by the listener"
         else:
             reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
             fields["detail"] = "%d setting(s) changed; %s" % (
@@ -1977,14 +2390,56 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
     if not raw.strip():
         if mode != "plan":
             raise Refused("an apply needs the changes on standard input", error_code="usage")
-        return "get", None, None, None
+        return "get", None, None, None, None, None
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         request = None
+    request_id = created_at = None
+    if isinstance(request, dict) and request.get("action") in ("save", "initialize", "reconcile"):
+        request_id, created_at = request.get("requestID"), request.get("requestCreatedAt")
+        try:
+            if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
+                raise ValueError()
+        except (ValueError, AttributeError):
+            raise Refused(
+                "a canonical requestID is required", error_code="request_id_required"
+            ) from None
+        if type(created_at) is not int or created_at <= 0:
+            raise Refused("requestCreatedAt is required", error_code="request_time_required")
+    if isinstance(request, dict) and request.get("action") == "reconcile":
+        if set(request) != {"action", "requestID", "requestCreatedAt"} or mode != "yes":
+            raise Refused(
+                "reconcile requires --yes and the original request identity only",
+                error_code="usage",
+            )
+        return "reconcile", None, None, None, request_id, created_at
+    if isinstance(request, dict) and request.get("action") == "initialize":
+        if (
+            set(request) != {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}
+            or mode != "yes"
+        ):
+            raise Refused(
+                "initialize requires --yes and the runtime-file revision only", error_code="usage"
+            )
+        expected = request["expectBaseSHA256"]
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
+            raise Refused("initialize requires expectBaseSHA256", error_code="version_required")
+        return "initialize", None, None, expected, request_id, created_at
     if (
         not isinstance(request, dict)
-        or set(request) - {"set", "remove", "expectPlanSHA256"}
+        or set(request)
+        - {
+            "action",
+            "set",
+            "remove",
+            "expectPlanSHA256",
+            "expectBaseSHA256",
+            "requestID",
+            "requestCreatedAt",
+        }
         or not isinstance(request.get("set"), dict)
         or not request["set"]
         or not isinstance(request.get("remove", []), list)
@@ -1992,6 +2447,17 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         raise Refused(
             "standard input must be one JSON object with a non-empty set", error_code="usage"
         )
+    if request.get("action") == "save":
+        expected = request.get("expectBaseSHA256")
+        if mode != "yes" or request.get("expectPlanSHA256") is not None:
+            raise Refused("save requires --yes and a canonical revision", error_code="usage")
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
+            raise Refused("save requires expectBaseSHA256", error_code="version_required")
+        return "save", request["set"], request.get("remove"), expected, request_id, created_at
+    if set(request) & {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}:
+        raise Refused("unknown settings action or revision field", error_code="usage")
     expect = request.get("expectPlanSHA256")
     if mode != "yes":
         if expect is not None:
@@ -2007,7 +2473,7 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             error_code="plan_hash_invalid",
         )
     action = "plan" if mode == "plan" else "apply"
-    return action, request["set"], request.get("remove"), expect
+    return action, request["set"], request.get("remove"), expect, None, None
 
 
 # MARK: - The server Operator's sessions and wakes (read only)
@@ -2640,10 +3106,14 @@ def test_wake_detail(reduced, chat):
     name = _test_wake_name(chat)
     answer = reduced["answer"]
     router = reduced["router"]
-    delivery = {True: "on", False: "off, so a real wake would be held"}.get(router["delivery"], "unknown")
+    delivery = {True: "on", False: "off, so a real wake would be held"}.get(
+        router["delivery"], "unknown"
+    )
     if reduced["passed"]:
         why = ", ".join(
-            f"{label} {value}" for label, value in (("pick", answer["pick"]), ("reason", answer["reason"])) if value
+            f"{label} {value}"
+            for label, value in (("pick", answer["pick"]), ("reason", answer["reason"]))
+            if value
         )
         return (
             f"the router accepted the dry run for {name} and picked that chat"
@@ -2746,6 +3216,266 @@ def run_test_wake(ctx, chat):
         "detail": test_wake_detail(reduced, chat),
         "errorCode": reduced["error"],
         "testWake": reduced,
+    }, 1
+
+
+PAUSE_SET_BY_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+
+def _pause_entry(entry):
+    """One pause file entry, reduced:  whether it stops wakes only, a word for who set it, and when."""
+    wakes_only = entry.get("wakes_only")
+    by = entry.get("by")
+    ts = entry.get("ts")
+    since = None
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) and 0 < ts < 1e11:
+        try:
+            since = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except (OverflowError, OSError, ValueError):
+            since = None
+    return {
+        "wakesOnly": wakes_only if isinstance(wakes_only, bool) else None,
+        # A word such as `cli`, `owner-dm` or `drain`;  an address or any other text is not kept.
+        "setBy": by if isinstance(by, str) and PAUSE_SET_BY_RE.fullmatch(by) else None,
+        "since": since,
+    }
+
+
+def reduce_pause(status):
+    """The pause a status document shows:  {"all": entry | None, "seats": {SEAT: entry}}, where an
+    entry is `_pause_entry`'s.  `all` is the fleet-wide pause (`*` in the pause file)."""
+    raw = status.get("pause") if isinstance(status, dict) else None
+    out = {"all": None, "seats": {}}
+    if not isinstance(raw, dict):
+        return out
+    for key in sorted(k for k in raw if isinstance(k, str)):
+        entry = raw[key]
+        if not isinstance(entry, dict):
+            continue
+        if key == "*":
+            out["all"] = _pause_entry(entry)
+        elif PAUSE_SEAT_RE.fullmatch(key):
+            # No cap:  `pause_done` decides from this map, so a dropped seat would read as lifted.
+            # The status read is already bounded (EAVESDROPPER_STATUS_MAX_BYTES).
+            out["seats"][key] = _pause_entry(entry)
+    return out
+
+
+def pause_target(ctx, target):
+    """(the seat a pause verb names, or None for every seat, the status read) or Refused.
+
+    `server` is every seat.  A seat must be one the Eavesdropper's own status lists, read here:  a
+    status that cannot be read refuses, so nothing runs against a target that is not confirmed."""
+    if target == OPERATOR_TARGET:
+        seat = None
+    elif isinstance(target, str) and PAUSE_SEAT_RE.fullmatch(target):
+        seat = target
+    else:
+        raise Refused(PAUSE_ERRORS["seat_unknown"], error_code="seat_unknown")
+    status, _reason = read_eavesdropper_status(ctx)
+    if status is None:
+        raise Refused(PAUSE_ERRORS["status_unavailable"], error_code="status_unavailable")
+    seats = status.get("seats")
+    if not isinstance(seats, dict):
+        # A seat list in another shape is not an empty one:  the target cannot be confirmed.
+        raise Refused(PAUSE_ERRORS["status_unavailable"], error_code="status_unavailable")
+    if seat is not None and seat not in seats:
+        raise Refused(PAUSE_ERRORS["seat_unknown"], error_code="seat_unknown")
+    return seat, status
+
+
+def pause_in_force(status):
+    """The reduced pause of a status read (`reduce_pause`), or Refused when it cannot be trusted.
+
+    The status's `pause` is the pause file as the Eavesdropper read it.  Every key must be `*` or a
+    seat, every entry an object whose `wakes_only` is a boolean;  anything else is
+    `pause_unreadable`, never an empty pause.  A drain marker (`defer`) on any entry is
+    `drain_active`."""
+    raw = status.get("pause") if isinstance(status, dict) else None
+    if not isinstance(raw, dict):
+        raise Refused(PAUSE_ERRORS["pause_unreadable"], error_code="pause_unreadable")
+    for key, entry in raw.items():
+        if not (
+            isinstance(key, str)
+            and (key == "*" or PAUSE_SEAT_RE.fullmatch(key))
+            and isinstance(entry, dict)
+            and isinstance(entry.get("wakes_only"), bool)
+        ):
+            raise Refused(PAUSE_ERRORS["pause_unreadable"], error_code="pause_unreadable")
+    if any(entry.get("defer") for entry in raw.values()):
+        raise Refused(PAUSE_ERRORS["drain_active"], error_code="drain_active")
+    return reduce_pause(status)
+
+
+def pause_checks(ctx, verb, target):
+    """(the seat, the reduced pause in force) for a pause verb that may run now, or Refused.
+
+    Run at plan time and again under the action lock:  the target is confirmed, the pause in force
+    is read and trusted (`pause_in_force`), a resume with nothing to lift is refused, and so is a
+    wakes-only pause over a full one, which `daemon pause` would loosen."""
+    seat, status = pause_target(ctx, target)
+    current = pause_in_force(status)
+    if verb == RESUME_VERB and pause_done(RESUME_VERB, seat, current):
+        raise Refused(PAUSE_ERRORS["not_paused"], error_code="not_paused")
+    if verb == PAUSE_WAKES_VERB:
+        held = current["all"] if seat is None else current["seats"].get(seat)
+        if held is not None and held["wakesOnly"] is False:
+            raise Refused(PAUSE_ERRORS["would_loosen"], error_code="would_loosen")
+    return seat, current
+
+
+def pause_argv(verb, seat):
+    """The one argv of a pause or a resume:  every word a constant of this file but the checked seat."""
+    argv = [
+        _docker(),
+        "exec",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        TEST_WAKE_ENTRYPOINT,
+        "daemon",
+        "resume" if verb == RESUME_VERB else "pause",
+    ]
+    if seat is not None:
+        argv += ["--seat", seat]
+    if verb == PAUSE_WAKES_VERB:
+        argv.append("--wakes-only")
+    return argv
+
+
+def pause_done(verb, seat, pause):
+    """Whether the reduced pause shows what the verb asked for."""
+    entry = pause["all"] if seat is None else pause["seats"].get(seat)
+    if verb == PAUSE_VERB:
+        return entry is not None and entry["wakesOnly"] is False
+    if verb == PAUSE_WAKES_VERB:
+        return entry is not None and entry["wakesOnly"] is True
+    if seat is None:
+        return pause["all"] is None and not pause["seats"]
+    return seat not in pause["seats"]
+
+
+def pause_name(seat):
+    return "every seat" if seat is None else seat
+
+
+def pause_detail(verb, seat):
+    """The plain sentence for what a pause verb does, for a plan and for its result."""
+    name = pause_name(seat)
+    if verb == PAUSE_VERB:
+        return f"{name}:  wakes and live interrupts stop;  capture goes on, and resume lifts it"
+    if verb == PAUSE_WAKES_VERB:
+        return (
+            f"{name}:  routine wakes stop;  live interrupts and capture go on, and resume lifts it"
+        )
+    if seat is None:
+        return "every pause is lifted, the fleet-wide one and each seat's"
+    return f"{name}'s own pause is lifted;  a fleet-wide pause, if any, stays"
+
+
+def run_pause(ctx, verb, seat):
+    """(the answer fields of a pause or a resume, the exit status).  One `docker exec`, no shell, no
+    sudo, the pinned docker environment and a bounded run, then the Eavesdropper's status read again
+    until it shows the change or PAUSE_CONFIRM_SECONDS pass.  What the command printed is not kept."""
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        scratch = None
+    if scratch is None:
+        status, err, over = 127, b"", False
+    else:
+        with scratch as config_dir:
+            status, _out, err, over = ctx.reader(
+                pause_argv(verb, seat),
+                timeout=PAUSE_TIMEOUT,
+                env=_docker_env(config_dir),
+                max_bytes=PAUSE_MAX_BYTES,
+            )
+    reason = None
+    if over:
+        reason = "too_large"
+    elif status == 127:
+        reason = "docker_unavailable"
+    elif status == 124:
+        reason = "timeout"
+    elif status == 2:
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS['usage']}",
+            "errorCode": "usage",
+            "pause": None,
+        }, 1
+    elif status != 0:
+        reason = _docker_failure(err)
+        if reason not in PAUSE_UNAVAILABLE:
+            reason = "read_failed"
+    # A timeout stops only the docker client, and an answer past the size bound is cut off;  in both
+    # the command may have finished (or may still finish) in the container.  So the status is read
+    # back before either is called anything, and a change it shows is done.
+    may_have_run = ("timeout", "too_large")
+    if reason is not None and reason not in may_have_run:
+        return {
+            "ok": False,
+            "result": "failed",
+            "detail": PAUSE_UNAVAILABLE[reason],
+            "errorCode": reason,
+            "pause": None,
+        }, 1
+    deadline = ctx.monotonic() + PAUSE_CONFIRM_SECONDS
+    pause = None
+    while True:
+        document, _reason = read_eavesdropper_status(ctx)
+        if document is not None:
+            # The same validated read as the plan's:  a pause file in another shape is not "nothing
+            # paused", so it can never confirm a resume.  A drain marker is the one readable
+            # special case in the read-back:  the command has already run here, and a drain-active
+            # entry is a well-formed pause the status shows, so a change it shows is done and the
+            # operator never sees a refusal code word attached to a run that happened.  Drain
+            # stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
+            try:
+                pause = pause_in_force(document)
+            except Refused as exc:
+                if exc.error_code == "drain_active":
+                    pause = reduce_pause(document)
+                else:
+                    return {
+                        "ok": False,
+                        "result": "unknown",
+                        "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS[exc.error_code]}",
+                        "errorCode": exc.error_code,
+                        "pause": None,
+                    }, 1
+            if pause_done(verb, seat, pause):
+                return {
+                    "ok": True,
+                    "result": "done",
+                    "detail": pause_detail(verb, seat),
+                    "pause": pause,
+                }, 0
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        ctx.sleep(min(PAUSE_CONFIRM_EVERY, remaining))
+    # Neither ending knows whether the change landed:  the command may still finish in the container,
+    # or the status may show it later.  So both are `unknown` (Muster's "may or may not have run"),
+    # never `failed`, and the error code says which.
+    if reason in may_have_run:
+        return {
+            "ok": False,
+            "result": "unknown",
+            "detail": PAUSE_UNAVAILABLE[reason],
+            "errorCode": reason,
+            "pause": pause,
+        }, 1
+    return {
+        "ok": False,
+        "result": "unknown",
+        "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS['not_confirmed']}",
+        "errorCode": "not_confirmed",
+        "pause": pause,
     }, 1
 
 
@@ -3406,35 +4136,65 @@ def coolify_base(ctx):
     return base
 
 
+def _load_infisical_reader(ctx):
+    """Load only the checked adjacent canonical source, never an import-cache substitute."""
+    source = _read_module_source(ctx, (INFISICAL_READER_NAME,), INFISICAL_READER_MAX_BYTES)
+    module = None
+    if source is not None:
+        try:
+            path = str(HELPER_DIR / INFISICAL_READER_NAME)
+            code = compile(source, path, "exec", dont_inherit=True)
+            module = types.ModuleType("_fleet_ops_control_infisical")
+            # The canonical bounded reader launches this exact sibling in Python's isolated mode.
+            module.__file__ = path
+            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+        except (Exception, SystemExit):  # noqa: BLE001 - unusable code has one fixed answer
+            module = None
+    if module is None or not all(
+        callable(getattr(module, name, None))
+        for name in ("bounded_fetch_project", "infisical_project_id")
+    ):
+        raise Failed("fleet_infisical.py is not available")
+    return module
+
+
 def read_coolify_token(ctx):
-    """The Coolify API token, from fleet-secrets, into memory only.  Raises Failed."""
-    binary = ctx.fleet_secrets
-    for candidate in () if binary else FLEET_SECRETS_CANDIDATES:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            binary = path
-            break
-    if binary is None:
-        raise Failed("fleet-secrets is not installed")
-    status, out = ctx.runner(
-        [binary, "get", COOLIFY_TOKEN_NAME, "--path", COOLIFY_TOKEN_PATH],
-        timeout=SECRET_TIMEOUT,
-        env=secrets_env(ctx),
-        want_stdout=True,
-    )
-    token = out.decode("utf-8", "replace").strip() if status == 0 else ""
-    out = b""
+    """One strict named read through this control consumer's own binding.  Raises Failed."""
+    reader = _load_infisical_reader(ctx)
+    env = secrets_env(ctx)
+    binding = env.pop("INFISICAL_TOKEN", "")
+    if not binding:
+        raise Failed("the Coolify token is not available")
+    try:
+        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
+        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
+        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
+        values = reader.bounded_fetch_project(
+            project,
+            COOLIFY_TOKEN_PATH,
+            scoped,
+            token=binding,
+            names=(COOLIFY_TOKEN_NAME,),
+            timeout=SECRET_TIMEOUT,
+            writer=False,
+            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
+            strict_records=True,
+        )
+        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
+    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
+        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+        raise Failed("the Coolify token is not available") from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
         raise Failed("the Coolify token is not available")
     return token
 
 
 def secrets_env(ctx):
-    """The environment the fleet-secrets child runs with.  Raises Failed.
+    """Resolve this control consumer's private reader binding.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
-    child.  Inherited shared token and machine-identity bindings are discarded."""
+    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
+    Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:
@@ -3923,14 +4683,20 @@ def handle(
             _server_only(ctx)
             if target != EAVESDROPPER_SETTINGS_TARGET:
                 raise Refused("only the server's Eavesdropper has settings here")
-            edit_action, changes, remove, expect = eavesdropper_settings_request_from_stdin(
-                ctx, mode
+            edit_action, changes, remove, expect, request_id, created_at = (
+                eavesdropper_settings_request_from_stdin(ctx, mode)
             )
             with contextlib.ExitStack() as held:
                 if mode == "yes" and not lock_held:
                     held.enter_context(action_lock(ctx))
                 fields, code = eavesdropper_settings(
-                    ctx, edit_action, changes, expect, remove=remove
+                    ctx,
+                    edit_action,
+                    changes,
+                    expect,
+                    remove=remove,
+                    request_id=request_id,
+                    created_at=created_at,
                 )
             answer.update(fields)
             if mode == "yes":
@@ -3954,7 +4720,9 @@ def handle(
                     result="planned",
                     detail=f"sends the wake router one dry-run wake addressed to {_test_wake_name(chat)};  "
                     "the router picks as for a real wake, delivers nothing and logs one test receipt",
-                    testWakeTarget={key: chat[key] for key in ("seat", "letter", "generation", "host")},
+                    testWakeTarget={
+                        key: chat[key] for key in ("seat", "letter", "generation", "host")
+                    },
                 )
                 return answer, 0
             with contextlib.ExitStack() as held:
@@ -3966,13 +4734,57 @@ def handle(
                 try:
                     fields, code = run_test_wake(ctx, chat)
                 except Exception:  # noqa: BLE001 - a run that may have sent still gets its one audit row
-                    fields, code = {
-                        "ok": False,
-                        "result": "failed",
-                        "detail": TEST_WAKE_ERRORS["test_wake_failed"],
-                        "errorCode": "test_wake_failed",
-                        "testWake": None,
-                    }, 1
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "failed",
+                            "detail": TEST_WAKE_ERRORS["test_wake_failed"],
+                            "errorCode": "test_wake_failed",
+                            "testWake": None,
+                        },
+                        1,
+                    )
+            answer.update(fields)
+            audit_run(ctx, scope, action, target, target, answer, None, extra)
+            return answer, code
+        if scope == "server" and action in PAUSE_VERBS:
+            # The Eavesdropper's kill switch (AFC-832).  Both `--plan` and `--yes` confirm the target
+            # against the Eavesdropper's status first, and a resume with nothing to lift is refused;
+            # `--plan` then shows the one command and the pause in force and runs nothing, and `--yes`
+            # confirms again under the one action lock, runs it, reads the result back from the
+            # status and writes one audit row.  The `--from-muster` route has no approval form for
+            # it, so it is refused there.
+            if require_approval:
+                raise Refused(f"{action} is not offered on this route")
+            _server_only(ctx)
+            seat, current = pause_checks(ctx, action, target)
+            answer["commands"] = [pause_argv(action, seat)]
+            if mode == "plan":
+                answer.update(
+                    ok=True, result="planned", detail=pause_detail(action, seat), pause=current
+                )
+                return answer, 0
+            with contextlib.ExitStack() as held:
+                if not lock_held:
+                    held.enter_context(action_lock(ctx))
+                # The pause file may have changed since the plan (an owner DM, a drain):  every check
+                # runs again here, under the one action lock, just before the command.
+                seat, _current = pause_checks(ctx, action, target)
+                if isinstance(reason_out, dict):
+                    reason_out["started"] = True
+                try:
+                    fields, code = run_pause(ctx, action, seat)
+                except Exception:  # noqa: BLE001 - a run that may have changed the pause still gets its one audit row
+                    fields, code = (
+                        {
+                            "ok": False,
+                            "result": "unknown",
+                            "detail": PAUSE_ERRORS["pause_failed"],
+                            "errorCode": "pause_failed",
+                            "pause": None,
+                        },
+                        1,
+                    )
             answer.update(fields)
             audit_run(ctx, scope, action, target, target, answer, None, extra)
             return answer, code
@@ -4530,21 +5342,26 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + (
-        "update",
-        "update-status",
-        "unit-status",
-        "redeploy",
-        "logs",
-        "resource-status",
-        "resource-policy",
-        "seat-inventory",
-        "eavesdropper-status",
-        EAVESDROPPER_SETTINGS_VERB,
-        "operator-sessions",
-        "operator-wakes",
-        ROUTER_HEALTH_VERB,
-        TEST_WAKE_VERB,
+    if (
+        plain[1]
+        not in ACTIONS
+        + (
+            "update",
+            "update-status",
+            "unit-status",
+            "redeploy",
+            "logs",
+            "resource-status",
+            "resource-policy",
+            "seat-inventory",
+            "eavesdropper-status",
+            EAVESDROPPER_SETTINGS_VERB,
+            "operator-sessions",
+            "operator-wakes",
+            ROUTER_HEALTH_VERB,
+            TEST_WAKE_VERB,
+        )
+        + PAUSE_VERBS
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
@@ -4580,7 +5397,9 @@ def run_eavesdropper_settings(argv, ctx, out):
     code = 2
     try:
         parser = _QuietParser(prog=TOOL, add_help=False)
-        parser.add_argument("action", choices=EAVESDROPPER_SETTINGS_ACTIONS)
+        # Canonical writes use only the owner-authenticated server route, which
+        # requires --yes and owns the action lock and audit row.
+        parser.add_argument("action", choices=("get", "plan", "apply"))
         parser.add_argument("--set", action="append", default=[], dest="changes")
         parser.add_argument("--remove", action="append", default=[])
         parser.add_argument("--file")
@@ -4710,6 +5529,34 @@ def emit(answer, as_json, out):
 
 def main(argv=None, ctx=None, out=None, muster=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if SETTINGS_RECEIVE in argv:
+        out = out or sys.stdout
+        environment = os.environ if ctx is None else ctx.environ
+        if argv != [SETTINGS_RECEIVE] or "SSH_ORIGINAL_COMMAND" in environment:
+            out.write('{"ok":false,"result":"refused","errorCode":"bootstrap_unavailable"}\n')
+            return 2
+        if ctx is None:
+            import pwd
+
+            ctx = Context(home=Path(pwd.getpwuid(os.getuid()).pw_dir), environ={})
+
+        def expired(signum, frame):
+            raise TimeoutError()
+
+        prior = signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, 30)
+        try:
+            answer, code = receive_settings_bootstrap(ctx)
+        except Exception:  # noqa: BLE001 - the local receiver never emits input or provider text
+            answer, code = (
+                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                2,
+            )
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, prior)
+        out.write(json.dumps(answer, sort_keys=True) + "\n")
+        return code
     if MUSTER_ENTRY in argv:
         # Before anything reads the environment into a Context: this branch builds its own.
         return run_from_muster(argv, ctx, out, muster)

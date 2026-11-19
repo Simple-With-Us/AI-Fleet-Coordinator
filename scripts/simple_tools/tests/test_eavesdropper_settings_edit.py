@@ -19,6 +19,7 @@ import stat
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from simple_tools.server import eavesdropper_settings_edit as M
@@ -60,6 +61,14 @@ instance = "server"
 enabled = true
 creds = "env"
 wake = "inbox"
+"""
+
+
+NOTES_FIXTURE = FIXTURE + """
+[notes_queue]
+enabled = true
+worker_seats = ["JET", "CLAUDE"]
+server_seats = ["CLAUDE"]
 """
 
 
@@ -138,8 +147,11 @@ class AllowlistTests(Case):
             sorted(checked["tables"]),
             ["daemon", "linear_comments", "linear_projects", "listener_api", "notes_queue"],
         )
-        for table in ("linear_comments", "linear_projects", "listener_api", "notes_queue"):
+        for table in ("linear_comments", "linear_projects", "listener_api"):
             self.assertEqual(list(checked["tables"][table]), ["enabled"])
+        self.assertEqual(
+            list(checked["tables"]["notes_queue"]), ["enabled", "worker_seats", "server_seats"]
+        )
 
     def test_the_shipped_allowlist_names_no_pin_and_no_credential_key(self) -> None:
         doc = M.validate_allowlist(shipped_allowlist())
@@ -363,6 +375,21 @@ class RefusalTests(Case):
         self.refused({"seat.JET.budget": {"made_up_cap": 1}}, "key_not_allowed")
         self.refused({"seat.JET.routine": {"url_file": "x"}}, "key_not_allowed")
 
+    def test_a_seat_list_of_the_wrong_shape_is_refused(self) -> None:
+        for key, value in (
+            ("notes_queue.worker_seats", "JET"),
+            ("notes_queue.worker_seats", [["JET"]]),
+            ("notes_queue.worker_seats", ["jet"]),
+            ("notes_queue.worker_seats", ["HAS SPACE"]),
+            ("notes_queue.worker_seats", [""]),
+            ("notes_queue.worker_seats", ["JET", 7]),
+            ("notes_queue.worker_seats", ["J\nET"]),
+            ("notes_queue.worker_seats", ["A" * 33]),
+            ("notes_queue.server_seats", ["CLAUDE"] * 65),
+        ):
+            with self.subTest(key=key, value=value):
+                self.refused({key: value}, "value_not_allowed")
+
     def test_a_key_of_the_wrong_shape_is_refused(self) -> None:
         for key in (
             "enabled",
@@ -417,6 +444,32 @@ class EditTests(Case):
         self.assertIs(doc["seat"]["ZC"]["enabled"], False)
         self.assertNotIn("enabled", doc["seat"]["JET"])
         self.assertIs(doc["seat"]["GB-FIXER"]["enabled"], True)
+
+    def test_a_seat_list_is_rewritten_and_reads_back(self) -> None:
+        new, changes = self.plan_text(
+            {"notes_queue.worker_seats": ["JET", "CLAUDE", "ZC"]}, text=NOTES_FIXTURE
+        )
+        self.assertIn('worker_seats = ["JET", "CLAUDE", "ZC"]\n', new)
+        doc = tomllib.loads(new)
+        self.assertEqual(doc["notes_queue"]["worker_seats"], ["JET", "CLAUDE", "ZC"])
+        self.assertEqual(doc["notes_queue"]["server_seats"], ["CLAUDE"])
+        self.assertEqual(
+            changes,
+            [
+                {
+                    "key": "notes_queue.worker_seats",
+                    "set": True,
+                    "from": ["JET", "CLAUDE"],
+                    "to": ["JET", "CLAUDE", "ZC"],
+                    "removes": [],
+                }
+            ],
+        )
+
+    def test_a_seat_list_may_be_emptied(self) -> None:
+        new, _ = self.plan_text({"notes_queue.server_seats": []}, text=NOTES_FIXTURE)
+        self.assertIn("server_seats = []\n", new)
+        self.assertEqual(tomllib.loads(new)["notes_queue"]["server_seats"], [])
 
     def test_a_value_over_several_lines_is_replaced_whole(self) -> None:
         new, _ = self.plan_text({"daemon.presence_topics": [["alerts", "*"], ["builds", "gates"]]})
@@ -1115,6 +1168,95 @@ class DaemonCheckTests(Case):
 
 
 class RequestProtocolTests(Case):
+    def bootstrap(self, request=None):
+        import secrets
+        import uuid
+
+        self.writer = "st." + secrets.token_urlsafe(32)
+        self.project = str(uuid.uuid4())
+        return dict(protocol="operator-settings-bootstrap/1",
+                    request=request or {**self.request("initialize"),
+                        "expectBaseSHA256": M.sha256(self.live.read_bytes()),
+                        "requestID": str(uuid.uuid4()), "requestCreatedAt": 1_800_000_000_000},
+                    bootstrap={M.BOOTSTRAP_PROJECT: self.project, M.BOOTSTRAP_WRITER: self.writer})
+
+    def test_private_envelope_uses_actual_consumer_constructor_and_original_request_only(self):
+        from simple_tools.server import operator_settings
+
+        envelope = self.bootstrap()
+        observed = []
+
+        def initialize(path, allowlist, expected, **kwargs):
+            store = operator_settings.InfisicalStore(writer=True)
+            self.assertEqual((store.project, store.token), (self.project, self.writer))
+            self.assertNotIn(M.BOOTSTRAP_READER, store.env)
+            self.assertNotIn(M.BOOTSTRAP_WRITER, M._child_env(self.live))
+            observed.append((expected, kwargs))
+            store.env.clear()
+            store.token = ""
+            return {"tool": M.TOOL, "ok": True, "result": "initialized"}
+
+        with mock.patch.dict(os.environ, {M.ENV_CONFIG: str(self.live),
+                M.BOOTSTRAP_WRITER: "ambient-unused", M.BOOTSTRAP_READER: "ambient-unused"}, clear=True):
+            with mock.patch.object(operator_settings, "initialize", side_effect=initialize):
+                out = io.StringIO()
+                code = M.main(["--bootstrap-request-stdin"], io.BytesIO(json.dumps(envelope).encode()), out)
+            self.assertEqual(code, 0)
+            self.assertNotIn(self.writer, out.getvalue())
+            self.assertNotIn("bootstrap", out.getvalue())
+            self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
+            self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
+            self.assertNotIn(M.BOOTSTRAP_PROJECT, os.environ)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0], envelope["request"]["expectBaseSHA256"])
+        self.assertNotIn("bootstrap", observed[0][1])
+
+    def test_private_failures_are_fixed_and_scrub_even_if_input_read_or_request_raises(self):
+        envelope = self.bootstrap()
+        deep_val: object = 1
+        for _ in range(M.BOOTSTRAP_MAX_DEPTH):
+            deep_val = [deep_val]
+        deep_envelope = self.bootstrap(request={**envelope["request"], "notes": deep_val})
+        dense_envelope = self.bootstrap(
+            request={**envelope["request"], "notes": list(range(M.BOOTSTRAP_MAX_NODES + 5))}
+        )
+        cases = [b"not-json", b'{"protocol":"a","protocol":"b"}',
+                 json.dumps({**envelope, "extra": self.writer}).encode(),
+                 json.dumps({**envelope, "request": {"action": "get"}}).encode(),
+                 json.dumps(deep_envelope).encode(),
+                 json.dumps(dense_envelope).encode(),
+                 b"x" * (M.BOOTSTRAP_MAX_BYTES + 1)]
+        for raw in cases:
+            with self.subTest(raw_length=len(raw)), mock.patch.dict(os.environ, {
+                    M.BOOTSTRAP_WRITER: self.writer, M.BOOTSTRAP_READER: self.writer}, clear=True):
+                out = io.StringIO()
+                self.assertEqual(M.main(["--bootstrap-request-stdin"], io.BytesIO(raw), out), 2)
+                self.assertEqual(json.loads(out.getvalue()), {"tool": M.TOOL, "ok": False, "result": "refused",
+                                                             "errorCode": "bootstrap_unavailable"})
+                self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
+                self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            M, "run_request", return_value=({"tool": M.TOOL, "ok": True, "result": "initialized"}, 0)
+        ) as mocked_run:
+            for limited in (deep_envelope, dense_envelope):
+                answer, code = M.bootstrap_request(json.dumps(limited).encode())
+                self.assertEqual((answer, code), (
+                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+                ))
+            mocked_run.assert_not_called()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(M, "run_request", side_effect=RuntimeError(self.writer)):
+                answer, code = M.bootstrap_request(json.dumps(envelope).encode())
+            self.assertEqual(code, 2)
+            self.assertEqual(answer.get("tool"), M.TOOL)
+            self.assertNotIn(self.writer, json.dumps(answer))
+            self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
+        stream = mock.Mock()
+        stream.read.side_effect = OSError(self.writer)
+        with mock.patch.dict(os.environ, {M.BOOTSTRAP_WRITER: self.writer}, clear=True):
+            self.assertEqual(M.main(["--bootstrap-request-stdin"], stream, io.StringIO()), 2)
+            self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
+
     def test_main_reads_one_request_and_writes_one_answer(self) -> None:
         old = os.environ.get(M.ENV_CONFIG)
         self.addCleanup(

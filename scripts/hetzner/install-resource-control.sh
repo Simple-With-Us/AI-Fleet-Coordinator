@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Install reviewed broker code only; credentials, keys and runtime state stay untouched.
+# Normal install copies reviewed code only; the explicit local receive mode delegates to its
+# already installed fixed consumer for a separately reviewed private stdin handoff.
 # Run it as the account that runs the helper (jay on the server), never as root:  the code goes to
 # that account's ~/.local/lib/fleet-resource-control, owned by it and writable by no one else.
 set -euo pipefail
+if [[ $# == 1 && $1 == --receive-operator-settings-bootstrap ]]; then
+  # Explicit local handoff only, to the already installed helper; stdin stays private.
+  exec /usr/bin/python3 -I -c 'import os,pwd; p=pwd.getpwuid(os.getuid()).pw_dir+"/.local/lib/fleet-resource-control/fleet-ops-control.py"; os.execv("/usr/bin/python3",["/usr/bin/python3","-I",p,"--receive-operator-settings-bootstrap"])'
+fi
 [[ $# == 0 ]] || { echo 'This installer accepts no arguments.' >&2; exit 2; }
 here=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 scripts=$(cd -P -- "$here/.." && pwd)
@@ -30,7 +35,7 @@ APPLY_ENABLED = re.compile(r'("applyEnabled"\s*:\s*)(true|false)')
 # in fleet-ops-control.py), and the settings editor accepts only these top-level fields
 # (validate_allowlist in simple_tools/server/eavesdropper_settings_edit.py).
 SETTINGS_MAX_BYTES = 64 * 1024
-SETTINGS_FIELDS = {'schemaVersion', 'applyEnabled', 'seat', 'tables', 'notes'}
+SETTINGS_FIELDS = {'schemaVersion', 'applyEnabled', 'seat', 'tables', 'notes', 'canonicalHome'}
 # The root-owned install this one replaces (docs/rollouts/2026-11-12-helper-to-jay.md).  Its
 # settings file is read once, to carry the owner's applyEnabled across the move, and only when it
 # and every folder above it are root's and writable by no one else.
@@ -277,6 +282,10 @@ def install(source_directory):
             raise RuntimeError('the broker secrets package is incomplete')
         for name in names:
             payload['fleet_secrets/' + name] = read_source(package, name)
+        ledger = os.open('simple_tools', DIRECTORY_FLAGS, dir_fd=source)
+        stack.callback(os.close, ledger)
+        for name in ('__init__.py', 'operator_github_state.py'):
+            payload['simple_tools/' + name] = read_source(ledger, name)
         hetzner = os.open('hetzner', DIRECTORY_FLAGS, dir_fd=source)
         stack.callback(os.close, hetzner)
         for name in ('fleet_coding_memory.py', 'coding_resources.py'):
@@ -292,7 +301,7 @@ def install(source_directory):
             stack.callback(os.close, parent)
         os.fchmod(parent, 0o755)
         packages = {}
-        for name in ('fleet_secrets', 'hetzner'):
+        for name in ('fleet_secrets', 'hetzner', 'simple_tools'):
             packages[name] = open_directory(parent, name, owner)
             stack.callback(os.close, packages[name])
             os.fchmod(packages[name], 0o755)

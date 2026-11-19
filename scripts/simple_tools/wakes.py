@@ -11,6 +11,15 @@ seat's FIFO, `started` before the routine is called, then `done` or `failed`.  
 heldback.py) later gets one more row:  `surfaced`, `expired` or `evicted`.  On restart, queued
 and accepted wakes are reloaded; a `started` with no outcome is marked failed and never re-run.
 
+For an `http` wake, `done` means only that the routine answered 2xx.  When the routine is the one
+wake router (config.routes_to_router), that 2xx says the router stored the wake, nothing more:
+the `done` row carries `receipt_awaited`, the daemon reads the router's receipt later
+(Daemon.receipt_pass), and the terminal outcome arrives as its own row (AFC-824):  `delivered`,
+`undelivered` (the router's `dead` or `held`) or `unknown` (the router could not tell,
+or no terminal receipt was read within RECEIPT_DEADLINE of the 2xx).  That row carries only the
+receipt fields RECEIPT_FIELDS lets through, and it does not move the wake's `ts` in the merged
+view (Ledger.wakes).
+
 Model gate (phase 1, record only):  a wake records why it was started.  The listener starts no
 model (owner ruling, Nov 10, 2026), so the only start it records today is the routine forward
 (`det_routine_forward`);  the other purposes and codes stay for rows already in the ledger and a
@@ -34,6 +43,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, NamedTuple
 
 from . import live as L
+from . import secretscan
 
 LEDGER_KEEP_SECONDS = 90 * 86400
 DAY = 86400.0
@@ -42,6 +52,9 @@ FIFO_LIMIT = 5
 LIMITS = {"owner_note": 500}  # the escalation note's quoted text (Daemon.owner_dm_text)
 OPEN_STATES = ("queued", "accepted")
 SPENT_STATES = ("started", "done", "failed")
+# The router's terminal outcome of a `done` wake it accepted (AFC-824):  one more row, after `done`.
+DELIVERED = "delivered"
+OUTCOME_STATES = (DELIVERED, "undelivered", "unknown")
 FINAL_STATES = (
     "done",
     "failed",
@@ -54,6 +67,7 @@ FINAL_STATES = (
     # A wake whose triggers were absorbed by the other wake for the same topic
     # (Coalescer.restore):  closed, never re-offered by a crash recovery.
     "merged",
+    *OUTCOME_STATES,
 )
 
 
@@ -94,15 +108,25 @@ class Ledger:
 
     def wakes(self) -> dict[str, dict[str, Any]]:
         """wake id -> the merged view:  the latest state, the first time each state was reached,
-        and the fields of every row (later rows win)."""
+        and the fields of every row (later rows win).  The one exception is the router's outcome
+        row (OUTCOME_STATES, AFC-824), which can land up to RECEIPT_DEADLINE after the wake ran:
+        it does not move `ts`, so `ts` stays the time the wake itself last moved, and what is
+        measured from it (the stale-once day, the 24-hour wakes view) is measured from the run.
+        The outcome's own time is `times[<outcome>]`, and the outcome row itself is kept whole as
+        `outcome_row`, so what the router said (outcome_fields) is read from that row alone and
+        never from a field an earlier row of the wake carried."""
         merged: dict[str, dict[str, Any]] = {}
         for row in self.rows():
             wake_id = row.get("wake_id")
             if not isinstance(wake_id, str):
                 continue
             view = merged.setdefault(wake_id, {"times": {}})
-            view.update({k: v for k, v in row.items() if k != "times"})
+            outcome = row.get("state") in OUTCOME_STATES
+            skip = ("times", "outcome_row", "ts") if outcome else ("times", "outcome_row")
+            view.update({k: v for k, v in row.items() if k not in skip})
             view["times"].setdefault(str(row.get("state")), row.get("ts"))
+            if outcome:
+                view["outcome_row"] = dict(row)
         return merged
 
     def prune(self, now: float) -> None:
@@ -172,14 +196,15 @@ def budget_block(
     here.  It never measured anything real -- a subscription-backed wake is 0.0 and a metered
     one's per-run maximum is approximate -- while what costs downstream is the FAN-OUT, which a
     dollar ceiling does not measure and a frequency cap does.  `exclude` is the wake
-    being checked, so a re-check just before its run never counts it twice."""
+    being checked, so a re-check just before its run never counts it twice.  A wake whose router
+    outcome row followed its `done` (OUTCOME_STATES) ran, and counts like the `done` it was."""
     others = {wake_id: view for wake_id, view in views.items() if wake_id != exclude}
     counted: list[Mapping[str, Any]] = []
     for view in others.values():
         times = view.get("times") or {}
         at = times.get("accepted", times.get("started"))
         if (
-            view.get("state") in ("accepted", "started", "done", "failed")
+            view.get("state") in ("accepted", "started", "done", "failed", *OUTCOME_STATES)
             and isinstance(at, (int, float))
             and now - at < DAY
         ):
@@ -899,6 +924,263 @@ def gate_line(counts: Mapping[str, Any] | None, hours: int = 24) -> str:
         if counts.get(key)
     ]
     return line + (", " + ", ".join(extra) if extra else "")
+
+
+# --------------------------------------------------------------------------------------------
+# The router's receipt (AFC-824)
+# --------------------------------------------------------------------------------------------
+#
+# A wake the one wake router answered 2xx is only stored there:  the router picks a chat and
+# delivers later, retrying a busy or unreachable chat for up to a day, and its receipt
+# (GET /receipt/<SEAT>/<wake_id>) holds the outcome.  The daemon reads that receipt on a schedule
+# (Daemon.receipt_pass) and appends one outcome row when it settles.  Everything here is pure.
+
+#: The router's terminal receipt statuses (wake_router.Router._finish) and the ledger state each
+#: one becomes.  `accepted` (still pending there) and any word not listed are not terminal:  the
+#: receipt is read again later.  `refused` is not a status the router writes today;  it is listed
+#: so that a router that starts writing it is read as undelivered rather than as pending.
+#: `delivered` is the router's word for a hand-over with no proof too (wake_router.Router._settle):
+#: its receipt's `delivered` is true only with proof and null without, and the outcome row keeps
+#: that field, so the two stay apart in the ledger.
+RECEIPT_TERMINAL = {
+    "delivered": DELIVERED,
+    "dead": "undelivered",
+    "held": "undelivered",
+    "refused": "undelivered",
+    "unknown": "unknown",
+}
+#: When the receipt is read:  30 seconds after the 2xx, then 2 minutes after that, then 10 minutes
+#: after that, then every 30 minutes, until a terminal receipt or the deadline.  The router retries
+#: a busy or unreachable delivery for up to 24 hours (its max_age_seconds), so the deadline is two
+#: hours past that;  a wake with no terminal receipt by then is recorded `unknown`, never delivered.
+RECEIPT_BACKOFF = (30.0, 120.0, 600.0)
+RECEIPT_EVERY = 1800.0
+RECEIPT_DEADLINE = 26 * HOUR
+#: How long the router keeps a final receipt (wake_router.DONE_KEEP_SECONDS):  a `done` wake from
+#: before the listener read receipts is still read once while the router can answer it
+#: (awaiting_receipts with `backfill`).
+RECEIPT_BACKFILL = 30 * DAY
+
+_RECEIPT_CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+_RECEIPT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")
+_RECEIPT_SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_RECEIPT_LETTER_RE = re.compile(r"[A-Z]{1,8}")
+#: A word the daemon itself writes as `receipt_last`:  what the last read answered when a wake
+#: reaches the deadline with no terminal receipt (`accepted`, `http_401`, `timeout`, ...).
+RECEIPT_LAST_RE = re.compile(r"[a-z0-9_]{1,32}")
+
+
+def _receipt_word(shape: re.Pattern[str]) -> Callable[[Any], bool]:
+    return lambda value: isinstance(value, str) and shape.fullmatch(value) is not None
+
+
+def _receipt_int(limit: int) -> Callable[[Any], bool]:
+    return lambda value: type(value) is int and 0 <= value <= limit
+
+
+def _receipt_status(value: Any) -> bool:
+    return isinstance(value, str) and value in RECEIPT_TERMINAL
+
+
+#: The receipt fields an outcome row may carry, as (the receipt's name, the row's name, the shape
+#: the value must have).  Nothing else in a receipt is ever copied:  `topic`, `channel`,
+#: `zulip_link`, `thread_link`, `link_note`, `note`, `candidates` and the rest are free text or
+#: lists the router took from Zulip or a chat, and a receipt is read as untrusted data.
+RECEIPT_FIELDS: tuple[tuple[str, str, Callable[[Any], bool]], ...] = (
+    ("status", "receipt_status", _receipt_status),
+    ("code", "receipt_code", _receipt_word(_RECEIPT_CODE_RE)),
+    ("receipt_id", "receipt_id", _receipt_word(_RECEIPT_ID_RE)),
+    ("picked_letter", "picked_letter", _receipt_word(_RECEIPT_LETTER_RE)),
+    ("picked_generation", "picked_generation", _receipt_int(10**9)),
+    ("host", "host", _receipt_word(_RECEIPT_CODE_RE)),
+    ("route", "route", _receipt_word(_RECEIPT_CODE_RE)),
+    ("ack", "ack", _receipt_word(_RECEIPT_CODE_RE)),
+    ("attempts", "attempts", _receipt_int(10**6)),
+    # True, false or null:  the router writes null when nobody knows whether the chat ran it.
+    ("delivered", "delivered", lambda value: value is None or isinstance(value, bool)),
+    ("reason", "reason", _receipt_word(_RECEIPT_CODE_RE)),
+    ("session_id", "session_id", _receipt_word(_RECEIPT_SESSION_RE)),
+    ("at", "receipt_at", lambda value: _gate_number(value) is not None),
+)
+
+
+def _receipt_value(
+    source: Mapping[str, Any], name: str, check: Callable[[Any], bool], known: Iterable[str]
+) -> tuple[bool, Any]:
+    """(kept, value) for one field:  present, of its shape, and not secret-shaped."""
+    if name not in source:
+        return False, None
+    value = source[name]
+    if not check(value):
+        return False, None
+    if isinstance(value, str) and secretscan.scan(value, known):
+        return False, None
+    return True, value
+
+
+def receipt_row_fields(receipt: Mapping[str, Any], known: Iterable[str] = ()) -> dict[str, Any]:
+    """The fields of a router receipt an outcome row carries, under the row's names
+    (RECEIPT_FIELDS):  each one present, of its shape and not secret-shaped (`known` are values the
+    caller holds as secrets), and every other field dropped.  An empty string (the router's "none")
+    is dropped."""
+    known = list(known)
+    out: dict[str, Any] = {}
+    for name, row_name, check in RECEIPT_FIELDS:
+        kept, value = _receipt_value(receipt, name, check, known)
+        if kept:
+            out[row_name] = value
+    return out
+
+
+def outcome_fields(view: Mapping[str, Any]) -> dict[str, Any]:
+    """The receipt fields of a merged ledger view's own outcome row (`outcome_row`, Ledger.wakes),
+    read back under the same shapes, plus the daemon's own `receipt_last`:  what listener_records
+    shows for an outcome.  Only that row is read, never the merged fields:  a field the receipt
+    did not have, such as `attempts`, is then absent, and not the `done` row's count of POSTs
+    shown as the router's.  An outcome the deadline wrote holds `receipt_last` alone."""
+    row = view.get("outcome_row")
+    if not isinstance(row, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    for _name, row_name, check in RECEIPT_FIELDS:
+        kept, value = _receipt_value(row, row_name, check, ())
+        if kept:
+            out[row_name] = value
+    last = row.get("receipt_last")
+    if isinstance(last, str) and RECEIPT_LAST_RE.fullmatch(last):
+        out["receipt_last"] = last
+    return out
+
+
+def receipt_outcome(
+    status: int | None,
+    body: Any,
+    *,
+    seat: str,
+    wake_id: str,
+    known: Iterable[str] = (),
+) -> tuple[str, dict[str, Any]] | None:
+    """(the outcome state, the row's receipt fields) when the router answered this wake's receipt
+    with a terminal status, else None (read it again later).  Only a 200 whose JSON object names
+    this wake and this seat and is not a test receipt counts."""
+    if status != 200 or not isinstance(body, Mapping) or body.get("test") is True:
+        return None
+    if body.get("wake_id") != wake_id or body.get("seat") != seat:
+        return None
+    word = body.get("status")
+    state = RECEIPT_TERMINAL.get(word) if isinstance(word, str) else None
+    if state is None:
+        return None
+    return state, receipt_row_fields(body, known)
+
+
+def receipt_read_word(status: int | None, body: Any, error: str | None) -> str:
+    """What one read that settled nothing answered, as a RECEIPT_LAST_RE word from a fixed set:
+    `accepted` (the router still holds the wake), `other` (a 200 with any other status that is not
+    terminal), `mismatched` (a terminal receipt that names another wake or seat, or a test one),
+    `malformed` (a 200 that is no receipt), `http_<code>`, `no_answer`, or the read's own error
+    word (A.ReceiptRead).  Nothing the router wrote is copied:  the word reaches the ledger, the
+    log and the read API."""
+    if error:
+        word = error
+    elif status == 200:
+        found = body.get("status") if isinstance(body, Mapping) else None
+        if not isinstance(found, str):
+            word = "malformed"
+        elif found in RECEIPT_TERMINAL:
+            word = "mismatched"
+        elif found == "accepted":
+            word = "accepted"
+        else:
+            word = "other"
+    elif status is None:
+        word = "no_answer"
+    else:
+        word = "http_%d" % status
+    return word if RECEIPT_LAST_RE.fullmatch(word) else "malformed"
+
+
+def receipt_next_read(done_at: float, read_at: float | None) -> float:
+    """When the receipt of a wake answered 2xx at `done_at` is next due, after a read at `read_at`
+    (None before the first):  the first slot of the schedule (RECEIPT_BACKOFF, then every
+    RECEIPT_EVERY) past the last read, and never later than the deadline.  It is a function of the
+    two times alone, so a restarted daemon that knows only the 2xx time picks the schedule up.
+    A read at or past the deadline that still settled nothing (its outcome row could not be
+    written) is followed by one every RECEIPT_EVERY, so a ledger that cannot be written is not
+    read again on every pass."""
+    if read_at is not None and read_at >= done_at + RECEIPT_DEADLINE:
+        return read_at + RECEIPT_EVERY
+    after = -math.inf if read_at is None else read_at - done_at
+    at = 0.0
+    for gap in RECEIPT_BACKOFF:
+        at += gap
+        if at > after:
+            return done_at + min(at, RECEIPT_DEADLINE)
+    steps = math.floor((after - at) / RECEIPT_EVERY) + 1
+    return done_at + min(at + steps * RECEIPT_EVERY, RECEIPT_DEADLINE)
+
+
+def awaiting_receipts(
+    views: Mapping[str, Mapping[str, Any]], *, backfill: bool = False, now: float | None = None
+) -> dict[str, float]:
+    """wake id -> the time of its `done` row, for every wake still waiting on the router's receipt:
+    its `done` row carries `receipt_awaited` and no outcome row followed.  This is how a restart
+    picks the reads up again:  the ledger is their only record.
+
+    With `backfill` (the caller's seat routes to the router by its config now), a `done` wake from
+    before the listener read receipts counts too, while the router still keeps its receipt (done
+    less than RECEIPT_BACKFILL before `now`):  an `http` wake the routine answered 202, the
+    router's answer to a wake it stored, with no answer of the hosted Worker on its row
+    (`routine_delivered` and `routine_outcome`, adapters.routine_answer).  One that is past the
+    deadline gets one last read (Daemon.receipt_pass), so each is read at most once more.  That
+    202 is a guess, not a record:  a Worker's (or another routine's) 202 whose body was not the
+    Worker's answer reads the same, so the daemon settles such a wake only on a terminal receipt
+    that names it, which the router writes only for a wake it stored (Daemon._receipt_final)."""
+    out: dict[str, float] = {}
+    for wake_id, view in views.items():
+        if view.get("state") != "done":
+            continue
+        at = _gate_number((view.get("times") or {}).get("done"))
+        if at is None:
+            continue
+        if view.get("receipt_awaited") is True or (
+            backfill and now is not None and now - at < RECEIPT_BACKFILL and _router_stored(view)
+        ):
+            out[wake_id] = at
+    return out
+
+
+def _router_stored(view: Mapping[str, Any]) -> bool:
+    """Whether a `done` view is an `http` wake answered the way the router answers a wake it
+    stored (wake_router.Router.accept:  202), and not by the hosted Worker with its answer.  It
+    is a guess:  any routine's 202 that left no Worker answer on the row looks the same."""
+    status = view.get("http_status")
+    return (
+        view.get("adapter") == "http"
+        and type(status) is int
+        and status == 202
+        and "routine_delivered" not in view
+        and "routine_outcome" not in view
+    )
+
+
+def outcome_counts(views: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """How many of these merged views are at each router outcome, plus `awaiting`:  a `done` wake
+    whose row says it went to the router (`receipt_awaited`) and has no outcome yet.  A `done`
+    wake from before the listener read receipts, which a start may still read
+    (awaiting_receipts with `backfill`), is not counted:  nothing on its row says it went to the
+    router, and the ledger cannot show whether it is still read (a start takes one up only while
+    the seat routes to the router and the wake is younger than RECEIPT_BACKFILL, and one whose
+    reads end unclaimed gets no row, Daemon._receipt_final)."""
+    counts = {state: 0 for state in OUTCOME_STATES}
+    counts["awaiting"] = 0
+    for view in views:
+        state = view.get("state")
+        if state in OUTCOME_STATES:
+            counts[state] += 1
+        elif state == "done" and view.get("receipt_awaited") is True:
+            counts["awaiting"] += 1
+    return counts
 
 
 # --------------------------------------------------------------------------------------------
