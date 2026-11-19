@@ -1850,6 +1850,9 @@ class FromRealDaemonStatusTests(DaemonHarness):
             # and effect reasons in its terminal rows, so the reducer deliberately never
             # reads it (see reduced_status.py, "Deliberately never read").
             "drain",
+            # Canonical settings revisions and channel spelling belong to the separately
+            # authenticated settings editor, not this names/counts/status document.
+            "operator_settings_revision", "operator_settings_snapshot_revision", "channel_names",
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
         # The retired wake types' keys (pinned, pin, claude, muse, model, fallback, provider, quota,
