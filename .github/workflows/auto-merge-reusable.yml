@@ -148,6 +148,20 @@ on:
         description: Delete the head branch after merge.
         type: boolean
         default: true
+      rearm_pr_number:
+        description: >-
+          Opt-in re-arm mode: when set, classify fetches this PR by number
+          instead of reading it from the pull_request event, so a caller can
+          re-run the gate from events the PR context does not reach (a
+          workflow_dispatch fired when an autofix run settles, or a
+          merge-queue drop).  Every classification rule, gate and the arming
+          boundary run identically; the only difference is where the PR
+          context comes from.  Empty (the default) keeps the event path and
+          is the normal operation for every existing caller.
+        type: string
+        required: false
+        default: ""
+
     secrets:
       wise_infisical_token:
         description: Dedicated read-only service token for Fleet-OPS prod /gr-front/wise-st
@@ -160,18 +174,6 @@ on:
           PAT or GitHub App installation token with contents + pull-requests
           write.  Probed before use; absent means a loud no-op.
         required: false
-      rearm_pr_number:
-        description: >-
-          Opt-in re-arm mode: when set, classify fetches this PR by number
-          instead of reading it from the pull_request event, so a caller can
-          re-run the gate from events the PR context does not reach (a
-          workflow_dispatch fired when an autofix run settles, or a
-          merge-queue drop).  Every classification rule, gate and the arming
-          boundary run identically; the only difference is where the PR
-          context comes from.  Empty (the default) keeps the event path and
-          is the normal operation for every existing caller.
-        required: false
-        default: ""
 
 permissions:
   contents: read

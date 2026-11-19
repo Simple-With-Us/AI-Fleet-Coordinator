@@ -974,8 +974,13 @@ def list_project_names(
     for record in records:
         key = validate_secret_name_record(record, project, path)
         value = record.get("secretValue")
-        hidden_mask = record.get("secretValueHidden") is True and value == HIDDEN_VALUE_MASK
-        if key in found or (value is not None and value != "" and not hidden_mask):
+        hidden_mask = record.get("secretValueHidden") is True and value in (
+            None,
+            "",
+            " ",
+            HIDDEN_VALUE_MASK,
+        )
+        if key in found or (value not in (None, "") and not hidden_mask):
             raise SecretsError("unverified-source")
         found.add(key)
     return tuple(sorted(found))
@@ -1973,13 +1978,18 @@ def _check_recovery_identity(raw: str, intent: WriteIntent) -> None:
     try:
         stored = _decode_json(raw.encode("utf-8"))
     except Exception:
-        return
-    if not isinstance(stored, dict):
-        return
+        raise SecretsError("write-identity-unavailable") from None
+    if (
+        not isinstance(stored, dict)
+        or not isinstance(stored.get("request_id"), str)
+        or type(stored.get("created_at_ms")) is not int
+        or not isinstance(stored.get("purpose"), str)
+    ):
+        raise SecretsError("write-identity-unavailable")
     mismatches = []
-    if stored.get("created_at_ms") != intent.created_at_ms:
+    if stored["created_at_ms"] != intent.created_at_ms:
         mismatches.append("created_at_ms")
-    if stored.get("purpose") != intent.purpose:
+    if stored["purpose"] != intent.purpose:
         mismatches.append("purpose")
     if mismatches:
         raise SecretsError(

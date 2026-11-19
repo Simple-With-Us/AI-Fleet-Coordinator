@@ -667,6 +667,20 @@ class WriteIntentTests(unittest.TestCase):
         ):
             core.clear_unsettled_write(NAME, PATH, self.env, intent=other_purpose)
 
+    def test_recovery_identity_check_refuses_corrupt_or_incomplete_records(self):
+        for raw in (
+            "not-json",
+            "[]",
+            "{}",
+            '{"request_id": "abc", "created_at_ms": true, "purpose": "sync"}',
+            '{"request_id": 123, "created_at_ms": 1000, "purpose": "sync"}',
+        ):
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(core.SecretsError, "write-identity-unavailable"),
+            ):
+                core._check_recovery_identity(raw, self.intent)
+
     def test_clear_unsettled_cli_without_request_id_names_clear_unsettled(self):
         from fleet_secrets import cli as fs_cli
 
