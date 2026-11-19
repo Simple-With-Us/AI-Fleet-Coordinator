@@ -63,7 +63,11 @@
     },
     "linear_comments": {"enabled": {"type": "bool"}},
     "linear_projects": {"enabled": {"type": "bool"}},
-    "notes_queue": {"enabled": {"type": "bool"}},
+    "notes_queue": {
+      "enabled": {"type": "bool"},
+      "worker_seats": {"type": "seats", "maxItems": 64, "maxLength": 32},
+      "server_seats": {"type": "seats", "maxItems": 64, "maxLength": 32}
+    },
     "listener_api": {"enabled": {"type": "bool"}}
   }
 }

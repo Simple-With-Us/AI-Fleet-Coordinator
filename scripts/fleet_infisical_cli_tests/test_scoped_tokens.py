@@ -332,9 +332,11 @@ class RagWorkerScopedTokens(unittest.TestCase):
             self.assertEqual(bounded.call_args.args[:2], (OTHER, "/"))
             self.assertEqual(bounded.call_args.kwargs["token"], api.token)
             self.assertEqual(bounded.call_args.kwargs["timeout"], 30.0)
-            # The retired shared reader is no longer a fallback:  one reader remains.
+            # The retired shared reader is no longer a fallback:  the module holds the
+            # recall reader's own scoped read and the Fleet-OPS root read,  and no other.
             self.assertEqual(
-                [name for name in dir(rag) if name.endswith("_many")], ["infisical_many"]
+                sorted(name for name in dir(rag) if name.endswith("_many")),
+                ["fleet_ops_many", "infisical_many"],
             )
             token_file.assert_not_called()
             self.assertEqual(api.requests, ["/api/v2/service-token"])
