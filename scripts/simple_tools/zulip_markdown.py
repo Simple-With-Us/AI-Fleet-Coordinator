@@ -212,6 +212,7 @@ class _List:
         self.ordered = ordered
         self.items: list[str] = []
         self.item: list[str] | None = None
+        self.marker = 2  # the width of the marker of the item being read
 
 
 class _Converter(HTMLParser):
@@ -315,7 +316,10 @@ class _Converter(HTMLParser):
         if tag == "li":
             if not self.lists:
                 self.lists.append(_List(False))
-            self.lists[-1].item = []
+            ctx = self.lists[-1]
+            ctx.item = []
+            marker = "%d. " % (len(ctx.items) + 1) if ctx.ordered else "- "
+            ctx.marker = len(marker)
             return
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._flush()
@@ -383,7 +387,7 @@ class _Converter(HTMLParser):
             text = "".join(ctx.item).strip()
             ctx.item = None
             marker = "%d. " % (len(ctx.items) + 1) if ctx.ordered else "- "
-            ctx.items.append(self._quoted(marker + text))
+            ctx.items.append(marker + text)
             return
         if tag in ("ul", "ol"):
             self._flush()
@@ -394,9 +398,11 @@ class _Converter(HTMLParser):
                 return
             rendered = "\n".join(ctx.items)
             if self.lists and self.lists[-1].item is not None:
-                # A nested list belongs under the item that holds it, and is indented so
-                # it reads as part of that item (Kody, PR 2340).
-                self.lists[-1].item.append("\n" + _indent(rendered))
+                # A nested list belongs under the item that holds it, and is indented by
+                # the width of that item's marker, so it reads as part of it whether the
+                # marker is "- " or "1. " (Kody, PR 2340).
+                width = self.lists[-1].marker + 1
+                self.lists[-1].item.append("\n" + _indent(rendered, width))
             else:
                 self.blocks.append(self._quoted(rendered))
             return

@@ -239,5 +239,23 @@ class CodeTests(unittest.TestCase):
         self.assertIn("before", prose)
 
 
+class ListTests(unittest.TestCase):
+    """The lists of a post keep their text and their shape."""
+
+    def test_a_quoted_list_is_quoted_once(self) -> None:
+        out = zm.to_markdown("<blockquote><ul><li>a</li></ul></blockquote>")
+        self.assertEqual(out, "> - a")
+
+    def test_a_nested_list_under_an_ordered_item_is_indented_to_nest(self) -> None:
+        # The indent follows the width of the marker the nested list sits under, so the
+        # list nests under "1. " as well as under "- " (Kody, PR 2340).
+        out = zm.to_markdown("<ol><li>one<ol><li>a</li></ol></li></ol>")
+        self.assertEqual(out, "1. one\n    1. a")
+
+    def test_a_nested_list_under_a_bullet_is_indented_to_nest(self) -> None:
+        out = zm.to_markdown("<ul><li>one<ul><li>a</li></ul></li></ul>")
+        self.assertEqual(out, "- one\n   - a")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

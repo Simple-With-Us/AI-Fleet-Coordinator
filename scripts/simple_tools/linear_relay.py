@@ -338,27 +338,40 @@ def neutralise(text: str) -> str:
     return text
 
 
-# A link opener in the converted text:  a bracket a link follows.  The brackets of the
-# text around it are already escaped by the conversion, and the text of a link can hold
-# an escaped bracket of its own, so the closing bracket is looked for behind them
-# (Kody, PR 2340).
-_LINK_OPENER = re.compile(r"(?P<slashes>\\*)(?P<bracket>\[)(?=(?:\\.|[^\]\\\n])*\]\()")
+def _escape_link_openers(chunk: str, offset: int, last_link: int) -> str:
+    """Escape the brackets of a piece of prose that can open a link, so the link is shown
+    and never live.
 
+    A link is a bracket, some text, a closing bracket and a parenthesis, and the text
+    between the brackets can hold a bracket of its own, so every bracket that stands
+    before a closing bracket and a parenthesis is escaped (Kody, PR 2340).  The scan is
+    one pass over the text, so a post full of brackets cannot stall the relay.
 
-def _escape_link_openers(text: str) -> str:
-    """Escape the bracket that opens a link, so the link is shown and never live.
-
-    The backslashes in front of it decide how it reads:  an odd count escapes the
+    The backslashes in front of a bracket decide how it reads:  an odd count escapes the
     bracket already, and an even count does not, so a bracket behind two backslashes is
     a live link again unless it is escaped here (Sentry, PR 2340)."""
-
-    def replace(match: re.Match[str]) -> str:
-        slashes = match.group("slashes")
-        if len(slashes) % 2:
-            return slashes + match.group("bracket")
-        return slashes + "\\" + match.group("bracket")
-
-    return _LINK_OPENER.sub(replace, text)
+    if last_link < 0:
+        return chunk  # no link in the text at all
+    out: list[str] = []
+    index = 0
+    length = len(chunk)
+    while index < length:
+        char = chunk[index]
+        if char != "[" or offset + index >= last_link:
+            out.append(char)
+            index += 1
+            continue
+        slashes = 0
+        back = index - 1
+        while back >= 0 and chunk[back] == "\\":
+            slashes += 1
+            back -= 1
+        if slashes % 2:
+            out.append(char)  # an odd count escapes the bracket already
+        else:
+            out.append("\\" + char)
+        index += 1
+    return "".join(out)
 
 
 def defang(text: str) -> str:
@@ -373,11 +386,16 @@ def defang(text: str) -> str:
     A fenced block and a code span are shown as the sender wrote them, so neither the
     escaping nor the zero-width space reaches into them (Kody, PR 2340)."""
     out: list[str] = []
+    offset = 0
+    # The last closing bracket and parenthesis of the text:  a bracket before it can open
+    # a link, and one after it cannot.
+    last_link = text.rfind("](")
     for is_code, chunk in zulip_markdown.split_code(text):
         if is_code:
             out.append(chunk)
-            continue
-        out.append(_escape_link_openers(chunk).replace("@", "@\u200b"))
+        else:
+            out.append(_escape_link_openers(chunk, offset, last_link).replace("@", "@\u200b"))
+        offset += len(chunk)
     return "".join(out)
 
 

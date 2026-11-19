@@ -2624,6 +2624,15 @@ class ReadablePostTests(WorkerCase):
         self.w.handle_event(message(3, "AFC-1 relay", "another message"))
         self.assertEqual(self.topic.whole_calls, 1)  # it waits
 
+    def test_a_post_full_of_brackets_does_not_stall_the_relay(self) -> None:
+        # The scan for the link openers is one pass over the text, so a post full of
+        # brackets cannot stall the relay poll loop (Kody, PR 2340).
+        raw = "[" * 20000 + "](x)"
+        start = time.monotonic()
+        text = lr.post_text(raw)
+        self.assertLess(time.monotonic() - start, 5.0)  # a quadratic scan would not
+        self.assertTrue(text.startswith("\\["), text[:40])  # the opener is escaped
+
     def test_without_a_reader_nothing_is_re_rendered(self) -> None:
         # The standalone relay has no history reader:  its comments keep what they have.
         worker = self.worker()
