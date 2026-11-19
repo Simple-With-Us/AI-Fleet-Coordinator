@@ -94,6 +94,23 @@ def is_consumed(state: str, wake_id: str) -> bool:
     return wake_id in _read_ledger(state)
 
 
+def mark_delivered(state: str, session_id: str, wake_id: str) -> bool:
+    """Record a handed-over wake and remove its pending file, if any.  True when a
+    pending file was removed.  The ledger mark stops a later retry from running the
+    turn again, and removing the file stops the next prompt from injecting it again."""
+    _safe_name(session_id, _SESSION_RE, "session id")
+    _safe_name(wake_id, _WAKE_ID_RE, "wake id")
+    removed = False
+    path = os.path.join(pending_dir(state), session_id, wake_id + ".json")
+    try:
+        os.unlink(path)
+        removed = True
+    except OSError:
+        pass
+    mark_consumed(state, wake_id)
+    return removed
+
+
 def mark_consumed(state: str, wake_id: str, now: float | None = None) -> None:
     """Record a handed-over wake, pruning entries older than the TTL."""
     _safe_name(wake_id, _WAKE_ID_RE, "wake id")

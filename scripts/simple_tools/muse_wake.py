@@ -589,9 +589,11 @@ def _via_exec(
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
             # `completed` would claim the turn finished, so this is `sent`, confirmed.
+            WP.mark_delivered(str(state_dir(env)), session_id, wake.wake_id)
             return WR.Delivery("sent", "exec", ack="confirmed")
         # It ran and may have done the work, but nothing in the chat proves it:  handed over,
         # never counted as delivered, and never retried.
+        WP.mark_delivered(str(state_dir(env)), session_id, wake.wake_id)
         return WR.Delivery("sent", "exec", ack="unknown")
     # It started, so it may have run the turn before it exited:  never retried.
     return WR.Delivery("refused", "exec", code="exec-exit-%d" % proc.returncode)

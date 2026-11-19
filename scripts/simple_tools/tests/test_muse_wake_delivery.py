@@ -418,6 +418,22 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["outcome"], "sent")
         self.assertEqual(self.calls, [])
 
+    def test_a_parked_wake_is_consumed_when_the_retry_executes_it(self) -> None:
+        WP.park(WP.state_dir(self.env), SID, WAKE_ID, "[MC wake] hello")
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(len(self.calls), 1)
+        folder = Path(WP.state_dir(self.env)) / "pending" / SID
+        self.assertEqual(list(folder.iterdir()), [])
+        self.assertTrue(WP.is_consumed(WP.state_dir(self.env), WAKE_ID))
+
+    def test_a_failed_exec_leaves_the_parked_wake_for_the_hook(self) -> None:
+        WP.park(WP.state_dir(self.env), SID, WAKE_ID, "[MC wake] hello")
+        answer = self._deliver(runner=self._runner(proc=OSError("boom")))
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        pending = Path(WP.state_dir(self.env)) / "pending" / SID / (WAKE_ID + ".json")
+        self.assertTrue(pending.is_file())
+
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))
         delivery = answer["delivery"]
