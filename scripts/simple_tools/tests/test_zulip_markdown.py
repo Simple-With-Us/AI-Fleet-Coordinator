@@ -207,6 +207,43 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(out, "[a \\[b\\] c](https://example.com/x)")
 
 
+class LinkPartsTests(unittest.TestCase):
+    """The parts of a link:  a mention and a code span inside it stay what they are."""
+
+    def test_a_mention_inside_a_link_is_escaped_once(self) -> None:
+        # The link escapes the name of the mention once, and the reader sees no stray
+        # backslash (Kody, PR 2340).
+        html = '<p><a href="https://x"><span class="user-mention">@A[B</span></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[@A\\[B](https://x)")
+
+    def test_an_unclosed_mention_inside_a_link_keeps_the_url(self) -> None:
+        # A mention the sender never closed still lands in the text of the link, and the
+        # link keeps its URL (Kody, PR 2340).
+        html = '<p><a href="https://x"><span class="user-mention">@A[B</a></p>'
+        self.assertEqual(zm.to_markdown(html), "[@A\\[B](https://x)")
+
+    def test_a_code_span_inside_a_link_keeps_its_markers(self) -> None:
+        # The code span stays a code span inside the link:  its markers are not escaped
+        # (Kody, PR 2340).
+        html = '<p><a href="https://x">the <code>docs</code></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[the `docs`](https://x)")
+
+    def test_an_emoji_inside_a_link_keeps_its_name(self) -> None:
+        html = '<p><a href="https://x"><span class="emoji" title="tada"></span></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[:tada:](https://x)")
+
+    def test_an_image_inside_a_link_keeps_its_placeholder(self) -> None:
+        html = '<p><a href="https://x"><img src="s" alt="pic"></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[\\[image: pic\\]](https://x)")
+
+    def test_a_mention_and_a_code_span_inside_a_link_keep_their_own_shape(self) -> None:
+        html = (
+            '<p><a href="https://x"><span class="user-mention">@A[B</span>'
+            " and <code>run</code></a></p>"
+        )
+        self.assertEqual(zm.to_markdown(html), "[@A\\[B and `run`](https://x)")
+
+
 class CodeTests(unittest.TestCase):
     """The code of a post is shown as the sender wrote it."""
 
@@ -311,7 +348,7 @@ class UnclosedTests(unittest.TestCase):
         # The innermost element closes first, so the code's text lands in the link and
         # the link keeps its URL (Kody, PR 2340).
         out = zm.to_markdown('<p>see <a href="https://example.com/x">the <code>docs</p>')
-        self.assertEqual(out, "see [the \\`docs\\`](https://example.com/x)")
+        self.assertEqual(out, "see [the `docs`](https://example.com/x)")
 
     def test_an_unclosed_link_in_a_list_item_keeps_its_url(self) -> None:
         out = zm.to_markdown('<ul><li>see <a href="https://example.com/x">the docs</li></ul>')

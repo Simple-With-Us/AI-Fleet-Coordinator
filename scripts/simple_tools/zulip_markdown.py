@@ -187,6 +187,11 @@ def _escape_url(url: str) -> str:
     return text.replace(" ", "%20")
 
 
+def _strip_control(value: str) -> str:
+    """An attribute value without the characters that would break the line."""
+    return "".join(ch for ch in (value or "") if ch not in "\r\n\t")
+
+
 def _plain_attribute(value: str) -> str:
     """An attribute value as plain text:  no line break, and no character that would
     change the shape of the comment.
@@ -194,8 +199,7 @@ def _plain_attribute(value: str) -> str:
     The attributes of a rendered post are the sender's own text and a sender can put
     anything in them, so they are escaped the way the rest of the text is (Kody, PR
     2340)."""
-    text = "".join(ch for ch in (value or "") if ch not in "\r\n\t")
-    return _escape_text(text)
+    return _escape_text(_strip_control(value))
 
 
 def _indent(text: str, width: int = 2) -> str:
@@ -241,7 +245,7 @@ class _Converter(HTMLParser):
         self.buf: list[str] = []
         self.pre: list[str] | None = None
         self.code: list[str] | None = None
-        self.link: list[str] | None = None
+        self.link: list[tuple[str, bool]] | None = None
         self.href = ""
         self.mention: list[str] | None = None
         self.embed: list[str] | None = None
@@ -264,34 +268,68 @@ class _Converter(HTMLParser):
             return self.mention
         if self.link is not None:
             return self.link
-        if self.code is not None:
-            return self.code
-        if self.pre is not None:
-            return self.pre
         return self.buf
+
+    def _link_text(self) -> str:
+        """The text of a link:  its own text escaped once, and the code markers it holds
+        left as they are, so a code span inside a link stays a code span (Kody, PR
+        2340)."""
+        parts = [
+            text if is_code else _escape_text(text) for text, is_code in (self.link or [])
+        ]
+        return "".join(parts).strip()
+
+    def _append_text(self, text: str) -> None:
+        """Put text where it belongs:  inside the text of an open link it is kept raw
+        and the link escapes it once, and anywhere else it is escaped on the way in."""
+        if self.link is not None:
+            self.link.append((text, False))
+            return
+        self._sink().append(_escape_text(text))
+
+    def _append_code(self, marker: str) -> None:
+        """Put a code span where it belongs:  inside the text of an open link it keeps
+        its markers, and anywhere else it is plain text."""
+        if self.link is not None:
+            self.link.append((marker, True))
+            return
+        self._sink().append(marker)
+
+    def _close_code(self) -> None:
+        """Close an open code span:  its text becomes a code span, and inside a link it
+        keeps its markers (Kody, PR 2340)."""
+        if self.code is None:
+            return
+        text = "".join(self.code)
+        self.code = None
+        if text:
+            self._append_code(_inline_code(text))
+
+    def _close_mention(self) -> None:
+        """Close an open mention:  its name becomes plain text, and inside a link the
+        name is kept raw so that the link escapes it exactly once (Kody, PR 2340)."""
+        if self.mention is None:
+            return
+        name = "".join(self.mention).strip()
+        self.mention = None
+        if not name:
+            return
+        if not name.startswith("@"):
+            name = "@" + name
+        self._append_text(name)
 
     def _close_inline(self) -> None:
         """Close an open inline element into the place its text belongs.
 
         The innermost element closes first, so the text of a code span inside a link lands
         in the link and the link keeps its URL (Kody, PR 2340)."""
-        if self.code is not None:
-            text = "".join(self.code)
-            self.code = None
-            if text:
-                self._sink().append(_inline_code(text))
-        if self.mention is not None:
-            name = "".join(self.mention).strip()
-            self.mention = None
-            if name:
-                if not name.startswith("@"):
-                    name = "@" + name
-                self._sink().append(_escape_text(name))
+        self._close_code()
+        self._close_mention()
         if self.link is not None:
-            text = "".join(self.link).strip()
+            text = self._link_text()
             self.link = None
             if text and self.embed is None:
-                self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
+                self._sink().append("[%s](%s)" % (text, _escape_url(self.href)))
 
     def _close_list(self) -> None:
         """Close the innermost open list:  its items become blocks.
@@ -378,7 +416,11 @@ class _Converter(HTMLParser):
                 self.mention = []
                 return
             if "emoji" in classes:
-                self._sink().append(":%s:" % _plain_attribute(self._emoji_name(attrd, classes)))
+                name = _strip_control(self._emoji_name(attrd, classes))
+                if self.link is not None:
+                    self.link.append((":%s:" % name, False))
+                    return
+                self._sink().append(":%s:" % _escape_text(name))
                 return
             return
         if tag == "blockquote":
@@ -406,8 +448,11 @@ class _Converter(HTMLParser):
             self.blocks.append(self._quoted("---"))
             return
         if tag == "img":
-            alt = _plain_attribute(attrd.get("alt", "").strip())
-            self._sink().append("[image: %s]" % alt if alt else "[image]")
+            alt = _strip_control(attrd.get("alt", "").strip())
+            if self.link is not None:
+                self.link.append(("[image: %s]" % alt if alt else "[image]", False))
+                return
+            self._sink().append("[image: %s]" % _escape_text(alt) if alt else "[image]")
             return
 
     def handle_endtag(self, tag: str) -> None:
@@ -418,33 +463,32 @@ class _Converter(HTMLParser):
                 self.blocks.append(self._quoted(_fence(code)))
             return
         if tag == "code":
-            if self.code is not None:
-                text = "".join(self.code)
-                self.code = None
-                self._sink().append(_inline_code(text))
+            self._close_code()
             return
         if tag == "a":
+            # The link closes last:  a code span or a mention inside it lands in the text
+            # of the link first, and the link keeps its URL (Kody, PR 2340).
             if self.link is not None:
-                text = "".join(self.link).strip()
-                self.link = None
-                if self.embed is None:
-                    # The text was kept raw while the link was read and is escaped once,
-                    # here, so the reader sees it as the sender wrote it (Kody, PR 2340).
-                    self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
+                self._close_inline()
             return
         if tag == "span":
-            if self.mention is not None:
-                name = "".join(self.mention).strip()
-                self.mention = None
-                if not name.startswith("@"):
-                    name = "@" + name
-                self._sink().append(_escape_text(name))
+            self._close_mention()
             return
         if tag == "div":
             if self.embed is not None:
                 url = self.embed_url
                 self.embed = None
                 self.embed_url = ""
+                if self.link is not None:
+                    self.link.append(
+                        (
+                            "[embedded link: %s]" % _strip_control(url)
+                            if url
+                            else "[embedded content]",
+                            False,
+                        )
+                    )
+                    return
                 self._sink().append(
                     "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]"
                 )
@@ -481,10 +525,9 @@ class _Converter(HTMLParser):
         if self.mention is not None:
             self.mention.append(data)
             return
-        if self.link is not None:
-            self.link.append(data)  # the link text is escaped once, when the link closes
-            return
-        self._sink().append(_escape_text(data))
+        # The link escapes its own text once, when it closes;  the prose is escaped on
+        # the way in (Kody, PR 2340).
+        self._append_text(data)
 
     def _finish(self) -> None:
         """Close what the post left open.
