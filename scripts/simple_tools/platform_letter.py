@@ -115,6 +115,7 @@ from . import identity as I
 from . import live as L
 from . import secretscan
 from . import session_ids as SI
+from . import wake_pending as WP
 
 ENTRY = "platform-letter"
 SCOPE = "default"
@@ -2739,6 +2740,18 @@ def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
     return (words if words != note.get("title") else ""), show
 
 
+def take_wakes(chat: Chat) -> str:
+    """Prompt context from wakes parked for this chat while it was held.  Taking consumes them, so each wake reaches
+    exactly one prompt;  a corrupt spool is skipped, and a helper-spawned host never takes (it is not the chat)."""
+    if _text(chat.env.get("MUSE_LETTER_HELPER")):
+        return ""
+    try:
+        pending = WP.take(WP.state_dir(chat.env), chat.session_id)
+    except Exception:
+        return ""
+    return "\n\n".join(text for _, text in pending)
+
+
 def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     spec = chat.spec
     note = chat.read()
@@ -2835,11 +2848,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             lambda text: chat.registry("issues", issues=text),
         )
     fix = advice(chat, note, current, data, "prompt")
+    parked = take_wakes(chat)
     chat.write(note)
-    if announce or (shown and shown != current) or fix:
+    if announce or (shown and shown != current) or fix or parked:
         out.emit(
             "prompt",
-            context=_join(moved + reminder(spec, note) if announce else "", fix),
+            context=_join(_join(moved + reminder(spec, note) if announce else "", fix), parked),
             title=shown,
             label=str(note.get("label") or ""),
         )
