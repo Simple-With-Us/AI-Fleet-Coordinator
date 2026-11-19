@@ -63,6 +63,14 @@ wake = "inbox"
 """
 
 
+NOTES_FIXTURE = FIXTURE + """
+[notes_queue]
+enabled = true
+worker_seats = ["JET", "CLAUDE"]
+server_seats = ["CLAUDE"]
+"""
+
+
 def shipped_allowlist(apply_enabled: bool = True) -> dict:
     doc = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
     doc["applyEnabled"] = apply_enabled
@@ -138,8 +146,11 @@ class AllowlistTests(Case):
             sorted(checked["tables"]),
             ["daemon", "linear_comments", "linear_projects", "listener_api", "notes_queue"],
         )
-        for table in ("linear_comments", "linear_projects", "listener_api", "notes_queue"):
+        for table in ("linear_comments", "linear_projects", "listener_api"):
             self.assertEqual(list(checked["tables"][table]), ["enabled"])
+        self.assertEqual(
+            list(checked["tables"]["notes_queue"]), ["enabled", "worker_seats", "server_seats"]
+        )
 
     def test_the_shipped_allowlist_names_no_pin_and_no_credential_key(self) -> None:
         doc = M.validate_allowlist(shipped_allowlist())
@@ -363,6 +374,21 @@ class RefusalTests(Case):
         self.refused({"seat.JET.budget": {"made_up_cap": 1}}, "key_not_allowed")
         self.refused({"seat.JET.routine": {"url_file": "x"}}, "key_not_allowed")
 
+    def test_a_seat_list_of_the_wrong_shape_is_refused(self) -> None:
+        for key, value in (
+            ("notes_queue.worker_seats", "JET"),
+            ("notes_queue.worker_seats", [["JET"]]),
+            ("notes_queue.worker_seats", ["jet"]),
+            ("notes_queue.worker_seats", ["HAS SPACE"]),
+            ("notes_queue.worker_seats", [""]),
+            ("notes_queue.worker_seats", ["JET", 7]),
+            ("notes_queue.worker_seats", ["J\nET"]),
+            ("notes_queue.worker_seats", ["A" * 33]),
+            ("notes_queue.server_seats", ["CLAUDE"] * 65),
+        ):
+            with self.subTest(key=key, value=value):
+                self.refused({key: value}, "value_not_allowed")
+
     def test_a_key_of_the_wrong_shape_is_refused(self) -> None:
         for key in (
             "enabled",
@@ -417,6 +443,32 @@ class EditTests(Case):
         self.assertIs(doc["seat"]["ZC"]["enabled"], False)
         self.assertNotIn("enabled", doc["seat"]["JET"])
         self.assertIs(doc["seat"]["GB-FIXER"]["enabled"], True)
+
+    def test_a_seat_list_is_rewritten_and_reads_back(self) -> None:
+        new, changes = self.plan_text(
+            {"notes_queue.worker_seats": ["JET", "CLAUDE", "ZC"]}, text=NOTES_FIXTURE
+        )
+        self.assertIn('worker_seats = ["JET", "CLAUDE", "ZC"]\n', new)
+        doc = tomllib.loads(new)
+        self.assertEqual(doc["notes_queue"]["worker_seats"], ["JET", "CLAUDE", "ZC"])
+        self.assertEqual(doc["notes_queue"]["server_seats"], ["CLAUDE"])
+        self.assertEqual(
+            changes,
+            [
+                {
+                    "key": "notes_queue.worker_seats",
+                    "set": True,
+                    "from": ["JET", "CLAUDE"],
+                    "to": ["JET", "CLAUDE", "ZC"],
+                    "removes": [],
+                }
+            ],
+        )
+
+    def test_a_seat_list_may_be_emptied(self) -> None:
+        new, _ = self.plan_text({"notes_queue.server_seats": []}, text=NOTES_FIXTURE)
+        self.assertIn("server_seats = []\n", new)
+        self.assertEqual(tomllib.loads(new)["notes_queue"]["server_seats"], [])
 
     def test_a_value_over_several_lines_is_replaced_whole(self) -> None:
         new, _ = self.plan_text({"daemon.presence_topics": [["alerts", "*"], ["builds", "gates"]]})

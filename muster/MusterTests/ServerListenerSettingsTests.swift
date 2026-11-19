@@ -29,6 +29,7 @@ private func sampleValue(_ spec: ServerSettingSpec) -> ServerSettingValue {
     case .choice(let values): return values.first.map(ServerSettingValue.text) ?? .null
     case .text: return .text("x")
     case .pairs: return .list([.list([.text("fleet"), .text("presence")])])
+    case .seats: return .list([.text("JET"), .text("CLAUDE")])
     case .seatEnv: return .text("CLAUDE_ROUTINE_URL")
     case .table(let keys): return .table(keys.mapValues(sampleValue))
     }
@@ -66,6 +67,11 @@ private let allowlistJSON = """
       "presence_topics": {"type": "pairs"}
     },
     "linear_comments": {"enabled": {"type": "bool"}},
+    "notes_queue": {
+      "enabled": {"type": "bool"},
+      "worker_seats": {"type": "seats", "maxItems": 64, "maxLength": 32},
+      "server_seats": {"type": "seats", "maxItems": 64, "maxLength": 32}
+    },
     "webhook": {"callback_url": {"type": "string", "pattern": ".*", "maxLength": 64}}
   }
 }
@@ -80,6 +86,9 @@ private let getAnswer = """
    "daemon.coalesce_seconds": 30.0,
    "daemon.held_back_catch_up": false,
    "linear_comments.enabled": true,
+   "notes_queue.enabled": true,
+   "notes_queue.worker_seats": ["JET", "CLAUDE"],
+   "notes_queue.server_seats": [],
    "seat.CLAUDE.budget": {"wakes_per_day": 40, "wakes_per_hour": 6, "usd_per_day": 5.0},
    "seat.CLAUDE.enabled": true,
    "seat.CLAUDE.routine": {"url_env": "CLAUDE_ROUTINE_URL", "method": "POST", "timeout_seconds": 15},
@@ -332,6 +341,20 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertThrowsError(try builder().invocation(
             for: .serverListenerSettings(ServerListenerSettingsRequest(set: ["daemon.owner_user_id": .int(1)])),
             mode: .plan))
+    }
+
+    /// The notes_queue seat lists parse as a known type and show read only, with the list the
+    /// server holds.  Without a `seats` case the allowlist parser silently dropped them.
+    func test_a_seats_list_is_shown_read_only_with_its_reason() throws {
+        let worker = try row("notes_queue.worker_seats")
+        XCTAssertEqual(worker.current, .list([.text("JET"), .text("CLAUDE")]))
+        XCTAssertNil(worker.control)
+        XCTAssertEqual(worker.readOnlyReason, ServerSettingsCopy.seats)
+        let server = try row("notes_queue.server_seats")
+        XCTAssertEqual(server.current, .list([]))
+        XCTAssertEqual(server.readOnlyReason, ServerSettingsCopy.seats)
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["notes_queue.worker_seats": "ZC"], rows: try rows()),
+                       .failure(.readOnly(worker.title)))
     }
 
     /// Owner's rule (Nov 11, 2026):  a knob's home is Infisical, so Muster never writes one into the
