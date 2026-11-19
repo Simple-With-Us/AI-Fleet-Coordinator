@@ -272,7 +272,6 @@ def infisical_many(names: Iterable[str]) -> dict[str, str]:
         return {}
 
 
-
 def infisical_secret(name: str) -> str | None:
     """One value through the recall reader's own scoped token, or None."""
     return infisical_many([name]).get(name)

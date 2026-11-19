@@ -139,7 +139,7 @@ class ProcessLocalFailureTests(KnobTestCase):
     def test_a_process_with_no_reader_token_leaves_no_marker_for_its_siblings(self):
         # Muster's Controls tab runs the engine with no reader token.  Its failed read must not
         # make the Mac's jobs, which hold one, skip their own fetch for the next minute.
-        from fleet_knobs import knobs, source
+        from fleet_knobs import knobs
 
         self.fake.set(secrets={"LANE_SWEEP_MODE": "act"})
         token = os.environ.pop(source.ENV_KNOBS_TOKEN)

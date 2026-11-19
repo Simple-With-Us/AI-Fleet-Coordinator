@@ -1303,13 +1303,8 @@ def _api_json(
         # consumer that can retry says so instead of reporting a broken credential.
         raise SecretsTimeout() from None
     except OSError as exc:
-        if (
-            not response_seen
-            and on_unsent is not None
-            and isinstance(exc, ConnectionRefusedError)
-        ):
+        if not response_seen and on_unsent is not None and isinstance(exc, ConnectionRefusedError):
             on_unsent()
-        return 0, None
         return 0, None
     finally:
         data = None

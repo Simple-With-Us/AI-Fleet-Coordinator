@@ -46,7 +46,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from itertools import chain
 
 # This checkout/payload must carry the canonical library beside scripts/alert-ingress.
 # A missing sibling never authorizes an executable, user-site or PATH fallback.

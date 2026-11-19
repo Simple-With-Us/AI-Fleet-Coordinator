@@ -9,13 +9,12 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
+import fleet_infisical as core
+import fleet_infisical_cli as cli
 from fleet_knobs import source as knobs
 from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core as rag
 from fleet_rag import infisical_settings as settings
-
-import fleet_infisical as core
-import fleet_infisical_cli as cli
 
 PROJECT = "00000000-0000-4000-8000-000000000001"
 OTHER = "00000000-0000-4000-8000-000000000002"
