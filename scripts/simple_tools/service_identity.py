@@ -19,8 +19,9 @@ PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_INFISICAL_PATH = "/zulip_operator"
 
 
-#: The Infisical folder that holds the wake runtimes' credentials (Fleet-OPS, the same project as the
-#: Operator's own three names), and the one value the OpenRouter wake runtime reads from it.  The key
+#: The Infisical folder that held the retired wake runtimes' credentials (Fleet-OPS, the same project
+#: as the Operator's own three names), and the one value the OpenRouter transport reads from it:  the
+#: optional decider's (`[decider.consult_backup]`) since the openrouter wake type was retired.  The key
 #: is the Operator's own (owner named it, Oct 30 2026), never another app's OpenRouter key.
 WAKE_INFISICAL_PATH = "/wake"
 OPENROUTER_KEY_NAME = "OPERATOR_OPENROUTER_API_KEY"
@@ -141,7 +142,7 @@ def operator_credentials(env, home=None, fetch=None):
 
 
 def openrouter_api_key(env, home=None, fetch=None):
-    """The Operator's OpenRouter key for the headless wake's HTTP runtime, as one string.
+    """The Operator's OpenRouter key for the optional decider's transport, as one string.
 
     Read the way `operator_credentials` reads the Operator's own three names:  one named value from
     Fleet-OPS (`INFISICAL_FLEET_OPS_PROJECT_ID`), folder `/wake`, through the installed fleet-secrets
@@ -153,8 +154,8 @@ def openrouter_api_key(env, home=None, fetch=None):
 
     home_path = Path(home) if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
     # The project id is the one the daemon's other Fleet-OPS reads use:  the environment variable, else
-    # the first line of ~/.simple-tools/fleet-ops-project-id (a shell that runs `test-wake --run` has the
-    # file even when it lacks the variable the LaunchAgent carries).  A malformed or missing id fails
+    # the first line of ~/.simple-tools/fleet-ops-project-id (a shell has the file even when it lacks
+    # the variable the LaunchAgent carries).  A malformed or missing id fails
     # closed with a message that names both places and never echoes the value.
     project = env.get(PROJECT_ENV, "").strip()
     if not project:

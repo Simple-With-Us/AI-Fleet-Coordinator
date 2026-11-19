@@ -1,15 +1,17 @@
 """The join between the Operator session registry and the chat catalog (AFC-412 wake wiring).
 
 The registry (AFC-412 PR1) allocates the letter and the catalog discovers the session.
-The wake path shows catalog rows to the woken agent, so a row that has a registration
-must carry its letter,  and a row that has none must not pretend to have one.
+The daemon's status shows each live lease with its letter (`session_letter_details`), so a row
+that has a registration must carry its letter,  and a row that has none must not pretend to
+have one.  (The headless wake path that also showed catalog rows to a woken agent went with the
+retired wake types:  the listener starts no model, owner ruling Nov 10, 2026.)
 
 Two properties matter here and are asserted rather than assumed:
 
   - the lookup never allocates:  a catalog scan must not mint registrations as a side
     effect of reading,  and a missing database is never created by a read;
-  - the wake never breaks on the registry:  a missing, empty or broken registry leaves
-    the rows unlettered and the wake continues.
+  - the join never breaks on the registry:  a missing, empty or broken registry leaves
+    the rows unlettered and the caller continues.
 """
 
 from __future__ import annotations
@@ -21,8 +23,6 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from simple_tools import chat_catalog as CC
@@ -683,25 +683,13 @@ class RegistryLookupTests(unittest.TestCase):
 
 
 class WakeLetterTests(DaemonHarness):
+    """The registry join in `session_letter_details`, which `status` uses for its lease rows.
+
+    These ran through the retired muse wake's chat context until the claude, muse and openrouter
+    wake types were retired (owner ruling, Nov 10, 2026);  they now call the join directly."""
+
     def setup_rows(self, rows):
-        d = self.daemon()
-        r = d.seats["CLAUDE"]
-        r.cfg.wake = "muse"
-        d._chat_catalog = SimpleNamespace(
-            discover=mock.Mock(return_value=rows),
-            resolve=mock.Mock(return_value=rows[0] if rows else None),
-            excerpt=mock.Mock(return_value=[]),
-        )
-        p = W.Pending(
-            "wake",
-            "CLAUDE",
-            {"channel": "simple-tools", "topic": "work"},
-            owner=True,
-            now=self.clock.time(),
-            due=self.clock.time(),
-        )
-        p.add({"id": 42}, True)
-        return d, r, p
+        return self.daemon(), rows
 
     def row(self, **over):
         base = {
@@ -728,429 +716,85 @@ class WakeLetterTests(DaemonHarness):
         identity = dict(IDENTITY, **over)
         return registry.resolve_or_register(identity)
 
+    @staticmethod
+    def letter(details, row_id="a" * 64):
+        return (details.get(row_id) or {}).get("letter", "")
+
     def test_a_registered_row_carries_its_letter_into_the_wake(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
+        d, rows = self.setup_rows([self.row()])
         self.register(d)
-        context = d.chat_context(r, p)
-        self.assertEqual(len(context), 1)
-        self.assertEqual(context[0]["label"], "AA")
-        self.assertEqual(context[0]["label_ref"], "MM AA")
+        details = d.session_letter_details(rows)
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details["a" * 64]["letter"], "AA")
+        self.assertEqual(details["a" * 64]["letter_ref"], "MM AA")
 
     def test_an_unregistered_row_carries_no_letter(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "")
-        self.assertEqual(context[0]["label_ref"], "")
+        d, rows = self.setup_rows([self.row()])
+        self.assertEqual(d.session_letter_details(rows), {})
 
     def test_a_missing_registry_leaves_the_rows_unlettered_and_the_wake_intact(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
+        d, rows = self.setup_rows([self.row()])
         self.assertFalse(os.path.exists(OR.registry_db_path(d.root)))
-        context = d.chat_context(r, p)
-        self.assertEqual(len(context), 1)
-        self.assertEqual(context[0]["label"], "")
+        self.assertEqual(d.session_letter_details(rows), {})
         # The read never created the registry on its way past.
         self.assertFalse(os.path.exists(OR.registry_db_path(d.root)))
 
     def test_a_broken_registry_never_breaks_the_wake(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
+        d, rows = self.setup_rows([self.row()])
         with mock.patch.object(
             OR, "lookup_many", side_effect=RuntimeError("registry is broken")
         ):
-            context = d.chat_context(r, p)
-        self.assertEqual(len(context), 1)
-        self.assertEqual(context[0]["label"], "")
+            self.assertEqual(d.session_letter_details(rows), {})
 
     def test_the_row_identity_joins_on_platform_location_scope_and_session(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
+        d, rows = self.setup_rows([self.row()])
         self.register(d, platform="codex", seat="CODEX", native_session_id="mvs_abc")
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "")
+        self.assertEqual(self.letter(d.session_letter_details(rows)), "")
         # The registry's host key is the fleet location, so a registration made under a
         # different location is a different identity and must not match.
         self.register(d, verified_host="server")
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "")
+        self.assertEqual(self.letter(d.session_letter_details(rows)), "")
 
     def test_the_join_uses_the_location_and_not_the_os_hostname(self) -> None:
-        d, r, p = self.setup_rows([self.row(host="example.test")])
+        d, rows = self.setup_rows([self.row(host="example.test")])
         self.register(d, verified_host="mac")
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "AA")
-        self.assertEqual(context[0]["location"], d.config.instance)
+        details = d.session_letter_details(rows)
+        self.assertEqual(self.letter(details), "AA")
+        self.assertEqual(details["a" * 64]["verified_host"], d.config.instance)
 
     def test_a_malformed_session_id_is_dropped_rather_than_coerced(self) -> None:
-        d, r, p = self.setup_rows([self.row(session_id="bad id!")])
+        d, rows = self.setup_rows([self.row(session_id="bad id!")])
         self.register(d)
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "")
+        self.assertEqual(d.session_letter_details(rows), {})
 
     def test_one_wake_uses_one_registry_connection(self) -> None:
-        d, r, p = self.setup_rows(
+        d, rows = self.setup_rows(
             [self.row(id="a" * 64), self.row(id="b" * 64, session_id="mvs_def")]
         )
         self.register(d)
         self.register(d, native_session_id="mvs_def")
         with mock.patch.object(OR, "SessionRegistry", wraps=OR.SessionRegistry) as opened:
-            context = d.chat_context(r, p)
-        self.assertEqual(len(context), 2)
-        self.assertEqual([row["label"] for row in context], ["AA", "BB"])
-        # One connection for the whole wake, not one per row.
+            details = d.session_letter_details(rows)
+        self.assertEqual(len(details), 2)
+        self.assertEqual([self.letter(details, i) for i in ("a" * 64, "b" * 64)], ["AA", "BB"])
+        # One connection for the whole join, not one per row.
         self.assertEqual(opened.call_count, 1)
 
     def test_the_catalog_row_carries_the_profile_scope(self) -> None:
-        d, r, p = self.setup_rows([self.row()])
-        labels = d.session_labels([self.row()])
-        self.assertEqual(labels, {})
+        d, rows = self.setup_rows([self.row()])
+        self.assertEqual(d.session_letter_details(rows), {})
 
     def test_the_join_uses_the_scope_the_row_carries(self) -> None:
-        d, r, p = self.setup_rows([self.row(profile_scope="work")])
+        d, rows = self.setup_rows([self.row(profile_scope="work")])
         self.register(d, profile_scope="work")
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "AA")
+        self.assertEqual(self.letter(d.session_letter_details(rows)), "AA")
         # The same session id under a different scope is a different session.
-        d2, r2, p2 = self.setup_rows([self.row(profile_scope="default")])
-        self.assertEqual(d2.chat_context(r2, p2)[0]["label"], "")
-
-
-class DirectMessageLetterTests(DaemonHarness):
-    """A direct message carries no letter (owner ruling, Oct 21 2026).
-
-    The letter is for a tagged address, and a DM is owner-only plain replies.  So a DM
-    context carries no label at all, rather than a letter the owner has to be told to
-    ignore.
-    """
-
-    def setup_rows(self, rows, private=False):
-        d = self.daemon()
-        r = d.seats["CLAUDE"]
-        r.cfg.wake = "muse"
-        d._chat_catalog = SimpleNamespace(
-            discover=mock.Mock(return_value=rows),
-            resolve=mock.Mock(return_value=rows[0] if rows else None),
-            excerpt=mock.Mock(return_value=[]),
-        )
-        p = W.Pending(
-            "wake",
-            "CLAUDE",
-            {"type": "private" if private else "stream", "channel": "simple-tools", "topic": "work"},
-            owner=True,
-            now=self.clock.time(),
-            due=self.clock.time(),
-        )
-        p.add({"id": 42}, True)
-        return d, r, p
-
-    def row(self, **over):
-        base = {
-            "id": "a" * 64,
-            "seat": "MM",
-            "platform": "minimax",
-            "host": "mac",
-            "profile_scope": "default",
-            "session_id": "mvs_abc",
-            "cwd": "/repo",
-            "title": "Work",
-            "updated_at": 100.0,
-            "status": "available",
-            "stale": False,
-            "capabilities": {"read": True, "wake": True},
-        }
-        base.update(over)
-        return base
-
-    def register(self, d, **over):
-        db = OR.registry_db_path(d.root)
-        registry = OR.SessionRegistry(db)
-        self.addCleanup(registry.close_db)
-        identity = dict(IDENTITY, **over)
-        return registry.resolve_or_register(identity)
-
-    def test_a_direct_message_carries_no_letter(self) -> None:
-        d, r, p = self.setup_rows([self.row()], private=True)
-        self.register(d)
-        context = d.chat_context(r, p)
-        self.assertEqual(len(context), 1)
-        self.assertEqual(context[0]["label"], "")
-        self.assertEqual(context[0]["label_ref"], "")
-
-    def test_a_channel_message_still_carries_the_letter(self) -> None:
-        d, r, p = self.setup_rows([self.row()], private=False)
-        self.register(d)
-        context = d.chat_context(r, p)
-        self.assertEqual(context[0]["label"], "AA")
-        self.assertEqual(context[0]["label_ref"], "MM AA")
-
-
-class AddressedRowTests(DaemonHarness):
-    """A tagged address names one session, so that session has to be in the wake.
-
-    The rows are ranked and cut before the letters join, so without this the addressed
-    session could be cut out of the list and the address would name a session the wake
-    never saw.
-    """
-
-    def setup_rows(self, rows):
-        d = self.daemon()
-        r = d.seats["CLAUDE"]
-        r.cfg.wake = "muse"
-        d._chat_catalog = SimpleNamespace(
-            discover=mock.Mock(return_value=rows),
-            resolve=mock.Mock(return_value=rows[0] if rows else None),
-            excerpt=mock.Mock(return_value=[]),
-        )
-        p = W.Pending(
-            "wake",
-            "CLAUDE",
-            {"channel": "simple-tools", "topic": "work"},
-            owner=True,
-            now=self.clock.time(),
-            due=self.clock.time(),
-        )
-        p.add({"id": 42}, True)
-        return d, r, p
-
-    def row(self, **over):
-        base = {
-            "id": "a" * 64,
-            "seat": "MM",
-            "platform": "minimax",
-            "host": "mac",
-            "profile_scope": "default",
-            "session_id": "mvs_abc",
-            "cwd": "/repo",
-            "title": "Work",
-            "updated_at": 100.0,
-            "status": "available",
-            "stale": False,
-            "capabilities": {"read": True, "wake": True},
-        }
-        base.update(over)
-        return base
-
-    def register(self, d, **over):
-        db = OR.registry_db_path(d.root)
-        registry = OR.SessionRegistry(db)
-        self.addCleanup(registry.close_db)
-        identity = dict(IDENTITY, **over)
-        return registry.resolve_or_register(identity)
-
-    def test_the_addressed_session_is_in_the_wake_even_when_it_is_cut(self) -> None:
-        # Forty rows, none of them the addressed one:  the addressed session is
-        # last by rank, so the cut would drop it.
-        rows = [
-            self.row(id="%064d" % i, session_id="mvs_%03d" % i, title="Session %d" % i)
-            for i in range(40)
-        ]
-        d, r, p = self.setup_rows(rows)
-        self.register(d, native_session_id="mvs_039")
-        context = d.chat_context(r, p, None, "AA")
-        titles = [str(row.get("title")) for row in context]
-        self.assertIn("Session 39", titles)
-
-    def test_a_tagged_older_chat_is_found_beyond_the_catalog_cap(self) -> None:
-        # Twenty real chats under a twenty-row catalog cap:  discover() keeps only
-        # the newest sessions, so the oldest chat is not among its rows at all.
-        # A message that tags that older chat by its letter still wakes with it,
-        # while an untagged wake keeps ranking by recency and never sees it.
-        d, r, p = self.setup_rows([self.row()])
-        project = Path(self.home) / ".claude/projects/project"
-        project.mkdir(parents=True)
-        for index in range(20):
-            events = [
-                {"type": "custom-title", "customTitle": "Session %d" % index},
-                {
-                    "type": "user",
-                    "cwd": "/repo",
-                    "timestamp": 1000 + index,
-                    "message": {"content": "question"},
-                },
-            ]
-            (project / ("session-%02d.jsonl" % index)).write_text(
-                "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
-            )
-
-        class _EmptyTransport:
-            def discover(self, **_kwargs):
-                return []
-
-        catalog = CC.ChatCatalog(
-            home=self.home,
-            scrub=d.scrub,
-            max_records=20,
-            host="test-host",
-            grok_transport=_EmptyTransport(),
-            cursor_transport=_EmptyTransport(),
-            clock=lambda: 100.0,
-        )
-        d._chat_catalog = catalog
-        discovered = [str(row.get("title")) for row in catalog.discover()]
-        self.assertIn("Session 19", discovered)
-        self.assertNotIn("Session 0", discovered)
-        made = self.register(
-            d,
-            platform="claude",
-            seat="CLAUDE",
-            native_session_id="session-00",
-            title="Session 0",
-        )
-        letter = str(made["label"])
-        context = d.chat_context(r, p, None, letter)
-        self.assertEqual(context[0]["title"], "Session 0")
-        self.assertEqual(context[0]["label"], letter)
-        untagged = d.chat_context(r, p, None, "")
-        untagged_titles = [str(row.get("title")) for row in untagged]
-        self.assertNotIn("Session 0", untagged_titles)
-        self.assertEqual(untagged_titles[0], "Session 19")
-
-    def test_no_letter_leaves_the_rows_alone(self) -> None:
-        rows = [self.row(id="%064d" % i, session_id="mvs_%03d" % i) for i in range(40)]
-        d, r, p = self.setup_rows(rows)
-        self.register(d, native_session_id="mvs_039")
-        context = d.chat_context(r, p, None, "")
-        titles = [str(row.get("title")) for row in context]
-        self.assertNotIn("Session 39", titles)
-
-    def test_a_letter_nobody_holds_names_no_row(self) -> None:
-        rows = [self.row()]
-        d, r, p = self.setup_rows(rows)
-        self.register(d)
-        context = d.chat_context(r, p, None, "Z")
-        self.assertEqual(len(context), 1)
-        self.assertEqual(context[0]["label"], "AA")
+        d2, rows2 = self.setup_rows([self.row(profile_scope="default")])
+        self.assertEqual(self.letter(d2.session_letter_details(rows2)), "")
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TaggedLetterTests(DaemonHarness):
-    """A letter is read off a trigger only in the shape the owner ruled.
-
-    The letter sits next to the mention, the way the owner ruled:  "@**MiniMax** Z".
-    A capital letter in ordinary prose is never an address, and a bare letter with no
-    mention is not an address at all.
-    """
-
-    def bot(self, d, seat="CLAUDE", name="Claude", uid=9001, email="claude-bot@example.test"):
-        runner = d.seats["CLAUDE"]
-        runner.users[uid] = {
-            "user_id": uid,
-            "full_name": name,
-            "email": email,
-            "is_bot": True,
-            "is_active": True,
-            "bot_owner_id": d.config.owner_user_id,
-        }
-        d.fleet_tags = frozenset({seat})
-        return runner
-
-    def test_a_letter_next_to_the_mention_is_read(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "@**Claude** Z what is the state of the closeout?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], "Z")
-
-    def test_the_id_form_of_the_mention_is_read_too(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "@**Claude|9001** Z what is the state of the closeout?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], "Z")
-
-    def test_a_capital_letter_in_prose_is_not_an_address(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "@**Claude** the plan is A and B, so pick one"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
-
-    def test_a_bare_letter_with_no_mention_is_not_an_address(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "is Z still running?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
-
-    def test_a_mention_of_another_seat_is_not_an_address(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "@**Codex** Z is that yours?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
-
-    def hold_pair(self, d, native="s-0001"):
-        """A live Claude chat holding a pair of letters, as the Claude hook registers one."""
-        return OR.register_session(
-            OR.registry_db_path(d.root, d.env),
-            platform="claude",
-            verified_host="mac",
-            profile_scope="default",
-            native_session_id=native,
-            seat="CLAUDE",
-            source="test",
-            title="Work",
-            issuer=OR.ISSUER_OPERATOR,
-            letter_space="double",
-            letter_pick="oldest",
-        )
-
-    def test_a_pair_that_someone_holds_is_an_address(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        pair = self.hold_pair(d)["label"]
-        self.assertEqual(len(pair), 2)
-        history = [{"id": 1, "content": "@**Claude** %s what is the state of the closeout?" % pair}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], pair)
-        history = [{"id": 1, "content": "@**Claude|9001** %s" % pair}]  # the id form, standing alone
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], pair)
-
-    def test_a_pair_nobody_holds_is_prose(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        self.hold_pair(d)  # AA is live
-        for body in (
-            "@**Claude** OK thanks, ship it",  # two capitals that are a word
-            "@**Claude** ZZ is not anyone's pair",
-            "@**Claude** AAA is three letters",
-            "@**Claude** Ab is not capitals",
-        ):
-            history = [{"id": 1, "content": body}]
-            self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None), body)
-
-    def test_a_pair_that_was_retired_is_prose_again(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        made = self.hold_pair(d)
-        registry = OR.SessionRegistry(OR.registry_db_path(d.root, d.env))
-        try:
-            registry.close(made["record_id"])
-        finally:
-            registry.close_db()
-        history = [{"id": 1, "content": "@**Claude** %s are you there?" % made["label"]}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
-
-    def test_a_pair_is_prose_when_the_registry_cannot_be_read(self) -> None:
-        d = self.daemon()
-        self.bot(d)
-        history = [{"id": 1, "content": "@**Claude** AA are you there?"}]  # no registry file at all
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
-
-    def test_the_candidate_query_finds_the_live_holder(self) -> None:
-        d = self.daemon()
-        db = OR.registry_db_path(d.root, d.env)
-        OR.register_session(
-            db,
-            platform="minimax",
-            verified_host="mac",
-            profile_scope="default",
-            native_session_id="mvs_abc",
-            seat="MM",
-            source="test",
-            title="Work",
-            issuer=OR.ISSUER_OPERATOR,
-        )
-        found = d.operator_candidates("minimax", "AA")
-        self.assertEqual(len(found), 1)
-        self.assertEqual(found[0]["native_session_id"], "mvs_abc")
-        self.assertEqual(found[0]["ref"], "MM AA")
-        # A letter nobody holds has no candidates, and the query never mints one.
-        self.assertEqual(d.operator_candidates("minimax", "Z"), [])
 
 
 class OperatorIssuesLettersTests(unittest.TestCase):
@@ -1296,28 +940,31 @@ class ReferenceFormTests(unittest.TestCase):
         self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX AA"))
         self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM AA"))
 
-class LetterCandidateTests(DaemonHarness):
-    """The tagged letter's registry count, for the model gate, and nothing sent to anyone.
+class RegistryCandidateTests(unittest.TestCase):
+    """`operator_registry.candidates_for` and `candidates_for_letter`, called directly.
 
-    The Operator asks nobody which session a letter means (owner ruling, Nov 10, 2026), so
-    `note_letter_candidates` only records the count on the pending wake.
+    They lost their only callers with the headless wake path (the daemon's tagged-letter read and
+    its candidate count for the model gate went with the retired wake types, owner ruling Nov 10,
+    2026), so these tests that went through the daemon are re-seated on the registry functions.
 
     A letter is the same letter on two platforms only if both sessions were allocated it, so
     the ambiguous seeds register one session per platform.  The seeds name the single-letter
     space, because a MiniMax session takes a pair by default (AFC-586) and the two platforms
-    have to hold the same letter for the ambiguity to exist at all.  A seat never picks its own
-    letter (register_session allocates the lowest free one), so a same-platform pair would be
-    A and B.
+    have to hold the same letter for the ambiguity to exist at all.
     """
 
     # Each seat on its own platform:  the registry refuses a platform under another seat (AFC-772).
     AMBIGUOUS = (("MM", "minimax"), ("CODEX", "codex"))
 
-    def seed(self, d, seats):
-        db = OR.registry_db_path(d.root, d.env)
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="fleet-registry-candidates-")
+        self.addCleanup(tmp.cleanup)
+        self.db = OR.registry_db_path(tmp.name, {})
+
+    def seed(self, seats):
         for seat, platform in seats:
             OR.register_session(
-                db,
+                self.db,
                 platform=platform,
                 verified_host="mac-%s" % seat.lower(),
                 profile_scope="default",
@@ -1327,65 +974,37 @@ class LetterCandidateTests(DaemonHarness):
                 title="Work %s" % seat,
                 issuer=OR.ISSUER_OPERATOR,
             )
-        return db
 
-    def pending(self, sender_id):
-        p = W.Pending(
-            "w1", "CLAUDE", {"channel": "simple-tools", "topic": "AFC-412"}, owner=True,
-            now=1.0, due=2.0,
+    def test_the_candidate_query_finds_the_live_holder(self) -> None:
+        OR.register_session(
+            self.db,
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="mvs_abc",
+            seat="MM",
+            source="test",
+            title="Work",
+            issuer=OR.ISSUER_OPERATOR,
         )
-        p.sender_id = sender_id
-        return p
-
-    def note(self, d, pending, letter="AA"):
-        before = len(self.fake.requests)
-        with mock.patch.object(d.log, "write") as write:
-            d.note_letter_candidates(d.seats["CLAUDE"], pending, letter)
-        self.assertEqual(len(self.fake.requests), before, "nothing was sent to Zulip")
-        self.assertEqual(write.call_args_list, [], "nothing was logged as a send")
-        self.assertEqual(self.operator_posts(), [])
-
-    def test_one_candidate_on_another_seat_is_counted(self) -> None:
-        d = self.daemon()
-        self.seed(d, (("MM", "minimax"),))
-        pending = self.pending(d.config.owner_user_id)
-        self.note(d, pending)
-        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (1, False))
-
-    def test_one_candidate_on_this_seat_is_its_holder(self) -> None:
-        d = self.daemon()
-        self.seed(d, (("CLAUDE", "claude-code"),))
-        pending = self.pending(d.config.owner_user_id)
-        self.note(d, pending)
-        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (1, True))
-
-    def test_an_ambiguous_letter_is_counted_and_nobody_is_asked(self) -> None:
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        pending = self.pending(d.config.owner_user_id)
-        self.note(d, pending)
-        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (2, False))
-
-    def test_a_letter_nobody_holds_counts_zero(self) -> None:
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        pending = self.pending(None)
-        self.note(d, pending, "ZZ")
-        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (0, False))
+        found = OR.candidates_for(self.db, "minimax", "AA")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["native_session_id"], "mvs_abc")
+        self.assertEqual(found[0]["ref"], "MM AA")
+        # A letter nobody holds has no candidates, and the query never mints one.
+        self.assertEqual(OR.candidates_for(self.db, "minimax", "Z"), [])
 
     def test_the_candidate_set_spans_platforms(self) -> None:
         """The registry keeps one live holder per (platform, letter), so only the cross-platform
         query can ever show an ambiguity."""
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        self.assertEqual(len(d.operator_candidates("minimax", "AA")), 1)
-        self.assertEqual(len(d.operator_candidates("", "AA")), 2)
+        self.seed(self.AMBIGUOUS)
+        self.assertEqual(len(OR.candidates_for(self.db, "minimax", "AA")), 1)
+        self.assertEqual(len(OR.candidates_for_letter(self.db, "AA")), 2)
 
     def test_a_closed_session_is_not_a_live_candidate(self) -> None:
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        self.assertEqual(len(d.operator_candidates("", "AA")), 2)
-        registry = OR.SessionRegistry(OR.registry_db_path(d.root, d.env))
+        self.seed(self.AMBIGUOUS)
+        self.assertEqual(len(OR.candidates_for_letter(self.db, "AA")), 2)
+        registry = OR.SessionRegistry(self.db)
         try:
             record = next(
                 row["record_id"]
@@ -1396,17 +1015,15 @@ class LetterCandidateTests(DaemonHarness):
             registry.close(record)
         finally:
             registry.close_db()
-        found = d.operator_candidates("", "AA")
+        found = OR.candidates_for_letter(self.db, "AA")
         self.assertEqual([row["seat"] for row in found], ["CODEX"])
 
     def test_a_closed_session_with_a_live_alias_is_not_a_candidate(self) -> None:
         """The `closed_at IS NULL` clause on its own:  `close()` also retires the alias, so the
         test above passes on `retired_at` alone.  Here the session is closed and its alias is left
         live, the state a writer that sets `closed_at` without retiring the alias would leave."""
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        db = OR.registry_db_path(d.root, d.env)
-        conn = sqlite3.connect(str(db))
+        self.seed(self.AMBIGUOUS)
+        conn = sqlite3.connect(str(self.db))
         try:
             with conn:
                 conn.execute(
@@ -1419,7 +1036,7 @@ class LetterCandidateTests(DaemonHarness):
         finally:
             conn.close()
         self.assertEqual(live, 2, "the alias stays live, so only closed_at can exclude the row")
-        found = d.operator_candidates("", "AA")
+        found = OR.candidates_for_letter(self.db, "AA")
         self.assertEqual([row["seat"] for row in found], ["CODEX"])
 
 
