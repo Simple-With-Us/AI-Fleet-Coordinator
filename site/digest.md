@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-18 15:28 CST · timezone America/Chicago_
+_Generated 2026-11-19 02:54 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -9,9 +9,17 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **ICS (daily outline):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
 - **ICS (per-commit activity):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 
+## 2026-11-19
+
+*1 PRs merged · 0 issues opened · 0 issues closed*
+
+### Merged PRs
+
+- **ST** [#5412](https://github.com/Simple-With-Us/Socratic-Trade/pull/5412): fix(broker-health): an order-capability probe timeout no longer halts Autopilot on the first strike (ST-4636) _(by jaywedgeworth22)_
+
 ## 2026-11-18
 
-*59 PRs merged · 0 issues opened · 0 issues closed*
+*83 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -38,24 +46,41 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Claude` `Muse Assist` [#2305](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2305): Listener: Retire The , — And openrouter Wake Types (AFC-694) _(by jaywedgeworth22)_
 - **AFC** `Z Code` [#2309](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2309): simple-chat remote show reads the whole message body _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2312](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2312): Helper Installer: Keep The Owner's applyEnabled On Update And On The Move To The User Folder _(by jaywedgeworth22)_
+- **AFC** `Z Code` [#2314](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2314): feat(installer): Z Code Bash-tool seat default (shims + guarded profile block) _(by jaywedgeworth22)_
 - **AFC** [#2316](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2316): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
 - **AFC** `Claude` `Antigravity` [#2320](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2320): Wake: Resume Headless So A Sign-In Need Fails Fast, And Name Quota And Sign-In Endings (AFC-838) _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2321](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2321): Control Helper: Router Health Reads A Body That Came With A Content-Length _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2323](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2323): Hosted eavesdropper_status: Pass The Listener's wake_outcomes_24h On (AFC-843) _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2327](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2327): Listener Cleanup Follow-Ups: Docs, Status Reducer Comments And The Retired Mac Listener Row (AFC-694) _(by jaywedgeworth22)_
 - **AFC** [#2328](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2328): Auto-merge reusable: rearm_pr_number belongs in inputs, not secrets (fixes #2267 regression) _(by jaywedgeworth22)_
+- **AFC** `Claude` [#2329](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2329): Muster: Pause And Resume The Eavesdropper From The Operator Panel (AFC-832) _(by jaywedgeworth22)_
+- **AFC** `Claude` [#2330](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2330): Muster: Retired Wakes Read As Refused, And The Quota Text Says None Is Published (AFC-845) _(by jaywedgeworth22)_
+- **AFC** [#2334](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2334): simple-chat: remote read — full maps to zulip_read_topic full:true _(by jaywedgeworth22)_
+- **AFC** `Claude` [#2336](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2336): Listener: simple-chat daemon pin — Pins The — Binary The Liveness Check Asks (AFC-694) _(by jaywedgeworth22)_
+- **AFC** [#2341](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2341): eavesdropper-settings: read and write the notes_queue seat lists _(by jaywedgeworth22)_
 - **BF** [#1954](https://github.com/Simple-With-Us/BotFleet/pull/1954): fix(mac): refuse desktop control when Accessibility was never granted _(by jaywedgeworth22)_
 - **BF** `Claude` [#2115](https://github.com/Simple-With-Us/BotFleet/pull/2115): Refresh The Electron Inventory After The Helper Move And The Filed Gap Issues _(by jaywedgeworth22)_
 - **BF** `Claude` [#2116](https://github.com/Simple-With-Us/BotFleet/pull/2116): Bring The Releasing Guide In Line With The Release Workflows _(by jaywedgeworth22)_
+- **BF** `Claude` [#2117](https://github.com/Simple-With-Us/BotFleet/pull/2117): Run The Release-Store Provenance Suites In The Repo Gate And Record Their Recipe _(by jaywedgeworth22)_
+- **BF** `MiniMax` [#2118](https://github.com/Simple-With-Us/BotFleet/pull/2118): Check the native host start path and report the failure reason _(by jaywedgeworth22)_
 - **BF** `MiniMax` [#2119](https://github.com/Simple-With-Us/BotFleet/pull/2119): Wire the native host artifact proof and make the Infisical bootstrap an explicit opt-in _(by jaywedgeworth22)_
 - **BF** `Claude` [#2121](https://github.com/Simple-With-Us/BotFleet/pull/2121): Add The Process Inventory Receipt Producer _(by jaywedgeworth22)_
 - **BF** `Claude` [#2122](https://github.com/Simple-With-Us/BotFleet/pull/2122): Add Linux Retention Receipt Producer _(by jaywedgeworth22)_
+- **BF** `Claude` [#2123](https://github.com/Simple-With-Us/BotFleet/pull/2123): Add Runner-Backed Job Adapter For The Placement Worker _(by jaywedgeworth22)_
 - **BF** `Claude` [#2124](https://github.com/Simple-With-Us/BotFleet/pull/2124): Add Placement Rollback Candidate Inspector And Fixture Probe _(by jaywedgeworth22)_
 - **BF** `Antigravity` [#2125](https://github.com/Simple-With-Us/BotFleet/pull/2125): Make minFreeDiskMb and minFreeInodes editable in Settings › Resources (BF-2686) _(by jaywedgeworth22)_
 - **BF** `Antigravity` [#2127](https://github.com/Simple-With-Us/BotFleet/pull/2127): Return 503 when native POST /api/desktop/open has no launch action (BF-2498) _(by jaywedgeworth22)_
 - **BF** `Antigravity` [#2128](https://github.com/Simple-With-Us/BotFleet/pull/2128): Document iOS companion topology under server placement (BF-2652) _(by jaywedgeworth22)_
 - **BF** [#2129](https://github.com/Simple-With-Us/BotFleet/pull/2129): Update dependency electron to v45.3.2 _(by renovate[bot])_
 - **BF** [#2131](https://github.com/Simple-With-Us/BotFleet/pull/2131): Update dependency wrangler to v4.162.0 _(by renovate[bot])_
+- **BF** `Claude` [#2132](https://github.com/Simple-With-Us/BotFleet/pull/2132): Refresh Decommission Documentation To Match Main _(by jaywedgeworth22)_
+- **BF** `Claude` [#2133](https://github.com/Simple-With-Us/BotFleet/pull/2133): Add Engine Replay Event Order Mismatch Test _(by jaywedgeworth22)_
+- **BF** `Claude` [#2134](https://github.com/Simple-With-Us/BotFleet/pull/2134): Pin The Control Start Server And Offline VM Menu Predicates _(by jaywedgeworth22)_
+- **BF** `Claude` [#2135](https://github.com/Simple-With-Us/BotFleet/pull/2135): Pin The Swift Import Parity Report To The Node Schema _(by jaywedgeworth22)_
+- **BF** [#2136](https://github.com/Simple-With-Us/BotFleet/pull/2136): Update pnpm to v12.21.0 _(by renovate[bot])_
+- **BF** [#2137](https://github.com/Simple-With-Us/BotFleet/pull/2137): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2138](https://github.com/Simple-With-Us/BotFleet/pull/2138): Update non-major dependencies _(by renovate[bot])_
+- **BF** `Z Code` [#2139](https://github.com/Simple-With-Us/BotFleet/pull/2139): Retrying Transient Write Failures In The Placement-Rollback Recheck Edits _(by jaywedgeworth22)_
 - **C** [#286](https://github.com/Simple-With-Us/Clutch/pull/286): chore(renovate): extend shared fleet preset (weekly limits, npm <12 lockfiles) _(by jaywedgeworth22)_
 - **CT** [#3186](https://github.com/Simple-With-Us/Congress.Trade/pull/3186): ci: catch a stale app/deno.lock before merge _(by jaywedgeworth22)_
 - **CT** [#3190](https://github.com/Simple-With-Us/Congress.Trade/pull/3190): chore(renovate): extend shared fleet preset and pin Renovate's npm and Deno _(by jaywedgeworth22)_
@@ -68,10 +93,17 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **PS** [#293](https://github.com/Simple-With-Us/Personal-Site/pull/293): chore(renovate): extend shared fleet preset (weekly limits, npm <12 lockfiles) _(by jaywedgeworth22)_
 - **PS** [#294](https://github.com/Simple-With-Us/Personal-Site/pull/294): renovate: inline the fleet weekly-limits policy from the AFC#2277 preset _(by jaywedgeworth22)_
 - **ST** [#5175](https://github.com/Simple-With-Us/Socratic-Trade/pull/5175): 4633: retry idempotent iOS GETs on transport timeouts _(by jaywedgeworth22)_
+- **ST** [#5278](https://github.com/Simple-With-Us/Socratic-Trade/pull/5278): Salvage commit: in-flight work preserved before the volume move _(by jaywedgeworth22)_
 - **ST** [#5392](https://github.com/Simple-With-Us/Socratic-Trade/pull/5392): 4622: mark #5391 STATUS/PLAN entries for unmerged PRs as proposed/pending _(by jaywedgeworth22)_
 - **ST** [#5411](https://github.com/Simple-With-Us/Socratic-Trade/pull/5411): chore(deps): update non-major dependencies _(by renovate[bot])_
 - **ST** [#5415](https://github.com/Simple-With-Us/Socratic-Trade/pull/5415): chore(deps): update non-major dependencies _(by renovate[bot])_
+- **ST** [#5416](https://github.com/Simple-With-Us/Socratic-Trade/pull/5416): Auto-merge caller wiring: rearm pass + lane re-arm hooks (AFC-812) _(by jaywedgeworth22)_
 - **ST** [#5417](https://github.com/Simple-With-Us/Socratic-Trade/pull/5417): chore(deps): update non-major dependencies _(by renovate[bot])_
+- **ST** [#5418](https://github.com/Simple-With-Us/Socratic-Trade/pull/5418): docs: codify "Never idle-watch a PR" as a binding fleet rule _(by jaywedgeworth22)_
+- **ST** [#5419](https://github.com/Simple-With-Us/Socratic-Trade/pull/5419): chore(deps): update dependency react-resizable-panels to v4.22.1 _(by renovate[bot])_
+- **ST** [#5420](https://github.com/Simple-With-Us/Socratic-Trade/pull/5420): chore(deps): update dependency @playwright/test to v1.65.1 _(by renovate[bot])_
+- **ST** [#5421](https://github.com/Simple-With-Us/Socratic-Trade/pull/5421): chore(deps): update dependency eslint to v10.15.0 _(by renovate[bot])_
+- **ST** [#5422](https://github.com/Simple-With-Us/Socratic-Trade/pull/5422): chore(deps): update dependency postcss to v8.5.33 _(by renovate[bot])_
 - **UM** [#2074](https://github.com/Simple-With-Us/Usage-Monitor/pull/2074): Update non-major dependencies _(by renovate[bot])_
 - **CTS** [#425](https://github.com/Simple-With-Us/congress-trading-shared/pull/425): chore(renovate): extend shared fleet preset (weekly limits, npm <12 lockfiles) _(by jaywedgeworth22)_
 
@@ -1391,7 +1423,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-04
 
-*65 PRs merged · 0 issues opened · 0 issues closed*
+*64 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -1402,7 +1434,6 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#1301](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1301): Fix Muster server update routing and verifiable receipts _(by jaywedgeworth22)_
 - **AFC** [#1304](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1304): Support Draft PR Creation and Preserve Bounded Relay Diagnostics _(by jaywedgeworth22)_
 - **AFC** [#1315](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1315): docs: Bitrig custom instructions for a fleet seat running in Bitrig _(by jaywedgeworth22)_
-- **AFC** [#1316](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1316): fix(git-relay): mint contents write for draft transitions _(by jaywedgeworth22)_
 - **AFC** [#1317](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1317): Muster: App Icon That Follows Light and Dark Mode _(by jaywedgeworth22)_
 - **AFC** [#1318](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1318): chore: net.dealdex 0.1.0 _(by jaywedgeworth22)_
 - **AFC** [#1319](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1319): Add the offline alert binding metadata audit (AFC-600) _(by jaywedgeworth22)_
@@ -1463,12 +1494,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-03
 
-*129 PRs merged · 0 issues opened · 0 issues closed*
+*122 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#1271](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1271): feat(vm-status): per-VM status collector (AFC-597 S4) _(by jaywedgeworth22)_
-- **AFC** [#1272](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1272): Operator server credentials: Infisical API route for the daemon's reader on the server instance _(by jaywedgeworth22)_
 - **AFC** [#1273](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1273): feat(muster): sidebar shell + Overview (AFC-597 S1) _(by jaywedgeworth22)_
 - **AFC** [#1275](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1275): feat(ops): unify service control on the plan path, pm2 + log tail (AFC-597 S3) _(by jaywedgeworth22)_
 - **AFC** [#1281](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1281): Add Muster CPU And RAM Resource Controls _(by jaywedgeworth22)_
@@ -1476,13 +1506,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#1284](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1284): fix: Publish Standalone Shell Housekeeper Owner (AFC-603) _(by jaywedgeworth22)_
 - **AFC** [#1292](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1292): Correct stale Datadog CPU alert routing guidance _(by jaywedgeworth22)_
 - **AFC** [#1294](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1294): Preserve Assigned Hosted MCP During Wrapper Updates _(by jaywedgeworth22)_
-- **AFC** [#1300](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1300): Clarify upward model and cost escalation in fleet mode _(by jaywedgeworth22)_
 - **AFC** [#1305](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1305): Operator registry API: serve the session registry over the listener HTTPS API (Path B) _(by jaywedgeworth22)_
-- **AFC** [#1309](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1309): Fix mcode wake argv: effort floor low, timeout 210s single-unit _(by jaywedgeworth22)_
-- **AFC** `Claude` [#1310](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1310): agent_sync: hook-flagged simple-chat calls no-op in remote mode (fix — hook prompt block) _(by jaywedgeworth22)_
-- **AFC** [#1311](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1311): Registry API transport for the internal registry callers _(by jaywedgeworth22)_
-- **AFC** [#1313](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1313): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
-- **AFC** [#1314](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1314): agent_sync: correct seat identity to canonical ZC (bot zc-bot@, ZC_ZULIP_ records) _(by jaywedgeworth22)_
 - **BF** `Z Code` [#1526](https://github.com/Simple-With-Us/BotFleet/pull/1526): feat : add ZCode (GLM Coding Plan) as a custom engine _(by jaywedgeworth22)_
 - **BF** [#1527](https://github.com/Simple-With-Us/BotFleet/pull/1527): Keep a parked fleet's companion down (BF-2614 part 1) _(by jaywedgeworth22)_
 - **BF** `Sentry` [#1528](https://github.com/Simple-With-Us/BotFleet/pull/1528): chore(deps): update dependency — to v9.32.0 _(by renovate[bot])_
@@ -1989,48 +2013,3 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **CC** [#339](https://github.com/Simple-With-Us/codecaps/pull/339): ios-fleet: shared merge-timestamp build number (0.1.0), planned once per release _(by jaywedgeworth22)_
 - **CC** [#340](https://github.com/Simple-With-Us/codecaps/pull/340): test(ios-ship): push-path coverage check accepts any quote style _(by jaywedgeworth22)_
 - **CTS** [#405](https://github.com/Simple-With-Us/congress-trading-shared/pull/405): chore(deps): update dependency node to v26 _(by renovate[bot])_
-
-## 2026-10-28
-
-*38 PRs merged · 0 issues opened · 0 issues closed*
-
-### Merged PRs
-
-- **AFC** [#973](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/973): 545: the outbound WhatsApp reply leg _(by jaywedgeworth22)_
-- **BF** [#1380](https://github.com/Simple-With-Us/BotFleet/pull/1380): Seat prompts: Deployer unblocks and may merge clean PRs (never do-not-merge/do-not-auto-merge), @all mostly Jay's, 👀 wake rule, auto-label ui PRs _(by jaywedgeworth22)_
-- **BF** [#1381](https://github.com/Simple-With-Us/BotFleet/pull/1381): Zulip router: eyes no-wake marker and @all wakes (Jay, Oct 27) _(by jaywedgeworth22)_
-- **BF** `Sentry` [#1382](https://github.com/Simple-With-Us/BotFleet/pull/1382): Webhooks: per-trigger action, label, conclusion, branch, — and PagerDuty filters; no run for Off bots _(by jaywedgeworth22)_
-- **BF** [#1383](https://github.com/Simple-With-Us/BotFleet/pull/1383): feat(control): managed services naming, process & port monitoring, and remote VM provider plugins _(by jaywedgeworth22)_
-- **BF** [#1385](https://github.com/Simple-With-Us/BotFleet/pull/1385): fix(harness): decide a refused service token in the server _(by jaywedgeworth22)_
-- **BF** [#1387](https://github.com/Simple-With-Us/BotFleet/pull/1387): feat(control): a Fleet Services section for every process BotFleet starts _(by jaywedgeworth22)_
-- **BF** [#1388](https://github.com/Simple-With-Us/BotFleet/pull/1388): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **BF** [#1389](https://github.com/Simple-With-Us/BotFleet/pull/1389): fix(deps): update non-major dependencies _(by renovate[bot])_
-- **C** `Sentry` [#221](https://github.com/Simple-With-Us/Clutch/pull/221): Update dependency — to v9 _(by renovate[bot])_
-- **C** [#224](https://github.com/Simple-With-Us/Clutch/pull/224): Update dependency node to v26 _(by renovate[bot])_
-- **CT** [#2880](https://github.com/Simple-With-Us/Congress.Trade/pull/2880): fix(deps): update non-major dependencies _(by renovate[bot])_
-- **CT** [#2888](https://github.com/Simple-With-Us/Congress.Trade/pull/2888): chore(deps): update dependency node to v26 _(by renovate[bot])_
-- **CT** [#2890](https://github.com/Simple-With-Us/Congress.Trade/pull/2890): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **CL** [#271](https://github.com/Simple-With-Us/ContactLogo/pull/271): chore(deps): update dependency node to v26 _(by renovate[bot])_
-- **CL** [#272](https://github.com/Simple-With-Us/ContactLogo/pull/272): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **CL** [#273](https://github.com/Simple-With-Us/ContactLogo/pull/273): chore(deps): bump seroval from 1.6.8 to 1.7.3 in /backups/crest _(by dependabot[bot])_
-- **DD** [#544](https://github.com/Simple-With-Us/DealDex/pull/544): chore(deps): update dependency node to v26 _(by renovate[bot])_
-- **DD** [#546](https://github.com/Simple-With-Us/DealDex/pull/546): build(deps): bump seroval from 1.6.8 to 1.7.3 _(by dependabot[bot])_
-- **FL** [#146](https://github.com/Simple-With-Us/FleetLink/pull/146): Bots: mint and show the first token on Add Bot; visible Rename _(by jaywedgeworth22)_
-- **HH** [#233](https://github.com/Simple-With-Us/HogHunter/pull/233): feat(server): share root's files over the tailnet as jay _(by jaywedgeworth22)_
-- **PS** [#247](https://github.com/Simple-With-Us/Personal-Site/pull/247): feat(start): host start.jays.services from this repository _(by jaywedgeworth22)_
-- **PS** [#248](https://github.com/Simple-With-Us/Personal-Site/pull/248): fix(start): find the ignore script wherever Vercel runs the ignore step _(by jaywedgeworth22)_
-- **PS** [#249](https://github.com/Simple-With-Us/Personal-Site/pull/249): fix(start): allow the site's own inputs under either ignore-file layout _(by jaywedgeworth22)_
-- **PS** [#250](https://github.com/Simple-With-Us/Personal-Site/pull/250): chore(rag): refresh fleet-rag snapshot [skip ci] _(by github-actions[bot])_
-- **PS** [#251](https://github.com/Simple-With-Us/Personal-Site/pull/251): fix(rag): let the required check run on the daily snapshot refresh _(by jaywedgeworth22)_
-- **PS** [#252](https://github.com/Simple-With-Us/Personal-Site/pull/252): feat(start): read the fleet live instead of serving a committed snapshot _(by jaywedgeworth22)_
-- **ST** [#4956](https://github.com/Simple-With-Us/Socratic-Trade/pull/4956): chore(ios): refresh the ios-fleet pin that #4954 left stale _(by jaywedgeworth22)_
-- **ST** [#4957](https://github.com/Simple-With-Us/Socratic-Trade/pull/4957): ci: fail PRs that leave the ios-fleet pin stale _(by jaywedgeworth22)_
-- **ST** [#4958](https://github.com/Simple-With-Us/Socratic-Trade/pull/4958): chore(deps): update dependency eslint-config-next to v16.4.3 _(by renovate[bot])_
-- **ST** [#4959](https://github.com/Simple-With-Us/Socratic-Trade/pull/4959): chore(deps): update dependency next to v16.4.3 _(by renovate[bot])_
-- **UM** [#1810](https://github.com/Simple-With-Us/Usage-Monitor/pull/1810): fix(backup): age-guard stale partial cleanup on shared /data (UM-1633) _(by jaywedgeworth22)_
-- **UM** [#1813](https://github.com/Simple-With-Us/Usage-Monitor/pull/1813): chore(deps): update dependency node to v26 _(by renovate[bot])_
-- **CC** `BotFleet` `Sentry` [#325](https://github.com/Simple-With-Us/codecaps/pull/325): Name the real cause for rc=5, and upload the iOS dSYM to — (CC-199, CC-200) _(by jaywedgeworth22)_
-- **CC** [#332](https://github.com/Simple-With-Us/codecaps/pull/332): Update non-major dependencies to v9.31.0 _(by renovate[bot])_
-- **CC** `Grok` `Cursor` [#333](https://github.com/Simple-With-Us/codecaps/pull/333): feat(quota): unify subscription pool sharing across , xAI, , and — Bot _(by jaywedgeworth22)_
-- **CC** [#334](https://github.com/Simple-With-Us/codecaps/pull/334): Fix iPhone and widget quota presentation and add plan details _(by jaywedgeworth22)_
-- **CC** [#335](https://github.com/Simple-With-Us/codecaps/pull/335): feat(pip): rebuild the PiP HUD around the owner's 2026-10-28 review _(by jaywedgeworth22)_
