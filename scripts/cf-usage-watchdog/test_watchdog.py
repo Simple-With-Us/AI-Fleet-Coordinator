@@ -1112,9 +1112,7 @@ class ConnectionTests(Base):
         def boom(command, **kwargs):
             raise AssertionError("service automation must not spawn simple-chat as a seat")
 
-        conn = wd.Connections(
-            self.cfg, runner=boom, env={"INFISICAL_TOKEN": "t", "HOME": "/h"}
-        )
+        conn = wd.Connections(self.cfg, runner=boom, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.zulip("hello"))
         self.assertIn('"event": "zulip_failed"', out.getvalue())

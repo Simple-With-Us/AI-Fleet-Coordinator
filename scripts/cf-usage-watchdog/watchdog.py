@@ -717,7 +717,10 @@ class Connections:
 
     def zulip(self, text: str) -> bool:
         # Service automation cannot represent any agent seat.
-        print(json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}), flush=True)
+        print(
+            json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}),
+            flush=True,
+        )
         return False
 
     def page(self, title: str, text: str) -> bool | None:
