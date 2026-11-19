@@ -224,7 +224,15 @@ def scoped_values(names, project, path):
         except scoped_secrets.SecretsError as exc:
             raise ReadError(f"the Infisical project id is unusable ({exc.message})") from None
     try:
-        return scoped_secrets.fetch_project(project_id, path, env, token=token, names=names)
+        # The strict contract the replaced reader enforced:  every row carries its own
+        # workspace, environment and secretPath,  and its value is not hidden.
+        return scoped_secrets.fetch_project(
+            project_id, path, env, token=token, names=names, strict_records=True
+        )
+    except TimeoutError:
+        # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first:
+        # a hung read is a timeout,  not a broken credential.
+        raise ReadError("the scoped Infisical read timed out", EXIT_TIMEOUT) from None
     except scoped_secrets.SecretsError as exc:
         raise ReadError(f"the scoped Infisical read failed ({exc.message})") from None
 
@@ -400,7 +408,7 @@ def main():
         print(f"  read  {name}  (len {len(value)})")
 
     # 2. The existing own Fleet-OPS root reader fetches only the Cloudflare
-    #    token in apply mode, before anything is written.  No machine identity
+    #    token in apply mode, before anything is written.  No machine identity
     #    or other consumer binding participates in this read.
     fleetops_names = []
     if not dry:

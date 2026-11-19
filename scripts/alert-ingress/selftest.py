@@ -143,6 +143,12 @@ def fs_get(name, project, path):
         )
     try:
         return FI.fetch_verified(name, path, scoped, token=token)
+    except TimeoutError:
+        # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first
+        # and keeps its own exit code.
+        raise Failed(
+            f"{name} could not be read:  the scoped read timed out", EXIT_TIMEOUT
+        ) from None
     except FI.SecretsError as error:
         if error.code == 3:
             return None

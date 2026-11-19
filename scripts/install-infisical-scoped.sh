@@ -23,6 +23,14 @@ set -euo pipefail
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${1:-$HOME/apps/infisical-scoped}"
 
+# The destination is a path,  never an option.  `install` reads a leading "-" as a
+# flag,  so a relative destination is made absolute before it reaches it:  a name that
+# begins with "-" is then a directory under the current directory,  and never a flag.
+case "$DEST" in
+  /*) ;;
+  *) DEST="$PWD/$DEST" ;;
+esac
+
 install -d -m 0755 "$DEST"
 install -m 0644 "$SRC_DIR/fleet_infisical.py" "$DEST/fleet_infisical.py"
 install -m 0755 "$SRC_DIR/infisical-scoped.py" "$DEST/infisical-scoped.py"

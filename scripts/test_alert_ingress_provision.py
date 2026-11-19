@@ -26,7 +26,7 @@ class FakeRead:
         self.calls = []
 
     def __call__(self, project, path, env, *, token=None, names=None, **kwargs):
-        self.calls.append((project, path, tuple(names or ())))
+        self.calls.append((project, path, tuple(names or ()), dict(kwargs)))
         found = {}
         for name in names or ():
             if name in self.absent:
@@ -85,6 +85,68 @@ class ScopedRead(ServiceTokenTestCase):
         found = provision.scoped_values(["PRESENT", "GONE"], "fleet-ops", "/")
         self.assertEqual(found, {"PRESENT": "the-value"})
         self.assertEqual(len(read.calls), 1)
+
+
+class ScopedReadContract(ServiceTokenTestCase):
+    """The read keeps the contract the replaced reader enforced.
+
+    The strict read refuses a row that cannot be tied to the folder it came from,  and
+    a hung read keeps the timeout exit code the old subprocess contract promised.
+    """
+
+    def test_the_read_asks_for_strict_records(self):
+        read = self.read({"ONLY_ONE": "the-value"})
+        provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(read.calls[0][3], {"strict_records": True})
+
+    def test_a_row_without_its_provenance_is_refused(self):
+        # The real client,  with an answer that omits its workspace:  the strict read
+        # refuses it,  because the row cannot be tied to the folder it came from.
+        project = "11111111-2222-3333-4444-555555555555"
+        record = {
+            "type": "shared",
+            "secretKey": "ONLY_ONE",
+            "secretValue": "the-value",
+            "secretValueHidden": False,
+            "environment": "prod",
+            "secretPath": "/",
+        }
+        with (
+            mock.patch.object(
+                provision.scoped_secrets, "verify_service_token", return_value=("/",)
+            ),
+            mock.patch.object(
+                provision.scoped_secrets, "_api_json", return_value=(200, {"secret": record})
+            ),
+        ):
+            with self.assertRaises(provision.ReadError) as caught:
+                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertIn("unverified-source", caught.exception.reason)
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_a_hung_read_exits_with_the_timeout_code(self):
+        # `SecretsTimeout` is both a `SecretsError` and a `TimeoutError`,  so the
+        # timeout has to be caught first to keep exit code 124.
+        self.assertTrue(issubclass(provision.scoped_secrets.SecretsTimeout, TimeoutError))
+
+        def hung(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsTimeout()
+
+        with mock.patch.object(provision.scoped_secrets, "fetch_project", hung):
+            with self.assertRaises(provision.ReadError) as caught:
+                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(caught.exception.code, provision.EXIT_TIMEOUT)
+        self.assertEqual(caught.exception.code, 124)
+
+    def test_a_broken_credential_exits_with_one(self):
+        def broken(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsError("token-expired-or-invalid", 3)
+
+        with mock.patch.object(provision.scoped_secrets, "fetch_project", broken):
+            with self.assertRaises(provision.ReadError) as caught:
+                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(caught.exception.code, 1)
+        self.assertNotEqual(caught.exception.code, provision.EXIT_TIMEOUT)
 
 
 class BatchValues(ServiceTokenTestCase):
