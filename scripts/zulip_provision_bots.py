@@ -77,13 +77,19 @@ TOKEN_ACCOUNT = "zulip-provision-ro"
 
 
 def admin_secret(name, required=True):
-    """A realm-admin value:  this script's own scoped token against Infisical
-    /zulip_operator first,  and the environment only carries that result.
+    """A realm-admin value:  the environment first,  then this script's own scoped token
+    against Infisical /zulip_operator.
+
+    A host that already bound the value keeps it:  the environment is the value's own
+    binding,  and the store is where a host that bound nothing reads it.  The scoped token
+    is the only credential this read uses.
 
     Never prints a value or a backend detail.  Returns "" for a missing optional value and
     exits with a message naming the folder and key for a missing required one.
     """
-    value = ""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
     problem = ""
     try:
         import fleet_infisical as FI
@@ -97,9 +103,6 @@ def admin_secret(name, required=True):
             problem = f"the scoped token read refused ({status})"
     except Exception as err:
         problem = f"the Infisical read could not run ({type(err).__name__})"
-    if not value:
-        # A host that already bound the scoped result carries it in the environment.
-        value = os.environ.get(name, "").strip()
     if value:
         return value
     if not required:

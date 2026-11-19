@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fleet_infisical as FI
 import zulip_linkifiers as L
 
 
@@ -292,17 +293,24 @@ class CredentialTests(unittest.TestCase):
     def test_admin_falls_back_to_zulipadmin_folder_first(self):
         calls = []
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            return mock.Mock(returncode=0, stdout="v\n")
+        def fake_fetch(name, folder, env, token=None):
+            calls.append((name, folder, token))
+            return "v"
 
         env = {
             k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
-        with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
+        env[FI.ENV_PROJECT] = "project-under-test"
+        env[FI.ENV_TOKEN] = "st.test-token"
+        with mock.patch.dict("os.environ", env), mock.patch.object(
+            FI, "fetch_verified", fake_fetch
+        ):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
-        self.assertTrue(all(c[3:5] == ["--path", "/zulip_operator"] for c in calls))
+        # The Operator's own names come from the Operator's own folder,  through this
+        # script's own scoped token,  and never from the seat folder.
+        self.assertTrue(all(folder == "/zulip_operator" for _name, folder, _token in calls))
+        self.assertTrue(all(token == "st.test-token" for _name, _folder, token in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {
