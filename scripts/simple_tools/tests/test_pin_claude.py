@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import time
 
 from simple_tools import adapters as A
 from simple_tools import live as L
@@ -94,24 +95,50 @@ class PinClaudeTests(ListenerHarness):
                 self.assertFalse(os.path.exists(self.paths.wake_pin), label)
 
     def test_a_listing_that_hangs_is_given_up_on_and_pins_nothing(self) -> None:
-        claude = self.make_claude("claude-hang", "pass")
-        original = A.run_agents
-        calls = []
-
-        def timed_out(argv, env, cwd):
-            calls.append(list(argv))
-            return None
-
-        A.run_agents = timed_out
-        try:
-            result = self.pin(claude=claude)
-        finally:
-            A.run_agents = original
+        # A real blocking binary, so the test dies if the 10-second give-up is ever
+        # removed (a stubbed run_agents would pass with no timeout at all) - Kody, PR 2336.
+        claude = self.make_claude("claude-hang", "import time; time.sleep(3600)")
+        started = time.monotonic()
+        result = self.pin(claude=claude)
+        elapsed = time.monotonic() - started
         self.assertEqual(result.code, 1)
         self.assertIn("nothing was pinned", result.out)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1:], ["agents", "--json"])
+        self.assertGreaterEqual(elapsed, 9.0, "the listing was given up on before its 10-second limit")
+        self.assertLess(elapsed, 60.0, "the hang was not bounded")
         self.assertFalse(os.path.exists(self.paths.wake_pin))
+
+    def test_a_seat_the_daemon_does_not_read_is_refused_and_pins_nothing(self) -> None:
+        # Daemon.agent_kinds reads only cfg.claude_seat's pin, so a pin for another
+        # seat would be a file the check never reads (Kody, PR 2336).
+        marker = self.tmp / "ran-other-seat"
+        claude = self.make_claude(
+            "claude-marked-other", "open(%r, 'a').write('x')\nprint(json.dumps([]))" % str(marker)
+        )
+        result = self.pin("--json", "--seat", "OTHER", claude=claude)
+        self.assertEqual(result.code, 1)
+        report = json.loads(result.out)
+        self.assertEqual((report["ok"], report["error"]), (False, "wrong_seat"))
+        self.assertEqual(report["seat"], "OTHER")
+        plain = self.pin("--seat", "OTHER", claude=claude)
+        self.assertEqual(plain.code, 1)
+        self.assertIn("the daemon reads (CLAUDE)", plain.out)
+        self.assertFalse(marker.exists(), "the listing never ran")
+        self.assertFalse(os.path.exists(self.paths.wake_pin))
+
+    def test_a_binary_other_than_the_seat_configured_is_refused_and_pins_nothing(self) -> None:
+        # Daemon.agent_kinds resolves the seat's own configured claude, so a pin for
+        # any other binary would never be read (Kody, PR 2336).
+        self.write_config(claude=str(self.claude))
+        other = self.make_claude("claude-configured-other", "print(json.dumps([]))")
+        result = self.pin("--json", claude=other)
+        self.assertEqual(result.code, 1)
+        report = json.loads(result.out)
+        self.assertEqual((report["ok"], report["error"]), (False, "claude_mismatch"))
+        self.assertEqual(report["daemon_claude"], os.path.realpath(str(self.claude)))
+        self.assertFalse(os.path.exists(self.paths.wake_pin))
+        # The configured binary itself is still the one pin that stands.
+        self.assertEqual(self.pin().code, 0)
+        self.assertTrue(A.agents_pinned(self.paths, str(self.claude)))
 
     def test_a_missing_or_relative_binary_pins_nothing(self) -> None:
         for claude in ("relative/claude", str(self.bin / "no-such-claude"), "claude"):

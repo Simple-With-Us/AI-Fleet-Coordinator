@@ -1247,6 +1247,20 @@ def cmd_pin_claude(rt: Any, args: argparse.Namespace) -> int:
             rt.out(line + "\n")
         return 0 if ok else 1
 
+    # The daemon consults this pin only for its own Claude seat and only against the
+    # binary it resolves from that seat's config (Daemon.agent_kinds), so a pin for
+    # another seat, or for a binary other than the seat's configured one, would be a
+    # file the check never reads while the command still reports success (Kody, PR
+    # 2336).  When the seat names no binary, the daemon resolves the same wake PATH
+    # this command resolves:  the command runs where the listener runs.
+    daemon_seat = cfg.claude_seat or "CLAUDE"
+    if seat != daemon_seat:
+        report["error"] = "wrong_seat"
+        return finish(
+            False,
+            "FAIL: seat %s is not the Claude seat the daemon reads (%s); nothing was pinned"
+            % (seat, daemon_seat),
+        )
     claude = A.resolve_claude(explicit, wake_path)
     if claude is None:
         report["error"] = "no_claude"
@@ -1258,6 +1272,19 @@ def cmd_pin_claude(rt: Any, args: argparse.Namespace) -> int:
         return finish(False, "FAIL: %s, so nothing was pinned" % where)
     real = A.binary_pin(claude)
     report["claude"] = real
+    named = seat_cfg.claude if seat_cfg is not None else None
+    if named:
+        named_claude = A.resolve_claude(named, wake_path)
+        named_real = A.binary_pin(named_claude) if named_claude is not None else None
+        if named_real != real:
+            report["error"] = "claude_mismatch"
+            report["daemon_claude"] = named_real
+            return finish(
+                False,
+                "FAIL: seat %s's config names %s, but this command resolved %s, so nothing "
+                "was pinned; the daemon would never read that pin"
+                % (seat, named_real or "no usable claude", real),
+            )
     if args.check:
         pinned = A.pinned(paths, claude)
         usable = A.agents_pinned(paths, claude)
