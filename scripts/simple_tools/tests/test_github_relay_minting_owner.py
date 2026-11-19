@@ -477,7 +477,7 @@ class OperatorBrokerCannotMint(unittest.TestCase):
             ),
             bot_identity=lambda slug: {"login": slug + "[bot]", "id": 7},
             enabled=True,
-            nonce_ledger=NonceLedger(tempfile.mkdtemp()),
+            nonce_ledger=NonceLedger(Path(tempfile.mkdtemp()).resolve()),
         )
         self.assertTrue(broker.enabled, "this test is only meaningful when forced on")
 
@@ -519,7 +519,7 @@ class OperatorBrokerCannotMint(unittest.TestCase):
             router=TokenRouter(loader, Path(tempfile.mkdtemp()) / "cache"),
             bot_identity=lambda slug: {"login": slug + "[bot]", "id": 7},
             enabled=True,
-            nonce_ledger=NonceLedger(tempfile.mkdtemp()),
+            nonce_ledger=NonceLedger(Path(tempfile.mkdtemp()).resolve()),
         )
         path = "/operator/v1/github/CODEX/token"
         body = json.dumps(

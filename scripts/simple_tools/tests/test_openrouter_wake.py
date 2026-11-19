@@ -1,16 +1,18 @@
-"""The OpenRouter HTTP wake runtime, below the daemon:  the request it sends, how it reads every kind of
-answer and failure, the key it reads from Fleet-OPS, the config that names it, and the pin on its request
-shape.  Everything runs against a fake OpenRouter on 127.0.0.1;  nothing here reaches openrouter.ai, and
-the key a test plants is made at run time by repeating a pattern, so no key-shaped literal is in the source.
+"""The OpenRouter HTTP transport, below the daemon:  the request it sends, how it reads every kind of
+answer and failure, and the key it reads from Fleet-OPS.  Everything runs against a fake OpenRouter on
+127.0.0.1;  nothing here reaches openrouter.ai, and the key a test plants is made at run time by
+repeating a pattern, so no key-shaped literal is in the source.
 
-The daemon-level flows (a muse failure falling back, the Operator posting the reply, `test-wake`) are in
-test_openrouter_daemon.py.
+The `openrouter` wake type is retired (owner, Nov 10, 2026:  the listener starts no model), so no seat
+config names this runtime any more, and its pins went with it;  the transport and the key reader stay
+for the optional decider (`[decider.consult_backup]`), which is the one caller its declaration selects.
+The caller states the system message and the schema:  the wake contract and the wake result schema
+were the retired wake's.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import time
@@ -22,15 +24,13 @@ from unittest import mock
 
 from simple_tools import adapters as A
 from simple_tools import config as C
-from simple_tools import live as L
 from simple_tools import service_identity as SI
-from simple_tools import wakes as W
 from simple_tools import zulip as Z
 from simple_tools.tests.fake_openrouter import FakeOpenRouter, Reply, completion
 
 MODEL = "meta/muse-spark-1.3-contributor"
-FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 PROMPT_MARKER = "UNIQUE-PROMPT-MARKER-4471"
+SYSTEM = "You answer with one JSON object and nothing else."
 GOOD = {
     "action": "reply",
     "reply": "On it.  The cutover is in review.",
@@ -41,6 +41,16 @@ GOOD = {
     "chat_target": None,
     "chat_inspect": None,
 }
+#: A strict schema for GOOD's keys:  every property required, nothing else allowed.
+SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {key: {"type": ["string", "null"]} for key in GOOD},
+        "required": list(GOOD),
+        "additionalProperties": False,
+    },
+    separators=(",", ":"),
+)
 
 
 def fake_key() -> str:
@@ -58,7 +68,7 @@ class RunnerCase(unittest.TestCase):
 
     def call(self, prompt: str = "hello %s" % PROMPT_MARKER, model: str = MODEL, **kw: Any) -> A.RunResult:
         runner = kw.pop("runner", self.runner)
-        return runner.run(model, prompt, W.schema_text(strict=True), kw.pop("key", self.key), **kw)
+        return runner.run(model, prompt, SCHEMA, kw.pop("key", self.key), system=SYSTEM, **kw)
 
     # ---- the request ----------------------------------------------------------------------------
     def test_the_request_is_one_post_with_no_tools_and_the_strict_schema(self) -> None:
@@ -68,13 +78,11 @@ class RunnerCase(unittest.TestCase):
         self.assertEqual(seen.path, "/api/v1/chat/completions")
         body = seen.body
         self.assertEqual(body["model"], MODEL)
-        # The contract is the system message and the daemon's prompt is the user message.
-        with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
-            contract = fh.read().rstrip()
+        # The caller's system message is the system message and its prompt the user message.
         self.assertEqual(
             body["messages"],
             [
-                {"role": "system", "content": contract},
+                {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": "hello %s" % PROMPT_MARKER},
             ],
         )
@@ -83,14 +91,13 @@ class RunnerCase(unittest.TestCase):
             self.assertNotIn(name, body)
         self.assertIs(body["stream"], False)
         self.assertEqual(body["provider"], {"require_parameters": True})
-        # The strict json_schema is the SAME strict schema the muse runtime sends.
+        # The strict json_schema is the schema the caller passed.
         response_format = body["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["name"], "wake_result")
         self.assertIs(response_format["json_schema"]["strict"], True)
         schema = response_format["json_schema"]["schema"]
-        self.assertEqual(schema, json.loads(W.schema_text(strict=True)))
-        self.assertEqual(schema["required"], list(schema["properties"]), "strict:  every key is required")
+        self.assertEqual(schema, json.loads(SCHEMA))
         self.assertLessEqual(body["temperature"], 0.3)
         self.assertEqual(body["max_tokens"], A.OPENROUTER_MAX_TOKENS)
         self.assertLessEqual(A.OPENROUTER_MAX_TOKENS, 8192)
@@ -108,18 +115,15 @@ class RunnerCase(unittest.TestCase):
         self.fake.reply(Reply(status=503, body={"error": {"code": 503}}))
         result = self.call()
         self.assertEqual(result.error, "HTTP 503 (no provider available)")
-        self.assertEqual(len(self.fake.requests()), 1, "a retry would spend the worker on a provider that said no")
+        self.assertEqual(len(self.fake.requests()), 1, "a retry would spend the caller's time on a provider that said no")
 
     # ---- a good answer --------------------------------------------------------------------------
-    def test_a_good_answer_is_parsed_and_counted_and_passes_the_validator(self) -> None:
+    def test_a_good_answer_is_parsed_and_counted(self) -> None:
         result = self.call()
         self.assertTrue(result.ok)
         self.assertEqual(result.http_status, 200)
         self.assertEqual(result.exit, 0)
         self.assertEqual(result.parsed, GOOD)
-        obj, why = W.validate(result.parsed)
-        self.assertIsNone(why)
-        self.assertEqual(obj["action"], "reply")
         # The model that served the call is recorded (an alias resolves to a dated id), with counts only.
         self.assertEqual(result.models, ["meta/muse-spark-1.3-contributor-20260902"])
         self.assertEqual(
@@ -140,20 +144,17 @@ class RunnerCase(unittest.TestCase):
         self.fake.reply(Reply(body=completion(parts)))
         self.assertEqual(self.call().parsed, GOOD)
 
-    def test_a_schema_invalid_answer_reaches_the_same_validator_and_is_refused_there(self) -> None:
+    def test_any_json_answer_is_returned_and_its_shape_is_the_callers_to_check(self) -> None:
         for answer in (
             {"action": "reply"},  # keys missing
             dict(GOOD, action="nuke"),  # not in the enum
             dict(GOOD, surprise=1),  # an extra key
-            dict(GOOD, reply="x" * 2000),  # over the length cap
-            dict(GOOD, action="board", board=None),  # a board action with no board
+            dict(GOOD, reply="x" * 2000),  # over any length cap
         ):
             self.fake.reply(Reply(body=completion(answer)))
             result = self.call()
-            self.assertTrue(result.ok, "the runner reads it:  the shape check is the validator's")
-            obj, why = W.validate(result.parsed)
-            self.assertIsNotNone(why, answer)
-            self.assertEqual(obj["action"], "none")
+            self.assertTrue(result.ok, "the runner reads it:  the shape check is the caller's")
+            self.assertEqual(result.parsed, answer)
 
     # ---- every failure --------------------------------------------------------------------------
     def test_each_http_error_class_is_a_fixed_phrase_and_never_the_body(self) -> None:
@@ -248,7 +249,7 @@ class RunnerCase(unittest.TestCase):
         url = self.fake.url
         self.fake.stop()  # (the cleanup stops it again, which a finished loopback server allows)
         result = A.OpenRouterRunner(base_url=url, timeout=2.0).run(
-            MODEL, "p", W.schema_text(strict=True), self.key
+            MODEL, "p", SCHEMA, self.key, system=SYSTEM
         )
         self.assertEqual(result.error, "network: ConnectionRefusedError")
         self.assertIsNone(result.http_status)
@@ -265,19 +266,19 @@ class RunnerCase(unittest.TestCase):
             "https:///api/v1",
         ):
             self.assertIsNotNone(A.openrouter_url_problem(bad), bad)
-            result = A.OpenRouterRunner(base_url=bad).run(MODEL, "p", W.schema_text(strict=True), self.key)
+            result = A.OpenRouterRunner(base_url=bad).run(MODEL, "p", SCHEMA, self.key, system=SYSTEM)
             self.assertTrue(result.error.startswith("the OpenRouter URL is refused"), result.error)
             self.assertNotIn(self.key, result.error)
         self.assertEqual(self.fake.requests(), [])
 
-    def test_a_missing_contract_fails_before_any_call(self) -> None:
-        with mock.patch.object(A, "CONTRACT_PATH", "/nonexistent/wake-contract.md"):
-            result = self.call()
-        self.assertEqual(result.error, "wake contract unavailable")
+    def test_the_caller_must_state_the_system_message(self) -> None:
+        # There is no default:  the wake contract it used to read went with the retired wake types.
+        with self.assertRaises(TypeError):
+            self.runner.run(MODEL, "p", SCHEMA, self.key)
         self.assertEqual(self.fake.requests(), [])
 
     def test_the_default_runner_uses_the_production_endpoint(self) -> None:
-        # The base URL is a module constant, not a config key:  the daemon builds the runner with none.
+        # The base URL is a module constant, not a config key:  production builds the runner with none.
         self.assertIsNone(A.OpenRouterRunner().base_url)
         self.assertEqual(A.OPENROUTER_BASE_URL, "https://openrouter.ai/api/v1")
         self.assertNotIn("openrouter_base_url", Path(C.__file__).read_text(encoding="utf-8"))
@@ -410,333 +411,13 @@ class KeyCase(unittest.TestCase):
         self.assertIsNone(holder.known_unavailable())
 
 
-class ConfigCase(unittest.TestCase):
-    def seat(self, **section: Any) -> C.Config:
-        return C.from_dict(
-            {"daemon": {"owner_user_id": 12}, "seat": {"MM": dict({"bot": "MiniMax"}, **section)}}
-        )
+class ParseResultCase(unittest.TestCase):
+    """`parse_muse_result` reads the transport's answer text (moved from the deleted muse wake tests)."""
 
-    def test_the_wake_type_and_the_fallback_are_known(self) -> None:
-        self.assertIn("openrouter", C.KNOWN_WAKES)
-        self.assertIn("openrouter", C.WORKER_WAKES)
-        self.assertEqual(C.KNOWN_FALLBACKS, ("mcode", "openrouter"))
-        self.assertEqual(C.OPENROUTER_DEFAULT_MODEL, MODEL)
-        self.assertEqual(C.OPENROUTER_FALLBACK_MODEL, FALLBACK_MODEL)
-
-    def test_the_primary_defaults_to_the_muse_contributor_tier_through_openrouter(self) -> None:
-        cfg = self.seat(wake="openrouter")
-        self.assertEqual(cfg.errors, [])
-        seat = cfg.seats["MM"]
-        self.assertEqual((seat.wake, seat.model, seat.fallback), ("openrouter", MODEL, None))
-        self.assertEqual(seat.wake_max_usd, 0.0)
-        self.assertTrue(seat.held_back["catch_up"])
-
-    def test_the_mac_snippets_from_the_docs_load_clean(self) -> None:
-        both = self.seat(
-            wake="openrouter", model=MODEL, fallback="openrouter", fallback_model=FALLBACK_MODEL
-        )
-        self.assertEqual(both.errors, [])
-        self.assertEqual(
-            (both.seats["MM"].wake, both.seats["MM"].fallback, both.seats["MM"].fallback_model),
-            ("openrouter", "openrouter", FALLBACK_MODEL),
-        )
-        keep_muse = self.seat(wake="muse", fallback="openrouter")
-        self.assertEqual(keep_muse.errors, [])
-        self.assertEqual(keep_muse.seats["MM"].fallback_model, FALLBACK_MODEL, "the fallback default")
-        claude = self.seat(wake="claude", fallback="openrouter")
-        self.assertEqual(claude.errors, [])
-
-    def test_good_slugs_pass_and_bad_ones_are_refused_in_the_style_of_the_other_keys(self) -> None:
-        for good in (
-            MODEL,
-            FALLBACK_MODEL,
-            "deepseek/deepseek-v4-flash",
-            "minimax/MiniMax-M3.1-Flash",
-            "Qwen/Qwen3-8B",
-            "~anthropic/claude-sonnet-latest",
-            "@preset/operator-inbox-router",
-            "@preset/a",
-        ):
-            self.assertEqual(self.seat(wake="openrouter", model=good).errors, [], good)
-            self.assertEqual(self.seat(wake="muse", fallback="openrouter", fallback_model=good).errors, [], good)
-        for bad in (
-            "muse",
-            "muse spark",
-            "a/b/c",
-            "x:online/y",
-            "meta/muse:nitro",
-            "~/x",
-            "meta/",
-            "/x",
-            "~~a/b",
-            " meta/x",
-            "meta/x\n",
-            "meta/" + "x" * 90,
-            "$(id)/x",
-            "@preset/",
-            "@preset/ x",
-            "@preset/$(id)",
-            "@preset/" + "x" * 90,
-            " @preset/x",
-            "preset@preset/x",
-            5,
-        ):
-            wake = self.seat(wake="openrouter", model=bad)
-            self.assertTrue(any("seat.MM.model must be an OpenRouter model" in e for e in wake.errors), bad)
-            self.assertEqual(wake.seats["MM"].wake, "inbox", "fail soft:  the seat still captures")
-            fb = self.seat(wake="muse", fallback="openrouter", fallback_model=bad)
-            self.assertTrue(any("seat.MM.fallback_model must be an OpenRouter model" in e for e in fb.errors), bad)
-            self.assertEqual(fb.seats["MM"].wake, "inbox")
-
-    def test_a_muse_seat_still_takes_a_cli_alias_for_its_model_and_not_a_slug(self) -> None:
-        self.assertEqual(self.seat(wake="muse", model="muse-spark-1.3-contributor").errors, [])
-        self.assertTrue(self.seat(wake="muse", model=MODEL).errors)
-
-    def test_the_refused_combinations(self) -> None:
-        refused = {
-            # The flag stays for mcode only:  an OpenRouter call has no tools to acknowledge.
-            "uncontained": dict(wake="muse", fallback="openrouter", fallback_uncontained_ok=True),
-            "uncontained, false": dict(wake="muse", fallback="openrouter", fallback_uncontained_ok=False),
-            "fallback_model without the fallback": dict(wake="muse", fallback_model=FALLBACK_MODEL),
-            "fallback_model for mcode": dict(wake="muse", fallback="mcode", fallback_model=FALLBACK_MODEL),
-            "the same model twice": dict(wake="openrouter", fallback="openrouter", fallback_model=MODEL),
-            "an inbox seat": dict(wake="inbox", fallback="openrouter"),
-            "an http seat": dict(
-                wake="http", fallback="openrouter", routine={"url_env": "A_URL", "key_env": "A_KEY"}
-            ),
-            "mcode behind openrouter": dict(wake="openrouter", fallback="mcode"),
-            "a provider on an openrouter wake": dict(wake="openrouter", provider="OpenRouter"),
-            "a muse path on an openrouter wake": dict(wake="openrouter", muse="/usr/bin/muse"),
-            "an unknown fallback": dict(wake="muse", fallback="openrouters"),
-        }
-        for label, section in refused.items():
-            cfg = self.seat(**section)
-            self.assertTrue(cfg.errors, label)
-            self.assertEqual(cfg.seats["MM"].wake, "inbox", label)
-            self.assertIsNone(cfg.seats["MM"].fallback, label)
-            self.assertTrue(any("seat.MM." in e for e in cfg.errors), label)
-
-    def test_the_uncontained_flag_is_refused_with_the_reason_and_still_works_for_mcode(self) -> None:
-        cfg = self.seat(wake="muse", fallback="openrouter", fallback_uncontained_ok=True)
-        self.assertTrue(any("nothing to acknowledge" in e for e in cfg.errors), cfg.errors)
-        mcode = self.seat(wake="muse", fallback="mcode", fallback_uncontained_ok=True)
-        self.assertEqual(mcode.errors, [])
-        self.assertTrue(mcode.seats["MM"].fallback_uncontained_ok)
-
-    def test_a_wake_can_back_itself_with_openrouter_but_no_other_runtime_can(self) -> None:
-        self.assertEqual(self.seat(wake="openrouter", fallback="openrouter").errors, [])
-        for wake in ("muse", "claude"):
-            self.assertTrue(self.seat(wake=wake, fallback=wake).errors, wake)
-
-    def test_no_base_url_key_exists(self) -> None:
-        cfg = self.seat(wake="openrouter", openrouter_base_url="https://evil.example/api/v1")
-        # An unknown key is not an error in this file's style, and it is never read:  the URL is a constant.
-        self.assertEqual(cfg.seats["MM"].wake, "openrouter")
-        self.assertFalse(hasattr(cfg.seats["MM"], "openrouter_base_url"))
-        self.assertFalse(hasattr(cfg.seats["MM"], "base_url"))
-
-
-class PinCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp(prefix="fleet-listener-or-pin-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.paths = L.SeatPaths(self.tmp, "MM")
-        L.private_dir(self.paths.seat_dir)
-        self.now = time.time()
-
-    def pin(self, model: str = MODEL, role: str = A.OPENROUTER_ROLE_PRIMARY) -> None:
-        A.record_openrouter_candidate(self.paths, model, self.now, role)
-        self.assertIsNone(A.openrouter_pin_candidate(self.paths, model, self.now + 5, role))
-
-    def state(self, model: str = MODEL, role: str = A.OPENROUTER_ROLE_PRIMARY) -> dict[str, Any]:
-        return A.openrouter_pin_state(self.paths, model, role)
-
-    def test_the_pin_files_are_named_per_role(self) -> None:
-        self.assertTrue(self.paths.wake_pin_openrouter.endswith("wake-pin-openrouter.json"))
-        self.assertTrue(
-            self.paths.wake_pin_candidate_openrouter.endswith("wake-pin-candidate-openrouter.json")
-        )
-        self.assertTrue(
-            self.paths.wake_pin_openrouter_fallback.endswith("wake-pin-openrouter-fallback.json")
-        )
-        self.assertTrue(
-            self.paths.wake_pin_candidate_openrouter_fallback.endswith(
-                "wake-pin-candidate-openrouter-fallback.json"
-            )
-        )
-
-    def test_never_verified_holds_and_says_why(self) -> None:
-        state = self.state()
-        self.assertEqual((state["pinned"], state["why"]), (False, "not_pinned"))
-        self.assertFalse(A.openrouter_pinned(self.paths, MODEL))
-
-    def test_pinned_only_after_a_person_pins_a_passing_candidate(self) -> None:
-        A.record_openrouter_candidate(self.paths, MODEL, self.now)
-        self.assertFalse(self.state()["pinned"], "a passing test alone never pins")
-        self.assertIsNone(A.openrouter_pin_candidate(self.paths, MODEL, self.now + 5))
-        self.assertTrue(self.state()["pinned"])
-        self.assertFalse(os.path.exists(self.paths.wake_pin_candidate_openrouter), "the candidate is spent")
-        pin = L.read_json(self.paths.wake_pin_openrouter)
-        self.assertEqual((pin["model"], pin["role"]), (MODEL, "primary"))
-        self.assertEqual(pin["endpoint"], "https://openrouter.ai/api/v1/chat/completions")
-        self.assertRegex(pin["fingerprint"], r"^[0-9a-f]{64}$")
-
-    def test_a_pin_holds_no_credential(self) -> None:
-        self.pin()
-        text = Path(self.paths.wake_pin_openrouter).read_text(encoding="utf-8")
-        for needle in (fake_key(), "Bearer", "OPERATOR_OPENROUTER_API_KEY", "Authorization"):
-            self.assertNotIn(needle, text)
-
-    def test_a_pin_for_one_role_never_stands_in_for_the_other(self) -> None:
-        self.pin(MODEL, A.OPENROUTER_ROLE_PRIMARY)
-        self.assertTrue(self.state(MODEL, A.OPENROUTER_ROLE_PRIMARY)["pinned"])
-        self.assertEqual(self.state(MODEL, A.OPENROUTER_ROLE_FALLBACK)["why"], "not_pinned")
-        self.pin(FALLBACK_MODEL, A.OPENROUTER_ROLE_FALLBACK)
-        self.assertTrue(self.state(FALLBACK_MODEL, A.OPENROUTER_ROLE_FALLBACK)["pinned"])
-        # Copying one role's pin over the other is stale:  the role is in the fingerprint.
-        shutil.copy(self.paths.wake_pin_openrouter, self.paths.wake_pin_openrouter_fallback)
-        self.assertEqual(self.state(MODEL, A.OPENROUTER_ROLE_FALLBACK)["why"], "pin_stale")
-
-    def test_a_changed_model_is_stale_and_not_self_healed(self) -> None:
-        self.pin()
-        state = self.state(FALLBACK_MODEL)
-        self.assertEqual((state["pinned"], state["why"]), (False, "pin_stale"))
-        self.assertEqual(state["pinned_model"], MODEL)
-        self.assertEqual(self.state(MODEL)["pinned"], True, "the original model is still pinned")
-        self.assertEqual(L.read_json(self.paths.wake_pin_openrouter)["model"], MODEL, "nothing re-pinned")
-
-    def test_a_pin_with_no_fingerprint_verified_nothing_about_this_request(self) -> None:
-        L.write_json(self.paths.wake_pin_openrouter, {"model": MODEL, "at": self.now})
-        self.assertEqual(self.state()["why"], "pin_unverified")
-
-    def test_the_fingerprint_covers_the_model_the_role_and_the_policy(self) -> None:
-        base = A.openrouter_wake_fingerprint(MODEL)
-        self.assertEqual(base, A.openrouter_wake_fingerprint(MODEL), "stable")
-        self.assertNotEqual(base, A.openrouter_wake_fingerprint(FALLBACK_MODEL))
-        self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL, A.OPENROUTER_ROLE_FALLBACK))
-        self.pin()
-        with mock.patch.object(A, "OPENROUTER_WAKE_POLICY_VERSION", "openrouter-wake-v2"):
-            self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL))
-            self.assertEqual(self.state()["why"], "pin_stale")
-
-    def test_the_fingerprint_covers_every_part_of_the_request_shape(self) -> None:
-        base = A.openrouter_wake_fingerprint(MODEL)
-        self.pin()
-        changes = {
-            "max_tokens": ("OPENROUTER_MAX_TOKENS", A.OPENROUTER_MAX_TOKENS + 1),
-            "temperature": ("OPENROUTER_TEMPERATURE", 0.9),
-            "reasoning": ("OPENROUTER_REASONING", {"effort": "high"}),
-            "schema name": ("OPENROUTER_SCHEMA_NAME", "other_name"),
-            "endpoint host": ("OPENROUTER_BASE_URL", "https://other.example/api/v1"),
-            "endpoint path": ("OPENROUTER_PATH", "/responses"),
-            "timeout": ("OPENROUTER_TIMEOUT", A.OPENROUTER_TIMEOUT + 1),
-            "response cap": ("OPENROUTER_RESPONSE_CAP", A.OPENROUTER_RESPONSE_CAP + 1),
-        }
-        for label, (name, value) in changes.items():
-            with mock.patch.object(A, name, value):
-                self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL), label)
-                self.assertEqual(self.state()["why"], "pin_stale", label)
-            self.assertTrue(self.state()["pinned"], "restored:  %s" % label)
-
-    def test_the_fingerprint_covers_the_body_template_itself(self) -> None:
-        base = A.openrouter_wake_fingerprint(MODEL)
-        real = A.openrouter_request_body
-
-        def with_a_tool(model: str, system: str, user: str, schema: str) -> dict[str, Any]:
-            body = real(model, system, user, schema)
-            body["tools"] = [{"type": "function", "function": {"name": "x"}}]
-            return body
-
-        def without_require_parameters(model: str, system: str, user: str, schema: str) -> dict[str, Any]:
-            body = real(model, system, user, schema)
-            body["provider"] = {}
-            return body
-
-        for variant in (with_a_tool, without_require_parameters):
-            with mock.patch.object(A, "openrouter_request_body", variant):
-                self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL), variant.__name__)
-
-    def test_the_fingerprint_covers_the_contract_and_the_schema(self) -> None:
-        base = A.openrouter_wake_fingerprint(MODEL)
-        self.pin()
-        contract = Path(self.tmp) / "wake-contract.md"
-        contract.write_text(Path(W.CONTRACT_PATH).read_text(encoding="utf-8") + "\nAlso obey this.\n")
-        with mock.patch.object(A, "CONTRACT_PATH", str(contract)):
-            self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL))
-            self.assertEqual(self.state()["why"], "pin_stale")
-        schema = json.loads(Path(W.SCHEMA_PATH).read_text(encoding="utf-8"))
-        schema["properties"]["risk"] = {"enum": ["low", "high", None]}
-        schema_file = Path(self.tmp) / "wake-schema.json"
-        schema_file.write_text(json.dumps(schema))
-        with mock.patch.object(W, "SCHEMA_PATH", str(schema_file)):
-            self.assertNotEqual(base, A.openrouter_wake_fingerprint(MODEL))
-            self.assertEqual(self.state()["why"], "pin_stale")
-        self.assertTrue(self.state()["pinned"])
-
-    def test_an_unreadable_contract_is_unverifiable_and_not_a_changed_pin(self) -> None:
-        self.pin()
-        A.record_openrouter_candidate(self.paths, MODEL, self.now)  # a fresh pass, made while it was readable
-        with mock.patch.object(A, "CONTRACT_PATH", "/nonexistent/wake-contract.md"):
-            self.assertIsNone(A.openrouter_wake_fingerprint(MODEL))
-            state = self.state()
-            self.assertEqual(state["why"], "pin_unreadable")
-            entry = A.openrouter_pin_red_entry(state, "MM", A.OPENROUTER_ROLE_PRIMARY)
-            self.assertIn("unverifiable", entry)
-            self.assertNotIn("; run restore", entry, "an unreadable contract is not fixed by re-pinning")
-            self.assertIn("restore the wake contract", entry)
-            self.assertIn("cannot be verified", entry)
-            problem = A.openrouter_pin_candidate(self.paths, MODEL, self.now + 5)
-            self.assertIn("unavailable", problem or "")
-
-    def test_the_candidate_must_be_fresh_for_this_model_and_this_request(self) -> None:
-        self.assertIn("no passing test-wake --run", A.openrouter_pin_candidate(self.paths, MODEL, self.now))
-        A.record_openrouter_candidate(self.paths, MODEL, self.now)
-        self.assertIn(
-            "over a day old", A.openrouter_pin_candidate(self.paths, MODEL, self.now + 2 * 86400) or ""
-        )
-        self.assertIn(
-            "over a day old",
-            A.openrouter_pin_candidate(self.paths, MODEL, self.now - 10) or "",
-            "a candidate dated in the future is refused too",
-        )
-        self.assertIn(
-            "model changed since the test",
-            A.openrouter_pin_candidate(self.paths, FALLBACK_MODEL, self.now + 5) or "",
-        )
-        with mock.patch.object(A, "OPENROUTER_MAX_TOKENS", A.OPENROUTER_MAX_TOKENS + 1):
-            self.assertIn(
-                "request changed since the test",
-                A.openrouter_pin_candidate(self.paths, MODEL, self.now + 5) or "",
-            )
-        self.assertFalse(os.path.exists(self.paths.wake_pin_openrouter), "none of the refusals pinned")
-        self.assertIsNone(A.openrouter_pin_candidate(self.paths, MODEL, self.now + 5))
-
-    def test_a_candidate_for_the_other_role_cannot_be_pinned_here(self) -> None:
-        A.record_openrouter_candidate(self.paths, MODEL, self.now, A.OPENROUTER_ROLE_PRIMARY)
-        self.assertIn(
-            "no passing test-wake --run",
-            A.openrouter_pin_candidate(self.paths, MODEL, self.now + 5, A.OPENROUTER_ROLE_FALLBACK) or "",
-        )
-
-    def test_the_remediation_names_the_runtime_of_the_role(self) -> None:
-        stale = {"why": "pin_stale", "pinned_model": MODEL, "model": MODEL}
-        primary = A.openrouter_pin_red_entry(stale, "MM", A.OPENROUTER_ROLE_PRIMARY)
-        fallback = A.openrouter_pin_red_entry(stale, "MM", A.OPENROUTER_ROLE_FALLBACK)
-        self.assertIn("test-wake --seat MM --runtime openrouter --run", primary)
-        self.assertIn("test-wake --seat MM --runtime openrouter --pin", primary)
-        self.assertTrue(primary.startswith("wake pin is stale:"))
-        self.assertIn("test-wake --seat MM --runtime fallback --run", fallback)
-        self.assertIn("test-wake --seat MM --runtime fallback --pin", fallback)
-        self.assertTrue(fallback.startswith("fallback pin is stale:"))
-        moved = A.openrouter_pin_red_entry(
-            {"why": "pin_stale", "pinned_model": MODEL, "model": FALLBACK_MODEL}, "MM", "primary"
-        )
-        self.assertIn("the OpenRouter model is %s (pinned %s)" % (FALLBACK_MODEL, MODEL), moved)
-
-    def test_openrouter_is_a_never_capped_provider(self) -> None:
-        self.assertIn("openrouter", A.QUOTA_NEVER_CAP_PROVIDERS)
-        self.assertIsNone(A.quota_block("OpenRouter", 1.0, "/nonexistent"))
-        self.assertIsNone(A.quota_red("OpenRouter", 1.0, "/nonexistent"))
+    def test_parse_result_is_lenient_about_a_fence(self) -> None:
+        self.assertEqual(A.parse_muse_result('```json\n{"action":"none"}\n```'), {"action": "none"})
+        self.assertIsNone(A.parse_muse_result("no object here"))
+        self.assertIsNone(A.parse_muse_result(None))
 
 
 if __name__ == "__main__":

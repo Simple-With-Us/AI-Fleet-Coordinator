@@ -999,7 +999,7 @@ class Tools:
             self.posted_ids.add(message_id)
 
     def _message_item(
-        self, message: Mapping[str, Any], body_limit: int = BODY_LIMIT
+        self, message: Mapping[str, Any], body_limit: int | None = BODY_LIMIT
     ) -> dict[str, Any]:
         # MCP does not expose CLI sibling/mention attribution.  Computing it
         # would reread the full native ownership ledger for every shown item.
@@ -1827,7 +1827,13 @@ class Tools:
 
     # ---- messages -------------------------------------------------------------------------
     def _tool_zulip_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, _, body_limit, _full = self._zulip_message_read_limits(args, schema_default=1)
+        work, _, body_limit, full = self._zulip_message_read_limits(args, schema_default=1)
+        if full:
+            #  A single message read with full=true is lossless (AFC-756's contract, and the
+            #  standing rule that a wake's message is read in whole):  the 4000-character
+            #  page cap exists to bound multi-row lists, not one message, and Zulip itself
+            #  bounds a message's length, so no cap here stays bounded.
+            body_limit = None
         message = OPS.get_message(self.agent, int(work["message_id"]))
         item = self._message_item(message, body_limit)
         flags = [f for f in message.get("flags") or [] if isinstance(f, str)]
