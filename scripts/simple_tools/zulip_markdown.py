@@ -420,9 +420,7 @@ class _Converter(HTMLParser):
                 parent = " " * self.lists[-1].marker
                 # The text that follows the nested list starts on a line of its own, at
                 # the indent of the item that holds it (Kody, PR 2340).
-                self.lists[-1].item.append(
-                    "\n" + _indent(rendered, width) + "\n" + parent
-                )
+                self.lists[-1].item.append("\n" + _indent(rendered, width) + "\n" + parent)
             else:
                 self.blocks.append(self._quoted(rendered))
             return
@@ -475,9 +473,7 @@ class _Converter(HTMLParser):
             self.embed = None
             self.embed_url = ""
             self.buf.append(
-                "[embedded link: %s]" % _plain_attribute(url)
-                if url
-                else "[embedded content]"
+                "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]"
             )
 
     def _emoji_name(self, attrd: dict[str, str], classes: str) -> str:
