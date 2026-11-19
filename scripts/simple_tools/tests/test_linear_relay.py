@@ -2556,6 +2556,21 @@ class ReadablePostTests(WorkerCase):
         body = self.lin.updated[-1][1]
         self.assertIn("1 message(s) were not read back from Zulip", body)
 
+    def test_the_note_about_a_message_that_was_not_read_back_reaches_the_comment(self) -> None:
+        # The re-render changed nothing, but the comment still says that a message was
+        # not read back, so the reader is told (Jet, PR 2340).
+        entry = self.old_entry(quote="the whole post")
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the whole post"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) were not read back from Zulip", body)
+
     def test_a_repair_reads_past_the_first_page_of_a_busy_topic(self) -> None:
         # A reader answers the oldest messages of a topic first, up to its cap, so the
         # repair goes on, page by page, until it reaches the entry's own messages (Jet,

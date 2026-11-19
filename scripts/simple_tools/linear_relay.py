@@ -1286,21 +1286,9 @@ def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the rela
     lines = [entry["marker"], heading, ""]
     if entry.get("refreshed"):
         lines += ["_Re-rendered from Zulip on %s._" % entry["refreshed"], ""]
-        unread = sum(
-            1 for item in entry["links"] if not _item_current(item) and item.get("gone") is not True
-        )
-        gone = sum(1 for item in entry["links"] if item.get("gone") is True)
-        if unread:
-            lines += [
-                "_%d message(s) were not read back from Zulip and keep their earlier text._"
-                % unread,
-                "",
-            ]
-        if gone:
-            lines += [
-                "_%d message(s) are no longer in Zulip and keep their earlier text._" % gone,
-                "",
-            ]
+    note = _repair_note(entry)
+    if note:
+        lines += [note, ""]
     if earlier > 0:
         lines += ["_%d earlier message(s) not listed._" % earlier, ""]
     # What the messages share of the body:  the marker, the heading, the notes and the
@@ -1338,6 +1326,26 @@ def _item_current(item: Mapping[str, Any]) -> bool:
         return int(item.get("format", 0)) >= RENDER_VERSION
     except (TypeError, ValueError):
         return False
+
+
+def _repair_note(entry: Mapping[str, Any]) -> str:
+    """What the comment says about the messages of an entry that were not read back.
+
+    A message that was not read back keeps the text it had, and the reader is told
+    that, so a cut post never shows in the comment as if it were the whole one (Jet,
+    PR 2340)."""
+    unread = sum(
+        1 for item in entry["links"] if not _item_current(item) and item.get("gone") is not True
+    )
+    gone = sum(1 for item in entry["links"] if item.get("gone") is True)
+    lines = []
+    if unread:
+        lines.append(
+            "_%d message(s) were not read back from Zulip and keep their earlier text._" % unread
+        )
+    if gone:
+        lines.append("_%d message(s) are no longer in Zulip and keep their earlier text._" % gone)
+    return "\n".join(lines)
 
 
 def _item_done(item: Mapping[str, Any]) -> bool:
@@ -2201,7 +2209,7 @@ class RelayWorker:
             and pages < MAX_REPAIR_PAGES
             and (not read or max(int(message["id"]) for message in read) < wanted)
         ):
-            newest = max(int(message["id"]) for message in read)
+            newest = max((int(message["id"]) for message in read), default=0)
             try:
                 found, malformed, over = _by_id(self.history_since(stream_id, topic, newest))
             except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
@@ -2261,6 +2269,12 @@ class RelayWorker:
                 item["gone"] = True
         if all(_item_done(item) for item in entry["links"]):
             entry["format"] = RENDER_VERSION
+        # The note about the messages that were not read back reaches the reader when
+        # it changes, even when the re-render itself changed nothing (Jet, PR 2340).
+        note = _repair_note(entry)
+        if note != entry.get("pending_repair"):
+            entry["pending_repair"] = note
+            entry["dirty"] = True
         # The text an entry holds is bounded the way a new message bounds it:  the whole
         # posts do not push the entry past what a comment can show (Kody, PR 2340).
         trimmed = self._trim_entry(entry)
