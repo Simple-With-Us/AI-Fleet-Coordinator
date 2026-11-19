@@ -1031,7 +1031,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, [])
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
+        XCTAssertTrue(store.message?.contains("Managed by the shared Operator") == true)
     }
 
     /// The kill switch does not claim a result it cannot have on a seat the Mac does not hold.
@@ -1047,7 +1047,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(listener.actions, [])
         await store.resume(seat: "MA")
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
+        XCTAssertTrue(store.message?.contains("Managed by the shared Operator") == true)
         XCTAssertEqual(listener.actions, [])
     }
 
