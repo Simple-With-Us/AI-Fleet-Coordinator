@@ -5215,6 +5215,22 @@ class SecretTitleTests(HookTests):
         self.assertNotIn("\x00", json.dumps(note))
         self.assertEqual(note.get("title"), "Fix the relay now")
 
+    def test_a_refusal_names_the_field_it_came_from(self) -> None:
+        # A field that holds a credential is dropped whole, and the refusal says which field it was, so a
+        # consumer can tell `title` from `want`, `shown` or `inherited`.
+        secret = secret_word()
+        note = {"title": "Fix the relay", "want": "AA: " + secret, "shown": "AA: Fix the relay", "inherited": ""}
+        safe = PL._safe_note(note)
+        self.assertEqual(safe.get("want"), "")
+        self.assertEqual(safe.get("title"), "Fix the relay")
+        self.assertEqual(safe.get("title_refused"), "want_secret")
+        self.assertNotIn(secret, json.dumps(safe))
+        # A field that is one credential whole is recorded and cleared too.
+        whole = PL._safe_note({"title": secret, "want": "", "shown": "", "inherited": ""})
+        self.assertEqual(whole.get("title"), "")
+        self.assertEqual(whole.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(whole))
+
     def test_a_chats_own_name_is_not_cut_short(self) -> None:
         # The live title is compared with what the platform shows, so a name cut at the title limit would
         # rename the chat back to the cut name.  The name survives whole.

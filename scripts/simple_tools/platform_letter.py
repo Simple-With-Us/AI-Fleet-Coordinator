@@ -1363,19 +1363,25 @@ def _safe_note(note: Mapping[str, Any]) -> dict[str, Any]:
     """The note as it is written, with no credential in the words it keeps.
 
     The note is where a chat's words are kept, so a word that looks like a credential never reaches
-    the disk:  it is dropped, and the note keeps the refusal code and the identifier, never the value
-    (owner rule:  user-supplied text is secret-scanned before it is persisted, logged or relayed)."""
+    the disk:  a field that is one is dropped whole, and a field with a credential-shaped word in it
+    keeps the rest.  The refusal names the field the hit came from and never the value (owner rule:
+    user-supplied text is secret-scanned before it is persisted, logged or relayed)."""
     safe = dict(note)
     refused = ""
     for field in ("title", "want", "shown", "inherited"):
         value = safe.get(field)
         if not isinstance(value, str) or not value:
             continue
+        if secretscan.scan(value):
+            # The whole field is a credential:  it goes whole, and the code says which field it was.
+            safe[field] = ""
+            refused = "%s_secret" % field
+            continue
         cleaned = chat_name(value)
         if cleaned == value:
             continue
-        if secretscan.scan(value):
-            refused = "title_secret"
+        if any(secretscan.scan(word) for word in value.split(" ")):
+            refused = "%s_secret" % field
         safe[field] = cleaned
     if refused:
         safe["title_refused"] = refused
@@ -1856,8 +1862,10 @@ def ask_again(
     if lettered(fresh):
         fresh.update(announce=True, placeholder=compose(str(fresh["label"]), ""))
         # The chat holds a letter now, so the topic it carries is English:  the words it asked with, or the
-        # English topic it already had, and never a name in another script.
-        fresh["title"] = words or lettered_topic(str(fresh.get("title") or ""))
+        # English topic it already had, and never a name in another script.  A refused title is not taken
+        # back out of the note either:  the chat waits to be named, and the fallback is scanned too.
+        fallback, _ = registry_words(str(fresh.get("title") or ""))
+        fresh["title"] = "" if refusal else (words or fallback)
         if refusal:
             fresh["title_refused"] = refusal
     return fresh
