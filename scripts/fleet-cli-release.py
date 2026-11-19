@@ -68,10 +68,10 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
-# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
-# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
+# the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 180
+MAX_FILES = 190
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -127,6 +127,10 @@ EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
@@ -219,6 +223,12 @@ BASE_REQUIRED = frozenset(
 # The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
 TOOL_REQUIRED = frozenset(
     {
+        # New canonical settings consumers need the shared editor and its schema.
+        # Retained older code remains a valid rollback target.
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         # The CLI entry points:  a new bundle must carry them, but a retained older release may not and
         # stays a valid rollback target.
         "scripts/simple-chat",
@@ -246,7 +256,6 @@ TOOL_REQUIRED = frozenset(
         # Shared protected-custody helper for declared readers and interactive launchers.
         "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.
-        "scripts/simple_tools/operator_github_state.py",
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/simple_tools/mcp/fleetlink-tools.json",

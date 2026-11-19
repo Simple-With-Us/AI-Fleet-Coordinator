@@ -30,7 +30,7 @@ A failed poll alerts after 5 minutes and never trips.  So does an answer that i
 
 Each one is logged with the version that was live before it, in the journal and in `events.jsonl`.
 
-1. Post to Zulip through `simple-chat` as the CLAUDE seat, and page through Pushover.
+1. Page through Pushover. A post to Zulip is refused (`dedicated-service-binding-required`) until the watchdog has a dedicated service binding, because service automation cannot represent an agent seat.
 2. `PUT /workers/scripts/{name}/secrets` with `GUARD_MODE=off`, then label the newest deployment with a message starting `GUARD-TRIPPED` so a deployer can refuse to undo the trip.  If the secret write fails, the label still goes on and the write repeats each minute.  A refusal sends the Worker to the fallback stop at once, and a network fault, a 408, a 429 or a 5xx does after 2 more tries, because the fallback takes hostnames down.  The fallback stop never runs without the label: until the label lands it is held, with an alert each hour, because a redeploy over an unlabelled stop would quietly restore the cron triggers.
 3. If the rate has not fallen after 2 polls that hold minutes from after the trip, the fallback stop: empty the cron triggers, turn off workers.dev and preview URLs, and detach custom domains.  With the 2-minute lag that is about 5 minutes after the trip.  The rate has fallen when it is under the threshold (a rate trip on one Worker), under half the Worker's own rate at the trip (a rate trip on an account-wide rule, whose threshold is not that Worker's), or under half the rate at the trip (a day trip).  The steps left are saved after each one, so a crash repeats none that landed, a domain already gone counts as done, and a step that fails runs again each minute until it lands, with an alert each hour.
 
@@ -40,7 +40,7 @@ Every action writes exactly one row, whatever happens to it, and an unexpected e
 
 One gap stays open in the label.  It reads the live split and posts it straight back, and Cloudflare's create-deployment call takes no precondition, so a deploy landing between those two calls would be replaced by the older split.  A second read just before the post would leave the same gap after it, so there is none.  The newer version stays in the Worker's history and can be deployed again, after a re-arm if the label is still on.  Nothing detects the overwrite automatically, but the `action` or `rearm_step` row's `label_versions` field records the split that was posted, and `rearm` prints it, so an operator can compare it with the Worker's history.
 
-**The alert path has a known weak spot.**  On this server `simple-chat` reaches Zulip through the hosted server, which needs `SIMPLE_CHAT_REMOTE_WRITES=1` for a post (the watchdog sets it), which is the simple-tools-mcp Worker on this same account, with no direct fallback.  If that Worker is the one tripped, or the account is capped, the Zulip post fails.  Pushover is then the only alert that goes out, so configure it before turning on enforce.  The daily check names it when it is missing.
+**The alert path is Pushover only for now.** A post to Zulip is refused (`dedicated-service-binding-required`) until the watchdog has a dedicated service binding, so configure Pushover before turning on enforce. The daily check names it when it is missing.
 
 ## Why the stop is the fallback and not a stub version
 
@@ -58,7 +58,7 @@ Re-arm is manual.  `python3 watchdog.py status` lists trips.  `python3 watchdo
 
 ## Daily check
 
-Once a UTC day it reads the account again and compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  Preview URLs count as drift unless a registry row says `preview_urls: true`, since off is the fleet's rule.  workers.dev counts only where a row says `workers_dev: false`, since some Workers are served from it.  The file may be absent, and its absence is only logged.  It posts to Zulip when the differences change, and it never pages.  It also names a missing page path or heartbeat.  It waits for a good inventory read rather than comparing an old one.
+Once a UTC day it reads the account again and compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  Preview URLs count as drift unless a registry row says `preview_urls: true`, since off is the fleet's rule.  workers.dev counts only where a row says `workers_dev: false`, since some Workers are served from it.  The file may be absent, and its absence is only logged.  It tries to post to Zulip when the differences change, which is refused and logged until the binding exists, and it never pages.  It also names a missing page path or heartbeat.  It waits for a good inventory read rather than comparing an old one.
 
 ## Credentials
 
