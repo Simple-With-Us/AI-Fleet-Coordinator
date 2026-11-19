@@ -102,7 +102,7 @@ No entry of the repo allowlist needs one.  The default is right for both timers
 
 ```json
 {"ok": true, "verb": "server redeploy", "target": "<uuid>",
- "commands": [["coolify", "POST", "/api/v1/deploy?uuid=<uuid>"]],
+ "commands": [["coolify", "GET", "/api/v1/deploy?uuid=<uuid>"]],
  "result": "planned", "detail": "redeploy", "resourceName": "fleet-recall"}
 ```
 
@@ -183,7 +183,7 @@ Every name the helper and its sibling modules use that points at a live object, 
 | Docker socket and Coolify | `unix:///var/run/docker.sock`, `http://127.0.0.1:8000` | same | socket `root:docker` 0660; port 8000 listening | yes |
 | Environment variables the helper reads or passes (`SSH_ORIGINAL_COMMAND`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `HOME`, `PATH`, `LANG`, `LC_ALL`, `PM2_HOME`, `COOLIFY_BASE_URL`, `FLEET_OPS_CONTROL_INFISICAL_TOKEN`; `DOCKER_HOST` and `DOCKER_CONFIG` to docker) | unchanged by #1509 | same | `/run/user/1001` exists (0700) for the user manager; the others are the process's own | yes |
 | Mac LaunchAgent labels and pm2 names in the allowlist | `com.jay.simple-tools-runtime-sync` since Nov 2 | same | not checkable from the server | not checked |
-| Infisical project and the `COOLIFY_DEPLOY_ONLY` path `/coolify-deploy-only-token` | unchanged by #1509 | same | secret store, not read | not checked |
+| Infisical project and the `COOLIFY_API_TOKEN` path `/coolify` | unchanged by #1509 | same | secret store, not read | not checked |
 
 Of what the helper and its sibling modules name, #1509 changed only the eavesdropper's account, the environment names inside its container and the project id path (plus a docstring in `reduced_status.py` and the repo folder the collector maps unit files from), and the live system matches `main` on all of them.
 

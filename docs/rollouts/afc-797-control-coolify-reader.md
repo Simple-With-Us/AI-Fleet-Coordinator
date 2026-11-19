@@ -4,7 +4,7 @@ Refs AFC-797, child of AFC-785.  This is a source change; it does not install a
 
 ## Change
 
-The control helper reads only `COOLIFY_API_TOKEN` from Fleet-OPS prod `/coolify` through the canonical bounded named reader.  Superseded (2026-11-18, MM):  the helper now reads `COOLIFY_DEPLOY_ONLY` from Fleet-OPS prod `/coolify-deploy-only-token`, the folder that holds the deploy-only Coolify token, and the install check asks the deploy route about a uuid that can name no resource, because a deploy-scoped token has no `read` permission.  It no longer discovers or executes a separately installed fleet-secrets application.
+The control helper reads only `COOLIFY_API_TOKEN` from Fleet-OPS prod `/coolify` through the canonical bounded named reader.  Superseded (2026-11-18, MM):  the helper now reads `COOLIFY_DEPLOY_ONLY` from Fleet-OPS prod `/coolify-deploy-only-token`, the folder that holds the deploy-only Coolify token, and the install check asks the deploy route about a uuid that can name no resource, because a deploy-scoped token has no `read` permission.  The live binding and its verification are recorded in `docs/rollouts/2026-11-18-ops-control-coolify-redeploy.md`.  It no longer discovers or executes a separately installed fleet-secrets application.
 
 The helper retains its existing `FLEET_OPS_CONTROL_INFISICAL_TOKEN` process binding and protected `~/.config/fleet-tools/ops-control.env` parser.  A valid file still wins over the process binding; malformed, unowned, shared or symlinked files refuse.  An absent own binding never selects another consumer's token, a writer, machine identity, CLI login or retired flat file.
 
