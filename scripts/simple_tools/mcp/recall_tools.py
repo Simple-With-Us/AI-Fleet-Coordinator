@@ -269,11 +269,23 @@ def envelope(header: str, summary: str, items: list[Mapping[str, Any]]) -> str:
 
 
 def search(
-    args: Mapping[str, Any], *, env: Mapping[str, str], runner: Runner | None = None
+    args: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     query = str(args["query"]).strip()
     if not query:
         raise RecallUnavailable("invalid_argument", "argument 'query' must not be blank")
+    # The same pre-upstream gate the recall writes run:  a query, app or category that
+    # looks like it holds a secret is refused here, before anything is sent anywhere,
+    # and the refusal names the field and kind, never the value.
+    if scan is not None:
+        for field in ("query", "app", "category"):
+            value = args.get(field)
+            if value:
+                scan(field, str(value).strip())
     argv = ["search", query, "--limit", str(args.get("limit") or 5), "--json"]
     if args.get("app"):
         argv += ["--app", str(args["app"])]

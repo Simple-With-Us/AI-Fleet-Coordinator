@@ -2642,7 +2642,7 @@ class Tools:
         return self.ok(text, structured)
 
     def _tool_recall_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        return self._recall(lambda: RECALL.search(args, env=self.agent.rt.env))
+        return self._recall(lambda: RECALL.search(args, env=self.agent.rt.env, scan=lambda field, value: self._scan(**{field: value})))
 
     def _tool_recall_stats(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall(lambda: RECALL.stats(env=self.agent.rt.env))
