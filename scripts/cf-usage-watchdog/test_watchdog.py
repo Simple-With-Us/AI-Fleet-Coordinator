@@ -1108,27 +1108,17 @@ class ConnectionTests(Base):
         self.assertEqual(caught.exception.codes, [10000])
         self.assertNotIn(self.TOKEN, str(caught.exception))
 
-    def test_zulip_uses_simple_chat_as_the_seat_without_infisical_in_its_environment(self):
-        conn = self.conn({}, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
-        self.assertTrue(conn.zulip("hello"))
-        command, kwargs = self.commands[0]
-        self.assertEqual(
-            command,
-            [
-                "simple-chat",
-                "post",
-                "--channel",
-                "Work-In-Progress",
-                "--topic",
-                "AFC-617 cf usage watchdog",
-                "-",
-            ],
+    def test_zulip_is_refused_until_a_dedicated_service_binding_exists(self):
+        def boom(command, **kwargs):
+            raise AssertionError("service automation must not spawn simple-chat as a seat")
+
+        conn = wd.Connections(
+            self.cfg, runner=boom, env={"INFISICAL_TOKEN": "t", "HOME": "/h"}
         )
-        self.assertEqual(kwargs["input"], "hello")
-        self.assertEqual(kwargs["env"]["AGENT_SEAT"], "CLAUDE")
-        self.assertEqual(kwargs["env"]["SIMPLE_CHAT_REMOTE_WRITES"], "1")
-        self.assertNotIn("INFISICAL_TOKEN", kwargs["env"])
-        self.assertLessEqual(len(self.cfg["zulip"]["topic"]), 60)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(conn.zulip("hello"))
+        self.assertIn('"event": "zulip_failed"', out.getvalue())
+        self.assertIn('"error": "dedicated-service-binding-required"', out.getvalue())
 
     def test_zulip_failure_is_false_not_a_crash(self):
         def boom(command, **kwargs):
@@ -1359,12 +1349,10 @@ class HttpSafetyTests(Base):
         self.assertEqual(wd.error_codes("not-a-list"), [])
 
     def test_a_failed_zulip_post_logs_why_and_stays_false(self):
-        conn = wd.Connections(
-            self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=2), env={}
-        )
+        conn = wd.Connections(self.cfg, runner=lambda command, **kwargs: None, env={})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.zulip("hello"))
-        self.assertIn('"exit": 2', out.getvalue())
+        self.assertIn('"error": "dedicated-service-binding-required"', out.getvalue())
 
 
 class MalformedAnswerTests(Base):
