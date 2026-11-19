@@ -302,8 +302,9 @@ class CredentialTests(unittest.TestCase):
         }
         env[FI.ENV_PROJECT] = "project-under-test"
         env[FI.ENV_TOKEN] = "st.test-token"
-        with mock.patch.dict("os.environ", env), mock.patch.object(
-            FI, "fetch_verified", fake_fetch
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(FI, "fetch_verified", fake_fetch),
         ):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
