@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -347,3 +348,18 @@ class DurableWriteTests(unittest.TestCase):
         store = I.IdemStore(os.path.join(self.tmp.name, "idem.json"))
         store.begin("k:test:aaaaaaaa-1", 60.0, {"tool": "t"})
         self.assertGreaterEqual(len(self.synced), 2)
+
+
+class PrivateDirTests(unittest.TestCase):
+    def test_the_seat_dir_is_private_under_a_permissive_umask(self) -> None:
+        # `os.makedirs(..., exist_ok=True)` obeys the umask, so a permissive shell left a
+        # group- or world-readable seat dir holding wake pins.  The fixture must build it the
+        # way the listener does, and it must hold even when the umask would not.
+        with tempfile.TemporaryDirectory() as tmp:
+            seat_dir = os.path.join(tmp, "MM")
+            previous = os.umask(0o000)
+            try:
+                L.private_dir(seat_dir)
+            finally:
+                os.umask(previous)
+            self.assertEqual(stat.S_IMODE(os.stat(seat_dir).st_mode), 0o700)

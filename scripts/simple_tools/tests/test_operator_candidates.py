@@ -12,7 +12,8 @@ letter means (owner ruling, Nov 10, 2026).  What stays is the ledger the other 
   - a rejected credential is named by a masked preview only;
   - a malformed member record is refused before it is used.
 
-The wake prompt's session-letter rule and the Operator identity helpers are pinned here too.
+The Operator identity helpers are pinned here too.  (The wake prompt's session-letter rule went
+with the retired wake types:  the listener starts no model, owner ruling Nov 10, 2026.)
 """
 
 from __future__ import annotations
@@ -27,8 +28,6 @@ from pathlib import Path
 
 from simple_tools import operator_candidates as OC
 from simple_tools import service_identity as SI
-from simple_tools import wakes as W
-from simple_tools import zulip as Z
 
 # Synthetic fixture ids only:  no committed test carries a real realm user id.
 OPERATOR_ID = 9101
@@ -154,56 +153,6 @@ class NothingIsAskedTests(unittest.TestCase):
     def test_the_candidate_list_is_gone(self) -> None:
         for name in ("send_candidate_list", "render_body", "candidate_view", "resolve_recipient"):
             self.assertFalse(hasattr(OC, name), name)
-
-
-class WakePromptTests(unittest.TestCase):
-    """The wake prompt tells the seat the rule:  nobody is asked, nothing blocks."""
-
-    def prompt(self, **overrides) -> str:
-        pending = W.Pending(
-            "w1",
-            "MM",
-            {"channel": Z.DEFAULT_CHANNEL, "topic": "AFC-412"},
-            owner=False,
-            now=1.0,
-            due=2.0,
-        )
-        pending.add({"id": 5}, False)
-        kwargs = dict(
-            seat="MM",
-            pending=pending,
-            history=[],
-            owner_user_id=OWNER_ID,
-            is_bot=lambda uid: True,
-            owner_of=lambda message: False,
-            format_time=str,
-            board_enabled=False,
-            nonce="n",
-        )
-        kwargs.update(overrides)
-        return W.build_prompt(**kwargs)
-
-    def test_the_prompt_says_nothing_blocks_and_names_the_default(self) -> None:
-        prompt = self.prompt()
-        self.assertIn("nobody is asked", prompt)
-        self.assertNotIn("candidate list", prompt)
-        self.assertIn("Nothing here blocks", prompt)
-        self.assertIn("your default letter", prompt)
-        self.assertIn("name the letter you used", prompt)
-
-    def test_the_prompt_names_the_letter_of_the_tagged_address(self) -> None:
-        prompt = self.prompt(tagged_address="Z")
-        self.assertIn('the session letter "Z"', prompt)
-        self.assertIn("nobody is asked", prompt)
-        self.assertNotIn("candidate list", prompt)
-        self.assertIn("Nothing here blocks", prompt)
-
-    def test_the_rule_sits_outside_the_untrusted_block(self) -> None:
-        prompt = self.prompt()
-        lines = prompt.splitlines()
-        begin = lines.index("BEGIN_UNTRUSTED_ZULIP nonce=n")
-        header = "\n".join(lines[:begin])
-        self.assertIn("Nothing here blocks", header)
 
 
 class ServiceIdentityTests(unittest.TestCase):

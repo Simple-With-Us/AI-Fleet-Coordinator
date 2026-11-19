@@ -631,17 +631,26 @@ class PendingReceiptTests(Harness):
             1306: {"wake_id": "wok", "state": "done", "via": "claude", "at": t},
         })
 
-    def test_a_count_only_read_and_a_page_with_no_items_never_touch_the_ledger(self) -> None:
-        paths = self.seat("COUNT", [self.row(1, 1401)], [self.wake("w1", "done", self.T0, [1401], adapter="claude")])
+    def test_a_read_with_no_candidate_never_touches_the_ledger_and_a_count_only_read_reads_it_once(self) -> None:
+        # AFC-824:  the count leaves out a message whose wake the router delivered, so a count-only read
+        # that has a candidate reads the ledger too (one bounded tail read, then the cache);  a read
+        # with no candidate still never touches it.
+        paths = self.seat("COUNT", [self.row(1, 1401), self.row(2, 1402)], [
+            self.wake("w1", "done", self.T0, [1401], adapter="claude"),
+            self.wake("w2", "done", self.T0, [1402], adapter="http"),
+            self.wake("w2", "delivered", self.T0 + 60, [1402]),
+        ])
         with self.watch(paths.wakes) as spy:
-            counted = LR.pending_inbox_view(self.root, "COUNT", after_seq=0, limit=0)
-            self.assertEqual((counted["count"], counted["items"]), (1, []))
             empty = LR.pending_inbox_view(self.root, "COUNT", after_seq=5)
             self.assertEqual((empty["count"], empty["items"]), (0, []))
         self.assertEqual((spy.stats, spy.opens, spy.builtin_opens, spy.preads), (0, 0, 0, []))
-        with self.watch(paths.wakes) as spy:  # and a read that does show an item does read it, once
-            self.assertEqual(self.receipts("COUNT")[1401]["wake_id"], "w1")
+        with self.watch(paths.wakes) as spy:  # the count-only read opens the ledger once, and joins it
+            counted = LR.pending_inbox_view(self.root, "COUNT", after_seq=0, limit=0)
+            self.assertEqual((counted["count"], counted["items"]), (1, []))
         self.assertEqual((spy.opens, spy.builtin_opens), (1, 0))
+        with self.watch(paths.wakes) as spy:  # and the next read of the unchanged file is the cache's
+            self.assertEqual(self.receipts("COUNT")[1401]["wake_id"], "w1")
+        self.assertEqual((spy.opens, spy.builtin_opens, spy.preads), (0, 0, []))
 
     def test_only_the_tail_of_a_large_ledger_is_read_and_older_wakes_get_null(self) -> None:
         # Three times the real window, in 3000 wakes of about a kilobyte:  one read of the last

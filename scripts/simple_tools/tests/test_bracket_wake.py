@@ -26,7 +26,7 @@ EMAIL = {
     CLAUDE: "claude-bot@zulip.test",
     11: "codex-bot@zulip.test",
     CURSOR: "cursor-bot@zulip.test",
-    OWNER: "jay@zulip.test",
+    OWNER: "owner@example.test",
     SENTRY: "sentry-bot@zulip.test",
 }
 
