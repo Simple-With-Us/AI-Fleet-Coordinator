@@ -29,6 +29,32 @@ from simple_tools import live as L
 from simple_tools import zulip as Z
 from simple_tools.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
+
+def private_dir(path) -> str:
+    """A private directory, built one level at a time with owner-only permissions.
+
+    Every missing level is created explicitly with mode 0o700, a symlinked level is refused,
+    and nothing outside the test's own home is ever followed.  One helper for the whole fleet:
+    a fixture directory that is not owner-only, or that follows a symlink, is a fixture that
+    another user can read."""
+    missing = []
+    probe = os.path.abspath(str(path))
+    while not os.path.exists(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    if os.path.islink(str(path)):
+        raise OSError("refusing a symlinked directory: %s" % path)
+    for level in reversed(missing):
+        if os.path.islink(level):
+            raise OSError("refusing a symlinked directory: %s" % level)
+        os.mkdir(level, mode=0o700)
+        os.chmod(level, 0o700)
+    return str(path)
+
+
 SESSION = "11112222-3333-4444-5555-666677778888"
 TAG = "11112222"
 # The tests exercise both listener instances.  The live partition gives no agent seat to "mac" since
@@ -117,10 +143,10 @@ class Harness(unittest.TestCase):
         (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n%s" % (user_id, extra))
 
     def tearDown(self) -> None:
-        token = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
+        auth = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
         everything = "\n".join(self.transcript)
         self.assertNotIn(self.key, everything, "the API key reached the output")
-        self.assertNotIn(token, everything, "the base64 auth token reached the output")
+        self.assertNotIn(auth, everything, "the base64 auth token reached the output")
 
     def add_infisical_bot(
         self, seat: str, *, email: str, key: str, site: str | None = None
