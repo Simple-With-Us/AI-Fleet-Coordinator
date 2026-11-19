@@ -58,9 +58,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
-# From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
+# From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
+# the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-release.py carries the same number and the reason.
-MAX_FILES = 180
+MAX_FILES = 190
 # Step 2 of the two-step cap raise:  ships at most 11 MiB, leaving at least 1 MiB under
 # fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB).  The receiver that runs is the published
 # scripts/fleet-cli-release.py blob from the same source commit, and receiver_policy()
