@@ -5221,7 +5221,8 @@ class SecretTitleTests(HookTests):
         secret = secret_word()
         note = {"title": "Fix the relay", "want": "AA: " + secret, "shown": "AA: Fix the relay", "inherited": ""}
         safe = PL._safe_note(note)
-        self.assertEqual(safe.get("want"), "")
+        # The credential word goes and the rest of the field stays.
+        self.assertEqual(safe.get("want"), "AA:")
         self.assertEqual(safe.get("title"), "Fix the relay")
         self.assertEqual(safe.get("title_refused"), "want_secret")
         self.assertNotIn(secret, json.dumps(safe))
@@ -5230,6 +5231,11 @@ class SecretTitleTests(HookTests):
         self.assertEqual(whole.get("title"), "")
         self.assertEqual(whole.get("title_refused"), "title_secret")
         self.assertNotIn(secret, json.dumps(whole))
+        # A field that holds a credential among other words keeps the rest of its words.
+        mixed = PL._safe_note({"title": "Fix deploy: " + secret, "want": "", "shown": "", "inherited": ""})
+        self.assertEqual(mixed.get("title"), "Fix deploy:")
+        self.assertEqual(mixed.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(mixed))
 
     def test_a_chats_own_name_is_not_cut_short(self) -> None:
         # The live title is compared with what the platform shows, so a name cut at the title limit would

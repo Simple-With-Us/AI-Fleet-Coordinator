@@ -1372,15 +1372,17 @@ def _safe_note(note: Mapping[str, Any]) -> dict[str, Any]:
         value = safe.get(field)
         if not isinstance(value, str) or not value:
             continue
-        if secretscan.scan(value):
-            # The whole field is a credential:  it goes whole, and the code says which field it was.
+        parts = [word for word in value.split(" ") if word]
+        if secretscan.scan(value) and parts and all(secretscan.scan(word) for word in parts):
+            # Every word in the field is a credential:  it goes whole, and the code says which field it was.
             safe[field] = ""
             refused = "%s_secret" % field
             continue
         cleaned = chat_name(value)
         if cleaned == value:
             continue
-        if any(secretscan.scan(word) for word in value.split(" ")):
+        if any(secretscan.scan(word) for word in parts):
+            # The field holds a credential among other words:  the credential goes, the rest stays.
             refused = "%s_secret" % field
         safe[field] = cleaned
     if refused:
