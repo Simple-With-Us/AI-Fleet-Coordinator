@@ -46,6 +46,8 @@ extend-exclude = [
 "scripts/fleet-tools-doctor.py" = "py39"
 "scripts/fleet-server-status.py" = "py39"
 "scripts/fleet-vm-status.py" = "py39"
+"scripts/fleet-api-health.py" = "py39"
+"scripts/test_fleet_api_health.py" = "py39"
 # Muster's build helpers run under the Mac's /usr/bin/python3 (3.9) from build_and_run.sh.
 "muster/script/**" = "py39"
 # fleet-rag already requires Python 3.10 syntax, but the Mac installer registers it as plain
@@ -72,6 +74,8 @@ extend-exclude = [
 "scripts/fleet-tools-doctor.py" = ["UP017"]
 "scripts/fleet-server-status.py" = ["UP017"]
 "scripts/fleet-vm-status.py" = ["UP017"]
+"scripts/fleet-api-health.py" = ["UP017"]
+"scripts/test_fleet_api_health.py" = ["UP017"]
 "muster/script/**" = ["UP017"]
 
 [format]

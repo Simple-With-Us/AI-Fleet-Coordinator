@@ -67,10 +67,10 @@ LIVE_DEFAULTS: dict[str, int] = {}
 # `zulip.DEFAULT_CHANNEL`:  live.py sits on the hook fast path, and test_live.py forbids importing
 # simple_tools.zulip there.  test_default_channel.py holds the two in step.
 DEFAULT_PRESENCE = [
-    ["work-in-progress", "roll call"],
-    ["work-in-progress", "fleet"],
-    ["builds", "gates"],
-    ["alerts", "*"],
+    ["Work-In-Progress", "roll call"],
+    ["Work-In-Progress", "fleet"],
+    ["Builds", "gates"],
+    ["Alerts", "*"],
 ]
 MARKER_BEGIN = "BEGIN_UNTRUSTED_ZULIP"
 MARKER_END = "END_UNTRUSTED_ZULIP"
@@ -254,32 +254,9 @@ class SeatPaths:
         self.owner_queue = os.path.join(self.seat_dir, "owner-queue.jsonl")
         self.owner_queue_meta = os.path.join(self.seat_dir, "owner-queue.meta.json")
         self.wakes = os.path.join(self.seat_dir, "wakes.jsonl")
-        self.wake_dir = os.path.join(self.seat_dir, "wake")
+        # The claude binary pin the lease-liveness probe reads (Daemon.agent_kinds, adapters.record_pin).
+        # It is not a wake pin any more:  the listener starts no model (owner ruling, Nov 10, 2026).
         self.wake_pin = os.path.join(self.seat_dir, "wake-pin.json")
-        self.wake_pin_candidate = os.path.join(self.seat_dir, "wake-pin-candidate.json")
-        # The muse wake pins its own binary on its own files (AFC-291):  a claude pin says a person
-        # verified the claude build's wake contract and can never stand in for the muse one, which
-        # is a different binary with a different flag surface.
-        self.wake_pin_muse = os.path.join(self.seat_dir, "wake-pin-muse.json")
-        self.wake_pin_candidate_muse = os.path.join(self.seat_dir, "wake-pin-candidate-muse.json")
-        # The mcode fallback pins its own binary on its own files too:  a fallback is only trusted
-        # once a person has verified that build's wake contract, exactly as for the primaries.
-        self.wake_pin_mcode = os.path.join(self.seat_dir, "wake-pin-mcode.json")
-        self.wake_pin_candidate_mcode = os.path.join(self.seat_dir, "wake-pin-candidate-mcode.json")
-        # The OpenRouter HTTP runtime has no binary to pin, so a pin vouches for the request shape
-        # (endpoint, model, schema, contract, body template, policy version).  One pin per role:  the
-        # primary and the fallback of a seat may name different models, and a pin made for one can
-        # never stand in for the other.
-        self.wake_pin_openrouter = os.path.join(self.seat_dir, "wake-pin-openrouter.json")
-        self.wake_pin_candidate_openrouter = os.path.join(
-            self.seat_dir, "wake-pin-candidate-openrouter.json"
-        )
-        self.wake_pin_openrouter_fallback = os.path.join(
-            self.seat_dir, "wake-pin-openrouter-fallback.json"
-        )
-        self.wake_pin_candidate_openrouter_fallback = os.path.join(
-            self.seat_dir, "wake-pin-candidate-openrouter-fallback.json"
-        )
 
     def lease(self, lease_id: str) -> str:
         return os.path.join(self.leases, lease_id + ".json")
