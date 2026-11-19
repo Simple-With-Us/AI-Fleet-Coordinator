@@ -35,6 +35,7 @@ from simple_tools import claude_wake as CW
 from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
+from simple_tools.tests.harness import private_dir
 
 SID_A = "aaaaaaaa-0000-4000-8000-000000000001"
 SID_B = "bbbbbbbb-0000-4000-8000-000000000002"
@@ -132,9 +133,9 @@ class WorkspaceRootTests(unittest.TestCase):
         path and drops the lane that was named under the root."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "root"
-            root.mkdir()
+            private_dir(root)
             outside = Path(tmp) / "outside"
-            outside.mkdir()
+            private_dir(outside)
             lane = root / "lane"
             lane.symlink_to(outside, target_is_directory=True)
             self.assertTrue(WR.workspace_allowed(str(lane), str(root)))
@@ -144,7 +145,7 @@ class WorkspaceRootTests(unittest.TestCase):
         and the two name one tree, so the session is inside the root."""
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "real"
-            real.mkdir()
+            private_dir(real)
             link = Path(tmp) / "link"
             link.symlink_to(real, target_is_directory=True)
             self.assertTrue(WR.workspace_allowed(str(real / "BotFleet"), str(link)))
