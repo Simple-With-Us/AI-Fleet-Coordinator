@@ -32,8 +32,10 @@ A reload after a stream event forgets the old set first, so a reload that fails 
 knowing nothing rather than trusting a set that may be stale; the queue is kept, and the reload is
 tried again after every poll.  The relay keeps running through a Zulip outage instead of exiting,
 because it does nothing while the set is unknown.  A message that arrives while the set is unknown
-is not held for later: like a message sent while the queue is down, it is not mirrored.  Archived
-public streams count as public: only `invite_only` makes a stream private.
+is not held for later: like a message sent while the queue is down, it is not mirrored by the
+standalone relay (hosted by the Operator, a topic with a standing comment reads it at its next
+message; see "What this does NOT promise").  Archived public streams count as public: only
+`invite_only` makes a stream private.
 
 Nothing is ever posted from Linear to Zulip, and there is no #issues stream.
 
@@ -55,6 +57,11 @@ lists only the messages that moved.
 - A move to a private stream closes the old entry (`change_all`), or takes the moved messages out of
   its list (a partial move), so the comment never links to messages in a stream the relay may not
   look at.
+- An archived record (see "The ledger") obeys the same rules: `change_all` re-keys it, a move to a
+  private stream drops it, and a partial move leaves it with the old topic.  It lists no message,
+  so a partial move to a private stream cannot take messages out of its comment until the topic's
+  next message restores and refills it.  A rename that newly names an issue whose comment is
+  archived restores nothing: the topic's next message does.
 
 ## The comment
 
@@ -178,23 +185,44 @@ once per cycle, not once per message; a create still writes its intent ahead of 
 It MUST sit on a persistent volume.  A lost ledger means the relay no longer knows which comment
 belongs to a topic, so it starts a new one, and the old comment stays behind.
 
-The ledger is bounded: 500 entries and 8 MB.  The oldest entries are pruned first.  A pruned entry
-means a later message in that old topic starts a second comment.
+The ledger is bounded: 500 entries and 8 MB, and the oldest entries are pruned first.  The comment
+map outlives that bound (AFC-821).  A pruned entry that has a comment, or a create whose outcome is
+unknown, leaves a record in the ledger's `archive` table under the same key: the conversation's
+first message id, the comment id, the `pending` flag and when the entry was last touched, and no
+topic text, stream name, link or quote.  The topic's next message, whether or not it names the
+issue, restores the entry from that record under its original marker and edits the old comment; a
+record whose create was never confirmed is looked up by that marker before anything is created.
+Hosted by the Operator, the restored entry is refilled from the topic's history first, and when
+that read fails the record waits in the archive and the comment is left as it is until a later
+message; standalone, the restored entry restarts from the live message.
+
+The archive is optional, so a ledger without one opens as it always did, and the version stays 2.
+When it is there it is checked on load like the entries: a table, every key exactly as the relay
+writes it, and every record with all four fields of the right type and a finite time.  A malformed
+record stops the relay, and the message names its position only.  The archive is bounded at 20,000
+records and by the file's 8 MB: its oldest records are dropped first, and the log says how many
+("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 8 MB.
+A build from before AFC-821 reads a ledger that has an archive, writes the table back as it found
+it, and neither adds to it nor restores from it, so a rollback loses only the restores.
 
 ## What this does NOT promise
 
-The relay is not exactly-once, and it does not say it is.  Three things can each produce a second
+The relay is not exactly-once, and it does not say it is.  Four things can each produce a second
 comment for one topic:
 
-1. a lost ledger, or a ledger pruned past the topic;
+1. a lost ledger, or an archived record dropped at the archive's bound;
 2. a second relay process on another host, which the file lock cannot prevent across hosts;
-3. an uncertain write outcome, where a create landed and its answer was lost.
+3. an uncertain write outcome, where a create landed and its answer was lost;
+4. a topic rename or a stream move the relay never saw (one made while it was not running, or while
+   its public-stream set was unloaded): the topic's entry, or its archived record, stays under the
+   old name, and a mention under the new name starts afresh.
 
-A fourth leaves an old comment behind without adding one: when a topic is renamed onto a topic that
-already has its own comment, the two conversations merge into the surviving comment, and the moved
-topic's older comment is left as it was and is no longer updated, because the app cannot delete
-comments.  Retiring it with an edit that points at the surviving comment waits for the sandbox run
-to show that an edit works under `read` and `comments:create`.
+One more leaves an old comment behind without adding one: when a topic is renamed onto a topic that
+already has its own comment, the two conversations merge into the surviving comment, and the other
+comment is left as it was and is no longer updated, because the app cannot delete comments.  The
+destination's comment survives, except that a live entry survives over an archived record, which
+holds no message to merge.  Retiring the other comment with an edit that points at the surviving
+one waits for the sandbox run to show that an edit works under `read` and `comments:create`.
 
 The relay narrows the third one, and it tracks the outcome of every create explicitly in the
 file-backed ledger:
@@ -218,10 +246,15 @@ That reconciliation is bounded by the pages it reads and is not verified against
 pagination, consistency or markup persistence (whether Linear keeps the HTML comment of the marker
 is one of the sandbox checks below), so it narrows the risk rather than removing it.
 
-Two more limits, both from the handoff: a queue expiry or a downtime loses the messages sent in the
-gap, because there is no backfill; and the permission to edit a comment under the Linear scopes
-`read` and `comments:create` is UNVERIFIED.  The relay is written for it, and the sandbox test that
-proves it comes later, after Jay approves the app.
+Two more limits, both from the handoff.  For the standalone relay, a queue expiry or a downtime
+loses the messages sent in the gap, because it has no history reader.  Hosted by the Operator
+(`docs/operator-linear-comments.md`), a topic with a standing comment reads that gap when its next
+message arrives, after a restart, after an event queue registers again, or after a message was
+dropped while the stream set was unloaded; a topic that stays silent keeps its gap until then, and
+the module docstring of `linear_relay.py` lists what else that catch-up does not promise.  And the
+permission to edit a comment under the Linear scopes `read` and `comments:create` is UNVERIFIED.
+The relay is written for it, and the sandbox test that proves it comes later, after Jay approves
+the app.
 
 ## Gates that stay with Jay
 
