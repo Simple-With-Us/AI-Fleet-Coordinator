@@ -234,8 +234,9 @@ made explicit.
   values and not lines).  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery
   by hand, the same code the POST path runs.
 - `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
-  registry env file (`~/.local/bin/operator-registry-env`) itself (the letter hooks no longer read it:  they get the same
-  settings from the host's `~/.local/bin/platform-letter` wrapper, which sources an env script in shell), binds the
+  registry env file (`~/.local/bin/operator-registry-env`) itself.  This unit is a separate consumer from the
+  letter client, whose [dedicated registry-only bootstrap](../rollouts/afc-785-letter-bootstrap.md) replaces
+  env-helper sourcing; verify each consumer's own approved binding before activation.  The unit binds the
   address `/etc/zc-wake-bridge.env` names (the tailnet IP;  loopback without one), and runs the
   checkout out of fleet-cli `current`, so a release move never leaves a dead path.
 - Target rules:  a subagent session never wins (the store's `task_type` says so), a session on
@@ -271,8 +272,9 @@ router never reads it.
 This is the legacy bridge's own setup, not the seat's routine:  the seat's routine is the
 one wake router's, and the names below are the bridge's.
 
-1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
-    `fleet-secrets` writes it;  never through chat text, never printed.
+1.  Provision `ZC_ROUTINE_KEY` in Infisical Fleet-OPS `/zulip` (32+ characters) through an
+    approved Infisical admin session (`fleet-secrets` only writes `/linear` and `/cli-logins`);
+    never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  the seat's block moves to the bridge's own binding, which is the shape

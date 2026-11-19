@@ -13,7 +13,7 @@ import sys
 from unittest import mock
 
 from fleet_knobs import __main__ as cli
-from fleet_knobs import inventory, setter, values
+from fleet_knobs import inventory, setter, source, values
 from fleet_knobs.registry import BY_NAME, REGISTRY
 
 from ._fake import SIGNING, KnobTestCase, fixture_service_token
@@ -228,7 +228,8 @@ class StatusValuesTests(KnobTestCase):
 class PlanTruthTests(KnobTestCase):
     def setUp(self):
         super().setUp()
-        from fleet_secrets import core
+        core = source._load_helper()
+        self.assertIsNotNone(core)
 
         verifier = mock.patch.object(core, "verify_service_token", return_value=("/",))
         verifier.start()
