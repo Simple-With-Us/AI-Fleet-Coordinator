@@ -2634,15 +2634,19 @@ class ReadablePostTests(WorkerCase):
         ]
         self.topic.messages = []
 
+        seen_after_ids: list[int] = []
+
         def since(
             stream_id: int, topic: str, after_id: int, deadline: float | None = None
         ) -> list[dict]:
+            seen_after_ids.append(after_id)
             return [past(1, "one"), past(2, "two")]
 
         self.w = self.worker(history=self.topic.whole, history_since=since)
         self.w.tick()
         self.assertEqual(entry["format"], lr.RENDER_VERSION)
         self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
+        self.assertEqual(seen_after_ids, [0])  # the walk starts at the beginning of the topic
 
     def test_a_missing_legacy_row_reaches_the_comment_when_nothing_else_changed(self) -> None:
         # The sibling's quote did not change, but a message that is gone from Zulip is
@@ -2658,6 +2662,26 @@ class ReadablePostTests(WorkerCase):
         self.w.tick()
         body = self.lin.updated[-1][1]
         self.assertIn("1 message(s) are no longer in Zulip", body)
+
+    def test_a_repair_read_with_a_reader_that_takes_no_deadline_still_works(self) -> None:
+        # A host may supply a reader that takes only the three arguments the catch-up
+        # path passes, and the walk calls it that way (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+
+        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
 
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean

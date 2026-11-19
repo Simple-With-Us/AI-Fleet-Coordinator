@@ -137,6 +137,7 @@ import fcntl
 import hashlib
 import heapq
 import http.client
+import inspect
 import json
 import math
 import os
@@ -1348,6 +1349,30 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _takes_deadline(reader: Callable[..., Any]) -> bool:
+    """True when a reader takes the deadline a walk shares.
+
+    A host may supply a reader that takes only the three arguments the catch-up path
+    passes, so the deadline is handed only to a reader that can take it, and a reader
+    that cannot is called the way it always was (Kody, PR 2340)."""
+    try:
+        parameters = inspect.signature(reader).parameters
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for parameter in parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.name == "deadline":
+            return True
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 4
+
+
 def _item_gone(item: Mapping[str, Any]) -> bool:
     """True when a message is marked as no longer in Zulip.
 
@@ -1474,6 +1499,8 @@ class RelayWorker:
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
         history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
+        # A reader may take the deadline a walk shares as its fourth argument, and one
+        # that does not is called with the three the catch-up path passes (Kody, PR 2340).
         history_since: Callable[..., list[Mapping[str, Any]]] | None = None,
         byline: str = "the relay",
     ) -> None:
@@ -2219,6 +2246,8 @@ class RelayWorker:
         # The reader compares the deadline with the real clock, so the deadline is
         # computed with the real clock too (Kody, PR 2340).
         deadline = time.monotonic() + REPAIR_READ_BUDGET
+        reader = self.history_since
+        takes_deadline = _takes_deadline(reader)
         pages = 0
         complete = False
         while (
@@ -2232,9 +2261,10 @@ class RelayWorker:
                 break
             newest = max((int(message["id"]) for message in read), default=0)
             try:
-                found, malformed, over = _by_id(
-                    self.history_since(stream_id, topic, newest, deadline)
-                )
+                if takes_deadline:
+                    found, malformed, over = _by_id(reader(stream_id, topic, newest, deadline))
+                else:
+                    found, malformed, over = _by_id(reader(stream_id, topic, newest))
             except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
                 self.log(
                     "the messages of %s could not be read further (%s)"
