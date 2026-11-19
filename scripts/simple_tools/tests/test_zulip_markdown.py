@@ -24,9 +24,7 @@ class HtmlTests(unittest.TestCase):
     def test_a_code_block_becomes_a_fenced_block(self) -> None:
         html = '<div class="codehilite"><pre><span></span><code>print(1)\nprint(2)\n</code></pre></div>'
         out = zm.to_markdown(html)
-        self.assertTrue(out.startswith("```\n"))
-        self.assertIn("print(1)\nprint(2)", out)
-        self.assertTrue(out.endswith("\n```"))
+        self.assertEqual(out, "```\nprint(1)\nprint(2)\n\n```")
 
     def test_a_pre_block_becomes_a_fenced_block(self) -> None:
         out = zm.to_markdown("<pre><code>ls -l\n</code></pre>")
@@ -234,7 +232,7 @@ class LinkPartsTests(unittest.TestCase):
 
     def test_an_image_inside_a_link_keeps_its_placeholder(self) -> None:
         html = '<p><a href="https://x"><img src="s" alt="pic"></a></p>'
-        self.assertEqual(zm.to_markdown(html), "[\\[image: pic\\]](https://x)")
+        self.assertEqual(zm.to_markdown(html), "[[image: pic]](https://x)")
 
     def test_a_mention_and_a_code_span_inside_a_link_keep_their_own_shape(self) -> None:
         html = (
@@ -242,6 +240,33 @@ class LinkPartsTests(unittest.TestCase):
             " and <code>run</code></a></p>"
         )
         self.assertEqual(zm.to_markdown(html), "[@A\\[B and `run`](https://x)")
+
+
+class BufferTests(unittest.TestCase):
+    """Every buffer takes the text that belongs in it, and each part is escaped once."""
+
+    def test_a_code_span_inside_a_mention_keeps_its_place(self) -> None:
+        # The innermost buffer that is open takes the code marker, so the words of the
+        # post keep their order (Kody, PR 2340).
+        html = '<p><a href="https://x"><span class="user-mention">@A<code>c</code></span></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[@A`c`](https://x)")
+
+    def test_a_code_block_keeps_its_text_inside_the_fence(self) -> None:
+        # The text of a code span inside a pre block stays in the pre block, so the fence
+        # holds the code and the paragraph does not (Kody, PR 2340).
+        html = '<div class="codehilite"><pre><span></span><code>print(1)\n</code></pre></div>'
+        out = zm.to_markdown(html)
+        self.assertEqual(out, "```\nprint(1)\n\n```")
+
+    def test_an_image_inside_a_code_span_stays_in_the_code(self) -> None:
+        # The code buffer wins over the link, so the placeholder stays in the code span
+        # (Kody, PR 2340).
+        html = '<p><a href="https://x"><code>a<img src="s" alt="p">b</code></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[`a[image: p]b`](https://x)")
+
+    def test_an_emoji_inside_a_code_span_stays_in_the_code(self) -> None:
+        html = '<p><a href="https://x"><code>a<span class="emoji" title="tada"></span>b</code></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[`a:tada:b`](https://x)")
 
 
 class CodeTests(unittest.TestCase):

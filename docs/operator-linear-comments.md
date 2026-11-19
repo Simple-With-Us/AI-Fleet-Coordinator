@@ -242,7 +242,7 @@ above, and the AFC-821 archive and catch-up, malformed history messages and read
 answer no list at all included, and the whole post (the conversion, the bounds and the
 notes, the credential scan over the converted text, and the repair of the comments an
 older build wrote).  The conversion itself has its own suite
-(`test_zulip_markdown.py`, 54 tests).
+(`test_zulip_markdown.py`, 64 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 
