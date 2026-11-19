@@ -290,7 +290,23 @@ class NestingTests(unittest.TestCase):
             '<div class="codehilite"><pre><code>q</code></pre></div></div></a></p>'
         )
         out = zm.to_markdown(html)
-        self.assertEqual(out, "```\nq\n```\n\n[\\[embedded content\\]](https://x)")
+        self.assertEqual(out, "[\\[embedded content\\]](https://x)")
+
+    def test_the_blocks_of_an_embedded_message_are_dropped(self) -> None:
+        # Nothing the embedded message holds becomes a block of the outer document:  a
+        # heading, a list and a rule are dropped with it (Kody, PR 2340).
+        heading = zm.to_markdown('<div class="message_embed"><h1>T</h1></div>')
+        self.assertEqual(heading, "\\[embedded content\\]")
+        listing = zm.to_markdown('<div class="message_embed"><ul><li>x</li></ul></div>')
+        self.assertEqual(listing, "\\[embedded content\\]")
+        rule = zm.to_markdown("<div class=\"message_embed\"><hr></div>")
+        self.assertEqual(rule, "\\[embedded content\\]")
+
+    def test_the_heading_of_an_embedded_message_joins_no_paragraph(self) -> None:
+        # The marker of the heading is dropped with the embedded message,  so it is not
+        # welded to the text of the paragraph it sits in (Kody, PR 2340).
+        out = zm.to_markdown('<p>Intro<div class="message_embed"><h1>T</h1></div></p>')
+        self.assertEqual(out, "Intro\\[embedded content\\]")
 
     def test_an_embedded_message_keeps_its_paragraph_whole(self) -> None:
         # The paragraph does not split around the embedded message (Kody, PR 2340).

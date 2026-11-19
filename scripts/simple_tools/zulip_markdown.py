@@ -402,13 +402,18 @@ class _Converter(HTMLParser):
         """Close the innermost open list:  its items become blocks.
 
         A list the sender never closed keeps its items in a buffer that is never
-        emptied, and the post would lose them (Kody, PR 2340)."""
+        emptied, and the post would lose them (Kody, PR 2340).  A list inside an
+        embedded message is dropped with it,  and never becomes a block of the outer
+        document (Kody, PR 2340)."""
         if not self.lists:
             return
         if self.embed is not None:
             self._keep_only_links()
-        else:
-            self._close_inline()
+            ctx = self.lists[-1]
+            ctx.item = None
+            self.lists.pop()
+            return
+        self._close_inline()
         ctx = self.lists[-1]
         if ctx.item is not None:
             text = "".join(ctx.item).strip()
@@ -522,11 +527,13 @@ class _Converter(HTMLParser):
             return
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._flush(keep_inline=self.embed is not None)
-            self.buf.append("%s " % ("#" * int(tag[1])))
+            if self.embed is None:
+                self.buf.append("%s " % ("#" * int(tag[1])))
             return
         if tag == "hr":
             self._flush(keep_inline=self.embed is not None)
-            self.blocks.append(self._quoted("---"))
+            if self.embed is None:
+                self.blocks.append(self._quoted("---"))
             return
         if tag == "img":
             alt = _strip_control(attrd.get("alt", "").strip())
@@ -540,7 +547,8 @@ class _Converter(HTMLParser):
             if self.pre is not None:
                 code = "".join(self.pre)
                 self.pre = None
-                self.blocks.append(self._quoted(_fence(code)))
+                if self.embed is None:
+                    self.blocks.append(self._quoted(_fence(code)))
             return
         if tag == "code":
             self._close_code()
@@ -590,9 +598,13 @@ class _Converter(HTMLParser):
             if not self.lists:
                 return
             if self.embed is not None:
+                # The text of the item went into the embedded message, so the item is
+                # not rendered as a block of the outer document (Kody, PR 2340).
                 self._keep_only_links()
-            else:
-                self._close_inline()  # the text of an open link stays in the item
+                ctx = self.lists[-1]
+                ctx.item = None
+                return
+            self._close_inline()  # the text of an open link stays in the item
             ctx = self.lists[-1]
             if ctx.item is None:
                 return
