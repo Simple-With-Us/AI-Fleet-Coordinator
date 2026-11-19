@@ -46,6 +46,10 @@ _HTML_CLOSER = re.compile(
     r"|thead|tbody|tr|br)>"
 )
 
+# The void elements, the ones that are closed by themselves:  a post of them alone has no
+# closing tag, and it is still rendered HTML (Kody, PR 2340).
+_HTML_VOID = re.compile(r"<(?:br|img|hr)[ />]")
+
 # A Markdown link in the source:  the text, then the target in parentheses.
 _LINK = re.compile(r"\[([^\]\n]*)\]\(\s*((?:[^()\s]|\([^()\s]*\))*)(?:\s+\"[^\"]*\")?\s*\)")
 
@@ -85,6 +89,8 @@ def _looks_like_html(text: str) -> bool:
         return False  # a code block:  its body may hold markup
     if not _HTML_SIGNATURE.match(stripped):
         return False  # it does not open with a tag the reader knows
+    if _HTML_VOID.match(stripped):
+        return True  # a void element is closed by itself
     return bool(_HTML_CLOSER.search(text))  # and it closes what it opens
 
 
@@ -264,8 +270,67 @@ class _Converter(HTMLParser):
             return self.pre
         return self.buf
 
+    def _close_inline(self) -> None:
+        """Close an open inline element into the place its text belongs.
+
+        A link keeps its text and its URL, a mention keeps its name, and a code span keeps
+        its text (Kody, PR 2340)."""
+        if self.link is not None:
+            text = "".join(self.link).strip()
+            self.link = None
+            if text and self.embed is None:
+                self._sink().append(
+                    "[%s](%s)" % (_escape_text(text), _escape_url(self.href))
+                )
+        if self.mention is not None:
+            name = "".join(self.mention).strip()
+            self.mention = None
+            if name:
+                if not name.startswith("@"):
+                    name = "@" + name
+                self._sink().append(_escape_text(name))
+        if self.code is not None:
+            text = "".join(self.code)
+            self.code = None
+            if text:
+                self._sink().append(_inline_code(text))
+
+    def _close_list(self) -> None:
+        """Close the innermost open list:  its items become blocks.
+
+        A list the sender never closed keeps its items in a buffer that is never
+        emptied, and the post would lose them (Kody, PR 2340)."""
+        if not self.lists:
+            return
+        self._close_inline()
+        ctx = self.lists[-1]
+        if ctx.item is not None:
+            text = "".join(ctx.item).strip()
+            ctx.item = None
+            marker = "%d. " % (len(ctx.items) + 1) if ctx.ordered else "- "
+            ctx.items.append(marker + text)
+        items = ctx.items
+        self.lists.pop()
+        if not items:
+            return
+        rendered = "\n".join(items)
+        if self.lists and self.lists[-1].item is not None:
+            # A nested list belongs under the item that holds it, and is indented by
+            # the width of that item's marker, so it reads as part of it whether the
+            # marker is "- " or "1. " (Kody, PR 2340).
+            width = self.lists[-1].marker + 1
+            parent = " " * self.lists[-1].marker
+            # The text that follows the nested list starts on a line of its own, at
+            # the indent of the item that holds it (Kody, PR 2340).
+            self.lists[-1].item.append(
+                "\n" + _indent(rendered, width) + "\n" + parent
+            )
+        else:
+            self.blocks.append(self._quoted(rendered))
+
     def _flush(self) -> None:
         """End the paragraph being read."""
+        self._close_inline()
         if not self.buf:
             return
         block = "".join(self.buf).strip()
@@ -396,6 +461,7 @@ class _Converter(HTMLParser):
         if tag == "li":
             if not self.lists:
                 return
+            self._close_inline()  # the text of an open link stays in the item
             ctx = self.lists[-1]
             if ctx.item is None:
                 return
@@ -406,23 +472,7 @@ class _Converter(HTMLParser):
             return
         if tag in ("ul", "ol"):
             self._flush()
-            if not self.lists:
-                return
-            ctx = self.lists.pop()
-            if not ctx.items:
-                return
-            rendered = "\n".join(ctx.items)
-            if self.lists and self.lists[-1].item is not None:
-                # A nested list belongs under the item that holds it, and is indented by
-                # the width of that item's marker, so it reads as part of it whether the
-                # marker is "- " or "1. " (Kody, PR 2340).
-                width = self.lists[-1].marker + 1
-                parent = " " * self.lists[-1].marker
-                # The text that follows the nested list starts on a line of its own, at
-                # the indent of the item that holds it (Kody, PR 2340).
-                self.lists[-1].item.append("\n" + _indent(rendered, width) + "\n" + parent)
-            else:
-                self.blocks.append(self._quoted(rendered))
+            self._close_list()
             return
         if tag in ("p", "tr", "table", "section", "article", "thead", "tbody"):
             self._flush()
@@ -446,23 +496,10 @@ class _Converter(HTMLParser):
         A tag the sender never closed sends its text into a buffer that is never
         emptied, and the post would read as empty;  the text is put back where a reader
         can see it (Kody, PR 2340)."""
-        if self.link is not None:
-            text = "".join(self.link).strip()
-            self.link = None
-            if text:
-                self.buf.append(_escape_text(text))
-        if self.mention is not None:
-            name = "".join(self.mention).strip()
-            self.mention = None
-            if name:
-                if not name.startswith("@"):
-                    name = "@" + name
-                self.buf.append(_escape_text(name))
-        if self.code is not None:
-            text = "".join(self.code)
-            self.code = None
-            if text:
-                self.buf.append(_inline_code(text))
+        self._close_inline()
+        while self.lists:
+            self._close_list()
+        self._close_inline()
         if self.pre is not None:
             code = "".join(self.pre)
             self.pre = None

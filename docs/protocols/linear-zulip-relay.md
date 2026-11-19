@@ -84,7 +84,9 @@ relay's wider rows (long hex and base64 runs, and a keyword such as `password` o
 by `:` or `=` and a value).  A message's text is scanned as the text the comment shows, that is
 after it is converted to Markdown, so a markup attribute (a Zulip `data-user-id`, a long href) can
 never trip a row by itself; a link's URL stays in the text, so a credential inside one is still
-caught.  The Zulip-shaped row also withholds an opaque 32-character id, a cost
+caught.  The post itself is relayed as readable Markdown:  its link openers stay escaped and
+never live, and its code spans and fenced blocks keep the sender's own formatting.  The
+Zulip-shaped row also withholds an opaque 32-character id, a cost
 accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  Neither

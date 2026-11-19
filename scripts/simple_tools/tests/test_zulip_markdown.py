@@ -286,5 +286,34 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(out, "- one\n   - a\n  tail")
 
 
+class UnclosedTests(unittest.TestCase):
+    """What a post leaves open keeps its text."""
+
+    def test_a_post_of_void_elements_is_read_as_html(self) -> None:
+        # A void element is closed by itself, so a post of them alone has no closing
+        # tag and is still rendered HTML (Kody, PR 2340).
+        out = zm.to_markdown('<img src="x" alt="pic">')
+        self.assertEqual(out, "[image: pic]")
+
+    def test_the_text_of_an_unclosed_link_keeps_its_place(self) -> None:
+        # The text of a link the sender never closed stays where the sender wrote it,
+        # before the blocks that follow it (Kody, PR 2340).
+        out = zm.to_markdown('<p>first <a href="https://x">second<ul><li>item</li></ul>')
+        self.assertTrue(out.startswith("first "), out)
+        self.assertIn("[second](https://x)", out)
+        self.assertLess(out.index("second"), out.index("item"))
+
+    def test_an_unclosed_list_keeps_its_items(self) -> None:
+        out = zm.to_markdown("<ul><li>one</li><li>two")
+        self.assertIn("one", out)
+        self.assertIn("two", out)
+
+    def test_an_unclosed_link_in_a_list_item_keeps_its_url(self) -> None:
+        out = zm.to_markdown('<ul><li>see <a href="https://example.com/x">the docs</li></ul>')
+        self.assertIn("the docs", out)
+        self.assertIn("https://example.com/x", out)
+        self.assertIn("- see", out)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
