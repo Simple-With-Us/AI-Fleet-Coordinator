@@ -2337,7 +2337,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
@@ -2354,20 +2354,72 @@ fi
 # environment and the shared type) is checked before the value is used.  There is no shared
 # reader, no machine identity and no cached copy:  a missing token, a locked keychain or a
 # refused grant yields nothing.  The value is never logged.
+#
+# Two rules about the token itself:
+#
+#   1. The bearer token never reaches an argument list.  The Authorization header goes to
+#      curl on standard input with curl --config -, so no process table shows it.
+#   2. The API base is pinned.  An inherited INFISICAL_API_BASE must never be able to send
+#      this consumer's scoped token to another host.
+#
+# The value comes back in _INFISICAL_SECRET_VALUE and the reason in
+# _INFISICAL_SECRET_STATUS:  "ok", "no-token", "keychain-locked", "token-unreadable",
+# "project-id-unavailable", "read-refused", "absent", "read-failed" or "unproven".
+INFISICAL_API_PINNED="https://app.infisical.com"
+
 _infisical_secret() {
-  local name="$1" folder="$2" account="$3" token project value=""
-  token="$(/usr/bin/security find-generic-password -s infisical-service-token -a "$account" -w 2>/dev/null || true)"
+  local name="$1" folder="$2" account="$3"
+  local token="" project="" body="" http_code="" store_status=0 curl_status=0
+  _INFISICAL_SECRET_VALUE=""
+  _INFISICAL_SECRET_STATUS="no-token"
+
+  token="$(/usr/bin/security find-generic-password -s infisical-service-token -a "$account" -w 2>/dev/null)" || store_status=$?
+  if [[ -z "$token" ]]; then
+    case "$store_status" in
+      44) _INFISICAL_SECRET_STATUS="no-token" ;;
+      36) _INFISICAL_SECRET_STATUS="keychain-locked" ;;
+      *) _INFISICAL_SECRET_STATUS="token-unreadable" ;;
+    esac
+    return 0
+  fi
+
   project="${INFISICAL_FLEET_OPS_PROJECT_ID:-}"
   if [[ -z "$project" && -r "${HOME}/.simple-tools/fleet-ops-project-id" ]]; then
     project="$(/usr/bin/head -n 1 "${HOME}/.simple-tools/fleet-ops-project-id" 2>/dev/null | /usr/bin/tr -d '[:space:]')"
   fi
-  if [[ -z "$token" || -z "$project" ]]; then
+  if [[ -z "$project" ]]; then
+    _INFISICAL_SECRET_STATUS="project-id-unavailable"
     return 0
   fi
-  value="$(/usr/bin/curl -sS --max-time 30 \
-    -H "Authorization: Bearer ${token}" \
-    "${INFISICAL_API_BASE:-https://app.infisical.com}/api/v3/secrets/raw/${name}?workspaceId=${project}&environment=prod&secretPath=${folder}&viewSecretValue=true&expandSecretReferences=false&recursive=false&include_imports=false" \
-    2>/dev/null | /usr/bin/python3 -c '
+
+  # The token goes into a curl config file, so it has to be one line of plain characters:
+  # a quote, a backslash or a space would mangle the header, so the read refuses instead.
+  if [[ ! "$token" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+    _INFISICAL_SECRET_STATUS="token-unreadable"
+    return 0
+  fi
+
+  body="$(/usr/bin/curl -sS --max-time 30 --config - \
+    --write-out '%{http_code}' \
+    "${INFISICAL_API_PINNED}/api/v3/secrets/raw/${name}?workspaceId=${project}&environment=prod&secretPath=${folder}&viewSecretValue=true&expandSecretReferences=false&recursive=false&include_imports=false" \
+    2>/dev/null <<INFISICAL_HEADER
+header = "Authorization: Bearer ${token}"
+INFISICAL_HEADER
+)" || curl_status=$?
+  if [[ "$curl_status" -ne 0 || "${#body}" -lt 3 ]]; then
+    _INFISICAL_SECRET_STATUS="read-failed"
+    return 0
+  fi
+  http_code="${body: -3}"
+  body="${body:0:${#body}-3}"
+  case "$http_code" in
+    200) ;;
+    403) _INFISICAL_SECRET_STATUS="read-refused"; return 0 ;;
+    404) _INFISICAL_SECRET_STATUS="absent"; return 0 ;;
+    *) _INFISICAL_SECRET_STATUS="read-failed"; return 0 ;;
+  esac
+
+  _INFISICAL_SECRET_VALUE="$(printf '%s' "$body" | /usr/bin/python3 -c '
 import json, sys
 try:
     answer = json.load(sys.stdin)
@@ -2386,8 +2438,13 @@ value = secret.get("secretValue")
 if not isinstance(value, str) or not value:
     raise SystemExit(1)
 sys.stdout.write(value)
-' "$name" "$folder" 2>/dev/null)" || value=""
-  printf '%s' "$value"
+' "$name" "$folder" 2>/dev/null)" || _INFISICAL_SECRET_VALUE=""
+  if [[ -z "$_INFISICAL_SECRET_VALUE" ]]; then
+    _INFISICAL_SECRET_STATUS="unproven"
+  else
+    _INFISICAL_SECRET_STATUS="ok"
+  fi
+  return 0
 }
 
 # One secret on stdout:  the environment value first, else this consumer's own scoped token
@@ -2395,7 +2452,8 @@ sys.stdout.write(value)
 _pushover_secret() {
   local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    value="$(_infisical_secret "$name" "%2Fglobal-api-keys" "apple-notes-ro")"
+    _infisical_secret "$name" "%2Fglobal-api-keys" "apple-notes-ro"
+    value="$_INFISICAL_SECRET_VALUE"
   fi
   printf '%s' "$value"
 }
@@ -2527,7 +2585,7 @@ stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 # Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
-# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
 # targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
 _ISO = re.compile(
     #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
