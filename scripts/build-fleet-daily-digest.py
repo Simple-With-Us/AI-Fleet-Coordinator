@@ -3,7 +3,7 @@
 
 Sources (verified-public repositories only):
   - Merged GitHub pull requests
-  - Linear issues opened / closed (completed or canceled) for mapped public teams
+  - Linear issues opened / closed (completed, canceled, or duplicate) for mapped public teams
   - GitHub issues opened / closed (if any)
 
 Outputs (under site/ and calendar/):
@@ -13,7 +13,7 @@ Outputs (under site/ and calendar/):
 
 Env:
   GITHUB_TOKEN / FLEET_GITHUB_TOKEN
-  LINEAR_API_KEY / FLEET_LINEAR_API_KEY (optional; omits Linear issues if unset)
+  LINEAR_API_KEY (optional; populated in CI by scripts/infisical-fetch.mjs from prod:/fleet-activity)
   FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
   DIGEST_LOOKBACK_DAYS (default 21)
@@ -49,6 +49,10 @@ from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_publ
 DEFAULT_REPOS = PUBLIC_REPOS
 DEFAULT_APPS_PATH = Path(__file__).resolve().parent.parent / "fleet-apps.json"
 LINEAR_GRAPHQL = "https://api.linear.app/graphql"
+DEFAULT_LINEAR_DEADLINE_SECONDS = 300.0
+_LINEAR_REQUEST_ID_HEADERS = ("x-linear-request-id", "x-request-id", "request-id")
+_SAFE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _LINEAR_ISSUES_QUERY = """
 query($cursor: String, $since: DateTimeOrDuration!, $teamKeys: [String!]!) {
   issues(
@@ -114,10 +118,8 @@ def token() -> str:
 
 
 def linear_token() -> str:
-    return (
-        os.environ.get("LINEAR_API_KEY", "").strip()
-        or os.environ.get("FLEET_LINEAR_API_KEY", "").strip()
-    )
+    """Read LINEAR_API_KEY injected by CI's scoped Infisical loader (prod:/fleet-activity)."""
+    return os.environ.get("LINEAR_API_KEY", "").strip()
 
 
 def _linear_headers(tok: str) -> dict[str, str]:
@@ -129,33 +131,88 @@ def _linear_headers(tok: str) -> dict[str, str]:
     }
 
 
-def linear_graphql(query: str, variables: dict[str, Any], tok: str) -> dict[str, Any]:
-    """Execute a Linear GraphQL query with bounded transient retries."""
+def _safe_linear_request_id(headers: Any) -> str:
+    if not headers or not hasattr(headers, "get"):
+        return ""
+    for name in _LINEAR_REQUEST_ID_HEADERS:
+        raw = headers.get(name)
+        if isinstance(raw, str):
+            val = raw.strip()
+            if _SAFE_REQUEST_ID_RE.match(val):
+                return val
+    return ""
+
+
+def _safe_linear_error_codes(errors: Any) -> list[str]:
+    codes: list[str] = []
+    if not isinstance(errors, list):
+        return codes
+    for err in errors[:5]:
+        if not isinstance(err, dict):
+            continue
+        ext = err.get("extensions")
+        if not isinstance(ext, dict):
+            continue
+        code = ext.get("code")
+        if isinstance(code, str) and _SAFE_ERROR_CODE_RE.match(code) and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def linear_graphql(
+    query: str,
+    variables: dict[str, Any],
+    tok: str,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Execute a Linear GraphQL query with bounded transient retries and shared deadline."""
     payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
     headers = _linear_headers(tok)
     last_exc: Exception | None = None
     for attempt in range(3):
+        timeout = 60.0
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Linear GraphQL deadline exhausted")
+            timeout = min(60.0, remaining)
         req = urllib.request.Request(LINEAR_GRAPHQL, data=payload, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:300]
-            last_exc = RuntimeError(f"Linear GraphQL HTTP {exc.code}: {body}")
+            req_id = _safe_linear_request_id(exc.headers)
+            exc.close()
+            suffix = f" (request_id={req_id})" if req_id else ""
+            last_exc = RuntimeError(f"Linear GraphQL HTTP {exc.code}{suffix}")
             if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
-                time.sleep(attempt + 1)
+                delay = float(attempt + 1)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= delay:
+                        raise RuntimeError("Linear GraphQL deadline exhausted") from exc
+                time.sleep(delay)
                 continue
             raise last_exc from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last_exc = RuntimeError(f"Linear GraphQL request failed: {exc}")
+            last_exc = RuntimeError(f"Linear GraphQL request failed ({type(exc).__name__})")
             if attempt < 2:
-                time.sleep(attempt + 1)
+                delay = float(attempt + 1)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= delay:
+                        raise RuntimeError("Linear GraphQL deadline exhausted") from exc
+                time.sleep(delay)
                 continue
             raise last_exc from exc
         if not isinstance(data, dict):
             raise RuntimeError("Linear GraphQL returned non-object response")
         if data.get("errors"):
-            raise RuntimeError(f"Linear GraphQL errors: {data['errors'][:3]}")
+            codes = _safe_linear_error_codes(data.get("errors"))
+            count = len(data["errors"]) if isinstance(data["errors"], list) else 1
+            detail = f" codes={','.join(codes)}" if codes else ""
+            raise RuntimeError(f"Linear GraphQL returned {count} error(s){detail}")
         result = data.get("data")
         if not isinstance(result, dict):
             raise RuntimeError("Linear GraphQL missing data payload")
@@ -306,6 +363,46 @@ def fetch_issue_churn(
     return opened, closed
 
 
+def _validate_linear_issue_node(node: Any) -> dict[str, Any]:
+    """Validate required fields and types on a Linear GraphQL issue node."""
+    if not isinstance(node, dict):
+        raise ValueError("invalid Linear issue node shape: node must be a dict")
+    for field_name in ("identifier", "url", "createdAt"):
+        val = node.get(field_name)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"invalid Linear issue node shape: missing {field_name}")
+    if not isinstance(node.get("title"), str):
+        raise ValueError("invalid Linear issue node shape: invalid title")
+    num = node.get("number")
+    if not isinstance(num, int) or isinstance(num, bool):
+        raise ValueError("invalid Linear issue node shape: invalid number")
+    for opt_ts in ("completedAt", "canceledAt"):
+        val = node.get(opt_ts)
+        if val is not None and not isinstance(val, str):
+            raise ValueError(f"invalid Linear issue node shape: invalid {opt_ts}")
+    team = node.get("team")
+    if not isinstance(team, dict) or not isinstance(team.get("key"), str):
+        raise ValueError("invalid Linear issue node shape: invalid team")
+    state = node.get("state")
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("name"), str)
+        or not isinstance(state.get("type"), str)
+    ):
+        raise ValueError("invalid Linear issue node shape: invalid state")
+    for opt_actor in ("delegate", "creator"):
+        actor = node.get(opt_actor)
+        if actor is not None and not isinstance(actor, dict):
+            raise ValueError(f"invalid Linear issue node shape: invalid {opt_actor}")
+    labels = node.get("labels")
+    if labels is not None:
+        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
+            raise ValueError("invalid Linear issue node shape: invalid labels")
+        if any(not isinstance(lbl, dict) for lbl in labels["nodes"]):
+            raise ValueError("invalid Linear issue node shape: invalid label entry")
+    return node
+
+
 def fetch_linear_issue_churn(
     repos: list[str],
     since: date,
@@ -313,11 +410,14 @@ def fetch_linear_issue_churn(
     tz: ZoneInfo,
     apps_path: Path | None = None,
     max_pages: int = 50,
+    timeout_budget: float = DEFAULT_LINEAR_DEADLINE_SECONDS,
 ) -> tuple[list[tuple[date, dict[str, Any]]], list[tuple[date, dict[str, Any]]]]:
     """Fetch Linear issues opened or closed since `since` for verified-public repos."""
     team_map = load_public_team_map(repos, apps_path)
     if not team_map:
         return [], []
+    if max_pages < 1:
+        raise RuntimeError("Linear pagination max_pages must be positive")
 
     opened: list[tuple[date, dict[str, Any]]] = []
     closed: list[tuple[date, dict[str, Any]]] = []
@@ -329,31 +429,39 @@ def fetch_linear_issue_churn(
     team_keys = sorted(team_map.keys())
     cursor: str | None = None
     seen_cursors: set[str] = set()
+    deadline = time.monotonic() + timeout_budget
+    completed_pagination = False
 
-    for _page in range(max_pages):
+    for page_idx in range(max_pages):
+        if deadline - time.monotonic() <= 0:
+            raise RuntimeError("Linear pagination deadline exhausted")
         data = linear_graphql(
             _LINEAR_ISSUES_QUERY,
             {"cursor": cursor, "since": since_iso, "teamKeys": team_keys},
             tok,
+            deadline=deadline,
         )
-        issues_conn = data.get("issues") or {}
-        nodes = issues_conn.get("nodes") or []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            team_key = str((node.get("team") or {}).get("key") or "").strip().upper()
+        issues_conn = data.get("issues")
+        if not isinstance(issues_conn, dict):
+            raise RuntimeError("Linear GraphQL missing issues connection")
+        nodes = issues_conn.get("nodes")
+        if not isinstance(nodes, list):
+            raise RuntimeError("Linear GraphQL missing issues nodes list")
+        for raw_node in nodes:
+            node = _validate_linear_issue_node(raw_node)
+            team_key = node["team"]["key"].strip().upper()
             # Defense in depth: ignore any issue outside the verified-public team map.
             repo = team_map.get(team_key)
             if not repo:
                 continue
-            identifier = str(node.get("identifier") or "").strip()
-            number = node.get("number")
-            title = str(node.get("title") or "").strip()
-            url = str(node.get("url") or "").strip()
-            state_obj = node.get("state") or {}
-            state_name = str(state_obj.get("name") or "").strip()
-            state_type = str(state_obj.get("type") or "").strip().lower()
-            created = parse_iso(node.get("createdAt"))
+            identifier = node["identifier"].strip()
+            number = node["number"]
+            title = node["title"].strip()
+            url = node["url"].strip()
+            state_obj = node["state"]
+            state_name = state_obj["name"].strip()
+            state_type = state_obj["type"].strip().lower()
+            created = parse_iso(node["createdAt"])
             completed = parse_iso(node.get("completedAt"))
             canceled = parse_iso(node.get("canceledAt"))
             base = {
@@ -377,11 +485,8 @@ def fetch_linear_issue_churn(
                         },
                     )
                 )
-            closed_at: datetime | None = None
-            if state_type == "completed":
-                closed_at = completed
-            elif state_type in ("canceled", "duplicate"):
-                closed_at = canceled or completed
+            closed_candidates = [ts for ts in (completed, canceled) if ts is not None]
+            closed_at = max(closed_candidates) if closed_candidates else None
             if closed_at and to_local_day(closed_at, tz) >= since:
                 closed.append(
                     (
@@ -393,14 +498,27 @@ def fetch_linear_issue_churn(
                         },
                     )
                 )
-        page_info = issues_conn.get("pageInfo") or {}
+        page_info = issues_conn.get("pageInfo")
+        if not isinstance(page_info, dict):
+            raise RuntimeError("Linear pagination malformed pageInfo")
+        has_next = page_info.get("hasNextPage")
+        if not isinstance(has_next, bool):
+            raise RuntimeError("Linear pagination malformed hasNextPage")
+        if has_next is False:
+            completed_pagination = True
+            break
         next_cursor = page_info.get("endCursor")
-        if not page_info.get("hasNextPage") or not isinstance(next_cursor, str) or not next_cursor:
-            break
+        if not isinstance(next_cursor, str) or not next_cursor.strip():
+            raise RuntimeError("Linear pagination missing endCursor while hasNextPage is true")
         if next_cursor in seen_cursors:
-            break
+            raise RuntimeError("Linear pagination repeated cursor")
+        if page_idx + 1 >= max_pages:
+            raise RuntimeError(f"Linear pagination exceeded max_pages budget ({max_pages})")
         seen_cursors.add(next_cursor)
         cursor = next_cursor
+
+    if not completed_pagination:
+        raise RuntimeError(f"Linear pagination exceeded max_pages budget ({max_pages})")
 
     return opened, closed
 

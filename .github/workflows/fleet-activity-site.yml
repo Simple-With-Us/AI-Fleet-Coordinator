@@ -57,20 +57,18 @@ jobs:
           INFISICAL_ENVIRONMENT: prod
           INFISICAL_SECRET_PATH: /fleet-activity
           INFISICAL_NAMES: LINEAR_API_KEY
-          INFISICAL_REQUIRED: LINEAR_API_KEY
           INFISICAL_TOKEN: ${{ secrets.INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN }}
-          GH_FALLBACK_LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
         run: |
           if [ -n "${INFISICAL_TOKEN:-}" ]; then
             node scripts/infisical-fetch.mjs
-          elif [ -z "${GH_FALLBACK_LINEAR_API_KEY:-}" ]; then
-            echo "::warning::Neither INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN nor LINEAR_API_KEY is set; Linear issues will be omitted until provisioned."
+          else
+            echo "::warning::INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN is not set; Linear issues will be omitted until provisioned."
           fi
 
       - name: Build daily digest (MD + HTML + ICS)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LINEAR_API_KEY: ${{ env.LINEAR_API_KEY || secrets.LINEAR_API_KEY }}
+          LINEAR_API_KEY: ${{ env.LINEAR_API_KEY }}
           FLEET_OWNER: Simple-With-Us
           DIGEST_LOOKBACK_DAYS: "21"
           DIGEST_TZ: America/Chicago
