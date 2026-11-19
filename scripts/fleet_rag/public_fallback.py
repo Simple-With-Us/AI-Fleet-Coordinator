@@ -423,7 +423,7 @@ def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, st
     vals = {key: (os.environ.get(key) or "").strip() for key in keys}
     missing = [key for key in keys if not vals[key]]
     if missing:
-        found = core.infisical_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
+        found = core.fleet_ops_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
         for key in missing:
             vals[key] = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return vals
@@ -432,7 +432,7 @@ def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, st
 def _resolve_public_env_key(key: str) -> str:
     v = (os.environ.get(key) or "").strip()
     if not v:
-        v = (core.infisical_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
+        v = (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return v
 
 

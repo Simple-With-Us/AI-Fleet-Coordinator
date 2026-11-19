@@ -1812,7 +1812,7 @@ def _heartbeat() -> None:
     prints the URL.  No credential file is read (AFC-359)."""
     url = (os.environ.get(HEARTBEAT_KEY) or "").strip()
     if not url:
-        url = (core.infisical_secret(HEARTBEAT_KEY) or "").strip()
+        url = (core.fleet_ops_secret(HEARTBEAT_KEY) or "").strip()
     if not url:
         return
     try:

@@ -9,6 +9,7 @@ account, no handoff file, no edit to core.py.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
@@ -19,6 +20,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from contextlib import redirect_stderr
 from unittest import mock
 
 from fleet_knobs.tests._fake import ScopedReadAPI
@@ -33,6 +35,70 @@ BYO = {
     "QDRANT_FLEET_COLLECTION": "my-agents",
 }
 SERVICE_TOKEN = "st." + "synthetic-recall-reader-token-value"
+
+
+class FleetOpsRootReaderTests(unittest.TestCase):
+    """The Fleet-OPS root route is its own reader, with its own binding and its own grant.
+
+    The public fallback and the ingest heartbeat need names that live in Fleet-OPS.
+    The recall reader's own scoped token must never stand in for that route,  and a
+    missing binding must name the unavailable source instead of failing quietly.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = pathlib.Path(temporary.name).resolve()
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI({"TEI_URL": "https://tei.example.invalid"}, project=self.project)
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": str(self.home),
+            "INFISICAL_TOKEN": self.api.token,
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "INFISICAL_ENVIRONMENT": "prod",
+        }
+
+    def test_the_root_route_reads_the_fleet_ops_project_with_its_own_binding(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL", "NOT_THERE"]),
+                {"TEI_URL": "https://tei.example.invalid"},
+            )
+            self.assertEqual(
+                core.fleet_ops_secret("TEI_URL"), "https://tei.example.invalid"
+            )
+        self.assertTrue(any("workspaceId=" + self.project in path for path in self.api.requests))
+
+    def test_the_recall_token_is_never_a_fallback_for_the_fleet_ops_route(self):
+        env = {
+            key: value
+            for key, value in self.env.items()
+            if key != "INFISICAL_TOKEN"
+        }
+        env["FLEET_RECALL_INFISICAL_TOKEN"] = self.api.token
+        env["FLEET_RAG_INFISICAL_PROJECT"] = self.project
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
+        self.assertEqual([path for path in self.api.requests if "/v3/secrets/raw/" in path], [])
+
+    def test_a_missing_binding_names_the_unavailable_source(self):
+        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(stderr):
+            self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
+        self.assertIn("INFISICAL_TOKEN", stderr.getvalue())
+        self.assertNotIn(self.api.token, stderr.getvalue())
+
+    def test_an_invalid_name_never_reaches_the_provider(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(core.fleet_ops_many([]), {})
+            self.assertEqual(core.fleet_ops_many([""]), {})
+            self.assertIsNone(core.fleet_ops_secret(""))
+        self.assertEqual(self.api.requests, [])
 
 
 class ExplodingHttp:
@@ -66,6 +132,13 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             "FLEET_RAG_INFISICAL_PROJECT": self.project,
             "FLEET_RAG_INFISICAL_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
+        }
+        # The Fleet-OPS root route is a different binding:  its own token and its own
+        # project id.  The recall reader's scoped token is never a fallback for it.
+        self.fleet_ops_env = {
+            **self.env,
+            "INFISICAL_TOKEN": self.api.token,
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
         }
 
     def test_many_preserves_present_subset_through_real_named_reader_without_a_binary(self):
@@ -207,7 +280,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         self.api.values = {
             public_fallback.PUBLIC_INFISICAL_NAMES[key]: value for key, value in expected.items()
         }
-        with mock.patch.dict(os.environ, self.env, clear=True):
+        with mock.patch.dict(os.environ, self.fleet_ops_env, clear=True):
             self.assertEqual(public_fallback.public_credentials(), expected)
         self.assertEqual(len(self.api.requests), 4)
 
@@ -221,7 +294,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         }
         real_popen = subprocess.Popen
         with (
-            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
             mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
             mock.patch.object(core, "http_json", side_effect=AssertionError("public request without credentials")),
         ):
@@ -237,7 +310,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         url = "https://heartbeat.example.invalid/ping"
         self.api.values[ingest.HEARTBEAT_KEY] = url
         with (
-            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
             mock.patch.object(ingest.urllib.request, "urlopen") as heartbeat,
         ):
             ingest._heartbeat()
