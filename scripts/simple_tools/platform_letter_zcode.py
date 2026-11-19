@@ -237,9 +237,7 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             where.append("time_archived IS NULL")
         if "time_deleted" in cols:
             where.append("time_deleted IS NULL")
-        time_col = next(
-            (name for name in ("time_created", "time_updated") if name in cols), ""
-        )
+        time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
         select = "id" + (", " + time_col if time_col else "")
         order = "ORDER BY %s DESC" % time_col if time_col else "ORDER BY rowid DESC"
         rows = conn.execute(
