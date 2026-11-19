@@ -776,16 +776,10 @@ def _repeat(path, allowlist, store, intent, prior, action):
         )
         return answer
     if known_ok:
-        claimed = intent.ledger.begin(
-            REQUEST_NAMESPACE,
-            intent.id,
-            intent.created / 1000 + REQUEST_TTL_SECONDS,
-            min(intent.now, intent.created / 1000 + REQUEST_TTL_SECONDS),
-            REQUEST_CAPACITY,
-        )
-        if claimed not in (
-            ("repeat-claimed", "ok", encode(metadata)),
-            ("repeat", "replay", encode(metadata)),
+        recorded = intent.ledger.lookup(REQUEST_NAMESPACE, intent.id)
+        if recorded not in (
+            ("ok", encode(metadata)),
+            ("replay", encode(metadata)),
         ):
             raise SettingsError("request_record_invalid")
     try:
@@ -823,7 +817,8 @@ def _repeat(path, allowlist, store, intent, prior, action):
             accepted = text.encode("utf-8") == raw and _accepted_revision(target)
         if accepted:
             metadata["phase"] = "complete"
-            intent.ledger.settle(REQUEST_NAMESPACE, intent.id, "ok", encode(metadata))
+            if prior != "ok":
+                intent.ledger.settle(REQUEST_NAMESPACE, intent.id, "ok", encode(metadata))
             known_ok = True
             answer.update(
                 ok=True,
@@ -842,10 +837,6 @@ def _repeat(path, allowlist, store, intent, prior, action):
     except (SettingsError, editor.Refusal, OSError):
         # A failed current read never erases a definite earlier success.
         return answer
-    finally:
-        if known_ok:
-            metadata["phase"] = "complete"
-            intent.ledger.settle(REQUEST_NAMESPACE, intent.id, "ok", encode(metadata))
 
 
 def reconcile(path, allowlist, request_id, created_at, *, store=None, ledger=None, now=None):
