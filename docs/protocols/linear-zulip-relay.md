@@ -115,12 +115,15 @@ messages API with its default gets.
 
 The comment is bounded, and every cut is said in the comment itself:
 
-- A message is shown up to 4,000 characters (`MESSAGE_CHARS`).  Zulip refuses a message over
-  10,000 characters, so 4,000 covers every real post, and a longer one is cut and says
-  `_N characters of this message are not shown._`
-- The whole comment is at most 30,000 characters (`COMMENT_CHARS`), well inside what Linear takes.
-  The messages that do not fit are the oldest ones, and the comment says
-  `_N characters of this topic are not shown._`
+- A message is shown up to 10,000 characters (`MESSAGE_CHARS`).  Zulip itself refuses a
+  message over 10,000 characters, so the bound cuts no post Zulip sends; a longer one is
+  cut and says `_N characters of this message are not shown._`
+- The whole comment is at most 50,000 characters (`COMMENT_CHARS`), well inside what Linear
+  takes.  The messages that do not fit are the oldest ones, and the comment says
+  `_N characters of this topic are not shown._`  A topic whose posts are longer than that
+  leaves the oldest of them out of the comment, and the count of the messages that are not
+  listed says so.  A second comment for the overflow would break the one-comment-per-topic
+  contract, which is the owner's ruling, so it is not done here.
 - A message's text is never collapsed into one line: the line structure the sender wrote is the
   line structure the reader gets.
 
@@ -209,7 +212,9 @@ Failures are sorted by what waiting can change:
 ## The ledger
 
 The ledger maps (issue, stream, topic) to the comment id, the message ids already seen, the
-recent messages, and the timing.  It keys each topic on a digest of the title, and stores the title
+recent messages, and the timing.  The text one entry holds is bounded as well (60,000
+characters): a comment shows at most 50,000, so an entry that held more would hold text no
+comment can show, and the ledger would grow with it.  It keys each topic on a digest of the title, and stores the title
 only in its withheld-or-clean display form, so a credential in a topic never reaches the file.  It
 is written atomically under a lock, so a restart never double-comments and two relays never share
 one file: the temporary file is owner-only from the moment it is created, it is synced before the
@@ -223,7 +228,7 @@ once per cycle, not once per message; a create still writes its intent ahead of 
 It MUST sit on a persistent volume.  A lost ledger means the relay no longer knows which comment
 belongs to a topic, so it starts a new one, and the old comment stays behind.
 
-The ledger is bounded: 500 entries and 32 MB, and the oldest entries are pruned first.  The comment
+The ledger is bounded: 500 entries and 48 MB, and the oldest entries are pruned first.  The comment
 map outlives that bound (AFC-821).  A pruned entry that has a comment, or a create whose outcome is
 unknown, leaves a record in the ledger's `archive` table under the same key: the conversation's
 first message id, the comment id, the `pending` flag and when the entry was last touched, and no

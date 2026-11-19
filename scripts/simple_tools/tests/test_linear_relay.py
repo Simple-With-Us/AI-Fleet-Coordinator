@@ -2387,6 +2387,36 @@ class ReadablePostTests(WorkerCase):
         self.assertIn("second line", body)
         self.assertIn("x" * 500, body)  # the whole post, not a fragment of it
 
+    def test_a_valid_post_over_four_thousand_characters_is_shown_whole(self) -> None:
+        # Zulip accepts a message of 10,000 characters, and the mirror shows one whole.
+        self.w.handle_event(message(1, "AFC-1 relay", "p" * 6000))
+        body = self.lin.created[0][1]
+        self.assertIn("p" * 6000, body)
+        self.assertNotIn("characters of this message are not shown.", body)
+
+    def test_a_topic_of_several_long_posts_fits_the_comment(self) -> None:
+        # Five posts of 9,000 characters are 45,000 characters, inside the comment's bound.
+        for mid in range(1, 6):
+            self.w.handle_event(message(mid, "AFC-1 relay", "p" * 9000))
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertLessEqual(len(body), lr.COMMENT_CHARS)
+        for mid in range(1, 6):
+            self.assertIn("near/%d)" % mid, body)
+        self.assertNotIn("characters of this topic are not shown.", body)
+
+    def test_the_ledger_holds_bounded_text_per_entry(self) -> None:
+        # Twenty posts of 9,000 characters would be 180,000 characters, and no comment can
+        # show that, so the entry holds only the text a comment can show.
+        for mid in range(1, 21):
+            self.w.handle_event(message(mid, "AFC-1 relay", "p" * 9000))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        held = sum(len(item["quote"]) for item in entry["links"])
+        self.assertLessEqual(held, lr.MAX_ENTRY_TEXT)
+        self.assertLess(len(entry["links"]), lr.MAX_LINKS_SHOWN)
+        self.assertEqual(entry["count"], 20)  # every message was mirrored
+
     def test_a_post_past_the_message_bound_is_cut_and_says_so(self) -> None:
         self.w.handle_event(message(1, "AFC-1 relay", "y" * (lr.MESSAGE_CHARS + 100)))
         body = self.lin.created[0][1]
@@ -2395,13 +2425,13 @@ class ReadablePostTests(WorkerCase):
 
     def test_the_comment_body_is_bounded_and_says_what_it_left_out(self) -> None:
         for mid in range(1, 11):
-            self.w.handle_event(message(mid, "AFC-1 relay", "z" * 4000))
+            self.w.handle_event(message(mid, "AFC-1 relay", "z" * 9000))
         self.t[0] += 600
         self.w.tick()
         body = self.lin.updated[-1][1]
         self.assertLessEqual(len(body), lr.COMMENT_CHARS)
         self.assertRegex(body, r"_\d+ characters of this topic are not shown\._")
-        self.assertIn("near/10", body)  # the newest post is in
+        self.assertIn("near/10)", body)  # the newest post is in
         self.assertLess(body.count("near/"), 10)  # the oldest ones are out, and it says so
 
     def test_a_link_in_a_post_is_shown_and_never_becomes_a_live_link(self) -> None:
@@ -2433,7 +2463,7 @@ class ReadablePostTests(WorkerCase):
     def test_a_cut_inside_a_code_block_closes_the_fence(self) -> None:
         # A post cut in the middle of a code block must not leave the fence open:  the
         # rest of the comment would render as code (Sentry, PR 2340).
-        raw = "```python\n" + ("print(1)\n" * 900)
+        raw = "```python\n" + ("print(1)\n" * 2000)
         text = lr.post_text(raw)
         self.assertEqual(text.count("```"), 2)  # the fence is closed where the post stops
         self.assertTrue(text.endswith("characters of this message are not shown._"))
@@ -2482,6 +2512,20 @@ class ReadablePostTests(WorkerCase):
         self.assertNotIn("the old cut text", body)
         self.assertIn("Re-rendered from Zulip", body)  # the comment says what happened
         self.assertTrue(any("re-rendered the quotes" in line for line in self.logs))
+
+    def test_the_repair_keeps_the_mention_and_the_credential_protections(self) -> None:
+        # A post that is rendered again from Zulip is protected the way a new post is:  a
+        # mention is never live, and a credential-shaped post is withheld whole.
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "hello @**MiniMax**")]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertIn("@\u200bMiniMax", entry["links"][0]["quote"])
+        token = "ghp_" + "fake" * 9
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "token: %s" % token)]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(entry["links"][0]["quote"], lr.WITHHELD)
+        self.assertNotIn(token, entry["links"][0]["quote"])
 
     def test_a_stale_comment_is_re_rendered_by_the_cycle(self) -> None:
         # A topic that stays silent is repaired anyway:  the cycle reads it back.

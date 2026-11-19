@@ -194,12 +194,17 @@ MAX_SHORT_READS = 3  # reads in a row that bring nothing past where they began, 
 MAX_HISTORY_FIELD_BYTES = 64 * 1024
 MAX_ISSUES_PER_MESSAGE = 5
 # The text of one message in the comment:  a post is shown whole, up to this many
-# characters.  Zulip refuses a message over 10,000 characters, so 4,000 covers every real
-# post with room to spare and keeps one comment readable.
-MESSAGE_CHARS = 4000
+# characters.  Zulip itself refuses a message over 10,000 characters, so this bound cuts
+# no post Zulip sends, and the guard stays for a host that delivers more.
+MESSAGE_CHARS = 10000
 # The whole comment body.  The messages that do not fit in it are left out, and the
-# comment says how many characters of the topic they were.
-COMMENT_CHARS = 30000
+# comment says how many characters of the topic they were.  It is well inside what
+# Linear takes for one comment.
+COMMENT_CHARS = 50000
+# The text one ledger entry holds.  It is a little more than a comment shows, so the
+# comment's own bound is what the reader sees, and the ledger does not hold text no
+# comment can show.
+MAX_ENTRY_TEXT = 60000
 # A label (the stream, the topic, the sender):  a name, not a post.
 LABEL_CHARS = 280
 # The render format of an entry's quotes.  An entry written by an older build carries no
@@ -219,7 +224,7 @@ MAX_ENTRIES = 500  # the ledger is bounded: the oldest entries are pruned
 MAX_ARCHIVE = 20000  # what pruned entries leave behind (root, comment id) is bounded too
 # The ledger holds the rendered text of every message it records, so it is larger than it
 # was when a quote was cut at 280 characters:  the bound is raised with the text.
-MAX_LEDGER_BYTES = 32 * 1024 * 1024
+MAX_LEDGER_BYTES = 48 * 1024 * 1024
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT = 30.0  # one HTTP request
@@ -1892,6 +1897,13 @@ class RelayWorker:
             }
         )
         entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
+        # The text an entry holds is bounded as well:  the oldest messages leave the list
+        # when the entry holds more text than a comment can show (the count of the
+        # messages that are not listed says so).
+        held = sum(len(item["quote"]) for item in entry["links"])
+        while len(entry["links"]) > 1 and held > MAX_ENTRY_TEXT:
+            held -= len(entry["links"][0]["quote"])
+            entry["links"].pop(0)
         entry["dirty"] = True
         entry["last_touch"] = self.clock()
         return True
