@@ -21,17 +21,24 @@ enforced at the folder.
 
 **Where it is installed.**  On the server, at `/home/jay/.config/fleet-tools/ops-control.env`, mode 0600,
 owned by the consumer's account, holding one line: `FLEET_OPS_CONTROL_INFISICAL_TOKEN=<value>`.  The
-value is never on a command line, in an argv, in the answer or in the audit.
+value is never on a command line, in an argv, in the answer or in the audit.  The path follows the
+running account's home, so the forced command, which runs as `jay`, reads that file, while a root
+shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with "the Coolify
+token is not available" even though the ssh path works.
 
 **What was verified, and how.**
 
-- `fleet-ops-control.py --check-token` on the server answered `"result": "done"` with the detail "the
-  Coolify token is available and accepted".  The check reads the token the way a redeploy does and
-  posts the deploy route the nil uuid, which names no resource, so nothing is deployed and Coolify's
-  own not-found is what proves the token is accepted.
-- `fleet-ops-control.py server redeploy l40rxd4rbj1pnogmbtetzmsf --plan` answered
+- `env -i HOME=/home/jay PATH=/usr/bin:/bin /usr/bin/python3 -I
+  /home/jay/.local/lib/fleet-resource-control/fleet-ops-control.py --check-token` on the server answered
+  `"result": "done"` with the detail "the Coolify token is available and accepted".  The check reads the
+  token the way a redeploy does and posts the deploy route the nil uuid, which names no resource, so
+  nothing is deployed and Coolify's own not-found is what proves the token is accepted.
+- The same script with `server redeploy l40rxd4rbj1pnogmbtetzmsf --plan` answered
   `"result": "planned"` with the command `[["coolify", "POST", "/api/v1/deploy?uuid=l40rxd4rbj1pnogmbtetzmsf"]]`.
   A plan sends nothing.
+- The installed copy on the server is the merged helper, installed as `jay` by
+  `scripts/hetzner/install-resource-control.sh` from the server's own checkout, so the commands above run
+  the code that is on `main`.
 
 **What was not done.**  No redeploy was triggered: the Eavesdropper redeploy is the owner's call, and
 the plan above is what it would run.
