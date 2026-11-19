@@ -1349,28 +1349,31 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _takes_deadline(reader: Callable[..., Any]) -> bool:
-    """True when a reader takes the deadline a walk shares.
+def _deadline_argument(reader: Callable[..., Any]) -> str | None:
+    """How a reader takes the deadline a walk shares:  "positional", "keyword", or None.
 
-    A host may supply a reader that takes only the three arguments the catch-up path
-    passes, so the deadline is handed only to a reader that can take it, and a reader
-    that cannot is called the way it always was (Kody, PR 2340)."""
+    The decision is on the parameter named "deadline" and on nothing else, so a reader
+    with a fourth parameter of another name is never handed the deadline.  A reader that
+    cannot take the deadline cannot hold a bounded walk, so the caller refuses it before
+    it reads (Kody, PR 2340)."""
     try:
         parameters = inspect.signature(reader).parameters
     except (TypeError, ValueError):
-        return False
-    positional = 0
-    for parameter in parameters.values():
-        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
-            return True
-        if parameter.name == "deadline":
-            return True
+        return None
+    parameter = parameters.get("deadline")
+    if parameter is not None:
         if parameter.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         ):
-            positional += 1
-    return positional >= 4
+            return "positional"
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY:
+            return "keyword"
+        return None
+    for candidate in parameters.values():
+        if candidate.kind is inspect.Parameter.VAR_KEYWORD:
+            return "keyword"
+    return None
 
 
 def _item_gone(item: Mapping[str, Any]) -> bool:
@@ -2068,7 +2071,14 @@ class RelayWorker:
         silent topic is not read once a message (Kody, PR 2340)."""
         if self.monotonic() < self._refresh_retry.get(key, 0.0):
             return  # the topic is waiting to be tried again
-        read, complete = self._read_for_repair(entry, stream_id, topic, cache)
+        try:
+            read, complete = self._read_for_repair(entry, stream_id, topic, cache)
+        except ValueError as exc:
+            # A reader that cannot take the deadline cannot hold a bounded walk, so the
+            # entry waits for a reader that can (Kody, PR 2340).
+            self.log("%s; the comment waits for a reader that can" % exc)
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
         if read is None:
             self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             return
@@ -2247,7 +2257,15 @@ class RelayWorker:
         # computed with the real clock too (Kody, PR 2340).
         deadline = time.monotonic() + REPAIR_READ_BUDGET
         reader = self.history_since
-        takes_deadline = _takes_deadline(reader)
+        how = None
+        if reader is not None:
+            # A reader that pages the topic must take the deadline, or the walk cannot be
+            # bounded in time (Kody, PR 2340).
+            how = _deadline_argument(reader)
+            if how is None:
+                raise ValueError(
+                    "the repair read needs a reader that takes a deadline, and this one does not"
+                )
         pages = 0
         complete = False
         while (
@@ -2261,10 +2279,12 @@ class RelayWorker:
                 break
             newest = max((int(message["id"]) for message in read), default=0)
             try:
-                if takes_deadline:
+                if how == "positional":
                     found, malformed, over = _by_id(reader(stream_id, topic, newest, deadline))
                 else:
-                    found, malformed, over = _by_id(reader(stream_id, topic, newest))
+                    found, malformed, over = _by_id(
+                        reader(stream_id, topic, newest, deadline=deadline)
+                    )
             except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
                 self.log(
                     "the messages of %s could not be read further (%s)"

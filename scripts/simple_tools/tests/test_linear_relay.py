@@ -2663,9 +2663,9 @@ class ReadablePostTests(WorkerCase):
         body = self.lin.updated[-1][1]
         self.assertIn("1 message(s) are no longer in Zulip", body)
 
-    def test_a_repair_read_with_a_reader_that_takes_no_deadline_still_works(self) -> None:
-        # A host may supply a reader that takes only the three arguments the catch-up
-        # path passes, and the walk calls it that way (Kody, PR 2340).
+    def test_a_repair_read_with_a_reader_that_takes_no_deadline_is_refused(self) -> None:
+        # A reader that cannot take the deadline cannot hold a bounded walk, so the
+        # repair is not attempted and the entry stays due (Kody, PR 2340).
         entry = self.old_entry()
         entry["count"] = 2
         entry["seen"] = [1, 2]
@@ -2680,8 +2680,33 @@ class ReadablePostTests(WorkerCase):
 
         self.w = self.worker(history=self.topic.whole, history_since=since)
         self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertTrue(any("needs a reader that takes a deadline" in line for line in self.logs))
+
+    def test_a_repair_read_with_a_keyword_only_deadline_works(self) -> None:
+        # A reader whose deadline is keyword-only takes it as a keyword (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+        seen: list[float | None] = []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, *, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
         self.assertEqual(entry["format"], lr.RENDER_VERSION)
         self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
+        self.assertTrue(seen)  # the deadline reached the reader
+        self.assertTrue(all(deadline is not None for deadline in seen))
 
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean
