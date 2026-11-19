@@ -3826,7 +3826,7 @@ def read_coolify_token(ctx):
     env = secrets_env(ctx)
     binding = env.pop("INFISICAL_TOKEN", "")
     if not binding:
-        raise Failed("the Coolify token is not available")
+        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
     try:
         project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
         scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
@@ -3845,9 +3845,9 @@ def read_coolify_token(ctx):
         token = values.get(COOLIFY_TOKEN_NAME, "").strip()
     except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
         # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
-        raise Failed("the Coolify token is not available") from None
+        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN") from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
-        raise Failed("the Coolify token is not available")
+        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
     return token
 
 

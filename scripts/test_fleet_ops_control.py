@@ -182,7 +182,7 @@ class Base(unittest.TestCase):
         def fixture_token(_ctx):
             value = getattr(_ctx.runner, "secret", TOKEN)
             if not value:
-                raise foc.Failed("the Coolify token is not available")
+                raise foc.Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
             return value
 
         # Pure control-flow tests retain their explicit synthetic credential seam.  The
@@ -2922,7 +2922,7 @@ class CredentialTests(Base):
         code, ans = self.redeploy(env)
         self.assertEqual(
             (code, ans["result"], ans["detail"]),
-            (1, "failed", "the Coolify token is not available"),
+            (1, "failed", "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"),
         )
         self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
@@ -2960,7 +2960,7 @@ class CredentialTests(Base):
                 self.api.metadata_override = metadata
                 self.api.requests.clear()
                 code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"))
                 self.assertEqual(self.api.requests, ["/api/v2/service-token"])
                 self.assertEqual(self.http_calls, [])
 
@@ -2986,7 +2986,7 @@ class CredentialTests(Base):
                 self.http_calls.clear()
                 self.assertEqual((self.api.requests, self.http_calls), ([], []))
                 code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"))
                 self.assertEqual(len(self.api.requests), 2)
                 self.assertEqual(self.http_calls, [])
 
@@ -3090,7 +3090,7 @@ class CredentialTests(Base):
     def test_check_token_failures_keep_fixed_diagnostics_and_host_gate(self):
         self.api.values.clear()
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
-        self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+        self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"))
         self.assertEqual(self.http_calls, [])
         self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))

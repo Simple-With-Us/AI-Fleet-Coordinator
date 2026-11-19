@@ -3,7 +3,7 @@
 **Why.**  `scripts/fleet-ops-control.py` read a Coolify token from an Infisical secret and folder that
 do not exist: the Fleet-OPS prod project has no `/coolify` folder and no `COOLIFY_API_TOKEN`, so
 `server redeploy` and `--check-token` failed closed with "the Coolify token is not available" before
-any Coolify request.  The server's audit log carries those failures for the Eavesdropper redeploys on
+any Coolify request;  the helper now names the variable it needs in that failure.  The server's audit log carries those failures for the Eavesdropper redeploys on
 2026-11-18.
 
 **What the deploy-only Coolify token is.**  Fleet-OPS prod holds three Coolify tokens at the project
