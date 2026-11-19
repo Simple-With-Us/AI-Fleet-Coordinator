@@ -715,37 +715,14 @@ class Connections:
             raise ApiError(200, error_codes(answer.get("errors")))
         return answer.get("result")
 
-    def zulip(self, text: str) -> bool:
-        conf = self.cfg["zulip"]
-        env = {key: value for key, value in self.env.items() if not key.startswith("INFISICAL_")}
-        env["AGENT_SEAT"] = conf["seat"]
-        # The seat wrapper turns on hosted reads only;  without this a post is refused with exit 2.
-        env["SIMPLE_CHAT_REMOTE_WRITES"] = "1"
-        command = [
-            "simple-chat",
-            "post",
-            "--channel",
-            conf["channel"],
-            "--topic",
-            conf["topic"],
-            "-",
-        ]
-        try:
-            done = self.runner(
-                command,
-                input=text,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env=env,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(json.dumps({"event": "zulip_failed", "error": type(exc).__name__}), flush=True)
-            return False
-        if done.returncode != 0:
-            print(json.dumps({"event": "zulip_failed", "exit": done.returncode}), flush=True)
-        return done.returncode == 0
+    def zulip(self, text: str) -> bool | None:
+        # Posting is disabled until the watchdog has a dedicated service binding:  service
+        # automation cannot represent any agent seat.  None means not configured, as in page().
+        print(
+            json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}),
+            flush=True,
+        )
+        return None
 
     def page(self, title: str, text: str) -> bool | None:
         """Pushover directly, the one path that does not go through a Worker on this account.
@@ -874,10 +851,14 @@ class Watchdog:
         zulip_ok = self.conn.zulip(text)
         paged = self.conn.page(title, "\n".join(shown)) if page else None
         self.store.event("notify", title=title, zulip=zulip_ok, page=paged)
+        # A disabled channel answers None, and that is not a failed delivery:  the event row is
+        # the record, and one-shot callers (the daily check) still persist their state.  Only an
+        # attempted channel that failed counts as undelivered.
+        attempted = zulip_ok is not None or paged is not None
         delivered = bool(zulip_ok or paged)
-        if not delivered:
+        if attempted and not delivered:
             self.undelivered = True
-        return delivered
+        return delivered or not attempted
 
     def describe(self, breach: dict, previous: dict) -> str:
         spec = self.cfg["metrics"][breach["metric"]]

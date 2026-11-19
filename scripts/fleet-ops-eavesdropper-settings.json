@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "canonicalHome": {
+    "key": "OPERATOR_SETTINGS",
+    "environment": "prod",
+    "folder": "/operator-settings",
+    "writer": "eavesdropper-settings save"
+  },
   "notes": [
     "The one allowlist of scripts/simple_tools/server/eavesdropper_settings_edit.py: the settings of the Eavesdropper's live config (/data/listener.toml) a tool may change, and the type and range each may take.",
     "applyEnabled is false until the owner turns it on. While it is false, get and plan work and every apply is refused (apply_disabled).",
@@ -63,7 +69,11 @@
     },
     "linear_comments": {"enabled": {"type": "bool"}},
     "linear_projects": {"enabled": {"type": "bool"}},
-    "notes_queue": {"enabled": {"type": "bool"}},
+    "notes_queue": {
+      "enabled": {"type": "bool"},
+      "worker_seats": {"type": "seats", "maxItems": 64, "maxLength": 32},
+      "server_seats": {"type": "seats", "maxItems": 64, "maxLength": 32}
+    },
     "listener_api": {"enabled": {"type": "bool"}}
   }
 }

@@ -66,17 +66,32 @@ class CheckConfig(ListenerHarness):
         self.assertEqual(answer["new_errors"], [])
         self.assertTrue(answer["refused"])
 
-    def test_a_bad_fallback_is_a_new_error(self) -> None:
-        edited = self.current.replace('model = "sonnet"', 'model = "sonnet"\nfallback = "muse"')
-        code, answer = self.check(edited)
-        self.assertEqual(code, 1)
-        self.assertIn("fallback must be one of", " ".join(answer["new_errors"]))
+    def test_a_retired_wake_type_is_a_new_error(self) -> None:
+        # Owner, Nov 10, 2026:  the listener starts no model, so a candidate that names one is refused.
+        self.assertIn('wake = "inbox"', self.current)
+        for value in ("claude", "muse", "openrouter"):
+            with self.subTest(wake=value):
+                edited = self.current.replace('wake = "inbox"', 'wake = "%s"' % value)
+                code, answer = self.check(edited)
+                self.assertEqual(code, 1)
+                self.assertFalse(answer["ok"])
+                self.assertIn(
+                    'seat.CLAUDE.wake = "%s" is retired:  the listener starts no model' % value,
+                    " ".join(answer["new_errors"]),
+                )
 
-    def test_a_bare_binary_name_is_a_new_error(self) -> None:
-        edited = self.current.replace('wake = "claude"', 'wake = "muse"\nmuse = "muse-bin"')
+    def test_a_leftover_runtime_key_is_a_warning_and_exits_0(self) -> None:
+        self.assertIn('bot = "Claude"', self.current)
+        edited = self.current.replace('bot = "Claude"', 'bot = "Claude"\nfallback = "muse"')
         code, answer = self.check(edited)
-        self.assertEqual(code, 1)
-        self.assertIn("muse must be an absolute path", " ".join(answer["new_errors"]))
+        self.assertEqual(code, 0)
+        self.assertTrue(answer["ok"])
+        self.assertEqual(answer["new_errors"], [])
+        self.assertIn(
+            "seat.CLAUDE.fallback is left over from the retired claude, muse and openrouter wake "
+            "types and is ignored;  it can be deleted",
+            answer["warnings"],
+        )
 
     def test_a_section_with_no_bot_is_a_new_error(self) -> None:
         """A Mac seat the file does not list yet needs its bot, so a bare cap is not enough."""
@@ -87,7 +102,9 @@ class CheckConfig(ListenerHarness):
     def test_an_existing_soft_error_on_another_seat_does_not_block(self) -> None:
         soft = self.current + '\n[seat.CODEX]\nbot = "Codex"\nwake = "nonsense"\n'
         (self.state_dir / "listener.toml").write_text(soft)
-        code, answer = self.check(soft.replace('model = "sonnet"', 'model = "opus"'))
+        edited = soft.replace('bot = "Claude"', 'bot = "Claude"\nbudget = { wakes_per_hour = 4 }')
+        self.assertNotEqual(edited, soft, "the edit must change the file")
+        code, answer = self.check(edited)
         self.assertEqual(code, 0)
         self.assertTrue(answer["ok"])
         self.assertTrue(answer["errors"])
@@ -97,9 +114,10 @@ class CheckConfig(ListenerHarness):
         """A dotted key beside an inline table is a duplicate, and tomllib rejects the whole file.
         The running listener would then read an empty config and drop every seat."""
         edited = self.current.replace(
-            'model = "sonnet"',
-            'model = "sonnet"\nbudget.wakes_per_hour = 5\nbudget = { wakes_per_hour = 6 }',
+            'bot = "Claude"',
+            'bot = "Claude"\nbudget.wakes_per_hour = 5\nbudget = { wakes_per_hour = 6 }',
         )
+        self.assertNotEqual(edited, self.current, "the edit must change the file")
         code, answer = self.check(edited)
         self.assertEqual(code, 1)
         self.assertTrue(answer["parse_error"])

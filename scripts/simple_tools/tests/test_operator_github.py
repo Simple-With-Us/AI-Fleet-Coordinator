@@ -1,4 +1,5 @@
 import json
+import secrets
 import tempfile
 from pathlib import Path
 from simple_tools.operator_github_state import LedgerError, NonceLedger
@@ -17,7 +18,7 @@ class Router:
 class BrokerTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.ledger=NonceLedger(Path(self.temp.name)/"replay")
+        self.ledger=NonceLedger(Path(self.temp.name).resolve()/"replay")
         self.router=Router();self.key=KEY;self.allowed=True;self.audit=[]
         self.broker=Broker(lambda seat:self.key if seat=='CODEX' else None,
             lambda seat:CallerPolicy('swu-example-app',{'example-org/widget-repo':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
@@ -70,7 +71,8 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused) as c:self.request(body=b)
         self.assertEqual(c.exception.status,403)
     def test_credential_shaped_target_refused(self):
-        b=json.dumps({'repo':'Simple-With-Us/ghp_dGhpc2lzYWZha2V0b2tlbg','permissions':{'contents':'read'}}).encode()
+        target = 'ghp_' + secrets.token_hex(16)
+        b=json.dumps({'repo':'Simple-With-Us/'+target,'permissions':{'contents':'read'}}).encode()
         with self.assertRaises(Refused) as c:self.request(body=b)
         self.assertEqual(c.exception.status,400)
         self.assertEqual(self.router.calls,[])
@@ -97,7 +99,7 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(c.exception.status,503)
     def test_restart_replay(self):
         first=self.request()
-        self.broker.nonce_ledger=NonceLedger(Path(self.temp.name)/'replay')
+        self.broker.nonce_ledger=NonceLedger(Path(self.temp.name).resolve()/'replay')
         again=self.request()
         self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),2)
     def test_definite_provider_rejection_releases_nonce(self):
@@ -161,7 +163,7 @@ class ReviewFixTests(unittest.TestCase):
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.ledger=NonceLedger(Path(self.temp.name)/"replay")
+        self.ledger=NonceLedger(Path(self.temp.name).resolve()/"replay")
         self.router=Router();self.audit=[]
         # The policy stub mirrors load_policy:  None for seats outside the
         # allowlist, so the broker can tell an unknown seat (401, no oracle)
