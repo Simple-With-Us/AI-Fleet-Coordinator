@@ -688,7 +688,7 @@ struct SeatActivityView: View {
         .help(SeatActivityText.display(server.help))
     }
 
-    /// The provider quota the server's eavesdropper reads for the seat.
+    /// The provider quota the server's eavesdropper publishes for the seat:  none since AFC-694.
     private func serverQuotaCell(_ server: ServerSeatRowPresentation) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(server.quota)
@@ -706,7 +706,10 @@ struct SeatActivityView: View {
         }
         .frame(width: quotaWidth, alignment: .leading)
         .help(server.isCurrent
-            ? "The provider quota the server's eavesdropper reads for this seat."
+            ? ApplyCopy.join(
+                "The provider quota the server's eavesdropper publishes for this seat.",
+                "Today's eavesdropper runs no model and publishes none."
+            )
             : SeatActivityText.display(server.help))
     }
 
@@ -782,7 +785,7 @@ struct SeatActivityView: View {
         .help(cellHelp(row.listener, known: "What the Mac's eavesdropper says about this seat."))
     }
 
-    /// The provider quota the eavesdropper reads for the seat.
+    /// The provider quota the Mac's eavesdropper publishes for the seat:  none since AFC-694.
     private func quotaCell(_ row: SeatActivityRow, readAt: Date?) -> some View {
         Group {
             switch row.quota {
@@ -809,8 +812,8 @@ struct SeatActivityView: View {
         }
         .frame(width: quotaWidth, alignment: .leading)
         .help(cellHelp(row.quota, known: ApplyCopy.join(
-            "The provider quota the Mac's eavesdropper reads for this seat, the same reading its wake gate uses.",
-            "Not reported means the seat's wake talks to no provider, or the quota snapshot cannot speak for it now."
+            "The provider quota the Mac's eavesdropper publishes for this seat.",
+            "Today's eavesdropper runs no model and publishes none, so any reading shown here comes from an older one."
         )))
     }
 
