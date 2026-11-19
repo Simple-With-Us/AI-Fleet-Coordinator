@@ -39,8 +39,17 @@ reader, used by many consumers, each of which should instead hold its own narrow
    route itself, with the same checks its own code needs.  `scripts/mac-resource-watch.py` is the reviewed
    precedent for that shape.
 
-4. **The environment still wins.**  A value already in the environment is used and never second-guessed.  The
-   scoped token is the fallback, not the override.
+4. **The consumer's own store is the authority for the token.**  The scoped service token is read from the
+   consumer's own store, and it is the credential the read runs under.  The environment may carry a copy of
+   that same token, which is how a host transports a value it already synced from Infisical, and a copy is
+   used only when the store has no usable token.  A hand-set environment value never replaces the reviewed,
+   scope-limited grant.  The read's own scope check still decides whether any token may read a folder at
+   all:  `validate_service_metadata` requires the token's granted folders to equal the declared folders
+   exactly.
+
+   This is about the token.  A consumer whose own contract says a host binds a secret *value* in the
+   environment (a realm credential for a given realm, for example) keeps that behaviour:  the value is the
+   host's own binding, and the token that fetches it is still the consumer's own scoped service token.
 
 5. **No fallback, no cached copy.**  There is no route to the shared reader, to a machine identity, to the System
    Keychain old identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields
@@ -90,7 +99,7 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `muster-afc-wake-router-ro` | AI Fleet Coordinator | `/wake-router` | Muster's knob registry | Mac |
 | `cf-usage-watchdog-ro` | AI Fleet Coordinator | `/cf-usage-watchdog` | the Cloudflare usage watchdog | server |
 | `alert-ingress-afc-ro` | AI Fleet Coordinator | `/zulip` | the alert-ingress provisioner, AFC side | server |
-| `alert-ingress-fleetops-ro` | Fleet-OPS | `/zulip` | the alert-ingress provisioner, Fleet-OPS side | server |
+| `alert-ingress-fleetops-ro` | Fleet-OPS | `/global-api-keys` | the alert-ingress provisioner, Fleet-OPS side | Mac + server |
 | `alert-ingress-selftest-ro` | AI Fleet Coordinator | `/zulip` | the alert-ingress selftest | server |
 | `notes-client-ro` | AI Fleet Coordinator | `/` | the notes client | both |
 | `notes-operator-ro` | AI Fleet Coordinator | `/operator` | the notes client, Operator key | both |
@@ -116,6 +125,7 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `botfleet-server-ro` | Fleet-OPS | `/` | the BotFleet harness start script's identity names | Mac |
 | `usage-monitor-collectors-ro` | Fleet-OPS | `/global-api-keys` | the Usage Monitor collectors | Mac |
 | `usage-monitor-collectors-global-ro` | Fleet-OPS | `/` | the Usage Monitor collectors' root-level names | Mac |
+| `fleet-rag-fleetops-ro` | Fleet-OPS | `/global-api-keys` | the recall reader's Fleet-OPS reader | Mac + server |
 
 `github-pat-ro` is the one account two callers share:  the shell's `GH_TOKEN` resolution and the iOS publish's
 fallback read the same credential from the same folder on the same host,  so they are rotated together.

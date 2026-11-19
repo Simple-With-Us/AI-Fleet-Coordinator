@@ -21,7 +21,7 @@ The caller explicitly chooses one source:
 | `--from file --file PATH` | The owner-provided regular input file with mode 0600 |
 
 The seat is in the path, so the name is the same on every host and the consumer's
-command line is the same everywhere.  A consumer whose own table of secrets is static
+command line is the same everywhere.  A consumer whose own table of secrets is static
 — BotFleet's secret map names one secret per bot — reads the other shape, one folder
 with the seat in the name (`GH_TOKEN_OPENCODE`), and renames the value to the
 environment variable the CLI expects.
@@ -38,15 +38,16 @@ The source of the value is one of:
 
 | Source | Reads |
 |---|---|
-| the environment | the environment variable.  This is what the Mac's own shell already exports for the GitHub CLI |
+| the environment | the environment variable.  This is what the Mac's own shell already exports for the GitHub CLI, and it may hold only a copy the scoped read populated |
 | Infisical | the value, read through the consumer's own scoped service token |
 | a file | a 0600 file the owner handed over, which is how the owner hands a secret to a seat at all |
 
 The GitHub CLI's own keychain entry and a generic keychain lookup are deliberately not
 sources here.  The keychain is reserved for the consumer's own scoped service token,  and a
 path-less lookup can reach an item in another account or in the System keychain and can
-raise an unlock prompt on the owner's screen.  The approved order is the environment first
-and a scoped Infisical read second.
+raise an unlock prompt on the owner's screen.  The approved order is a scoped Infisical read first:  the consumer's own scoped service token, read
+from the consumer's own store, is the authoritative credential, and the environment may carry only a copy
+that read populated, never a hand-set value.
 
 The value never appears in an argument list, a message or a log.  The write checks the
 policy before it reads the value, so a name or a path outside the allowlist never reaches
@@ -78,14 +79,14 @@ prints a fixed outcome and recovery identity, never a value, value digest,
 credential prefix or provider body.  A cached successful receipt describes a known
 past completion and does not assert that external writers left the value unchanged.
 
-* No credential file is copied between hosts.  The Mac does not push a file to the
+* No credential file is copied between hosts.  The Mac does not push a file to the
   server, and the server does not pull one from the Mac.
 * The GitHub CLI's own keychain entry is not a source,  and neither is a path-less
   keychain lookup.  The keychain is for the consumer's own scoped service token.
-* No value goes in the repository, a log, a pull request or a chat message.  The
+* No value goes in the repository, a log, a pull request or a chat message.  The
   repository carries names and paths only.
 * The GitHub CLI's own token stays in the GitHub CLI's own store on the machine where
-  it was made.  The sync copies the value into the shared store; it does not take the
+  it was made.  The sync copies the value into the shared store; it does not take the
   keychain entry away.
 
 ## The writer token and the reader token

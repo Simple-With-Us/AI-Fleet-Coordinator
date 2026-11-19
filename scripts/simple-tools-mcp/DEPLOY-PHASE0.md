@@ -1,21 +1,21 @@
 # Deploy Phase 0:  Runbook
 
-Ordered steps to put the Phase 0 stub on `https://agents.simplewithus.com`.  The stub holds no Zulip key, so spec 3.2 allows today's credential (the Global key) for it.  Every Cloudflare change below is Jay-approved work for the parent session, run by hand, never from CI and never on merge.
+Ordered steps to put the Phase 0 stub on `https://agents.simplewithus.com`.  The stub holds no Zulip key, so spec 3.2 allows today's credential (the Global key) for it.  Every Cloudflare change below is Jay-approved work for the parent session, run by hand, never from CI and never on merge.
 
-Everything runs from `scripts/simple-tools-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else a scoped Infisical read (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
+Everything runs from `scripts/simple-tools-mcp/` in a checkout of the merged commit (a fresh worktree off `origin/main`, never `~/Code/AI-Fleet-Coordinator`).  `infra_phase0.py` loads the Global key inside its own process from the environment, else a scoped Infisical read (OPS-818;  the flat file is no longer read) and never prints it.  Every step is a dry run until `--apply`.  Do not merge stderr into output (`2>&1`) on any command that touches a secret.
 
 ## What can hold the hostname (read-only probe: `python3 -I infra_phase0.py status`)
 
 | Thing | State |
 | --- | --- |
 | DNS in zone `simplewithus.com` | a proxied `CNAME` for the hostname to a `*.cfargotunnel.com` name, if one exists |
-| Cloudflare Tunnel "Jay's Tunnel" | an ingress rule for the hostname aimed at `http://localhost:8787`, if one exists.  **A rule is live, not dead config:**  `status` names the process listening on that local port (8787 is `wrangler dev`'s default port).  Through a proxied CNAME the internet reaches it with no Access.  That exposure ends when step 4 deletes the CNAME |
+| Cloudflare Tunnel "Jay's Tunnel" | an ingress rule for the hostname aimed at `http://localhost:8787`, if one exists.  **A rule is live, not dead config:**  `status` names the process listening on that local port (8787 is `wrangler dev`'s default port).  Through a proxied CNAME the internet reaches it with no Access.  That exposure ends when step 4 deletes the CNAME |
 | Worker routes and Worker custom domains | none for this hostname |
-| Access apps | none cover this hostname.  `agents.jays.services` (`1e1a5fc4`) allows `mail@jays.services` and `jaywedgeworth22@gmail.com` through identity provider `76030d10-ec5b-46ff-ba9d-a4412cd755ce` (type One-time PIN), 24-hour session.  The new app allows `mail@jays.services` only (spec 3.3) |
+| Access apps | none cover this hostname.  `agents.jays.services` (`1e1a5fc4`) allows `mail@jays.services` and `jaywedgeworth22@gmail.com` through identity provider `76030d10-ec5b-46ff-ba9d-a4412cd755ce` (type One-time PIN), 24-hour session.  The new app allows `mail@jays.services` only (spec 3.3) |
 
-What must change for the custom domain to bind:  the CNAME must go.  Cloudflare refuses a Worker custom domain on a hostname that already has a DNS record, and wrangler creates the domain's own record when it binds.  The tunnel rule does not block the bind, but once DNS stops pointing at the tunnel it is a dead rule aimed at a local dev port, and it comes back to life if anyone re-adds a CNAME.  Removing it (step 7) is a required step, done right after the deploy is verified.
+What must change for the custom domain to bind:  the CNAME must go.  Cloudflare refuses a Worker custom domain on a hostname that already has a DNS record, and wrangler creates the domain's own record when it binds.  The tunnel rule does not block the bind, but once DNS stops pointing at the tunnel it is a dead rule aimed at a local dev port, and it comes back to life if anyone re-adds a CNAME.  Removing it (step 7) is a required step, done right after the deploy is verified.
 
-**Do not wait for the deploy to close the exposure.**  If Jay wants it closed now, either stop the node process on port 8787 (tell the Congress.Trade owner first) or run step 4 early.  The hostname then does not resolve until step 5, which only affects a service nobody should be using.
+**Do not wait for the deploy to close the exposure.**  If Jay wants it closed now, either stop the node process on port 8787 (tell the Congress.Trade owner first) or run step 4 early.  The hostname then does not resolve until step 5, which only affects a service nobody should be using.
 
 ## Step 0:  Preflight
 
@@ -37,11 +37,11 @@ python3 -I infra_phase0.py access          # prints the payload, changes nothing
 python3 -I infra_phase0.py access --apply
 ```
 
-It creates the self-hosted app "agents.simplewithus.com consent and admin" with two destinations, `agents.simplewithus.com/authorize` and `agents.simplewithus.com/admin` (Access covers each path and everything under it), a 30-day session (`720h`; spec 3.3 said 15 minutes, raised by owner ruling on Fri, Oct 9, 2026), app launcher hidden, the same identity provider list as `1e1a5fc4`, and one allow policy, "Jay emails only", for `mail@jays.services` and nobody else (spec 3.3).  The identity provider is One-time PIN, so every address on the policy is an admin credential for this server:  it can arm a seat, approve a consent, create Grok clients and revoke.  That list must stay equal to `OWNER_EMAILS` in `wrangler.jsonc` (a test pins both), or a login that passes Access fails the Worker's own check.  Adding a second address is an owner decision to record in the spec, not a config tweak.
+It creates the self-hosted app "agents.simplewithus.com consent and admin" with two destinations, `agents.simplewithus.com/authorize` and `agents.simplewithus.com/admin` (Access covers each path and everything under it), a 30-day session (`720h`; spec 3.3 said 15 minutes, raised by owner ruling on Fri, Oct 9, 2026), app launcher hidden, the same identity provider list as `1e1a5fc4`, and one allow policy, "Jay emails only", for `mail@jays.services` and nobody else (spec 3.3).  The identity provider is One-time PIN, so every address on the policy is an admin credential for this server:  it can arm a seat, approve a consent, create Grok clients and revoke.  That list must stay equal to `OWNER_EMAILS` in `wrangler.jsonc` (a test pins both), or a login that passes Access fails the Worker's own check.  Adding a second address is an owner decision to record in the spec, not a config tweak.
 
-If the API ignores the inline policy, the script warns and the app has no allow policy, which nobody can pass (fails closed).  Then add "Jay emails only" in the dashboard, or `POST /accounts/<id>/access/apps/<app id>/policies`.
+If the API ignores the inline policy, the script warns and the app has no allow policy, which nobody can pass (fails closed).  Then add "Jay emails only" in the dashboard, or `POST /accounts/<id>/access/apps/<app id>/policies`.
 
-Record the printed app id and `aud`.  The app can exist before the Worker does.
+Record the printed app id and `aud`.  The app can exist before the Worker does.
 
 ## Step 2:  KV namespace
 
@@ -59,12 +59,12 @@ git diff wrangler.jsonc                    # exactly one line changes:  the OAUT
 
 The KV namespace id is not a credential, so it stays in the committed file and belongs in a follow-up PR so the next deploy is reproducible.
 
-The Access AUD is a private Cloudflare resource identifier and is **not** committed.  `write-config --apply` sets it as an encrypted Worker secret (`wrangler secret put ACCESS_AUD`, value on stdin, never argv) from the Access app `access --apply` created.  Run it again whenever that app is recreated — it replaces the live value rather than only a placeholder.  Until `ACCESS_AUD` is provisioned, the Worker fails closed:  `/authorize` and `/admin` answer 500 and name `ACCESS_AUD` as the missing variable.
+The Access AUD is a private Cloudflare resource identifier and is **not** committed.  `write-config --apply` sets it as an encrypted Worker secret (`wrangler secret put ACCESS_AUD`, value on stdin, never argv) from the Access app `access --apply` created.  Run it again whenever that app is recreated — it replaces the live value rather than only a placeholder.  Until `ACCESS_AUD` is provisioned, the Worker fails closed:  `/authorize` and `/admin` answer 500 and name `ACCESS_AUD` as the missing variable.
 
 Two things about that call, because a failure here is otherwise a bare exit code:
 
-- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same scoped Infisical credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it reports only the exit code plus two allow-listed fields taken from wrangler's output (the Cloudflare error code and the request id); none of wrangler's own text is relayed, so no secret can ride along.  Exit 124 is a hung wrangler and 127 is a missing one.
-- **It needs the Worker to already exist.**  On a brand-new endpoint, run this step again *after* step 5: `wrangler secret put` has nothing to attach to until the Worker is deployed.  Setting it later needs no redeploy, so it can equally be run after `check`.
+- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same scoped Infisical credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it reports only the exit code plus two allow-listed fields taken from wrangler's output (the Cloudflare error code and the request id); none of wrangler's own text is relayed, so no secret can ride along.  Exit 124 is a hung wrangler and 127 is a missing one.
+- **It needs the Worker to already exist.**  On a brand-new endpoint, run this step again *after* step 5: `wrangler secret put` has nothing to attach to until the Worker is deployed.  Setting it later needs no redeploy, so it can equally be run after `check`.
 
 ## Step 4:  Remove the tunnel CNAME
 
@@ -73,9 +73,9 @@ python3 -I infra_phase0.py dns             # shows the record it would delete
 python3 -I infra_phase0.py dns --apply     # backs it up to ~/.simple-tools-mcp-phase0/dns-<id>.json (mode 600), then deletes it
 ```
 
-The step refuses anything but a `*.cfargotunnel.com` CNAME.  From here until step 5 finishes the hostname does not resolve.
+The step refuses anything but a `*.cfargotunnel.com` CNAME.  From here until step 5 finishes the hostname does not resolve.
 
-**The backup is a record, never a rollback.**  Recreating this CNAME would publish the Mac's port 8787 again, with no Access.  To undo a bad deploy, roll the Worker back to its previous version (`npx --no-install wrangler rollback`, or redeploy the previous commit);  to take the endpoint down, use `MCP_DISABLED` or `wrangler delete` (see the table at the end).
+**The backup is a record, never a rollback.**  Recreating this CNAME would publish the Mac's port 8787 again, with no Access.  To undo a bad deploy, roll the Worker back to its previous version (`npx --no-install wrangler rollback`, or redeploy the previous commit);  to take the endpoint down, use `MCP_DISABLED` or `wrangler delete` (see the table at the end).
 
 ## Step 5:  Deploy
 
@@ -91,7 +91,9 @@ cd scripts/simple-tools-mcp
 )
 ```
 
-`npx --no-install` runs the pinned devDependency, wrangler 4.139.0.  The deploy uploads `simple-tools-mcp`, creates the `SeatGate` SQLite class (migration `v1`), binds `OAUTH_KV` and `TOKEN_RATE_LIMITER`, and binds the custom domain `agents.simplewithus.com`, creating its DNS record.  No workers.dev or preview URL is created.  If wrangler says the hostname already has DNS records, step 4 did not run.  `npm run deploy` refuses on purpose.
+Each `CLOUDFLARE_*` value above is a copy the scoped read populated, carried into the environment for wrangler;  the scoped service token behind `read_secret` is the consumer's own, read from the consumer's own store, and a hand-set value never replaces that reviewed grant.
+
+`npx --no-install` runs the pinned devDependency, wrangler 4.139.0.  The deploy uploads `simple-tools-mcp`, creates the `SeatGate` SQLite class (migration `v1`), binds `OAUTH_KV` and `TOKEN_RATE_LIMITER`, and binds the custom domain `agents.simplewithus.com`, creating its DNS record.  No workers.dev or preview URL is created.  If wrangler says the hostname already has DNS records, step 4 did not run.  `npm run deploy` refuses on purpose.
 
 ## Step 6:  Post-deploy checks (read-only)
 
@@ -99,7 +101,7 @@ cd scripts/simple-tools-mcp
 python3 -I infra_phase0.py check           # right after the deploy:  exactly one FAIL line is expected
 ```
 
-At this point `check` ends with "1 failure(s)" and exit code 1, and that is correct:  the line `no stale tunnel ingress rule for this host` stays FAIL until step 7 removes the tunnel rule.  Any other FAIL means the deploy is wrong.  The rerun at the end of step 7 must say PASS on every line and exit 0.
+At this point `check` ends with "1 failure(s)" and exit code 1, and that is correct:  the line `no stale tunnel ingress rule for this host` stays FAIL until step 7 removes the tunnel rule.  Any other FAIL means the deploy is wrong.  The rerun at the end of step 7 must say PASS on every line and exit 0.
 
 What it checks, with the curl equivalent for a by-hand look:
 
@@ -117,7 +119,7 @@ What it checks, with the curl equivalent for a by-hand look:
 | custom domain | bound to service `simple-tools-mcp` |
 | tunnel | no ingress rule left for this host (FAIL until step 7), and no `cfargotunnel.com` CNAME (passes once step 4 ran) |
 
-Wrong Host:  the Worker answers 404 to any Host but `agents.simplewithus.com`.  At the edge no other hostname routes to it (custom domain only, workers.dev and previews off), so this cannot be probed from outside;  `npm run test:workerd` pins it by sending the loopback Host and a foreign URL and expecting 404.
+Wrong Host:  the Worker answers 404 to any Host but `agents.simplewithus.com`.  At the edge no other hostname routes to it (custom domain only, workers.dev and previews off), so this cannot be probed from outside;  `npm run test:workerd` pins it by sending the loopback Host and a foreign URL and expecting 404.
 
 Then Jay opens `https://agents.simplewithus.com/admin`, signs in through Access, and should see JET and GROK-WEB, both "Not armed", epoch 0, no grants.
 
@@ -129,20 +131,20 @@ python3 -I infra_phase0.py tunnel --apply  # backs up the whole config, then PUT
 python3 -I infra_phase0.py check           # now every line, the tunnel ones included, must say PASS
 ```
 
-This rewrites the whole configuration of a live tunnel that carries 12 other hostnames, so do it on its own and only with Jay's go-ahead.  The step refuses unless exactly one rule goes and the catch-all stays last.  It is required, not optional:  a rule that aims a public hostname at a local dev port is one re-added CNAME away from being published again.  Tell the Congress.Trade owner what was listening on port 8787.
+This rewrites the whole configuration of a live tunnel that carries 12 other hostnames, so do it on its own and only with Jay's go-ahead.  The step refuses unless exactly one rule goes and the catch-all stays last.  It is required, not optional:  a rule that aims a public hostname at a local dev port is one re-added CNAME away from being published again.  Tell the Congress.Trade owner what was listening on port 8787.
 
 ## Step 8:  Hand over to Jay
 
-Send Jay [ARMING-JAY.md](ARMING-JAY.md).  Phase 0 results get recorded in `docs/protocols/simple-tools-mcp.md` section 6.
+Send Jay [ARMING-JAY.md](ARMING-JAY.md).  Phase 0 results get recorded in `docs/protocols/simple-tools-mcp.md` section 6.
 
-**The first Approve is the proof of the Referrer-Policy fix.**  The unit tests pin the policy and the Fetch Standard's Origin rule, and the workerd flow derives the Origin from the page's policy, but nobody has driven a live browser.  Jay's first Arm click and first Approve click, in Safari or Chrome, are that test.  If either answers "Request Refused", read the refusal:  an `Origin: null` means a page lost its `Referrer-Policy: same-origin`, and the fix is the page header, never a looser Origin check.
+**The first Approve is the proof of the Referrer-Policy fix.**  The unit tests pin the policy and the Fetch Standard's Origin rule, and the workerd flow derives the Origin from the page's policy, but nobody has driven a live browser.  Jay's first Arm click and first Approve click, in Safari or Chrome, are that test.  If either answers "Request Refused", read the refusal:  an `Origin: null` means a page lost its `Referrer-Policy: same-origin`, and the fix is the page header, never a looser Origin check.
 
 **Watch items for the first connections**, all visible in Workers Logs and `/admin`:
 
-- ChatGPT's first token request.  The library's metadata advertises `none`, `client_secret_basic` and `client_secret_post`, so ChatGPT's `private_key_jwt` option is not chosen.  If a token request still arrives with a `client_assertion` and no `client_id`, it fails with `invalid_client`;  the fix is the 1.2.2 library (eligible Tue, Oct 20), which needs Jay's age-rule approval only if it must go sooner.
+- ChatGPT's first token request.  The library's metadata advertises `none`, `client_secret_basic` and `client_secret_post`, so ChatGPT's `private_key_jwt` option is not chosen.  If a token request still arrives with a `client_assertion` and no `client_id`, it fails with `invalid_client`;  the fix is the 1.2.2 library (eligible Tue, Oct 20), which needs Jay's age-rule approval only if it must go sooner.
 - Whether any client sends a browser `Origin` to `/mcp` (logged as `mcp_origin_refused`).
 - That the Workers Logs rows carry no `cf-access-jwt-assertion` or cookie (`invocation_logs` is off, so only our own lines should appear).
-- The rate limiter namespace id `4711` in `wrangler.jsonc` must be unique among the account's rate limiters.  A read-only scan on Fri, Oct 9 found 7 Workers on Usage.Jays.Services and none with a rate limiter binding;  rerun it if other Workers deployed since (`GET /accounts/<id>/workers/scripts/<name>/settings`, look for bindings of type `ratelimit`).
+- The rate limiter namespace id `4711` in `wrangler.jsonc` must be unique among the account's rate limiters.  A read-only scan on Fri, Oct 9 found 7 Workers on Usage.Jays.Services and none with a rate limiter binding;  rerun it if other Workers deployed since (`GET /accounts/<id>/workers/scripts/<name>/settings`, look for bindings of type `ratelimit`).
 
 ## Rollback and kill switch
 
@@ -151,7 +153,7 @@ Send Jay [ARMING-JAY.md](ARMING-JAY.md).  Phase 0 results get recorded in `docs/
 | Stop one seat now | `/admin` → Pause (tools say paused, refreshes fail, grants kept) |
 | Kill a seat's grants | `/admin` → Revoke All And Bump Epoch |
 | Stop the whole endpoint | set `"MCP_DISABLED": "1"` in `wrangler.jsonc` and redeploy (step 5):  `/mcp` answers 503 |
-| Remove it | `npx --no-install wrangler delete` with the step 5 environment (removes the Worker; check that the custom domain went with it, and delete it in the dashboard if not).  Never restore the old tunnel CNAME |
+| Remove it | `npx --no-install wrangler delete` with the step 5 environment (removes the Worker; check that the custom domain went with it, and delete it in the dashboard if not).  Never restore the old tunnel CNAME |
 | Undo a bad deploy | `npx --no-install wrangler rollback` (previous Worker version) with the step 5 environment |
 
 Before Phase 2 puts any Zulip key in this Worker, spec 3.2 requires a per-Worker deploy token minted by Jay (A5), and every Phase 0 grant revoked with every epoch bumped (ARMING-JAY.md, exit criteria).

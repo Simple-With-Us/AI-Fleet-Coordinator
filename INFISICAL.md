@@ -1,12 +1,12 @@
 # INFISICAL.md — Sole Source of Truth for AI-Fleet-Coordinator
 
 Owner directive (2026-10-03): **Infisical is the sole source of truth** for this app's
-secrets, env variables, and tunable settings knobs.  Per-user settings stay in the app's
+secrets, env variables, and tunable settings knobs.  Per-user settings stay in the app's
 own store and never go in Infisical.
 
-- Infisical project: **AI Fleet Coordinator** (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), jays-services org.  **`prod` is the only environment** (owner decision 2026-10-10, new projects delete the default dev and staging at creation):  the service reads and writes prod, `INFISICAL_ENVIRONMENT` defaults to `prod`, and any other slug is refused.
+- Infisical project: **AI Fleet Coordinator** (`9bf7417a-fbbb-42ca-870c-2b45207233f5`), jays-services org.  **`prod` is the only environment** (owner decision 2026-10-10, new projects delete the default dev and staging at creation):  the service reads and writes prod, `INFISICAL_ENVIRONMENT` defaults to `prod`, and any other slug is refused.
 - Fleet knobs for the short-lived open-loops jobs (LaunchAgents, hooks, CLIs):  `scripts/fleet_knobs/`, documented in "Fleet knobs" below.
-- Migrated surface (this PR): `scripts/fleet-recall-service/server.py` — the fleet's shared vector memory HTTP front (the deployable Python service with the admin surface).  Settings module: `scripts/fleet_rag/infisical_settings.py` (stdlib only).
+- Migrated surface (this PR): `scripts/fleet-recall-service/server.py` — the fleet's shared vector memory HTTP front (the deployable Python service with the admin surface).  Settings module: `scripts/fleet_rag/infisical_settings.py` (stdlib only).
 - Credential:  the service's own scoped Infisical service token, bound as `INFISICAL_TOKEN` (read) and, for admin saves, `INFISICAL_WRITE_TOKEN` (write), under the Service Tokens Only rule below.  `infisical_settings.py` accepts only those two explicit bindings, checks the `st.` shape and uses the token as the bearer directly:  it does no universal-auth login and reads no `INFISICAL_AUTOMATION_*` or `INFISICAL_SHARED_*` name and no handoff file.  With no token configured, managed keys fall back to the process environment and the service keeps its old env-only behavior.
 
 ## Service Tokens Only
@@ -73,34 +73,34 @@ See [Muster Resource Controls](docs/muster-resource-controls.md) for validation,
 ## Hosted Simple-Tools: Cursor Cloud
 
 The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member
-bot.  Its credential pair belongs in this project, `prod`, folder `/zulip`,
+bot.  Its credential pair belongs in this project, `prod`, folder `/zulip`,
 separately from the recall-service settings cache and the generated fleet-knobs
-inventory below.  Store or update the source of truth in Infisical first, then
+inventory below.  Store or update the source of truth in Infisical first, then
 copy the credential to the Worker through the secure owner handoff in
 [scripts/simple-tools-mcp/DEPLOY.md](scripts/simple-tools-mcp/DEPLOY.md#add-cursor-cloud-afc-294).
 
 | Key | Kind | Worker binding / provisioning |
 |---|---|---|
-| `ZULIP_CURSOR_API_KEY` | secret | Owner-managed existing CURSOR bot key; encrypted Worker secret `ZULIP_KEY_CURSOR`.  Secure provisioning is required before live Cursor acceptance. |
+| `ZULIP_CURSOR_API_KEY` | secret | Owner-managed existing CURSOR bot key; encrypted Worker secret `ZULIP_KEY_CURSOR`.  Secure provisioning is required before live Cursor acceptance. |
 | `ZULIP_CURSOR_EMAIL` | env config | `cursor-bot@simplewithus.zulipchat.com`; Worker var `ZULIP_EMAIL_CURSOR`. |
 
 Provisioning and rotation use these same key names; no secret value belongs in
-this inventory.  The installer verifies the email, bot identity and member role
+this inventory.  The installer verifies the email, bot identity and member role
 before copying the key, and the hosted Worker repeats those checks at runtime.
 
 ### Cursor Shared-Agent Tool Budgets
 
 `SIMPLE_TOOLS_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
-copied to the same encrypted Worker binding.  Config validation rejects unknown
-kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
-the existing limits.  The policy applies only to CURSOR, across all its grants, and only ever raises a default:  each window is the larger of the policy and the built-in limit (owner 2026-10-19), so Cursor's 100 Zulip writes an hour now count as 120.
+copied to the same encrypted Worker binding.  Config validation rejects unknown
+kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
+the existing limits.  The policy applies only to CURSOR, across all its grants, and only ever raises a default:  each window is the larger of the policy and the built-in limit (owner 2026-10-19), so Cursor's 100 Zulip writes an hour now count as 120.
 
 Owner requested capacity for approximately 40 Cursor agents on 2026-10-15:
 Linear writes 2,000/hour and 20,000/day, Linear reads 12,000/hour with separate
-counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
+counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
 100/hour and 600/day; reads 1,500/hour; reactions 300/hour; recall contributions
-50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
-Other seats retain their existing limits.  Upstream rate limits still apply.
+50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
+Other seats retain their existing limits.  Upstream rate limits still apply.
 
 ## Cursor Cloud Letters (the shared Operator unit)
 
@@ -115,11 +115,11 @@ The registry knobs share `/wake-router` with the router's bearer `WAKE_ROUTER_KE
 
 ## Apple Notes through the Operator (AFC-486)
 
-Apple Notes requests from the server and cloud seats go to the Operator's notes queue (`docs/protocols/operator-notes.md`), never through Zulip.  Four names, all in this project, `prod`:
+Apple Notes requests from the server and cloud seats go to the Operator's notes queue (`docs/protocols/operator-notes.md`), never through Zulip.  Four names, all in this project, `prod`:
 
 | Name | Where | Who reads it |
 |---|---|---|
-| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`, else (when the knob reads empty, as on the server once its last-known-good copy lapses) through the consumer's own scoped read-only service token and `scripts/fleet_infisical.py`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
+| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`, else (when the knob reads empty, as on the server once its last-known-good copy lapses) through the consumer's own scoped read-only service token and `scripts/fleet_infisical.py`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
 | `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
 | `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (the server Notes reader below, with its own `operator-notes-read` service token, held in memory) |
 | `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, through its own scoped service token and `scripts/fleet_infisical.py`) |
@@ -128,45 +128,45 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 
 The server's `simple-notes` and stdio MCP can use the existing read-only
 `operator-notes-read` service token without a personal login or a CLI credential
-argument. The SERVER consumer reads `~/.config/operator-notes/reader.json`.
+argument.  The SERVER consumer reads `~/.config/operator-notes/reader.json`.
 Its parent directory must be owned by the current user and mode 0700; the file
 must be a regular single-link current-user file, mode 0600, with no symlinks.
 The schema has exactly `schema` (integer 1), `service_token` (the existing token),
-`operator_api_url`, `project_id`, `token_id`, and `token_name`. The four non-secret
+`operator_api_url`, `project_id`, `token_id`, and `token_name`.  The four non-secret
 deployment pins are provisioned from the host's verified metadata and must match
 the reviewed SHA-256 commitment in the reader, computed over canonical sorted JSON
-with compact separators. They are not learned from the API response. Other
-identities or destinations fail closed. No private inventory IDs or hostnames are
-stored in source. Do not put a token in source, arguments, environment or logs.
+with compact separators.  They are not learned from the API response.  Other
+identities or destinations fail closed.  No private inventory IDs or hostnames are
+stored in source.  Do not put a token in source, arguments, environment or logs.
 
-When that file exists, it is authoritative for SERVER Notes. An unsafe file,
+When that file exists, it is authoritative for SERVER Notes.  An unsafe file,
 wrong token, expired token, failed request or unverified key fails closed; it does
-not fall back to a personal login, environment credential or disk cache. An absent
-file preserves existing behavior on hosts not using this reader. RUNNER and
+not fall back to a personal login, environment credential or disk cache.  An absent
+file preserves existing behavior on hosts not using this reader.  RUNNER and
 WORKER are unchanged.
 
 The reader checks the existing token's ID, name, AFC project, exact `prod:/operator`
 scope, read-only permission and expiry, then makes a bounded, no-redirect point
-read of `OPERATOR_NOTES_SERVER_KEY`. It verifies the returned key's project,
-environment, folder, name, shared type and visible value. It never exports the
+read of `OPERATOR_NOTES_SERVER_KEY`.  It verifies the returned key's project,
+environment, folder, name, shared type and visible value.  It never exports the
 folder, writes a secret cache, creates/renews a login, or changes token scope.
 Malformed HTTP status lines and incomplete responses are reduced to a short
 redacted failure, never an exception containing response data.
 
 A process may reuse the verified key for at most 600 monotonic elapsed seconds,
 with a separate wall-clock check against the token's UTC expiry minus 30 seconds.
-A backward wall-clock correction cannot extend the elapsed TTL. As with the existing KeySource cache, an Infisical
+A backward wall-clock correction cannot extend the elapsed TTL.  As with the existing KeySource cache, an Infisical
 revocation or scope change can remain unobserved during this window if the Operator
-still accepts the key. Every use rechecks the private config's custody and content;
-changes invalidate the cache and require a new client. An Operator 401 drops it
-without retrying the request. Expired cache is discarded before refresh, so a
-failed refresh never returns a stale key. The cache is thread-safe and memory-only.
+still accepts the key.  Every use rechecks the private config's custody and content;
+changes invalidate the cache and require a new client.  An Operator 401 drops it
+without retrying the request.  Expired cache is discarded before refresh, so a
+failed refresh never returns a stale key.  The cache is thread-safe and memory-only.
 
 The non-secret URL comes from the committed private deployment pins; this does not
-change fleet-knobs local-value or last-known-good freshness rules. Host provisioning,
-private token custody and runtime activation remain separate release steps. Generic verified reads through a consumer's own scoped service token are unchanged.
+change fleet-knobs local-value or last-known-good freshness rules.  Host provisioning,
+private token custody and runtime activation remain separate release steps.  Generic verified reads through a consumer's own scoped service token are unchanged.
 
-Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
+Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
 ## Linear project linkifiers (AFC-565)
 
@@ -185,17 +185,17 @@ Each value is never printed, logged or written to a file.
 
 ## Linear living comments (the Zulip -> Linear relay, folded into the Operator)
 
-The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the owner's Linear developer token — a personal API key with Write permission — held in this project, `prod`, folder `/linear`, as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.  (Owner ruling 2026-11-03:  the lane first minted tokens from the Operator app's OAuth pair, but the app's registered scopes are `read` + `comments:create` only, so comment edits fail;  the developer token replaces the pair for this job, and the pair is no longer read by the daemon.)  The daemon reads the key through ONE scoped read-only Infisical service token, `operator-linear-read`, scoped to exactly `prod` `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens" row 61), resolved from the runtime-only variable `OPERATOR_LINEAR_INFISICAL_TOKEN` or the `[linear_comments] infisical_token_file` — never through a machine identity, and no Linear token is bound to the container.  The key is fetched at daemon start and held in memory only.  Nothing reads a seat's Linear credential for this job.
+The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the owner's Linear developer token — a personal API key with Write permission — held in this project, `prod`, folder `/linear`, as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.  (Owner ruling 2026-11-03:  the lane first minted tokens from the Operator app's OAuth pair, but the app's registered scopes are `read` + `comments:create` only, so comment edits fail;  the developer token replaces the pair for this job, and the pair is no longer read by the daemon.)  The daemon reads the key through ONE scoped read-only Infisical service token, `operator-linear-read`, scoped to exactly `prod` `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens" row 61), resolved from the runtime-only variable `OPERATOR_LINEAR_INFISICAL_TOKEN` or the `[linear_comments] infisical_token_file` — never through a machine identity, and no Linear token is bound to the container.  The key is fetched at daemon start and held in memory only.  Nothing reads a seat's Linear credential for this job.
 
 ## Zulip Outgoing Wake Tokens
 
-The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
+The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
 
-`scripts/zulip_migrate_outgoing.py` was retired 2026-10-19 because it needed the owner key;  bots are now provisioned through `scripts/zulip_provision_bots.py` with the realm-admin bot.  See [the outgoing-webhook runbook](docs/protocols/zulip-outgoing-migration.md).
+`scripts/zulip_migrate_outgoing.py` was retired 2026-10-19 because it needed the owner key;  bots are now provisioned through `scripts/zulip_provision_bots.py` with the realm-admin bot.  See [the outgoing-webhook runbook](docs/protocols/zulip-outgoing-migration.md).
 
 ## Hosted Echo and Wise Zulip identities
 
-The hosted bridge and server listener use the canonical seat names ECHO and WISE.  Their Zulip RC files are `Echo-zuliprc` and `Wise-zuliprc`; the latter replaces the former `Instinct-zuliprc` filename.  The bot email may retain its existing Zulip local part while the seat key is WISE.
+The hosted bridge and server listener use the canonical seat names ECHO and WISE.  Their Zulip RC files are `Echo-zuliprc` and `Wise-zuliprc`; the latter replaces the former `Instinct-zuliprc` filename.  The bot email may retain its existing Zulip local part while the seat key is WISE.
 
 | Key | Kind | Worker binding / provisioning |
 |---|---|---|
@@ -204,11 +204,11 @@ The hosted bridge and server listener use the canonical seat names ECHO and WISE
 | `ZULIP_WISE_EMAIL` | env config | Wise bot email; Worker var `ZULIP_EMAIL_WISE` |
 | `ZULIP_WISE_API_KEY` | secret | Wise bot key; Worker secret `ZULIP_KEY_WISE` |
 
-Store current values in prod `/zulip`, and verify each bot identity before provisioning.  Never copy a key into source or logs.
+Store current values in prod `/zulip`, and verify each bot identity before provisioning.  Never copy a key into source or logs.
 
 ## Zulip incoming-webhook bots
 
-Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`/api/v1/external/<integration>?api_key=…&stream=…`), so a leaked URL is a leaked key.  The local copies are `~/.secrets/Zulip/<Name>-zuliprc` (0600).  Routing is in [the signal routing plan](docs/plans/2026-10-15-fleet-signal-routing.md).
+Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`/api/v1/external/<integration>?api_key=…&stream=…`), so a leaked URL is a leaked key.  The local copies are `~/.secrets/Zulip/<Name>-zuliprc` (0600).  Routing is in [the signal routing plan](docs/plans/2026-10-15-fleet-signal-routing.md).
 
 | Key | Kind | Used by |
 |---|---|---|
@@ -226,29 +226,29 @@ Its never-deployed Infisical variant was designed to read `GITHUB_WEBHOOK_SECRET
 
 ## Runtime contract
 
-1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: service-token bearer (`INFISICAL_TOKEN`) → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.
-2. **Never fetch per-request.**  All runtime reads come from the in-memory cache (`infisical_settings.get()`).  There is no per-request, per-tick, or per-event Infisical call anywhere in the request path — verified by test (`test_runtime_reads_make_zero_network_calls_after_init`).
-3. **Background refresh.**  A daemon thread re-fetches every `SETTINGS_REFRESH_SECONDS` (default 300), re-exports the backend keys, and on failure logs loudly while keeping the last-known-good cache.  On-demand refresh: `SIGHUP` to the process, `POST /admin/reload-settings`, or the admin settings save.
-4. **Write-through on admin save.**  `POST /admin/settings` calls `infisical_settings.set()`, which writes to Infisical FIRST (`POST`/`PATCH /api/v3/secrets/raw`) and only then updates the local cache.  A failed write fails the save (502) and the cache is left untouched.
+1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: service-token bearer (`INFISICAL_TOKEN`) → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.
+2. **Never fetch per-request.**  All runtime reads come from the in-memory cache (`infisical_settings.get()`).  There is no per-request, per-tick, or per-event Infisical call anywhere in the request path — verified by test (`test_runtime_reads_make_zero_network_calls_after_init`).
+3. **Background refresh.**  A daemon thread re-fetches every `SETTINGS_REFRESH_SECONDS` (default 300), re-exports the backend keys, and on failure logs loudly while keeping the last-known-good cache.  On-demand refresh: `SIGHUP` to the process, `POST /admin/reload-settings`, or the admin settings save.
+4. **Write-through on admin save.**  `POST /admin/settings` calls `infisical_settings.set()`, which writes to Infisical FIRST (`POST`/`PATCH /api/v3/secrets/raw`) and only then updates the local cache.  A failed write fails the save (502) and the cache is left untouched.
 
 **Service token.**  The service binds its own Infisical service token as `INFISICAL_TOKEN` in the service environment, and that is the only credential the loader accepts:  the token is the bearer directly, so no login happens at all, and a 401 raises a `SettingsError` naming the variable instead of a re-login retry, because a service token is not something the loader can refresh.  The token must carry the `st.` prefix, no whitespace and 20 to 2048 characters, or startup refuses it before any API call; its value never reaches a log, an error message, the admin listing or the environment export.  Bind it in the platform's own secret store for that service and let the platform inject it as an environment variable at start (Coolify, systemd, a container runtime);  it is the host's one bootstrap token, the standing exception to the sole-source rule.  Never write it into an image, a repository or a sheet, and log the grant (not the value) on the service-tokens tab of the fleet references workbook.
 
 ## Admin gating
 
-`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.  OWNER correction/retraction of recall lessons is a separate authority: it requires `Authorization: Bearer <RECALL_OWNER_TOKEN>`, and with that key unset the service refuses the mutation 403.  A client-supplied `seat: "OWNER"` is only a claim, never proof.
+`GET /admin/settings` (key inventory; secret values masked as `set`/`empty`, never returned), `POST /admin/settings` (write-through save), and `POST /admin/reload-settings` require `Authorization: Bearer <RECALL_ADMIN_TOKEN>`.  The seat bearer (`RECALL_API_TOKEN`) gets 401 on these routes; with `RECALL_ADMIN_TOKEN` unset the routes answer 403.  "Admin" is whoever holds the admin token — the fleet operator, not the seats.  OWNER correction/retraction of recall lessons is a separate authority: it requires `Authorization: Bearer <RECALL_OWNER_TOKEN>`, and with that key unset the service refuses the mutation 403.  A client-supplied `seat: "OWNER"` is only a claim, never proof.
 
 ## Per-user boundary (out of scope by design)
 
-This service has no per-user settings: seat identity is passed per-request by the caller (`recall_contribute` requires a `seat` argument) and is never stored.  Nothing per-user belongs in Infisical, and nothing here was migrated into it.
+This service has no per-user settings: seat identity is passed per-request by the caller (`recall_contribute` requires a `seat` argument) and is never stored.  Nothing per-user belongs in Infisical, and nothing here was migrated into it.
 
 ## Deliberately not migrated (this PR)
 
-- THE BOARD server (`scripts/mac-collab/`, retired on 2026-10-19, AFC-363): Mac-local; read `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.  Its tracked source was removed from this repo when the server was retired, and the env file it read went with it.
-- The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
-- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there with its own scoped service tokens (`LINEAR_BOARD_INFISICAL_READ_TOKEN` and the separate `LINEAR_BOARD_INFISICAL_WRITE_TOKEN`, bound by the launcher or a token file;  no automation identity), after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` Linear environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
+- THE BOARD server (`scripts/mac-collab/`, retired on 2026-10-19, AFC-363): Mac-local; read `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.  Its tracked source was removed from this repo when the server was retired, and the env file it read went with it.
+- The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
+- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there with its own scoped service tokens (`LINEAR_BOARD_INFISICAL_READ_TOKEN` and the separate `LINEAR_BOARD_INFISICAL_WRITE_TOKEN`, bound by the launcher or a token file;  no automation identity), after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` Linear environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
-- `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
+- `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
 
 ## Fleet RAG nightly ingest (AFC-687)
 
@@ -265,13 +265,13 @@ A machine-identity variable in the environment refuses the run before any fetch.
 `scripts/fleet_knobs/` is how the open-loops jobs (LaunchAgents, hooks and CLIs that run for seconds) read their modes, caps and flags.  The values live in this project, `prod`, at the root path, apart from a knob whose registry entry names its own folder (`folder` in `registry.py`, and "in folder" in the table below), and they are the only place a mode or a cap is set.  A process fetches each folder its reads need and no other, so a job that reads only root knobs fetches `/` exactly as before.  A refresh thread does not fit a job that lives a few seconds, so the contract differs from the service above:
 
 1. **Fetch once per folder per process.**  The first `knobs.get()` of a knob in a folder reads only that folder's registered names, through the packaged shared REST client `fleet_infisical.py`, without application discovery or a path override, for prod only.  It needs the knob reader's own service token in `FLEET_KNOBS_INFISICAL_TOKEN`;  the token's metadata must prove this project, exactly the prod folder being read, read-only permission and a finite future timezone-aware `expiresAt` before any value is fetched (so a token scoped to `/` does not read `/wake-router` through this reader, and one scoped to `/wake-router` reads nothing else), and a missing or malformed token is reason `service-token-required`, with no machine-identity, keychain or CLI-session fallback.  A missing, malformed, indefinite or expired metadata expiry is reason `token-expired-or-invalid`;  it writes the normal cross-process failure marker described below.  A failed fetch is not retried in the same process.  A non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused before anything runs.  The token goes only to the reader, never into a log, an argument list or a file.  The whole read shares one 8 second budget, and running out is reason `timeout`.  **Fail fast across processes.**  A failed fetch writes `~/.local/state/fleet-knobs/fetch-failed.json` (0600, a timestamp and the reason token only), except for the two reasons that belong to one process, `service-token-required` and `scoped-reader-unavailable`:  a process with no usable reader token, or without the reader code, writes no marker, because a sibling process that does hold the token must still be able to fetch.  For 60 seconds after it, other processes skip the fetch and use the last-known-good copy (reason `recent-<token>`), so a broken read costs one timeout across a burst of processes instead of one each.  A good fetch removes the marker, and `knobs.refresh()` ignores it.  A secret still fails closed inside the window.  Each folder has its own marker:  `fetch-failed.json` is the root's, and another folder's carries its name (`fetch-failed-wake-router.json`), so one folder's failure never skips another folder's fetch.
-2. **Last-known-good.**  After a good fetch the non-secret knobs are copied to `~/.local/state/fleet-knobs/lkg.json` (directory 0700, file 0600, atomic rename).  Each folder has its own copy, aged by its own fetch:  `lkg.json` is the root's, unchanged, and another folder's is named for it (`lkg-wake-router.json`), records its folder and is refused for any other.  When Infisical cannot be reached the job reads that copy and its report says `stale`.  A copy older than 48 hours, or one that is a symlink, belongs to someone else or is readable by group or other, is ignored, and the job runs on the defaults below.  A knob unset in Infisical is dropped from the copy, and so is a value that fails validation (a typo), so an outage right after a typo reads the default, the same answer a live read gives, and never an older and possibly wider value.  An export that holds none of the registered names (empty output, or only other keys) is treated as a failed fetch, reason `empty`, while the copy still has knobs:  the copy is kept and every answer is stale, because an empty answer is also what a wrong path or a broken login looks like.  The tradeoff:  deleting every knob on purpose reads as an outage until the copy ages out at 48 hours;  a project that has never had a knob has no such copy and is unaffected.  The 48 hour limit also applies to a pause:  `NEEDS_OWNER_NOTIFY_PAUSED=true` stops holding after 48 hours without a good fetch, and the fallback notifier runs again (owner decision open:  keep the limit, or let the last pause value hold).
-3. **Secrets fail closed.**  `FLEET_FACTS_SIGNING_KEY`, the wake router's bearer `WAKE_ROUTER_KEY` and the registry key `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` are never written to a copy, never defaulted and never exported.  A job that cannot fetch one stops (`SecretUnavailable`).  The value stays in that process's memory for the one fetch, as the service cache does.
-4. **Local files only narrow.**  A job's own config file or a STOP file may lower a cap, remove a list entry, force a mode toward its first choice or set a flag to its safe value.  Anything that would widen the answer is ignored and the report says `local_ignored`.  The owner id and the launch time take no local override.
-5. **Registered names only.**  A name that is not in `scripts/fleet_knobs/registry.py` cannot be read, so a job cannot ask Infisical for an arbitrary secret.
-6. **Names only in logs.**  The CLI's output and stderr are never printed or logged;  a failure is a short reason (`cli-missing`, `timeout`, `exit-1`, `bad-output`).
+2. **Last-known-good.**  After a good fetch the non-secret knobs are copied to `~/.local/state/fleet-knobs/lkg.json` (directory 0700, file 0600, atomic rename).  Each folder has its own copy, aged by its own fetch:  `lkg.json` is the root's, unchanged, and another folder's is named for it (`lkg-wake-router.json`), records its folder and is refused for any other.  When Infisical cannot be reached the job reads that copy and its report says `stale`.  A copy older than 48 hours, or one that is a symlink, belongs to someone else or is readable by group or other, is ignored, and the job runs on the defaults below.  A knob unset in Infisical is dropped from the copy, and so is a value that fails validation (a typo), so an outage right after a typo reads the default, the same answer a live read gives, and never an older and possibly wider value.  An export that holds none of the registered names (empty output, or only other keys) is treated as a failed fetch, reason `empty`, while the copy still has knobs:  the copy is kept and every answer is stale, because an empty answer is also what a wrong path or a broken login looks like.  The tradeoff:  deleting every knob on purpose reads as an outage until the copy ages out at 48 hours;  a project that has never had a knob has no such copy and is unaffected.  The 48 hour limit also applies to a pause:  `NEEDS_OWNER_NOTIFY_PAUSED=true` stops holding after 48 hours without a good fetch, and the fallback notifier runs again (owner decision open:  keep the limit, or let the last pause value hold).
+3. **Secrets fail closed.**  `FLEET_FACTS_SIGNING_KEY`, the wake router's bearer `WAKE_ROUTER_KEY` and the registry key `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` are never written to a copy, never defaulted and never exported.  A job that cannot fetch one stops (`SecretUnavailable`).  The value stays in that process's memory for the one fetch, as the service cache does.
+4. **Local files only narrow.**  A job's own config file or a STOP file may lower a cap, remove a list entry, force a mode toward its first choice or set a flag to its safe value.  Anything that would widen the answer is ignored and the report says `local_ignored`.  The owner id and the launch time take no local override.
+5. **Registered names only.**  A name that is not in `scripts/fleet_knobs/registry.py` cannot be read, so a job cannot ask Infisical for an arbitrary secret.
+6. **Names only in logs.**  The CLI's output and stderr are never printed or logged;  a failure is a short reason (`cli-missing`, `timeout`, `exit-1`, `bad-output`).
 
-**The one long-running reader.**  The wake router (OPS-1048) is one service for every platform (`afc-wake-router.service`, `scripts/simple_tools/wake_service.py`), and it reads its `WAKE_ROUTER_*` knobs through `fleet_knobs` and holds them to the service contract above:  `scripts/simple_tools/wake_settings.py` loads them at startup into memory, never fetches per wake, refreshes every seat's settings together in one background thread and on `SIGHUP`, with one fetch of the folder per refresh, and keeps what it was running on when a refresh fails.  It needs `FLEET_KNOBS_INFISICAL_TOKEN` in the service's environment.  Unlike every other knob, delivery never comes on from the last-known-good copy or a default:  it is on only after a successful fetch in that process.  Until the first one, with no token, in an outage or inside the failed-fetch cooldown, wakes stay pending and are retried, up to `WAKE_ROUTER_MAX_AGE_SECONDS`, and are not closed as held.  Delivery runs for a seat only when `WAKE_ROUTER_DELIVERY_ENABLED` is true and `WAKE_ROUTER_DELIVERY_SEATS` names the seat;  every registered seat is served either way, so a seat not yet armed still picks and writes `held` receipts.  The numeric knobs are the same for every seat, and each seat's router applies them to itself.  One local file for the whole service, `~/.local/state/wake-router/config.json`, can only narrow these, for every seat and including during an outage;  its `delivery_seats` can only remove seats.  A file that cannot be read at a refresh keeps its last good narrowing in force and the fetch still applies through it, so a broken file never widens anything or freezes the settings.  `local_host` and `claude_bin` there, and a platform's own `workspace`, `mcode_bin` and `mcode_model`, are facts about one host, not settings.
+**The one long-running reader.**  The wake router (OPS-1048) is one service for every platform (`afc-wake-router.service`, `scripts/simple_tools/wake_service.py`), and it reads its `WAKE_ROUTER_*` knobs through `fleet_knobs` and holds them to the service contract above:  `scripts/simple_tools/wake_settings.py` loads them at startup into memory, never fetches per wake, refreshes every seat's settings together in one background thread and on `SIGHUP`, with one fetch of the folder per refresh, and keeps what it was running on when a refresh fails.  It needs `FLEET_KNOBS_INFISICAL_TOKEN` in the service's environment.  Unlike every other knob, delivery never comes on from the last-known-good copy or a default:  it is on only after a successful fetch in that process.  Until the first one, with no token, in an outage or inside the failed-fetch cooldown, wakes stay pending and are retried, up to `WAKE_ROUTER_MAX_AGE_SECONDS`, and are not closed as held.  Delivery runs for a seat only when `WAKE_ROUTER_DELIVERY_ENABLED` is true and `WAKE_ROUTER_DELIVERY_SEATS` names the seat;  every registered seat is served either way, so a seat not yet armed still picks and writes `held` receipts.  The numeric knobs are the same for every seat, and each seat's router applies them to itself.  One local file for the whole service, `~/.local/state/wake-router/config.json`, can only narrow these, for every seat and including during an outage;  its `delivery_seats` can only remove seats.  A file that cannot be read at a refresh keeps its last good narrowing in force and the fetch still applies through it, so a broken file never widens anything or freezes the settings.  `local_host` and `claude_bin` there, and a platform's own `workspace`, `mcode_bin` and `mcode_model`, are facts about one host, not settings.
 
 **The wake router's folder and token.**  Every `WAKE_ROUTER_*` knob lives in `prod` `/wake-router`, and so do the registry's address and key below;  nothing else does.  The router's read token (`FLEET_KNOBS_INFISICAL_TOKEN`, the only entry in its service environment file `~/.config/afc-wake-router/env`) is the read-only service token `afc-wake-router-ro`, scoped to `prod:/wake-router` only.  The reason is the owner's rule of one consumer, one token, the narrowest folder:  an Infisical service token scoped to `prod:/` also reads every folder under it (checked live on November 11, 2026:  a fresh read-only token scoped to `prod:/` read `/zulip` and `/linear`, and it was revoked), so while these knobs sat at the root no token for the router could be narrower than the whole project.  The router has one bearer for every seat, the secret knob `WAKE_ROUTER_KEY` in the same folder, at least 16 characters, and the value the listener sends for each seat's routine.  The registry the server's router reads is configured here too, under the one name `registry_api` reads for each value:  `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` (the registry API's origin) and the secret `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` (the key its calls are signed with, at least 32 characters).  The router fetches them with its other knobs and hands them to `registry_api` as an explicit mapping, which `registry_api` never supplements from Infisical, so there is one fetch path and the keep-on-failed-refresh rule below governs it.  `registry_api` reads the same knobs itself only for a process environment that does not set them.  No env file and no ssh remote is a fallback for the router:  with either value missing every pick is a bounded `registry-not-configured` retry and `/health` says so.  Two other processes read this folder.  One is the Eavesdropper's loader (`scripts/simple_tools/server/infisical_env.py`), at every container start, with its own read-only token `eavesdropper-wake-router-ro` (`EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN`, scoped to `prod:/wake-router` only).  The image ships no `fleet_knobs`, so it uses its own scoped REST reader, and it exports only `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` (as `OPERATOR_REGISTRY_KEY`, the registry service's key), held to the same pattern;  a missing or unusable value stops it.  The other is the Cursor Cloud letter sweep (`afc-cursor-cloud-letters.service`), which reads only the two registry knobs, through `registry_api` and `fleet_knobs`, with its own read-only token `afc-cursor-cloud-letters-knobs-ro` (see "Cursor Cloud Letters" above).  No Mac reads this folder, because a token that could would also read the bearer:  the Mac's `wake-deliver` keeps the shared registry env file every Mac registry client uses.  There is no key file:  the router reads each secret at start and on every refresh and holds it in memory only.  Only a refresh whose fetch worked changes one, so an Infisical outage keeps them held and a revocation takes effect at the next good refresh.  While it holds no bearer, every seat refuses its requests with 503 and `/health` says why.  A writer of these knobs (`fleet_knobs set` or `unset`) needs a write token whose grant is `/wake-router`, for the same reason.  A process that reads both folders, such as `fleet_knobs status`, needs a token granted both, with `INFISICAL_READ_PATHS` naming both;  with a root-only token it reads the root and reports the router's knobs stale, exit 3.
 
@@ -318,7 +318,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `FLEET_SHEET_INGEST_TIMEOUT_MS` | S1 | int 60000 to 21600000 | `5400000` | no | only lower it | milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it |
 | `COMPLIANCE_CERT_EXPIRY_DAYS` | C8 | int 1 to 365 | `30` | no | only lower it | days before an Apple signing certificate expires that the fleet-config compliance rule calls a finding;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
 | `COMPLIANCE_SECRETS_FINDINGS_MAX` | C8 | int 0 to 10 | `0` | no | only lower it | how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
-| `CF_USAGE_WATCHDOG_MODE` | W1 | enum: observe < enforce | `observe` | no | only move toward `observe` | observe only alerts;  enforce also stops the Worker behind a breach.  A STOP file in the watchdog's state directory forces observe |
+| `CF_USAGE_WATCHDOG_MODE` | W1 | enum: observe < enforce | `observe` | no | only move toward `observe` | observe only alerts;  enforce also stops the Worker behind a breach.  A STOP file in the watchdog's state directory forces observe |
 | `CF_USAGE_WATCHDOG_PROFILE` | W1 | enum: paid < free | `paid` | no | nothing | which threshold profile in config.json applies:  paid catches runaways, free is 80% of the Free caps |
 | `WAKE_ROUTER_DELIVERY_ENABLED` | W2 | bool | `false` | no | only set it to `false` | in folder `/wake-router`;  false makes the wake router pick and write receipts and deliver nothing;  true also needs the seat named in WAKE_ROUTER_DELIVERY_SEATS |
 | `WAKE_ROUTER_DELIVERY_SEATS` | W2 | list | empty | no | nothing | in folder `/wake-router`;  the seats the wake router may deliver for;  empty means none, whatever WAKE_ROUTER_DELIVERY_ENABLED says |
@@ -342,10 +342,10 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 
 ## Telemetry relay (Coolify)
 
-`telemetry-relay/` is a Coolify-hosted otelcol-contrib.  Its secrets live in this
+`telemetry-relay/` is a Coolify-hosted otelcol-contrib.  Its secrets live in this
 project, `prod`, and are copied into the Coolify service env by name (see
-`telemetry-relay/COOLIFY.md`).  They are not fleet knobs and are not in the
-generated block above.  Names only:
+`telemetry-relay/COOLIFY.md`).  They are not fleet knobs and are not in the
+generated block above.  Names only:
 
 | Key | Kind | Who sets it |
 |---|---|---|
@@ -366,15 +366,15 @@ is shipped, never run against Jay's Mac, and prints no secret values.
 
 ## Rotation
 
-Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-through, immediate).  Background refresh picks UI/API changes up within `SETTINGS_REFRESH_SECONDS`; `POST /admin/reload-settings` or `SIGHUP` forces it now.  Rotating `RECALL_API_TOKEN` requires distributing the new bearer to the seats (coordinate via the board) — the old token stops working as soon as the refresh lands.  Never print, echo, or log a value; verify with key names and the `set`/`empty` flags from `GET /admin/settings` only.
+Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-through, immediate).  Background refresh picks UI/API changes up within `SETTINGS_REFRESH_SECONDS`; `POST /admin/reload-settings` or `SIGHUP` forces it now.  Rotating `RECALL_API_TOKEN` requires distributing the new bearer to the seats (coordinate via the board) — the old token stops working as soon as the refresh lands.  Never print, echo, or log a value; verify with key names and the `set`/`empty` flags from `GET /admin/settings` only.
 
 ## Prod-only lint
 
-`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_infisical.py`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
+`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_infisical.py`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
 
 ## Local dev
 
-Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or bind the service's own scoped service token as `INFISICAL_TOKEN` and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
+Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or bind the service's own scoped service token as `INFISICAL_TOKEN` and leave `INFISICAL_ENVIRONMENT` unset (it is `prod`).  Local runs read prod, so treat the secrets there as live.  Any other slug is refused:  `init()`, `set()` and every fetch raise `SettingsError` before the network, `refresh()` logs the refusal and keeps the last-known-good cache, and `configure()` leaves the previous settings in place.  Never commit real values.
 
 ## Secrets and service tokens
 
@@ -394,7 +394,7 @@ Authorization: Bearer <token>
 
 The shared client is `scripts/fleet_infisical.py`, and it stays.  `fetch_verified(name, folder, env, token)` performs the read and checks the answer's own provenance (workspace, environment, secretPath, secretKey and shared type), so a value from the wrong place fails closed.  `token_from_store(account)` reads the consumer's own store and says which refusal it was (`ok`, `no-token`, `keychain-locked`, `token-unreadable`).  `fetch_scoped(name, folder, account)` does both and returns the value and a status (`ok`, `absent`, `forbidden`, `no-token`, `keychain-locked`, `token-unreadable`, `failed`).  A consumer that lives outside this repository calls the same route itself, with the checks its own code needs;  `scripts/mac-resource-watch.py` is the reviewed precedent for that shape.
 
-**The environment still wins.**  A value already in the environment is used and never second-guessed.  The scoped token is the fallback, not the override.
+**The consumer's own scoped token is authoritative.**  The credential for a folder is the consumer's own scoped service token, read from the consumer's own store.  The environment may carry a copy of that same token, which is how a host transports a value it already synced from Infisical, and a copy is used only when the store holds no usable token;  it never outranks the store.  A hand-set environment value must never replace the reviewed, scope-limited grant, and the read's own scope check still decides whether any token may read a folder at all.
 
 **No fallback and no cached copy.**  There is no route to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields nothing, and the consumer says which of those it was.
 
@@ -416,7 +416,7 @@ if status != "ok":
 
 Never `echo` the value, never put it in argv, and never write it to a log or a transcript.
 
-**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  A value that is already in the environment is used as it is, and the token is only the fallback.
+**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  A value already in the environment is used only when it is a copy the scoped read populated, and the token is never a fallback for a hand-set value.
 
 **(c) A consumer on a server.**  The same client and the same shape, with the token in the 0600 file the store table above names.
 
@@ -428,7 +428,7 @@ Never `echo` the value, never put it in argv, and never write it to a log or a t
 
 ## Brokering credentials to agents
 
-A consumer's own scoped service token injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
+A consumer's own scoped service token injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
 
 | | Agent Proxy | Agent Vault |
 |---|---|---|
@@ -440,17 +440,17 @@ A consumer's own scoped service token injects values into a process it starts.  
 
 This fleet does not mint a universal-auth client id or secret for Agent Proxy.  A consumer's own scoped service token is the route.
 
-Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`, `~/.ssh`, `~/.aws` and `~/.config/gh` but **not** `~/.secrets`, `~/Library/Keychains`, `~/.codex/config.toml` or `~/.claude.json`, and it has no deny flag;  `127.0.0.1` is unreachable inside it even with `--allow-host`, so local MCP servers and hooks break;  `--unmatched-host block` works;  and the first run writes `~/.infisical/agent-proxy/local-ca.{crt,key}`, which expires in about a week.  Agent Vault has no sandbox and `--no-proxy` always merges `localhost` and `127.0.0.1`, and its CA is fetched per run with optional `--ca-fingerprint` pinning.
+Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`, `~/.ssh`, `~/.aws` and `~/.config/gh` but **not** `~/.secrets`, `~/Library/Keychains`, `~/.codex/config.toml` or `~/.claude.json`, and it has no deny flag;  `127.0.0.1` is unreachable inside it even with `--allow-host`, so local MCP servers and hooks break;  `--unmatched-host block` works;  and the first run writes `~/.infisical/agent-proxy/local-ca.{crt,key}`, which expires in about a week.  Agent Vault has no sandbox and `--no-proxy` always merges `localhost` and `127.0.0.1`, and its CA is fetched per run with optional `--ca-fingerprint` pinning.
 
-Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on a direct scoped read.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names two `/agent-proxy` identities from a pilot that is not a current credential route.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
+Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on a direct scoped read.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names two `/agent-proxy` identities from a pilot that is not a current credential route.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
 
 ## Mac `global-api-keys` sync (retired, AFC-359)
 
-The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with the consumer's own scoped service token from Fleet-OPS root.
+The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with the consumer's own scoped service token from Fleet-OPS root.
 
 ## Retiring `~/.secrets` (AFC-359)
 
-Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (environment first, then a direct scoped read of `NAME` in its folder, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (the consumer's own scoped service token, read from the consumer's own store, with an environment copy of that same token used only when the store holds no usable token, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
 
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|
@@ -470,21 +470,21 @@ Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.sec
 
 The names for every other file match its name (lower case, dashes), with one folder per file.
 
-**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.simple-tools/echo`, `~/.simple-tools/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/simple-tools` is only a bootstrap seed and goes stale on the first token refresh.
+**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.simple-tools/echo`, `~/.simple-tools/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/simple-tools` is only a bootstrap seed and goes stale on the first token refresh.
 
-**Cutover** (`scripts/retire-secrets-dir.sh`, tested by `scripts/test-retire-secrets-dir.sh`, allowlist `scripts/retire-secrets-dir.allow`).  The script never deletes anything.
+**Cutover** (`scripts/retire-secrets-dir.sh`, tested by `scripts/test-retire-secrets-dir.sh`, allowlist `scripts/retire-secrets-dir.allow`).  The script never deletes anything.
 
-1. `bash scripts/retire-secrets-dir.sh check`  lists every reader left in the repos (on `origin/main`) and on the Mac, every symlink that points into the folder, and every process that holds a file open there.  Output is paths and line numbers only.
+1. `bash scripts/retire-secrets-dir.sh check`  lists every reader left in the repos (on `origin/main`) and on the Mac, every symlink that points into the folder, and every process that holds a file open there.  Output is paths and line numbers only.
 2. `bash scripts/retire-secrets-dir.sh bootout`  stops and disables `com.jay.infisical-secrets-sync`, the one writer.
-3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
-4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
+3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
+4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
 
-**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket named by `B2_FLEET_WORK_BUCKET_NAME` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
+**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket named by `B2_FLEET_WORK_BUCKET_NAME` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
-Canonical location: AI Fleet Coordinator, `prod`, `/zulip`.  These inventory
-entries already exist, as confirmed by the owner.  Worker provisioning remains
+Canonical location: AI Fleet Coordinator, `prod`, `/zulip`.  These inventory
+entries already exist, as confirmed by the owner.  Worker provisioning remains
 unconfirmed.
 
 | Key | Kind | Status |
@@ -493,8 +493,8 @@ unconfirmed.
 | `ZULIP_CLAUDE_API_KEY` | secret | Owner-confirmed existing entry; Worker provisioning unconfirmed; never copy to source, chat or a client |
 
 The Worker uses these same canonical names: var `ZULIP_CLAUDE_EMAIL` and secret
-`ZULIP_CLAUDE_API_KEY`.  After authorization, the owner-operated installer
-verifies the stored identity and provisions the Worker secret.  Its live
+`ZULIP_CLAUDE_API_KEY`.  After authorization, the owner-operated installer
+verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/simple-tools-mcp/DEPLOY.md#add-hosted-claude-afc-296).
 
@@ -504,11 +504,11 @@ AFC `prod` `/fleet-cli` holds the three values the GitHub workflow `fleet-cli-se
 
 | Key | Kind | Notes |
 |---|---|---|
-| `FLEET_CLI_UPDATE_SSH_KEY` | secret | An ed25519 private key.  Its public half is in the server's `/root/.ssh/authorized_keys` with `restrict` and a forced command that only starts `fleet-cli-git-update.service`. |
+| `FLEET_CLI_UPDATE_SSH_KEY` | secret | An ed25519 private key.  Its public half is in the server's `/root/.ssh/authorized_keys` with `restrict` and a forced command that only starts `fleet-cli-git-update.service`. |
 | `FLEET_CLI_UPDATE_HOST` | private infrastructure | The server's address, kept out of this public repo. |
 | `FLEET_CLI_UPDATE_KNOWN_HOSTS` | public | The server's host key line, so the workflow checks the host strictly. |
 
-Rotate by minting a new key, replacing the `authorized_keys` line and both copies.  The repository variable `FLEET_CLI_SIGNAL_ENABLED=true` turns the workflow on.
+Rotate by minting a new key, replacing the `authorized_keys` line and both copies.  The repository variable `FLEET_CLI_SIGNAL_ENABLED=true` turns the workflow on.
 
 ## FleetLink agent server credential (AFC-328)
 
@@ -516,20 +516,20 @@ Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
 
 | Key | Kind | Status |
 | --- | --- | --- |
-| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `simple-tools-mcp`.  FleetLink's own `DEPLOY.md` lists its matching shared secret as retired and deleted.  Never copy it to source, chat or a client. |
-| `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Simple-Tools Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleetlink`.  No expiry. |
+| `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `simple-tools-mcp`.  FleetLink's own `DEPLOY.md` lists its matching shared secret as retired and deleted.  Never copy it to source, chat or a client. |
+| `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Simple-Tools Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleetlink`.  No expiry. |
 
-The stdio Simple-Tools server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleetlink` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/simple-tools-mcp.md` section 2.2).
+The stdio Simple-Tools server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleetlink` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/simple-tools-mcp.md` section 2.2).
 
 The Simple-Tools MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
-Rotate both Workers from this one value, FleetLink first.  See
+Rotate both Workers from this one value, FleetLink first.  See
 [the FleetLink runbook](scripts/simple-tools-mcp/DEPLOY.md#fleetlink-afc-328).
 
 
 ## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
 
-The owner selected dedicated read-only service tokens in AFC.  This supersedes the earlier machine-identity/Fleet-OPS proposal; no credentials have been provisioned.  Bridge and binder use exact AFC `prod` `/jet`.  Operator uses the separate sibling AFC `prod` `/operator-jet-wake`, containing only its distinct signing key and literal Worker URL.  No machine identity, project-wide grant, Operator read/write token or plan purchase is involved.
+The owner selected dedicated read-only service tokens in AFC.  This supersedes the earlier machine-identity/Fleet-OPS proposal; no credentials have been provisioned.  Bridge and binder use exact AFC `prod` `/jet`.  Operator uses the separate sibling AFC `prod` `/operator-jet-wake`, containing only its distinct signing key and literal Worker URL.  No machine identity, project-wide grant, Operator read/write token or plan purchase is involved.
 
 | Name | Source | Consumer |
 |---|---|---|
@@ -541,9 +541,9 @@ The owner selected dedicated read-only service tokens in AFC.  This supersedes t
 | `WA_OPERATOR_HMAC_KEY_JET` | AFC prod `/operator-jet-wake` | Operator client and existing Worker |
 | `WA_WORKER_URL` | Literal origin in both folders | Respective client |
 
-Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed consumer read strips bootstrap authentication before it hands a value to a child process.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
+Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed consumer read strips bootstrap authentication before it hands a value to a child process.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
 
-No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.
+No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.
 
 ### Server consumers
 

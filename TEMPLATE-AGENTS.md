@@ -39,7 +39,7 @@ Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #P
 - **Review again when it is warranted.**  Bigger or riskier changes get 2 or 3 reviews, or more, after fixes land.  Use your judgment.
 - **Review the code that will merge.**  Final-code review and evidence for each finding still apply, and a request is neither a waiver nor merge clearance.
 - **One request per ready head.**  Read the PR's comments first and coordinate with its owner and reviewers, so no head gets a duplicate request.  Never bulk-retrigger every PR.  Through `gr_comment_pr`, the same seat repeating identical text within 24 hours gets the existing comment back and nothing posts, so a real repeat needs different text.  That guard does not cover another seat or an older request, so the comment read is what prevents a duplicate.
-- **Monitor it.**  A head was reviewed only when Kody's own `Kody Code Review` check on it is `success`, its title is `Code Review Complete`, its summary starts `Review finished successfully`, and it started no earlier than the newest request (`docs/AUTO-MERGE.md` has the full contract).  Treat every other result, `skipped` included, as no review.  Also use the Kodus CLI if your seat can run it, in a shell with no credentials in its environment: it reviews local code, so it cannot show the state of a PR head.
+- **Monitor it.**  A head was reviewed only when Kody's own `Kody Code Review` check on it is `success`, its title is `Code Review Complete`, its summary starts `Review finished successfully`, and it started no earlier than the newest request (`docs/AUTO-MERGE.md` has the full contract).  Treat every other result, `skipped` included, as no review.  Also use the Kodus CLI if your seat can run it, in a shell with no credentials in its environment: it reviews local code, so it cannot show the state of a PR head.
 - **A failed run.**  A Kody run that finished without that receipt is not a review, and a failed attempt is permission to retry (owner, November 8, 2026).  Request again with text different from the earlier request, because the relay posts nothing for identical text from the same seat within 24 hours, for example a second line after `@kody start-review`.  A run that is still queued or `in_progress` is not a failed attempt and permits no new request.  The hourly prompter (`docs/KODY-FIRST-REVIEW.md`) never retries a failed run itself;  a seat does.
 - **Answer every finding.**  Each finding gets a comment describing its fix, or disputing it with valid reasons about the code, before it is resolved.  Timing and the owner wanting a merge are never reasons.
 - **A stale change request.**  Dismiss one only as PR-sweep rule 7 (`scripts/pr_sweep/rules.md`) allows.
@@ -498,7 +498,8 @@ simple-board status <id> completed --resolution "Landed in #123."
 line, which is why it is allowlisted and needs no approval.  Writes (`file`, `claim`, `status`,
 `comment`) need `AGENT_SEAT` set and a matching `--by`; reads do not.  Cloud seats run
 `python3 scripts/linear-board/board` from an AI-Fleet-Coordinator checkout with
-`LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` in their environment.  Before substantial work:
+`LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` in their environment, holding only the copy the scoped read
+populated.  Before substantial work:
 list, then claim (or file + claim).  Branch `<seat>/<id>-<slug>`; the PR body says `Fixes <ID>`
 when it finishes the issue and `Refs <ID>` for partial work.  When done: real status +
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
@@ -588,9 +589,9 @@ Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify to
 
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`) and Fleet MCP are the
 tools for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
-`react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: Mac seats use
-Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through the seat's own scoped service token); cloud seats use env `ZULIP_EMAIL`,
-`ZULIP_API_KEY`, `ZULIP_SITE`.  Pin your seat in `AGENT_SEAT`.  Setup and FAQ:
+`react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: every seat reads
+Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`) through the seat's own scoped service token, which is
+authoritative;  an environment value may hold only a copy that read populated, never a hand-set one.  Pin your seat in `AGENT_SEAT`.  Setup and FAQ:
 `docs/protocols/zulip-fleet-guide.md` (published at
 https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
 
@@ -791,7 +792,7 @@ Connect to **Fleet MCP** at `https://agents.simplewithus.com/mcp` with your own 
 
 The seven core Git tools are `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.  Additional workflow tools require their scoped rollout; this instruction is not a permission grant or a claim that every pending tool is deployed.  `mint_token` is not exposed because it returns a raw credential.  Policy, permission ceilings and audit remain server-side.  Use the supported configuration for your actual client transport, never invented fields or another agent's bearer.  The admin page must show missing service credentials explicitly, such as a missing Zulip token; having a bearer is not full-service readiness.
 
-These are the intended connection and tool names.  Actual deployment, runtime startup and native custody qualification are recorded separately and must not be inferred from these instructions.  If your assigned connection does not expose a needed tool or reports a missing service credential, report that exact readiness gap.  Use an already-authorized GitHub route only within its existing scope; never mint credentials, widen permissions, borrow another agent's bearer or bypass the backend to make these target instructions appear live.  The git-relay cutover is decided (owner ruling 2026-11-08): every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity, on Mac seats too.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).  No route may mint credentials, widen permissions, or replace the target configuration above.
+These are the intended connection and tool names.  Actual deployment, runtime startup and native custody qualification are recorded separately and must not be inferred from these instructions.  If your assigned connection does not expose a needed tool or reports a missing service credential, report that exact readiness gap.  Use an already-authorized GitHub route only within its existing scope; never mint credentials, widen permissions, borrow another agent's bearer or bypass the backend to make these target instructions appear live.  The git-relay cutover is decided (owner ruling 2026-11-08): every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity, on Mac seats too.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).  No route may mint credentials, widen permissions, or replace the target configuration above.
 
 ## Product philosophy — real trading, owner's risk (READ FIRST; do not re-paternalize)
 
