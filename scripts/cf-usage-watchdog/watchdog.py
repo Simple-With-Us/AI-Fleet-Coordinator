@@ -716,36 +716,9 @@ class Connections:
         return answer.get("result")
 
     def zulip(self, text: str) -> bool:
-        conf = self.cfg["zulip"]
-        env = {key: value for key, value in self.env.items() if not key.startswith("INFISICAL_")}
-        env["AGENT_SEAT"] = conf["seat"]
-        # The seat wrapper turns on hosted reads only;  without this a post is refused with exit 2.
-        env["SIMPLE_CHAT_REMOTE_WRITES"] = "1"
-        command = [
-            "simple-chat",
-            "post",
-            "--channel",
-            conf["channel"],
-            "--topic",
-            conf["topic"],
-            "-",
-        ]
-        try:
-            done = self.runner(
-                command,
-                input=text,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env=env,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(json.dumps({"event": "zulip_failed", "error": type(exc).__name__}), flush=True)
-            return False
-        if done.returncode != 0:
-            print(json.dumps({"event": "zulip_failed", "exit": done.returncode}), flush=True)
-        return done.returncode == 0
+        # Service automation cannot represent any agent seat.
+        print(json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}), flush=True)
+        return False
 
     def page(self, title: str, text: str) -> bool | None:
         """Pushover directly, the one path that does not go through a Worker on this account.
