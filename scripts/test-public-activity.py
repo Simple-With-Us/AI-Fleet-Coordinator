@@ -966,6 +966,32 @@ class PublicActivityTests(unittest.TestCase):
             unfolded_ics,
         )
 
+    def test_past_linear_close_keeps_event_and_labels_current_reopened_state(self) -> None:
+        item = {
+            "repo": "BotFleet",
+            "number": 9906,
+            "identifier": "BF-9906",
+            "title": "Past closure fixture",
+            "url": "https://linear.example.test/issue/BF-9906",
+            "state": "In Progress <review>",
+            "state_type": "started",
+            "source": "linear",
+        }
+        day = digest.DayBucket(day=date(2026, 11, 18), issues_closed=[item])
+        now = datetime(2026, 11, 19, 20, 0, tzinfo=UTC)
+        note = "closed that day; now In Progress <review>"
+        self.assertEqual(digest._issue_state_note(item), note)
+        md = digest.build_markdown([day], now, ZoneInfo("America/Chicago"), "https://example.com")
+        page = digest.build_html([day], now, ZoneInfo("America/Chicago"), "https://example.com")
+        cal = re.sub(r"\r?\n[ \t]", "", digest.build_daily_ics([day], now, "https://example.com"))
+        self.assertIn(note, md)
+        self.assertIn("closed that day; now In Progress &lt;review&gt;", page)
+        self.assertNotIn("In Progress <review>", page)
+        self.assertIn(note.replace(";", r"\;"), cal)
+        self.assertIn("1 issues closed", md)
+        self.assertEqual(digest._issue_state_note({**item, "source": "github"}), "")
+        self.assertEqual(digest._issue_state_note({**item, "state_type": "completed"}), "")
+
     def test_main_fetches_linear_issues_when_key_set_and_creates_no_output_on_incomplete_fetch(
         self,
     ) -> None:
