@@ -494,7 +494,12 @@ class Remote(unittest.TestCase):
             calls[-1],
             {
                 "name": "linear_claim",
-                "arguments": {"id": "AFC-1", "steal": True, "reason": "holder parked it", "identity": "CODEX"},
+                "arguments": {
+                    "id": "AFC-1",
+                    "steal": True,
+                    "reason": "holder parked it",
+                    "identity": "CODEX",
+                },
             },
         )
 
@@ -645,9 +650,7 @@ class Remote(unittest.TestCase):
                     if stage == "comment":
                         first.append(rpc({"ok": True}))
                     first.append((status, "application/json", b"{}"))
-                    code, _, err, _ = self.run_writes(
-                        argv, first, {"LINEAR_BOARD_CACHE_DIR": tmp}
-                    )
+                    code, _, err, _ = self.run_writes(argv, first, {"LINEAR_BOARD_CACHE_DIR": tmp})
                     self.assertNotEqual(code, 0)
                     retry = [rpc(self.IDANS), rpc({"ok": True})]
                     if stage == "state":
