@@ -7176,9 +7176,7 @@ class UnknownOutcomeTests(Checks):
                 self.assertEqual([row["result"] for row in rows], ["failed"])
 
     def test_a_post_that_was_accepted_is_submitted(self):
-        answer, code, _, rows = self.run_redeploy(
-            lambda url, headers, method="GET": (202, "")
-        )
+        answer, code, _, rows = self.run_redeploy(lambda url, headers, method="GET": (202, ""))
         self.assertEqual((code, answer["body"]["outcome"]), (0, "submitted"))
         self.assertEqual([row["result"] for row in rows], ["submitted"])
 

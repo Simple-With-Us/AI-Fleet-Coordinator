@@ -245,7 +245,9 @@ print(json.dumps({
             target.write_bytes((self.destination / name).read_bytes())
             target.chmod(0o600)
         with ScopedReadAPI(
-            {"COOLIFY_DEPLOY_ONLY": coolify_token}, project=project, path="/coolify-deploy-only-token"
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
+            project=project,
+            path="/coolify-deploy-only-token",
         ) as api:
             api.record_override = {"secretValueHidden": False}
             isolated = invoke(api, reader_only)
@@ -273,7 +275,9 @@ print(json.dumps({
         try:
             reader.unlink()
             with ScopedReadAPI(
-                {"COOLIFY_DEPLOY_ONLY": coolify_token}, project=project, path="/coolify-deploy-only-token"
+                {"COOLIFY_DEPLOY_ONLY": coolify_token},
+                project=project,
+                path="/coolify-deploy-only-token",
             ) as api:
                 missing = invoke(api)
                 self.assertEqual(missing["status"], 1, missing)

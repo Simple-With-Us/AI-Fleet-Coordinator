@@ -1241,7 +1241,7 @@ class NoAnswer(int):
 
 
 def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
-    """(status, body) of one request, or (0, "") when there was no answer. 
+    """(status, body) of one request, or (0, "") when there was no answer.
 
     The body is bounded and returned because the install check has to tell a refused
     token from a route that no longer answers.  The caller never logs it.
