@@ -57,9 +57,7 @@ def parse_unit(path: str) -> dict[str, list[tuple[str, str]]]:
     return sections
 
 
-def values(
-    sections: dict[str, list[tuple[str, str]]], section: str, key: str
-) -> list[str]:
+def values(sections: dict[str, list[tuple[str, str]]], section: str, key: str) -> list[str]:
     return [value for name, value in sections.get(section, []) if name == key]
 
 
@@ -103,11 +101,7 @@ class SystemdUnitTemplates(unittest.TestCase):
         self.assertEqual(values(sections, "Service", "Group"), accounts)
 
         environments = values(sections, "Service", "Environment")
-        homes = [
-            value.split("=", 1)[1]
-            for value in environments
-            if value.startswith("HOME=")
-        ]
+        homes = [value.split("=", 1)[1] for value in environments if value.startswith("HOME=")]
         self.assertEqual(len(homes), 1, "the unit must set HOME explicitly, once")
         home = homes[0]
         self.assertTrue(home.startswith("/"), "HOME must be an absolute path")
@@ -160,9 +154,7 @@ class SystemdUnitTemplates(unittest.TestCase):
         command = values(parse_unit(path), "Service", "ExecStart")[0]
         with open(INVENTORY, encoding="utf-8") as handle:
             rows = [line for line in handle if line.startswith(f"| {INVENTORY_ROW} ")]
-        self.assertEqual(
-            len(rows), 1, f"expected exactly one {INVENTORY_ROW} inventory row"
-        )
+        self.assertEqual(len(rows), 1, f"expected exactly one {INVENTORY_ROW} inventory row")
         self.assertIn(
             command,
             rows[0],
@@ -174,12 +166,8 @@ class SystemdUnitTemplates(unittest.TestCase):
         path = os.path.join(UNIT_DIR, DOCTOR_UNIT)
         command = values(parse_unit(path), "Service", "ExecStart")[0]
         with open(INVENTORY, encoding="utf-8") as handle:
-            rows = [
-                line for line in handle if line.startswith(f"| {DOCTOR_INVENTORY_ROW} ")
-            ]
-        self.assertEqual(
-            len(rows), 1, f"expected exactly one {DOCTOR_INVENTORY_ROW} inventory row"
-        )
+            rows = [line for line in handle if line.startswith(f"| {DOCTOR_INVENTORY_ROW} ")]
+        self.assertEqual(len(rows), 1, f"expected exactly one {DOCTOR_INVENTORY_ROW} inventory row")
         self.assertIn(
             command,
             rows[0],
