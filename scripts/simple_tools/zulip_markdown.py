@@ -306,6 +306,10 @@ class _Converter(HTMLParser):
         if self.code is not None or self.pre is not None:
             self._sink().append(text)  # code is code:  it is not markdown
             return
+        if self.embed is not None:
+            # The content of an embedded message is dropped:  the placeholder names it.
+            self._sink().append(_escape_text(text) if kind == _PART_TEXT else text)
+            return
         parts = self._parts()
         if parts is not None:
             parts.append((text, kind))
@@ -425,9 +429,14 @@ class _Converter(HTMLParser):
         else:
             self.blocks.append(self._quoted(rendered))
 
-    def _flush(self) -> None:
-        """End the paragraph being read."""
-        self._close_inline()
+    def _flush(self, keep_inline: bool = False) -> None:
+        """End the paragraph being read.
+
+        The inline elements close with it,  unless the caller keeps them open:  a link
+        that holds an embedded link keeps it,  so the URL of the sender is still shown
+        (Kody, PR 2340)."""
+        if not keep_inline:
+            self._close_inline()
         if not self.buf:
             return
         block = "".join(self.buf).strip()
@@ -450,7 +459,7 @@ class _Converter(HTMLParser):
             self.pre = []
             return
         if tag == "div" and "message_embed" in classes:
-            self._flush()
+            self._flush(keep_inline=True)
             self.embed = []
             self.embed_url = ""
             return
@@ -525,17 +534,29 @@ class _Converter(HTMLParser):
             return
         if tag == "a":
             # The link closes last:  a code span inside it lands in the text of the link
-            # first, and the link keeps its URL (Kody, PR 2340).
+            # first, and the link keeps its URL.  The buffers it holds close with it,  so
+            # the text after the end tag lands outside the link (Kody, PR 2340).
             self._close_code()
-            if self.typed and self.typed[-1].kind == "link":
-                self._close_typed()
+            index = next(
+                (i for i in range(len(self.typed) - 1, -1, -1) if self.typed[i].kind == "link"),
+                None,
+            )
+            if index is not None:
+                while len(self.typed) > index:
+                    self._close_typed()
             return
         if tag == "span":
             # Only a mention closes what is open:  the end of an emoji span says nothing
-            # about the code span that may hold it (Kody, PR 2340).
-            if self.typed and self.typed[-1].kind == "mention":
+            # about the code span that may hold it.  The buffers the mention holds close
+            # with it (Kody, PR 2340).
+            index = next(
+                (i for i in range(len(self.typed) - 1, -1, -1) if self.typed[i].kind == "mention"),
+                None,
+            )
+            if index is not None:
                 self._close_code()
-                self._close_typed()
+                while len(self.typed) > index:
+                    self._close_typed()
             return
         if tag == "div":
             if self.embed is not None:

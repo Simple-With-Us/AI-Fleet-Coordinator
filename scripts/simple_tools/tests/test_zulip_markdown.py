@@ -276,6 +276,12 @@ class BufferTests(unittest.TestCase):
 class NestingTests(unittest.TestCase):
     """The buffer that is open takes the text, and the buffers close from the inside out."""
 
+    def test_an_unbalanced_mention_inside_a_link_closes_with_it(self) -> None:
+        # The buffers a link holds close with it, so the text after the end tag lands
+        # outside the link (Kody, PR 2340).
+        html = '<p><a href="https://x">L<span class="user-mention">@A</a> tail</p>'
+        self.assertEqual(zm.to_markdown(html), "[L@A](https://x) tail")
+
     def test_a_link_inside_a_mention_keeps_both(self) -> None:
         # The innermost buffer that is open takes the text, so the mention keeps its
         # name and the link keeps its URL (Kody, PR 2340).
@@ -295,8 +301,7 @@ class NestingTests(unittest.TestCase):
         # a link and never as a live one (Kody, PR 2340).
         html = '<p><a href="https://x"><div class="message_embed">P</div></a></p>'
         out = zm.to_markdown(html)
-        self.assertNotIn("[[", out)
-        self.assertIn("\\[", out)
+        self.assertEqual(out, "[\\[embedded content\\]](https://x)")
 
 
 class CodeTests(unittest.TestCase):
