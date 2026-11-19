@@ -1,5 +1,7 @@
 # [AFC-740](https://linear.app/simple-with-us/issue/AFC-740) One Letter Client:  Steps At Merge
 
+> **Superseded Bootstrap Instructions.**  Follow [AFC-785's registry bootstrap and rollout contract](afc-785-letter-bootstrap.md) for current credentials, managed wrappers and activation checks.  This dated AFC-740 record preserves the earlier design; its env-helper provisioning and bash-wrapper examples are historical.  Each host's own narrow binding and native acceptance remain separate rollout gates.
+
 One client, `platform-letter`, letters the chats of every platform from this change on, Claude Code and MiniMax Code included.  The two per-seat clients it replaces are gone from the checkout:  `scripts/simple_tools/claude_letter.py` (behind `simple-chat letter`) and `scripts/mm_session_letter.py` (behind `mm-session-letter`).
 
 This page is the order of work on the Mac and on the server when the change merges, the check that proves each step, what to take away afterwards, and how to go back.  None of it was run against a real home, a real `authorized_keys` or the real registry in this change:  every command below was run against a throwaway home and an in-process registry, except the few that say they were run on the Mac, and each of those sent nothing to the registry.  The server was not reached at all.
