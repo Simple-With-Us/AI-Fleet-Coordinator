@@ -61,7 +61,8 @@ def default_wake_path(home: str) -> str:
 # Not a wake:  the listener starts no model (owner ruling, Nov 10, 2026).  The daemon asks the
 # pinned claude binary which of its processes are interactive sessions, so a `claude-code` lease
 # is only alive while its process is one.  The pin file (`<SEAT>/wake-pin.json`, written by
-# record_pin) says which binary that is and whether its listing was found usable (`agents_ok`).
+# record_pin through `simple-chat daemon pin-claude`) says which binary that is and whether its listing
+# was found usable (`agents_ok`).
 
 
 def resolve_claude(explicit: str | None, wake_path: str) -> str | None:
