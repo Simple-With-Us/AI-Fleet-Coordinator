@@ -1017,7 +1017,9 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   # 2026-11-19 (MA): snapshot Trash; right after the sweep block
   # below, this branch permanently deletes whatever the sweeps
   # parked there (see the trash-purge block after the sweeps).
-  trash_snap="$(mktemp -t janitor-trash-snap 2>/dev/null || echo "/tmp/janitor-trash-snap.$$")"
+  # No predictable-path fallback: if mktemp fails the name stays
+  # empty and the purge below is skipped (fail-closed).
+  trash_snap="$(mktemp -t janitor-trash-snap 2>/dev/null)"
   ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_snap"
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
   if [ -x "$HOGHUNTER_CLEAN" ]; then
@@ -1093,24 +1095,37 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   # trashed during the branch's later, slower cache work is never
   # caught by this purge.
   if [ -d "$HOME_DIR/.Trash" ] && [ -n "${trash_snap:-}" ] && [ -f "$trash_snap" ]; then
-    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null || echo "/tmp/janitor-trash-after.$$")"
-    ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
-    parked_n=0
-    parked_names=""
-    while IFS= read -r parked_item; do
-      [ -n "$parked_item" ] || continue
-      if janitor_purge "$HOME_DIR/.Trash/$parked_item"; then
-        parked_n=$((parked_n + 1))
-        parked_names="${parked_names}${parked_item}; "
+    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null)"
+    if [ -n "$trash_after" ]; then
+      ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
+      parked_n=0
+      parked_names=""
+      while IFS= read -r parked_item; do
+        [ -n "$parked_item" ] || continue
+        parked_path="$HOME_DIR/.Trash/$parked_item"
+        # Watchdog-bounded: a big parked tree can take minutes to
+        # unlink, and the watchdog refreshes the lock heartbeat while
+        # it runs, so the self-heal cannot mistake this purge for a
+        # wedged run and kill it mid-delete.
+        janitor_watchdog 900 "trash-purge-item" -- janitor_purge "$parked_path"
+        # Count by absence, not exit status: find -delete reports
+        # failure when any single entry resists, even after deleting
+        # everything else.
+        if [ ! -e "$parked_path" ] && [ ! -L "$parked_path" ]; then
+          parked_n=$((parked_n + 1))
+          parked_names="${parked_names}${parked_item}; "
+        else
+          printf '%s  lowfree trash-purge: could not fully delete parked item: %s\n' "$now" "$parked_item" >> "$LOG"
+        fi
+      done < <(comm -13 "$trash_snap" "$trash_after")
+      if [ "$parked_n" -gt 0 ]; then
+        actions="${actions}trash-purge(${parked_n}) "
+        printf '%s  lowfree trash-purge: permanently deleted %s items parked during the sweep block: %s\n' "$now" "$parked_n" "$parked_names" >> "$LOG"
       fi
-    done < <(comm -13 "$trash_snap" "$trash_after")
-    if [ "$parked_n" -gt 0 ]; then
-      actions="${actions}trash-purge(${parked_n}) "
-      printf '%s  lowfree trash-purge: permanently deleted %s items parked during the sweep block: %s\n' "$now" "$parked_n" "$parked_names" >> "$LOG"
+      janitor_purge "$trash_after"
     fi
-    rm -f "$trash_after"
   fi
-  [ -n "${trash_snap:-}" ] && rm -f "$trash_snap"
+  [ -n "${trash_snap:-}" ] && janitor_purge "$trash_snap"
   janitor_purge "$HOME_DIR/.npm/_cacache"
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
   # sentry, pinecone, uptimerobot, coolify) are launched via `uvx`, which keeps that
@@ -1162,7 +1177,10 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
         uv cache clean >/dev/null 2>&1 && { actions="${actions}uv-clean "; uv_branch="${uv_branch}+clean"; }
       fi
     elif [ "$free" -lt "$CRIT_FREE" ]; then
-      janitor_purge "$uv_cache" && { actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli; }
+      if ! janitor_purge "$uv_cache"; then
+        printf '%s  uv cache legacy purge partial: some entries busy or undeletable\n' "$now" >> "$LOG"
+      fi
+      actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli
     fi
     printf '%s  uv-cache branch=%s free=%sG crit=%sG\n' "$now" "$uv_branch" "$free" "$CRIT_FREE" >> "$LOG"
   fi
