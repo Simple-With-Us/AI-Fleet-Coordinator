@@ -289,7 +289,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
                 seat or "every seat",
-                " (headless wakes only)" if args.wakes_only else " (wakes and live interrupts)",
+                " (wakes only)" if args.wakes_only else " (wakes and live interrupts)",
                 " --seat " + seat if seat else "",
             )
         )
@@ -316,6 +316,8 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         return cmd_init(rt, args)
     if sub == "test-wake":
         return cmd_test_wake(rt, args)
+    if sub == "pin-claude":
+        return cmd_pin_claude(rt, args)
     if sub == "check-config":
         return cmd_check_config(rt, args)
     raise Z.UsageError("unknown daemon command %r" % sub)
@@ -543,55 +545,16 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 lines.append("  RED %s" % problem)
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
-            if s.get("wake") == "claude":
-                pin = s.get("pin") or {}
-                # A stale pin is not a seat that was never set up, and the difference is the whole point
-                # of AFC-256:  say which one this is rather than a bare NOT pinned.
-                state = (
-                    " (pinned)"
-                    if s.get("pinned")
-                    else (
-                        " (NOT pinned: %s)" % pin.get("why") if pin.get("why") else " (NOT pinned)"
-                    )
-                )
-            elif s.get("wake") == "http":
+            if s.get("wake") == "http":
                 state = (
                     " (routine ready, %s)" % routine.get("host")
                     if routine.get("ready")
                     else " (routine NOT ready: %s)" % (routine.get("detail") or routine.get("why"))
                 )
-            elif s.get("wake") == "openrouter":
-                # No binary, so the pin is on the model and the request shape.
-                pin = s.get("pin") or {}
-                pin_text = (
-                    "pinned"
-                    if s.get("pinned")
-                    else "NOT pinned: %s" % (pin.get("why") or "not_pinned")
-                )
-                state = " (%s, %s)" % (s.get("model"), pin_text)
             else:
                 state = ""
-            fallback = s.get("fallback") or {}
-            if fallback:
-                fallback_pin = fallback.get("pin") or {}
-                state += "  fallback %s (%s, %s)%s" % (
-                    fallback.get("runtime"),
-                    fallback.get("model"),
-                    "pinned"
-                    if fallback.get("pinned")
-                    else "NOT pinned: %s" % (fallback_pin.get("why") or "not_pinned"),
-                    " ANSWERING IN PLACE OF THE WAKE (%s)" % fallback.get("primary_hold")
-                    if fallback.get("stands_in")
-                    else "",
-                )
-            routes = ""
-            if s.get("wake") == "claude":
-                routes = "  routes 24h %s%s" % (
-                    s.get("routes_24h", 0),
-                    "" if s.get("route_enabled", True) else " (routing off)",
-                )
             lines.append(
-                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (%s)%s"
+                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (%s)"
                 % (
                     seat,
                     "connected" if s.get("connected") else "DOWN",
@@ -601,7 +564,6 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     state,
                     s.get("wakes_24h"),
                     _wake_caps_text(s.get("budget")),
-                    routes,
                 )
             )
             for gate_text in _gate_status_lines(
@@ -1251,6 +1213,118 @@ def _held_line(summary: Any) -> str | None:
     return "held back %d (%s)" % (int(summary.get("count") or 0), "; ".join(parts))
 
 
+# --------------------------------------------------------------------------------------------
+# pin-claude
+# --------------------------------------------------------------------------------------------
+
+
+def cmd_pin_claude(rt: Any, args: argparse.Namespace) -> int:
+    """Pin the claude binary the lease-liveness check asks (Daemon.agent_kinds).  The listener starts
+    no model:  the check only runs `claude agents --json`, and only when the seat's pin file
+    (`<SEAT>/wake-pin.json`) holds this binary's realpath with `agents_ok`.  This is the one command
+    that writes it.  It runs the listing once, the way the daemon will (stdin closed, 10 seconds, the
+    daemon's cleaned environment), and pins the binary only when the answer is a listing the daemon
+    reads;  anything else writes nothing.  `--check` writes nothing either and says whether the pin
+    stands.  Exit 0 means the binary is pinned and usable, 1 that it is not.
+
+    The pin belongs to the listener whose state folder this is:  run it where that listener runs, and
+    note that a listener on a host with no claude binary, or with no Claude Code session leases (the
+    server container has neither), has nothing for the check to ask."""
+    cfg = _load(rt)
+    seat = Z.normalise_seat(args.seat) if args.seat else (cfg.claude_seat or "CLAUDE")
+    seat_cfg = cfg.seats.get(seat)
+    home = _home(rt)
+    wake_path = A.default_wake_path(home)
+    explicit = args.claude or (seat_cfg.claude if seat_cfg is not None else None)
+    paths = L.SeatPaths(_root(rt), seat)
+    report: dict[str, Any] = {"seat": seat, "pin_file": paths.wake_pin}
+
+    def finish(ok: bool, line: str) -> int:
+        report["ok"] = ok
+        if getattr(args, "json", False):
+            rt.out(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        else:
+            rt.out(line + "\n")
+        return 0 if ok else 1
+
+    # The daemon consults this pin only for its own Claude seat and only against the
+    # binary it resolves from that seat's config (Daemon.agent_kinds), so a pin for
+    # another seat, or for a binary other than the seat's configured one, would be a
+    # file the check never reads while the command still reports success (Kody, PR
+    # 2336).  When the seat names no binary, the daemon resolves the same wake PATH
+    # this command resolves:  the command runs where the listener runs.
+    daemon_seat = cfg.claude_seat or "CLAUDE"
+    if seat != daemon_seat:
+        report["error"] = "wrong_seat"
+        return finish(
+            False,
+            "FAIL: seat %s is not the Claude seat the daemon reads (%s); nothing was pinned"
+            % (seat, daemon_seat),
+        )
+    claude = A.resolve_claude(explicit, wake_path)
+    if claude is None:
+        report["error"] = "no_claude"
+        where = (
+            "%s is not an absolute path to an executable file" % explicit
+            if explicit
+            else "there is no `claude` on %s" % wake_path
+        )
+        return finish(False, "FAIL: %s, so nothing was pinned" % where)
+    real = A.binary_pin(claude)
+    report["claude"] = real
+    named = seat_cfg.claude if seat_cfg is not None else None
+    if named:
+        named_claude = A.resolve_claude(named, wake_path)
+        named_real = A.binary_pin(named_claude) if named_claude is not None else None
+        if named_real != real:
+            report["error"] = "claude_mismatch"
+            report["daemon_claude"] = named_real
+            return finish(
+                False,
+                "FAIL: seat %s's config names %s, but this command resolved %s, so nothing "
+                "was pinned; the daemon would never read that pin"
+                % (seat, named_real or "no usable claude", real),
+            )
+    if args.check:
+        pinned = A.pinned(paths, claude)
+        usable = A.agents_pinned(paths, claude)
+        report.update({"pinned": pinned, "agents_ok": usable})
+        return finish(
+            usable,
+            "%s:  %s is %s in %s"
+            % (
+                seat,
+                real,
+                "pinned and its listing is usable"
+                if usable
+                else ("pinned, but its listing was not found usable" if pinned else "not pinned"),
+                paths.wake_pin,
+            ),
+        )
+    rows = A.parse_agents(
+        A.run_agents([real, "agents", "--json"], A.claude_env(rt.env, home, wake_path), home)
+    )
+    if rows is None:
+        report["error"] = "agents_unusable"
+        return finish(
+            False,
+            "FAIL: `%s agents --json` gave no listing the daemon reads (it failed, took over 10 "
+            "seconds or answered something else), so nothing was pinned" % real,
+        )
+    kinds: dict[str, int] = {}
+    for row in rows:
+        kind = str(row.get("kind") or row.get("type") or "").casefold() or "unknown"
+        kinds[kind] = kinds.get(kind, 0) + 1
+    L.private_dir(paths.seat_dir)
+    A.record_pin(paths, claude, time.time(), agents_ok=True)
+    report.update({"pinned": True, "agents_ok": True, "agents": len(rows), "kinds": kinds})
+    return finish(
+        True,
+        "pinned %s for %s in %s:  its listing is usable (%d session%s)"
+        % (real, seat, paths.wake_pin, len(rows), "" if len(rows) == 1 else "s"),
+    )
+
+
 def cmd_wakes(rt: Any, args: argparse.Namespace) -> int:
     root = _root(rt)
     seat = _seat(rt, args)
@@ -1712,7 +1786,9 @@ def add_parsers(
     _status_args(q)
     q = add("pause", "kill switch: stop wakes and live interrupts (capture continues)", dsub)
     q.add_argument("--seat", metavar="S", help="one seat (default: every seat)")
-    q.add_argument("--wakes-only", action="store_true", help="stop headless wakes only")
+    q.add_argument(
+        "--wakes-only", action="store_true", help="stop routine wakes only, not live interrupts"
+    )
     q.add_argument(
         "--defer",
         action="store_true",
@@ -1788,6 +1864,29 @@ def add_parsers(
     )
     q.add_argument(
         "--topic", metavar="T", help="the topic of the test wake (default: %s)" % TEST_WAKE_TOPIC
+    )
+    q = add(
+        "pin-claude",
+        "pin the claude binary the lease-liveness check asks:  runs `claude agents --json` once and "
+        "writes <SEAT>/wake-pin.json only when it answers a listing the daemon reads.  The listener "
+        "starts no model;  --check only reports.  Exit 0 means pinned and usable",
+        dsub,
+    )
+    q.add_argument(
+        "--seat",
+        metavar="S",
+        help="the seat whose pin file this is (default: the Claude seat, as the daemon reads it)",
+    )
+    q.add_argument(
+        "--claude",
+        metavar="PATH",
+        help="an absolute path to the claude binary (default: the seat's `claude` setting, else "
+        "`claude` on the daemon's fixed PATH)",
+    )
+    q.add_argument(
+        "--check",
+        action="store_true",
+        help="report whether this binary is pinned with a usable listing;  run nothing, write nothing",
     )
 
     p = add("status", "listener status (same as daemon status)")

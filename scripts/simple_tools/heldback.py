@@ -5,7 +5,8 @@ dropped:  the daemon keeps one record per held-back MESSAGE in `<SEAT>/held-back
 ledger, and writes them before the ledger's `held_back` row, so a crash between the two never loses
 one.  A coalesced wake that stood for five messages holds all five, each listed and surfaced on its
 own (AFC-253:  a record used to keep only the wake's representative id).  Every other refusal (the
-pause, the pin, the loop guard, staleness, a seat with no wake adapter) is still a plain `dropped`.
+pause, a routine that is not ready, the loop guard, staleness, a seat with no wake adapter) is
+still a plain `dropped`.
 
 Two tiers, both surfaced, oldest first:
   - `records`:  full metadata (who, where, a link), at most `max`.
@@ -55,7 +56,9 @@ from . import live as L
 # The refusals that hold a wake back:  every budget wakes.budget_block names, and a full FIFO.
 # `usd_per_day` is gone with the dollar axis (owner 2026-10-13):  wake accounting is frequency-only,
 # so a dollar total can no longer produce a hold reason.  Kept out of the set deliberately -- a
-# reason nothing can emit is worse than no reason at all.
+# reason nothing can emit is worse than no reason at all.  The host-load holds (`host_busy`,
+# `host_wake_slots`) left for the same reason with the claude and muse wake types, the only wakes they
+# could hold (owner ruling, Nov 10, 2026);  a record already on disk keeps its reason.
 HOLD_REASONS = frozenset(
     {
         "wakes_per_hour",
@@ -64,8 +67,6 @@ HOLD_REASONS = frozenset(
         "owner_per_day",
         "owner_per_topic_per_hour",
         "overflow",
-        "host_busy",
-        "host_wake_slots",
     }
 )
 FILE_NAME = "held-back.json"

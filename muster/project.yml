@@ -128,11 +128,14 @@ targets:
       - path: Muster/Model/VmStatusReport.swift
       - path: Muster/Model/AppProcessesReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
+      - path: Muster/Model/ApiHealthReport.swift
       - path: Muster/Model/MacServicesReport.swift
       - path: Muster/Model/HogHunterMacReport.swift
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/ServerListenerSettings.swift
+      - path: Muster/Model/ServerSettingsAutosave.swift
+      - path: Muster/Model/OwnerCheck.swift
       - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
@@ -162,6 +165,9 @@ targets:
       # word and cell it shows (OperatorPanelTests).
       - path: Muster/Model/OperatorPanel.swift
       - path: Muster/Model/OperatorRouter.swift
+      # The Eavesdropper's pause and resume (AFC-832), which OpsControl.swift names
+      # (OperatorPauseTests).
+      - path: Muster/Model/OperatorPause.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
