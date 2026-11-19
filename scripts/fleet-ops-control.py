@@ -3845,7 +3845,9 @@ def read_coolify_token(ctx):
         token = values.get(COOLIFY_TOKEN_NAME, "").strip()
     except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
         # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
-        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN") from None
+        raise Failed(
+            "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+        ) from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
         raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
     return token
