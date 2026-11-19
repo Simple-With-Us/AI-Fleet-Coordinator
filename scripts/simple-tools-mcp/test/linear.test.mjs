@@ -538,10 +538,10 @@ test("a steal of nothing attributes no one:  no takeover text for a re-assert or
   assert.equal(ownBody.split("\n")[0], "CLAIMED", "no taken-from text on a self re-assert");
   assert.equal(own.held_by, null);
   // A human delegate holds no fleet claim, so the attribution must not name them.
-  fake.mutations().length = 0;
+  const afterOwn = fake.mutations().length;
   fake.addIssue({ id: "issue-329", identifier: "AFC-329", team: "AFC", delegate: { id: "user-jay", name: "Jay", app: false } });
   const human = ok(await tools.call("linear_claim", { id: "AFC-329", steal: true, reason: "reclaiming an abandoned issue" }), "linear_claim");
-  const humanBody = fake.mutations()[1].body.variables.input.body;
+  const humanBody = fake.mutations().slice(afterOwn)[1].body.variables.input.body;
   assert.equal(humanBody.split("\n")[0], "CLAIMED", "a human delegate is never named as a displaced holder");
   assert.equal(human.label, "claimed:GROK-WEB");
 });
@@ -559,6 +559,31 @@ test("a steal retry derives the same identities:  one comment, one write", async
   assert.equal(commentCount(), 1, "the retry posted no second CLAIMED comment");
   const lastBody = bodies().at(-1);
   assert.ok(lastBody.includes("CLAIMED"), "a comment body exists");
+});
+
+test("a steal never answers as a duplicate of the same seat's plain claim", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-331", identifier: "AFC-331", team: "AFC" });
+  const plain = ok(await tools.call("linear_claim", { id: "AFC-331", session: "mvs-1234-5678" }), "linear_claim");
+  const plainMutations = fake.mutations().length;
+  fake.addIssue({ id: "issue-332", identifier: "AFC-332", team: "AFC", labels: ["claimed:CLAUDE"] });
+  const steal = ok(await tools.call("linear_claim", { id: "AFC-332", steal: true, reason: "displacing the parked claim", session: "mvs-1234-5678" }), "linear_claim");
+  assert.equal(steal.duplicate, false, "the steal ran its own write, not the plain claim's row");
+  const stealMutations = fake.mutations().slice(plainMutations);
+  assert.equal(stealMutations.filter((m) => m.body.query?.includes("BoardComment")).length, 1, "the steal posted its own CLAIMED comment");
+});
+
+test("a foreign claim after the caller's own label is still named and removed", async () => {
+  const { tools, fake } = harness();
+  // The caller's claim label comes first on the issue;  CLAUDE's sits behind it
+  // (the same-second double-claim shape), so the first claimed: key is the caller's.
+  fake.addIssue({ id: "issue-333", identifier: "AFC-333", team: "AFC", labels: ["claimed:GROK-WEB", "claimed:CLAUDE", "seat:CLAUDE"] });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-333", steal: true, reason: "taking the stalled half of the double claim" }), "linear_claim");
+  const update = fake.mutations()[0].body.variables;
+  assert.deepEqual(update.input.removedLabelIds, [fake.labelId("claimed:CLAUDE")]);
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.match(body, /CLAIMED — taken from CLAUDE: taking the stalled half of the double claim/);
+  assert.equal(claimed.label, "claimed:GROK-WEB");
 });
 
 test("a human delegate is no claim hold:  claiming delegates to the seat's app user", async () => {

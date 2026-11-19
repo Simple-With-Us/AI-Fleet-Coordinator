@@ -1391,9 +1391,17 @@ class LinearToolTests(FakePrograms):
         (call,) = self.calls(self.board_out)
         self.assertIn("--steal", call["argv"])
         self.assertIn("--reason=holder parked it", call["argv"])
-        # Without steal the flags never appear;  a steal without a reason is the
-        # board's own refusal, so the mapping still sends exactly what it was given.
-        session.call("linear_claim", {"id": "AFC-2"})
+        # A non-boolean steal never reaches the mapping:  the input schema refuses it
+        # (integer, string alike), so there is no truthiness ambiguity to normalize.
+        for bad in (1, "true"):
+            each = self.session(self.env())
+            refused = each.call("linear_claim", {"id": "AFC-3", "steal": bad, "reason": "r"})
+            self.assertTrue(refused.get("isError"))
+            self.assertIn("must be of type boolean", refused["content"][0]["text"])
+        self.assertEqual(len(self.calls(self.board_out)), 1, "the refusals never ran board")
+        # Without steal the flags never appear.
+        plain = self.session(self.env())
+        plain.call("linear_claim", {"id": "AFC-2"})
         last = self.calls(self.board_out)[-1]["argv"]
         self.assertNotIn("--steal", last)
         self.assertFalse([a for a in last if a.startswith("--reason=")])
