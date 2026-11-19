@@ -475,18 +475,22 @@ class StandaloneScopedReaderTests(unittest.TestCase):
             env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "FLEET_RAG_HOME": str(stable)}
             installed = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(installed.returncode, 0, installed.stderr)
-            package = stable / "fleet_secrets"
-            self.assertEqual(sorted(p.name for p in package.iterdir()), ["__init__.py", "core.py"])
+            # The installed reader ships the shared client.  The retired package and the
+            # retired command are gone from it, and a host that still holds one loses it.
+            client = stable / "fleet_infisical.py"
+            shared = pathlib.Path(__file__).resolve().parents[2] / "fleet_infisical.py"
+            self.assertEqual(client.read_bytes(), shared.read_bytes())
+            self.assertFalse((stable / "fleet_secrets").exists())
             self.assertFalse((stable / "fleet-secrets").exists())
-            (package / "cli.py").write_text("# stale code must not ship\n")
+            client.write_text("# stale client must not ship\n")
             (stable / "state/keep").write_text("preserved")
             again = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(again.returncode, 0, again.stderr)
-            self.assertFalse((package / "cli.py").exists())
+            self.assertEqual(client.read_bytes(), shared.read_bytes())
             self.assertEqual((stable / "state/keep").read_text(), "preserved")
             boot = (
                 "import json,os,sys;sys.path.insert(0,sys.argv[1]);"
-                "from fleet_rag import core;import fleet_secrets.core as verifier;"
+                "from fleet_rag import core;import fleet_infisical as verifier;"
                 "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
                 "print(json.dumps(core.infisical_fetch({'RECALL_API_URL'})))"
             )

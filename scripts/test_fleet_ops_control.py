@@ -20,11 +20,8 @@ import sys
 import tempfile
 import time
 import unittest
-import uuid
 from pathlib import Path
 from unittest import mock
-
-from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("foc", os.path.join(HERE, "fleet-ops-control.py"))
