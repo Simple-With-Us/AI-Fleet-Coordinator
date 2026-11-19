@@ -805,6 +805,19 @@ class DailyCheckTests(Base):
         self.check(registry)
         self.assertEqual(len(self.fake.posts), 1)
 
+    def test_a_disabled_zulip_path_still_completes_the_daily_check(self):
+        self.fake.zulip_ok = None
+        registry = {"workers": {WORKER: {"limits": {"cpu_ms": 50}}}}
+        self.check(registry)
+        self.assertEqual(self.state["daily_check_day"], NOW.strftime("%Y-%m-%d"))
+        self.assertIn("last_drift", self.state)
+
+    def test_a_failed_zulip_post_still_blocks_the_daily_check(self):
+        self.fake.zulip_ok = False
+        registry = {"workers": {WORKER: {"limits": {"cpu_ms": 50}}}}
+        self.check(registry)
+        self.assertNotIn("daily_check_day", self.state)
+
     def test_preview_urls_count_even_when_a_registry_row_does_not_name_them(self):
         registry = {"workers": {"alerts-worker": {"status": "auto", "limits": {}}}}
         self.check(registry)
@@ -1114,7 +1127,7 @@ class ConnectionTests(Base):
 
         conn = wd.Connections(self.cfg, runner=boom, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertFalse(conn.zulip("hello"))
+            self.assertIsNone(conn.zulip("hello"))
         self.assertIn('"event": "zulip_failed"', out.getvalue())
         self.assertIn('"error": "dedicated-service-binding-required"', out.getvalue())
 
