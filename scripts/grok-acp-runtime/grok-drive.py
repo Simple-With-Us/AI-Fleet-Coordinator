@@ -71,7 +71,11 @@ def cmd_list(args):
     if args.cwd:
         argv.extend(["--cwd", args.cwd])
     if args.all_pages:
-        argv.extend(["--all-pages"])
+        # A total budget the leader returns inside:  it answers with the pages it fetched
+        # and `complete: false` instead of being killed mid-walk and answering nothing.
+        # 20 s here sits inside this helper's own 25 s, which sits inside the wake's
+        # LIST_TIMEOUT (Kody, PR 2306 review round 2).
+        argv.extend(["--all-pages", "--rpc-timeout", "20"])
     data, code = run_json(argv, timeout=25)
     sessions = enrich_sessions(data.get("sessions") or [])
     complete = data.get("complete") is True

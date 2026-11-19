@@ -399,7 +399,12 @@ def deliver_request(
             # The whole inventory, not one page:  a chat on a later page would otherwise
             # read as chat-not-listed, which is final, when its page was simply never
             # fetched (Kody, PR 2306).  An incomplete list answers drive-list-unavailable.
+            # The installed helper on a host can be older than this checkout and reject the
+            # flag, so an answer without a session list falls back to the plain list the
+            # older helper speaks, with its older one-page semantics (Kody, PR 2306 round 2).
             _code, payload = _invoke(env, ["list", "--all-pages"], LIST_TIMEOUT, runner)
+            if payload is None or not isinstance(payload.get("sessions"), list):
+                _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
         except subprocess.TimeoutExpired:
             return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
