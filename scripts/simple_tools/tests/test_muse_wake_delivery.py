@@ -194,7 +194,7 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "chat-live-parked")
         self.assertEqual(self.calls, [])
         pending = (
-            Path(WP.state_dir(self.env)) / "pending" / SID / (WAKE_ID + ".json")
+            Path(WP.state_dir(str(self.home))) / "pending" / SID / (WAKE_ID + ".json")
         )
         self.assertTrue(pending.is_file())
 
@@ -394,7 +394,7 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "chat-live-parked")
         self.assertEqual(self.calls, [])
         pending = (
-            Path(WP.state_dir(self.env)) / "pending" / SID / (WAKE_ID + ".json")
+            Path(WP.state_dir(str(self.home))) / "pending" / SID / (WAKE_ID + ".json")
         )
         body = json.loads(pending.read_text(encoding="utf-8"))
         self.assertIn("[MC wake]", body["text"])
@@ -407,11 +407,11 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         for _ in range(2):
             answer = self._deliver()
             self.assertEqual(answer["delivery"]["outcome"], "busy")
-        folder = Path(WP.state_dir(self.env)) / "pending" / SID
+        folder = Path(WP.state_dir(str(self.home))) / "pending" / SID
         self.assertEqual([p.name for p in folder.iterdir()], [WAKE_ID + ".json"])
 
     def test_a_consumed_wake_is_sent_without_running(self) -> None:
-        WP.mark_consumed(WP.state_dir(self.env), WAKE_ID)
+        WP.mark_consumed(WP.state_dir(str(self.home)), WAKE_ID)
         with open(self.session_dir / "session.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"prompt": "wake " + WAKE_ID}) + "\n")
         answer = self._deliver()
@@ -419,20 +419,25 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_a_parked_wake_is_consumed_when_the_retry_executes_it(self) -> None:
-        WP.park(WP.state_dir(self.env), SID, WAKE_ID, "[MC wake] hello")
+        WP.park(WP.state_dir(str(self.home)), SID, WAKE_ID, "[MC wake] hello")
         answer = self._deliver()
         self.assertEqual(answer["delivery"]["outcome"], "sent")
         self.assertEqual(len(self.calls), 1)
-        folder = Path(WP.state_dir(self.env)) / "pending" / SID
+        folder = Path(WP.state_dir(str(self.home))) / "pending" / SID
         self.assertEqual(list(folder.iterdir()), [])
-        self.assertTrue(WP.is_consumed(WP.state_dir(self.env), WAKE_ID))
+        self.assertTrue(WP.is_consumed(WP.state_dir(str(self.home)), WAKE_ID))
 
     def test_a_failed_exec_leaves_the_parked_wake_for_the_hook(self) -> None:
-        WP.park(WP.state_dir(self.env), SID, WAKE_ID, "[MC wake] hello")
+        WP.park(WP.state_dir(str(self.home)), SID, WAKE_ID, "[MC wake] hello")
         answer = self._deliver(runner=self._runner(proc=OSError("boom")))
         self.assertEqual(answer["delivery"]["outcome"], "failed")
-        pending = Path(WP.state_dir(self.env)) / "pending" / SID / (WAKE_ID + ".json")
+        pending = Path(WP.state_dir(str(self.home))) / "pending" / SID / (WAKE_ID + ".json")
         self.assertTrue(pending.is_file())
+
+    def test_a_ledger_failure_after_a_run_still_reports_sent(self) -> None:
+        with mock.patch.object(WP, "mark_delivered", side_effect=OSError("disk full")):
+            answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
 
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))

@@ -1156,11 +1156,11 @@ class HookFlowTests(Tree):
 
     def test_a_parked_wake_reaches_the_next_prompt_as_context(self) -> None:
         self.start()
-        WP.park(WP.state_dir(self.env()), SID, "w-hook-1", "[MC wake] hello there")
+        WP.park(WP.state_dir(self.home), SID, "w-hook-1", "[MC wake] hello there")
         out = self.prompt("continue working")
         self.assertIn("[MC wake] hello there", out["additionalContext"])
-        self.assertEqual(WP.take(WP.state_dir(self.env()), SID), [])
-        self.assertTrue(WP.is_consumed(WP.state_dir(self.env()), "w-hook-1"))
+        self.assertEqual(WP.take(WP.state_dir(self.home), SID), [])
+        self.assertTrue(WP.is_consumed(WP.state_dir(self.home), "w-hook-1"))
 
     def test_a_prompt_with_no_parked_wake_adds_no_wake_context(self) -> None:
         self.start()

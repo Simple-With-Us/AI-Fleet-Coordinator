@@ -2740,16 +2740,34 @@ def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
     return (words if words != note.get("title") else ""), show
 
 
-def take_wakes(chat: Chat) -> str:
-    """Prompt context from wakes parked for this chat while it was held.  Taking consumes them, so each wake reaches
-    exactly one prompt;  a corrupt spool is skipped, and a helper-spawned host never takes (it is not the chat)."""
+def _wake_home(chat: Chat) -> str:
+    """The home directory the parked-wake spool resolves under:  the chat user's own home, the same value the
+    delivery adapter uses, so both sides resolve the identical spool."""
+    return _text(chat.env.get("HOME")) or os.path.expanduser("~")
+
+
+def peek_wakes(chat: Chat) -> tuple[str, list[str]]:
+    """Parked wakes for this chat as prompt context, plus their ids.  Never raises and never consumes:  the
+    caller emits first, then consumes, so a crash between the two cannot lose a wake.  A helper-spawned host
+    (MUSE_LETTER_HELPER, the mark the letter helper sets on its own runs) peeks at nothing:  it is not the chat."""
     if _text(chat.env.get("MUSE_LETTER_HELPER")):
-        return ""
+        return "", []
     try:
-        pending = WP.take(WP.state_dir(chat.env), chat.session_id)
+        pending = WP.peek(WP.state_dir(_wake_home(chat)), chat.session_id)
     except Exception:
-        return ""
-    return "\n\n".join(text for _, text in pending)
+        return "", []
+    return "\n\n".join(text for _, text in pending), [wake_id for wake_id, _ in pending]
+
+
+def consume_wakes(chat: Chat, wake_ids: list[str]) -> None:
+    """Consume parked wakes after they were emitted into a prompt.  Never raises:  a failure here only means
+    the next prompt shows the wake again, which is the safe direction."""
+    if not wake_ids:
+        return
+    try:
+        WP.consume(WP.state_dir(_wake_home(chat)), chat.session_id, wake_ids)
+    except Exception:
+        pass
 
 
 def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
@@ -2848,7 +2866,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             lambda text: chat.registry("issues", issues=text),
         )
     fix = advice(chat, note, current, data, "prompt")
-    parked = take_wakes(chat)
+    parked, parked_ids = peek_wakes(chat)
     chat.write(note)
     if announce or (shown and shown != current) or fix or parked:
         out.emit(
@@ -2857,6 +2875,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             title=shown,
             label=str(note.get("label") or ""),
         )
+        consume_wakes(chat, parked_ids)
     return 0
 
 

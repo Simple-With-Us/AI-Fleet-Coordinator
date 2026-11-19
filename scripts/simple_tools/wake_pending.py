@@ -9,12 +9,13 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
+import tempfile
 import time
-from collections.abc import Mapping
 from typing import Any
 
 #: A pending file bigger than this is left alone:  wakes are short texts, and the hook
@@ -30,13 +31,11 @@ _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _WAKE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
-def state_dir(env: Mapping[str, str]) -> str:
-    """The wake state dir for this host:  the same rule `muse_wake.state_dir` uses, so the
-    adapter and the hook resolve the same spool from their own environments."""
-    base = env.get("MUSE_WAKE_STATE") or os.path.join(
-        str(env.get("HOME") or os.path.expanduser("~")), ".local", "state"
-    )
-    return os.path.join(base, "muse-wake")
+def state_dir(home: str) -> str:
+    """The wake state dir for one host user:  a pure function of the home directory, so the adapter and the
+    hook resolve the same spool no matter what each process carries in its environment.  (An environment
+    override could split them:  the hook runs with a cleared environment, so no override is read here.)"""
+    return os.path.join(home, ".local", "state", "muse-wake")
 
 
 def _safe_name(value: object, pattern: re.Pattern[str], what: str) -> str:
@@ -45,28 +44,54 @@ def _safe_name(value: object, pattern: re.Pattern[str], what: str) -> str:
     return value
 
 
-def _private_dir(path: str) -> None:
-    try:
-        os.makedirs(path, mode=0o700, exist_ok=True)
-    except OSError:
-        return
-    try:
-        if stat.S_IMODE(os.stat(path).st_mode) != 0o700:
-            os.chmod(path, 0o700)
-    except OSError:
-        pass
+def _private_dir(path: str, base: str) -> None:
+    """Make sure every level from `base` down to `path` exists and is 0700, refusing symlinks at each level.
+    Nothing above `base` is created or touched.  Errors propagate:  the adapter answers a retryable `failed`
+    and the hook skips the wake, never silently using a wrong directory."""
+    if os.path.islink(base) or os.path.islink(path):
+        raise OSError("refusing symlinked state dir")
+    rest = os.path.relpath(path, base)
+    if rest.startswith(".."):
+        raise OSError("state dir escapes its base")
+    head = base
+    for part in [None, *([] if rest == "." else rest.split(os.sep))]:
+        if part is not None:
+            if part in (".", ".."):
+                raise OSError("state dir escapes its base")
+            _safe_name(part, _SESSION_RE, "path part")
+            head = os.path.join(head, part)
+        if os.path.islink(head):
+            raise OSError("refusing symlinked state dir")
+        os.makedirs(head, mode=0o700, exist_ok=True)
+        if os.path.islink(head):
+            raise OSError("refusing symlinked state dir")
+        if stat.S_IMODE(os.stat(head).st_mode) != 0o700:
+            os.chmod(head, 0o700)
 
 
-def _atomic_write_json(path: str, record: Mapping[str, Any]) -> None:
+def _atomic_write_json(directory: str, path: str, record: dict[str, Any]) -> None:
+    """Write one JSON record atomically:  a unique temp file in the destination directory, flushed and fsynced
+    before the rename, then the directory itself fsynced, so a crash cannot leave a truncated record behind."""
     data = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-    tmp = path + ".tmp-%d" % os.getpid()
-    with open(tmp, "wb") as fh:
-        fh.write(data)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
     try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        os.replace(tmp, path)
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def pending_dir(state: str) -> str:
@@ -77,7 +102,7 @@ def _ledger_path(state: str) -> str:
     return os.path.join(state, CONSUMED_FILENAME)
 
 
-def _read_ledger(state: str) -> dict[str, float]:
+def _read_ledger_unlocked(state: str) -> dict[str, float]:
     try:
         with open(_ledger_path(state), encoding="utf-8") as fh:
             record = json.load(fh)
@@ -86,6 +111,26 @@ def _read_ledger(state: str) -> dict[str, float]:
     if not isinstance(record, dict):
         return {}
     return {k: float(v) for k, v in record.items() if isinstance(v, (int, float))}
+
+
+def _with_ledger_lock(state: str, fn: Any) -> Any:
+    """Run `fn` with the ledger's host-local lock held, so the hook's take and the adapter's delivery cannot
+    lose each other's wake ids in a concurrent read-modify-write."""
+    _private_dir(state, state)
+    lock_path = os.path.join(state, "consumed.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fn()
+    finally:
+        os.close(fd)
+
+
+def _read_ledger(state: str) -> dict[str, float]:
+    try:
+        return _with_ledger_lock(state, lambda: _read_ledger_unlocked(state))
+    except OSError:
+        return {}
 
 
 def is_consumed(state: str, wake_id: str) -> bool:
@@ -112,13 +157,17 @@ def mark_delivered(state: str, session_id: str, wake_id: str) -> bool:
 
 
 def mark_consumed(state: str, wake_id: str, now: float | None = None) -> None:
-    """Record a handed-over wake, pruning entries older than the TTL."""
+    """Record a handed-over wake, pruning entries older than the TTL.  The read-prune-write runs under the
+    ledger lock, so concurrent markers merge instead of losing each other."""
     _safe_name(wake_id, _WAKE_ID_RE, "wake id")
     at = time.time() if now is None else now
-    _private_dir(state)
-    ledger = {k: v for k, v in _read_ledger(state).items() if at - v < CONSUMED_TTL_SECONDS}
-    ledger[wake_id] = at
-    _atomic_write_json(_ledger_path(state), ledger)
+
+    def rewrite() -> None:
+        ledger = {k: v for k, v in _read_ledger_unlocked(state).items() if at - v < CONSUMED_TTL_SECONDS}
+        ledger[wake_id] = at
+        _atomic_write_json(state, _ledger_path(state), ledger)
+
+    _with_ledger_lock(state, rewrite)
 
 
 def park(state: str, session_id: str, wake_id: str, text: str) -> bool:
@@ -132,21 +181,21 @@ def park(state: str, session_id: str, wake_id: str, text: str) -> bool:
     if is_consumed(state, wake_id):
         return False
     folder = os.path.join(pending_dir(state), session_id)
-    _private_dir(folder)
-    _atomic_write_json(os.path.join(folder, wake_id + ".json"), {"wake_id": wake_id, "text": text})
+    _private_dir(folder, state)
+    _atomic_write_json(folder, os.path.join(folder, wake_id + ".json"), {"wake_id": wake_id, "text": text})
     return True
 
 
-def take(state: str, session_id: str) -> list[tuple[str, str]]:
-    """Take and consume every parked wake for one chat, oldest filename first.  A file
-    that cannot be read or parsed is removed and skipped, never handed over."""
+def _read_pending(state: str, session_id: str) -> list[tuple[str, str, str]]:
+    """(wake_id, text, path) of every readable parked wake for one chat, oldest filename first.  Unreadable,
+    oversized and empty files are left alone here:  `take` removes them, `peek` only skips them."""
     _safe_name(session_id, _SESSION_RE, "session id")
     folder = os.path.join(pending_dir(state), session_id)
     try:
         names = sorted(os.listdir(folder))
     except OSError:
         return []
-    taken: list[tuple[str, str]] = []
+    found: list[tuple[str, str, str]] = []
     for name in names:
         if not name.endswith(".json"):
             continue
@@ -160,22 +209,56 @@ def take(state: str, session_id: str) -> list[tuple[str, str]]:
             with open(path, encoding="utf-8") as fh:
                 record = json.load(fh)
         except (OSError, ValueError):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             continue
         text = record.get("text") if isinstance(record, dict) else None
         if not isinstance(text, str) or not text:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             continue
+        found.append((wake_id, text, path))
+    return found
+
+
+def peek(state: str, session_id: str) -> list[tuple[str, str]]:
+    """The parked wakes for one chat, without consuming anything:  what the hook shows before it emits."""
+    return [(wake_id, text) for wake_id, text, _ in _read_pending(state, session_id)]
+
+
+def consume(state: str, session_id: str, wake_ids: list[str]) -> None:
+    """Consume parked wakes after they were handed over:  remove their files and mark the removed ids.  Unknown
+    or already-gone ids are ignored, so emitting first and consuming after is safe to repeat, and a wake that
+    was never shown is never marked delivered."""
+    _safe_name(session_id, _SESSION_RE, "session id")
+    for wake_id in wake_ids:
+        _safe_name(wake_id, _WAKE_ID_RE, "wake id")
         try:
-            os.unlink(path)
+            os.unlink(os.path.join(pending_dir(state), session_id, wake_id + ".json"))
         except OSError:
             continue
         mark_consumed(state, wake_id)
-        taken.append((wake_id, text))
-    return taken
+
+
+def take(state: str, session_id: str) -> list[tuple[str, str]]:
+    """Take and consume every parked wake for one chat, oldest filename first.  A file
+    that cannot be read or parsed is removed and skipped, never handed over."""
+    pending = _read_pending(state, session_id)
+    folder = os.path.join(pending_dir(state), session_id)
+    try:
+        names = set(os.listdir(folder))
+    except OSError:
+        names = set()
+    for _, _, path in pending:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    for name in sorted(names):
+        if not name.endswith(".json"):
+            continue
+        wake_id = name[: -len(".json")]
+        if _WAKE_ID_RE.fullmatch(wake_id) and all(wake_id != seen for seen, _, _ in pending):
+            try:
+                os.unlink(os.path.join(folder, name))
+            except OSError:
+                pass
+    for wake_id, _, _ in pending:
+        mark_consumed(state, wake_id)
+    return [(wake_id, text) for wake_id, text, _ in pending]

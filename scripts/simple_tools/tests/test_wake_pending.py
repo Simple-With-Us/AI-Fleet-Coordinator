@@ -70,12 +70,53 @@ class WakePendingTest(unittest.TestCase):
         self.assertFalse(WP.is_consumed(self.state, "w-old"))
         self.assertTrue(WP.is_consumed(self.state, "w-new"))
 
-    def test_state_dir_mirrors_the_adapter_rule(self) -> None:
+    def test_state_dir_is_a_pure_function_of_home(self) -> None:
         home = os.path.join(self.tmp.name, "home")
         self.assertEqual(
-            WP.state_dir({"HOME": home}), os.path.join(home, ".local", "state", "muse-wake")
+            WP.state_dir(home), os.path.join(home, ".local", "state", "muse-wake")
         )
-        self.assertEqual(WP.state_dir({"HOME": home, "MUSE_WAKE_STATE": "/x"}), "/x/muse-wake")
+
+    def test_peek_shows_without_consuming_and_consume_removes(self) -> None:
+        WP.park(self.state, SID, "w-peek-1", "[MC wake] one")
+        self.assertEqual(WP.peek(self.state, SID), [("w-peek-1", "[MC wake] one")])
+        self.assertEqual(WP.peek(self.state, SID), [("w-peek-1", "[MC wake] one")])
+        self.assertFalse(WP.is_consumed(self.state, "w-peek-1"))
+        WP.consume(self.state, SID, ["w-peek-1"])
+        self.assertEqual(WP.peek(self.state, SID), [])
+        self.assertTrue(WP.is_consumed(self.state, "w-peek-1"))
+
+    def test_consume_ignores_unknown_ids(self) -> None:
+        WP.consume(self.state, SID, ["w-never-parked"])
+        self.assertFalse(WP.is_consumed(self.state, "w-never-parked"))
+
+    def test_park_refuses_a_symlinked_spool(self) -> None:
+        real = os.path.join(self.tmp.name, "real")
+        os.makedirs(real)
+        link = os.path.join(self.tmp.name, "linked-state")
+        os.symlink(real, link)
+        with self.assertRaises(OSError):
+            WP.park(link, SID, "w-link-1", "[MC wake] x")
+
+    def test_concurrent_marks_keep_every_wake_id(self) -> None:
+        import threading
+
+        ids = ["w-race-%02d" % n for n in range(20)]
+
+        def mark_some(part: list[str]) -> None:
+            for wake_id in part:
+                WP.mark_consumed(self.state, wake_id)
+
+        threads = [threading.Thread(target=mark_some, args=(ids[i::4],)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for wake_id in ids:
+            self.assertTrue(WP.is_consumed(self.state, wake_id))
+
+    def test_mark_delivered_without_a_pending_file_still_marks(self) -> None:
+        self.assertFalse(WP.mark_delivered(self.state, SID, "w-fresh-1"))
+        self.assertTrue(WP.is_consumed(self.state, "w-fresh-1"))
 
 
 if __name__ == "__main__":

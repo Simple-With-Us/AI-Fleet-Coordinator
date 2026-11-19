@@ -585,18 +585,29 @@ def _via_exec(
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return WR.Delivery("refused", "exec", code="exec-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
+        # The turn already ran:  a ledger failure must not turn this handoff into a retryable `failed`
+        # (the router would run the turn twice), so the mark is best-effort and the transcript stays
+        # the hand-over record.
+        try:
+            WP.mark_delivered(WP.state_dir(_pending_home(env)), session_id, wake.wake_id)
+        except OSError:
+            pass
         if _seen_appended(transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep):
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
             # `completed` would claim the turn finished, so this is `sent`, confirmed.
-            WP.mark_delivered(str(state_dir(env)), session_id, wake.wake_id)
             return WR.Delivery("sent", "exec", ack="confirmed")
         # It ran and may have done the work, but nothing in the chat proves it:  handed over,
         # never counted as delivered, and never retried.
-        WP.mark_delivered(str(state_dir(env)), session_id, wake.wake_id)
         return WR.Delivery("sent", "exec", ack="unknown")
     # It started, so it may have run the turn before it exited:  never retried.
     return WR.Delivery("refused", "exec", code="exec-exit-%d" % proc.returncode)
+
+
+def _pending_home(env: Mapping[str, str]) -> str:
+    """The home directory the parked-wake spool resolves under:  this host user's own home only, never an
+    environment override, so the hook (which runs with a cleared environment) resolves the identical spool."""
+    return str(env.get("HOME") or os.path.expanduser("~"))
 
 
 def _wake_seen(transcript: str, wake_id: str) -> bool:
@@ -650,7 +661,7 @@ def deliver_local(
         return WR.Delivery("failed", code="store-unreadable")
     if session_dir is None:
         return WR.Delivery("refused", code="no-such-session")
-    state = str(state_dir(env))
+    state = WP.state_dir(_pending_home(env))
     transcript = os.path.join(session_dir, "session.jsonl")
     if (handed := _handed_over(state, transcript, wake)) is not None:
         return handed
