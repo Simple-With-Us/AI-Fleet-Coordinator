@@ -834,6 +834,14 @@ class RelayTests(unittest.TestCase):
         self.assertTrue(lr.has_secret("a" * 32))
         self.assertTrue(lr.has_secret("4027256F4B281A9C5D3E7F608192A4B5C6D7E8F9"))
         self.assertTrue(lr.has_secret(sha + "0123456789abcdef0123456789abcdef"))
+        # Commit and pull URL paths are the commonest way a head is pasted:  the SHA
+        # there is exempt too, while a query form and a JSON-keyed value still withhold
+        # (Kody, PR 2344).
+        self.assertFalse(lr.has_secret("https://x.test/o/r/commit/%s" % sha))
+        self.assertFalse(lr.has_secret("https://x.test/o/r/pull/12/commits/%s" % sha))
+        self.assertTrue(lr.has_secret('"registry_hash": "%s"' % sha))
+        self.assertTrue(lr.has_secret(sha + "Zk9+/=="))
+        self.assertTrue(lr.has_secret('"' + sha + '"'))
 
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:

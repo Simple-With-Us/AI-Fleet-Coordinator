@@ -261,10 +261,11 @@ _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
 # A bare 40-character lowercase hex run is a git SHA-1:  commits and PR heads quote them in
-# prose that carries no credential, and withholding whole posts for a quoted SHA is the bug
-# AFC-834 records.  A run beside a URL query or a key name (`?sha=`, `token:`) is not bare,
-# and keeps withholding, as does any other length or a mixed-case run.
-_BARE_GIT_SHA = re.compile(r"(?<![?&=:/\w])[0-9a-f]{40}(?![0-9a-fA-F])")
+# prose and in commit/pull URL paths, and withholding whole posts for a quoted SHA is the bug
+# AFC-834 records.  Not exempt:  a run in a query or keyed position (`?sha=`, `token:`, a JSON
+# `"key": "..."`), one that continues into a longer base64 run, any other length, or a
+# mixed-case run (Kody, PR 2344).
+_BARE_GIT_SHA = re.compile(r"(?<![?&=:\w\"])[0-9a-f]{40}(?![A-Za-z0-9+/=])")
 
 
 def has_secret(text: str) -> bool:
@@ -276,9 +277,10 @@ def has_secret(text: str) -> bool:
     text = text or ""
     if secretscan.scan(text) is not None or bool(_KEYED_SECRET.search(text)):
         return True
-    # The bare SHAs are masked out before the wide rows run, at their own length, so no
-    # boundary shifts and no neighbouring pattern sees them.
-    probe = _BARE_GIT_SHA.sub("x" * 40, text)
+    # The bare SHAs are masked out before the wide rows run, with a character outside
+    # every credential alphabet:  the mask also breaks any wider run a URL path or a
+    # neighbouring segment would otherwise extend across the SHA (Kody, PR 2344).
+    probe = _BARE_GIT_SHA.sub("!" * 40, text)
     return any(p.search(probe) for p in _SECRET_PATTERNS)
 
 
