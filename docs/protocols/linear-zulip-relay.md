@@ -233,7 +233,7 @@ once per cycle, not once per message; a create still writes its intent ahead of 
 It MUST sit on a persistent volume.  A lost ledger means the relay no longer knows which comment
 belongs to a topic, so it starts a new one, and the old comment stays behind.
 
-The ledger is bounded: 500 entries and 48 MB, and the oldest entries are pruned first.  The comment
+The ledger is bounded: 500 entries and 16 MB, and the oldest entries are pruned first.  The comment
 map outlives that bound (AFC-821).  A pruned entry that has a comment, or a create whose outcome is
 unknown, leaves a record in the ledger's `archive` table under the same key: the conversation's
 first message id, the comment id, the `pending` flag and when the entry was last touched, and no
@@ -248,8 +248,8 @@ The archive is optional, so a ledger without one opens as it always did, and the
 When it is there it is checked on load like the entries: a table, every key exactly as the relay
 writes it, and every record with all four fields of the right type and a finite time.  A malformed
 record stops the relay, and the message names its position only.  The archive is bounded at 20,000
-records and by the file's 48 MB: its oldest records are dropped first, and the log says how many
-("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 48 MB.
+records and by the file's 16 MB: its oldest records are dropped first, and the log says how many
+("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 16 MB.
 A build from before AFC-821 reads a ledger that has an archive, writes the table back as it found
 it, and neither adds to it nor restores from it, so a rollback loses only the restores.
 

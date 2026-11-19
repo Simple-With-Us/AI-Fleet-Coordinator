@@ -223,8 +223,11 @@ LEDGER_VERSION = 2  # 2: the ledger key carries a digest of the topic, never the
 MAX_ENTRIES = 500  # the ledger is bounded: the oldest entries are pruned
 MAX_ARCHIVE = 20000  # what pruned entries leave behind (root, comment id) is bounded too
 # The ledger holds the rendered text of every message it records, so it is larger than it
-# was when a quote was cut at 280 characters:  the bound is raised with the text.
-MAX_LEDGER_BYTES = 48 * 1024 * 1024
+# was when a quote was cut at 280 characters:  the bound is raised with the text, and the
+# file is rewritten whole on a dirty cycle, so the bound stays near the old one (Kody, PR
+# 2340).  A bound of 8 MB would shed the entry of most topics in the worst case, and every
+# shed entry costs a history read when its topic speaks again.
+MAX_LEDGER_BYTES = 16 * 1024 * 1024
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT = 30.0  # one HTTP request
@@ -365,9 +368,17 @@ def defang(text: str) -> str:
     Only the link openers are escaped.  The text around them is the post's own Markdown,
     and a reader should see it as the sender wrote it;  a link is shown as the text and
     the URL, never as a link that can be clicked.  A bracket that opens no link (one in a
-    code span, say) is left alone."""
-    text = _escape_link_openers(text)
-    return text.replace("@", "@\u200b")
+    code span, say) is left alone.
+
+    A fenced block and a code span are shown as the sender wrote them, so neither the
+    escaping nor the zero-width space reaches into them (Kody, PR 2340)."""
+    out: list[str] = []
+    for is_code, chunk in zulip_markdown.split_code(text):
+        if is_code:
+            out.append(chunk)
+            continue
+        out.append(_escape_link_openers(chunk).replace("@", "@\u200b"))
+    return "".join(out)
 
 
 def post_text(content: str) -> str:
@@ -1901,17 +1912,47 @@ class RelayWorker:
                 "quote": post_text(content),
             }
         )
+        self._trim_entry(entry)
+        entry["dirty"] = True
+        entry["last_touch"] = self.clock()
+        return True
+
+    def _repair(
+        self,
+        entry: dict[str, Any],
+        key: str,
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+    ) -> None:
+        """Re-render the quotes of a comment an older build wrote, from the topic's history.
+
+        A topic that cannot be read waits REFRESH_RETRY before it is tried again, so a
+        silent topic is not read once a message (Kody, PR 2340)."""
+        if self.monotonic() < self._refresh_retry.get(key, 0.0):
+            return  # the topic is waiting to be tried again
+        read, _error = self._read_topic(stream_id, topic, cache)
+        if read is None:
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
+        if not self._refresh(entry, read):
+            # The read held none of this entry's messages:  the entry waits as well.
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
+        self._refresh_retry.pop(key, None)
+
+    def _trim_entry(self, entry: dict[str, Any]) -> None:
+        """Bound what an entry holds:  the messages it lists, and the text of those
+        messages.
+
+        The oldest messages leave the list when the entry holds more text than a comment
+        can show (the count of the messages that are not listed says so).  A repair holds
+        the same bound (Kody, PR 2340)."""
         entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
-        # The text an entry holds is bounded as well:  the oldest messages leave the list
-        # when the entry holds more text than a comment can show (the count of the
-        # messages that are not listed says so).
         held = sum(len(item["quote"]) for item in entry["links"])
         while len(entry["links"]) > 1 and held > MAX_ENTRY_TEXT:
             held -= len(entry["links"][0]["quote"])
             entry["links"].pop(0)
-        entry["dirty"] = True
-        entry["last_touch"] = self.clock()
-        return True
 
     def _read_topic(
         self, stream_id: int, topic: str, cache: dict[tuple[int, str], Any]
@@ -2066,6 +2107,9 @@ class RelayWorker:
             # the entry keeps the format it had and waits for a later try.
             return False
         entry["format"] = RENDER_VERSION
+        # The text an entry holds is bounded the way a new message bounds it:  the whole
+        # posts do not push the entry past what a comment can show (Kody, PR 2340).
+        self._trim_entry(entry)
         if changed:
             entry["refreshed"] = time.strftime("%b %d %H:%M UTC", time.gmtime(self.clock()))
             entry["dirty"] = True
@@ -2103,14 +2147,7 @@ class RelayWorker:
             # Every read counts, not every repair:  an entry whose topic cannot be read
             # must not make the cycle read every stale entry, every cycle (Sentry, PR 2340).
             attempts += 1
-            read, _error = self._read_topic(int(entry["stream_id"]), entry["topic"], cache)
-            if read is None:
-                self._refresh_retry[key] = now + REFRESH_RETRY
-                continue
-            if not self._refresh(entry, read):
-                # The read held none of this entry's messages:  the entry waits before it
-                # is tried again, so a topic that cannot be read is not read every cycle.
-                self._refresh_retry[key] = now + REFRESH_RETRY
+            self._repair(entry, key, int(entry["stream_id"]), entry["topic"], cache)
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live
@@ -2347,10 +2384,10 @@ class RelayWorker:
                     continue  # an archived comment whose history could not be read waits
             elif self._needs_refresh(entry):
                 # A comment an older build wrote:  its quotes are read from Zulip again, so
-                # the next edit of it carries the whole posts.
-                read, _error = self._read_topic(stream_id, topic, reads)
-                if read is not None:
-                    self._refresh(entry, read)
+                # the next edit of it carries the whole posts.  A topic that could not be
+                # read waits REFRESH_RETRY, so every message of it does not read it again
+                # (Kody, PR 2340).  The message itself is recorded either way.
+                self._repair(entry, key, stream_id, topic, reads)
             if self._append(entry, mid, sender, content, now):
                 self._note_recorded(key, mid)
                 self._flush(key, now)  # creates at once; edits wait for the interval

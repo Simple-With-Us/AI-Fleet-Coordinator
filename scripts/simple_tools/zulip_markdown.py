@@ -97,6 +97,62 @@ def close_code_fence(text: str) -> str:
     return "%s\n%s" % (text.rstrip("\n"), fence)
 
 
+def split_code(text: str) -> list[tuple[bool, str]]:
+    """The text in pieces:  (True, code) for a fenced block or a code span, and
+    (False, prose) for everything else.
+
+    A reader sees code as the sender wrote it, so whatever a caller does to the prose of
+    a post (escaping a link opener, breaking a live mention) must not touch the code
+    (Kody, PR 2340)."""
+    pieces: list[tuple[bool, str]] = []
+    fence = ""
+    # The line breaks are kept:  the pieces are the text itself, cut in two.
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if fence:
+            pieces.append((True, line))
+            if stripped.startswith(fence):
+                fence = ""
+            continue
+        if stripped.startswith("```"):
+            fence = "`" * (len(stripped) - len(stripped.lstrip("`")))
+            pieces.append((True, line))
+            continue
+        pieces.extend(_split_spans(line))
+    return pieces
+
+
+def _split_spans(line: str) -> list[tuple[bool, str]]:
+    """One line in pieces:  the code spans it holds and the prose around them."""
+    pieces: list[tuple[bool, str]] = []
+    prose: list[str] = []
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if char != "`":
+            prose.append(char)
+            index += 1
+            continue
+        run = 1
+        while index + run < length and line[index + run] == "`":
+            run += 1
+        marker = "`" * run
+        close = _closing_run(line, marker, index + run)
+        if close == -1:
+            prose.append(line[index : index + run])  # an unclosed run:  prose, not code
+            index += run
+            continue
+        if prose:
+            pieces.append((False, "".join(prose)))
+            prose = []
+        pieces.append((True, line[index : close + run]))
+        index = close + run
+    if prose:
+        pieces.append((False, "".join(prose)))
+    return pieces
+
+
 def _escape_text(text: str) -> str:
     """Text as Markdown text:  only the characters that would change the shape of the
     document are escaped, and the reader still sees them as they are."""
@@ -389,7 +445,9 @@ def _source_to_markdown(source: str) -> str:
         stripped = line.strip()
         if fence is None:
             if stripped.startswith("```"):
-                fence = stripped[:3]
+                # The whole run opens the fence:  a fence of four backticks is closed by
+                # four backticks and not by three (Kody, PR 2340).
+                fence = "`" * (len(stripped) - len(stripped.lstrip("`")))
                 out.append(line)
                 continue
             out.append(_source_line(line))

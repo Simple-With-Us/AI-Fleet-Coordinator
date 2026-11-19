@@ -2588,6 +2588,42 @@ class ReadablePostTests(WorkerCase):
         text = lr.post_text(raw)
         self.assertIn("53 characters of this message are not shown.", text)
 
+    def test_the_code_of_a_post_is_not_defanged(self) -> None:
+        # Code is shown as the sender wrote it:  the at sign inside it is left alone
+        # (Kody, PR 2340).
+        text = lr.post_text("run `mail @MiniMax` and mail @**MiniMax**")
+        self.assertIn("`mail @MiniMax`", text)
+        self.assertIn("@\u200bMiniMax", text)  # the prose mention is still broken
+
+    def test_a_fenced_block_is_not_defanged(self) -> None:
+        text = lr.post_text("```\nmail @**MiniMax**\n```")
+        self.assertIn("mail @**MiniMax**", text)
+
+    def test_a_repair_holds_the_same_text_bound_as_a_new_message(self) -> None:
+        # A repaired entry holds as much text as a new message lets it hold:  the whole
+        # posts do not push the entry past what a comment can show (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}
+            for mid in range(1, 11)
+        ]
+        entry["seen"] = list(range(1, 11))
+        self.topic.messages = [past(mid, "p" * 9000) for mid in range(1, 11)]
+        self.w.tick()
+        held = sum(len(item["quote"]) for item in entry["links"])
+        self.assertLessEqual(held, lr.MAX_ENTRY_TEXT)
+        self.assertGreater(held, 0)
+
+    def test_a_topic_that_cannot_be_read_is_not_read_again_for_every_message(self) -> None:
+        # A topic that cannot be read waits before it is tried again, so every message of
+        # it does not read it again (Kody, PR 2340).
+        self.old_entry()
+        self.topic.whole_error = RuntimeError("the topic cannot be read")
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(self.topic.whole_calls, 1)
+        self.w.handle_event(message(3, "AFC-1 relay", "another message"))
+        self.assertEqual(self.topic.whole_calls, 1)  # it waits
+
     def test_without_a_reader_nothing_is_re_rendered(self) -> None:
         # The standalone relay has no history reader:  its comments keep what they have.
         worker = self.worker()

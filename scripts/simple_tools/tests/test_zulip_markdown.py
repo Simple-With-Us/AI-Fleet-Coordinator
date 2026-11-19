@@ -207,5 +207,37 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(out, "[a \\[b\\] c](https://example.com/x)")
 
 
+class CodeTests(unittest.TestCase):
+    """The code of a post is shown as the sender wrote it."""
+
+    def test_a_fence_of_four_backticks_is_not_closed_by_three(self) -> None:
+        # The whole run opens the fence:  a fence of four backticks is closed by four
+        # backticks and not by three (Kody, PR 2340).
+        out = zm.to_markdown("````\n```\nstill code\n````\nafter")
+        self.assertTrue(out.endswith("after"), out)  # the fence closed on the four
+        self.assertNotIn("\n```\nafter", out)  # and not on the three
+
+    def test_the_code_of_a_post_is_piece_of_its_own(self) -> None:
+        pieces = zm.split_code("prose `code` prose\n```\nblock\n```\nend")
+        kinds = [is_code for is_code, _chunk in pieces]
+        self.assertTrue(any(kinds))
+        self.assertTrue(not all(kinds))
+        code = "".join(chunk for is_code, chunk in pieces if is_code)
+        self.assertIn("`code`", code)
+        self.assertIn("block", code)
+        self.assertNotIn("prose", code)
+
+    def test_the_pieces_are_the_text_itself(self) -> None:
+        # The line breaks are kept:  the pieces are the text, cut in two.
+        text = "before\n```\ninside\n```\nafter"
+        pieces = zm.split_code(text)
+        self.assertEqual("".join(chunk for _is_code, chunk in pieces), text)
+        code = "".join(chunk for is_code, chunk in pieces if is_code)
+        prose = "".join(chunk for is_code, chunk in pieces if not is_code)
+        self.assertIn("inside", code)
+        self.assertNotIn("inside", prose)
+        self.assertIn("before", prose)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
