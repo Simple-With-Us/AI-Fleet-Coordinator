@@ -2621,6 +2621,44 @@ class ReadablePostTests(WorkerCase):
         self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
         self.assertNotIn("no longer in Zulip", self.lin.updated[-1][1])
 
+    def test_a_repair_read_that_starts_with_an_empty_page_reads_on(self) -> None:
+        # The first page came back empty, and the walk goes on from the start of the
+        # topic with a cursor that is safe, so the entry's own messages are still read
+        # back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
+
+    def test_a_missing_legacy_row_reaches_the_comment_when_nothing_else_changed(self) -> None:
+        # The sibling's quote did not change, but a message that is gone from Zulip is
+        # marked as gone, and the comment says so (Jet, PR 2340).
+        entry = self.old_entry(quote="the whole post")
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the whole post"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the missing cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post"), past(3, "a later message")]
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
+
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean
         # (Kody, PR 2340).
