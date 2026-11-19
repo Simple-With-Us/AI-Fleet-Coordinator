@@ -2266,6 +2266,8 @@ GOLDEN_ACTIONS = {
     "unitStatus": "unit-status",
     "serverListenerSettings": "eavesdropper-settings",
     "testWake": "test-wake",
+    # `server pause|pause-wakes|resume`:  the line's own verb word.
+    "eavesdropperPause": None,
 }
 
 
@@ -2756,7 +2758,7 @@ class CredentialTests(Base):
 
     fake_credential_read = False
     ROWS = RedeployTests.ROWS
-    TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+    TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2822,7 +2824,7 @@ class CredentialTests(Base):
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
             "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
-            self.TOKEN: self.VALUE,
+            self.TOKEN_NAME: self.VALUE,
             **extra,
         }
 
@@ -2835,7 +2837,7 @@ class CredentialTests(Base):
         return path
 
     def pair_text(self):
-        return "# fleet-ops-control\n" + f"{self.TOKEN}={self.VALUE}\n"
+        return "# fleet-ops-control\n" + f"{self.TOKEN_NAME}={self.VALUE}\n"
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
@@ -2847,7 +2849,7 @@ class CredentialTests(Base):
     def test_file_binding_wins_and_only_the_exact_named_strict_read_runs(self):
         self.credentials(self.pair_text())
         inherited = self.env(**self.SHARED_AUTH)
-        inherited[self.TOKEN] = "st.different-process-reader-token"
+        inherited[self.TOKEN_NAME] = "st.different-process-reader-token"
         inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
         code, ans = self.redeploy(inherited)
         self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
@@ -2886,7 +2888,7 @@ class CredentialTests(Base):
         )
         ((argv, child_env),) = self.runner.calls
         self.assertNotIn(self.VALUE, " ".join(argv))
-        self.assertNotIn(self.TOKEN, child_env)
+        self.assertNotIn(self.TOKEN_NAME, child_env)
         self.assertFalse(self.SHARED_AUTH.keys() & child_env.keys())
 
     def test_process_binding_and_existing_project_metadata_file_are_supported(self):
@@ -2903,7 +2905,7 @@ class CredentialTests(Base):
 
     def test_missing_own_binding_never_uses_ambient_writer_recall_or_machine_auth(self):
         env = self.env(**self.SHARED_AUTH)
-        env.pop(self.TOKEN)
+        env.pop(self.TOKEN_NAME)
         code, ans = self.redeploy(env)
         self.assertEqual(
             (code, ans["result"], ans["detail"]),
@@ -2990,7 +2992,7 @@ class CredentialTests(Base):
         for change in (
             {"INFISICAL_ENVIRONMENT": "dev"},
             {"INFISICAL_ENV": "staging"},
-            {self.TOKEN: "malformed"},
+            {self.TOKEN_NAME: "malformed"},
         ):
             with self.subTest(fields=tuple(change)):
                 self.api.requests.clear()
@@ -6594,6 +6596,361 @@ class TestWakeTests(Base):
         answer = json.loads(out.getvalue())
         self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
         self.assertEqual(answer["testWake"]["wakeId"], self.WAKE_ID)
+
+
+class PauseReader:
+    """Stands in for `run_bounded_read`:  answers the status read (`cat` of status.json) with the
+    next of `statuses` (the last one repeats), and the pause or resume command with `status`."""
+
+    def __init__(self, statuses, status=0, stderr=b"", over=False, raise_on_run=False):
+        self.statuses = list(statuses)
+        self.status = status
+        self.stderr = stderr
+        self.over = over
+        self.raise_on_run = raise_on_run
+        self.reads = 0
+        self.runs = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        if argv[-1] == "/data/listener/status.json":
+            index = min(self.reads, len(self.statuses) - 1)
+            self.reads += 1
+            document = self.statuses[index]
+            if document is None:
+                return (
+                    1,
+                    b"",
+                    b"Error response from daemon: container eavesdropper is not running",
+                    False,
+                )
+            return 0, json.dumps(document).encode(), b"", False
+        assert argv[1:8] == [
+            "exec",
+            "--user",
+            "simpletools",
+            "eavesdropper",
+            "/app/scripts/simple_tools/server/entrypoint.sh",
+            "daemon",
+            argv[7],
+        ], argv
+        self.runs.append((list(argv), timeout, max_bytes))
+        if self.raise_on_run:
+            raise RuntimeError("the reader broke after the command may have run")
+        return self.status, b"paused CLAUDE (wakes and live interrupts)\n", self.stderr, self.over
+
+
+class PauseTests(Base):
+    """`server pause|pause-wakes|resume server|SEAT` (AFC-832):  the Eavesdropper's own kill switch,
+    a deliberate previewed gesture, read back from the status and never from the command's text."""
+
+    EMAIL = "someone@" + "example.invalid"
+
+    def status(self, pause=None):
+        # The listener publishes its pause file as read:  `{}` when nothing is paused.
+        return {
+            "updated": NOW,
+            "seats": {"CLAUDE": {"connected": True}, "CODEX": {"connected": True}},
+            "pause": {} if pause is None else pause,
+        }
+
+    def entry(self, wakes_only=False, by="cli"):
+        return {"wakes_only": wakes_only, "by": by, "ts": NOW - 30, "message_id": None}
+
+    def go(self, verb, target, mode="--yes", reader=None):
+        context = self.ctx()
+        clock = {"now": 1000.0}
+        context.monotonic = lambda: clock["now"]
+        context.sleep = lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
+        self.reader = reader
+        context.reader = reader
+        return self.run_main(["server", verb, target, mode, "--json"], context)
+
+    def test_a_plan_shows_the_one_command_and_the_pause_in_force_and_runs_nothing(self):
+        reader = PauseReader([self.status({"CODEX": self.entry(wakes_only=True)})])
+        code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        argv = answer["commands"][0]
+        self.assertEqual(
+            argv[1:],
+            [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/app/scripts/simple_tools/server/entrypoint.sh",
+                "daemon",
+                "pause",
+            ],
+        )
+        self.assertEqual(answer["pause"]["all"], None)
+        self.assertEqual(answer["pause"]["seats"]["CODEX"]["wakesOnly"], True)
+        self.assertEqual(reader.runs, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_seat_and_wakes_only_forms_name_only_the_checked_seat(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-4:], ["pause", "--seat", "CLAUDE", "--wakes-only"])
+        reader = PauseReader([self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("resume", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-3:], ["resume", "--seat", "CLAUDE"])
+
+    def test_an_unknown_seat_or_an_unreadable_status_is_refused_before_anything_runs(self):
+        for target, statuses, code_word in (
+            ("NOSUCH", [self.status()], "seat_unknown"),
+            ("claude", [self.status()], "seat_unknown"),
+            ("CLAUDE", [None], "status_unavailable"),
+            ("server", [None], "status_unavailable"),
+        ):
+            with self.subTest(target=target, code_word=code_word):
+                reader = PauseReader(statuses)
+                code, answer = self.go("pause", target, reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (2, "refused", code_word)
+                )
+                self.assertEqual(reader.runs, [])
+
+    def test_a_resume_with_nothing_to_lift_is_refused(self):
+        for target, pause in (
+            ("server", None),
+            ("CLAUDE", None),
+            # A fleet-wide pause is not CLAUDE's own:  `resume CLAUDE` has nothing to lift.
+            ("CLAUDE", {"*": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(target=target, pause=pause, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go("resume", target, mode=mode, reader=reader)
+                    self.assertEqual((code, answer["errorCode"]), (2, "not_paused"))
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_pause_runs_once_and_is_read_back_from_the_status(self):
+        reader = PauseReader(
+            [
+                self.status(),  # the plan-time read
+                self.status(),  # the read under the lock
+                self.status(),  # the first read-back:  not published yet
+                self.status({"CLAUDE": self.entry(by=self.EMAIL)}),
+            ]
+        )
+        code, answer = self.go("pause", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(len(reader.runs), 1)
+        seat = answer["pause"]["seats"]["CLAUDE"]
+        self.assertEqual((seat["wakesOnly"], seat["setBy"]), (False, None))
+        self.assertNotIn(self.EMAIL, json.dumps(answer))
+        self.assertNotIn("wakes and live interrupts)", json.dumps(answer))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            (rows[0]["verb"], rows[0]["target"], rows[0]["result"]),
+            ("server pause", "CLAUDE", "done"),
+        )
+
+    def test_a_change_the_status_never_shows_is_not_confirmed(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["errorCode"]), (1, False, "not_confirmed"))
+        # It may still land, so it is not a failure:  Muster reads it as "may or may not have run".
+        self.assertEqual(answer["result"], "unknown")
+        self.assertEqual(len(reader.runs), 1)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # A pause of the other kind is not the asked-for change either.
+        reader = PauseReader([self.status(), self.status(), self.status({"*": self.entry()})])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual(answer["errorCode"], "not_confirmed")
+
+    def test_resume_server_lifts_every_pause(self):
+        before = self.status({"*": self.entry(), "CLAUDE": self.entry(wakes_only=True)})
+        reader = PauseReader([before, before, self.status({})])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_a_failed_command_says_why_in_code_words_only(self):
+        for status, stderr, over, code_word, result in (
+            (2, b"usage: simple-chat daemon pause", False, "usage", "failed"),
+            (127, b"", False, "docker_unavailable", "failed"),
+            # A timeout stops only the docker client, so its outcome is not known.
+            (124, b"", False, "timeout", "unknown"),
+            # An answer past the size bound is cut off, so the command may have run:  not known.
+            (0, b"", True, "too_large", "unknown"),
+            (
+                1,
+                b"Error response from daemon: container eavesdropper is not running",
+                False,
+                "container_not_running",
+                "failed",
+            ),
+        ):
+            with self.subTest(code_word=code_word):
+                reader = PauseReader([self.status()], status=status, stderr=stderr, over=over)
+                code, answer = self.go("pause", "server", reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (1, result, code_word)
+                )
+                self.assertNotIn("usage: simple-chat", json.dumps(answer))
+
+    def test_a_timeout_is_read_back_before_it_is_called_failed(self):
+        # A slow Infisical in the entrypoint can outlast the bound;  the docker client stops, the
+        # command may still finish in the container, and a change the status shows is done.
+        before = self.status()
+        reader = PauseReader(
+            [before, before, before, self.status({"*": self.entry(wakes_only=True)})], status=124
+        )
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["pause"]["all"]["wakesOnly"], True)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # The bound is the test wake's, which runs through the same entrypoint.
+        self.assertEqual(reader.runs[0][1], foc.TEST_WAKE_TIMEOUT)
+        self.assertEqual(foc.PAUSE_TIMEOUT, foc.TEST_WAKE_TIMEOUT)
+        # A timeout the status never confirms keeps its own code and keeps the pause it read.
+        reader = PauseReader([before], status=124)
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "timeout"))
+        self.assertIn("may still take effect", answer["detail"])
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        reader = PauseReader([self.status()], raise_on_run=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed")
+        )
+        self.assertNotIn("reader broke", json.dumps(answer))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_a_drain_window_refuses_every_pause_verb(self):
+        # `daemon pause` would replace the `*` marker and `daemon resume` would clear it, and the
+        # drain's restore puts back its saved bytes over any other change.
+        drain = dict(self.entry(wakes_only=True, by="drain"), defer=True)
+        for verb, target, pause in (
+            ("pause", "server", {"*": drain}),
+            ("pause-wakes", "CLAUDE", {"*": drain}),
+            ("resume", "server", {"*": drain, "CLAUDE": self.entry()}),
+            ("resume", "CLAUDE", {"*": drain, "CLAUDE": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(verb=verb, target=target, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go(verb, target, mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer["errorCode"]),
+                        (2, "refused", "drain_active"),
+                    )
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_wakes_only_pause_never_loosens_a_full_one(self):
+        for target, pause in (
+            ("CLAUDE", {"CLAUDE": self.entry()}),
+            ("server", {"*": self.entry()}),
+        ):
+            with self.subTest(target=target):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause-wakes", target, mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+                self.assertEqual(reader.runs, [])
+        # Tightening, repeating a wakes-only pause, and a seat's own pause under a fleet-wide one
+        # all plan as usual.
+        for verb, target, pause in (
+            ("pause", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"*": self.entry()}),
+        ):
+            with self.subTest(verb=verb, pause=pause):
+                code, answer = self.go(
+                    verb, target, mode="--plan", reader=PauseReader([self.status(pause)])
+                )
+                self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_the_read_back_trusts_only_a_pause_it_can_read(self):
+        # A resume whose read-back shows the pause in another shape is never `done`.
+        before = self.status({"*": self.entry()})
+        after = self.status()
+        after["pause"] = "cleared"
+        reader = PauseReader([before, before, after])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_unreadable")
+        )
+        self.assertEqual(len(reader.runs), 1)
+        # An answer past the size bound is read back too, and a change it shows is done.
+        reader = PauseReader(
+            [self.status(), self.status(), self.status({"*": self.entry()})], over=True
+        )
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+
+    def test_the_read_back_reads_a_drain_marker_as_a_pause(self):
+        # In the read-back the command has already run, and a drain-active entry is a
+        # well-formed pause the status shows:  it reads as a pause, so a change it shows
+        # is done and the operator never sees a refusal code word on a run that happened.
+        # Drain stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
+        before = self.status()
+        drain = dict(self.entry(by="drain"), defer=True)
+        reader = PauseReader([before, before, self.status({"*": drain})], over=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"]["all"]["setBy"], "drain")
+
+    def test_the_pause_map_keeps_every_seat(self):
+        # `pause_done` decides from the reduced map, so no seat may be dropped from it.
+        raw = {"S%02d" % n: self.entry() for n in range(70)}
+        reduced = foc.reduce_pause(self.status(raw))
+        self.assertEqual(len(reduced["seats"]), 70)
+        self.assertFalse(foc.pause_done("resume", "S69", reduced))
+
+    def test_a_refused_run_writes_its_one_audit_row(self):
+        drain = dict(self.entry(by="drain"), defer=True)
+        code, answer = self.go("resume", "server", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual((code, answer["errorCode"]), (2, "drain_active"))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["verb"], rows[0]["result"]), ("server resume", "refused"))
+        # A plan writes none.
+        self.go("resume", "server", mode="--plan", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_the_checks_run_again_under_the_lock(self):
+        # The plan saw nothing paused;  by the run a full pause is in force, so nothing runs.
+        reader = PauseReader([self.status(), self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("pause-wakes", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+        self.assertEqual(reader.runs, [])
+
+    def test_a_pause_it_cannot_read_is_never_read_as_no_pause(self):
+        for pause in (
+            "paused",
+            {"*": "yes"},
+            {"*": {"wakes_only": "yes", "by": "cli", "ts": NOW}},
+            {"claude": self.entry()},
+        ):
+            with self.subTest(pause=pause):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "pause_unreadable"))
+        status = self.status()
+        status["seats"] = ["CLAUDE"]
+        code, answer = self.go("pause", "CLAUDE", mode="--plan", reader=PauseReader([status]))
+        self.assertEqual((code, answer["errorCode"]), (2, "status_unavailable"))
+
+    def test_the_ssh_gate_accepts_the_three_verbs_with_one_target_only(self):
+        for line in (
+            "server pause server --plan --json",
+            "server pause-wakes CLAUDE --yes --json",
+            "server resume server --yes",
+        ):
+            self.assertEqual(foc.parse_ssh_command(line), line.split())
+        for line in (
+            "server pause --seat CLAUDE --yes",
+            "server pause server --wakes-only --yes",
+            "server pause CLAUDE CODEX --yes",
+        ):
+            with self.assertRaises(foc.Refused, msg=line):
+                foc.parse_ssh_command(line)
 
 
 class SourceTests(unittest.TestCase):

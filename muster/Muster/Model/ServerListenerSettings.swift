@@ -330,6 +330,7 @@ indirect enum ServerSettingSpec: Equatable {
     case choice([String])
     case text(pattern: String, maxLength: Int)
     case pairs
+    case seats
     case seatEnv
     case table([String: ServerSettingSpec])
 }
@@ -428,6 +429,7 @@ struct ServerSettingsAllowlist: Equatable {
                   (0.0...256.0).contains(length) else { return nil }
             return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
+        case "seats": return .seats
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
             guard !nested, let keys = object["keys"] as? [String: Any], !keys.isEmpty else { return nil }
@@ -898,6 +900,7 @@ enum ServerSettingsCopy {
     static let routerContract = "How a routine is signed and sent is fixed by the receiver it calls, so Muster shows it and offers no control for it."
     static let daemonDefault = "The file sets no value here, so this is the daemon's default."
     static let pairs = "A list of channel and topic pairs.\(gap)Muster shows it and offers no control for it."
+    static let seats = "A list of seat names.\(gap)Muster shows it and offers no control for it."
     static let notEnforced = "The eavesdropper counts wakes and not dollars, so this cap is never enforced and Muster will not write it."
     static let noRoutine = "The seat has no routine table, so it Captures Only.\(gap)Muster does not give a seat a routine."
     static let notOnThisCopy = "The server's allowlist lists this, and this checkout's copy does not, so Muster does not offer it.\(gap)Update the checkout to offer it."
@@ -1022,7 +1025,7 @@ enum ServerSettingsBuilder {
         case .number(let low, let high): return .number(min: low, max: high)
         case .choice(let values): return .choice(values)
         case .text(let pattern, let limit): return .text(pattern: pattern, maxLength: limit)
-        case .pairs, .seatEnv, .table: return nil
+        case .pairs, .seatEnv, .seats, .table: return nil
         }
     }
 
@@ -1030,7 +1033,8 @@ enum ServerSettingsBuilder {
                              hasRoutine: Bool, isStructure: Bool) -> [ServerSettingRow] {
         guard case .table(let keys) = spec else {
             var control = control(spec)
-            var reason: String? = control == nil ? ServerSettingsCopy.pairs : nil
+            var reason: String?
+            if control == nil { reason = spec == .seats ? ServerSettingsCopy.seats : ServerSettingsCopy.pairs }
             if reason == nil, !isStructure {
                 reason = ServerSettingsCopy.knobHome
                 control = nil
