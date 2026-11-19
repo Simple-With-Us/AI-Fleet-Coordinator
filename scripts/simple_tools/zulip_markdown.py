@@ -294,9 +294,7 @@ class _Converter(HTMLParser):
                 if self.embed is None:
                     # The text was kept raw while the link was read and is escaped once,
                     # here, so the reader sees it as the sender wrote it (Kody, PR 2340).
-                    self._sink().append(
-                        "[%s](%s)" % (_escape_text(text), _escape_url(self.href))
-                    )
+                    self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
             return
         if tag == "span":
             if self.mention is not None:
@@ -312,9 +310,7 @@ class _Converter(HTMLParser):
                 self.embed = None
                 self.embed_url = ""
                 self._sink().append(
-                    "[embedded link: %s]" % _plain_attribute(url)
-                    if url
-                    else "[embedded content]"
+                    "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]"
                 )
             return
         if tag == "blockquote":
