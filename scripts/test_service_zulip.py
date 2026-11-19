@@ -1,9 +1,9 @@
 import ast
 import contextlib
-import io
-import sys
 import importlib.util
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
