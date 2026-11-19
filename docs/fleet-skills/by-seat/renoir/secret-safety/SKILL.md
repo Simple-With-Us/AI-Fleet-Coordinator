@@ -60,7 +60,7 @@ The pattern is identical everywhere: extract the one value you actually need, pr
 **Infisical through the consumer's own scoped service token (the old `~/.secrets` flat files are retired, AFC-359).**  There is no shared reader any more:  every consumer holds its own scoped, read-only service token, scoped to one project, environment `prod` and one folder, and never the shared Automation identity: see `service-tokens`.  Fetch the one value you need into a variable, or hand a command only the names it needs, and never let the value pass through your own visible output:
 ```bash
 # one value, into a variable, never printed;  the status says why it failed
-KEY="$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from fleet_infisical import fetch_scoped; v,s=fetch_scoped("SOME_KEY","/","consumer-ro"); sys.exit(1) if s!="ok" else sys.stdout.write(v)')" || exit $?
+KEY="$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from fleet_infisical import fetch_scoped; v,s=fetch_scoped("SOME_KEY","/","consumer-ro"); sys.exit("consumer-ro scoped read unavailable or refused: "+s) if s!="ok" else sys.stdout.write(v)')" || exit $?
 
 # the value reaches that command's environment only, never its command line
 SOME_KEY="$KEY" some-command
@@ -75,7 +75,7 @@ the consumer's own scoped service token, read from its own store through `script
 closed and says which refusal it was.
 
 ```bash
-python3 -c 'import os,sys; sys.path.insert(0,"scripts"); from fleet_infisical import token_from_store, list_project_names; t,s=token_from_store("consumer-ro"); sys.exit(1) if s!="ok" else print("\n".join(sorted(list_project_names("fleet-ops","/",os.environ,token=t))))'
+python3 -c 'import os,sys; sys.path.insert(0,"scripts"); from fleet_infisical import token_from_store, list_project_names; t,s=token_from_store("consumer-ro"); sys.exit("consumer-ro service-token store unavailable or refused: "+s) if s!="ok" else print("\n".join(sorted(list_project_names("fleet-ops","/",os.environ,token=t))))'
 ```
 
 **Forbidden (2026-08-14 Grok incident):** `grep '^[A-Z0-9_]+=' file`, `grep '^ADMIN' file`,

@@ -299,7 +299,7 @@ surfaces now route every call through `public_fallback.call_with_fallback`, whic
    `POST /recall/search`, `POST /recall/contribute` -- see *From any other device* below).
 3. The public retry needs `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
    `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token).  A value already in the
-   environment wins; otherwise `RECALL_API_TOKEN` comes from a scoped Infisical read of RECALL_API_TOKEN (the flat
+   environment wins only when the scoped read below populated it; otherwise `RECALL_API_TOKEN` comes from a scoped Infisical read of RECALL_API_TOKEN (the flat
    file `global-api-keys` is no longer read, OPS-818), and the Access pair from
    a scoped Infisical read of AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID / ..._SECRET -- so the fallback works from the
    stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper and no MCP config
@@ -424,8 +424,9 @@ the source of truth per the standing rule.
   `QDRANT__SERVICE__READ_ONLY_API_KEY` and is what search / stats / eval use.  Only ingest and
   `contribute` use the write key.  Until the service has restarted with the new key, the client
   falls back to the write key on a 401/403 so reads never break.
-- Every client loads credentials from the environment first, then from Infisical via the machine
-  identity in `INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET`, or an explicit `FLEET_RAG_HANDOFF_FILE` of your own, or else from the consumer's own scoped service token on the Mac (the flat `global-api-keys` file is no longer read, OPS-818).  Values are never printed.
+- Every client loads credentials from the consumer's own scoped Infisical service token, through
+  `scripts/fleet_infisical.py`;  the scoped result is authoritative, so an environment variable may carry the value only when that read populated it.
+  The retired machine identity in `INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET` is not a credential source, the flat `global-api-keys` file is no longer read (OPS-818), and an explicit `FLEET_RAG_HANDOFF_FILE` of your own is the caller's own configuration rather than an authentication source.  Values are never printed.
 
 ST keeps its own `QDRANT_URL` / `QDRANT_API_KEY` in the ST project for the app runtime.  Rotating
 the Qdrant write key means updating both places.

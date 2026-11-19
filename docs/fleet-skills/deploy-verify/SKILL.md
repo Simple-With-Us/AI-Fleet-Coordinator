@@ -18,7 +18,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack), read through `scripts/fleet_infisical.py`;  there is no shared reader any more, and an operator reading one value by hand uses the read-only Infisical CLI session.  See `secret-handoff`.
+Load via env, not argv, and the environment carries only what the scoped read returned.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack), read through `scripts/fleet_infisical.py`;  there is no shared reader any more, and an operator reading one value by hand uses the read-only Infisical CLI session.  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
