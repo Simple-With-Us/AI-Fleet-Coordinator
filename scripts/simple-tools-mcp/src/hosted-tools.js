@@ -2364,6 +2364,12 @@ export class HostedTools {
     if (stealing && !steal_reason) {
       throw new ToolError("invalid_argument", "steal requires reason:  one sentence naming why the claim is being taken.");
     }
+    // The steal reason reaches Linear in the CLAIMED comment, so it runs the same
+    // scan as the optional note:  a credential-shaped value is refused having sent
+    // nothing, and the refusal names the field, never the value.
+    if (steal_reason) {
+      this.scanLinearText(steal_reason, args.session, { field: "reason" });
+    }
     if (held && held !== claimName && !stealing) {
       throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
@@ -2399,15 +2405,28 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
-    const stolen_from = stealing ? (held?.slice(CLAIM_PREFIX.length) || delegate?.name || "another holder") : "";
-    const body = this.linearBody(
-      `CLAIMED${stolen_from ? ` — taken from ${stolen_from}: ${steal_reason}` : ""}${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`,
+    // The takeover attribution names only a holder this steal actually displaced:
+    //  another seat's claim label, or the app delegate of another seat — never the
+    //  caller's own claim (a re-assert takes nothing) and never a human delegate,
+    //  who holds no fleet claim.
+    const foreignLabel = held && held !== claimName ? held.slice(CLAIM_PREFIX.length) : "";
+    const foreignDelegate = delegate?.id && delegate.app === true && delegate.id !== viewerId ? delegate.name || "another seat" : "";
+    const stolen_from = stealing ? foreignLabel || foreignDelegate : "";
+    // The idempotency key and the fixed comment id come from the stable part of the
+    // body, so a retry after a successful steal derives the same identities even
+    // though the displaced holder is no longer visible on the issue;  the theft
+    // attribution travels in the comment text alone.
+    const stable = this.linearBody(
+      `CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`,
       args.session,
     );
+    const body = stolen_from
+      ? this.linearBody(`CLAIMED — taken from ${stolen_from}: ${steal_reason}${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session)
+      : stable;
     audit.body_len = [...body].length;
-    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
+    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, stable]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
-    const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
+    const commentId = await linearCommentId(issue.id, this.seat, "claim", stable, args.session, centralDay(this.now()));
     const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });

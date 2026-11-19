@@ -1385,6 +1385,19 @@ class LinearToolTests(FakePrograms):
         self.assertIn("--comment=--help", call["argv"])
         self.assertNotIn("--help", call["argv"])
 
+    def test_a_claim_steal_forwards_the_flag_and_reason_to_the_board(self):
+        session = self.session(self.env())
+        session.call("linear_claim", {"id": "AFC-1", "steal": True, "reason": "holder parked it"})
+        (call,) = self.calls(self.board_out)
+        self.assertIn("--steal", call["argv"])
+        self.assertIn("--reason=holder parked it", call["argv"])
+        # Without steal the flags never appear;  a steal without a reason is the
+        # board's own refusal, so the mapping still sends exactly what it was given.
+        session.call("linear_claim", {"id": "AFC-2"})
+        last = self.calls(self.board_out)[-1]["argv"]
+        self.assertNotIn("--steal", last)
+        self.assertFalse([a for a in last if a.startswith("--reason=")])
+
     def test_a_write_that_times_out_is_an_unknown_outcome_not_a_retryable_failure(self):
         specs = LT.load_specs(self.env())
 
