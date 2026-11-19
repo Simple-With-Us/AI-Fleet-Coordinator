@@ -128,6 +128,7 @@ targets:
       - path: Muster/Model/VmStatusReport.swift
       - path: Muster/Model/AppProcessesReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
+      - path: Muster/Model/ApiHealthReport.swift
       - path: Muster/Model/MacServicesReport.swift
       - path: Muster/Model/HogHunterMacReport.swift
       - path: Muster/Model/OpsAuditLog.swift
@@ -161,6 +162,7 @@ targets:
       # The Operator panel's reads (the letter registry and the wake record), its store and every
       # word and cell it shows (OperatorPanelTests).
       - path: Muster/Model/OperatorPanel.swift
+      - path: Muster/Model/OperatorRouter.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift

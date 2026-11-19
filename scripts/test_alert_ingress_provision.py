@@ -1,7 +1,16 @@
 import importlib.util
 import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+import uuid
 from unittest import mock
+
+from fleet_infisical import SecretsError
+from fleet_knobs.tests._fake import ScopedReadAPI, fixture_service_token
 
 SPEC = importlib.util.spec_from_file_location(
     "alert_ingress_provision",
@@ -33,8 +42,6 @@ class FakeRead:
                 continue
             found[name] = self.answers[name]
         return found
-
-
 class ServiceTokenTestCase(unittest.TestCase):
     def setUp(self):
         self.token_env = mock.patch.dict(
@@ -44,7 +51,7 @@ class ServiceTokenTestCase(unittest.TestCase):
                 provision.READ_TOKEN_FLEETOPS: "st." + "fixture-fleetops-read-token",
                 provision.WRITE_TOKEN_AFC: "st." + "fixture-afc-write-token-value",
             },
-            clear=False,
+            clear=True,
         )
         self.token_env.start()
         self.addCleanup(self.token_env.stop)

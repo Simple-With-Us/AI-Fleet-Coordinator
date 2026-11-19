@@ -6,6 +6,10 @@ Mac alongside all other platforms.
 
 ## The chain, end to end
 
+This is the AFC-665 bridge's chain, kept as a record.  Neither host runs the bridge (see
+Arming the wake), and AG wakes go through the one wake router (`zulip-wake-routing.md`),
+whose AG delivery is `deliver_local` in `scripts/simple_tools/antigravity_wake.py`.
+
     Zulip tag @AG or DM ag-bot
       -> the listener that holds the seat records the message in the seat inbox
       -> [seat.AG] wake = "http" POSTs simple-tools-wake/1, bearer-signed with AG_ROUTINE_KEY
@@ -31,13 +35,16 @@ after the POST is handled.
   `seen.json` and `delivery.jsonl`.  `ag-wake-bridge deliver --wake-id ... --topic ...` runs one
   delivery by hand using the same code path as the POST handler.
 - `scripts/simple_tools/server/ag-wake-bridge.service`:  the systemd unit template for the server
-  (port 8792).  On the Mac, `ag-wake-bridge serve --bind 127.0.0.1 --port 8792` runs with
+  (port 8792).  On the Mac, `ag-wake-bridge serve --bind 127.0.0.1 --port 8792` ran with
   `target_host` set to `"mac"` in `~/.local/state/ag-wake/config.json`.
-- Registry settings for a hook:  a letter hook is launched with no profile, so `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and
-  its key reach it through the host's `~/.local/bin/platform-letter` wrapper, which sources the host's registry env
-  script in shell before it runs the checkout's `scripts/platform-letter` (on the Mac a script of the host's, on the
-  server the fleet-cli managed wrapper).  The letter client never reads that file itself.  `platform_letter.with_registry_env`
-  is the wake delivery's helper (the bridges' own delivery calls), not the hooks'.
+- Registry settings for a hook:  a letter hook is launched with no profile, so the shared letter client binds
+  its own read-only Infisical service token from the host's protected store before reading only
+  `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and its key from AFC `prod:/operator-registry`.  The managed
+  `~/.local/bin/platform-letter` wrapper no longer sources a registry env script; see the
+  [current bootstrap and host acceptance contract](../rollouts/afc-785-letter-bootstrap.md).
+  Inherited URL/key values never replace this consumer's refused bootstrap.  The letter client never reads
+  a registry env script.  `platform_letter.with_registry_env` remains the wake delivery's helper
+  (the bridges' own delivery calls), not the hooks'; each bridge retains its own approved binding.
 - Target rules:  target IDs must match a strict UUID regex (`TARGET_RE`), sub-agent conversations
   (`parent_conversation_id` or `nesting_depth > 0` in `conversation_summaries.db`) and killed
   conversations (`killed != 0`) are skipped, sessions on another host (`verified_host`) are

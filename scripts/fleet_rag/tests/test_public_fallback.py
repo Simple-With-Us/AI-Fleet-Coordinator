@@ -527,9 +527,9 @@ class RequireDirectPathTests(unittest.TestCase):
 # --------------------------------------------------------------------------- credential resolution
 
 
-class PublicCredentialsFileFallbackTests(unittest.TestCase):
-    """public_credentials() reads a name from its file (the Access pair) or from Infisical
-    (RECALL_API_TOKEN) when the environment has none -- the stock `python3 fleet-recall-mcp.py`
+class PublicCredentialsInfisicalFallbackTests(unittest.TestCase):
+    """public_credentials() reads every name it is missing from Infisical (the Access pair and
+    RECALL_API_TOKEN) when the environment has none -- the stock `python3 fleet-recall-mcp.py`
     MCP registration never sources these into os.environ, so this is what makes the fallback
     work in practice."""
 
@@ -537,10 +537,13 @@ class PublicCredentialsFileFallbackTests(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {k: "" for k in public_fallback.PUBLIC_ENV_KEYS})
         self.env.start()
         # Never reach the real reader or the network from a test.
-        self.fs = mock.patch.object(core, "infisical_secret", return_value=None)
-        self.infisical_secret = self.fs.start()
+        self.fs = mock.patch.object(core, "infisical_many", return_value={})
+        self.infisical_many = self.fs.start()
+        self.single = mock.patch.object(core, "infisical_secret", return_value=None)
+        self.single.start()
 
     def tearDown(self):
+        self.single.stop()
         self.fs.stop()
         self.env.stop()
 
@@ -551,14 +554,9 @@ class PublicCredentialsFileFallbackTests(unittest.TestCase):
             resolved = public_fallback._resolve_public_env()
         self.assertEqual(resolved["RECALL_API_TOKEN"], "from-env")
         self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "id-env")
-        # Only the two names missing from the environment were looked up.
-        self.assertEqual(
-            sorted(c.args[0] for c in self.infisical_secret.call_args_list),
-            sorted(
-                [
-                    public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
-                ]
-            ),
+        # Only the name missing from the environment was looked up, in one batch.
+        self.infisical_many.assert_called_once_with(
+            [public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]]
         )
 
     def test_falls_back_to_infisical_when_env_is_blank(self):
@@ -567,7 +565,9 @@ class PublicCredentialsFileFallbackTests(unittest.TestCase):
             public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "id-from-infisical",
             public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]: "secret-from-fs",
         }
-        self.infisical_secret.side_effect = values.get
+        self.infisical_many.side_effect = lambda names: {
+            name: values[name] for name in names if name in values
+        }
         creds = public_fallback.public_credentials()
         self.assertEqual(
             creds,
@@ -594,18 +594,42 @@ class CallPublicTests(unittest.TestCase):
         # control credentials via os.environ only.
         self.no_files = mock.patch.object(core, "infisical_secret", return_value=None)
         self.no_files.start()
-        self.no_fs = mock.patch.object(core, "infisical_secret", return_value=None)
-        self.no_fs.start()
+        self.no_reader = mock.patch.object(core, "infisical_many", return_value={})
+        self.no_reader.start()
 
     def tearDown(self):
-        self.no_fs.stop()
+        self.no_reader.stop()
         self.no_files.stop()
         self.env.stop()
 
     def test_missing_credentials_names_the_missing_keys(self):
-        with mock.patch.dict(os.environ, {"CF_ACCESS_CLIENT_SECRET": ""}):
+        with (
+            mock.patch.dict(os.environ, {"CF_ACCESS_CLIENT_SECRET": ""}),
+            mock.patch.object(core, "infisical_many", return_value={}) as lookup,
+        ):
             with self.assertRaisesRegex(FleetRagError, "CF_ACCESS_CLIENT_SECRET"):
                 public_fallback.call_public("recall_stats", {})
+        lookup.assert_called_once_with(
+            [public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]]
+        )
+
+    def test_owner_mutation_includes_owner_token_in_the_same_batch(self):
+        with (
+            mock.patch.dict(os.environ, {key: "" for key in public_fallback.PUBLIC_ENV_KEYS}),
+            mock.patch.object(core, "infisical_many", return_value={}) as lookup,
+            self.assertRaisesRegex(FleetRagError, "CF_ACCESS_CLIENT_SECRET"),
+        ):
+            public_fallback.call_public(
+                "recall_correct", {"seat": "OWNER", "doc_id": "contrib/X"}
+            )
+        lookup.assert_called_once_with(
+            [
+                public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_API_TOKEN"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_OWNER_TOKEN"],
+            ]
+        )
 
     def test_strips_ok_true_on_success(self):
         with mock.patch.object(core, "http_json", return_value={"ok": True, "points": 37047}):
@@ -727,8 +751,11 @@ class CallMutationRoutingTests(unittest.TestCase):
         recall_api.Qdrant = core.Qdrant
         self.no_fs = mock.patch.object(core, "infisical_secret", return_value=None)
         self.no_fs.start()
+        self.no_reader = mock.patch.object(core, "infisical_many", return_value={})
+        self.no_reader.start()
 
     def tearDown(self):
+        self.no_reader.stop()
         self.no_fs.stop()
         recall_api.Qdrant = self._saved_qdrant
         self.env.stop()
@@ -799,6 +826,8 @@ class CallWithFallbackTests(unittest.TestCase):
         # control credentials via os.environ only.
         self.no_files = mock.patch.object(core, "infisical_secret", return_value=None)
         self.no_files.start()
+        self.no_reader = mock.patch.object(core, "infisical_many", return_value={})
+        self.no_reader.start()
         # Deterministic regardless of the platform/network this suite happens to run on (this
         # Mac's own route to the documented default Qdrant host is a real bypass signal per
         # PrivateRouteBypassesTailscaleTests) -- tests that care about the route-check branch
@@ -812,6 +841,7 @@ class CallWithFallbackTests(unittest.TestCase):
 
     def tearDown(self):
         self.no_route_bypass.stop()
+        self.no_reader.stop()
         self.no_files.stop()
         self.env.stop()
         recall_api.Qdrant = self._saved_qdrant

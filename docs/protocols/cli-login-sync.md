@@ -1,25 +1,24 @@
-# CLI login sync
+# CLI Login Sync
 
-A seat's CLI login lives in that CLI's own store on the machine where the seat works:
-the GitHub CLI keeps an OAuth token in its keychain, the Copilot CLI keeps one in the
-system credential store, and so on.  A seat that also runs somewhere else — a bot on
-the shared VPS, a helper on the local VM — needs the same login there, and copying
-credential files between hosts is the thing the fleet does not do.
+The shared helper copies one explicitly supplied CLI credential into its approved
+Infisical Fleet-OPS prod folder.  It uses a scoped service token, never a machine
+identity, CLI login session or implicit credential-store lookup.  This source
+contract does not establish that a host has the grant or installed payload.
 
-So the login goes where every host already reads from: Infisical, Fleet-OPS, prod,
-under `/cli-logins/<seat>`.
+## Scope And Inputs
 
-## The path
+The reviewed write allowlist accepts GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN
+and COPILOT_GITHUB_TOKEN under `/cli-logins/<SEAT>`, or the corresponding
+seat-suffixed names under `/cli-logins`.  Widening it requires a code change.
+The destination folder must already exist; this helper never provisions folders.
 
-One folder per seat, `/cli-logins/<SEAT>`, and inside it the names the CLIs actually
-read out of their environment:
+The caller explicitly chooses one source:
 
-| Name | Read by |
+| Source | Access |
 |---|---|
-| `GH_TOKEN` | the GitHub CLI, and anything else that speaks to GitHub as the owner |
-| `GITHUB_TOKEN` | the same, for a tool that looks for that name |
-| `GH_ENTERPRISE_TOKEN` | the GitHub CLI against a GitHub Enterprise host |
-| `COPILOT_GITHUB_TOKEN` | the Copilot CLI |
+| `--from env` (default) | The named variable already supplied to this process |
+| `--from fleet-secrets --from-path PATH` | Compatibility spelling for one named direct shared-client read through its explicit scoped reader; no application subprocess |
+| `--from file --file PATH` | The owner-provided regular input file with mode 0600 |
 
 The seat is in the path, so the name is the same on every host and the consumer's
 command line is the same everywhere.  A consumer whose own table of secrets is static
@@ -55,24 +54,14 @@ a child process and never touches the network.  Then it reads the source, write
 it back, compares the digests, and prints the name and the path:
 
 ```
-synced GH_TOKEN at /cli-logins/OPENCODE
+python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE --request-id ORIGINAL_UUID --request-created-at ORIGINAL_EPOCH_MS
 ```
 
-The token is resolved once and used for the folder, the write and the read-back, so a
-sync does not log in three times.  The folder is created on demand, and the API's
-"already exists" answer is read rather than assumed, so a rejected request is not
-mistaken for a folder that is there.
-
-The write is a reviewed class and not a general write.  The path names the seat, the
-name is one of the four above, and the allowlist is code, so widening it takes a
-reviewed change — the same rule the minted Linear token class follows.  The folder is
-created on demand, because an empty folder is not a secret and no seat should need a
-human to make one before its first sync.
-
-## The read
-
-On the host that needs the login, the consumer runs the CLI with the credential in its
-environment:
+A genuine synchronous HTTP 200/201 acknowledgment is persisted before readback.
+Success additionally requires the exact scoped named value to match.  An accepted
+write whose readback fails stays held; its original identity can reconcile
+read-only when that acknowledgment and exact readback are both available.
+HTTP 202 is not synchronous success.
 
 ```
 GH_TOKEN="<the scoped read>" gh api user
@@ -84,7 +73,10 @@ an argument list.  The reader is the consumer's own scoped service token throug
 `scripts/fleet_infisical.py`.  The server's fleet tools already read Fleet-OPS prod, so
 this is the same read they already do.
 
-## What is not in this
+Success prints safe request identity plus the name/path confirmation.  Failure
+prints a fixed outcome and recovery identity, never a value, value digest,
+credential prefix or provider body.  A cached successful receipt describes a known
+past completion and does not assert that external writers left the value unchanged.
 
 * No credential file is copied between hosts.  The Mac does not push a file to the
   server, and the server does not pull one from the Mac.
@@ -106,7 +98,11 @@ directory on a server.  There is no machine identity and no shared reader any m
 The local VM reads the same folder once it holds a token for it; until it does, the local
 VM's consumers need the value passed in by whoever runs them.
 
-## A token that has been printed is a token to rotate
+The guarantee covers cooperating callers sharing this state and lock.  It is not
+provider CAS, cross-host serialization, protection against a different state
+location, or a guarantee for direct external writers.  The independent
+`fleet_knobs.setter` Infisical CLI writes and the Linear board's own REST writer
+do not call `put_secret` and are not covered by this protocol.
 
 A CLI login that appears in a transcript, a log or a chat message is exposed, and it
 has to be rotated.  That is the reason the write prints a name and a path, and the

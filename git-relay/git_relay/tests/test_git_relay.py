@@ -22,6 +22,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+import uuid
 from http.server import ThreadingHTTPServer
 
 from git_relay.audit import AuditLog

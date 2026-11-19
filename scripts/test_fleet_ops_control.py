@@ -1,8 +1,8 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify: every runner is a fake,
-except that the bounded reader of `server eavesdropper-status` is also tried against small
-Python child processes of its own (and a stand-in `docker` script).
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
+fake; credential tests use only a loopback provider and the actual isolated canonical worker.
+The bounded status reader also runs small Python children and a stand-in `docker` script.
 
   python3 scripts/test_fleet_ops_control.py
 """
@@ -20,8 +20,11 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
+
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("foc", os.path.join(HERE, "fleet-ops-control.py"))
@@ -118,8 +121,6 @@ class FakeRunner:
             return 0, update_state()
         if argv[1:2] == ["print"]:
             return (0 if self.loaded else 113), b""
-        if argv[1:2] == ["get"]:
-            return (0, self.secret.encode()) if self.secret else (3, b"")
         if argv[-1:] == ["jlist"]:
             return self.status, (self.jlist if want_stdout and self.jlist is not None else b"")
         if "journalctl" in argv[0]:
@@ -128,6 +129,8 @@ class FakeRunner:
 
 
 class Base(unittest.TestCase):
+    fake_credential_read = True
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
@@ -140,7 +143,7 @@ class Base(unittest.TestCase):
         self.http_calls = []
         # Every test gets the shared client faked:  no test reaches Infisical.
         self.client = FakeInfisical()
-        patcher = mock.patch.object(foc, "shared_client", return_value=self.client)
+        patcher = mock.patch.object(foc, "_load_infisical_reader", return_value=self.client)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -170,7 +173,22 @@ class Base(unittest.TestCase):
 
     def run_main(self, argv, ctx):
         out = io.StringIO()
-        code = foc.main(argv, ctx=ctx, out=out)
+
+        def fixture_token(_ctx):
+            value = getattr(_ctx.runner, "secret", TOKEN)
+            if not value:
+                raise foc.Failed("the Coolify token is not available")
+            return value
+
+        # Pure control-flow tests retain their explicit synthetic credential seam.  The
+        # CredentialTests subclass disables it and crosses the actual provider/worker path.
+        isolated = (
+            mock.patch.object(foc, "read_coolify_token", side_effect=fixture_token)
+            if self.fake_credential_read
+            else contextlib.nullcontext()
+        )
+        with isolated:
+            code = foc.main(argv, ctx=ctx, out=out)
         text = out.getvalue()
         return code, (json.loads(text) if text.startswith("{") else text)
 
@@ -382,6 +400,11 @@ class AllowlistNotesTests(Base):
             None,
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
+        ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
         ),
         "com.jay.fleet-mac-services": (
             "reporting",
@@ -2247,6 +2270,7 @@ GOLDEN_ACTIONS = {
     # Inert until Muster's fixture has a line for it (that line belongs to the Muster change).
     "unitStatus": "unit-status",
     "serverListenerSettings": "eavesdropper-settings",
+    "testWake": "test-wake",
 }
 
 
@@ -2756,6 +2780,8 @@ class FakeInfisical:
 class CredentialTests(Base):
     """A caller-scoped service token reaches only the one Infisical read."""
 
+    # This class crosses the real read, so the harness fixture seam is off here.
+    fake_credential_read = False
     ROWS = RedeployTests.ROWS
     TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
     VALUE = "st." + "scoped-fleet-ops-control-token"
@@ -5893,6 +5919,14 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
+                    # The real router sends a Content-Length:  http.client closes the response,
+                    # and its socket, as soon as that many bytes are read.  The reader must stop
+                    # there, not set a timeout on the closed socket (read_failed on the server).
+                    state["headers"] = {"Content-Length": str(len(state["body"]))}
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state["headers"] = {}
                     state.update(
                         status=503,
                         body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
@@ -5936,6 +5970,47 @@ class RouterHealthTests(Base):
                 srv.shutdown()
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
 
+    def test_a_known_length_body_is_complete_without_another_read(self):
+        # Python 3.9's HTTPResponse.read1 neither counts a known length down nor closes the
+        # response, so isclosed() stays false:  the reader must stop on the Content-Length
+        # instead of reading again and waiting on the kept-alive socket.
+        body = b'{"healthy": true, "seats": {}}'
+
+        class Headers(dict):
+            pass
+
+        class KeptAlive:
+            headers = Headers({"Content-Length": str(len(body))})
+
+            def __init__(self):
+                self.sent = False
+                self.reads = 0
+
+            def isclosed(self):
+                return False
+
+            def read1(self, size):
+                self.reads += 1
+                if self.sent:
+                    raise AssertionError("read again after the declared length")
+                self.sent = True
+                return body[:size]
+
+        response = KeptAlive()
+        deadline = foc.time.monotonic() + 5
+        self.assertEqual(foc._read_router_health_body(response, 1024, deadline), body)
+        self.assertEqual(response.reads, 1)
+        # A declared length above the cap still reads only the cap plus one byte, which the
+        # caller answers as too_large.
+        response = KeptAlive()
+        response.headers = Headers({"Content-Length": "999999"})
+        self.assertEqual(len(foc._read_router_health_body(response, 8, deadline)), 9)
+        # A missing or unreadable Content-Length leaves the length undeclared.
+        for headers in (Headers(), Headers({"Content-Length": "x"}), None):
+            response = KeptAlive()
+            response.headers = headers
+            self.assertIsNone(foc._declared_length(response))
+
     def test_read_router_health_http_times_out_slow_trickle_peer(self):
         import http.server
         import socketserver
@@ -5973,6 +6048,417 @@ class RouterHealthTests(Base):
                 self.assertLess(elapsed, 0.9)
             finally:
                 srv.shutdown()
+
+
+class TestWakeReader:
+    """Stands in for `run_bounded_read`:  answers the registry read (the sessions program) with
+    `sessions`, and the test-wake command as the container's `simple-chat daemon test-wake --json`
+    would, after checking its fixed argv."""
+
+    def __init__(
+        self,
+        status=0,
+        report=None,
+        stderr=b"",
+        over=False,
+        raw=None,
+        sessions=None,
+        registry_status=0,
+    ):
+        self.status = status
+        self.report = report
+        self.stderr = stderr
+        self.over = over
+        self.raw = raw
+        self.sessions = sessions
+        self.registry_status = registry_status
+        self.calls = []
+        self.registry_calls = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        if "-c" in argv:
+            self.registry_calls.append(list(argv))
+            assert argv[1:6] == [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/usr/local/bin/python3",
+            ], argv
+            body = json.dumps(self.sessions).encode() if self.sessions is not None else b""
+            return self.registry_status, body, b"", False
+        self.calls.append((list(argv), dict(env or {}), timeout, max_bytes))
+        if self.raw is not None:
+            out = self.raw
+        else:
+            out = json.dumps(self.report).encode() if self.report is not None else b""
+        return self.status, (b"" if self.over else out), self.stderr, self.over
+
+
+class TestWakeTests(Base):
+    """`server test-wake SEAT.LETTER.GEN.HOST`:  one dry-run wake to one exact registry chat,
+    answered as code words, never with a fallback."""
+
+    SESSION = "-".join(["0123abcd", "4567", "89ab", "cdef", "0123456789ab"])
+    LINK = "https://" + "example.invalid/#narrow/near/1"
+    TOPIC = "a private topic name"
+    BODY = "please read this private message body"
+    HOST = "router-host.example.invalid"
+    HIDDEN = (SESSION, LINK, TOPIC, BODY, HOST, "CLAUDE_ROUTINE_URL", "WAKE_ROUTER_KEY")
+    WAKE_ID = "test-wake-20261118T053000Z-0a1b2c3d"
+    TARGET = "CLAUDE.BB.2.S"
+    ISO = "2026-11-17T18:00:00Z"
+
+    def registry(self, *rows):
+        """What the sessions program prints:  one live row per (seat, host, letter, generation)."""
+        listed = rows or (("CLAUDE", "server", "BB", 2),)
+        return {
+            "counts": [["active", len(listed)], ["closed", 0]],
+            "rows": [
+                [seat, "claude", host, "active", "none", self.ISO, self.ISO, letter, gen, "[]"]
+                for seat, host, letter, gen in listed
+            ],
+        }
+
+    def report(self, **changes):
+        report = {
+            "seat": "CLAUDE",
+            "routine": {
+                "url_env": "CLAUDE_ROUTINE_URL",
+                "key_env": "WAKE_ROUTER_KEY",
+                "auth": "bearer",
+                "method": "POST",
+                "host": self.HOST,
+            },
+            "router_health": {"healthy": True, "delivery": True, "reason": None},
+            "request": {
+                "wake_id": self.WAKE_ID,
+                "topic": self.TOPIC,
+                "content": self.BODY,
+                "test": True,
+            },
+            "http_status": 200,
+            "answer": {
+                "test": True,
+                "status": "test",
+                "wake_id": self.WAKE_ID,
+                "receipt_id": "0011223344556677",
+                "seat": "CLAUDE",
+                "letter": "BB",
+                "letter_live": True,
+                "picked": "letter",
+                "picked_letter": "BB",
+                "picked_generation": 2,
+                "session_id": self.SESSION,
+                "host": "server",
+                "thread_link": self.LINK,
+                "reason": "addressed-letter",
+                "candidates": [self.SESSION, "other"],
+                "link_note": self.BODY,
+                "delivered": False,
+            },
+            "dry_run": True,
+            "picked": True,
+            "addressed": True,
+            "passed": True,
+        }
+        report.update(changes)
+        return report
+
+    def go(self, mode="--yes", target=None, reader=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        self.reader = reader or TestWakeReader(report=self.report(), sessions=self.registry())
+        if self.reader.sessions is None and self.reader.registry_status == 0:
+            self.reader.sessions = self.registry()
+        context.reader = self.reader
+        return self.run_main(
+            ["server", "test-wake", target or self.TARGET, mode, "--json"], context
+        )
+
+    def assert_nothing_hidden(self, answer):
+        text = json.dumps(answer)
+        for hidden in self.HIDDEN:
+            self.assertNotIn(hidden, text)
+
+    def test_a_plan_confirms_the_chat_shows_the_one_command_and_sends_nothing(self):
+        code, answer = self.go(mode="--plan")
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertEqual(
+            answer["commands"],
+            [
+                [
+                    answer["commands"][0][0],
+                    "exec",
+                    "--user",
+                    "simpletools",
+                    "eavesdropper",
+                    "/app/scripts/simple_tools/server/entrypoint.sh",
+                    "daemon",
+                    "test-wake",
+                    "--seat",
+                    "CLAUDE",
+                    "--letter",
+                    "BB",
+                    "--json",
+                ]
+            ],
+        )
+        self.assertEqual(
+            answer["testWakeTarget"],
+            {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"},
+        )
+        self.assertIn("CLAUDE BB.2 (server)", answer["detail"])
+        self.assertEqual(len(self.reader.registry_calls), 1)
+        self.assertEqual(self.reader.calls, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_a_chat_that_is_gone_or_not_one_row_is_refused_and_nothing_is_sent(self):
+        cases = {
+            "target_gone": TestWakeReader(
+                report=self.report(), sessions=self.registry(("CLAUDE", "server", "BB", 3))
+            ),
+            "target_ambiguous": TestWakeReader(
+                report=self.report(),
+                sessions=self.registry(
+                    ("CLAUDE", "server", "BB", 2), ("CLAUDE", "server", "BB", 2)
+                ),
+            ),
+            "registry_unavailable": TestWakeReader(report=self.report(), registry_status=1),
+        }
+        for word, reader in cases.items():
+            for mode in ("--plan", "--yes"):
+                with self.subTest(word=word, mode=mode):
+                    code, answer = self.go(mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer.get("errorCode")), (2, "refused", word)
+                    )
+                    self.assertEqual(reader.calls, [], "nothing goes to the router")
+        # A chat on another host, or another seat's chat with the letter, is not the target.
+        for rows in ((("CLAUDE", "mac", "BB", 2),), (("CODEX", "server", "BB", 2),)):
+            with self.subTest(rows=rows):
+                code, answer = self.go(
+                    mode="--plan", reader=TestWakeReader(sessions=self.registry(*rows))
+                )
+                self.assertEqual((code, answer.get("errorCode")), (2, "target_gone"))
+
+    def test_a_passed_dry_run_is_accepted_and_never_delivered(self):
+        code, answer = self.go()
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(
+            answer["testWake"],
+            {
+                "target": {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"},
+                "mode": "dry_run",
+                "passed": True,
+                "accepted": True,
+                "delivered": False,
+                "dryRun": True,
+                "picked": True,
+                "wakeId": self.WAKE_ID,
+                "httpStatus": 200,
+                "error": None,
+                "router": {"healthy": True, "delivery": True, "reason": None},
+                "answer": {
+                    "status": "test",
+                    "pick": "letter",
+                    "pickedLetter": "BB",
+                    "pickedGeneration": 2,
+                    "host": "server",
+                    "reason": "addressed_letter",
+                    "delivered": False,
+                    "letterLive": True,
+                    "candidates": 2,
+                },
+            },
+        )
+        self.assertIn("accepted the dry run for CLAUDE BB.2 (server)", answer["detail"])
+        self.assertIn("delivers nothing", answer["detail"])
+        self.assertNotIn(" delivered ", answer["detail"])
+        self.assert_nothing_hidden(answer)
+        argv, env, timeout, max_bytes = self.reader.calls[0]
+        self.assertEqual(argv, answer["commands"][0])
+        self.assertEqual(set(env), {"PATH", "DOCKER_HOST", "DOCKER_CONFIG", "HOME"})
+        self.assertEqual((timeout, max_bytes), (foc.TEST_WAKE_TIMEOUT, foc.TEST_WAKE_MAX_BYTES))
+        self.assertEqual(len(self.reader.registry_calls), 1, "confirmed again just before the run")
+        rows = self.audit_rows()
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in rows],
+            [("server test-wake", self.TARGET, "done")],
+        )
+
+    def test_a_router_answer_that_says_delivered_is_still_never_delivered(self):
+        report = self.report()
+        report["answer"]["delivered"] = True
+        code, answer = self.go(reader=TestWakeReader(status=0, report=report))
+        self.assertIs(answer["testWake"]["delivered"], False)
+
+    def test_a_pick_of_any_other_chat_fails_and_is_never_a_fallback(self):
+        other_generation = self.report()
+        other_generation["answer"]["picked_generation"] = 1
+        other_host = self.report()
+        other_host["answer"]["host"] = "mac"
+        other_letter = self.report(passed=False, addressed=False)
+        other_letter["answer"]["picked_letter"] = "CC"
+        cases = (
+            (other_generation, 0, "wrong_target"),
+            (other_host, 0, "wrong_target"),
+            (other_letter, 1, "letter_not_picked"),
+        )
+        for report, status, word in cases:
+            with self.subTest(word=word, answer=report["answer"]["picked_letter"]):
+                code, answer = self.go(reader=TestWakeReader(status=status, report=report))
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "failed", word),
+                )
+                self.assertFalse(answer["testWake"]["passed"])
+                self.assertIn("nothing was delivered", answer["detail"])
+
+    def test_a_dry_run_that_picked_no_chat_fails_with_its_word(self):
+        report = self.report(picked=False, passed=False)
+        report["answer"].update(
+            picked_letter="", picked_generation=0, session_id="", reason="no-live-session"
+        )
+        code, answer = self.go(reader=TestWakeReader(status=1, report=report))
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["errorCode"]),
+            (1, False, "failed", "no_pick"),
+        )
+        self.assertIn("reason no_live_session", answer["detail"])
+        self.assertIsNone(answer["testWake"]["answer"]["pickedLetter"])
+        self.assert_nothing_hidden(answer)
+        self.assertEqual([r["result"] for r in self.audit_rows()], ["failed"])
+
+    def test_the_commands_own_error_is_kept_only_as_a_known_word(self):
+        cases = {
+            "not_the_router": "not_the_router",
+            "router_unreachable": "router_unreachable",
+            "routine_not_configured: environment variable not set: CLAUDE_ROUTINE_URL": "routine_not_configured",
+            "HTTP 401 from %s" % self.HOST: "not_accepted",
+            "%s said no" % self.LINK: "not_accepted",
+        }
+        for error, word in cases.items():
+            with self.subTest(error=error[:30]):
+                report = {
+                    "seat": "CLAUDE",
+                    "routine": {"host": self.HOST},
+                    "error": error,
+                    "passed": False,
+                }
+                code, answer = self.go(reader=TestWakeReader(status=1, report=report))
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+                self.assertEqual(answer["testWake"]["error"], word)
+                self.assertFalse(answer["testWake"]["accepted"])
+                self.assert_nothing_hidden(answer)
+                if error != word:
+                    self.assertNotIn(error, json.dumps(answer))
+
+    def test_a_report_that_says_passed_with_a_failing_exit_is_not_done(self):
+        code, answer = self.go(reader=TestWakeReader(status=1, report=self.report()))
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "not_accepted")
+        )
+        self.assertFalse(answer["testWake"]["passed"])
+
+    def test_usage_refusals_and_container_trouble_are_words(self):
+        usage = {
+            b"simple-chat: seat CODEX is not a loaded seat in /data/listener.toml": "seat_not_loaded",
+            b"simple-chat: seat FX has no routine in /data/listener.toml (wake = inbox)": "no_routine",
+            b"something else": "usage",
+        }
+        for stderr, word in usage.items():
+            with self.subTest(stderr=stderr):
+                code, answer = self.go(reader=TestWakeReader(status=2, stderr=stderr))
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+                self.assertNotIn("listener.toml", json.dumps(answer))
+        trouble = {
+            "timeout": TestWakeReader(status=124),
+            "docker_unavailable": TestWakeReader(status=127),
+            "too_large": TestWakeReader(status=-9, over=True),
+            "container_not_running": TestWakeReader(
+                status=1, stderr=b"Error: container x is not running", raw=b""
+            ),
+            "not_json": TestWakeReader(status=0, raw=b"not json"),
+        }
+        for word, reader in trouble.items():
+            with self.subTest(word=word):
+                code, answer = self.go(reader=reader)
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+
+    def test_a_bad_target_a_mac_and_the_muster_route_are_refused(self):
+        for target in (
+            "CLAUDE",
+            "claude.BB.2.S",
+            "CLAUDE.BB.0.S",
+            "CLAUDE.BBB.2.S",
+            "CLAUDE.BB.2.X",
+            "CLAUDE.BB.2",
+            "A" * 40 + ".BB.2.S",
+            "CLAUDE;rm.BB.2.S",
+        ):
+            with self.subTest(target=target):
+                code, answer = self.go(mode="--plan", target=target)
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                self.assertEqual(self.reader.registry_calls, [])
+        code, answer = self.go(mode="--plan", platform="darwin")
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        answer, code = foc.handle(
+            self.ctx(),
+            "server",
+            "test-wake",
+            self.TARGET,
+            "yes",
+            require_approval=True,
+            approval={},
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        # Kody, PR 2299:  a run that raised must not leave the audit log without a row.
+        reader = TestWakeReader(report=self.report(), sessions=self.registry())
+
+        def broken(ctx, chat):
+            raise RuntimeError("unexpected")
+
+        with mock.patch.object(foc, "run_test_wake", broken):
+            code, answer = self.go(reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "test_wake_failed")
+        )
+        self.assertNotIn("unexpected", json.dumps(answer))
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in self.audit_rows()],
+            [("server test-wake", self.TARGET, "failed")],
+        )
+
+    def test_a_run_takes_the_one_action_lock(self):
+        lock = self.state / "ops-control.lock"
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, answer = self.go()
+        finally:
+            os.close(fd)
+        self.assertEqual(
+            (code, answer["result"], answer.get("errorCode")), (2, "refused", "action_busy")
+        )
+        self.assertEqual(self.reader.calls, [])
+
+    def test_ssh_forced_command_accepts_test_wake(self):
+        for mode in ("--plan", "--yes"):
+            words = foc.parse_ssh_command(f"server test-wake {self.TARGET} {mode} --json")
+            self.assertEqual(words, ["server", "test-wake", self.TARGET, mode, "--json"])
+        ctx = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": f"server test-wake {self.TARGET} --yes --json"}
+        )
+        ctx.reader = TestWakeReader(report=self.report(), sessions=self.registry())
+        out = io.StringIO()
+        code = foc.main(["--from-ssh"], ctx=ctx, out=out)
+        answer = json.loads(out.getvalue())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["testWake"]["wakeId"], self.WAKE_ID)
 
 
 class SourceTests(unittest.TestCase):

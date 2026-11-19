@@ -180,10 +180,11 @@ def main(argv=None, environment=None):
     prepared = prepare(environment, service_token)
     service_token = ""
     sys.path.insert(0, str(release / "lib"))
+    from fleet_infisical_cli import cmd_run
 
     if mode == "poll":
         return run_poll_with_optional_send(command, prepared)
-    return run_with_secrets(command, prepared)
+    return cmd_run(command, prepared, sys.stderr)
 
 
 if __name__ == "__main__":

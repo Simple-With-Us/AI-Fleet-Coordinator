@@ -1,6 +1,7 @@
 """The shared client works without the legacy application and preserves the verified scope boundary."""
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,12 +16,143 @@ from fleet_knobs.tests._fake import ScopedReadAPI
 
 
 class SharedClientTests(unittest.TestCase):
+    def test_writer_uses_actual_pinned_verifier_despite_public_path_and_module_poison(self):
+        scripts = str(Path(__file__).resolve().parents[2])
+        boot = """
+import os,sys,types
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from fleet_knobs import setter,source
+mode = sys.argv[3]
+cached = source._load_helper() if mode == 'warm' else None
+sys.path.insert(0, sys.argv[2])
+poison = types.ModuleType('fleet_infisical')
+poison.__file__ = str(Path(sys.argv[2]) / 'fleet_infisical.py')
+poison.calls = []
+poison.SecretsError = type('SecretsError', (Exception,), {})
+def foreign(*args, **kwargs):
+    poison.calls.append(True)
+    return ('/',)
+poison.verify_service_token = foreign
+if mode in ('module', 'warm'):
+    sys.modules['fleet_infisical'] = poison
+sys.modules[source._HELPER_NAME] = poison
+setter.verify_writer(os.environ[setter.ENV_WRITE_TOKEN], dict(os.environ))
+assert not poison.calls, 'foreign public verifier received writer binding'
+loaded = sys.modules.get('fleet_infisical')
+assert not getattr(loaded, 'calls', []), 'foreign path verifier received writer binding'
+helper = source._load_helper()
+assert helper is not None
+assert Path(helper.__file__).resolve() == Path(sys.argv[1]) / 'fleet_infisical.py'
+if cached is not None:
+    assert helper is cached
+print('pinned-writer-verified')
+"""
+        with tempfile.TemporaryDirectory() as home, ScopedReadAPI({}) as api:
+            poison = Path(home) / "untrusted"
+            poison.mkdir()
+            (poison / "fleet_infisical.py").write_text(
+                "calls = []\nclass SecretsError(Exception): pass\n"
+                "def verify_service_token(*args, **kwargs):\n"
+                "    calls.append(True)\n    return ('/',)\n"
+            )
+            api.metadata_override["permissions"] = ["read", "write"]
+            for mode in ("module", "path", "warm"):
+                with self.subTest(mode=mode):
+                    api.requests.clear()
+                    proc = subprocess.run(
+                        [sys.executable, "-I", "-B", "-c", boot, scripts, str(poison), mode],
+                        env={
+                            "HOME": home,
+                            "PATH": "/unavailable",
+                            **api.env,
+                            "FLEET_KNOBS_WRITE_TOKEN": api.token,
+                        },
+                        cwd=home,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertNotIn(api.token, proc.stdout + proc.stderr)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(proc.stdout.strip(), "pinned-writer-verified")
+                    self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+    def test_writer_actual_metadata_preserves_scope_and_finite_expiry_refusals(self):
+        from fleet_knobs import setter
+
+        with ScopedReadAPI({}) as api:
+            for wrong, reason in (
+                ({"permissions": ["read"]}, "does not prove"),
+                ({"workspace": "another-project"}, "does not prove"),
+                ({"scopes": [{"environment": "prod", "secretPath": "/other"}]}, "does not prove"),
+                ({"expiresAt": None}, "finite future expiry"),
+                ({"expiresAt": "2000-01-01T00:00:00Z"}, "finite future expiry"),
+            ):
+                with self.subTest(kind=reason, field=next(iter(wrong))):
+                    api.requests.clear()
+                    api.metadata_override = {"permissions": ["read", "write"], **wrong}
+                    with self.assertRaisesRegex(setter.Refused, reason) as caught:
+                        setter.verify_writer(api.token, api.env)
+                    self.assertNotIn(api.token, str(caught.exception))
+                    self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+    def test_missing_or_broken_packaged_verifier_refuses_without_public_fallback(self):
+        scripts = Path(__file__).resolve().parents[2]
+        boot = """
+import os,sys,types
+sys.path.insert(0, sys.argv[1])
+from fleet_knobs import setter,source
+foreign = types.ModuleType('fleet_infisical')
+foreign.SecretsError = type('SecretsError', (Exception,), {})
+foreign.calls = []
+def verify(*args, **kwargs):
+    foreign.calls.append(True)
+foreign.verify_service_token = verify
+sys.modules['fleet_infisical'] = foreign
+sys.modules[source._HELPER_NAME] = foreign
+try:
+    setter.verify_writer(os.environ[setter.ENV_WRITE_TOKEN], dict(os.environ))
+except setter.Refused as exc:
+    assert str(exc) == 'fleet_infisical write token verifier unavailable'
+    assert not foreign.calls
+    print(str(exc))
+else:
+    raise AssertionError('missing verifier accepted')
+"""
+        with tempfile.TemporaryDirectory() as home:
+            payload = Path(home) / "payload"
+            shutil.copytree(
+                scripts / "fleet_knobs",
+                payload / "fleet_knobs",
+                ignore=shutil.ignore_patterns("__pycache__", "tests"),
+            )
+            from fleet_knobs.tests._fake import fixture_service_token
+
+            own = fixture_service_token()
+            for broken in (False, True):
+                with self.subTest(broken=broken):
+                    if broken:
+                        (payload / "fleet_infisical.py").write_text("not valid Python !\n")
+                    proc = subprocess.run(
+                        [sys.executable, "-I", "-B", "-c", boot, str(payload)],
+                        env={"HOME": home, "PATH": "/unavailable", "FLEET_KNOBS_WRITE_TOKEN": own},
+                        cwd=home,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertNotIn(own, proc.stdout + proc.stderr)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(
+                        proc.stdout.strip(), "fleet_infisical write token verifier unavailable"
+                    )
+
     def test_missing_shared_client_keeps_import_safe_and_returns_process_local_reason(self):
         scripts = str(Path(__file__).resolve().parents[2])
         boot = """
 import sys
 sys.path.insert(0, sys.argv[1])
-sys.modules['fleet_infisical'] = None
 from fleet_knobs import source
 try:
     source.fetch({'OPERATOR_API_URL'})
@@ -30,8 +162,14 @@ else:
     raise AssertionError('missing client allowed a read')
 """
         with tempfile.TemporaryDirectory() as home:
+            payload = Path(home) / "payload"
+            shutil.copytree(
+                Path(scripts) / "fleet_knobs",
+                payload / "fleet_knobs",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
             proc = subprocess.run(
-                [sys.executable, "-I", "-B", "-c", boot, scripts],
+                [sys.executable, "-I", "-B", "-c", boot, str(payload)],
                 env={"HOME": home, "PATH": "/unavailable"},
                 cwd=home,
                 capture_output=True,
@@ -64,13 +202,18 @@ else:
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
         scripts = str(Path(__file__).resolve().parents[2])
         boot = """
-import json,sys
+import json,sys,types
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
 sys.modules['fleet_secrets'] = None
 sys.modules['fleet_secrets.core'] = None
+poison = types.ModuleType('fleet_infisical')
+poison.fetch_project = lambda *a, **k: (_ for _ in ()).throw(AssertionError('untrusted helper received binding'))
+sys.modules['fleet_infisical'] = poison
+sys.modules['_fleet_knobs_fleet_infisical'] = poison
 from fleet_knobs import source
-import fleet_infisical
-assert source._load_helper() is fleet_infisical
+assert Path(source._load_helper().__file__).resolve() == Path(sys.argv[1]) / 'fleet_infisical.py'
 result = source.fetch({'OPERATOR_API_URL'})
 assert result == {'OPERATOR_API_URL': 'https://operator.invalid'}
 print(json.dumps(sorted(result)))
@@ -80,13 +223,18 @@ print(json.dumps(sorted(result)))
             ScopedReadAPI({"OPERATOR_API_URL": "https://operator.invalid"}) as api,
         ):
             env = {"HOME": home, "PATH": "/unavailable", **api.env}
+            poison = Path(home) / "untrusted"
+            poison.mkdir()
+            (poison / "fleet_infisical.py").write_text(
+                "raise AssertionError('untrusted path loaded')\n"
+            )
             for wrong_scope in (False, True):
                 with self.subTest(wrong_scope=wrong_scope):
                     api.requests.clear()
                     if wrong_scope:
                         api.metadata_override["permissions"] = ["read", "write"]
                     proc = subprocess.run(
-                        [sys.executable, "-I", "-B", "-c", boot, scripts],
+                        [sys.executable, "-I", "-B", "-c", boot, scripts, str(poison)],
                         env=env,
                         cwd=home,
                         capture_output=True,

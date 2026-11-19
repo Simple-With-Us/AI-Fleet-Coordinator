@@ -46,9 +46,29 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from itertools import chain
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import fleet_infisical as scoped_secrets
+# This checkout/payload must carry the canonical library beside scripts/alert-ingress.
+# A missing sibling never authorizes an executable, user-site or PATH fallback.
+SCRIPTS_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CANONICAL_READER = SCRIPTS_ROOT / "fleet_infisical.py"
+EXIT_MISSING_EXECUTABLE = 127  # Compatibility exit: required code payload is unavailable.
+sys.path.insert(0, str(SCRIPTS_ROOT))
+try:
+    if CANONICAL_READER.is_symlink() or not CANONICAL_READER.is_file():
+        raise ImportError()
+    import fleet_infisical as scoped_secrets
+
+    if pathlib.Path(scoped_secrets.__file__).resolve() != CANONICAL_READER:
+        raise ImportError()
+    if not all(
+        callable(getattr(scoped_secrets, name, None))
+        for name in ("bounded_fetch_project", "infisical_project_id", "verify_service_token")
+    ):
+        raise ImportError()
+except (Exception, SystemExit):
+    print("STOP: shared Infisical reader is unavailable; nothing was written.", file=sys.stderr)
+    raise SystemExit(EXIT_MISSING_EXECUTABLE) from None
 
 # Project identifiers, pinned: a copy must read from and write to exactly this
 # project (populate-scoped-folders.py, kody 4365623903).  Neither is a credential.
@@ -116,9 +136,10 @@ READ_TOKEN_ACCOUNTS = {
     FLEETOPS_SLUG: "alert-ingress-fleetops-ro",
 }
 
-# Exit codes the shell reads:  124 is a timeout, 127 a missing executable.
+# The read operation retains the old subprocess's 90-second limit and timeout exit.
 EXIT_TIMEOUT = 124
-EXIT_MISSING_EXECUTABLE = 127
+READ_TIMEOUT = 90.0
+READ_MAX_OUTPUT_BYTES = 1024 * 1024
 
 # The reason word for a write whose outcome the server never confirmed.  Such
 # a write may already have been applied, so it is never a definite failure.
@@ -185,7 +206,10 @@ def scoped_values(names, project, path):
     folder does not hold is simply absent, not an error:  the caller decides which ones it
     may do without.
     """
-    if not names:
+    iterator = iter(names)
+    empty = object()
+    first = next(iterator, empty)
+    if first is empty:
         return {}
     token = _read_token(project)
     env = {k: v for k, v in os.environ.items() if k not in scoped_secrets.AUTH_ENV_VARS}
@@ -207,7 +231,7 @@ def scoped_values(names, project, path):
 
 
 def batch_values(names, project, path):
-    """Every named value:  the environment first, one batched read second.
+    """Every named value:  the environment first, one bounded named read second.
 
     A name the folder does not hold is an error here, not a silent gap:  the
     caller asked for a value it cannot do without.  The names are ever
@@ -330,7 +354,7 @@ def main():
 
     print(f"{mode}: alert-ingress secret provisioning")
 
-    # 1. Every value this run needs, read in ONE Infisical export.  The
+    # 1. Every value this run needs, read in one canonical named batch.  The
     #    environment comes first for every name, so a value the environment
     #    already holds is never fetched again.
     bot_names = [infisical_name for _source, infisical_name, _binding in BOT_PAIRS]
@@ -376,10 +400,9 @@ def main():
         values[name] = value
         print(f"  read  {name}  (len {len(value)})")
 
-    # 2. The fleet-ops root:  the automation identity, and -- in apply mode --
-    #    the Cloudflare token.  One batched read of the folder, so it is
-    #    exported once for the whole run.  It is read before the login, so a
-    #    missing Cloudflare token is found before anything is written.
+    # 2. The existing own Fleet-OPS root reader fetches only the Cloudflare
+    #    token in apply mode, before anything is written.  No machine identity
+    #    or other consumer binding participates in this read.
     fleetops_names = []
     if not dry:
         fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
@@ -435,7 +458,7 @@ def main():
         return 0
 
     # 4. The Worker bindings.  The Cloudflare token came with the fleet-ops
-    #    batch above, so the folder is not exported a second time.
+    #    named batch above; no additional credential read occurs here.
     cloudflare_token = fleetops["CLOUDFLARE_FLEET_API_TOKEN"]
     bound = 0
     for name, value in values.items():

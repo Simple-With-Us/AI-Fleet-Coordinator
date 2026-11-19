@@ -75,6 +75,8 @@ class ScopedReadAPI:
         self.allow_bulk = allow_bulk
         self.token = fixture_service_token()
         self.metadata_override = {}
+        self.record_override = {}
+        self.record_omissions = ()
         self.requests = []
         self.status = 200
         fake = self
@@ -122,6 +124,9 @@ class ScopedReadAPI:
                                 "type": "shared",
                             }
                         }
+                        payload["secret"].update(fake.record_override)
+                        for field in fake.record_omissions:
+                            payload["secret"].pop(field, None)
                 elif (
                     fake.allow_bulk
                     and parsed.path == "/api/v3/secrets/raw"

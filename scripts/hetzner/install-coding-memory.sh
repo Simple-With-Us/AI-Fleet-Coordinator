@@ -13,6 +13,11 @@ install -d -m 0755 /run/fleet-coding-resources
 install -m 0600 "$here/coding_resources.py" "$dest/coding_resources.py"
 install -m 0600 "$here/fleet_coding_memory.py" "$dest/fleet_coding_memory.py"
 install -m 0600 "$scripts/fleet_infisical.py" "$dest/settings/fleet_infisical.py"
+install -m 0600 "$scripts/fleet_infisical_cli.py" "$dest/settings/fleet_infisical_cli.py"
+install -d -m 0700 "$dest/settings/simple_tools"
+for source in __init__.py operator_github_state.py; do
+  install -m 0600 "$scripts/simple_tools/$source" "$dest/settings/simple_tools/$source"
+done
 python3 - "$config/environment" <<'PY'
 import os, sys, uuid
 from pathlib import Path

@@ -13,7 +13,7 @@ import sys
 from unittest import mock
 
 from fleet_knobs import __main__ as cli
-from fleet_knobs import inventory, setter, values
+from fleet_knobs import inventory, setter, source, values
 from fleet_knobs.registry import BY_NAME, REGISTRY
 
 from ._fake import SIGNING, KnobTestCase, fixture_service_token

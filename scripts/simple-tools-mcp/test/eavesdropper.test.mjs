@@ -310,6 +310,71 @@ test("the read API's answer is parsed before use:  odd fields fall back on their
   toolError(await wrongContract.tools.call("eavesdropper_status", {}), "upstream_error");
 });
 
+// AFC-843:  the status view in the listener's own shape for one seat (listener_records.status_view),
+// whose wake_outcomes_24h is wakes.outcome_counts:  the router's outcomes, then awaiting.
+const STATUS_VIEW = { seat: "GROK-WEB", inbox_pending: 2, inbox_cursor: 7, owner_queue_pending: 1, held_back: 3, held_back_lost: 1, wakes_24h: 4, wakes_by_state: { delivered: 2, done: 1, undelivered: 1 }, leases: 0, nudges_pending: 0, paused: false, paused_wakes: false };
+const OUTCOMES = { delivered: 2, undelivered: 1, unknown: 0, awaiting: 1 };
+// What eavesdropper_status answered for STATUS_VIEW before AFC-843, key for key and in order.
+const STATUS_TEXT = { seat: "GROK-WEB", inbox_pending: 2, owner_queue_pending: 1, held_back: 3, wakes_24h: 4, leases: 0, paused: false, inbox_cursor: 7, held_back_lost: 1, wakes_by_state: { delivered: 2, done: 1, undelivered: 1 }, nudges_pending: 0, paused_wakes: false };
+const STATUS_STRUCTURED = { inbox_pending: 2, owner_queue_pending: 1, held_back: 3, wakes_24h: 4, leases: 0, paused: false };
+
+/** One eavesdropper_status call against a listener whose status view is `view`:  the parsed text and the structuredContent. */
+async function statusRead(view) {
+  const { tools } = harness({ listener: (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fakeListener({ views: { status: view }, now: () => clock.now }).fetch, now: () => clock.now }) });
+  const result = await tools.call("eavesdropper_status", {});
+  const structured = ok(result, "eavesdropper_status");
+  return { text: JSON.parse(result.content[0].text), structured };
+}
+
+const without = (text, key) => Object.fromEntries(Object.entries(text).filter(([k]) => k !== key));
+
+test("eavesdropper_status passes the listener's wake_outcomes_24h on in its text, and structuredContent keeps to the shared outputSchema (AFC-843)", async () => {
+  const { text, structured } = await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: OUTCOMES });
+  assert.deepEqual(text.wake_outcomes_24h, OUTCOMES);
+  assert.deepEqual(Object.keys(text.wake_outcomes_24h), ["delivered", "undelivered", "unknown", "awaiting"]);
+  assert.deepEqual(without(text, "wake_outcomes_24h"), STATUS_TEXT);
+  assert.deepEqual(structured, STATUS_STRUCTURED, "the stdio server keeps it out of structuredContent too");
+});
+
+test("a hostile wake_outcomes_24h is cut to the four known keys with non-negative integer counts, and the rest of the answer is untouched (AFC-843)", async () => {
+  // JSON.parse makes __proto__ an own key, as a listener's answer would.
+  const hostile = JSON.parse('{"awaiting": 4, "__proto__": 9, "delivered": 3, "undelivered": -1, "unknown": 1.5, "extra": 7, "by_seat": {"CLAUDE": 1}, "constructor": 2}');
+  const { text, structured } = await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: hostile });
+  assert.deepEqual(text.wake_outcomes_24h, { delivered: 3, awaiting: 4 });
+  assert.deepEqual(Object.keys(text.wake_outcomes_24h), ["delivered", "awaiting"], "the known order, not the listener's");
+  assert.deepEqual(without(text, "wake_outcomes_24h"), STATUS_TEXT);
+  assert.deepEqual(structured, STATUS_STRUCTURED);
+  // A count that is not a non-negative safe integer is dropped, never turned into 0.
+  for (const bad of [{ delivered: "3" }, { delivered: true }, { delivered: null }, { delivered: 2 ** 53 }, { delivered: [1] }, { delivered: { n: 1 } }, {}]) {
+    assert.deepEqual((await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: bad })).text.wake_outcomes_24h, {}, JSON.stringify(bad));
+  }
+});
+
+test("a wake_outcomes_24h that is not an object is dropped, and every other field still answers (AFC-843)", async () => {
+  const control = await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: OUTCOMES });
+  assert.deepEqual(control.text.wake_outcomes_24h, OUTCOMES, "the well-formed control carries it");
+  for (const bad of ["lots", 7, -1, true, null, [1, 2], [OUTCOMES]]) {
+    const { text, structured } = await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: bad });
+    assert.equal(Object.hasOwn(text, "wake_outcomes_24h"), false, JSON.stringify(bad));
+    assert.deepEqual(text, STATUS_TEXT, JSON.stringify(bad));
+    assert.deepEqual(structured, STATUS_STRUCTURED, JSON.stringify(bad));
+  }
+});
+
+test("a listener from before AFC-824 sends no wake_outcomes_24h, and the answer is the one it gave before, key for key (AFC-843)", async () => {
+  const before = await statusRead(STATUS_VIEW);
+  assert.deepEqual(before.text, STATUS_TEXT);
+  assert.deepEqual(Object.keys(before.text), Object.keys(STATUS_TEXT));
+  assert.deepEqual(before.structured, STATUS_STRUCTURED);
+  // A listener that sends it changes that answer by the one key, right after wakes_by_state.
+  const after = await statusRead({ ...STATUS_VIEW, wake_outcomes_24h: OUTCOMES });
+  const keys = Object.keys(STATUS_TEXT);
+  keys.splice(keys.indexOf("wakes_by_state") + 1, 0, "wake_outcomes_24h");
+  assert.deepEqual(Object.keys(after.text), keys);
+  assert.deepEqual(after.text, { ...STATUS_TEXT, wake_outcomes_24h: OUTCOMES });
+  assert.deepEqual(after.structured, before.structured);
+});
+
 test("listenerClientFromEnv: a resolved wake key builds the client with no env binding (required mode)", () => {
   const env = { LISTENER_API_URL: "https://listener.example.test" };
   const client = listenerClientFromEnv(env, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "w".repeat(40) });
