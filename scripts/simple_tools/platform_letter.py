@@ -619,13 +619,32 @@ def lettered_topic(words: object) -> str:
 
 
 def chat_name(text: object) -> str:
-    """The name a chat carries, as the fleet may keep it:  one line, at most TITLE_CHARS characters, and nothing in
-    it that looks like a credential.
+    """The name a chat carries, as the fleet may keep it:  one line, nothing in it that looks like a credential, and
+    no control character or lone surrogate.
 
     A chat's own name is the owner's, and the app shows it;  the client keeps it in its private note and relays it
     to the registry, and neither may hold a credential (owner rule:  user-supplied text is secret-scanned before it
-    is persisted or relayed).  A name that is only a credential is dropped whole, and the chat waits to be named."""
-    return clean_title(text)
+    is persisted or relayed).  A name that is only a credential is dropped whole, and the chat waits to be named.
+
+    The name is not cut short here:  it is the live title the hook compares with what the platform shows, so a
+    title cut at the limit would rename the chat back to the cut name.  The cut belongs where a title is stored
+    for the fleet, and the registry's own `clean_title` makes it there."""
+    words = [w for w in tidy(text).split(" ") if w and not secretscan.scan(w)]
+    line = " ".join(words)
+    return "" if secretscan.scan(line) else line
+
+
+def registry_words(text: object) -> tuple[str, str]:
+    """(the words to register, the refusal code or "").
+
+    The registry is the sheet the whole fleet reads, so the words it holds are English (owner, Nov 18, 2026) and
+    carry no secret:  a name in another script is never registered, and a name with a credential in it is refused.
+    The refusal names the field and the code, never the value, so the note can say what happened without saying
+    what was in the name."""
+    words = lettered_topic(text)
+    if words and secretscan.scan(words):
+        return "", "title_secret"
+    return words, ""
 
 
 def clean_title(text: object) -> str:
@@ -1340,6 +1359,29 @@ def _sync_folder(folder: str) -> None:
         os.close(dir_fd)
 
 
+def _safe_note(note: Mapping[str, Any]) -> dict[str, Any]:
+    """The note as it is written, with no credential in the words it keeps.
+
+    The note is where a chat's words are kept, so a word that looks like a credential never reaches
+    the disk:  it is dropped, and the note keeps the refusal code and the identifier, never the value
+    (owner rule:  user-supplied text is secret-scanned before it is persisted, logged or relayed)."""
+    safe = dict(note)
+    refused = ""
+    for field in ("title", "want", "shown", "inherited"):
+        value = safe.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        cleaned = chat_name(value)
+        if cleaned == value:
+            continue
+        if secretscan.scan(value):
+            refused = "title_secret"
+        safe[field] = cleaned
+    if refused:
+        safe["title_refused"] = refused
+    return safe
+
+
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
@@ -1400,7 +1442,7 @@ class Chat:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(
                     dict(
-                        note,
+                        _safe_note(note),
                         session_id=self.session_id,
                         platform=self.spec.platform,
                         updated_at=self.now,
@@ -1598,6 +1640,11 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
 
     A chat that holds a letter keeps it when the call merely got no answer (an Eavesdropper redeploy, a timeout):  only
     a refusal takes the letter off.  Its `sync_failed_at` stamp holds the next call back for RETRY_SECONDS."""
+    refusal = str(answer.get("title_refused") or "")
+    if refusal:
+        # A refused title keeps its code and nothing else:  the note says the field and the code, never the words
+        # that were in it.
+        note = dict(note, title_refused=refusal)
     if ("error" in answer or not answer.get("outcome")) and lettered(note) and not refused(answer):
         return dict(note, location=chat.location, sync_failed_at=chat.now)
     if "error" in answer or not answer.get("outcome"):
@@ -1799,9 +1846,10 @@ def ask_again(
     if not force and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
         return note
     # The words a chat carries under its letter are the ones the whole fleet reads, so they are English
-    # (owner, Nov 18, 2026):  a name in another script is never registered and never goes under a letter.  The
-    # chat's own name stays in its own script, in the note, for a chat that holds no letter.
-    words = lettered_topic(words)
+    # (owner, Nov 18, 2026) and carry no secret:  a name in another script is never registered and never goes
+    # under a letter, and a name with a credential in it is refused with a code the note keeps.  The chat's own
+    # name stays in its own script, in the note, for a chat that holds no letter.
+    words, refusal = registry_words(words)
     # Stamped before the chain:  a hook killed inside it (a hung assigner) does not repeat it on the next prompt.
     chat.write(dict(note, failed_at=chat.now))
     fresh = _apply(chat, _enroll(chat, words, parent), dict(note, parent=parent))
@@ -1810,6 +1858,8 @@ def ask_again(
         # The chat holds a letter now, so the topic it carries is English:  the words it asked with, or the
         # English topic it already had, and never a name in another script.
         fresh["title"] = words or lettered_topic(str(fresh.get("title") or ""))
+        if refusal:
+            fresh["title_refused"] = refusal
     return fresh
 
 
@@ -2551,6 +2601,11 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
     Mac that is asleep costs one hop every ten minutes, not one on every prompt.  Returns the registry's answer, or {}
     when the call was held back."""
     if op == "title" and words:
+        words, refusal = registry_words(words)
+        if refusal:
+            # A name with a credential in it is never sent:  the note keeps the code, never the value.
+            note["title_refused"] = refusal
+            return {}
         note["unsent"] = words
     if chat.now - float(note.get("sync_failed_at") or 0) < RETRY_SECONDS:
         return {}
@@ -2661,16 +2716,16 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
         cap = spec.parent_call_timeout or spec.call_timeout or _API_TIMEOUT
         mother.write(dict(note, failed_at=chat.now))
         started = time.monotonic()
-        done = _apply(
-            mother,
-            mother.registry(
-                "register",
-                title=lettered_topic(str(note.get("title") or "")),
-                parent=grand,
-                timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
-            ),
-            dict(note, parent=grand),
+        words, refusal = registry_words(str(note.get("title") or ""))
+        answer = mother.registry(
+            "register",
+            title=words,
+            parent=grand,
+            timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
         )
+        if refusal:
+            answer["title_refused"] = refusal
+        done = _apply(mother, answer, dict(note, parent=grand))
         spent += time.monotonic() - started
         if done["state"] == "open":
             done["announce"] = True
@@ -2688,7 +2743,11 @@ def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
     The registry is the sheet the whole fleet reads, so the words it holds are English (owner, Nov 18, 2026):
     a name in another script is never registered, whichever path asks for the letter."""
     _ensure_parent(chat, parent, 0, walk_allowance(chat.spec))
-    return chat.registry("register", title=lettered_topic(title), parent=parent)
+    words, refusal = registry_words(title)
+    answer = chat.registry("register", title=words, parent=parent)
+    if refusal:
+        answer["title_refused"] = refusal
+    return answer
 
 
 def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
@@ -4622,6 +4681,28 @@ def _write_private(path: str, data: bytes, mode: int, *, exclusive: bool = False
     os.chmod(path, mode)
 
 
+def _prune_backups(path: str, keep: int = 3) -> int:
+    """Drop the oldest `.bak-letter-` copies of the hook file beside it, keeping the newest few.
+
+    The names carry a UTC stamp, so they sort in the order they were made.  The copies are the installer's own
+    safety net, and the reconcile runs on every hook event, so the net is kept small on purpose:  a file that
+    stays stale must not grow a copy per event."""
+    folder = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + ".bak-letter-"
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.startswith(prefix))
+    except OSError:
+        return 0
+    dropped = 0
+    for name in names[: max(0, len(names) - keep)]:
+        try:
+            os.remove(os.path.join(folder, name))
+            dropped += 1
+        except OSError:
+            pass
+    return dropped
+
+
 def _backup(path: str) -> str:
     """Copy `path` to `<path>.bak-letter-<UTC stamp>` (0600) and return the new name.  The stamp has microseconds and
     a name that is taken gets a counter, so two rewrites in the same moment (an install, then a remove) never share a
@@ -4681,6 +4762,10 @@ def install_json_hooks(
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
     if opts.location and opts.location not in LOCATIONS:
         return _emit(stdout, {"error": "--location must be mac or server"}, 2)
+    if os.path.islink(os.path.dirname(path)):
+        # A hooks folder that is a link is not ours to write through:  the file would land wherever the link
+        # points, and a folder someone else owns would take the host's hooks.
+        return _emit(stdout, {"error": "the hooks folder is a link", "path": path}, 2)
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -4880,6 +4965,10 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
         return {}
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
+    if os.path.islink(os.path.dirname(path)):
+        # A hooks folder that is a link is not ours to write through:  the file would land wherever the link
+        # points, and a folder someone else owns would take the host's hooks.
+        return {"platform": platform, "path": path, "refused": "the hooks folder is a link"}
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -4922,6 +5011,10 @@ def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
         return {}
     out = io.StringIO()
     install_json_hooks(installer, InstallOptions(platform), env, out)
+    # Every pass that rewrites the file leaves a backup of it beside it, and the reconcile runs on every hook
+    # event, so a file that stays stale would grow a copy per event without bound.  The newest few are kept:  the
+    # last one is the file as it was before the last rewrite, which is what an owner needs to undo it.
+    _prune_backups(path)
     answer = _last_json(out.getvalue()) or {}
     trust = str(answer.get("trust") or "")
     wrote = ""

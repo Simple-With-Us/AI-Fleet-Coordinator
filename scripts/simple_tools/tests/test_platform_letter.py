@@ -5165,6 +5165,55 @@ class SecretTitleTests(HookTests):
         # And the chat is not named after the credential.
         self.assertNotIn(secret, out["sessionTitle"])
 
+    def test_a_stored_credential_is_refused_with_a_code(self) -> None:
+        # A note that carries a credential (written before the scan, or by a path that missed it) is refused
+        # at the registry write:  the registry holds no title, and the note keeps the code and not the words.
+        secret = secret_word()
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        with mock.patch.object(PL, "_enroll", return_value={"outcome": "failed", "state": "failed"}):
+            self.hook(
+                {
+                    "hook_event_name": "SessionStart",
+                    "session_id": "s-0001",
+                    "source": "startup",
+                    "session_title": "Fix the relay",
+                },
+                spec=spec,
+            )
+        note = self.note("s-0001")
+        note["title"] = secret
+        with open(os.path.join(self.state, "CODEX", "letters", "s-0001.json"), "w") as fh:
+            json.dump(note, fh)
+        with mock.patch.dict(PL.SPECS, {"codex": self.spec}):
+            out = io.StringIO()
+            code = PL.request_main(
+                ["--session-id", "s-0001"], self.server_env(), out, now=1000.0, platform="linux"
+            )
+        self.assertEqual(code, 0)
+        note = self.note("s-0001")
+        # The code names the field and says nothing about the value.
+        self.assertEqual(note.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(note))
+        row = self.lookup("s-0001")
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("title") or "", "")
+
+    def test_a_chats_own_name_is_not_cut_short(self) -> None:
+        # The live title is compared with what the platform shows, so a name cut at the title limit would
+        # rename the chat back to the cut name.  The name survives whole.
+        name = "Fix " + " ".join(["Relay"] * 30)
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "s-0001",
+                "source": "startup",
+                "session_title": name,
+            },
+            spec=spec,
+        )
+        self.assertEqual(self.note("s-0001").get("title"), name)
+
 
 class EnglishRegistryTests(HookTests):
     """The registry is the sheet the whole fleet reads, so a name in another script never reaches it (owner,
@@ -5358,9 +5407,9 @@ class ReconcileHookFileTests(Base):
         with open(path) as fh:
             self.assertEqual(fh.read(), before)
 
-    def test_a_symlinked_hooks_folder_is_written_where_the_link_points(self) -> None:
-        # A host that keeps its hooks folder somewhere else and links it in:  the file is written where
-        # the link points, and the link stays a link.
+    def test_a_symlinked_hooks_folder_is_refused(self) -> None:
+        # A host whose hooks folder is a link must not have the file written through it:  the reconcile
+        # refuses the symlinked path, and the file the link points at is left exactly as it is.
         real = tempfile.mkdtemp(dir=self.tmp.name)
         self.addCleanup(shutil.rmtree, real, True)
         link = os.path.join(self.home, ".minimax")
@@ -5373,9 +5422,28 @@ class ReconcileHookFileTests(Base):
         }
         with open(path, "w") as fh:
             json.dump(doc, fh)
+        answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertEqual(answer.get("refused"), "the hooks folder is a link")
+        self.assertEqual(self.load(path), doc)
+        # The installer refuses it as well, so a person running it by hand is told why.
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "minimax"], {"HOME": self.home}, out)
+        self.assertEqual(code, 2)
+        self.assertIn("link", out.getvalue())
+        self.assertEqual(self.load(path), doc)
+
+    def test_the_reconcile_keeps_only_a_few_backups(self) -> None:
+        # The reconcile runs on every hook event, and every pass that rewrites the file leaves a backup of it
+        # beside it, so the copies would grow without bound.  The newest few are kept.
+        path = self.seed(["SessionStart"])
+        folder = os.path.dirname(path)
+        for n in range(6):
+            with open(os.path.join(folder, "hooks.json.bak-letter-2026111%s000000Z" % n), "w") as fh:
+                fh.write("{}")
         PL.reconcile_hooks("minimax", {"HOME": self.home})
+        left = sorted(n for n in os.listdir(folder) if n.startswith("hooks.json.bak-letter-"))
+        self.assertLessEqual(len(left), 3)
         self.assertIn("UserPromptSubmit", self.load(path)["hooks"])
-        self.assertTrue(os.path.islink(link))
 
     def test_the_trust_step_is_pending_from_the_first_pass_that_writes_it(self) -> None:
         # A platform whose runtime trusts an entry by hash:  the step is the owner's, and the answer says
