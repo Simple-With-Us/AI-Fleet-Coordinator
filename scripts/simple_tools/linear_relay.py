@@ -1349,6 +1349,13 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+class _ReaderWithoutDeadline(ValueError):
+    """A reader that cannot take the deadline a walk shares.
+
+    A walk it cannot bound is not a bounded walk, so the repair is not attempted and
+    the comment waits for a reader that can (Kody, PR 2340)."""
+
+
 def _call_with_deadline(
     reader: Callable[..., Any], args: tuple[Any, ...], deadline: float | None
 ) -> Any:
@@ -2088,10 +2095,15 @@ class RelayWorker:
             return  # the topic is waiting to be tried again
         try:
             read, complete = self._read_for_repair(entry, stream_id, topic, cache)
-        except ValueError as exc:
+        except _ReaderWithoutDeadline as exc:
             # A reader that cannot take the deadline cannot hold a bounded walk, so the
-            # entry waits for a reader that can (Kody, PR 2340).
-            self.log("%s; the comment waits for a reader that can" % exc)
+            # entry waits for a reader that can (Kody, PR 2340).  The log carries the
+            # type of the failure and never its text, which can hold message or topic
+            # content (Kody, PR 2340).
+            self.log(
+                "a repair read was refused (%s); the comment waits for a reader that can"
+                % type(exc).__name__
+            )
             self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             return
         if read is None:
@@ -2288,7 +2300,7 @@ class RelayWorker:
             # bounded in time (Kody, PR 2340).
             how = _deadline_argument(reader)
             if how is None:
-                raise ValueError(
+                raise _ReaderWithoutDeadline(
                     "the repair read needs a reader that takes a deadline, and this one does not"
                 )
         pages = 0
@@ -2424,7 +2436,12 @@ class RelayWorker:
             # Every read counts, not every repair:  an entry whose topic cannot be read
             # must not make the cycle read every stale entry, every cycle (Sentry, PR 2340).
             attempts += 1
-            self._repair(entry, key, int(entry["stream_id"]), entry["topic"], cache)
+            try:
+                self._repair(entry, key, int(entry["stream_id"]), entry["topic"], cache)
+            except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the others
+                # The log names the entry and the type of the failure, never the text of
+                # the exception, which can hold message or topic content (Kody, PR 2340).
+                self.log("the repair of %s failed (%s)" % (self._label(entry), type(exc).__name__))
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live

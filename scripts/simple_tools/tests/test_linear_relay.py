@@ -2715,7 +2715,11 @@ class ReadablePostTests(WorkerCase):
         self.w = self.worker(history=self.topic.whole, history_since=since)
         self.w.tick()
         self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
-        self.assertTrue(any("needs a reader that takes a deadline" in line for line in self.logs))
+        self.assertTrue(any("a repair read was refused" in line for line in self.logs))
+        # The log carries the type of the failure and never its text (Kody, PR 2340).
+        refusals = [line for line in self.logs if "a repair read was refused" in line]
+        self.assertTrue(refusals)
+        self.assertNotIn("deadline, and this one does not", refusals[0])
 
     def test_a_repair_read_with_a_keyword_only_deadline_works(self) -> None:
         # A reader whose deadline is keyword-only takes it as a keyword (Kody, PR 2340).
@@ -2741,6 +2745,16 @@ class ReadablePostTests(WorkerCase):
         self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
         self.assertTrue(seen)  # the deadline reached the reader
         self.assertTrue(all(deadline is not None for deadline in seen))
+
+    def test_a_bad_stored_message_id_does_not_stop_the_other_repairs(self) -> None:
+        # A failure in one entry's repair is logged with its type and does not stop the
+        # repairs of the other entries (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"][0]["mid"] = "not an id"
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertTrue(any("the repair of" in line for line in self.logs))
+        self.assertFalse(any("a repair read was refused" in line for line in self.logs))
 
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean
