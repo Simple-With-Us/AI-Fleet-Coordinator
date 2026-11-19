@@ -30,7 +30,7 @@ Peer asks: collaborate without waiting; DM Jay on your platform about intent and
 
 Infisical alone owns secrets/settings/variables; prod only.  Environment may transport synced values/bootstrap, never hand-set sources.  Use scoped service tokens, not machine identities; max two per project/use case (read-only, plus needed write), exact scope/expiry.  Register metadata at `fl/references`; host bootstrap storage is excepted.
 
-Use a names-only scoped Infisical read; capture a scoped read of NAME silently for its consumer, never print it; hand a command only the names it needs, through its environment.  Never open secret files, run bare `infisical secrets`, `ps`, or value dumps.  Retired `~/.secrets` flat files, including `global-api-keys`, are not sources.
+Use a names-only scoped Infisical read; capture a read of NAME for its consumer, never print it; give a command only its names.  Never open secret files, run bare `infisical secrets`, `ps`, or value dumps.  Retired `~/.secrets` flat files, including `global-api-keys`, are not sources.
 
 ### Writing Anything a Human Reads
 
