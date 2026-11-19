@@ -274,9 +274,7 @@ class _Converter(HTMLParser):
         """The text of a link:  its own text escaped once, and the code markers it holds
         left as they are, so a code span inside a link stays a code span (Kody, PR
         2340)."""
-        parts = [
-            text if is_code else _escape_text(text) for text, is_code in (self.link or [])
-        ]
+        parts = [text if is_code else _escape_text(text) for text, is_code in (self.link or [])]
         return "".join(parts).strip()
 
     def _append_text(self, text: str) -> None:
