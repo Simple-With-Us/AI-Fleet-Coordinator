@@ -5198,6 +5198,23 @@ class SecretTitleTests(HookTests):
         self.assertIsNotNone(row)
         self.assertEqual(row.get("title") or "", "")
 
+    def test_a_chat_name_with_a_control_character_is_scrubbed(self) -> None:
+        # The live title is compared with what the platform shows and its words are derived from it, so it is
+        # scrubbed of the control characters and lone surrogates a title cannot carry.
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "s-0001",
+                "source": "startup",
+                "session_title": "Fix the relay\x00 now",
+            },
+            spec=spec,
+        )
+        note = self.note("s-0001")
+        self.assertNotIn("\x00", json.dumps(note))
+        self.assertEqual(note.get("title"), "Fix the relay now")
+
     def test_a_chats_own_name_is_not_cut_short(self) -> None:
         # The live title is compared with what the platform shows, so a name cut at the title limit would
         # rename the chat back to the cut name.  The name survives whole.
