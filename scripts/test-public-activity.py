@@ -799,6 +799,27 @@ class PublicActivityTests(unittest.TestCase):
                 ["BotFleet"], since, "fixture-tok", tz, timeout_budget=300.0
             )
 
+    def test_unmapped_malformed_linear_nodes_do_not_abort_public_digest(self) -> None:
+        nodes = [
+            {"team": {"key": "OPS"}, "state": None, "number": "bad"},
+            {"team": None},
+            None,
+            {"team": {"key": 1}},
+        ]
+        with patch.object(
+            digest,
+            "linear_graphql",
+            return_value={
+                "issues": {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+            },
+        ):
+            self.assertEqual(
+                digest.fetch_linear_issue_churn(
+                    ["BotFleet"], date(2026, 11, 17), "fixture-tok", ZoneInfo("America/Chicago")
+                ),
+                ([], []),
+            )
+
     def test_linear_issue_node_shape_validation_and_error_redaction(self) -> None:
         tz = ZoneInfo("America/Chicago")
         since = date(2026, 11, 17)

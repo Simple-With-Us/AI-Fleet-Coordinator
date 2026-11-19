@@ -448,12 +448,15 @@ def fetch_linear_issue_churn(
         if not isinstance(nodes, list):
             raise RuntimeError("Linear GraphQL missing issues nodes list")
         for raw_node in nodes:
-            node = _validate_linear_issue_node(raw_node)
-            team_key = node["team"]["key"].strip().upper()
-            # Defense in depth: ignore any issue outside the verified-public team map.
+            # Establish the public boundary before validating fields we will never publish.
+            raw_team = raw_node.get("team") if isinstance(raw_node, dict) else None
+            raw_key = raw_team.get("key") if isinstance(raw_team, dict) else None
+            team_key = raw_key.strip().upper() if isinstance(raw_key, str) else ""
             repo = team_map.get(team_key)
             if not repo:
                 continue
+            # Mapped public nodes still fail closed on every malformed required field.
+            node = _validate_linear_issue_node(raw_node)
             identifier = node["identifier"].strip()
             number = node["number"]
             title = node["title"].strip()
