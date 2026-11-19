@@ -238,7 +238,10 @@ class SeatAndMcpTests(unittest.TestCase):
         report.add("seat:CLAUDE", "FAIL", "missing fleetlink token")
         self.assertTrue(doctor.post_changes(report, runner))
         self.assertFalse(doctor.post_changes(report, runner))
-        self.assertEqual(calls[0][:5], [sys.executable, str(HERE / "service_zulip.py"), "--service", "doctor", "post"])
+        self.assertEqual(
+            calls[0][:5],
+            [sys.executable, str(HERE / "service_zulip.py"), "--service", "doctor", "post"],
+        )
         self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][-1])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
         self.assertIn("every check passes again", calls[1][-1])

@@ -3596,7 +3596,19 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         STATE.write_text(json.dumps(doc))
 
     if failing and message_id is not None and previous_checks == checks:
-        outcome = edit_outcome([sys.executable, str(Path(__file__).with_name("service_zulip.py")), "--service", "doctor", "edit", "--id", str(message_id), body], runner)
+        outcome = edit_outcome(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("service_zulip.py")),
+                "--service",
+                "doctor",
+                "edit",
+                "--id",
+                str(message_id),
+                body,
+            ],
+            runner,
+        )
         if outcome == "edited":
             remember(message_id)
             return True
@@ -3607,8 +3619,14 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
             return False
         # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
         # missing:  post a new message instead and keep its id.
-    argv = [sys.executable, str(Path(__file__).with_name("service_zulip.py")),
-            "--service", "doctor", "post", body]
+    argv = [
+        sys.executable,
+        str(Path(__file__).with_name("service_zulip.py")),
+        "--service",
+        "doctor",
+        "post",
+        body,
+    ]
     try:
         result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
     except (

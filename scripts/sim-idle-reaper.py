@@ -53,12 +53,11 @@ import argparse
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 HOME = os.path.expanduser("~")
 STATE_DIR = os.environ.get("SIM_REAPER_STATE_DIR") or os.path.join(
@@ -362,8 +361,14 @@ def fleet_alert(content: str) -> str:
     exited with a usage or credential error) or "unknown" (anything else, such as a timeout,
     a network error or a refusal that may follow a send).  The post is never retried here.
     """
-    argv = [sys.executable, str(Path(__file__).with_name("service_zulip.py")),
-            "--service", "sim-reaper", "post", content + "\n" + RESOURCE_MENTIONS]
+    argv = [
+        sys.executable,
+        str(Path(__file__).with_name("service_zulip.py")),
+        "--service",
+        "sim-reaper",
+        "post",
+        content + "\n" + RESOURCE_MENTIONS,
+    ]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=ALERT_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:

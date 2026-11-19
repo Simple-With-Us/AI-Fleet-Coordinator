@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Service-only Zulip transport. No seat wrappers, credential fallback or audience override."""
+
 import argparse
-import importlib.util
 import base64
+import importlib.util
 import json
 import os
 import stat
-from pathlib import Path
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 ORIGIN = "https://simplewithus.zulipchat.com"
 # Existing dedicated Watchdog bot, verified /users/me in the restoration investigation.
@@ -22,15 +23,19 @@ SERVICES = {
     "sim-reaper": ("SIM_REAPER", "Alerts", "sim-idle-reaper"),
 }
 
+
 class Refused(Exception):
     pass
+
 
 class Unknown(Exception):
     pass
 
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise Unknown("redirect outcome uncertain")
+
 
 def agent_emails():
     registry = Path(__file__).resolve().with_name("fleet-apps.json")
@@ -41,6 +46,7 @@ def agent_emails():
     except Exception:
         raise Refused("agent registry unavailable") from None
     found = set()
+
     def walk(value):
         if isinstance(value, dict):
             for key, item in value.items():
@@ -51,10 +57,12 @@ def agent_emails():
         elif isinstance(value, list):
             for item in value:
                 walk(item)
+
     walk(data)
     if not found:
         raise Refused("agent registry empty")
     return found
+
 
 def protected_binding(service, env):
     """Runtime-only Mac/user binding. Fixed path, no executable config or secret discovery."""
@@ -66,24 +74,36 @@ def protected_binding(service, env):
     try:
         for directory in (path.parent, path.parent.parent):
             info = directory.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                    or stat.S_IMODE(info.st_mode) & 0o022):
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o022
+            ):
                 raise Refused("unsafe binding directory")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(path, flags)
         with os.fdopen(fd, "r") as stream:
             info = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 16384
+            ):
                 raise Refused("unsafe service binding")
             data = json.load(stream)
         if not isinstance(data, dict) or set(data) != {"email", "api_key", "user_id"}:
             raise Refused("invalid service binding")
-        if not isinstance(data["email"], str) or not isinstance(data["api_key"], str) or type(data["user_id"]) is not int:
+        if (
+            not isinstance(data["email"], str)
+            or not isinstance(data["api_key"], str)
+            or type(data["user_id"]) is not int
+        ):
             raise Refused("invalid service binding")
         return dict(env, **dict(zip(names, [data["email"], data["api_key"], str(data["user_id"])])))
     except Exception:
         raise Refused("service binding unavailable; staged only") from None
+
 
 def binding(service, env):
     env = protected_binding(service, env)
@@ -91,13 +111,20 @@ def binding(service, env):
     email = env.get(prefix + "_ZULIP_EMAIL", "")
     key = env.get(prefix + "_ZULIP_API_KEY", "")
     raw_id = env.get(prefix + "_ZULIP_USER_ID", "")
-    if (not email.endswith("@simplewithus.zulipchat.com") or "\n" in email
-            or ":" in email or not key or not raw_id.isdecimal() or int(raw_id) != SERVICE_USER_ID
-            or email != SERVICE_EMAIL):
+    if (
+        not email.endswith("@simplewithus.zulipchat.com")
+        or "\n" in email
+        or ":" in email
+        or not key
+        or not raw_id.isdecimal()
+        or int(raw_id) != SERVICE_USER_ID
+        or email != SERVICE_EMAIL
+    ):
         raise Refused("dedicated service binding missing")
     if email.casefold() in agent_emails():
         raise Refused("agent identity forbidden")
     return email, key, int(raw_id), channel, topic
+
 
 def send(service, content, message_id=None, env=None, request=None):
     email, key, user_id, channel, topic = binding(service, os.environ if env is None else env)
@@ -112,9 +139,12 @@ def send(service, content, message_id=None, env=None, request=None):
     except Exception:
         raise Refused("message content check refused") from None
     opener = urllib.request.build_opener(NoRedirect())
+
     def http(method, path, fields=None):
-        headers = {"Authorization": "Basic " + base64.b64encode((email + ":" + key).encode()).decode(),
-                   "User-Agent": "fleet-service-zulip/1"}
+        headers = {
+            "Authorization": "Basic " + base64.b64encode((email + ":" + key).encode()).decode(),
+            "User-Agent": "fleet-service-zulip/1",
+        }
         body = None
         if fields is not None:
             body = urllib.parse.urlencode(fields).encode()
@@ -134,29 +164,41 @@ def send(service, content, message_id=None, env=None, request=None):
         if not isinstance(data, dict) or data.get("result") != "success":
             raise Refused("service response refused")
         return data
+
     request = request or http
     # Failed reads are known unsent. Never expose raw provider bodies or exceptions.
     try:
         identity = request("GET", "/api/v1/users/me")
-        if (identity.get("result") != "success" or identity.get("user_id") != user_id
-                or identity.get("email") != email or identity.get("is_bot") is not True):
+        if (
+            identity.get("result") != "success"
+            or identity.get("user_id") != user_id
+            or identity.get("email") != email
+            or identity.get("is_bot") is not True
+        ):
             raise Refused("dedicated service identity mismatch")
         if message_id is not None:
             previous = request("GET", "/api/v1/messages/" + str(message_id)).get("message", {})
-            if (previous.get("sender_id") != user_id or previous.get("type") != "stream"
-                    or previous.get("display_recipient", "").casefold() != channel.casefold()
-                    or previous.get("subject") != topic):
+            if (
+                previous.get("sender_id") != user_id
+                or previous.get("type") != "stream"
+                or previous.get("display_recipient", "").casefold() != channel.casefold()
+                or previous.get("subject") != topic
+            ):
                 raise Refused("edit ownership or audience mismatch")
     except Exception:
         raise Refused("service preflight refused") from None
     if message_id is not None:
         result = request("PATCH", "/api/v1/messages/" + str(message_id), {"content": content})
         return {"id": message_id, "edited": True}
-    result = request("POST", "/api/v1/messages", {"type": "stream", "to": channel,
-                      "topic": topic, "content": content})
+    result = request(
+        "POST",
+        "/api/v1/messages",
+        {"type": "stream", "to": channel, "topic": topic, "content": content},
+    )
     if type(result.get("id")) is not int or result["id"] <= 0:
         raise Unknown("send receipt missing")
     return {"id": result["id"]}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -169,10 +211,22 @@ def main():
     if args.action == "status":
         try:
             binding(args.service, os.environ)
-            print(json.dumps({"service": args.service, "state": "bound_unverified", "delivery_verified": False}))
+            print(
+                json.dumps(
+                    {
+                        "service": args.service,
+                        "state": "bound_unverified",
+                        "delivery_verified": False,
+                    }
+                )
+            )
             return 0
         except Refused:
-            print(json.dumps({"service": args.service, "state": "staged_unbound", "delivery_verified": False}))
+            print(
+                json.dumps(
+                    {"service": args.service, "state": "staged_unbound", "delivery_verified": False}
+                )
+            )
             return 3
     if (args.action == "edit") != (args.id is not None) or (args.id is not None and args.id <= 0):
         parser.error("edit needs a positive message id; post takes no id")
@@ -188,6 +242,7 @@ def main():
     except Exception:
         print("service sender outcome unknown", file=sys.stderr)
         return 6
+
 
 if __name__ == "__main__":
     sys.exit(main())

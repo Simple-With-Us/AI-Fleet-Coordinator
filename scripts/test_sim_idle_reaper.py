@@ -696,7 +696,16 @@ class Reaper(Base):
         outcome, calls, log = self.fleet_alert_with(0)
         self.assertEqual(outcome, "ok")
         argv = calls[0]
-        self.assertEqual(argv[:5], [sys.executable, str(REPO / "scripts" / "service_zulip.py"), "--service", "sim-reaper", "post"])
+        self.assertEqual(
+            argv[:5],
+            [
+                sys.executable,
+                str(REPO / "scripts" / "service_zulip.py"),
+                "--service",
+                "sim-reaper",
+                "post",
+            ],
+        )
         self.assertNotIn("--as", argv)
         # The first line keeps the house format;  the second tags both Housekeepers and Jay (owner, Oct 29 2026).
         self.assertEqual(
@@ -707,7 +716,9 @@ class Reaper(Base):
         self.assertIn("fleet alert posted", log)
 
     def test_agent_cli_overrides_are_not_used(self):
-        with patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": "/opt/pinned/simple-chat", "AGENT_SEAT": "MA"}):
+        with patch.dict(
+            os.environ, {"SIM_REAPER_SIMPLE_CHAT": "/opt/pinned/simple-chat", "AGENT_SEAT": "MA"}
+        ):
             _, calls, _ = self.fleet_alert_with(0)
         self.assertEqual(calls[0][0], sys.executable)
         self.assertNotIn("/opt/pinned/simple-chat", calls[0])
