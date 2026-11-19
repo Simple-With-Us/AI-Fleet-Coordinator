@@ -3,8 +3,9 @@
 
 Any message in a PUBLIC Zulip stream whose TOPIC TITLE or BODY names a Linear issue ID (AFC-123
 and the other team keys) is mirrored onto that issue as ONE comment per (issue, topic), written by
-a dedicated Linear app identity.  Later hits in the same topic edit that comment in place (a list
-of permalinks), at most once per EDIT_INTERVAL seconds per comment.  Once a topic has a standing
+a dedicated Linear app identity.  Later hits in the same topic edit that comment in place (every
+post of the topic, each under its permalink), at most once per EDIT_INTERVAL seconds per
+comment.  Once a topic has a standing
 comment, every later message in the topic joins it, key or not (the whole-topic scope the owner
 ruled on 2026-11-03, with the backfill in operator_linear.py's hosting).  Direct messages and private
 streams are never relayed: the relay bot is a plain member that only joins public streams, and the
@@ -15,6 +16,17 @@ Owner decisions (Jay, 2026-10-21 and 2026-10-23): human and bot posts both count
 record; no #issues stream; comments are NOT posted as the Wise app but as a new dedicated relay
 app; one updating comment per (issue, topic) with 10 minute batching; DMs and private streams are
 excluded.
+
+The comment carries the whole post, as readable text (AFC-847).  A Zulip message is converted
+to Markdown (scripts/simple_tools/zulip_markdown.py:  Zulip's rendered HTML and its Markdown
+source both become Markdown) and shown with the line structure it was sent with, up to
+MESSAGE_CHARS characters a message and COMMENT_CHARS characters a comment.  A cut is always
+said in the comment itself:  "N characters of this message are not shown" and "N characters of
+this topic are not shown".  The credential scan runs over the converted text and not over the
+markup, so a Zulip attribute cannot trip it by itself;  a link's URL stays in the text, so a
+credential inside one is still caught.  A comment an older build wrote holds quotes that were
+cut at 280 characters:  its quotes are read from Zulip again and the comment is edited with the
+whole posts (the repair, in _refresh).
 
 What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
 
@@ -137,7 +149,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import secretscan
+from . import secretscan, zulip_markdown
 from .zulip import (
     ApiError,
     CredentialError,
@@ -181,7 +193,22 @@ MAX_SHORT_READS = 3  # reads in a row that bring nothing past where they began, 
 # characters, so a field past this bound is not one Zulip sent as it is.
 MAX_HISTORY_FIELD_BYTES = 64 * 1024
 MAX_ISSUES_PER_MESSAGE = 5
-QUOTE_CHARS = 280
+# The text of one message in the comment:  a post is shown whole, up to this many
+# characters.  Zulip refuses a message over 10,000 characters, so 4,000 covers every real
+# post with room to spare and keeps one comment readable.
+MESSAGE_CHARS = 4000
+# The whole comment body.  The messages that do not fit in it are left out, and the
+# comment says how many characters of the topic they were.
+COMMENT_CHARS = 30000
+# A label (the stream, the topic, the sender):  a name, not a post.
+LABEL_CHARS = 280
+# The render format of an entry's quotes.  An entry written by an older build carries no
+# version, and its quotes are read from Zulip again before its comment is edited.
+RENDER_VERSION = 2
+# How many standing comments are re-rendered from Zulip in one cycle, and how long an
+# entry whose topic could not be read waits before it is tried again.
+REFRESH_PER_CYCLE = 1
+REFRESH_RETRY = 900.0
 LINEAR_URL = "https://api.linear.app/graphql"
 USER_AGENT = "simple-tools-linear-relay/1 (fleet)"
 MARKER = "<!-- zulip-relay -->"  # first line of every relay comment, so humans can spot them
@@ -190,7 +217,9 @@ DRY_STATE = "~/.simple-tools/linear-relay.dry-run.json"
 LEDGER_VERSION = 2  # 2: the ledger key carries a digest of the topic, never the topic itself
 MAX_ENTRIES = 500  # the ledger is bounded: the oldest entries are pruned
 MAX_ARCHIVE = 20000  # what pruned entries leave behind (root, comment id) is bounded too
-MAX_LEDGER_BYTES = 8 * 1024 * 1024
+# The ledger holds the rendered text of every message it records, so it is larger than it
+# was when a quote was cut at 280 characters:  the bound is raised with the text.
+MAX_LEDGER_BYTES = 32 * 1024 * 1024
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT = 30.0  # one HTTP request
@@ -288,16 +317,64 @@ def _escape_markdown(text: str) -> str:
 
 
 def neutralise(text: str) -> str:
-    """Trim, withhold and defang untrusted Zulip text for a Linear comment.
+    """Trim, withhold and defang an untrusted Zulip label for a Linear comment.
 
     The result cannot open a link, start a code span, close the quoted string, or carry a
     credential into Linear.  The @ is kept but followed by a zero-width space, so a mention
-    never becomes a live mention."""
+    never becomes a live mention.  A label is a name, not a post:  a post is rendered by
+    post_text, which keeps the line structure the label throws away."""
     text = _escape_markdown(safe_text(text))
     text = text.replace("@", "@\u200b")
-    if len(text) > QUOTE_CHARS:
-        text = text[: QUOTE_CHARS - 1] + "\u2026"
+    if len(text) > LABEL_CHARS:
+        text = text[: LABEL_CHARS - 1] + "\u2026"
     return text
+
+
+def defang(text: str) -> str:
+    """Markdown that a Linear comment can hold:  its links are shown, not live, and an at
+    sign never starts a live mention.
+
+    Only the link openers are escaped.  The text around them is the post's own Markdown,
+    and a reader should see it as the sender wrote it;  a link is shown as the text and
+    the URL, never as a link that can be clicked.  A bracket that opens no link (one in a
+    code span, say) is left alone."""
+    text = re.sub(r"(?<!\\)\[(?=[^\]\n]*\]\()", r"\\[", text)
+    return text.replace("@", "@\u200b")
+
+
+def post_text(content: str) -> str:
+    """One Zulip post as the text of a Linear comment:  readable Markdown with its line
+    structure kept, or the withheld placeholder when it carries anything
+    credential-shaped.
+
+    The post is converted first (Zulip's rendered HTML and its Markdown source both
+    become Markdown) and the credential scan runs over the converted text, so a markup
+    attribute can never trip it by itself.  A link's URL stays in the text, so a
+    credential inside one is still caught.  A post longer than MESSAGE_CHARS is cut, and
+    the cut says how many characters of it are not shown."""
+    converted = zulip_markdown.to_markdown(content)
+    if has_secret(converted):
+        return WITHHELD
+    text = defang(converted)
+    if len(text) > MESSAGE_CHARS:
+        left_out = len(text) - MESSAGE_CHARS
+        text = "%s\n\n_%d characters of this message are not shown._" % (
+            text[:MESSAGE_CHARS].rstrip(),
+            left_out,
+        )
+    return text
+
+
+def _field_is_secret(name: str, value: str) -> bool:
+    """Whether one field of a Zulip message carries anything credential-shaped.
+
+    A message's text is scanned as the text the comment shows:  the converted post, so a
+    markup attribute cannot trip the scanner by itself, and a link's URL stays in the
+    text, so a credential inside one is still caught.  The other fields are plain text
+    and are scanned as they are."""
+    if name == "content":
+        value = zulip_markdown.to_markdown(value)
+    return has_secret(value)
 
 
 # ------------------------------------------------------------------------------------------
@@ -400,6 +477,8 @@ def valid_entry(key: Any, entry: Any) -> bool:
         and _is_int(entry.get("failures"))
         and entry["failures"] >= 0
         and _is_number(entry.get("retry_after"))
+        and (entry.get("format") is None or _is_int(entry.get("format")))
+        and (entry.get("refreshed") is None or isinstance(entry.get("refreshed"), str))
     )
 
 
@@ -750,6 +829,11 @@ def new_entry(issue: str, stream_id: int, stream: str, topic: str, root_mid: int
         "pending": False,
         "failures": 0,
         "retry_after": 0.0,
+        # The render format of the quotes below.  An entry written by an older build has
+        # none, and its quotes are read from Zulip again before its comment is edited.
+        "format": RENDER_VERSION,
+        # When the quotes were last re-rendered from Zulip, for the comment to say so.
+        "refreshed": None,
     }
 
 
@@ -1074,30 +1158,62 @@ class LinearClient:
 # ------------------------------------------------------------------------------------------
 # Worker
 # ------------------------------------------------------------------------------------------
+def _message_block(item: Mapping[str, Any], realm: str) -> str:
+    """One message of the comment:  its permalink and its sender, then its text.
+
+    The link is built here, from the message id, so no text that came out of Zulip can
+    reach it.  The sender is a label, escaped whole.  A message the relay never read (one
+    that came in by a topic rename) has no text, and its block shows none."""
+    head = "**[%s](%s) \u2014 %s**" % (
+        item["when"],
+        permalink(realm, int(item["mid"])),
+        neutralise(item["sender"]),
+    )
+    if not item["quote"]:
+        return head
+    return "%s\n\n%s" % (head, item["quote"])
+
+
 def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the relay") -> str:
+    """The body of the relay comment:  the marker, the heading, every recorded message as
+    its own block, and the footer.
+
+    The body is bounded and nothing is ever cut silently.  A message whose text is longer
+    than MESSAGE_CHARS was cut when it was stored, and it says so;  the messages that do
+    not fit in COMMENT_CHARS are left out here, and the comment says how many characters
+    of the topic they were."""
     links = entry["links"][-MAX_LINKS_SHOWN:]
     earlier = max(0, int(entry["count"]) - len(links))
-    lines = [
-        entry["marker"],
-        "**Zulip discussion:** #%s > %s"
-        % (neutralise(entry["stream"]), neutralise(entry["topic"])),
-        "",
-    ]
+    heading = "**Zulip discussion:** #%s > %s" % (
+        neutralise(entry["stream"]),
+        neutralise(entry["topic"]),
+    )
+    lines = [entry["marker"], heading, ""]
+    if entry.get("refreshed"):
+        lines += ["_Re-rendered from Zulip on %s._" % entry["refreshed"], ""]
     if earlier > 0:
-        lines.append("_%d earlier message(s) not listed._" % earlier)
-    for item in links:
-        # The URL is built here, from the message id, so no text that came out of Zulip can
-        # reach it.  The quote was neutralised when it was stored, so it is not escaped twice.
-        # A message the relay never read (one that came in by a topic rename) has no quote, and
-        # its bullet shows none rather than an empty pair of quotation marks.
-        head = "- [%s](%s), %s" % (
-            item["when"],
-            permalink(realm, int(item["mid"])),
-            neutralise(item["sender"]),
-        )
-        lines.append('%s: "%s"' % (head, item["quote"]) if item["quote"] else head)
+        lines += ["_%d earlier message(s) not listed._" % earlier, ""]
+    # What the messages share of the body:  the marker, the heading, the notes and the
+    # footer are outside it, and the note about what was left out has room in it.
+    budget = COMMENT_CHARS - len("\n".join(lines)) - 200
+    blocks: list[str] = []
+    used = 0
+    left_out = 0
+    for item in reversed(links):
+        block = _message_block(item, realm)
+        if blocks and used + len(block) > budget:
+            # The newest messages are the ones that fit:  what is left out is the oldest.
+            left_out += len(item["quote"])
+            continue
+        blocks.append(block)
+        used += len(block)
+    blocks.reverse()
+    if left_out:
+        lines += ["_%d characters of this topic are not shown._" % left_out, ""]
+    for block in blocks:
+        lines += [block, ""]
     # Rendered copy: the sentence gap is a no-break space plus a space.
-    lines += ["", "_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
+    lines += ["_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
     return "\n".join(lines)
 
 
@@ -1240,6 +1356,9 @@ class RelayWorker:
         self._caught_up: set[str] = set()
         self._catching: dict[str, _CatchUp] = {}
         self._read_retry: dict[str, float] = {}
+        # For a key whose topic could not be read to re-render its comment, the monotonic
+        # time before which it is not read for again.
+        self._refresh_retry: dict[str, float] = {}
         self._archive_drops_logged = 0  # how much of ledger.archive_dropped the log has said
         # Whose name the comment footer carries: "the relay" standalone, "the Operator" hosted.
         # The marker line itself never changes, so a hosted worker adopts the comments the
@@ -1412,7 +1531,7 @@ class RelayWorker:
         """Say which fields of one message carry credential-shaped text, and so show WITHHELD in
         the comment (_append withholds each such field whole, on the live path and the history
         path alike).  The field names and the message id only: the text never reaches the log."""
-        withheld = [name for name, value in fields if has_secret(value)]
+        withheld = [name for name, value in fields if _field_is_secret(name, value)]
         if withheld:
             self.log(
                 "message %d: withheld %s (credential-shaped text)" % (mid, ", ".join(withheld))
@@ -1748,7 +1867,7 @@ class RelayWorker:
                 "mid": mid,
                 "sender": safe_text(sender),
                 "when": time.strftime("%b %d %H:%M UTC", time.gmtime(when)),
-                "quote": neutralise(content),
+                "quote": post_text(content),
             }
         )
         entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
@@ -1867,6 +1986,83 @@ class RelayWorker:
         else:
             self._judge(key, read, 0, mid)
         return entry
+
+    def _needs_refresh(self, entry: Mapping[str, Any]) -> bool:
+        """True when the entry's quotes were rendered by an older build.
+
+        An entry written before this build holds quotes that were cut at 280 characters
+        and escaped, and the cut text is gone:  only Zulip holds the whole post."""
+        try:
+            return int(entry.get("format", 0)) < RENDER_VERSION
+        except (TypeError, ValueError):
+            return True
+
+    def _refresh(self, entry: dict[str, Any], read: list[Mapping[str, Any]]) -> bool:
+        """Render the entry's recorded quotes again from the messages the topic holds.
+
+        The quotes are replaced only for the messages the read actually holds, so a read
+        of another topic (the stored topic is the whitespace-collapsed form, and a topic
+        whose title carried a credential is stored withheld) changes nothing.  The entry
+        counts as rendered in this format once the read covered one of its messages;  a
+        message the read does not hold (one older than the read's cap, or one that was
+        deleted) keeps the text it had."""
+        by_id: dict[int, Mapping[str, Any]] = {}
+        for message in read:
+            try:
+                by_id[int(message["id"])] = message
+            except (KeyError, TypeError, ValueError):
+                continue
+        changed = 0
+        covered = 0
+        for item in entry["links"]:
+            message = by_id.get(int(item["mid"]))
+            if message is None:
+                continue
+            covered += 1
+            quote = post_text(str(message.get("content", "")))
+            if quote != item["quote"]:
+                item["quote"] = quote
+                changed += 1
+        if not covered:
+            return False  # the read is of another topic, or it holds none of its messages
+        entry["format"] = RENDER_VERSION
+        if changed:
+            entry["refreshed"] = time.strftime("%b %d %H:%M UTC", time.gmtime(self.clock()))
+            entry["dirty"] = True
+            self.log("re-rendered the quotes of %s from Zulip" % self._label(entry))
+        return bool(changed)
+
+    def _refresh_stale(self) -> None:
+        """Re-render the standing comments an older build wrote.
+
+        A comment written before this build holds quotes that were cut at 280
+        characters;  the whole post is only in Zulip, so the topic is read again and the
+        comment is edited with the whole text.  One comment is refreshed per cycle, so a
+        realm full of old comments is repaired over a few cycles instead of in one
+        burst, and an entry whose topic cannot be read waits REFRESH_RETRY seconds
+        before it is tried again."""
+        if self.history is None:
+            return  # no reader: the standalone process cannot read a topic back
+        now = self.monotonic()
+        done = 0
+        for key, entry in sorted(
+            self.ledger.entries.items(),
+            key=lambda item: float(item[1].get("last_touch", 0.0)),
+        ):
+            if done >= REFRESH_PER_CYCLE:
+                break
+            if not self._needs_refresh(entry) or not entry.get("comment_id"):
+                continue
+            if self._is_public(int(entry["stream_id"])) is not True:
+                continue  # a stream that turned private is dropped, not repaired
+            if now < self._refresh_retry.get(key, 0.0):
+                continue  # its topic could not be read a moment ago
+            read, _error = self._read_topic(int(entry["stream_id"]), entry["topic"], {})
+            if read is None:
+                self._refresh_retry[key] = now + REFRESH_RETRY
+                continue
+            if self._refresh(entry, read):
+                done += 1
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live
@@ -2101,6 +2297,12 @@ class RelayWorker:
                 entry = self._enter(key, ident, stream_id, stream, topic, mid, reads)
                 if entry is None:
                     continue  # an archived comment whose history could not be read waits
+            elif self._needs_refresh(entry):
+                # A comment an older build wrote:  its quotes are read from Zulip again, so
+                # the next edit of it carries the whole posts.
+                read, _error = self._read_topic(stream_id, topic, reads)
+                if read is not None:
+                    self._refresh(entry, read)
             if self._append(entry, mid, sender, content, now):
                 self._note_recorded(key, mid)
                 self._flush(key, now)  # creates at once; edits wait for the interval
@@ -2253,6 +2455,7 @@ class RelayWorker:
             self.log("%s relay comment for %s" % (done, label))
             entry["last_edit"] = now
             entry["dirty"] = False
+            entry["refreshed"] = None  # the comment says so once
             entry["failures"] = 0
             entry["retry_after"] = 0.0
         except LinearAuthError as exc:
@@ -2283,6 +2486,7 @@ class RelayWorker:
             if self.public_streams is None:
                 return  # nothing is known about any stream yet: write nothing, drop nothing
             self._drop_private_archive()
+            self._refresh_stale()
             for key in list(self.ledger.entries):
                 entry = self.ledger.entries.get(key)
                 if entry is None:

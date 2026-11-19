@@ -2351,5 +2351,150 @@ class CatchUpTests(WorkerCase):
         self.assertEqual(self.entry()["seen"], [1, 5])
 
 
+class ReadablePostTests(WorkerCase):
+    """AFC-847:  the comment carries the whole post, as readable text.
+
+    The relay used to cut every post at 280 characters, collapse its line structure into
+    one line and escape its markup, so a reader of the Linear comment saw a fragment of
+    a post, not the post.  Now the post is converted to Markdown, shown whole up to a
+    bound, and every cut says what it left out.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.w = self.worker(history=self.topic.whole)
+
+    def old_entry(self, quote: str = "the old cut text") -> dict:
+        """An entry as an older build wrote it:  no render format, and a quote that was
+        cut at 280 characters."""
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        del entry["format"]
+        entry["comment_id"] = "c1"
+        entry["count"] = 1
+        entry["seen"] = [1]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": quote}
+        ]
+        self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")] = entry
+        return entry
+
+    # -- the whole post ------------------------------------------------------------------
+    def test_a_post_is_shown_whole_and_keeps_its_line_structure(self) -> None:
+        post = "first line\n\nsecond line\n\n" + "x" * 500
+        self.w.handle_event(message(1, "AFC-1 relay", post))
+        body = self.lin.created[0][1]
+        self.assertIn("first line", body)
+        self.assertIn("second line", body)
+        self.assertIn("x" * 500, body)  # the whole post, not a fragment of it
+
+    def test_a_post_past_the_message_bound_is_cut_and_says_so(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "y" * (lr.MESSAGE_CHARS + 100)))
+        body = self.lin.created[0][1]
+        self.assertIn("100 characters of this message are not shown.", body)
+        self.assertNotIn("y" * (lr.MESSAGE_CHARS + 1), body)
+
+    def test_the_comment_body_is_bounded_and_says_what_it_left_out(self) -> None:
+        for mid in range(1, 11):
+            self.w.handle_event(message(mid, "AFC-1 relay", "z" * 4000))
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertLessEqual(len(body), lr.COMMENT_CHARS)
+        self.assertRegex(body, r"_\d+ characters of this topic are not shown\._")
+        self.assertIn("near/10", body)  # the newest post is in
+        self.assertLess(body.count("near/"), 10)  # the oldest ones are out, and it says so
+
+    def test_a_link_in_a_post_is_shown_and_never_becomes_a_live_link(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "see [the docs](https://example.com/x)"))
+        body = self.lin.created[0][1]
+        self.assertIn("the docs", body)
+        self.assertIn("https://example.com/x", body)
+        self.assertNotIn("see [the docs]", body)  # not a link:  the opener is escaped
+
+    def test_a_mention_in_a_post_never_becomes_a_live_mention(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello @**MiniMax**"))
+        body = self.lin.created[0][1]
+        self.assertIn("@\u200bMiniMax", body)
+
+    # -- the credential scan runs over the converted text ---------------------------------
+    def test_a_markup_attribute_cannot_trip_the_credential_scan(self) -> None:
+        # A long hex run in an attribute is markup, not text:  the conversion drops it, so
+        # it can no longer withhold a post whole.
+        sha = "a" * 40
+        html = '<p>the commit is here</p><p><span class="mention" data-sha="%s">@x</span></p>' % sha
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertNotIn(lr.WITHHELD, body)
+        self.assertIn("the commit is here", body)
+        self.assertNotIn(sha, body)
+
+    def test_a_long_hex_run_in_the_text_is_still_withheld_whole(self) -> None:
+        # The text itself is still scanned:  this is the row AFC-834 is about, and this
+        # change does not touch it.
+        sha = "a" * 40
+        self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(sha, body)
+
+    def test_a_credential_inside_a_link_url_is_still_withheld_whole(self) -> None:
+        token = "ghp_" + "fake" * 9
+        html = '<p><a href="https://example.com/%s">the link</a></p>' % token
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(token, body)
+
+    # -- the repair of the comments an older build wrote ----------------------------------
+    def test_a_comment_an_older_build_wrote_is_re_rendered_from_zulip(self) -> None:
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "the whole post\n\nwith its lines")]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the whole post\n\nwith its lines")
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("the whole post", body)
+        self.assertIn("with its lines", body)
+        self.assertNotIn("the old cut text", body)
+        self.assertIn("Re-rendered from Zulip", body)  # the comment says what happened
+        self.assertTrue(any("re-rendered the quotes" in line for line in self.logs))
+
+    def test_a_stale_comment_is_re_rendered_by_the_cycle(self) -> None:
+        # A topic that stays silent is repaired anyway:  the cycle reads it back.
+        self.old_entry()
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the whole post")
+        self.assertIn("the whole post", self.lin.updated[-1][1])
+
+    def test_a_repair_that_cannot_read_the_topic_leaves_the_comment_as_it_is(self) -> None:
+        entry = self.old_entry()
+        self.topic.whole_error = RuntimeError("the topic cannot be read")
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)  # it waits for a later try
+        self.assertEqual(entry["links"][0]["quote"], "the old cut text")
+        self.assertEqual(self.lin.updated, [])
+
+    def test_a_repair_of_another_topic_changes_nothing(self) -> None:
+        # The stored topic is the whitespace-collapsed form, so a read can be of another
+        # topic:  the quotes are then left as they are.
+        entry = self.old_entry()
+        self.topic.messages = [past(9, "a different topic")]
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the old cut text")
+
+    def test_without_a_reader_nothing_is_re_rendered(self) -> None:
+        # The standalone relay has no history reader:  its comments keep what they have.
+        worker = self.worker()
+        entry = self.old_entry()
+        worker.tick()
+        self.assertNotIn("format", entry)
+
+
 if __name__ == "__main__":
     unittest.main()

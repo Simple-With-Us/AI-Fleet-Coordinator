@@ -49,12 +49,27 @@ Eavesdropper, and it hosts the mirror.
   fold-in was directed.  The retirement sequence below keeps that proof as a gate.
 - **Comment format:** first line `<!-- zulip-relay -->` plus a per-conversation key (the
   issue and the id of the first message recorded for the topic, so a topic rename keeps
-  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then a
-  bullet per recorded message — timestamp link (a `near/<message id>` permalink built
-  from the id alone, never from topic text), sender, and a neutralised quote (280 chars,
-  credential-shaped fields withheld whole, markdown defanged);  at most 20 bullets, with
+  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then one
+  block per recorded message — a bold line with the timestamp link (a `near/<message id>`
+  permalink built from the id alone, never from topic text) and the sender, then the whole
+  post as readable Markdown (the line structure kept, credential-shaped fields withheld
+  whole, links shown but never live);  at most 20 blocks, with
   an "_N earlier message(s) not listed._" line when the thread is longer;  footer
   "_Mirrored one way from Zulip by the relay.  Edit in Zulip, not here._"
+- **The whole post (AFC-847).**  A post is shown as the sender wrote it:  the message
+  content is converted to Markdown (`scripts/simple_tools/zulip_markdown.py`, standard
+  library only — Zulip's rendered HTML and its Markdown source both become Markdown) and
+  shown with its line structure kept, up to 4,000 characters a message (`MESSAGE_CHARS`)
+  and 30,000 characters a comment (`COMMENT_CHARS`);  a cut always says what it left out
+  ("_N characters of this message are not shown._", "_N characters of this topic are not
+  shown._").  The credential scan runs over the converted text and not over the markup, so
+  a Zulip attribute cannot trip a row by itself, while a link's URL stays in the text, so a
+  credential inside one is still caught.  A link is shown, not live.  The comments written
+  before this change hold posts that were cut at 280 characters:  an entry records the
+  format its quotes were rendered in, an entry without one is read from Zulip again and
+  rendered again, and the comment is edited with the whole posts and says that it was
+  re-rendered.  The topic's next message repairs its comment, and a topic that stays
+  silent is repaired by the cycle, one comment per cycle.
 - **Dedup state:** a JSON ledger, `~/.agent-sync/linear-relay.json` on the host that runs
   it (override `LINEAR_RELAY_STATE`), keyed `ISSUE|stream_id|sha256(topic)[:32]`, holding
   the comment id, the recorded links, seen message ids, counts, edit timing and retry
@@ -191,7 +206,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (59 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (61 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -218,9 +233,12 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 127 tests) covers the worker, the whole-topic continuation
+(`test_linear_relay.py`, 148 tests) covers the worker, the whole-topic continuation
 above, and the AFC-821 archive and catch-up, malformed history messages and reads that
-answer no list at all included.
+answer no list at all included, and the whole post (the conversion, the bounds and the
+notes, the credential scan over the converted text, and the repair of the comments an
+older build wrote).  The conversion itself has its own suite
+(`test_zulip_markdown.py`, 26 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 

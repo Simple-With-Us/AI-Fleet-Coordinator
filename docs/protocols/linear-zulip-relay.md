@@ -13,7 +13,7 @@ the other team keys, the same list as `LINEAR_TEAMS` in `scripts/zulip_linkifier
 onto that issue as a comment.
 
 There is exactly one comment per (issue, topic).  The first hit creates it; every later hit in the
-same topic edits it in place, adding a bullet per message with a permalink back to Zulip.  Edits
+same topic edits it in place, adding a block per message with a permalink back to Zulip.  Edits
 are batched: at most one edit per comment every ten minutes, and a tick flushes what is pending.
 A message is mirrored once, so a replay is idempotent.
 
@@ -73,31 +73,69 @@ The key is the issue and the id of the first message recorded for the topic, not
 a topic rename moves the conversation, and the key has to survive that so the relay keeps editing
 the same comment instead of starting a second one.  The marker is matched against whole lines of
 a comment, never as a substring, so the marker of message 100 cannot match the comment of message
-1000.  Then a heading, one bullet per message, and a footer that says the mirror runs one way.
+1000.  Then a heading, one block per message (its permalink, its sender and the whole post),
+and a footer that says the mirror runs one way.
 
 Copied Zulip text is untrusted.  Every field (the topic, the message, the sender's name, the stream
 name) is scanned for credential-shaped text before it is stored, logged or relayed: the fleet's own
 scanner (`scripts/simple_tools/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
 and other service prefixes, and Zulip-shaped API keys of 32 mixed-case letters and digits) and the
 relay's wider rows (long hex and base64 runs, and a keyword such as `password` or `token` followed
-by `:` or `=` and a value).  The Zulip-shaped row also withholds an opaque 32-character id, a cost
+by `:` or `=` and a value).  A message's text is scanned as the text the comment shows, that is
+after it is converted to Markdown, so a markup attribute (a Zulip `data-user-id`, a long href) can
+never trip a row by itself; a link's URL stays in the text, so a credential inside one is still
+caught.  The Zulip-shaped row also withholds an opaque 32-character id, a cost
 accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  Neither
 the comment nor the log says which row matched, so a reader cannot tell from Linear why one id was
 withheld and another was not; the rows above are the whole list.  It is never partly
 redacted, because a pattern can find where a credential starts but not always where it ends.  The
-message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
-trimmed and escaped so it cannot open a link, start a code span or close the quoted string.  An @ is
+message itself is still mirrored as a link, which carries no Zulip text.  A clean label (the
+topic, the sender, the stream name) is trimmed and escaped so it cannot open a link, start a code
+span or close the quoted string.  An @ is
 kept but followed by a zero-width space, so a mention never becomes a live mention.  The relay's log
 names an entry by its issue and its first message id, never by its topic.  A message that came in
-by a topic rename was never read by the relay, so its bullet carries no quote.
+by a topic rename was never read by the relay, so its block carries no post.
 
-The link on each bullet names the message id and nothing else: `https://<realm>/#narrow/near/<id>`.
+The link on each block names the message id and nothing else: `https://<realm>/#narrow/near/<id>`.
 The topic never goes into a URL, because a percent-encoded topic is still the topic, and a reader of
 the Linear comment could decode it.  Zulip's `near` narrow operator resolves a message id on its own,
 so the link lands on the message and the topic it lives in.  The link is built when the comment is
 rendered, from the message id, so no text that came out of Zulip can reach it.
+
+## The whole post (AFC-847)
+
+A post is shown as the sender wrote it.  Zulip's message content is converted to Markdown
+(`scripts/simple_tools/zulip_markdown.py`, standard library only): Zulip's rendered HTML and
+Zulip's Markdown source both become Markdown, with the paragraphs, the lists, the quotes, the code
+and the links kept.  The relay reads the message source (`apply_markdown=false`), so a post
+arrives as Markdown already; the same reader handles the rendered HTML a host that reads the
+messages API with its default gets.
+
+The comment is bounded, and every cut is said in the comment itself:
+
+- A message is shown up to 4,000 characters (`MESSAGE_CHARS`).  Zulip refuses a message over
+  10,000 characters, so 4,000 covers every real post, and a longer one is cut and says
+  `_N characters of this message are not shown._`
+- The whole comment is at most 30,000 characters (`COMMENT_CHARS`), well inside what Linear takes.
+  The messages that do not fit are the oldest ones, and the comment says
+  `_N characters of this topic are not shown._`
+- A message's text is never collapsed into one line: the line structure the sender wrote is the
+  line structure the reader gets.
+
+A link in a post is shown, with its text and its URL, and it is not a live link: the opener is
+escaped, so a reader cannot click a link out of a post they did not read.  A mention is never a
+live mention either.
+
+The comments that were written before this change hold posts that were cut at 280 characters, and
+the cut text is gone: only Zulip has the whole post.  Those comments are repaired, not left as
+they are.  An entry records the format its quotes were rendered in; an entry without one is read
+from Zulip again (the topic's history), its quotes are rendered again, and the comment is edited
+with the whole posts and says that it was re-rendered.  A topic's next message repairs its
+comment, and a topic that stays silent is repaired by the cycle, one comment per cycle.  The
+standalone relay has no history reader, so its comments keep what they have until the topic speaks
+again.
 
 ## Environment
 
@@ -185,7 +223,7 @@ once per cycle, not once per message; a create still writes its intent ahead of 
 It MUST sit on a persistent volume.  A lost ledger means the relay no longer knows which comment
 belongs to a topic, so it starts a new one, and the old comment stays behind.
 
-The ledger is bounded: 500 entries and 8 MB, and the oldest entries are pruned first.  The comment
+The ledger is bounded: 500 entries and 32 MB, and the oldest entries are pruned first.  The comment
 map outlives that bound (AFC-821).  A pruned entry that has a comment, or a create whose outcome is
 unknown, leaves a record in the ledger's `archive` table under the same key: the conversation's
 first message id, the comment id, the `pending` flag and when the entry was last touched, and no
@@ -201,7 +239,7 @@ When it is there it is checked on load like the entries: a table, every key exac
 writes it, and every record with all four fields of the right type and a finite time.  A malformed
 record stops the relay, and the message names its position only.  The archive is bounded at 20,000
 records and by the file's 8 MB: its oldest records are dropped first, and the log says how many
-("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 8 MB.
+("the relay ledger dropped N archived record(s)").  A full archive takes about 3.7 MB of the 32 MB.
 A build from before AFC-821 reads a ledger that has an archive, writes the table back as it found
 it, and neither adds to it nor restores from it, so a rollback loses only the restores.
 
