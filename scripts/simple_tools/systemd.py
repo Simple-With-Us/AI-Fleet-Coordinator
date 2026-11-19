@@ -149,7 +149,7 @@ def sample_config() -> str:
     return (
         "# Linux listener sample.  Contains no secrets and enables no seats.\n"
         "# Configure only seats assigned to the interactive mac partition in the fleet partition.\n"
-        "# Approved authentication and init precede activation; headless wakes require a probe.\n"
+        "# Approved authentication and init precede activation.\n"
         '[daemon]\ninstance = "mac"\nowner_user_id = 0\neligible_user_ids = []\nnotify_banners = false\n'
     )
 

@@ -61,6 +61,13 @@ class AlerterTests(unittest.TestCase):
         self.assertEqual(self.poll(items), 0)
         self.assertEqual(len(self.ran), 1)
 
+    def test_a_wake_the_router_settled_before_the_poll_still_alerts_once(self):
+        # AFC-824:  a router wake's last row is its outcome, which can land between two polls.
+        items = [{"wake_id": "r1", "state": "delivered"}, {"wake_id": "r2", "state": "undelivered"},
+                 {"wake_id": "r3", "state": "unknown"}]
+        self.assertEqual(self.poll(items), 3)
+        self.assertEqual(self.poll(items), 0)
+
     def test_dm_without_channel_banners_dm(self):
         self.assertEqual(self.poll([{"wake_id": "w2", "state": "queued", "dm": True}]), 1)
         self.assertIn("wake in DM", self.ran[0])

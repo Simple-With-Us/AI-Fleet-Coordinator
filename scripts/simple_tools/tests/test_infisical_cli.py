@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+
 
 class IsolatedCommandTests(unittest.TestCase):
     def test_coding_memory_installer_payload_can_run_its_delegate_in_isolation(self):
@@ -18,8 +20,17 @@ class IsolatedCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / "coding-memory"
+            if destination.is_symlink():
+                raise ValueError(f"refusing symlink: {destination}")
+            destination.mkdir(mode=0o700)
             settings = destination / "settings"
-            (settings / "fleet_secrets").mkdir(parents=True)
+            if settings.is_symlink():
+                raise ValueError(f"refusing symlink: {settings}")
+            settings.mkdir(mode=0o700)
+            fleet_secrets_dir = settings / "fleet_secrets"
+            if fleet_secrets_dir.is_symlink():
+                raise ValueError(f"refusing symlink: {fleet_secrets_dir}")
+            fleet_secrets_dir.mkdir(mode=0o700)
             hostile = root / "hostile"
             hostile.mkdir()
             (hostile / "fleet_infisical_cli.py").write_text("raise AssertionError('foreign command')\n")
@@ -40,6 +51,12 @@ class IsolatedCommandTests(unittest.TestCase):
             self.assertEqual(installed.returncode, 0, installed.stderr)
             for name in ("fleet_infisical.py", "fleet_infisical_cli.py"):
                 self.assertEqual((settings / name).read_bytes(), (scripts / name).read_bytes())
+            for name in ("__init__.py", "operator_github_state.py"):
+                self.assertEqual(
+                    (settings / "simple_tools" / name).read_bytes(),
+                    (scripts / "simple_tools" / name).read_bytes(),
+                )
+            assert_installed_writer(self, settings, root)
             result = subprocess.run(
                 [sys.executable, "-I", str(settings / "linux-entrypoint.py"), "--help"],
                 cwd=hostile,
@@ -104,6 +121,7 @@ class IsolatedCommandTests(unittest.TestCase):
                     "HOME": directory,
                     "PATH": os.defpath,
                     "PYTHONPATH": directory,
+                    "INFISICAL_TOKEN": "synthetic-fixture",
                 },
                 capture_output=True,
                 text=True,

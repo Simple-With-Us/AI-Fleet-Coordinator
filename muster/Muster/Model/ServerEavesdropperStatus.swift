@@ -774,7 +774,8 @@ enum ServerSeatPause: Equatable {
     }
 }
 
-/// A seat's `quota` block:  the provider quota the wake gate reads.
+/// A seat's `quota` block:  the provider quota an older listener published.  Today's listener
+/// runs no model and has no wake gate (AFC-694), so the reducer's block never holds a reading.
 struct ServerSeatQuotaFields: Decodable, Equatable {
     let known: Bool?
     let exhausted: Bool?
@@ -827,7 +828,7 @@ extension ServerSeatQuotaFields {
 /// A seat's provider quota.  An absent reading is never an exhausted one.
 enum ServerSeatQuota: Equatable {
     case notReported
-    /// The listener has no quota reading for this seat (or its wake names no provider).
+    /// The listener has no quota reading for this seat, which is every seat since AFC-694.
     case notKnown
     /// Each part can still be nil, which reads as not reported.
     case known(exhausted: Bool?, remainingPercent: Int?, resetsAt: Date?)
