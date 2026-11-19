@@ -405,7 +405,10 @@ class _Converter(HTMLParser):
         emptied, and the post would lose them (Kody, PR 2340)."""
         if not self.lists:
             return
-        self._close_inline()
+        if self.embed is not None:
+            self._keep_only_links()
+        else:
+            self._close_inline()
         ctx = self.lists[-1]
         if ctx.item is not None:
             text = "".join(ctx.item).strip()
@@ -429,6 +432,13 @@ class _Converter(HTMLParser):
         else:
             self.blocks.append(self._quoted(rendered))
 
+    def _keep_only_links(self) -> None:
+        """Close the code span and every buffer but a link:  a link that holds an
+        embedded message keeps it,  so the URL of the sender is not lost (Kody, PR 2340)."""
+        self._close_code()
+        while self.typed and self.typed[-1].kind != "link":
+            self._close_typed()
+
     def _flush(self, keep_inline: bool = False) -> None:
         """End the paragraph being read.
 
@@ -437,9 +447,7 @@ class _Converter(HTMLParser):
         The paragraph itself stays whole then,  and only a link stays open:  a mention or
         a code span that is open closes with the paragraph it is in (Kody, PR 2340)."""
         if keep_inline:
-            self._close_code()
-            while self.typed and self.typed[-1].kind != "link":
-                self._close_typed()
+            self._keep_only_links()
             return
         self._close_inline()
         if not self.buf:
@@ -460,7 +468,7 @@ class _Converter(HTMLParser):
         attrd = {key: (value or "") for key, value in attrs}
         classes = attrd.get("class", "")
         if tag == "div" and "codehilite" in classes:
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.pre = []
             return
         if tag == "div" and "message_embed" in classes:
@@ -475,7 +483,7 @@ class _Converter(HTMLParser):
             self.buf.append("\n")
             return
         if tag == "pre":
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.pre = []
             return
         if tag == "code":
@@ -497,11 +505,11 @@ class _Converter(HTMLParser):
                 return
             return
         if tag == "blockquote":
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.quote += 1
             return
         if tag in ("ul", "ol"):
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.lists.append(_List(tag == "ol"))
             return
         if tag == "li":
@@ -513,11 +521,11 @@ class _Converter(HTMLParser):
             ctx.marker = len(marker)
             return
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.buf.append("%s " % ("#" * int(tag[1])))
             return
         if tag == "hr":
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self.blocks.append(self._quoted("---"))
             return
         if tag == "img":
@@ -574,14 +582,17 @@ class _Converter(HTMLParser):
                     self._append_part("[embedded content]", _PART_TEXT)
             return
         if tag == "blockquote":
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             if self.quote:
                 self.quote -= 1
             return
         if tag == "li":
             if not self.lists:
                 return
-            self._close_inline()  # the text of an open link stays in the item
+            if self.embed is not None:
+                self._keep_only_links()
+            else:
+                self._close_inline()  # the text of an open link stays in the item
             ctx = self.lists[-1]
             if ctx.item is None:
                 return
@@ -591,7 +602,7 @@ class _Converter(HTMLParser):
             ctx.items.append(marker + text)
             return
         if tag in ("ul", "ol"):
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             self._close_list()
             return
         if tag in ("p", "tr", "table", "section", "article", "thead", "tbody"):

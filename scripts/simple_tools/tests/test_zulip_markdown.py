@@ -282,6 +282,16 @@ class NestingTests(unittest.TestCase):
         html = '<p><a href="https://x"><div class="message_embed"><p>quoted</p></div></a></p>'
         self.assertEqual(zm.to_markdown(html), "[\\[embedded content\\]](https://x)")
 
+    def test_a_code_block_inside_an_embedded_message_keeps_the_link(self) -> None:
+        # Every block read inside an embedded message keeps the link open,  not only a
+        # paragraph (Kody, PR 2340).
+        html = (
+            '<p><a href="https://x"><div class="message_embed">'
+            '<div class="codehilite"><pre><code>q</code></pre></div></div></a></p>'
+        )
+        out = zm.to_markdown(html)
+        self.assertEqual(out, "```\nq\n```\n\n[\\[embedded content\\]](https://x)")
+
     def test_an_embedded_message_keeps_its_paragraph_whole(self) -> None:
         # The paragraph does not split around the embedded message (Kody, PR 2340).
         html = '<p>Hi <a href="https://x">L<div class="message_embed">P</div></a></p>'
