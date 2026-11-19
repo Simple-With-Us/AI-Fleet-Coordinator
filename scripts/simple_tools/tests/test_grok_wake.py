@@ -278,6 +278,9 @@ class GrokWake(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "chat-not-listed")
         self.assertIn("chat-not-listed", GW.NEVER_RAN)
         self.assertEqual(len(drive.calls), 1)
+        # The whole inventory is asked for:  a later-page chat must not read as
+        # chat-not-listed (Kody, PR 2306).
+        self.assertIn("--all-pages", drive.calls[0])
 
     def test_no_refusal_still_says_the_vague_not_live(self) -> None:
         for sessions in ([row(live=False)], []):
@@ -298,7 +301,13 @@ class GrokWake(unittest.TestCase):
 
     def test_an_updated_router_still_reads_the_old_code_as_never_ran(self) -> None:
         # A Mac that has not been updated answers `not-live`;  that must stay delivered:  false.
+        # Both halves are pinned down:  this platform's set carries the code into the
+        # router's never_ran through the builder (here), and the router maps a never-ran
+        # refusal to delivered false end to end (test_wake_router_not_live, kept in its
+        # own file so the relay's per-file publish scan does not refuse the router suite).
         self.assertIn("not-live", GW.NEVER_RAN)
+        ready = SVC.prepare("GROK", SVC.BUILDERS["GROK"], self.env)
+        self.assertIn("not-live", ready.never_ran)
 
     def test_an_incomplete_list_without_the_chat_is_retried(self) -> None:
         drive = Drive([])

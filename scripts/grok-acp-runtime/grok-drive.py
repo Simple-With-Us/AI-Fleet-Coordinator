@@ -69,13 +69,23 @@ def cmd_list(args):
     argv = [PY, str(LEADER), "list"]
     if args.cwd:
         argv.extend(["--cwd", args.cwd])
+    if args.all_pages:
+        argv.extend(["--all-pages"])
     data, code = run_json(argv, timeout=25)
     sessions = enrich_sessions(data.get("sessions") or [])
+    complete = data.get("complete") is True
     out = {
         "ok": bool(data.get("ok", code == 0)) or bool(sessions),
         "count": len(sessions),
         "sessions": sessions,
+        # The leader pages its inventory:  an incomplete list must not read as the
+        # whole of it, or a later-page chat answers chat-not-listed, which is final
+        # (Kody, PR 2306).  grok_wake reads `partial` and retries instead.
+        "complete": complete,
+        "nextCursor": data.get("nextCursor"),
     }
+    if not complete:
+        out["partial"] = True
     if data.get("error"):
         out["leaderError"] = data.get("error")
         if sessions:
@@ -228,6 +238,11 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     ls = sub.add_parser("list", help="TUI chats + turnState (idle/working/needs-input)")
     ls.add_argument("--cwd", default="")
+    ls.add_argument(
+        "--all-pages",
+        action="store_true",
+        help="follow the leader's pagination to the end;  without it the answer is partial",
+    )
     pk = sub.add_parser("peek", help="disk summary; optional --tail N of updates.jsonl")
     pk.add_argument("--session-id", required=True)
     pk.add_argument("--cwd", default="/Users/jay")

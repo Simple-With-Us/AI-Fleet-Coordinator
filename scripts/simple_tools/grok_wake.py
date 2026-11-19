@@ -396,7 +396,10 @@ def deliver_request(
         if blocked is not None:
             return _answer(request, blocked)
         try:
-            _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
+            # The whole inventory, not one page:  a chat on a later page would otherwise
+            # read as chat-not-listed, which is final, when its page was simply never
+            # fetched (Kody, PR 2306).  An incomplete list answers drive-list-unavailable.
+            _code, payload = _invoke(env, ["list", "--all-pages"], LIST_TIMEOUT, runner)
         except subprocess.TimeoutExpired:
             return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
