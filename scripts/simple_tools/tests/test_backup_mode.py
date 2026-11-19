@@ -23,6 +23,40 @@ from simple_tools.config import (
 
 NOW = 1_760_000_000.0
 EXPECTED = ["meta/muse-spark-1.3-contributor", "minimax/minimax-m3.1"]
+# OPENROUTER_MODEL_PATTERN's table (it came from the deleted openrouter wake config tests):  the length
+# caps, one slash, no `:` variant suffix, a `~` only once and only at the start, no space or newline
+# at either end (only a fullmatch refuses a trailing newline), and an `@preset/` slug of its own shape.
+GOOD_PLAIN_MODELS = (
+    "meta/muse-spark-1.3-contributor",
+    "minimax/MiniMax-M3.1-Flash",
+    "deepseek/deepseek-v4-flash",
+    "Qwen/Qwen3-8B",
+    "~anthropic/claude-sonnet-latest",
+)
+BAD_MODELS = (
+    "muse",
+    "muse spark",
+    "a/b/c",
+    "x:online/y",
+    "meta/muse:nitro",
+    "~/x",
+    "/x",
+    "~~a/b",
+    " meta/x",
+    "meta/x\n",
+    "meta/",
+    "meta/" + "x" * 90,
+    "meta" + "x" * 40 + "/y",
+    "$(id)/x",
+    "@preset/",
+    "@preset/ x",
+    "@preset/$(id)",
+    "@preset/" + "x" * 90,
+    " @preset/x",
+    "preset@preset/x",
+    "",
+    5,
+)
 GOOD = {
     "runtime": "openrouter",
     "model": "@preset/operator-inbox-router",
@@ -70,6 +104,13 @@ class ParseTest(unittest.TestCase):
                 {**GOOD, "model": "~deepseek/deepseek-flash-latest", "expected_models": ["bad"]}
             )
         )
+        for good in GOOD_PLAIN_MODELS:
+            with self.subTest(model=good):
+                decl = parse_declaration({**plain, "model": good})
+                self.assertIsNotNone(decl, good)
+                self.assertEqual(decl.expected_models, (good,))
+                self.assertIsNotNone(parse_declaration({**GOOD, "expected_models": [good]}), good)
+        self.assertIsNotNone(parse_declaration({**GOOD, "model": "@preset/a"}), "a one-letter preset slug")
 
     def test_missing_keys_rejected(self):
         # review_by is optional (no expiry by default);  every other key is still required.
@@ -95,8 +136,10 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(parse_declaration({**GOOD, "runtime": "minimax"}))
 
     def test_bad_models_rejected(self):
-        for bad in ("muse", "@preset/", "@preset/ x", "meta/", "$(id)/x", "", 5):
-            self.assertIsNone(parse_declaration({**GOOD, "model": bad}), bad)
+        for bad in BAD_MODELS:
+            with self.subTest(model=bad):
+                self.assertIsNone(parse_declaration({**GOOD, "model": bad}), bad)
+                self.assertIsNone(parse_declaration({**GOOD, "expected_models": [bad]}), bad)
 
     def test_blank_reason_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "reason": "   "}))

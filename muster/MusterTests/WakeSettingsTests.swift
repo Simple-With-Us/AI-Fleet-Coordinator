@@ -1031,7 +1031,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, [])
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
+        XCTAssertTrue(store.message?.contains("Managed by the shared Operator") == true)
     }
 
     /// The kill switch does not claim a result it cannot have on a seat the Mac does not hold.
@@ -1047,7 +1047,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(listener.actions, [])
         await store.resume(seat: "MA")
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
+        XCTAssertTrue(store.message?.contains("Managed by the shared Operator") == true)
         XCTAssertEqual(listener.actions, [])
     }
 
@@ -1411,8 +1411,8 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertNotNil(held.usage["MA"])
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(held).seats.first(where: { $0.seat == "MA" }))
         XCTAssertFalse(seat.host.isElsewhere)
-        // An old wake line with no routine is one today's listener still wakes the seat by.
-        XCTAssertEqual(seat.kind, .oldWakeSetting(.stillWakes("muse")))
+        // A retired wake line with no routine is one today's listener refuses:  the seat only captures.
+        XCTAssertEqual(seat.kind, .oldWakeSetting(.refused("muse")))
         XCTAssertEqual(seat.leftoverWake, "muse")
 
         // Once it names the partition,  that copy gives MA away,  so nothing is read for it.

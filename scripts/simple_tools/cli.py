@@ -1175,6 +1175,11 @@ def build_parser(
     p.add_argument(
         "--include-self", action="store_true", help="also show messages this session posted"
     )
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="full message bodies in remote mode (default is a compact preview)",
+    )
 
     p = add("wait", "block until a new message from someone else arrives in a topic")
     topic_opt(p)
@@ -3055,7 +3060,7 @@ REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
-REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read", "show")
 REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit")
 REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 
@@ -3544,6 +3549,13 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
+            if getattr(args, "full", False):
+                targs["full"] = True
+        elif cmd == "show":
+            #  One message by id with its whole body:  the hosted topic and search reads are
+            #  compact by design, and a wake's standing rule is "open the message and read all
+            #  of it", so remote show always asks the hosted read for the full lossless payload.
+            tool, targs = "zulip_get_message", {"message_id": args.id, "full": True}
         elif cmd == "search":
             targs = {"limit": args.limit}
             words = list(getattr(args, "words", None) or [])
