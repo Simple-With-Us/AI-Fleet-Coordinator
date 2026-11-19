@@ -129,6 +129,7 @@ struct OperatorPanelView: View {
                 }
             }
             OperatorRouterSeatsSection(reading: routerStore.reading)
+            OperatorPauseSection(status: store.status?.currentStatus(now: now))
             seatsAndChats(now: now)
             recentWakes(now: now)
             OperatorQueuesSection(wakes: store.wakes, now: now)

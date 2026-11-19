@@ -163,6 +163,9 @@ targets:
       # word and cell it shows (OperatorPanelTests).
       - path: Muster/Model/OperatorPanel.swift
       - path: Muster/Model/OperatorRouter.swift
+      # The Eavesdropper's pause and resume (AFC-832), which OpsControl.swift names
+      # (OperatorPauseTests).
+      - path: Muster/Model/OperatorPause.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
