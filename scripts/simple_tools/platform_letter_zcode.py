@@ -220,7 +220,6 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     path = store_file(env)
     if not os.path.isfile(path):
         return None
-    now_ms = int(time.time() * 1000)
     try:
         conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=0.5)
     except (sqlite3.Error, ValueError):
@@ -238,31 +237,50 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             where.append("time_archived IS NULL")
         if "time_deleted" in cols:
             where.append("time_deleted IS NULL")
-        time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
+        time_col = next(
+            (name for name in ("time_created", "time_updated") if name in cols), ""
+        )
+        select = "id" + (", " + time_col if time_col else "")
         order = "ORDER BY %s DESC" % time_col if time_col else "ORDER BY rowid DESC"
-        params: list[object] = []
-        if time_col:
-            where.append("%s >= ? AND %s <= ?" % (time_col, time_col))
-            params = [
-                now_ms - UNLETTERED_MAX_AGE_SECONDS * 1000,
-                now_ms - UNLETTERED_MIN_AGE_SECONDS * 1000,
-            ]
-        params.append(UNLETTERED_SCAN)
         rows = conn.execute(
-            "SELECT id FROM session WHERE %s %s LIMIT ?" % (" AND ".join(where), order),
-            tuple(params),
+            "SELECT %s FROM session WHERE %s %s LIMIT ?" % (select, " AND ".join(where), order),
+            (UNLETTERED_SCAN,),
         ).fetchall()
     except sqlite3.Error:
         return None
     finally:
         conn.close()
+    # The store's own shape decides the units (the documented table and the test fixture
+    # disagree), so the age window is applied here, on normalized seconds, never in SQL
+    # (Kody, PR 2307 round 2).  A store with no time column cannot prove a chat's age;  it
+    # still answers its newest bounded rows rather than none, because an empty listing
+    # would disable the repair on the documented schema outright - and the replay re-reads
+    # each title in its own start before anything changes, so an in-flight "??" is safe.
+    now = time.time()
     found: list[str] = []
     for row in rows:
         try:
-            found.append(SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id"))
+            sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
         except ValueError:
             continue  # a store id that is no session id would name a note path outside the letters folder
+        if time_col:
+            stamp = _stored_seconds(row[1] if len(row) > 1 else None)
+            if stamp is None or not (
+                UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
+            ):
+                continue
+        found.append(sid)
     return found
+
+
+def _stored_seconds(value: object) -> float | None:
+    """A store timestamp in seconds, or None:  seconds, or milliseconds past 1e12."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    stamp = float(value)
+    if stamp > 1e12:
+        stamp /= 1000.0
+    return stamp if stamp > 0 else None
 
 
 def zcode_rename(request: Any) -> bool:
