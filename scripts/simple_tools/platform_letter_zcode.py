@@ -238,8 +238,12 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         if "time_deleted" in cols:
             where.append("time_deleted IS NULL")
         time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
-        select = "id" + (", " + time_col if time_col else "")
-        order = "ORDER BY %s DESC" % time_col if time_col else "ORDER BY rowid DESC"
+        # Unknown age is not evidence that a session's own start hook finished.
+        # Skip this pass rather than replaying potentially in-flight sessions.
+        if not time_col:
+            return None
+        select = "id, " + time_col
+        order = "ORDER BY %s DESC" % time_col
         rows = conn.execute(
             "SELECT %s FROM session WHERE %s %s" % (select, " AND ".join(where), order),
         )
