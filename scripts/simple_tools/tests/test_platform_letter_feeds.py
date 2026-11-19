@@ -391,6 +391,21 @@ class UnletteredListingTests(unittest.TestCase):
         conn.close()
         self.assertEqual(ZC.zcode_unlettered_sessions(self.where), ["z-old-enough"])
 
+    def test_zcode_age_filter_precedes_result_cap(self) -> None:
+        path = os.path.join(self.home, ZC.STORE_SUBPATH)
+        os.makedirs(os.path.dirname(path))
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE session (id text, title text, time_created integer)")
+        rows = [("z-new-%d" % i, "??: Starting", int(_ago(60) * 1000))
+                for i in range(ZC.UNLETTERED_SCAN + 5)]
+        rows += [("z-ready-%02d" % i, "??: Ready", int(_ago(3600 + i) * 1000))
+                 for i in range(ZC.UNLETTERED_SCAN + 5)]
+        conn.executemany("INSERT INTO session VALUES (?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        self.assertEqual(ZC.zcode_unlettered_sessions(self.where),
+                         ["z-ready-%02d" % i for i in range(ZC.UNLETTERED_SCAN)])
+
     def test_zcode_store_under_a_home_whose_path_needs_escaping(self) -> None:
         self.where = {"HOME": os.path.join(self.home, "a b?c#d%")}
         path = os.path.join(self.where["HOME"], ZC.STORE_SUBPATH)

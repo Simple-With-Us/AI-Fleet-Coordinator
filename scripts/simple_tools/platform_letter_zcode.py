@@ -241,34 +241,31 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         select = "id" + (", " + time_col if time_col else "")
         order = "ORDER BY %s DESC" % time_col if time_col else "ORDER BY rowid DESC"
         rows = conn.execute(
-            "SELECT %s FROM session WHERE %s %s LIMIT ?" % (select, " AND ".join(where), order),
-            (UNLETTERED_SCAN,),
-        ).fetchall()
+            "SELECT %s FROM session WHERE %s %s" % (select, " AND ".join(where), order),
+        )
+        # Stream candidates until the eligible result cap, rather than truncating before
+        # normalized age checks.  Recent starts must not starve older repair candidates.
+        now = time.time()
+        found: list[str] = []
+        for row in rows:
+            try:
+                sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
+            except ValueError:
+                continue
+            if time_col:
+                stamp = _stored_seconds(row[1] if len(row) > 1 else None)
+                if stamp is None or not (
+                    UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
+                ):
+                    continue
+            found.append(sid)
+            if len(found) >= UNLETTERED_SCAN:
+                break
+        return found
     except sqlite3.Error:
         return None
     finally:
         conn.close()
-    # The store's own shape decides the units (the documented table and the test fixture
-    # disagree), so the age window is applied here, on normalized seconds, never in SQL
-    # (Kody, PR 2307 round 2).  A store with no time column cannot prove a chat's age;  it
-    # still answers its newest bounded rows rather than none, because an empty listing
-    # would disable the repair on the documented schema outright - and the replay re-reads
-    # each title in its own start before anything changes, so an in-flight "??" is safe.
-    now = time.time()
-    found: list[str] = []
-    for row in rows:
-        try:
-            sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
-        except ValueError:
-            continue  # a store id that is no session id would name a note path outside the letters folder
-        if time_col:
-            stamp = _stored_seconds(row[1] if len(row) > 1 else None)
-            if stamp is None or not (
-                UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
-            ):
-                continue
-        found.append(sid)
-    return found
 
 
 def _stored_seconds(value: object) -> float | None:
