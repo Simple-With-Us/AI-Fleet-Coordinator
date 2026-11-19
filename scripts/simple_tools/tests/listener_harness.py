@@ -179,8 +179,10 @@ class ListenerHarness(Harness):
         live: str = "",
         coalesce: float = 20,
         owner_coalesce: float = 5,
+        claude: str | None = None,
     ) -> None:
         eligible = BASE_CONFIG["eligible"] if eligible is None else eligible
+        claude_line = ('claude = "%s"' % claude) if claude else ""
         text = textwrap.dedent("""\
             [daemon]
             owner_user_id = {owner}
@@ -210,11 +212,13 @@ class ListenerHarness(Harness):
                 [seat.CLAUDE]
                 bot = "Claude"
                 wake = "{wake}"
+                {claude_line}
                 {routine}
                 {budget}
                 {live}
                 """).format(
                 wake=wake,
+                claude_line=claude_line,
                 routine="routine = {}" if wake == "http" else "",
                 budget=("budget = { %s }" % budget) if budget else "",
                 live=("live = { %s }" % live) if live else "",
