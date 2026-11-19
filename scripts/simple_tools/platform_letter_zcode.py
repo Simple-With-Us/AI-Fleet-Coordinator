@@ -226,15 +226,33 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     except (sqlite3.Error, ValueError):
         return None
     try:
-        rows = conn.execute(
-            "SELECT id FROM session WHERE title LIKE '??: %' AND task_type = 'interactive'"
-            " AND time_archived IS NULL AND time_deleted IS NULL"
-            " AND time_created >= ? AND time_created <= ? ORDER BY time_created DESC LIMIT ?",
-            (
+        # The store's shape is not one fixed schema (the module docstring's own table and the
+        # test fixture disagree on which time columns exist), so the query is built from the
+        # columns the store actually has:  a query naming a column that is not there would
+        # raise and answer no sessions at all, every time (Kody, PR 2307).
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(session)").fetchall()}
+        where = ["title LIKE '??: %'"]
+        if "task_type" in cols:
+            where.append("task_type = 'interactive'")
+        if "time_archived" in cols:
+            where.append("time_archived IS NULL")
+        if "time_deleted" in cols:
+            where.append("time_deleted IS NULL")
+        time_col = next(
+            (name for name in ("time_created", "time_updated") if name in cols), ""
+        )
+        order = "ORDER BY %s DESC" % time_col if time_col else "ORDER BY rowid DESC"
+        params: list[object] = []
+        if time_col:
+            where.append("%s >= ? AND %s <= ?" % (time_col, time_col))
+            params = [
                 now_ms - UNLETTERED_MAX_AGE_SECONDS * 1000,
                 now_ms - UNLETTERED_MIN_AGE_SECONDS * 1000,
-                UNLETTERED_SCAN,
-            ),
+            ]
+        params.append(UNLETTERED_SCAN)
+        rows = conn.execute(
+            "SELECT id FROM session WHERE %s %s LIMIT ?" % (" AND ".join(where), order),
+            tuple(params),
         ).fetchall()
     except sqlite3.Error:
         return None

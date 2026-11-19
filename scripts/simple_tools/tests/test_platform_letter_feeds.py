@@ -107,6 +107,16 @@ class RepairAfterStartTests(Base):
 
         self.assertFalse(PL.repair_after_start(self.chat(), broken))
 
+    def test_a_spawn_that_fails_gives_the_claim_back(self) -> None:
+        # A spawn that never started must not hold the next start off for the whole
+        # claim TTL (Kody, PR 2307).
+        chat = self.chat()
+        self.assertFalse(PL.repair_after_start(chat, lambda argv, env: False))
+        stamp = PL.repair_stamp_path(chat.env, chat.seat, chat.spec.platform, chat.location)
+        self.assertFalse(os.path.exists(stamp + ".spawn"))
+        # So the very next start runs.
+        self.assertTrue(PL.repair_after_start(chat, self.spawn))
+
 
 class RequestNewChatTests(Base):
     """`request` for a chat with no note:  its platform's own session id says which chat, and its start runs now."""
@@ -416,6 +426,96 @@ class UnletteredListingTests(unittest.TestCase):
         record("e", 3600, cliSessionId="0b7c2f2e-1111-4222-8333-000000000004", title="AA: Fine")
         record("f", 3600, cliSessionId="0b7c2f2e-1111-4222-8333-000000000005", title="??: Odd", isArchived="yes")
         self.assertEqual(CL.claude_unlettered_sessions(self.where), [sid])
+
+
+class RequestSelectorTests(Base):
+    """`request`'s own selectors:  `--platform` narrows every answer, `--location` names the host
+    on the no-note path, and an adapter the table does not hold is a bad argument."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = make_spec(session_id=PL.either(PL.from_payload("session_id"), PL.from_env("FAUX_SESSION_ID")))
+        faux = make_spec(platform="faux", source="faux-hook", display="Faux", session_env=("FAUX_NOTE",))
+        patcher = mock.patch.dict(PL.SPECS, {"codex": self.spec, "faux": faux})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def request(self, *argv: str, env: dict | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        code = PL.request_main(list(argv), env if env is not None else self.server_env(), out, platform="linux")
+        return code, out.getvalue()
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def test_an_unknown_platform_is_a_bad_argument_not_a_failed_request(self) -> None:
+        # Exit 2, as `repair` answers the same case;  exit 1 is a request that found no letter
+        # (Kody, PR 2307).
+        code, line = self.request("--session-id", "s-0301", "--platform", "no-such-platform")
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", line)
+        self.assertIn("no adapter", line)
+        self.assertIsNone(self.lookup("s-0301"))
+
+    def test_a_platform_selector_refuses_another_platforms_note(self) -> None:
+        # A note of another platform is a refusal, never a registration under the wrong
+        # adapter (Kody, PR 2307).
+        code, _ = self.request("--session-id", "s-0302", "--platform", "codex")
+        self.assertEqual(code, 0)
+        code, line = self.request("--session-id", "s-0302", "--platform", "faux")
+        self.assertEqual(code, 1)
+        self.assertIn("is a codex chat, not the faux chat", line)
+        # Without the selector the note answers as it always did.
+        self.assertEqual(self.request("--session-id", "s-0302")[0], 0)
+
+    def test_location_flag_names_the_host_on_the_no_note_path(self) -> None:
+        # The flag reaches the no-note start the way the hook's own `--location server` does
+        # (Kody, PR 2307):  a server chat whose shell says nothing still asks.
+        env = self.server_env()
+        env.pop("SESSION_LETTER_LOCATION", None)
+        code, line = self.request(
+            "--session-id", "s-0303", "--platform", "codex", "--location", "server", env=env
+        )
+        self.assertEqual(code, 0, line)
+        self.assertEqual(self.note("s-0303")["location"], "server")
+
+    def test_one_platform_naming_two_ids_is_told_to_name_one(self) -> None:
+        # Every id the platform names counts, never only the first (Cursor names two);
+        # one platform holding two chats asks for --session-id (Kody, PR 2307).
+        second = make_spec(
+            platform="codex",
+            source="faux-hook",
+            display="Codex",
+            session_id=PL.from_env("FAUX_SESSION_ID"),
+            session_env=("FAUX_SESSION_ID", "FAUX_SESSION_ID_2"),
+        )
+        with mock.patch.dict(PL.SPECS, {"codex": second}):
+            code, line = self.request(
+                env=self.server_env(FAUX_SESSION_ID="s-0304", FAUX_SESSION_ID_2="s-0305")
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("more than one codex chat", line)
+        self.assertIn("s-0304", line)
+        self.assertIn("--session-id S", line)
+        self.assertIsNone(self.lookup("s-0304"))
+
+
+class RepairStampTests(unittest.TestCase):
+    """The repair stamp's `at` is the throttle:  an outcome never moves it backward."""
+
+    def test_an_outcome_never_moves_the_stamp_backward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stamp.json")
+            self.assertTrue(PL._save_json(path, {"at": 5_000.0}))
+            # An older pass finishing late keeps the newer pass's time (Kody, PR 2307).
+            self.assertTrue(PL._record_outcome(path, 4_000.0, {"found": 0}))
+            stamp = PL._read_json(path)
+            self.assertEqual(stamp["at"], 5_000.0)
+            self.assertEqual(stamp["outcome"], {"found": 0})
+            # And a newer outcome moves it forward as usual.
+            self.assertTrue(PL._record_outcome(path, 6_000.0, {"found": 1}))
+            self.assertEqual(PL._read_json(path)["at"], 6_000.0)
 
 
 if __name__ == "__main__":

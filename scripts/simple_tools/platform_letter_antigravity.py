@@ -382,15 +382,22 @@ def antigravity_rename(request: PL.TitleRequest) -> bool:
 # placeholder:  at most this many, only ones whose last change is old enough that their own start hook has finished
 # (a brand-new "??" can be its start in flight), never a killed one, and none untouched for over a week.
 UNLETTERED_SCAN = 20
-UNLETTERED_ROWS = (
-    200  # the rows one store read takes, newest first, before the age window is applied
-)
+UNLETTERED_ROWS = 200  # the rows one store read takes, newest first, before the age window is applied
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
 
 
 def _stored_time(value: object) -> float | None:
-    """A `last_modified_time` as the store writes it ("2026-11-12 02:02:54.017305+00:00"), in seconds, or None."""
+    """A store timestamp in seconds, or None:  the ISO strings `last_modified_time` holds
+    ("2026-11-12 02:02:54.017305+00:00"), or the numbers `updated_at`/`created_at` hold
+    (seconds, or milliseconds past 1e12), as the catalog's reader treats them."""
+    if isinstance(value, bool) or not value:
+        return None
+    if isinstance(value, (int, float)):
+        stamp = float(value)
+        if stamp > 1e12:
+            stamp /= 1000.0
+        return stamp if stamp > 0 else None
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -417,10 +424,31 @@ def antigravity_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         try:
             conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
             try:
+                # The stores this host keeps do not all share one schema (the catalog's own
+                # reader of this table discovers its columns for the same reason):  a store
+                # without the columns one query names would raise and answer no sessions
+                # from that store at all (Kody, PR 2307).
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "conversation_id" not in cols:
+                    continue
+                time_col = next(
+                    (
+                        name
+                        for name in ("last_modified_time", "updated_at", "created_at")
+                        if name in cols
+                    ),
+                    "",
+                )
+                if not time_col:
+                    continue
+                killed_where = " AND killed = 0" if "killed" in cols else ""
                 rows = conn.execute(
-                    "SELECT conversation_id, last_modified_time FROM conversation_summaries"
-                    " WHERE title LIKE '??: %' AND killed = 0"
-                    " ORDER BY last_modified_time DESC LIMIT ?",
+                    f"SELECT conversation_id, {time_col} FROM conversation_summaries"
+                    f" WHERE title LIKE '??: %'{killed_where}"
+                    f" ORDER BY {time_col} DESC LIMIT ?",
                     (UNLETTERED_ROWS,),
                 ).fetchall()
             finally:

@@ -3124,13 +3124,15 @@ class NoNote(str):
     `request` then looks for the chat through the platforms' own session ids (`find_new_chat`)."""
 
 
-def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str, str] | str:
+def find_chat(env: Mapping[str, str], sid: str = "", only: str = "") -> tuple[PlatformSpec, str, str] | str:
     """(spec, session id, seat) of the chat a `request` is about, or why there is none.
 
-    With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
+    With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
     runs in:  the first spec in the table whose own session-id reader, or whose session id variables (its
-    `session_env`, then AGENT_SESSION, the fleet's own name for it), name an id whose note exists.  The note is the proof the chat is that platform's:  a
-    stray variable from another platform's shell finds no note and is never registered."""
+    `session_env`, then AGENT_SESSION, the fleet's own name for it), name an id whose note exists.  The note is the proof the chat is that platform's:  a
+    stray variable from another platform's shell finds no note and is never registered.  `only`, the platform
+    `--platform` names, narrows every answer to that platform:  a note of another platform is a refusal, never a
+    registration under the wrong adapter (Kody, PR 2307)."""
     root = L.state_root(env)
     if sid:
         try:
@@ -3154,6 +3156,12 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
                 problem = note_problem(note) if isinstance(note, dict) else "not a JSON object"
                 return "invalid letter note for chat %s: %s" % (sid, problem)
             platform = str(note.get("platform") or "")
+            if only and platform != only:
+                return "chat %s is a %s chat, not the %s chat --platform names" % (
+                    sid,
+                    platform or "unknown",
+                    only,
+                )
             spec = load_spec(platform) if valid_platform(platform) else None
             if spec is None:
                 return "chat %s is a %s chat, which has no entry in the letter table" % (
@@ -3162,7 +3170,7 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
                 )
             return spec, sid, seat
         return NoNote("no chat with the session id %s has a letter note on this host" % sid)
-    for platform in adapter_platforms():
+    for platform in ([only] if only else adapter_platforms()):
         spec = load_spec(platform)
         if spec is None:
             continue
@@ -3173,7 +3181,10 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
             )  # the spec's own reader, for one that reads the environment
         except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
             own = ""
-        for value in (own, *(env.get(name) for name in (*spec.session_env, "AGENT_SESSION"))):
+        # AGENT_SESSION is safe here without a named platform:  the note itself proves the
+        # platform, so a shared variable finds a chat but registers nothing.
+        names = (*spec.session_env, "AGENT_SESSION")
+        for value in (own, *(env.get(name) for name in names)):
             try:
                 found = SI.check(_text(value), "the session id")
             except ValueError:
@@ -3237,8 +3248,11 @@ def find_new_chat(
         named = _own_session_ids(spec, env, generic=bool(platform))
         if sid and (platform or sid in named):
             matches.append((spec, sid))
-        elif not sid and named:
-            matches.append((spec, named[0]))
+        elif not sid:
+            # Every id the platform names, never only the first:  a platform whose variables
+            # name two chats (Cursor's CURSOR_CONVERSATION_ID and CURSOR_AGENT_CHAT_ID) must
+            # be able to ask for either (Kody, PR 2307).
+            matches.extend((spec, one) for one in named)
     if not matches:
         if sid:
             return (
@@ -3247,9 +3261,15 @@ def find_new_chat(
             )
         return "no chat runs in this shell (no platform's session id is set); pass --session-id S --platform P"
     if len(matches) > 1:
+        platforms = sorted({spec.platform for spec, _ in matches})
+        if len(platforms) > 1:
+            return (
+                "this shell names chats of more than one platform (%s); pass --platform P"
+                % ", ".join(platforms)
+            )
         return (
-            "this shell names chats of more than one platform (%s); pass --platform P"
-            % ", ".join(spec.platform for spec, _ in matches)
+            "this shell names more than one %s chat (%s); pass --session-id S"
+            % (matches[0][0].platform, ", ".join(sid for _, sid in matches))
         )
     spec, found = matches[0]
     seat = spec.seat_for({}, env)
@@ -3280,12 +3300,14 @@ def request_new(
     now: float,
     platform: str,
     transport: Transport | None,
+    where: str | None = None,
 ) -> int:
     """`request` for a chat with no note yet:  the chat's own start flow on its resume payload, as its start hook
     would have run it (the note is made, the chat registered, and titled through the adapter's writer when it has
     one), so nothing about a chat that asks differs from one whose start hook ran.  The hook's own refusals hold:
-    a launcher's session, a headless run, a host that does not say where it is, a platform that does not run there."""
-    where = location(env, platform)
+    a launcher's session, a headless run, a host that does not say where it is, a platform that does not run there.
+    `where` is the caller's `--location` (a server chat names it;  the fleet default fills the rest)."""
+    where = where or location(env, platform)
     if where is None:
         stdout.write("no letter: %s\n" % NO_LOCATION)
         return 1
@@ -3337,18 +3359,25 @@ def request_main(
     platform's own session id and started now (`find_new_chat`, `request_new`).
 
     A letter that comes is put in the chat's note, and on its title through the adapter's writer when it has one;  a
-    platform that takes titles only from hook output swaps "??" for it at its next prompt.  Exit 0 with a letter, 1
+    platform that takes titles only from hook output swaps "??" for it at its next prompt.  Exit 0 with a letter, 1
     without one, 2 for bad arguments."""
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
     try:
-        flags = _flags(argv, ("--session-id", "--platform"))
+        flags = _flags(argv, ("--session-id", "--platform", "--location"))
     except ValueError:
-        stdout.write("usage: simple-chat letter request [--session-id S] [--platform P]\n")
+        stdout.write("usage: simple-chat letter request [--session-id S] [--platform P] [--location L]\n")
         return 2
-    found = find_chat(env, flags.get("session-id", ""))
+    named = flags.get("platform", "")
+    if named and (not valid_platform(named) or load_spec(named) is None):
+        # An adapter the table does not hold is a bad argument (exit 2, as `repair` answers
+        # it), not a request without a letter (Kody, PR 2307).
+        stdout.write("usage: no adapter for the platform %r\n" % named)
+        return 2
+    where_flag = flags.get("location", "")
+    found = find_chat(env, flags.get("session-id", ""), only=named)
     if isinstance(found, NoNote):
-        new = find_new_chat(env, flags.get("session-id", ""), flags.get("platform", ""))
+        new = find_new_chat(env, flags.get("session-id", ""), named)
         if isinstance(new, str):
             stdout.write("no letter: %s\n" % new)
             return 1
@@ -3359,6 +3388,7 @@ def request_main(
             now=time.time() if now is None else now,
             platform=platform,
             transport=transport,
+            where=where_flag,
         )
     if isinstance(found, str):
         stdout.write("no letter: %s\n" % found)
@@ -3367,7 +3397,7 @@ def request_main(
     chat = Chat(
         spec,
         env,
-        location(env, platform) or "",
+        where_flag or location(env, platform) or "",
         sid,
         now=time.time() if now is None else now,
         transport=transport,
@@ -4106,11 +4136,11 @@ def repair_unlettered(
             if sid not in found:
                 found.append(sid)
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
-        mark = {"at": now, "outcome": {"error": "the adapter could not list them"}}
-        recorded = _save_json(path, mark)
+        outcome = {"error": "the adapter could not list them"}
+        recorded = _record_outcome(path, now, outcome)
         if not recorded:
             # One retry:  an unsaved outcome reads as a pass that never finished.
-            recorded = _save_json(path, mark)
+            recorded = _record_outcome(path, now, outcome)
         return {"skipped": "the adapter could not list them", "recorded": recorded}
     home = str(env.get("HOME") or os.path.expanduser("~"))
     started = time.monotonic()
@@ -4151,11 +4181,11 @@ def repair_unlettered(
         "failed": len(failures),
         "failures": failures,
     }
-    recorded = _save_json(path, {"at": now, "outcome": outcome})
+    recorded = _record_outcome(path, now, outcome)
     if not recorded:
         # One retry with a bare marker:  an unsaved outcome must not read as a pass that never finished.
-        recorded = _save_json(
-            path, {"at": now, "outcome": {"error": "the outcome could not be saved"}}
+        recorded = _record_outcome(
+            path, now, {"error": "the outcome could not be saved"}
         )
     return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
 
@@ -4247,6 +4277,15 @@ def repair_main(
     return 0
 
 
+def _record_outcome(path: str, now: float, outcome: Mapping[str, Any]) -> bool:
+    """Merge a pass's outcome into the repair stamp without moving its `at` backward.  Two passes may overlap
+    (the `--force` path ignores the throttle on purpose), and a stamp written with the older pass's `at` would
+    roll the throttle window back and lose the newer pass's time (Kody, PR 2307)."""
+    stamp = _read_json(path)
+    at = max(_seconds(stamp["at"]), now) if "at" in stamp else now
+    return _save_json(path, {"at": at, "outcome": outcome})
+
+
 def repair_command(platform: str, where: str) -> list[str]:
     """The detached run a chat's start sets off:  this checkout's own `platform-letter repair` for one platform and
     location, under the interpreter the hook itself runs on."""
@@ -4301,11 +4340,17 @@ def repair_after_start(
     if not _claim(path + ".spawn", REPAIR_SPAWN_CLAIM_SECONDS):
         return False  # another chat's start set off this window's run moments ago
     try:
-        return bool(
+        started = bool(
             (spawn or _spawn_detached)(repair_command(spec.platform, chat.location), chat.env)
         )
     except Exception:  # noqa: BLE001 - a repair never blocks a chat
+        # Nothing was started:  give the claim back, so the next start is not held off
+        # for the whole claim TTL by a run that never existed (Kody, PR 2307).
+        _release(path + ".spawn")
         return False
+    if not started:
+        _release(path + ".spawn")
+    return started
 
 
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
