@@ -33,8 +33,17 @@ _TEXT_SPECIALS = "\\`[]<"
 # the tags and attributes Zulip's own renderer emits, so a post that merely talks about
 # HTML is not mistaken for HTML.
 _HTML_SIGNATURE = re.compile(
-    r"<(?:p[ >]|/p>|br[ />]|div class=|span class=|/div>|/span>|a href=|pre[ >]"
-    r"|blockquote[ >]|/blockquote>|ul[ >]|ol[ >]|li[ >]|h[1-6][ >]|img[ >]|hr[ >])"
+    r"<(?:p[ >]|/p>|br[ />]|div[ >]|div class=|span[ >]|span class=|/div>|/span>|a href=|pre[ >]"
+    r"|blockquote[ >]|/blockquote>|ul[ >]|ol[ >]|li[ >]|h[1-6][ >]|img[ >]|hr[ >]"
+    r"|table[ >]|/table>|section[ >]|/section>|article[ >]|/article>|thead[ >]|/thead>"
+    r"|tbody[ >]|/tbody>|tr[ >]|/tr>)"
+)
+
+# A rendered post closes what it opens, so a closing tag is what tells the two shapes
+# apart when a source post opens with a tag of its own (Kody, PR 2340).
+_HTML_CLOSER = re.compile(
+    r"</(?:p|div|span|a|pre|code|blockquote|ul|ol|li|h[1-6]|img|hr|table|section|article"
+    r"|thead|tbody|tr|br)>"
 )
 
 # A Markdown link in the source:  the text, then the target in parentheses.
@@ -74,7 +83,9 @@ def _looks_like_html(text: str) -> bool:
     stripped = text.lstrip()
     if stripped.startswith("```") or stripped.startswith("~~~"):
         return False  # a code block:  its body may hold markup
-    return bool(_HTML_SIGNATURE.match(stripped))
+    if not _HTML_SIGNATURE.match(stripped):
+        return False  # it does not open with a tag the reader knows
+    return bool(_HTML_CLOSER.search(text))  # and it closes what it opens
 
 
 def close_code_fence(text: str) -> str:
@@ -235,6 +246,10 @@ class _Converter(HTMLParser):
     # -- the block and the inline buffers ------------------------------------------------
     def _sink(self) -> list[str]:
         """Where the text of the element being read goes."""
+        if self.code is not None:
+            return self.code
+        if self.pre is not None:
+            return self.pre
         if self.lists and self.lists[-1].item is not None:
             return self.lists[-1].item
         if self.embed is not None:
@@ -402,7 +417,12 @@ class _Converter(HTMLParser):
                 # the width of that item's marker, so it reads as part of it whether the
                 # marker is "- " or "1. " (Kody, PR 2340).
                 width = self.lists[-1].marker + 1
-                self.lists[-1].item.append("\n" + _indent(rendered, width))
+                parent = " " * self.lists[-1].marker
+                # The text that follows the nested list starts on a line of its own, at
+                # the indent of the item that holds it (Kody, PR 2340).
+                self.lists[-1].item.append(
+                    "\n" + _indent(rendered, width) + "\n" + parent
+                )
             else:
                 self.blocks.append(self._quoted(rendered))
             return
@@ -422,6 +442,44 @@ class _Converter(HTMLParser):
             return
         self._sink().append(_escape_text(data))
 
+    def _finish(self) -> None:
+        """Close what the post left open.
+
+        A tag the sender never closed sends its text into a buffer that is never
+        emptied, and the post would read as empty;  the text is put back where a reader
+        can see it (Kody, PR 2340)."""
+        if self.link is not None:
+            text = "".join(self.link).strip()
+            self.link = None
+            if text:
+                self.buf.append(_escape_text(text))
+        if self.mention is not None:
+            name = "".join(self.mention).strip()
+            self.mention = None
+            if name:
+                if not name.startswith("@"):
+                    name = "@" + name
+                self.buf.append(_escape_text(name))
+        if self.code is not None:
+            text = "".join(self.code)
+            self.code = None
+            if text:
+                self.buf.append(_inline_code(text))
+        if self.pre is not None:
+            code = "".join(self.pre)
+            self.pre = None
+            if code:
+                self.blocks.append(self._quoted(_fence(code)))
+        if self.embed is not None:
+            url = self.embed_url
+            self.embed = None
+            self.embed_url = ""
+            self.buf.append(
+                "[embedded link: %s]" % _plain_attribute(url)
+                if url
+                else "[embedded content]"
+            )
+
     def _emoji_name(self, attrd: dict[str, str], classes: str) -> str:
         """The name of an emoji span:  its title, else its label, else the id in its class."""
         name = attrd.get("title") or attrd.get("aria-label")
@@ -438,6 +496,7 @@ def _html_to_markdown(text: str) -> str:
     parser = _Converter()
     parser.feed(text)
     parser.close()
+    parser._finish()
     parser._flush()
     return "\n\n".join(parser.blocks).strip()
 

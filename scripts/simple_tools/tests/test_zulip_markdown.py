@@ -257,5 +257,34 @@ class ListTests(unittest.TestCase):
         self.assertEqual(out, "- one\n   - a")
 
 
+class ShapeTests(unittest.TestCase):
+    """The shape of a post is read from its start, and the reader keeps what it finds."""
+
+    def test_a_rendered_table_is_read_as_html(self) -> None:
+        out = zm.to_markdown("<table><tr><td>cell</td></tr></table>")
+        self.assertEqual(out, "cell")
+
+    def test_a_source_post_that_opens_with_a_tag_keeps_its_text(self) -> None:
+        # A source post that opens with a tag and never closes it is the sender's own
+        # text, and keeps it (Kody, PR 2340).
+        out = zm.to_markdown("<p> is a paragraph tag")
+        self.assertIn("\\<p>", out)
+        self.assertIn("is a paragraph tag", out)
+
+    def test_an_unclosed_inline_element_does_not_swallow_its_text(self) -> None:
+        # A tag the sender never closed sends its text into a buffer that is never
+        # emptied; the text is put back where a reader can see it (Kody, PR 2340).
+        out = zm.to_markdown('<p>text with an <a href="https://x">unclosed link')
+        self.assertIn("unclosed link", out)
+
+    def test_the_code_inside_a_list_item_is_code(self) -> None:
+        out = zm.to_markdown("<ul><li>run <code>make test</code> now</li></ul>")
+        self.assertEqual(out, "- run `make test` now")
+
+    def test_the_text_after_a_nested_list_starts_on_its_own_line(self) -> None:
+        out = zm.to_markdown("<ul><li>one<ul><li>a</li></ul>tail</li></ul>")
+        self.assertEqual(out, "- one\n   - a\n  tail")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

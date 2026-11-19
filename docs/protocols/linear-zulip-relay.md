@@ -133,8 +133,8 @@ The comment is bounded, and every cut is said in the comment itself:
 
 A link in a post is shown, with its text and its URL, and it is not a live link: the opener is
 escaped, so a reader cannot click a link out of a post they did not read.  A link whose own text
-holds a bracket is shown the same way.  A mention is never a live
-mention either.
+holds a bracket is shown the same way.  A mention in the prose of a post is never a live mention; inside code the at 
+sign is left as the sender wrote it.
 
 The comments that were written before this change hold posts that were cut at 280 characters, and
 the cut text is gone: only Zulip has the whole post.  Those comments are repaired, not left as

@@ -2633,6 +2633,35 @@ class ReadablePostTests(WorkerCase):
         self.assertLess(time.monotonic() - start, 5.0)  # a quadratic scan would not
         self.assertTrue(text.startswith("\\["), text[:40])  # the opener is escaped
 
+    def test_a_bracket_that_opens_no_link_is_left_alone(self) -> None:
+        # Only the brackets that open a link are escaped:  the prose keeps its own shape
+        # (Kody, PR 2340).
+        text = lr.defang("a [note] and [link](https://x)")
+        self.assertIn("a [note]", text)
+        self.assertIn("\\[link](https://x)", text)
+
+    def test_a_repair_that_trims_the_entry_writes_it_back(self) -> None:
+        # A repair that drops the oldest messages leaves the entry shorter, and the
+        # shorter entry is written back even when no quote changed (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"] = [
+            {
+                "mid": mid,
+                "sender": "Al",
+                "when": "Nov 18 05:07 UTC",
+                "quote": "p" * 9000,
+            }
+            for mid in range(1, 11)
+        ]
+        entry["seen"] = list(range(1, 11))
+        self.topic.messages = [past(mid, "p" * 9000) for mid in range(1, 11)]
+        self.led.save()  # the file holds the long entry
+        self.w.tick()
+        saved = json.loads(self.led.path.read_text())["entries"][
+            self.key("AFC-1", 5, "AFC-1 relay")
+        ]["links"]
+        self.assertLess(len(saved), 10)
+
     def test_without_a_reader_nothing_is_re_rendered(self) -> None:
         # The standalone relay has no history reader:  its comments keep what they have.
         worker = self.worker()

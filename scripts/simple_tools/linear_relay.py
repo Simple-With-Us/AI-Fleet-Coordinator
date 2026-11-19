@@ -338,39 +338,72 @@ def neutralise(text: str) -> str:
     return text
 
 
-def _escape_link_openers(chunk: str, offset: int, last_link: int) -> str:
-    """Escape the brackets of a piece of prose that can open a link, so the link is shown
-    and never live.
+def _code_ranges(pieces: list[tuple[bool, str]]) -> list[tuple[int, int]]:
+    """Where the code of a text sits:  the ranges its fenced blocks and code spans cover."""
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    for is_code, chunk in pieces:
+        if is_code:
+            ranges.append((offset, offset + len(chunk)))
+        offset += len(chunk)
+    return ranges
 
-    A link is a bracket, some text, a closing bracket and a parenthesis, and the text
-    between the brackets can hold a bracket of its own, so every bracket that stands
-    before a closing bracket and a parenthesis is escaped (Kody, PR 2340).  The scan is
-    one pass over the text, so a post full of brackets cannot stall the relay.
+
+def _link_openers(text: str, ranges: list[tuple[int, int]]) -> set[int]:
+    """The brackets of the text that open a link.
+
+    A link is a bracket, some text, a closing bracket and a parenthesis.  The bracket
+    that opens one is a bracket with no closing bracket between it and the closing one,
+    so every such bracket is escaped and the link can never be live (Kody, PR 2340).  A
+    bracket that opens no link is left alone, so the prose keeps its own shape.
+
+    The code of a post is skipped:  it is shown as the sender wrote it.  The scan is one
+    pass over the text, so a post full of brackets cannot stall the relay."""
+    opens: list[int] = []
+    found: set[int] = set()
+    index = 0
+    length = len(text)
+    range_index = 0
+    while index < length:
+        if range_index < len(ranges) and ranges[range_index][0] <= index < ranges[range_index][1]:
+            index = ranges[range_index][1]
+            range_index += 1
+            continue
+        char = text[index]
+        if char == "\\" and index + 1 < length:
+            index += 2  # an escaped character opens and closes nothing
+            continue
+        if char == "[":
+            opens.append(index)
+        elif char == "]":
+            if index + 1 < length and text[index + 1] == "(":
+                found.update(opens)
+            opens = []  # a closing bracket ends what a bracket could have opened
+        index += 1
+    return found
+
+
+def _defang_prose(chunk: str, offset: int, openers: set[int]) -> str:
+    """A piece of prose as a Linear comment can hold:  its link openers escaped and its
+    at signs broken.
 
     The backslashes in front of a bracket decide how it reads:  an odd count escapes the
     bracket already, and an even count does not, so a bracket behind two backslashes is
     a live link again unless it is escaped here (Sentry, PR 2340)."""
-    if last_link < 0:
-        return chunk  # no link in the text at all
     out: list[str] = []
-    index = 0
-    length = len(chunk)
-    while index < length:
-        char = chunk[index]
-        if char != "[" or offset + index >= last_link:
-            out.append(char)
-            index += 1
+    for index, char in enumerate(chunk):
+        if char == "@":
+            out.append("@\u200b")  # never a live mention
             continue
-        slashes = 0
-        back = index - 1
-        while back >= 0 and chunk[back] == "\\":
-            slashes += 1
-            back -= 1
-        if slashes % 2:
-            out.append(char)  # an odd count escapes the bracket already
-        else:
-            out.append("\\" + char)
-        index += 1
+        if (offset + index) in openers:
+            slashes = 0
+            back = index - 1
+            while back >= 0 and chunk[back] == "\\":
+                slashes += 1
+                back -= 1
+            if slashes % 2 == 0:
+                out.append("\\")  # an odd count escapes the bracket already
+        out.append(char)
     return "".join(out)
 
 
@@ -385,16 +418,15 @@ def defang(text: str) -> str:
 
     A fenced block and a code span are shown as the sender wrote them, so neither the
     escaping nor the zero-width space reaches into them (Kody, PR 2340)."""
+    pieces = zulip_markdown.split_code(text)
+    openers = _link_openers(text, _code_ranges(pieces))
     out: list[str] = []
     offset = 0
-    # The last closing bracket and parenthesis of the text:  a bracket before it can open
-    # a link, and one after it cannot.
-    last_link = text.rfind("](")
-    for is_code, chunk in zulip_markdown.split_code(text):
+    for is_code, chunk in pieces:
         if is_code:
             out.append(chunk)
         else:
-            out.append(_escape_link_openers(chunk, offset, last_link).replace("@", "@\u200b"))
+            out.append(_defang_prose(chunk, offset, openers))
         offset += len(chunk)
     return "".join(out)
 
@@ -1959,18 +1991,21 @@ class RelayWorker:
             return
         self._refresh_retry.pop(key, None)
 
-    def _trim_entry(self, entry: dict[str, Any]) -> None:
+    def _trim_entry(self, entry: dict[str, Any]) -> bool:
         """Bound what an entry holds:  the messages it lists, and the text of those
         messages.
 
         The oldest messages leave the list when the entry holds more text than a comment
         can show (the count of the messages that are not listed says so).  A repair holds
-        the same bound (Kody, PR 2340)."""
+        the same bound (Kody, PR 2340).  True when messages left the list, so the caller
+        can write the shortened entry back (Kody, PR 2340)."""
+        before = len(entry["links"])
         entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
         held = sum(len(item["quote"]) for item in entry["links"])
         while len(entry["links"]) > 1 and held > MAX_ENTRY_TEXT:
             held -= len(entry["links"][0]["quote"])
             entry["links"].pop(0)
+        return len(entry["links"]) != before
 
     def _read_topic(
         self, stream_id: int, topic: str, cache: dict[tuple[int, str], Any]
@@ -2127,10 +2162,12 @@ class RelayWorker:
         entry["format"] = RENDER_VERSION
         # The text an entry holds is bounded the way a new message bounds it:  the whole
         # posts do not push the entry past what a comment can show (Kody, PR 2340).
-        self._trim_entry(entry)
+        trimmed = self._trim_entry(entry)
+        if changed or trimmed:
+            entry["dirty"] = True
+            entry["last_touch"] = self.clock()
         if changed:
             entry["refreshed"] = time.strftime("%b %d %H:%M UTC", time.gmtime(self.clock()))
-            entry["dirty"] = True
             self.log("re-rendered the quotes of %s from Zulip" % self._label(entry))
         return True
 

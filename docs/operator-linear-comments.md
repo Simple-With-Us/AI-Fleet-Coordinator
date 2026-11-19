@@ -237,12 +237,12 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 163 tests) covers the worker, the whole-topic continuation
+(`test_linear_relay.py`, 165 tests) covers the worker, the whole-topic continuation
 above, and the AFC-821 archive and catch-up, malformed history messages and reads that
 answer no list at all included, and the whole post (the conversion, the bounds and the
 notes, the credential scan over the converted text, and the repair of the comments an
 older build wrote).  The conversion itself has its own suite
-(`test_zulip_markdown.py`, 44 tests).
+(`test_zulip_markdown.py`, 49 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 
