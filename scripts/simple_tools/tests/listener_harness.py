@@ -2,11 +2,11 @@
 writing, and a Daemon wired to the fake Zulip server.
 
 The fake claude is a small Python script written into a temp bin directory with an absolute
-shebang (the wake runs it with `env -i`, so it cannot read test variables).  It reads its
-behaviour from a control file baked into it and can dump its argv, environment, cwd and stdin.
-No test ever runs a real claude, osascript, board or launchctl:  the daemon gets the temp bin
-directory as its wake PATH, a notifier whose runner only records argv, and an injected
-start-time function.
+shebang.  It answers only `claude agents --json`, the lease-liveness listing (Daemon.agent_kinds),
+from a control file baked into it.  The listener starts no model (owner ruling, Nov 10, 2026), so
+any other call is recorded in a dump file and fails:  `dumps()` stays empty in every test.  No test
+ever runs a real claude, osascript, board or launchctl:  the daemon gets the temp bin directory as
+its wake PATH, a notifier whose runner only records argv, and an injected start-time function.
 """
 
 from __future__ import annotations
@@ -21,10 +21,8 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 from simple_tools import adapters as A
-from simple_tools import host_load as HL
 from simple_tools import live as L
 from simple_tools import zulip as Z
 from simple_tools.daemon import Daemon
@@ -45,7 +43,7 @@ OPERATOR_USER_ID = 90
 SYNTHETIC_STREAM_ID = 900642
 
 FAKE_CLAUDE = r"""#!{python}
-import json, os, sys, time
+import json, os, sys
 CONTROL = {control!r}
 DUMP = {dump!r}
 with open(CONTROL) as fh:
@@ -54,35 +52,9 @@ argv = sys.argv[1:]
 if argv[:2] == ["agents", "--json"]:
     print(json.dumps(control.get("agents", [])))
     sys.exit(0)
-stdin = sys.stdin.read()
 with open(DUMP, "a") as fh:
-    fh.write(json.dumps({{"argv": sys.argv, "env": dict(os.environ), "cwd": os.getcwd(), "stdin": stdin}}) + "\n")
-mode = control.get("mode", "ok")
-# --json-schema adds the harness's own StructuredOutput tool, so a real init lists it.
-init = {{"type": "system", "subtype": "init", "tools": control.get("tools", ["StructuredOutput"]), "mcp_servers": [],
-        "model": "claude-sonnet"}}
-if mode == "tool":
-    init["tools"] = ["StructuredOutput", "Bash"]
-if mode == "mcp":
-    init["mcp_servers"] = [{{"name": "gmail", "status": "connected"}}]
-if mode != "noinit":
-    print(json.dumps(init), flush=True)
-if mode == "hook":
-    print(json.dumps({{"type": "system", "subtype": "hook_response", "hook_name": "Stop"}}), flush=True)
-if mode in ("tool", "mcp", "hang", "hook"):
-    time.sleep(control.get("hang", 30))
-result = {{"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": control.get("cost", 0.03),
-          "modelUsage": {{"claude-sonnet": {{"inputTokens": 1}}}}, "num_turns": 1,
-          "structured_output": control.get("output")}}
-if mode == "two_models":
-    result["modelUsage"]["claude-haiku"] = {{"inputTokens": 1}}
-if mode == "error":
-    result.update({{"is_error": True, "subtype": "error_max_budget_usd", "structured_output": None}})
-if mode == "text":
-    result["structured_output"] = None
-    result["result"] = json.dumps(control.get("output"))
-print(json.dumps(result), flush=True)
-sys.stderr.write("some stderr noise\n")
+    fh.write(json.dumps({{"argv": sys.argv, "cwd": os.getcwd()}}) + "\n")
+sys.exit(2)
 """
 
 
@@ -111,30 +83,23 @@ class FakeClock:
         self.now += seconds
 
 
-def reply_output(text: str = "On it.  The cutover is in review.", **extra: Any) -> dict[str, Any]:
-    out = {"action": "reply", "reply": text, "board": None, "owner_note": None, "risk": None}
-    out.update(extra)
-    return out
-
-
 class ListenerHarness(Harness):
     heartbeat = 0.2
     #: A test whose seats write to the realm on purpose (it plays a peer bot over HTTP, say) sets this.
     #: Every other listener test fails if a seat's bot wrote anything on the daemon's behalf.
     seat_writes_allowed = False
+    #: The default seat's wake when `write_config` is given none:  a capture seat (owner, Nov 10, 2026:
+    #: a seat has a routine or only captures).  DaemonHarness uses an http seat with a fake routine.
+    default_wake = "inbox"
 
     def setUp(self) -> None:
         super().setUp()
-        # Routing tests use a fake host; dedicated load tests override this sample.
-        host_load = mock.patch.object(HL, "read_host_load", return_value=HL.HostLoad(0.0, 8))
-        host_load.start()
-        self.addCleanup(host_load.stop)
         self.clock = FakeClock(EPOCH + 1000)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.control = self.tmp / "claude-control.json"
         self.dump = self.tmp / "claude-dump.jsonl"
-        self.set_claude(mode="ok", output=reply_output())
+        self.set_claude()
         self.claude = self.bin / "claude"
         self.claude.write_text(
             FAKE_CLAUDE.format(
@@ -176,12 +141,12 @@ class ListenerHarness(Harness):
             self.transcript.append(self.dump.read_text())
         everything = "\n".join(self.transcript)
         for email, key in self.extra_keys:
-            token = base64.b64encode(("%s:%s" % (email, key)).encode()).decode()
+            basic_auth = base64.b64encode(("%s:%s" % (email, key)).encode()).decode()
             self.assertNotIn(
                 key, everything, "a second bot key reached the output or the state files"
             )
             self.assertNotIn(
-                token,
+                basic_auth,
                 everything,
                 "a second bot's base64 auth token reached the output or the state files",
             )
@@ -189,12 +154,14 @@ class ListenerHarness(Harness):
 
     # ---- helpers ------------------------------------------------------------------------------
     def set_claude(self, **control: Any) -> None:
-        """Control the fake claude.  `claude agents --json` lists this test process as an
-        interactive session unless `agents` is given."""
+        """Control the fake claude's lease-liveness listing:  `claude agents --json` lists this
+        test process as an interactive session unless `agents` is given."""
         control.setdefault("agents", [{"pid": os.getpid(), "kind": "interactive"}])
         self.control.write_text(json.dumps(control))
 
     def dumps(self) -> list[dict[str, Any]]:
+        """Every call of the fake claude other than its liveness listing:  always empty, since the
+        listener starts no model."""
         if not self.dump.exists():
             return []
         return [json.loads(line) for line in self.dump.read_text().splitlines() if line.strip()]
@@ -207,13 +174,15 @@ class ListenerHarness(Harness):
         eligible: list[int] | None = None,
         extra_daemon: str = "",
         rewake: bool = False,
-        wake: str = "claude",
+        wake: str | None = None,
         budget: str = "",
         live: str = "",
         coalesce: float = 20,
         owner_coalesce: float = 5,
+        claude: str | None = None,
     ) -> None:
         eligible = BASE_CONFIG["eligible"] if eligible is None else eligible
+        claude_line = ('claude = "%s"' % claude) if claude else ""
         text = textwrap.dedent("""\
             [daemon]
             owner_user_id = {owner}
@@ -237,15 +206,20 @@ class ListenerHarness(Harness):
             rewake="true" if rewake else "false",
         )
         if seats is None:
+            wake = self.default_wake if wake is None else wake
+            # A routine seat takes the default routine variables (CLAUDE_ROUTINE_URL and _KEY).
             seats = textwrap.dedent("""\
                 [seat.CLAUDE]
                 bot = "Claude"
                 wake = "{wake}"
-                model = "sonnet"
+                {claude_line}
+                {routine}
                 {budget}
                 {live}
                 """).format(
                 wake=wake,
+                claude_line=claude_line,
+                routine="routine = {}" if wake == "http" else "",
                 budget=("budget = { %s }" % budget) if budget else "",
                 live=("live = { %s }" % live) if live else "",
             )

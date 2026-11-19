@@ -18,6 +18,10 @@ for source in "$scripts"/fleet_secrets/*.py; do
 done
 install -m 0600 "$scripts/fleet_infisical.py" "$dest/settings/fleet_infisical.py"
 install -m 0600 "$scripts/fleet_infisical_cli.py" "$dest/settings/fleet_infisical_cli.py"
+install -d -m 0700 "$dest/settings/simple_tools"
+for source in __init__.py operator_github_state.py; do
+  install -m 0600 "$scripts/simple_tools/$source" "$dest/settings/simple_tools/$source"
+done
 install -m 0700 "$scripts/fleet_secrets/linux-entrypoint.py" "$dest/settings/linux-entrypoint.py"
 python3 - "$config/environment" <<'PY'
 import os, sys, uuid

@@ -3,47 +3,44 @@
 The owner's words, after complaining five or six times in a week:  "The operator should never be
 answering on behalf of a platform."  The Operator used to post a headless agent's words in a chat topic
 as `[OPERATOR·wake] re=<id> ...`, and those replies answered questions as if the owner had asked it to
-and promised things it never does.  `Daemon.post` is a refusal now, for every seat and every wake type,
-and these tests pin the rule four ways:
+and promised things it never does.  The same day the listener stopped starting models at all (the
+claude, muse and openrouter wake types were retired), so the daemon has no answering code left, and
+these tests pin the rule three ways:
 
-  1. every adapter (claude, muse, openrouter, the mcode fallback, an http routine) completes a wake and
-     the Operator posts nothing, with the refusal on the ledger row;
+  1. the two wakes a seat can have post nothing:  an http routine completes a wake and an inbox seat
+     captures a mention, and the Operator posts nothing for either;  a seat that still names a retired
+     wake type is refused, only captures, starts nothing and posts nothing;
   2. the Operator's own alerts and notes (the held-wake digest, the owner DM note) still go out;
-  3. `Daemon.post` is a pure refusal (no Operator client, no request, no kept text);
-  4. the structure:  no function can build a wake reply, a route page or an owner ack, and the set of
-     functions that send a message as the Operator, and of modules that post a Zulip message at all, is
-     pinned, so a new sender is a deliberate change to this file and never an accident.
+  3. the structure:  the daemon has no function that posts a wake's answer, no function can build a
+     wake reply, a route page or an owner ack, and the set of functions that send a message as the
+     Operator, and of modules that post a Zulip message at all, is pinned, so a new sender is a
+     deliberate change to this file and never an accident.
 
-A fifth set pins the owner's Nov 10, 2026 ruling that the Operator asks nobody a clarifying question:
+A fourth set pins the owner's Nov 10, 2026 ruling that the Operator asks nobody a clarifying question:
 no candidate list, no registration question and no clarifying-question exemption in the hosted tools.
 """
 
 from __future__ import annotations
 
 import ast
-import json
 import re
 import textwrap
 import unittest
 from pathlib import Path
-from typing import Any
 
-from simple_tools import adapters as A
 from simple_tools import daemon as D
 from simple_tools import heldalert as HELDALERT
 from simple_tools import wakes as W
 from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.test_daemon import MENTION, DaemonHarness
-from simple_tools.tests.test_openrouter_daemon import OpenRouterHarness, or_output
 
 TOOLS = Path(D.__file__).resolve().parent
 #: What a wake reply or a route page began with:  `[WORD·wake] re=` and `[WORD·route→SEAT] re=`.
 TAG = re.compile("^\\s*\\[[A-Za-z0-9_-]+·(wake|route)")
-REASON = "operator_never_answers"
 
 
 class Quiet:
-    """The assertions every adapter's completed wake has to pass."""
+    """The assertions every wake and every capture has to pass."""
 
     def assert_nothing_was_posted(self) -> None:
         self.assertEqual(self.operator_posts(), [], "the Operator posted for a wake")
@@ -53,140 +50,11 @@ class Quiet:
         for message in self.fake.messages:
             self.assertIsNone(TAG.match(str(message.get("content") or "")), message.get("content"))
 
-    def assert_the_reply_was_dropped(self, row: dict[str, Any]) -> None:
-        self.assertEqual(row["state"], "done", row)
-        self.assertEqual(row["post_error"], REASON)
-        self.assertIsNone(row["posted_id"])
-        self.assertNotIn("posted_by", row)
-        refusals = [e for e in self.log_events("post-refused") if e.get("wake_id") == row["wake_id"]]
-        self.assertEqual([e["reason"] for e in refusals], [REASON])
 
 
 # --------------------------------------------------------------------------------------------
-# 1. One test per adapter
+# 1. One test per kind of seat
 # --------------------------------------------------------------------------------------------
-
-
-class ClaudeWakeTests(Quiet, DaemonHarness):
-    def test_a_completed_claude_wake_posts_nothing(self) -> None:
-        daemon = self.started()
-        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon)
-        self.assertEqual(self.final_adapter(), "claude")
-        self.assert_the_reply_was_dropped(self.terminal_wakes()[-1])
-        self.assert_nothing_was_posted()
-
-    def final_adapter(self) -> str:
-        return str(self.terminal_wakes()[-1]["adapter"])
-
-    def test_every_action_the_model_can_take_posts_nothing_but_the_owner_note(self) -> None:
-        daemon = self.started()
-        owner = self.fake.user_named("Jay Wedgeworth")
-        cases = {
-            "a reply to a peer": ("Codex", dict(action="reply", reply="Done.  Anything else?", board=None,
-                                                owner_note=None, risk="low", route=None)),
-            "a reply to the owner": (owner, dict(action="reply", reply="On it.", board=None,
-                                                 owner_note=None, risk=None, route=None)),
-            "a route the owner asked for": (owner, dict(action="none", reply=None, board=None, owner_note=None,
-                                                        risk=None, route={"seat": "CODEX", "reason": "look"})),
-            "an escalation by an owner trigger": (owner, dict(action="escalate", reply=None, board=None,
-                                                              owner_note="deploy now", risk=None, route=None)),
-        }
-        for n, (label, (sender, output)) in enumerate(cases.items()):
-            with self.subTest(label):
-                self.set_claude(mode="ok", output=output)
-                topic = "case %d" % n
-                self.fake.add_message(sender, "simple-tools", topic, MENTION + " please")
-                self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
-                self.wake_cycle(daemon, 25)
-        self.assertEqual(len(self.terminal_wakes()), len(cases))
-        self.assertEqual([r["state"] for r in self.terminal_wakes()], ["done"] * len(cases))
-        self.assert_nothing_was_posted()
-
-    def test_a_peer_escalation_posts_only_the_owner_note_and_never_a_reply(self) -> None:
-        daemon = self.started()
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "I can't share credentials.",
-                                           "board": None, "risk": "high", "owner_note": "asked for a key"})
-        self.fake.add_message("Codex", "simple-tools", "t", MENTION + " the key please")
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon)
-        posts = self.operator_posts()
-        self.assertEqual([(p["type"], p["content"].split("\n")[0][:15]) for p in posts],
-                         [("private", "[OPERATOR·note]")])
-        self.assertEqual(self.fake.requests_to("POST", "typing"), [])
-        self.assertEqual(self.seat_requests(), [])
-        self.assertNotIn("credentials", posts[0]["content"], "the dropped reply is not in the note")
-
-
-class MuseWakeTests(Quiet, OpenRouterHarness):
-    def setUp(self) -> None:
-        super().setUp()
-        self.mm_config("muse")
-        self.pin_muse()
-
-    def test_a_completed_muse_wake_posts_nothing(self) -> None:
-        daemon = self.mm()
-        self.mm_wake(daemon)
-        row = self.final()
-        self.assertEqual((row["adapter"], self.muse_runs()), ("muse", 1))
-        self.assert_the_reply_was_dropped(row)
-        self.assert_nothing_was_posted()
-
-
-class OpenRouterWakeTests(Quiet, OpenRouterHarness):
-    def setUp(self) -> None:
-        super().setUp()
-        self.mm_config("openrouter")
-        self.pin_openrouter()
-
-    def test_a_completed_openrouter_wake_posts_nothing(self) -> None:
-        daemon = self.mm()
-        self.mm_wake(daemon)
-        row = self.final()
-        self.assertEqual((row["adapter"], len(self.router.requests())), ("openrouter", 1))
-        self.assert_the_reply_was_dropped(row)
-        self.assert_nothing_was_posted()
-
-
-class FakeMcode:
-    """An mcode runner that answers with a valid wake result, and counts its runs."""
-
-    def __init__(self) -> None:
-        self.runs = 0
-
-    def run(self, argv: Any, env: Any, cwd: str, prompt: str, schema: Any = None) -> A.RunResult:
-        self.runs += 1
-        out = A.RunResult()
-        output = or_output("On it.  The cutover is in review.")
-        out.result = {"result": json.dumps(output)}
-        out.parsed = output
-        out.exit = 0
-        out.models = ["fake-mcode"]
-        return out
-
-
-class McodeFallbackWakeTests(Quiet, OpenRouterHarness):
-    def setUp(self) -> None:
-        super().setUp()
-        self.mm_config("muse", extra='fallback = "mcode"\nfallback_uncontained_ok = true')
-        self.pin_muse()
-        mcode = self.bin / "mcode"
-        mcode.write_text("#!/bin/sh\n")
-        mcode.chmod(0o755)
-        A.record_mcode_pin(self.seat_paths("MM"), str(mcode), self.clock.time())
-        self.set_muse(mode="silent_exit2")  # the primary fails (no answer), so the mcode fallback answers
-
-    def test_a_completed_mcode_fallback_wake_posts_nothing(self) -> None:
-        mcode = FakeMcode()
-        daemon = self.mm(mcode_runner=mcode)
-        self.mm_wake(daemon)
-        row = self.final()
-        self.assertEqual((row["adapter"], mcode.runs), ("mcode", 1))
-        self.assert_the_reply_was_dropped(row)
-        self.assert_nothing_was_posted()
-        (event,) = self.log_events("wake-fallback")
-        self.assertEqual(event["fallback"], "mcode")
 
 
 class HttpRoutineWakeTests(Quiet, DaemonHarness):
@@ -219,6 +87,47 @@ class HttpRoutineWakeTests(Quiet, DaemonHarness):
         self.assert_nothing_was_posted()
 
 
+class CaptureSeatTests(Quiet, DaemonHarness):
+    """A seat with no routine only captures:  the mention reaches its inbox, no wake row is written, and
+    nothing is posted.  A seat that still names a retired wake type is refused and does exactly that."""
+
+    default_wake = "inbox"
+
+    def capture_one(self) -> D.Daemon:
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.wake_cycle(daemon)
+        self.assertEqual([row["id"] for row in self.inbox()], [mid])
+        return daemon
+
+    def test_an_inbox_seat_captures_a_mention_and_nothing_is_posted(self) -> None:
+        self.capture_one()
+        self.assertEqual(self.ledger(), [], "a capture seat is never woken")
+        self.assertEqual(self.routine.received, [])
+        self.assert_nothing_was_posted()
+
+    def test_a_retired_wake_type_is_refused_captures_and_starts_nothing(self) -> None:
+        for value in ("claude", "muse", "openrouter"):
+            with self.subTest(wake=value):
+                self.write_config(wake=value)
+                daemon = self.daemon()
+                self.assertEqual(daemon.config.seats["CLAUDE"].wake, "inbox")
+                self.assertTrue(
+                    daemon.config.seats["CLAUDE"].config_problems[0].startswith(
+                        'seat.CLAUDE.wake = "%s" is retired' % value
+                    )
+                )
+                daemon.shutdown()
+        # The last refused config, end to end:  the mention is captured and nothing ever starts.
+        self.capture_one()
+        self.assertEqual([r for r in self.ledger() if r["state"] == "started"], [])
+        self.assertEqual(self.ledger(), [])
+        self.assertEqual(self.dumps(), [], "no model ran")
+        self.assertEqual(self.routine.received, [])
+        self.assert_nothing_was_posted()
+
+
 # --------------------------------------------------------------------------------------------
 # 2. What the Operator still sends
 # --------------------------------------------------------------------------------------------
@@ -237,76 +146,28 @@ class OperatorStillSendsTests(DaemonHarness):
         self.assertEqual(self.seat_requests(), [])
 
     def test_the_owner_dm_note_still_goes_out(self) -> None:
+        # The escalation note's sender stays although no wake can raise one any more (a model's
+        # escalate result was its only caller):  called directly, it still sends as the Operator.
         daemon = self.started()
-        self.set_claude(mode="ok", output={"action": "escalate", "reply": "No.", "board": None,
-                                           "risk": "high", "owner_note": "Codex asked for the key."})
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION + " the key please")
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        now = self.clock.time()
+        pending = W.Pending(
+            "w-note", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
+            owner=False, now=now, due=now,
+        )
+        pending.add({"id": mid, "ts": now}, False)
+        sent = daemon.dm_owner(daemon.seats["CLAUDE"], pending, "Codex asked for the key.", "high", [])
         (note,) = self.operator_posts()
         self.assertEqual(note["type"], "private")
         self.assertTrue(note["content"].startswith("[OPERATOR·note] re=%d\n" % mid), note["content"])
         self.assertIn("Codex asked for the key.", note["content"])
-        row = self.terminal_wakes()[-1]
-        self.assertEqual((row["state"], row["owner_dm"]), ("done", note["id"]))
+        self.assertEqual(sent, {"owner_dm": note["id"]})
+        self.assertEqual(self.seat_requests(), [])
 
 
 # --------------------------------------------------------------------------------------------
-# 3. `Daemon.post` is a pure refusal
-# --------------------------------------------------------------------------------------------
-
-
-class PostIsARefusalTests(DaemonHarness):
-    def pending(self, **item: Any) -> W.Pending:
-        now = self.clock.time()
-        base = {"channel": "simple-tools", "topic": "t", "type": "stream"}
-        pending = W.Pending("w-refused", "CLAUDE", {**base, **item}, owner=True, now=now, due=now)
-        pending.add({"id": 900, "ts": now}, True)
-        return pending
-
-    def test_post_refuses_without_an_operator_client_a_request_or_any_text(self) -> None:
-        daemon = self.started()
-        runner = daemon.seats["CLAUDE"]
-        builds = self.operator_builds
-        before = len(self.fake.requests)
-        for kind in ("reply", "route", "owner_ack"):
-            for pending in (self.pending(), self.pending(type="private", recipients=[10, 12], channel="", topic="")):
-                with self.subTest(kind=kind, type=pending.type):
-                    pending.post_refusal = None
-                    self.assertIsNone(daemon.post(runner, pending, kind))
-                    self.assertEqual(pending.post_refusal, REASON)
-        self.assertEqual(self.operator_builds, builds, "no Operator client was built for a refusal")
-        self.assertEqual(len(self.fake.requests), before, "no request of any kind was made")
-        self.assertEqual(self.operator_posts(), [])
-        events = self.log_events("post-refused")
-        self.assertEqual({e["reason"] for e in events}, {REASON})
-        self.assertEqual({e["kind"] for e in events}, {"reply", "route", "owner_ack"})
-        self.assertEqual(self.log_events("post-failed") + self.log_events("post-refused-dm"), [])
-
-    def test_the_refusal_does_not_depend_on_the_operator_being_reachable(self) -> None:
-        self.operator_available = False
-        daemon = self.started()
-        pending = self.pending()
-        self.assertIsNone(daemon.post(daemon.seats["CLAUDE"], pending))
-        self.assertEqual(pending.post_refusal, REASON, "not `operator_unavailable`:  the rule, not the outage")
-        self.assertEqual(self.operator_builds, 0)
-
-    def test_a_refusal_never_marks_a_wake_failed_or_runs_a_retry_loop(self) -> None:
-        daemon = self.started()
-        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon)
-        self.clock.advance(7200)
-        daemon.tick()
-        daemon.run_jobs("CLAUDE")
-        states = [r["state"] for r in self.ledger()]
-        self.assertEqual(states, ["queued", "accepted", "started", "done"], "one run, no retry, no second row")
-        self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual(len(self.log_events("post-refused")), 1)
-
-
-# --------------------------------------------------------------------------------------------
-# 4. The structure
+# 3. The structure
 # --------------------------------------------------------------------------------------------
 
 
@@ -425,17 +286,25 @@ class StructureTests(unittest.TestCase):
         V().visit(tree)
         self.assertEqual(found, {"post": {"_operator_send"}, "edit": {"_operator_edit"}})
 
-    def test_post_is_a_refusal_with_no_path_to_the_operator(self) -> None:
-        function = next(
-            node for node in ast.walk(parse(TOOLS / "daemon.py")) if isinstance(node, ast.FunctionDef) and node.name == "post"
+    #: The functions that took a model's result and acted on it:  posted its reply (`post`, a refusal
+    #: since Nov 10, 2026), acted on it (`act`), routed it (`route_check`, `handle_route`), filed it on
+    #: the board (`file_board`) or sent it to a chat (`select_chat`).  They went with the retired wake
+    #: types, and none may come back.
+    ANSWERING = {"post", "act", "route_gate", "route_check", "handle_route", "file_board", "select_chat"}
+
+    def test_the_daemon_has_no_function_that_answers_a_wake(self) -> None:
+        tree = parse(TOOLS / "daemon.py")
+        daemon_class = next(
+            node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Daemon"
         )
-        body = ast.Module(body=function.body[1:], type_ignores=[])  # after the docstring
-        used = {n.attr for n in ast.walk(body) if isinstance(n, ast.Attribute)} | {
-            n.id for n in ast.walk(body) if isinstance(n, ast.Name)
+        methods = {
+            node.name
+            for node in daemon_class.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        self.assertFalse(used & {"_operator_send", "_operator_edit", "operator_voice", "OPV", "Z", "client"}, used)
-        self.assertEqual([n for n in ast.walk(body) if isinstance(n, ast.Return) and n.value is not None], [])
-        self.assertEqual([n for n in ast.walk(body) if isinstance(n, ast.Raise)], [])
+        self.assertEqual(methods & self.ANSWERING, set(), "the Operator never answers a wake")
+        self.assertIn("dm_owner", methods, "the escalation note's sender stays (owner-only DM)")
+        self.assertFalse(hasattr(W, "OPERATOR_NEVER_ANSWERS"), "nothing is left to refuse")
 
     #: Every module that posts a Zulip message, and whose message it is.  A new one fails this test.
     MESSAGE_POSTERS = {
@@ -462,19 +331,20 @@ class StructureTests(unittest.TestCase):
                     posters.add(str(path.relative_to(TOOLS)))
         self.assertEqual(posters, set(self.MESSAGE_POSTERS), "a new module posts messages:  say whose they are")
 
-    def test_the_typing_indicator_is_not_started_by_anything_but_the_dead_plumbing(self) -> None:
-        # `_typing_signal` answers None, so `typing.start()` in `run_wake` never runs;  nothing else may
-        # construct the signal.
+    def test_the_typing_indicator_is_not_started_by_anything(self) -> None:
+        # The typing indicator (typing_signal.py) went with the retired wake types:  nothing may
+        # construct one again.
         constructors = []
         for path in modules():
             for node in ast.walk(parse(path)):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "TypingSignal":
                     constructors.append(path.name)
         self.assertEqual(constructors, [], "something raises the Operator's typing indicator again")
+        self.assertFalse((TOOLS / "typing_signal.py").exists())
 
 
 # --------------------------------------------------------------------------------------------
-# 5. The Operator asks nobody
+# 4. The Operator asks nobody
 # --------------------------------------------------------------------------------------------
 
 

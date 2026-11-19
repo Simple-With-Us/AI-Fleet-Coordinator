@@ -800,6 +800,9 @@ final class OpsWireContractTests: XCTestCase {
                 expectPlanSHA256: String(repeating: "b", count: 64)
             ))
         case "testWake": return OperatorWakeTarget(word: target).map { .testWake($0) }
+        case "eavesdropperPause":
+            guard let kind = entry["verb"].flatMap(OperatorPauseRequest.Kind.init(rawValue:)) else { return nil }
+            return .eavesdropperPause(OperatorPauseRequest(kind: kind, seat: target == "server" ? nil : target))
         default: return nil
         }
     }

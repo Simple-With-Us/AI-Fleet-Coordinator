@@ -17,15 +17,17 @@ naming another would move the chat.  The holder check fails closed:  a session s
 cannot be read well enough to say no process holds the chat is `busy`, and no headless run
 starts.
 
-While a process does hold the chat, the answer is `busy` too, and nothing is delivered.
-Waking a held chat in place has no supported route today, measured on Muse 1.4.15:
-`muse session-message send` from outside a Muse session answers `sender_unverified`
-(the channel verifies its sender as a Muse session, and this delivery runs under the ssh
-forced command, as no session), and a headless run against a held chat would be a second
-writer on one session.  The experimental MSP method `turn/start` on an attached host is
-the candidate route;  until it is built and proven, a held chat's wake waits, `busy`, and
-lands as a headless turn in the same session once the chat is let go.  It is never refused
-for being live:  the turn has not run, and a later try can run it.
+While a process does hold the chat, the wake is parked for it and the answer is `busy`
+(the router waits on `busy` without using up an attempt):  waking a held chat in place
+has no direct route, measured on Muse 1.4.15 (`muse session-message send` from outside a
+Muse session answers `sender_unverified`, because the channel verifies its sender as a
+Muse session and this delivery runs under the ssh forced command, as no session;  a
+headless run against a held chat would be a second writer on one session;  the chat's
+own socket speaks the peer-message hello and nothing else).  Instead the parked wake is
+handed over by the chat's own UserPromptSubmit hook, as prompt context on its next turn,
+and a later retry finds the wake id consumed (or in the transcript) and answers `sent`
+without running anything twice.  A held chat's wake is never refused for being live:
+the turn has not run, and parking uses up no attempt.
 
 The registry is asked again immediately before delivering, while the per-session lock is
 held, as the router did before sending.  A letter that no longer holds this session at this
@@ -74,6 +76,7 @@ from typing import Any, TextIO
 from . import claude_wake as CW
 from . import muse_session_rename as MR
 from . import platform_letter_muse as PLM
+from . import wake_pending as WP
 from . import wake_router as WR
 
 SEAT = "MC"
@@ -537,6 +540,9 @@ def _via_exec(
         confirm_seconds = int(config["confirm_seconds"])
     except (KeyError, TypeError, ValueError):
         return WR.Delivery("failed", "exec", code="settings-unreadable")
+    transcript = os.path.join(session_dir, "session.jsonl")
+    if _wake_seen(transcript, wake.wake_id):
+        return WR.Delivery("sent", "exec", ack="confirmed")
     binary = _binary(env, config)
     if not binary:
         return WR.Delivery("failed", "exec", code="muse-not-found")
@@ -555,7 +561,6 @@ def _via_exec(
     if not stat.S_ISDIR(info.st_mode):
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
     argv = [binary, "exec", "--session-id", session_id, wake_text(wake)]
-    transcript = os.path.join(session_dir, "session.jsonl")
     try:
         offset = os.path.getsize(transcript)
     except OSError:
@@ -580,6 +585,13 @@ def _via_exec(
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return WR.Delivery("refused", "exec", code="exec-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
+        # The turn already ran:  a ledger failure must not turn this handoff into a retryable `failed`
+        # (the router would run the turn twice), so the mark is best-effort and the transcript stays
+        # the hand-over record.
+        try:
+            WP.mark_delivered(WP.state_dir(_pending_home(env)), session_id, wake.wake_id)
+        except OSError:
+            pass
         if _seen_appended(transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep):
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
@@ -590,6 +602,35 @@ def _via_exec(
         return WR.Delivery("sent", "exec", ack="unknown")
     # It started, so it may have run the turn before it exited:  never retried.
     return WR.Delivery("refused", "exec", code="exec-exit-%d" % proc.returncode)
+
+
+def _pending_home(env: Mapping[str, str]) -> str:
+    """The home directory the parked-wake spool resolves under:  this host user's own home only, never an
+    environment override, so the hook (which runs with a cleared environment) resolves the identical spool."""
+    return str(env.get("HOME") or os.path.expanduser("~"))
+
+
+def _wake_seen(transcript: str, wake_id: str) -> bool:
+    """Whether the wake id is already recorded in the transcript's tail:  one bounded,
+    non-waiting read.  The hook hands a parked wake over as prompt context, so a retry
+    that finds the id here must not run the turn again."""
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - _SCAN_CHUNK))
+            return wake_id.encode("utf-8") in fh.read()
+    except (OSError, ValueError):
+        return False
+
+
+def _handed_over(state: str, transcript: str, wake: WR.Wake) -> WR.Delivery | None:
+    """`sent` when this wake already reached the chat through the hook (its id consumed,
+    and confirmed when the transcript itself carries it), or None when it did not."""
+    if not WP.is_consumed(state, wake.wake_id):
+        return None
+    if _wake_seen(transcript, wake.wake_id):
+        return WR.Delivery("sent", "hook", ack="confirmed")
+    return WR.Delivery("sent", "hook", ack="unknown")
 
 
 def deliver_local(
@@ -603,7 +644,9 @@ def deliver_local(
     _locked: bool = False,
 ) -> WR.Delivery:
     """Deliver one wake to a Muse chat on this host.  Not knowing whether a process
-    holds it is `busy`, and a sub-agent's session is never a target.  `_locked` is for
+    holds it is `busy`, and a sub-agent's session is never a target.  A held chat gets
+    the wake parked for its next prompt and the same `busy`, and an already-handed-over
+    wake is `sent` without running anything twice.  `_locked` is for
     `deliver_request`, which already holds this session's lock:  taking it again on a
     second file description would refuse itself."""
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
@@ -618,11 +661,23 @@ def deliver_local(
         return WR.Delivery("failed", code="store-unreadable")
     if session_dir is None:
         return WR.Delivery("refused", code="no-such-session")
+    state = WP.state_dir(_pending_home(env))
+    transcript = os.path.join(session_dir, "session.jsonl")
+    if (handed := _handed_over(state, transcript, wake)) is not None:
+        return handed
     held = _holder(session_dir)
     if held is None:
         return WR.Delivery("busy", code="holder-unknown")
     if held:
-        return WR.Delivery("busy", code="chat-live")
+        if WP.park(state, session_id, wake.wake_id, wake_text(wake)):
+            return WR.Delivery("busy", code="chat-live-parked")
+        # Park refused:  the wake id is already consumed, so the hook handed it over.
+        # The transcript check inside confirms it;  without the record the ledger is
+        # still proof the hook emitted it into a prompt.
+        handed = _handed_over(state, transcript, wake)
+        if handed is not None:
+            return handed
+        return WR.Delivery("sent", "hook", ack="unknown")
     if _locked:
         return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
     try:

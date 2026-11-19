@@ -13,9 +13,11 @@ import SwiftUI
 /// It reads the server and nothing on the Mac:  `server eavesdropper-status`,
 /// `server operator-sessions`, `server operator-wakes` and `server router-health`, together, each
 /// kept on its own so a read that fails never blanks another.  It reads when it opens, every
-/// minute while it is open and when the Mac wakes, and on Refresh.  Two things here act, and both
-/// go Show Plan, then Touch ID, through the shared action sheet:  the settings section, and a
-/// live chat's Test Wake button, which sends that one chat a dry-run wake that delivers nothing.
+/// minute while it is open and when the Mac wakes, and on Refresh.  Two things here act: the
+/// settings section, which coalesces typed edits and authenticates automatically through the shared
+/// server command (only verified persistence, readback and runtime application appear Saved), and
+/// a live chat's Test Wake button, which goes Show Plan, then Touch ID, through the shared action
+/// sheet and sends that one chat a dry-run wake that delivers nothing.
 struct OperatorPanelView: View {
     /// Opens the Controls panel, where the Operator's knobs are.
     var openControls: () -> Void = {}
@@ -129,6 +131,7 @@ struct OperatorPanelView: View {
                 }
             }
             OperatorRouterSeatsSection(reading: routerStore.reading)
+            OperatorPauseSection(status: store.status?.currentStatus(now: now))
             seatsAndChats(now: now)
             recentWakes(now: now)
             OperatorQueuesSection(wakes: store.wakes, now: now)
