@@ -61,7 +61,7 @@
     }
   },
   "macWake": {
-    "CLAUDE": "Mac listener:  live delivery, and a fresh headless claude -p wake.  Live-session rewake is off (rewake_verified = false).",
+    "CLAUDE": "Mac listener:  live delivery.  The headless claude -p wake was retired on Nov 10, 2026 (the listener starts no model), so wakes go through the shared wake router.  Live-session rewake is off (rewake_verified = false).",
     "*": "Mac listener:  inbox capture, no wake."
   },
   "unheldWake": {
