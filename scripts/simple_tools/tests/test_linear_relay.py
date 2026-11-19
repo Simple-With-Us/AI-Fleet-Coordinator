@@ -214,7 +214,9 @@ class Topic:
         self.sloppy = False  # answer `since` with the whole topic, as if the id were ignored
         self.cap: int | None = None
 
-    def whole(self, stream_id: int, topic: str) -> list[dict]:
+    def whole(
+        self, stream_id: int, topic: str, deadline: float | None = None
+    ) -> list[dict]:
         self.whole_calls += 1
         if self.whole_error is not None:
             raise self.whole_error
@@ -2662,6 +2664,38 @@ class ReadablePostTests(WorkerCase):
         self.w.tick()
         body = self.lin.updated[-1][1]
         self.assertIn("1 message(s) are no longer in Zulip", body)
+
+    def test_the_repair_read_hands_every_reader_the_same_deadline(self) -> None:
+        # The first read of a repair and the pages that follow it share one budget, so
+        # the whole repair read is bounded in time (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+        seen: list[float | None] = []
+
+        def whole(
+            stream_id: int, topic: str, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertTrue(seen)  # every reader of the repair got a deadline
+        self.assertTrue(all(deadline is not None for deadline in seen))
+        self.assertEqual(len(set(seen)), 1)  # and it was the same one
 
     def test_a_repair_read_with_a_reader_that_takes_no_deadline_is_refused(self) -> None:
         # A reader that cannot take the deadline cannot hold a bounded walk, so the

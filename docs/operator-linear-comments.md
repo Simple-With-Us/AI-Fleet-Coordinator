@@ -126,7 +126,8 @@ Eavesdropper, and it hosts the mirror.
   Each history read has one 30-second deadline for all its pages, because it runs on
   the routing thread.  A caller that walks a topic page by page may hand the read a
   deadline of its own, and the earlier of the two holds, so a walk never gets more time
-  out of a read than a read on its own gets.
+  out of a read than a read on its own gets.  A reader that cannot take a deadline is
+  refused before it reads, because a walk it cannot bound is not a bounded walk.
   Every message a read answers is checked against the shape Zulip's messages API gives
   it before anything reads it:  a malformed one is skipped and counted in the log (the
   count alone, never its text), so one bad message never holds a catch-up or a restore
@@ -212,7 +213,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (62 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (63 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -239,7 +240,7 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 178 tests) covers the worker, the whole-topic continuation
+(`test_linear_relay.py`, 179 tests) covers the worker, the whole-topic continuation
 above, and the AFC-821 archive and catch-up, malformed history messages and reads that
 answer no list at all included, and the whole post (the conversion, the bounds and the
 notes, the credential scan over the converted text, and the repair of the comments an

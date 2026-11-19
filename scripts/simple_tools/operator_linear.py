@@ -483,16 +483,26 @@ class OperatorLinearComments:
         )
 
     # -- plumbing ----------------------------------------------------------------------
-    def _history(self, stream_id: int, topic: str) -> list[Mapping[str, Any]]:
+    def _history(
+        self, stream_id: int, topic: str, deadline: float | None = None
+    ) -> list[Mapping[str, Any]]:
         """The whole topic, oldest first:  the worker's backfill reader, for an entry a
         message makes or restores.  With no client there is nothing to read with, and that
         is a failed read, not an empty topic:  an empty answer would let a restored entry
-        rewrite its standing comment down to the live message."""
+        rewrite its standing comment down to the live message.
+
+        The deadline is the one the caller's read shares, and the Operator's own budget
+        bounds the read as well, so a walk never gets more time out of a read than a read
+        on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
-            client, stream_id, topic, deadline=time.monotonic() + HISTORY_READ_BUDGET
+            client,
+            stream_id,
+            topic,
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
     def _history_since(

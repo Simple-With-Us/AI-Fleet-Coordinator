@@ -1349,6 +1349,21 @@ def _repair_note(entry: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _call_with_deadline(
+    reader: Callable[..., Any], args: tuple[Any, ...], deadline: float | None
+) -> Any:
+    """Call a reader with the deadline it takes, and without one when it takes none.
+
+    The deadline is handed the way the reader declares it:  in place, or as a keyword,
+    and never to a reader that has no parameter named "deadline" (Kody, PR 2340)."""
+    how = _deadline_argument(reader)
+    if how == "positional":
+        return reader(*args, deadline)
+    if how == "keyword":
+        return reader(*args, deadline=deadline)
+    return reader(*args)
+
+
 def _deadline_argument(reader: Callable[..., Any]) -> str | None:
     """How a reader takes the deadline a walk shares:  "positional", "keyword", or None.
 
@@ -2105,18 +2120,27 @@ class RelayWorker:
         return len(entry["links"]) != before
 
     def _read_topic(
-        self, stream_id: int, topic: str, cache: dict[tuple[int, str], Any]
+        self,
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+        deadline: float | None = None,
     ) -> tuple[list[Mapping[str, Any]] | None, str]:
         """The whole topic from the history reader, oldest first, read once per message for
         every entry the message makes or restores (the caller's cache).  (messages, "") when the
         read succeeded, (None, the error's type name) when it failed, and (None, "") when there
-        is no reader to read with (the standalone process)."""
+        is no reader to read with (the standalone process).
+
+        The deadline is the one the caller's read shares, and it is handed to the reader
+        when the reader takes one (Kody, PR 2340)."""
         if self.history is None:
             return None, ""
         cache_key = (stream_id, topic)
         if cache_key not in cache:
             try:
-                read, malformed, over = _by_id(self.history(stream_id, topic))
+                read, malformed, over = _by_id(
+                    _call_with_deadline(self.history, (stream_id, topic), deadline)
+                )
             except Exception as exc:  # noqa: BLE001 - history must never stop a record
                 cache[cache_key] = (None, type(exc).__name__)
             else:
@@ -2249,13 +2273,14 @@ class RelayWorker:
         Every page of the walk shares one deadline, so the walk is bounded in time and
         not only in pages, and a walk that runs out of time leaves the entry due for a
         later try (Kody, PR 2340)."""
-        read, _error = self._read_topic(stream_id, topic, cache)
+        # The reader compares the deadline with the real clock, so the deadline is
+        # computed with the real clock too (Kody, PR 2340).  It is computed before the
+        # first read, so the whole repair read shares one budget (Kody, PR 2340).
+        deadline = time.monotonic() + REPAIR_READ_BUDGET
+        read, _error = self._read_topic(stream_id, topic, cache, deadline)
         if read is None:
             return None, False
         wanted = max((int(item["mid"]) for item in entry["links"]), default=0)
-        # The reader compares the deadline with the real clock, so the deadline is
-        # computed with the real clock too (Kody, PR 2340).
-        deadline = time.monotonic() + REPAIR_READ_BUDGET
         reader = self.history_since
         how = None
         if reader is not None:

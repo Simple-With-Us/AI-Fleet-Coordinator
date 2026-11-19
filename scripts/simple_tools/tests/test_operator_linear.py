@@ -586,6 +586,20 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             eng._history(5, "thread")
 
+    def test_a_caller_deadline_bounds_the_whole_topic_read_too(self) -> None:
+        # The whole-topic reader takes the deadline the caller's read shares, and the
+        # Operator's own budget bounds it as well (Kody, PR 2340).
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 4)])
+        eng = self.engine(zulip)
+        eng.reload_streams(zulip)  # the client the readers read with
+        before = time.monotonic()
+        eng._history(5, "thread", deadline=before + opl.HISTORY_READ_BUDGET * 10)
+        after = time.monotonic()
+        deadlines = [options["deadline"] for options in zulip.message_options]
+        self.assertTrue(deadlines)
+        for deadline in deadlines:
+            self.assertLessEqual(deadline, after + opl.HISTORY_READ_BUDGET)
+
     def test_a_caller_deadline_never_gets_more_time_than_the_operator_budget(self) -> None:
         # A walk that shares its own deadline does not get more time out of a read than
         # a read on its own gets (Kody, PR 2340).
