@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from simple_tools import wake_router as WR
 from simple_tools import zcode_wake
+from simple_tools.tests.harness import private_dir
 
 SID = "sess_1a2b3c4d-1111-2222-3333-444455556666"
 SID_OTHER = "sess_9999ffff-1111-2222-3333-444455556666"
@@ -77,29 +78,6 @@ class StubbornChild(FakeChild):
 
     def kill(self):
         self.killed = True
-
-
-def private_dir(path) -> str:
-    """A private directory, built one level at a time with owner-only permissions.
-
-    Every missing level is created explicitly, a symlinked level is refused, and nothing
-    outside the test's own home is ever followed."""
-    missing = []
-    probe = os.path.abspath(str(path))
-    while not os.path.exists(probe):
-        missing.append(probe)
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            break
-        probe = parent
-    if os.path.islink(str(path)):
-        raise OSError("refusing a symlinked directory: %s" % path)
-    for level in reversed(missing):
-        if os.path.islink(level):
-            raise OSError("refusing a symlinked directory: %s" % level)
-        os.mkdir(level, mode=0o700)
-        os.chmod(level, 0o700)
-    return str(path)
 
 
 def _holding_row(session_id: str = SID):
