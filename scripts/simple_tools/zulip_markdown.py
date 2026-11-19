@@ -291,7 +291,7 @@ class _Converter(HTMLParser):
         if not name:
             for token in classes.split():
                 if token.startswith("emoji-") and len(token) > len("emoji-"):
-                    name = token[len("emoji-"):]
+                    name = token[len("emoji-") :]
                     break
         return (name or "emoji").strip()
 
@@ -346,7 +346,7 @@ def _source_line(line: str) -> str:
             if close == -1:
                 out.append("\\`" * run)  # an unclosed run: escaped, it swallows nothing
             else:
-                out.append(marker + text[index + run:close] + marker)
+                out.append(marker + text[index + run : close] + marker)
                 index = close + run
                 continue
             index += run
@@ -354,10 +354,7 @@ def _source_line(line: str) -> str:
         if char == "[":
             match = _LINK.match(text, index)
             if match:
-                out.append(
-                    "[%s](%s)"
-                    % (_escape_text(match.group(1)), _escape_url(match.group(2)))
-                )
+                out.append("[%s](%s)" % (_escape_text(match.group(1)), _escape_url(match.group(2))))
                 index = match.end()
                 continue
             out.append("\\[")
