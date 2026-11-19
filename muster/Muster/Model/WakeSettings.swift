@@ -19,10 +19,11 @@ import Foundation
 /// writes a `wake` line.
 ///
 /// Until the listener change lands, today's listener (`simple_tools/config.py`) still decides by
-/// the old `wake` line:  it defaults to inbox, reads a routine only with `wake = "http"`, still
-/// runs `claude`, `muse` and `openrouter`, and drops every other mismatch to inbox, which only
-/// captures.  So a seat Wakes with a routine and `wake = "http"`, or with a routine and no wake
-/// line, which is how the one-wake-path schema reads every seat once the line is gone.  It
+/// the old `wake` line:  it defaults to inbox, reads a routine only with `wake = "http"`, refuses
+/// the retired `claude`, `muse` and `openrouter` (it starts no model, AFC-694), and drops every
+/// other mismatch to inbox, which only captures.  So a seat Wakes with a routine and
+/// `wake = "http"`, or with a routine and no wake line, which is how the one-wake-path schema
+/// reads every seat once the line is gone.  It
 /// Captures Only with no routine and no wake line or `wake = "inbox"`.  Every other mix is an Old
 /// Wake Setting, and the panel says what today's listener does with it rather than call it either.
 enum WakeSeatKind: Equatable {
@@ -50,15 +51,9 @@ enum WakeSeatKind: Equatable {
     /// Whether the seat Wakes through its routine, so its routine applies.
     var hasRoutine: Bool { self == .wakes }
 
-    /// Whether today's listener wakes the seat at all, by its routine or by an old wake it still
-    /// runs, so its caps apply.  A seat the listener drops to inbox is not woken.
-    var isWoken: Bool {
-        switch self {
-        case .wakes: return true
-        case .oldWakeSetting(let old): return old.isWoken
-        case .capturesOnly, .notKnown: return false
-        }
-    }
+    /// Whether today's listener wakes the seat at all, so its caps apply.  Only a routine wakes a
+    /// seat:  the listener starts no model (AFC-694), and a seat it drops to inbox is not woken.
+    var isWoken: Bool { self == .wakes }
 
     /// What the label means, for its help text.
     var help: String {
@@ -82,32 +77,20 @@ enum WakeSeatKind: Equatable {
 }
 
 /// What today's listener does with a seat whose routine and old wake line do not make one wake
-/// path, by `simple_tools/config.py`'s own rules.
+/// path, by `simple_tools/config.py`'s own rules.  Every one of them only captures.
 enum WakeOldSetting: Equatable {
-    /// No routine, and an old wake the listener still runs:  claude, muse or openrouter.
-    case stillWakes(String)
-    /// No routine, and an old wake line the listener refuses:  `http` without a routine, or a word
-    /// it does not know.  It drops the seat to inbox.
+    /// No routine, and an old wake line the listener refuses:  a retired wake (`claude`, `muse` or
+    /// `openrouter`, `RETIRED_WAKES`, since the listener starts no model), `http` without a
+    /// routine, or a word it does not know.  It drops the seat to inbox.
     case refused(String)
     /// A routine beside a wake line other than `http`.  Today's listener reads a routine only with
     /// `wake = "http"`, so it drops the seat to inbox.  A routine with no wake line is not this
     /// case:  it Wakes, as the one-wake-path schema reads it.
     case routineNeedsHTTP(wake: String?)
 
-    /// The old wakes today's listener still runs without a routine.
-    static let stillRun: Set<String> = ["claude", "muse", "openrouter"]
-
-    /// Whether today's listener wakes the seat.
-    var isWoken: Bool {
-        if case .stillWakes = self { return true }
-        return false
-    }
-
     /// What the panel says about it.
     var note: String {
         switch self {
-        case .stillWakes(let wake):
-            return "The listener still wakes this seat through its old wake = \"\(wake)\" setting until the listener change lands.\u{00A0} Muster no longer edits it."
         case .refused(let wake):
             return "The listener refuses this old wake = \"\(wake)\" line, so this seat only captures until it is removed."
         case .routineNeedsHTTP(let wake):
@@ -446,7 +429,7 @@ enum ListenerSeatHost: Equatable {
         case .mac:
             return nil
         case .server:
-            return "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file.\u{00A0} Whether it is on and how it is woken are changed under Server Eavesdropper Settings, through Show Plan and Touch ID;  its caps, timings and routine figures are knobs, so they are read only there."
+            return "Managed by the shared Operator on the server.\u{00A0} Edit its settings under Server Eavesdropper Settings; changes save automatically after owner authorization and confirmed persistence."
         case .noListener:
             return "No eavesdropper holds this seat."
         case .unlisted:
@@ -801,8 +784,8 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     }
 
     /// Whether the setting means anything for a seat of this kind:  the routine table for a seat
-    /// that Wakes, the caps for any seat the listener wakes today (by its routine or by an old wake
-    /// line), and none of them for one that Captures Only, which never wakes.
+    /// that Wakes, the caps for a seat the listener wakes today (only by its routine), and none of
+    /// them for one that Captures Only or has an old wake setting, which never wakes.
     func applies(to kind: WakeSeatKind) -> Bool {
         switch self {
         case .hostLoadGate:
@@ -1678,8 +1661,8 @@ enum WakeSettingsBuilder {
     ///
     /// A routine table with `wake = "http"` makes it a seat that Wakes, and no routine with no
     /// wake line or `wake = "inbox"` one that Captures Only.  Every other mix is an Old Wake
-    /// Setting:  an old wake the listener still runs (claude, muse, openrouter), one it refuses
-    /// (`http` with no routine, or a word it does not know), or a routine it ignores because the
+    /// Setting:  one it refuses (a retired wake such as `claude`, `muse` or `openrouter`, `http`
+    /// with no routine, or a word it does not know), or a routine it ignores because the
     /// wake is not `http`.  The wake line is read for that purpose and never written.  Muster cannot say what a seat is
     /// when the file was not read, when another eavesdropper holds the seat (the Mac's file does not
     /// describe it), when the Mac's file has no section for it, or when its section holds a line
@@ -1729,9 +1712,8 @@ enum WakeSettingsBuilder {
             guard let line = wake, line != "inbox" else {
                 return .capturesOnly
             }
-            if WakeOldSetting.stillRun.contains(line) {
-                return .oldWakeSetting(.stillWakes(line))
-            }
+            // The listener starts no model, so a retired wake (`claude`, `muse`, `openrouter`) is
+            // refused like any other word it does not run, and the seat only captures.
             return .oldWakeSetting(.refused(line))
         }
     }

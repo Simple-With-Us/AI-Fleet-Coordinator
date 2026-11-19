@@ -1,8 +1,8 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify: every runner is a fake,
-except that the bounded reader of `server eavesdropper-status` is also tried against small
-Python child processes of its own (and a stand-in `docker` script).
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
+fake; credential tests use only a loopback provider and the actual isolated canonical worker.
+The bounded status reader also runs small Python children and a stand-in `docker` script.
 
   python3 scripts/test_fleet_ops_control.py
 """
@@ -20,8 +20,11 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
+
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("foc", os.path.join(HERE, "fleet-ops-control.py"))
@@ -118,8 +121,6 @@ class FakeRunner:
             return 0, update_state()
         if argv[1:2] == ["print"]:
             return (0 if self.loaded else 113), b""
-        if argv[1:2] == ["get"]:
-            return (0, self.secret.encode()) if self.secret else (3, b"")
         if argv[-1:] == ["jlist"]:
             return self.status, (self.jlist if want_stdout and self.jlist is not None else b"")
         if "journalctl" in argv[0]:
@@ -128,6 +129,8 @@ class FakeRunner:
 
 
 class Base(unittest.TestCase):
+    fake_credential_read = True
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
@@ -158,7 +161,6 @@ class Base(unittest.TestCase):
             http=self.http,
             now=lambda: NOW,
             config_path=self.config_path,
-            fleet_secrets="/fake/bin/fleet-secrets",
             pm2_node="/fake/bin/node",
             pm2_script="/fake/lib/pm2",
             sleep=lambda _: None,
@@ -166,7 +168,22 @@ class Base(unittest.TestCase):
 
     def run_main(self, argv, ctx):
         out = io.StringIO()
-        code = foc.main(argv, ctx=ctx, out=out)
+
+        def fixture_token(_ctx):
+            value = getattr(_ctx.runner, "secret", TOKEN)
+            if not value:
+                raise foc.Failed("the Coolify token is not available")
+            return value
+
+        # Pure control-flow tests retain their explicit synthetic credential seam.  The
+        # CredentialTests subclass disables it and crosses the actual provider/worker path.
+        isolated = (
+            mock.patch.object(foc, "read_coolify_token", side_effect=fixture_token)
+            if self.fake_credential_read
+            else contextlib.nullcontext()
+        )
+        with isolated:
+            code = foc.main(argv, ctx=ctx, out=out)
         text = out.getvalue()
         return code, (json.loads(text) if text.startswith("{") else text)
 
@@ -378,6 +395,11 @@ class AllowlistNotesTests(Base):
             None,
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
+        ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
         ),
         "com.jay.fleet-mac-services": (
             "reporting",
@@ -2244,6 +2266,8 @@ GOLDEN_ACTIONS = {
     "unitStatus": "unit-status",
     "serverListenerSettings": "eavesdropper-settings",
     "testWake": "test-wake",
+    # `server pause|pause-wakes|resume`:  the line's own verb word.
+    "eavesdropperPause": None,
 }
 
 
@@ -2730,11 +2754,11 @@ class RedeployResourceNameTests(Base):
 
 
 class CredentialTests(Base):
-    """A caller-scoped service token reaches only the fleet-secrets child."""
+    """Own custody and strict rows cross the actual canonical worker, never an app fake."""
 
+    fake_credential_read = False
     ROWS = RedeployTests.ROWS
     TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
-    VALUE = "st." + "scoped-fleet-ops-control-token"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2750,9 +2774,59 @@ class CredentialTests(Base):
             "INFISICAL_SHARED_CLIENT_ID",
             "INFISICAL_SHARED_CLIENT_SECRET",
             "WISE_RELAY_INFISICAL_TOKEN",
+            "FLEET_KNOBS_INFISICAL_TOKEN",
+            "FLEET_RECALL_INFISICAL_TOKEN",
         )
     }
-    COORDINATES = {"INFISICAL_PROJECT_ID": "preserved-project", "INFISICAL_READ_PATHS": "/coolify"}
+
+    def setUp(self):
+        super().setUp()
+        # Source lanes may intentionally be group-writable.  Exercise the unchanged custody
+        # guard against an actual private copied reader, rather than relaxing that guard.
+        reader_dir = self.home / "reader-payload"
+        if reader_dir.is_symlink():
+            raise ValueError(f"refusing symlink: {reader_dir}")
+        reader_dir.mkdir(mode=0o700)
+        reader_file = reader_dir / "fleet_infisical.py"
+        reader_file.write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
+        reader_file.chmod(0o600)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", reader_dir))
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI(
+            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify"
+        )
+        self.api.record_override = {"secretValueHidden": False}
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.VALUE = self.api.token
+        self.read_calls = []
+        actual_loader = foc._load_infisical_reader
+
+        def observed_loader(ctx):
+            reader = actual_loader(ctx)
+            actual_fetch = reader.bounded_fetch_project
+
+            def observed_fetch(project, folder, env, **kwargs):
+                self.read_calls.append((project, folder, dict(env), dict(kwargs)))
+                return actual_fetch(project, folder, env, **kwargs)
+
+            reader.bounded_fetch_project = observed_fetch
+            return reader
+
+        loader_patch = mock.patch.object(foc, "_load_infisical_reader", side_effect=observed_loader)
+        self.loader = loader_patch.start()
+        self.addCleanup(loader_patch.stop)
+
+    def env(self, **extra):
+        return {
+            "HOME": str(self.home),
+            "PATH": "/no-secret-application",
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "INFISICAL_ENVIRONMENT": "prod",
+            self.TOKEN_NAME: self.VALUE,
+            **extra,
+        }
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
@@ -2767,78 +2841,166 @@ class CredentialTests(Base):
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
-        environ = environ or {"PATH": "/usr/bin", "INFISICAL_TOKEN": "stale-token-from-env"}
         return self.run_main(
-            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ)
+            ["server", "redeploy", UUID, "--yes", "--json"],
+            self.ctx(environ=self.env() if environ is None else environ),
         )
 
-    def secrets_env(self):
-        ((argv, env),) = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
-        return env
-
-    def test_file_scoped_token_reaches_only_fleet_secrets(self):
+    def test_file_binding_wins_and_only_the_exact_named_strict_read_runs(self):
         self.credentials(self.pair_text())
-        inherited = {
-            "PATH": "/usr/bin",
-            **self.SHARED_AUTH,
-            **self.COORDINATES,
-            self.TOKEN_NAME: "st.different-process-reader-token",
-        }
+        inherited = self.env(**self.SHARED_AUTH)
+        inherited[self.TOKEN_NAME] = "st.different-process-reader-token"
+        inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
         code, ans = self.redeploy(inherited)
-        # A server redeploy is submitted rather than run inline:  the merged code answers
-        # "submitted" for that action, so the expectation follows the code.
-        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN_NAME, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
+        self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
+        ((project, folder, env, kwargs),) = self.read_calls
+        self.assertEqual((project, folder), (self.project, "/coolify"))
+        self.assertEqual(
+            env,
+            {
+                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+                "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_READ_PATHS": "/coolify",
+            },
+        )
+        self.assertEqual(
+            kwargs,
+            {
+                "token": self.VALUE,
+                "names": ("COOLIFY_API_TOKEN",),
+                "timeout": 30,
+                "writer": False,
+                "max_output_bytes": 8192,
+                "strict_records": True,
+            },
+        )
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(self.api.requests[1].startswith("/api/v3/secrets/raw/COOLIFY_API_TOKEN?"))
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
         self.assertNotIn(self.VALUE, text)
-        for argv, _env in self.runner.calls:
-            self.assertNotIn(self.VALUE, " ".join(argv))
-        # A systemctl child never sees it.
+        self.assertNotIn(TOKEN, text)
+        self.assertEqual(self.runner.calls, [])
         self.runner.calls.clear()
         self.run_main(
             ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
             self.ctx(environ=inherited),
         )
-        ((argv, env),) = self.runner.calls
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertNotIn(self.TOKEN_NAME, env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+        ((argv, child_env),) = self.runner.calls
+        self.assertNotIn(self.VALUE, " ".join(argv))
+        self.assertNotIn(self.TOKEN_NAME, child_env)
+        self.assertFalse(self.SHARED_AUTH.keys() & child_env.keys())
 
-    def test_process_scoped_token_is_mapped_for_the_child(self):
-        inherited = {
-            "PATH": "/usr/bin",
-            **self.SHARED_AUTH,
-            **self.COORDINATES,
-            self.TOKEN_NAME: self.VALUE,
-        }
-        code, _ = self.redeploy(inherited)
-        self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN_NAME, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
-        self.runner.calls.clear()
-        self.run_main(
-            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
-            self.ctx(environ=inherited),
+    def test_process_binding_and_existing_project_metadata_file_are_supported(self):
+        coordinate = self.home / ".simple-tools" / "fleet-ops-project-id"
+        if coordinate.parent.is_symlink():
+            raise ValueError(f"refusing symlink: {coordinate.parent}")
+        coordinate.parent.mkdir(mode=0o700)
+        coordinate.write_text(self.project + "\n")
+        env = self.env()
+        env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
+        code, ans = self.redeploy(env)
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(self.read_calls[0][3]["token"], self.VALUE)
+
+    def test_missing_own_binding_never_uses_ambient_writer_recall_or_machine_auth(self):
+        env = self.env(**self.SHARED_AUTH)
+        env.pop(self.TOKEN_NAME)
+        code, ans = self.redeploy(env)
+        self.assertEqual(
+            (code, ans["result"], ans["detail"]),
+            (1, "failed", "the Coolify token is not available"),
         )
-        ((argv, env),) = self.runner.calls
-        self.assertNotIn(self.TOKEN_NAME, env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
-    def test_no_file_discards_broad_token_and_machine_credentials(self):
-        code, _ = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
-        self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+    def test_missing_or_malformed_project_refuses_before_the_provider(self):
+        for value in (None, "invalid-project"):
+            with self.subTest(value=value):
+                env = self.env()
+                env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
+                if value is not None:
+                    env["INFISICAL_FLEET_OPS_PROJECT_ID"] = value
+                code, ans = self.redeploy(env)
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
-    def test_a_shared_or_malformed_file_fails_before_fleet_secrets_runs(self):
+    def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
+        cases = (
+            {"workspace": str(uuid.uuid4())},
+            {"scopes": [{"environment": "prod", "secretPath": "/"}]},
+            {"scopes": [{"environment": "dev", "secretPath": "/coolify"}]},
+            {
+                "scopes": [
+                    {"environment": "prod", "secretPath": "/coolify"},
+                    {"environment": "prod", "secretPath": "/other"},
+                ]
+            },
+            {"permissions": ["read", "write"]},
+            {"expiresAt": None},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
+        )
+        for metadata in cases:
+            with self.subTest(fields=tuple(metadata)):
+                self.api.metadata_override = metadata
+                self.api.requests.clear()
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+                self.assertEqual(self.http_calls, [])
+
+    def test_strict_named_record_failures_never_reach_coolify(self):
+        cases = (
+            {},
+            {"secretValueHidden": True},
+            {"secretValueHidden": "false"},
+            {"secretKey": "OTHER_NAME"},
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "dev"},
+            {"secretPath": "/other"},
+            {"type": "personal"},
+            {"secretValue": ""},
+            {"secretValue": None},
+            {"secretValue": "${UNRESOLVED}"},
+        )
+        for record in cases:
+            with self.subTest(fields=tuple(record)):
+                self.api.record_override = {"secretValueHidden": False, **record} if record else {}
+                self.api.record_omissions = () if record else ("secretValueHidden",)
+                self.api.requests.clear()
+                self.http_calls.clear()
+                self.assertEqual((self.api.requests, self.http_calls), ([], []))
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(len(self.api.requests), 2)
+                self.assertEqual(self.http_calls, [])
+
+    def test_absent_whitespace_and_oversized_values_fail_closed(self):
+        for value in (None, " ", "two words", "z" * 9000):
+            with self.subTest(kind=type(value).__name__, length=len(value or "")):
+                self.api.values.clear()
+                if value is not None:
+                    self.api.values[foc.COOLIFY_TOKEN_NAME] = value
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(self.http_calls, [])
+                self.assertNotIn(self.VALUE, json.dumps(ans))
+
+    def test_non_prod_and_invalid_own_binding_never_contact_the_provider(self):
+        for change in (
+            {"INFISICAL_ENVIRONMENT": "dev"},
+            {"INFISICAL_ENV": "staging"},
+            {self.TOKEN_NAME: "malformed"},
+        ):
+            with self.subTest(fields=tuple(change)):
+                self.api.requests.clear()
+                code, ans = self.redeploy(self.env(**change))
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual((self.api.requests, self.http_calls), ([], []))
+
+    def test_private_file_custody_failures_stop_before_any_reader_or_coolify_call(self):
         cases = [
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
@@ -2846,62 +3008,80 @@ class CredentialTests(Base):
             ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
             ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
-            (
-                "FLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
-                + "x" * 20
-                + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
-                + "y" * 20
-                + "\n",
-                0o600,
-            ),
-            ("export FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 25 + "\n", 0o600),
+            (self.pair_text() + self.pair_text(), 0o600),
+            ("export " + self.pair_text().splitlines()[1] + "\n", 0o600),
             ("# nothing\n", 0o600),
         ]
         for text, mode in cases:
-            self.credentials(text, mode)
-            code, ans = self.redeploy()
-            self.assertEqual((code, ans["result"]), (1, "failed"), (text, oct(mode)))
-            self.assertIn(
-                ans["detail"],
-                (
-                    "the Infisical credential file is not private",
-                    "the Infisical credential file is malformed",
-                ),
-            )
-            self.assertEqual([c for c in self.runner.calls if c[0][1:2] == ["get"]], [])
-            self.assertEqual(self.http_calls, [])
+            with self.subTest(mode=mode):
+                self.credentials(text, mode)
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertIn(
+                    ans["detail"],
+                    (
+                        "the Infisical credential file is not private",
+                        "the Infisical credential file is malformed",
+                    ),
+                )
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
-    def test_a_symlinked_file_is_refused(self):
+    def test_symlinked_credential_file_is_refused(self):
         real = self.home / "elsewhere.env"
         real.write_text(self.pair_text())
-        os.chmod(real, 0o600)
+        real.chmod(0o600)
         folder = self.home / ".config" / "fleet-tools"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True)
         (folder / "ops-control.env").symlink_to(real)
         code, ans = self.redeploy()
         self.assertEqual((code, ans["detail"]), (1, "the Infisical credential file cannot be read"))
+        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
-    def test_check_token_reads_the_token_and_asks_coolify_for_its_version(self):
-        self.credentials(self.pair_text())
-        code, ans = self.run_main(["--check-token"], self.ctx())
+    def test_plan_does_not_load_reader_or_read_even_a_malformed_credential_file(self):
+        self.credentials("malformed", 0o644)
+        self.write_status(self.ROWS)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
+        self.assertEqual((code, ans["result"]), (0, "planned"))
+        self.loader.assert_not_called()
+        self.assertEqual((self.api.requests, self.http_calls), ([], []))
+
+    def test_read_timeout_is_known_failure_but_sent_coolify_failure_stays_uncertain(self):
+        ctx = self.ctx(environ=self.env())
+        commands = [["coolify", "GET", "/api/v1/deploy?uuid=" + UUID]]
+        with mock.patch.object(foc, "SECRET_TIMEOUT", 0.001):
+            with self.assertRaises(foc.Failed) as caught:
+                foc.execute(ctx, "server", "redeploy", UUID, commands)
+        self.assertFalse(caught.exception.timed_out)
+        self.assertEqual(self.http_calls, [])
+        ctx = self.ctx(environ=self.env(), http_status=foc.NoAnswer(0))
+        with self.assertRaises(foc.Failed) as caught:
+            foc.execute(ctx, "server", "redeploy", UUID, commands)
+        self.assertTrue(caught.exception.timed_out)
+        self.assertEqual(len(self.http_calls), 1)
+
+    def test_check_token_uses_same_real_reader_without_an_audit_write(self):
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
         self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
         self.assertNotIn(TOKEN, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
-        self.assertEqual(self.secrets_env()["INFISICAL_TOKEN"], self.VALUE)
 
-    def test_check_token_failures(self):
-        code, ans = self.run_main(["--check-token"], self.ctx(runner=FakeRunner(secret="")))
+    def test_check_token_failures_keep_fixed_diagnostics_and_host_gate(self):
+        self.api.values.clear()
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
         self.assertEqual(self.http_calls, [])
-        code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
+        self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))
         self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
-        code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
+        self.api.requests.clear()
+        code, ans = self.run_main(["--check-token"], self.ctx("darwin", environ=self.env()))
         self.assertEqual((code, ans["result"]), (2, "refused"))
-        code, ans = self.run_main(["--check-token", "--json"], self.ctx())
-        self.assertEqual((code, ans["result"]), (2, "refused"))
+        self.assertEqual(self.api.requests, [])
 
 
 class SshGateTests(Base):
@@ -5876,6 +6056,14 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
+                    # The real router sends a Content-Length:  http.client closes the response,
+                    # and its socket, as soon as that many bytes are read.  The reader must stop
+                    # there, not set a timeout on the closed socket (read_failed on the server).
+                    state["headers"] = {"Content-Length": str(len(state["body"]))}
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state["headers"] = {}
                     state.update(
                         status=503,
                         body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
@@ -5918,6 +6106,47 @@ class RouterHealthTests(Base):
             finally:
                 srv.shutdown()
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
+
+    def test_a_known_length_body_is_complete_without_another_read(self):
+        # Python 3.9's HTTPResponse.read1 neither counts a known length down nor closes the
+        # response, so isclosed() stays false:  the reader must stop on the Content-Length
+        # instead of reading again and waiting on the kept-alive socket.
+        body = b'{"healthy": true, "seats": {}}'
+
+        class Headers(dict):
+            pass
+
+        class KeptAlive:
+            headers = Headers({"Content-Length": str(len(body))})
+
+            def __init__(self):
+                self.sent = False
+                self.reads = 0
+
+            def isclosed(self):
+                return False
+
+            def read1(self, size):
+                self.reads += 1
+                if self.sent:
+                    raise AssertionError("read again after the declared length")
+                self.sent = True
+                return body[:size]
+
+        response = KeptAlive()
+        deadline = foc.time.monotonic() + 5
+        self.assertEqual(foc._read_router_health_body(response, 1024, deadline), body)
+        self.assertEqual(response.reads, 1)
+        # A declared length above the cap still reads only the cap plus one byte, which the
+        # caller answers as too_large.
+        response = KeptAlive()
+        response.headers = Headers({"Content-Length": "999999"})
+        self.assertEqual(len(foc._read_router_health_body(response, 8, deadline)), 9)
+        # A missing or unreadable Content-Length leaves the length undeclared.
+        for headers in (Headers(), Headers({"Content-Length": "x"}), None):
+            response = KeptAlive()
+            response.headers = headers
+            self.assertIsNone(foc._declared_length(response))
 
     def test_read_router_health_http_times_out_slow_trickle_peer(self):
         import http.server
@@ -6369,6 +6598,361 @@ class TestWakeTests(Base):
         self.assertEqual(answer["testWake"]["wakeId"], self.WAKE_ID)
 
 
+class PauseReader:
+    """Stands in for `run_bounded_read`:  answers the status read (`cat` of status.json) with the
+    next of `statuses` (the last one repeats), and the pause or resume command with `status`."""
+
+    def __init__(self, statuses, status=0, stderr=b"", over=False, raise_on_run=False):
+        self.statuses = list(statuses)
+        self.status = status
+        self.stderr = stderr
+        self.over = over
+        self.raise_on_run = raise_on_run
+        self.reads = 0
+        self.runs = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        if argv[-1] == "/data/listener/status.json":
+            index = min(self.reads, len(self.statuses) - 1)
+            self.reads += 1
+            document = self.statuses[index]
+            if document is None:
+                return (
+                    1,
+                    b"",
+                    b"Error response from daemon: container eavesdropper is not running",
+                    False,
+                )
+            return 0, json.dumps(document).encode(), b"", False
+        assert argv[1:8] == [
+            "exec",
+            "--user",
+            "simpletools",
+            "eavesdropper",
+            "/app/scripts/simple_tools/server/entrypoint.sh",
+            "daemon",
+            argv[7],
+        ], argv
+        self.runs.append((list(argv), timeout, max_bytes))
+        if self.raise_on_run:
+            raise RuntimeError("the reader broke after the command may have run")
+        return self.status, b"paused CLAUDE (wakes and live interrupts)\n", self.stderr, self.over
+
+
+class PauseTests(Base):
+    """`server pause|pause-wakes|resume server|SEAT` (AFC-832):  the Eavesdropper's own kill switch,
+    a deliberate previewed gesture, read back from the status and never from the command's text."""
+
+    EMAIL = "someone@" + "example.invalid"
+
+    def status(self, pause=None):
+        # The listener publishes its pause file as read:  `{}` when nothing is paused.
+        return {
+            "updated": NOW,
+            "seats": {"CLAUDE": {"connected": True}, "CODEX": {"connected": True}},
+            "pause": {} if pause is None else pause,
+        }
+
+    def entry(self, wakes_only=False, by="cli"):
+        return {"wakes_only": wakes_only, "by": by, "ts": NOW - 30, "message_id": None}
+
+    def go(self, verb, target, mode="--yes", reader=None):
+        context = self.ctx()
+        clock = {"now": 1000.0}
+        context.monotonic = lambda: clock["now"]
+        context.sleep = lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
+        self.reader = reader
+        context.reader = reader
+        return self.run_main(["server", verb, target, mode, "--json"], context)
+
+    def test_a_plan_shows_the_one_command_and_the_pause_in_force_and_runs_nothing(self):
+        reader = PauseReader([self.status({"CODEX": self.entry(wakes_only=True)})])
+        code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        argv = answer["commands"][0]
+        self.assertEqual(
+            argv[1:],
+            [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/app/scripts/simple_tools/server/entrypoint.sh",
+                "daemon",
+                "pause",
+            ],
+        )
+        self.assertEqual(answer["pause"]["all"], None)
+        self.assertEqual(answer["pause"]["seats"]["CODEX"]["wakesOnly"], True)
+        self.assertEqual(reader.runs, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_seat_and_wakes_only_forms_name_only_the_checked_seat(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-4:], ["pause", "--seat", "CLAUDE", "--wakes-only"])
+        reader = PauseReader([self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("resume", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-3:], ["resume", "--seat", "CLAUDE"])
+
+    def test_an_unknown_seat_or_an_unreadable_status_is_refused_before_anything_runs(self):
+        for target, statuses, code_word in (
+            ("NOSUCH", [self.status()], "seat_unknown"),
+            ("claude", [self.status()], "seat_unknown"),
+            ("CLAUDE", [None], "status_unavailable"),
+            ("server", [None], "status_unavailable"),
+        ):
+            with self.subTest(target=target, code_word=code_word):
+                reader = PauseReader(statuses)
+                code, answer = self.go("pause", target, reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (2, "refused", code_word)
+                )
+                self.assertEqual(reader.runs, [])
+
+    def test_a_resume_with_nothing_to_lift_is_refused(self):
+        for target, pause in (
+            ("server", None),
+            ("CLAUDE", None),
+            # A fleet-wide pause is not CLAUDE's own:  `resume CLAUDE` has nothing to lift.
+            ("CLAUDE", {"*": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(target=target, pause=pause, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go("resume", target, mode=mode, reader=reader)
+                    self.assertEqual((code, answer["errorCode"]), (2, "not_paused"))
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_pause_runs_once_and_is_read_back_from_the_status(self):
+        reader = PauseReader(
+            [
+                self.status(),  # the plan-time read
+                self.status(),  # the read under the lock
+                self.status(),  # the first read-back:  not published yet
+                self.status({"CLAUDE": self.entry(by=self.EMAIL)}),
+            ]
+        )
+        code, answer = self.go("pause", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(len(reader.runs), 1)
+        seat = answer["pause"]["seats"]["CLAUDE"]
+        self.assertEqual((seat["wakesOnly"], seat["setBy"]), (False, None))
+        self.assertNotIn(self.EMAIL, json.dumps(answer))
+        self.assertNotIn("wakes and live interrupts)", json.dumps(answer))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            (rows[0]["verb"], rows[0]["target"], rows[0]["result"]),
+            ("server pause", "CLAUDE", "done"),
+        )
+
+    def test_a_change_the_status_never_shows_is_not_confirmed(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["errorCode"]), (1, False, "not_confirmed"))
+        # It may still land, so it is not a failure:  Muster reads it as "may or may not have run".
+        self.assertEqual(answer["result"], "unknown")
+        self.assertEqual(len(reader.runs), 1)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # A pause of the other kind is not the asked-for change either.
+        reader = PauseReader([self.status(), self.status(), self.status({"*": self.entry()})])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual(answer["errorCode"], "not_confirmed")
+
+    def test_resume_server_lifts_every_pause(self):
+        before = self.status({"*": self.entry(), "CLAUDE": self.entry(wakes_only=True)})
+        reader = PauseReader([before, before, self.status({})])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_a_failed_command_says_why_in_code_words_only(self):
+        for status, stderr, over, code_word, result in (
+            (2, b"usage: simple-chat daemon pause", False, "usage", "failed"),
+            (127, b"", False, "docker_unavailable", "failed"),
+            # A timeout stops only the docker client, so its outcome is not known.
+            (124, b"", False, "timeout", "unknown"),
+            # An answer past the size bound is cut off, so the command may have run:  not known.
+            (0, b"", True, "too_large", "unknown"),
+            (
+                1,
+                b"Error response from daemon: container eavesdropper is not running",
+                False,
+                "container_not_running",
+                "failed",
+            ),
+        ):
+            with self.subTest(code_word=code_word):
+                reader = PauseReader([self.status()], status=status, stderr=stderr, over=over)
+                code, answer = self.go("pause", "server", reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (1, result, code_word)
+                )
+                self.assertNotIn("usage: simple-chat", json.dumps(answer))
+
+    def test_a_timeout_is_read_back_before_it_is_called_failed(self):
+        # A slow Infisical in the entrypoint can outlast the bound;  the docker client stops, the
+        # command may still finish in the container, and a change the status shows is done.
+        before = self.status()
+        reader = PauseReader(
+            [before, before, before, self.status({"*": self.entry(wakes_only=True)})], status=124
+        )
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["pause"]["all"]["wakesOnly"], True)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # The bound is the test wake's, which runs through the same entrypoint.
+        self.assertEqual(reader.runs[0][1], foc.TEST_WAKE_TIMEOUT)
+        self.assertEqual(foc.PAUSE_TIMEOUT, foc.TEST_WAKE_TIMEOUT)
+        # A timeout the status never confirms keeps its own code and keeps the pause it read.
+        reader = PauseReader([before], status=124)
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "timeout"))
+        self.assertIn("may still take effect", answer["detail"])
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        reader = PauseReader([self.status()], raise_on_run=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed")
+        )
+        self.assertNotIn("reader broke", json.dumps(answer))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_a_drain_window_refuses_every_pause_verb(self):
+        # `daemon pause` would replace the `*` marker and `daemon resume` would clear it, and the
+        # drain's restore puts back its saved bytes over any other change.
+        drain = dict(self.entry(wakes_only=True, by="drain"), defer=True)
+        for verb, target, pause in (
+            ("pause", "server", {"*": drain}),
+            ("pause-wakes", "CLAUDE", {"*": drain}),
+            ("resume", "server", {"*": drain, "CLAUDE": self.entry()}),
+            ("resume", "CLAUDE", {"*": drain, "CLAUDE": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(verb=verb, target=target, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go(verb, target, mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer["errorCode"]),
+                        (2, "refused", "drain_active"),
+                    )
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_wakes_only_pause_never_loosens_a_full_one(self):
+        for target, pause in (
+            ("CLAUDE", {"CLAUDE": self.entry()}),
+            ("server", {"*": self.entry()}),
+        ):
+            with self.subTest(target=target):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause-wakes", target, mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+                self.assertEqual(reader.runs, [])
+        # Tightening, repeating a wakes-only pause, and a seat's own pause under a fleet-wide one
+        # all plan as usual.
+        for verb, target, pause in (
+            ("pause", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"*": self.entry()}),
+        ):
+            with self.subTest(verb=verb, pause=pause):
+                code, answer = self.go(
+                    verb, target, mode="--plan", reader=PauseReader([self.status(pause)])
+                )
+                self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_the_read_back_trusts_only_a_pause_it_can_read(self):
+        # A resume whose read-back shows the pause in another shape is never `done`.
+        before = self.status({"*": self.entry()})
+        after = self.status()
+        after["pause"] = "cleared"
+        reader = PauseReader([before, before, after])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_unreadable")
+        )
+        self.assertEqual(len(reader.runs), 1)
+        # An answer past the size bound is read back too, and a change it shows is done.
+        reader = PauseReader(
+            [self.status(), self.status(), self.status({"*": self.entry()})], over=True
+        )
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+
+    def test_the_read_back_reads_a_drain_marker_as_a_pause(self):
+        # In the read-back the command has already run, and a drain-active entry is a
+        # well-formed pause the status shows:  it reads as a pause, so a change it shows
+        # is done and the operator never sees a refusal code word on a run that happened.
+        # Drain stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
+        before = self.status()
+        drain = dict(self.entry(by="drain"), defer=True)
+        reader = PauseReader([before, before, self.status({"*": drain})], over=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"]["all"]["setBy"], "drain")
+
+    def test_the_pause_map_keeps_every_seat(self):
+        # `pause_done` decides from the reduced map, so no seat may be dropped from it.
+        raw = {"S%02d" % n: self.entry() for n in range(70)}
+        reduced = foc.reduce_pause(self.status(raw))
+        self.assertEqual(len(reduced["seats"]), 70)
+        self.assertFalse(foc.pause_done("resume", "S69", reduced))
+
+    def test_a_refused_run_writes_its_one_audit_row(self):
+        drain = dict(self.entry(by="drain"), defer=True)
+        code, answer = self.go("resume", "server", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual((code, answer["errorCode"]), (2, "drain_active"))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["verb"], rows[0]["result"]), ("server resume", "refused"))
+        # A plan writes none.
+        self.go("resume", "server", mode="--plan", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_the_checks_run_again_under_the_lock(self):
+        # The plan saw nothing paused;  by the run a full pause is in force, so nothing runs.
+        reader = PauseReader([self.status(), self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("pause-wakes", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+        self.assertEqual(reader.runs, [])
+
+    def test_a_pause_it_cannot_read_is_never_read_as_no_pause(self):
+        for pause in (
+            "paused",
+            {"*": "yes"},
+            {"*": {"wakes_only": "yes", "by": "cli", "ts": NOW}},
+            {"claude": self.entry()},
+        ):
+            with self.subTest(pause=pause):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "pause_unreadable"))
+        status = self.status()
+        status["seats"] = ["CLAUDE"]
+        code, answer = self.go("pause", "CLAUDE", mode="--plan", reader=PauseReader([status]))
+        self.assertEqual((code, answer["errorCode"]), (2, "status_unavailable"))
+
+    def test_the_ssh_gate_accepts_the_three_verbs_with_one_target_only(self):
+        for line in (
+            "server pause server --plan --json",
+            "server pause-wakes CLAUDE --yes --json",
+            "server resume server --yes",
+        ):
+            self.assertEqual(foc.parse_ssh_command(line), line.split())
+        for line in (
+            "server pause --seat CLAUDE --yes",
+            "server pause server --wakes-only --yes",
+            "server pause CLAUDE CODEX --yes",
+        ):
+            with self.assertRaises(foc.Refused, msg=line):
+                foc.parse_ssh_command(line)
+
+
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()
@@ -6393,6 +6977,235 @@ class SourceTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path.name):
                 self.assertNotIn("datetime.UTC", path.read_text())
+
+
+class SettingsBootstrapTests(unittest.TestCase):
+    """Real fd stores and canonical grant validation; Docker alone is simulated."""
+
+    def setUp(self):
+        import pwd
+        import types
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home/control"
+        self.home.mkdir(parents=True, mode=0o700)
+        (self.root / "home").chmod(0o755)
+        self.root.chmod(0o700)
+        self.uid = os.getuid()
+        self.enterContext(
+            mock.patch.object(
+                pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir="/home/control")
+            )
+        )
+        original_open = os.open
+
+        def virtual_root(path, *args, **kwargs):
+            return original_open(self.root if path == "/" else path, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(foc.os, "open", side_effect=virtual_root))
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI({}, project=self.project, path="/operator-settings")
+        self.api.metadata_override = {
+            "permissions": ["read", "write"],
+            "expiresAt": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+            ).isoformat(),
+        }
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.source = self.root / "reader"
+        self.source.mkdir(mode=0o700)
+        (self.source / "fleet_infisical.py").write_bytes(
+            Path(HERE, "fleet_infisical.py").read_bytes()
+        )
+        (self.source / "fleet_infisical.py").chmod(0o600)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", self.source))
+        original_loader = foc._load_infisical_reader
+
+        def local_verifier(ctx):
+            reader = original_loader(ctx)
+            reader.API_BASE = self.api.env["FLEET_SECRETS_API"]
+            return reader
+
+        self.enterContext(
+            mock.patch.object(foc, "_load_infisical_reader", side_effect=local_verifier)
+        )
+        self.cid, self.image = "a" * 64, "sha256:" + "b" * 64
+        self.calls = []
+        self.gone = False
+        self.envelope = dict(
+            protocol="operator-settings-install/1",
+            imageID=self.image,
+            bootstrap={foc.SETTINGS_PROJECT: self.project, foc.SETTINGS_WRITER: self.api.token},
+        )
+        self.ctx = foc.Context(
+            home=self.root / "untrusted-HOME",
+            uid=self.uid,
+            platform="linux",
+            environ={},
+            stdin=lambda: json.dumps(self.envelope).encode(),
+            reader=self.docker,
+        )
+        self.store = self.home / ".config/fleet-tools" / foc.SETTINGS_STORE
+        self.image_file = self.store.with_name(foc.SETTINGS_IMAGE)
+
+    def docker(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if argv[1] == "inspect":
+            if self.gone and argv[-1] == self.cid:
+                return 1, b"", b"not running", False
+            return 0, (self.cid + " " + self.image + " true\n").encode(), b"", False
+        return 0, b'{"tool":"eavesdropper-settings","ok":false,"result":"failed"}', b"", False
+
+    def install(self):
+        answer, code = foc.receive_settings_bootstrap(self.ctx)
+        self.assertNotIn(self.api.token, json.dumps(answer))
+        return answer, code
+
+    def test_real_grant_store_then_captured_container_pipe_and_no_foreign_module(self):
+        foreign = mock.Mock()
+        with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+            self.assertEqual(self.install()[1], 0)
+        self.assertEqual(foreign.mock_calls, [])
+        self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+        self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.store.parent.stat().st_mode), 0o700)
+        self.assertEqual(self.store.stat().st_nlink, 1)
+        metadata = json.loads(self.image_file.read_bytes())
+        self.assertEqual(metadata["storeInode"], self.store.stat().st_ino)
+        request = {
+            "action": "save",
+            "requestID": str(uuid.uuid4()),
+            "set": {"daemon.coalesce_seconds": 3},
+        }
+        foc.run_eavesdropper_settings_editor_in_container(self.ctx, request)
+        argv, kwargs = self.calls[-1]
+        self.assertIn(self.cid, argv)
+        self.assertNotIn("eavesdropper", argv)
+        self.assertEqual(argv[-1], "--bootstrap-request-stdin")
+        self.assertNotIn(self.api.token, repr(argv) + repr(kwargs["env"]))
+        wire = json.loads(kwargs["data"])
+        self.assertEqual(wire["request"], request)
+        self.assertEqual(wire["bootstrap"][foc.SETTINGS_WRITER], self.api.token)
+        self.assertNotIn("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN", wire["bootstrap"])
+
+    def test_old_image_refuses_before_writer_store_is_opened(self):
+        self.assertEqual(self.install()[1], 0)
+        self.image = "sha256:" + "c" * 64
+        actual = foc._settings_read
+        names = []
+
+        def observed(parent, name, uid):
+            names.append(name)
+            return actual(parent, name, uid)
+
+        with mock.patch.object(foc, "_settings_read", side_effect=observed):
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.assertEqual(names, [foc.SETTINGS_IMAGE])
+
+    def test_exited_captured_container_never_switches_to_replacement_name(self):
+        self.assertEqual(self.install()[1], 0)
+        self.gone = True
+        self.calls.clear()
+        with self.assertRaises(foc.Refused):
+            foc.run_eavesdropper_settings_editor_in_container(self.ctx, {"action": "save"})
+        self.assertFalse(any(argv[1] == "exec" for argv, _ in self.calls))
+        self.assertEqual([argv[-1] for argv, _ in self.calls], ["eavesdropper", self.cid])
+
+    def test_invalid_grant_or_overlong_expiry_never_publishes_ready_image(self):
+        for override in (
+            {"permissions": ["read"]},
+            {"expiresAt": "2099-01-01T00:00:00Z"},
+            {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
+            {"expiresAt": None},
+        ):
+            with self.subTest(override=override):
+                self.api.metadata_override = {
+                    "permissions": ["read", "write"],
+                    "expiresAt": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+                    ).isoformat(),
+                }
+                self.api.metadata_override.update(override)
+                self.assertEqual(self.install()[1], 2)
+                self.assertFalse(self.image_file.exists())
+                self.assertTrue(self.store.exists())
+                self.store.unlink()
+
+    def test_atomic_publish_race_preserves_existing_store_without_a_provider_call(self):
+        actual = os.link
+
+        def collision(source, target, **kwargs):
+            if target == foc.SETTINGS_STORE:
+                fd = os.open(
+                    target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=kwargs["dst_dir_fd"]
+                )
+                os.write(fd, b"pre-existing")
+                os.close(fd)
+            return actual(source, target, **kwargs)
+
+        with mock.patch.object(foc.os, "link", side_effect=collision):
+            self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), b"pre-existing")
+        self.assertFalse(self.image_file.exists())
+        self.assertEqual(self.api.requests, [])
+
+    def test_existing_store_and_inode_custody_fail_closed(self):
+        self.assertEqual(self.install()[1], 0)
+        before = self.store.read_bytes()
+        count = len(self.api.requests)
+        self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), before)
+        self.assertEqual(len(self.api.requests), count)
+        for mode in (0o644, 0o400):
+            self.store.chmod(mode)
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.store.chmod(0o600)
+        with foc._settings_directory(self.ctx) as fd, self.assertRaises(foc.Refused):
+            foc._settings_read(fd, foc.SETTINGS_STORE, self.uid + 1)
+        os.link(self.store, self.store.with_name("linked"))
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+
+    def test_symlinked_store_and_parent_are_refused(self):
+        self.assertEqual(self.install()[1], 0)
+        self.store.unlink()
+        self.store.symlink_to(self.image_file)
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+        folder = self.store.parent
+        folder.rename(folder.with_name("actual"))
+        folder.symlink_to(folder.with_name("actual"), target_is_directory=True)
+        self.assertEqual(self.install()[1], 2)
+
+    def test_remote_flags_and_json_cannot_select_local_receiver(self):
+        with mock.patch.object(foc, "receive_settings_bootstrap") as receive:
+            for argv in (
+                [foc.SETTINGS_RECEIVE, "--from-muster"],
+                ["--from-ssh", foc.SETTINGS_RECEIVE],
+            ):
+                self.assertEqual(foc.main(argv, ctx=self.ctx, out=io.StringIO()), 2)
+            self.ctx.environ["SSH_ORIGINAL_COMMAND"] = foc.SETTINGS_RECEIVE
+            self.assertEqual(foc.main([foc.SETTINGS_RECEIVE], ctx=self.ctx, out=io.StringIO()), 2)
+            receive.assert_not_called()
+        self.ctx.stdin = lambda: json.dumps({"action": "save", "bootstrap": self.envelope}).encode()
+        with self.assertRaises(foc.Refused):
+            foc.eavesdropper_settings_request_from_stdin(self.ctx, "yes")
+
+    def test_malformed_receive_and_unready_store_output_never_reflect_input(self):
+        for raw in (
+            b"not-json",
+            json.dumps({"bootstrap": self.api.token}).encode(),
+            b'{"protocol":"x","protocol":"y"}',
+        ):
+            self.ctx.stdin = lambda: raw
+            answer, code = self.install()
+            self.assertEqual(code, 2)
+            self.assertEqual(set(answer), {"ok", "result", "errorCode"})
 
 
 if __name__ == "__main__":

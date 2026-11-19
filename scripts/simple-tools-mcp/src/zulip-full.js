@@ -219,7 +219,10 @@ export const ZULIP_FULL_METHODS = {
 
   async tool_get_message(args, audit) {
     const { args: workArgs, full } = splitFullArg(args, audit?.rawArgs);
-    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    //  A single message read with full=true is lossless (AFC-756's contract, and the standing
+    //  rule that a wake's message is read in whole):  BODY_LIMIT bounds multi-row list pages,
+    //  not one message, and Zulip itself bounds a message's length, so no cap here stays bounded.
+    const bodyLimit = full ? null : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
     const message = await this.visibleMessage(workArgs.message_id);
     audit.message_id = workArgs.message_id;

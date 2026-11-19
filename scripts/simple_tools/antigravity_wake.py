@@ -24,6 +24,18 @@ to `claude_wake.deliver_remote` over ssh, specifying `platform="antigravity"`.  
 `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before calling local
 delivery, ensuring the letter was not released or reassigned.
 
+A resume without a browser (AFC-838).  `agy` has no flag or variable that only turns off its
+browser sign-in:  its print mode falls back to the browser whenever stdin is a character device or
+`/dev/tty` opens (printmode.go:390-397, 425-433;  browser.go:79-80).  So the resume runs with an
+empty pipe on stdin, in a session of its own.  Its stderr goes into a pipe that a thread reads
+one line at a time, holding only the line being read (at most `OUTPUT_SCAN_CAP` bytes) in
+memory.  The last line the CLI wrote that says how a failed run ended maps to a fixed code:
+`resume-quota-exhausted`, `resume-signin-required` or `resume-signin-interactive`;  anything else
+keeps `resume-exit-N`.  An exit 0 that the CLI moved to a new chat answers `resume-new-chat`,
+wherever its warning falls in the output.  All of them are final, and none of them changes what
+happens to a later wake.  A run past its timeout answers `unknown` (`resume-timeout`), since it
+may have run its turn.
+
 Python 3.11+, standard library only.
 """
 
@@ -37,6 +49,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -72,6 +85,13 @@ NEVER_RAN: frozenset[str] = frozenset(
         "conversation-killed",
         "session-cwd-gone",
         "agy-not-found",
+        # A sign-in failure ends inside printmode.waitForAuth, the one place that writes these
+        # lines (printmode.go:403-493;  the fast exit at 428, the browser branch at 440 and
+        # 473-488), which runs at printmode.go:286, before session.start (351) and runTurn
+        # (365):  no turn ran (AFC-838).  A quota failure comes after runTurn started, and a turn
+        # the CLI moved to a new chat did run, so neither of those codes is here.
+        "resume-signin-interactive",
+        "resume-signin-required",
         "unknown-host",
         "unknown-platform",
         "platform-handler-missing",
@@ -307,6 +327,166 @@ def _find_agy_binary(child_env: Mapping[str, str]) -> str | None:
     return None
 
 
+#: The longest stderr line that is read, in bytes.  Only the line being read is held, in memory
+#: only, never logged or written to disk, and only the fixed code a line maps to is kept and
+#: reaches a receipt (AFC-838).  A longer line is skipped:  the CLI's own ending lines are short,
+#: and it cuts a long non-JSON error body after 500 bytes (its 1.3.3 changelog).
+OUTPUT_SCAN_CAP = 8192
+#: How long a finished run's stderr pipe gets to end.  A process the CLI left holding the pipe is
+#: not waited for:  the drain thread keeps reading it, a line at a time, until it lets go.
+OUTPUT_WAIT_SECONDS = 2.0
+QUOTA_EXHAUSTED = "resume-quota-exhausted"
+SIGNIN_REQUIRED = "resume-signin-required"
+SIGNIN_INTERACTIVE = "resume-signin-interactive"
+NEW_CHAT = "resume-new-chat"
+#: Lines the compiled agy writes itself, each from one place in printmode.waitForAuth.  The fast
+#: exit when no terminal was found, so no browser was tried (printmode.go:426-429):
+SIGNIN_REQUIRED_RE = re.compile(
+    r"Error: authentication required\. Run '.*' to log in, then retry\."
+)
+#: Endings reached only after the browser path was taken:  printmode.go:440, after
+#: StartOAuthProcess (433) gave no URL, and 473, 483 and 488.  One of these means the headless
+#: stdio did not hold.
+SIGNIN_BROWSER_RE = re.compile(r"Error: authentication required\. Run '.*' to log in\.")
+SIGNIN_INTERACTIVE_MARKS = (
+    "Error: authentication interrupted.",
+    "Error: authentication timed out.",
+    "Error: authentication failed:",
+)
+#: The CLI's own error lines:  `error: %v` and `AGY_ERROR: {json}` (emitter.go:126-130,
+#: printmode.go:681-710).  Quota is matched on these lines only, by the API's status words and the
+#: CLI's own quota and credit messages.
+ERROR_LINE_MARKS = ("AGY_ERROR:", "error:")
+QUOTA_RE = re.compile(
+    r"RESOURCE_?EXHAUSTED|\b429\b|too many requests|individual quota|exhausted your quota"
+    r"|credits balance is too low",
+    re.IGNORECASE,
+)
+#: The warning agy prints when it cannot find the `--conversation` id and starts a new chat
+#: instead (projectresolve.go:74-78), on its saved stderr or os.Stderr (common.go:165,
+#: termio.go:53-56).
+NEW_CHAT_RE = re.compile(r'warning: conversation ".*" not found')
+
+
+class _StderrLines:
+    """The CLI's stderr through a pipe that a daemon thread drains to its end, reading it one line
+    at a time as it comes (AFC-838).  What a line names is kept as a fixed code, and only the line
+    being read is held, at most `cap` bytes of it:  nothing reaches disk, nothing grows with
+    output, and a line counts wherever it falls in the output (PR 2320)."""
+
+    __slots__ = (
+        "_cap",
+        "_done",
+        "_ended",
+        "_line",
+        "_lock",
+        "_long",
+        "_new_chat",
+        "_read_fd",
+        "write_fd",
+    )
+
+    def __init__(self, cap: int) -> None:
+        self._cap = cap
+        self._ended = ""
+        self._new_chat = False
+        self._line = bytearray()
+        self._long = False
+        self._done = threading.Event()
+        self._lock = threading.Lock()
+        self._read_fd, self.write_fd = os.pipe()
+        try:
+            threading.Thread(target=self._drain, name="agy-stderr", daemon=True).start()
+        except BaseException:
+            os.close(self._read_fd)
+            os.close(self.write_fd)
+            raise
+
+    def _drain(self) -> None:
+        try:
+            while chunk := os.read(self._read_fd, 65536):
+                with self._lock:
+                    self._feed(chunk)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
+            self._done.set()
+
+    def finish(self, wait: float) -> None:
+        """Close this process's write end, then give the pipe up to `wait` seconds to end.  Only
+        the first call waits."""
+        if self.write_fd < 0:
+            return
+        try:
+            os.close(self.write_fd)
+        except OSError:
+            pass
+        self.write_fd = -1
+        self._done.wait(wait)
+
+    def _feed(self, chunk: bytes) -> None:
+        """Read `chunk` on from where the last one stopped.  The caller holds the lock."""
+        *ended, rest = chunk.split(b"\n")
+        for piece in ended:
+            self._add(piece)
+            if not self._long:
+                self._note(bytes(self._line))
+            self._line.clear()
+            self._long = False
+        self._add(rest)
+
+    def _add(self, piece: bytes) -> None:
+        """Hold the next piece of the line being read, unless the line is past the cap."""
+        if self._long:
+            return
+        if len(self._line) + len(piece) > self._cap:
+            self._line.clear()
+            self._long = True
+            return
+        self._line += piece
+
+    def _note(self, raw: bytes) -> None:
+        """Keep what one whole line names.  The last line that names an ending decides, since
+        the CLI writes how it ended last;  the new-chat warning counts wherever it falls."""
+        ended, new_chat = _line_says(raw)
+        if ended:
+            self._ended = ended
+        if new_chat:
+            self._new_chat = True
+
+    def result(self) -> tuple[str, bool]:
+        """The code of the last line that named an ending, or "", and whether a line was the
+        new-chat warning.  A last line that has no newline yet counts too."""
+        with self._lock:
+            ended, new_chat = self._ended, self._new_chat
+            if self._line and not self._long:
+                last, warned = _line_says(bytes(self._line))
+                ended, new_chat = last or ended, new_chat or warned
+        return ended, new_chat
+
+
+def _line_says(raw: bytes) -> tuple[str, bool]:
+    """What one stderr line names:  the fixed code of an ending, or "", and whether it is the
+    CLI's new-chat warning.  The text is matched here and never kept."""
+    line = raw.decode("utf-8", "replace").strip()
+    return _line_code(line), NEW_CHAT_RE.fullmatch(line) is not None
+
+
+def _line_code(line: str) -> str:
+    """The fixed code one of the CLI's own stderr lines names, or ""."""
+    if line.startswith(SIGNIN_INTERACTIVE_MARKS) or SIGNIN_BROWSER_RE.fullmatch(line):
+        return SIGNIN_INTERACTIVE
+    if SIGNIN_REQUIRED_RE.fullmatch(line):
+        return SIGNIN_REQUIRED
+    if line.startswith(ERROR_LINE_MARKS) and QUOTA_RE.search(line):
+        return QUOTA_EXHAUSTED
+    return ""
+
+
 def deliver_local(
     env: Mapping[str, str],
     config: Mapping[str, Any],
@@ -383,27 +563,61 @@ def deliver_local(
 
             argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
+            # agy's stderr goes into a pipe read in memory, a line at a time.  Nothing has run
+            # yet, so failing to make the pipe or its thread is safe to retry.
             try:
-                proc = runner(
-                    argv,
-                    cwd=cwd,
-                    env=child_env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=timeout_seconds,
-                    check=False,
+                lines = _StderrLines(OUTPUT_SCAN_CAP)
+            except (OSError, RuntimeError) as exc:
+                return WR.Delivery(
+                    "failed", "resume", code="resume-capture-%s" % type(exc).__name__
                 )
-            except subprocess.TimeoutExpired:
-                return WR.Delivery("refused", "resume", code="resume-timeout")
-            except OSError as exc:
-                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
-            except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-                return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
+            try:
+                try:
+                    # No browser (AFC-838):  stdin is an empty pipe, not /dev/null (a character
+                    # device), and the child runs in its own session, so it has no /dev/tty.  The
+                    # compiled sign-in then exits fast (printmode.go:390-397, 425-429) and never
+                    # reaches browser.go:79-80.
+                    proc = runner(
+                        argv,
+                        cwd=cwd,
+                        env=child_env,
+                        input=b"",
+                        stdout=subprocess.DEVNULL,
+                        stderr=lines.write_fd,
+                        timeout=timeout_seconds,
+                        check=False,
+                        start_new_session=True,
+                    )
+                except subprocess.TimeoutExpired:
+                    # The two waits found before a turn each last a minute (printmode.go:465, 505),
+                    # and the rest of start-up has no known bound, so a run this long may have run
+                    # its turn and nobody can tell:  unknown, never retried and never recorded as
+                    # delivered (PR 2320).
+                    return WR.Delivery("unknown", "resume", code="resume-timeout")
+                except OSError as exc:
+                    return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+                except Exception as exc:  # noqa: BLE001 - may have started, so it is final
+                    return WR.Delivery(
+                        "refused", "resume", code="resume-error-%s" % type(exc).__name__
+                    )
 
-            if proc.returncode == 0:
-                return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
-            return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+                lines.finish(OUTPUT_WAIT_SECONDS)
+                ended, new_chat = lines.result()
+                if proc.returncode == 0:
+                    # Named after the fact only:  the turn ran, in a chat that is not the target.
+                    if new_chat:
+                        return WR.Delivery("refused", "resume", code=NEW_CHAT, note="agy-exit-0")
+                    return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
+                if ended:
+                    # Final, never busy:  a quota ending comes inside the turn, which may have
+                    # run tools by then, and the CLI retries a short rate limit itself before it
+                    # gives up (PR 2320).
+                    return WR.Delivery(
+                        "refused", "resume", code=ended, note="agy-exit-%d" % proc.returncode
+                    )
+                return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+            finally:
+                lines.finish(OUTPUT_WAIT_SECONDS)
         finally:
             if bridge_lock is not None:
                 bridge_lock.close()

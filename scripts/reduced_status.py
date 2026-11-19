@@ -96,8 +96,8 @@ changes):
     and anything else is "unknown".  The daemon rewrites the file every two seconds, so five
     minutes is a stopped or wedged listener and not a slow one.
   * `wake` is the source's configured wake kind when it is one of the known kinds, else "other".
-    It is "fallback" while the seat's `fallback.stands_in` is true (the primary cannot run and the
-    fallback answers in its place).  "mcode" is in the vocabulary but is never produced: the
+    A document from an older listener says "fallback" while the seat's `fallback.stands_in` is true (the
+    primary could not run and the fallback answered in its place);  a current listener writes no `fallback`.  "mcode" is in the vocabulary but is never produced: the
     source carries no mcode fallback.
   * `paused` is true when the source's `paused` (a full pause) or `wakes_paused` (a pause that
     only stops wakes) is true, false when they say false, else null.  The top-level `pause` is the
@@ -105,8 +105,8 @@ changes):
     a pause on one seat shows on that seat.  `set_by` is the pause's `by` ("cli", "owner-dm") when it
     is a short token.
   * `held_back` is the source's `held_back.count`.  `last_event` is `last_event` (epoch seconds).
-  * `quota` is the provider quota the wake gate reads (the CodeCaps snapshot), and only for a seat
-    whose wake names a provider.  A seat the source gives no quota is `known: false` with nulls.
+  * `quota` is the provider quota an older listener's wake gate read (the CodeCaps snapshot), and only for a
+    seat whose wake names a provider;  a current listener writes none, so it is `known: false`.  A seat the source gives no quota is `known: false` with nulls.
     `exhausted` is the producer's verdict and is null unless `known` (an absent reading is not an
     exhausted one).  `remaining` is a percent, rounded to an integer in 0 to 100.  `reset_at` is
     normalised to UTC.
@@ -165,9 +165,14 @@ What the source does NOT carry, and so is null here (or never produced) whatever
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
 `owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
+canonical settings revision (`operator_settings_revision`, `operator_settings_snapshot_revision`)
+and `channel_names`, which only the separately authenticated settings editor reads, each
 seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
-lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
+lease's `lease_id`, `session_id` and `title`.  A current listener no longer writes `claude`, `muse`,
+`pin`, `pinned`, `model`, `routes_24h`, `route_enabled`, `provider`, `fallback` or `quota` (the
+claude, muse and openrouter wake types were retired, Nov 10, 2026);  a document from an older
+listener may still carry them, and it is read as before.  `drain` is not read either:  it is the AFC-652
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.
