@@ -11,13 +11,27 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
-SUMMARY:Fleet: 1 merged · 0 opened · 0 closed
-DESCRIPTION:1 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
- s:\n- [Socratic-Trade#5412] fix(broker-health): an order-capability probe 
- timeout no longer halts Autopilot on the first strike (ST-4636)
+SUMMARY:Fleet: 13 merged · 0 opened · 0 closed
+DESCRIPTION:13 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2310] (minimax) Read a subagent's parent from
+  the session store\, not from the payload\n- [AI-Fleet-Coordinator#2338] (
+ minimax) The hook brings its own hook file current\, and a lettered title 
+ is English\n- [AI-Fleet-Coordinator#2345] (instinct) cf-usage-watchdog: re
+ fuse Zulip posts until a dedicated service binding exists\n- [AI-Fleet-Coo
+ rdinator#2346] (instinct) cf-usage-watchdog: dedicated Zulip service ident
+ ity in config\n- [BotFleet#2140] Update non-major dependencies\n- [BotFlee
+ t#2141] (minimax) Package the native host for real and ask the packaged ex
+ ecutable who it is\n- [BotFleet#2142] Update non-major dependencies to v16
+ .19.2\n- [BotFleet#2143] Update non-major dependencies to v16.19.3\n- [Soc
+ ratic-Trade#5410] 4635: keep health and receipts queries off the event loo
+ p\n- [Socratic-Trade#5412] fix(broker-health): an order-capability probe t
+ imeout no longer halts Autopilot on the first strike (ST-4636)\n- [Socrati
+ c-Trade#5424] Update dependency lucide-react to v1.73.0\n- [Socratic-Trade
+ #5425] Update dependency better-sqlite3 to v13.2.0\n- [Socratic-Trade#5426
+ ] Update dependency react-resizable-panels to v4.23.0
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-19
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -25,7 +39,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -96,7 +110,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -138,7 +152,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -195,7 +209,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -256,7 +270,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -317,7 +331,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -375,7 +389,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -438,7 +452,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -506,7 +520,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -570,7 +584,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -632,7 +646,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -702,7 +716,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 125 merged · 0 opened · 0 closed
@@ -769,7 +783,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -828,7 +842,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -888,58 +902,57 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
-SUMMARY:Fleet: 64 merged · 0 opened · 0 closed
-DESCRIPTION:64 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 60 merged · 0 opened · 0 closed
+DESCRIPTION:60 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1265] (minimax) fix( -registry): the CLI and 
  the guard must name one registry file\n- [AI-Fleet-Coordinator#1276] perf(
  simple-tools-mcp): cut per-call Durable Object burn (R1+R2+R3+R4)\n- [AI-F
  leet-Coordinator#1277] feat(listener): publish session letters in daemon s
- tatus (AFC-597 S2)\n- [AI-Fleet-Coordinator#1298] Mirror the handbook (Fle
- et-OPS ed833baff3c3)\n- [AI-Fleet-Coordinator#1301] Fix Muster server upda
- te routing and verifiable receipts\n- [AI-Fleet-Coordinator#1304] Support 
- Draft PR Creation and Preserve Bounded Relay Diagnostics\n- [AI-Fleet-Coor
- dinator#1315] docs: Bitrig custom instructions for a fleet seat running in
-  Bitrig\n- [AI-Fleet-Coordinator#1317] Muster: App Icon That Follows Light
-  and Dark Mode\n- [AI-Fleet-Coordinator#1318] chore: net.dealdex 0.1.0\n- 
- [AI-Fleet-Coordinator#1319] Add the offline alert binding metadata audit (
- AFC-600)\n- [AI-Fleet-Coordinator#1321] chore: record the fleet iOS versio
- ns in the manifest\n- [AI-Fleet-Coordinator#1322] docs: require drafts and
-  leading readiness criteria for held PRs\n- [AI-Fleet-Coordinator#1333] Sh
- ow Hog Hunter's Mac Status In Muster Operations\n- [AI-Fleet-Coordinator#1
- 334] Add Lane Placement Detection\, Git Shim\, And Main Clone Checks\n- [A
- I-Fleet-Coordinator#1335] Use Consistent GitHub: And Linear: Display Title
- s\n- [AI-Fleet-Coordinator#1339] Add Worker Limits\, Registry\, CI Check A
- nd Design Doc\n- [AI-Fleet-Coordinator#1345] 620: role lane eligibility fo
- r BF-/GB- personas\n- [AI-Fleet-Coordinator#1346] Rename the server listen
- er surfaces to Eavesdropper\n- [AI-Fleet-Coordinator#1347] Record The Mac 
- Lane Placement Guard Install\n- [AI-Fleet-Coordinator#1349] Add the fleet 
- service-token skill and refresh the stale skill packs\n- [AI-Fleet-Coordin
- ator#1350] Move the Mac housekeeper webhook onto a scoped service token\n-
-  [AI-Fleet-Coordinator#1352] Add Mac coding-priority launcher and fix the 
- watcher's webhook delivery\n- [BotFleet#1547] Remove The Expression Picker
- \, Keep Color On TV-Face And Add The Recolorable Flag\n- [BotFleet#1577] A
- dd Placement Worker Routes Behind An Optional Transport\n- [BotFleet#1578]
-  Placement Transport T1: Worker Client And Fsynced Report Spool\n- [BotFle
- et#1579] Add The Retained Linux Closure Policy And Fixture Source\n- [BotF
- leet#1580] Add The Server Placement Mode Record And The Applied Acknowledg
- ement\n- [BotFleet#1581] Update dependency lucide-react to v1.65.0\n- [Bot
- Fleet#1583] Stage protected-main binding preflight before credential migra
- tion\n- [BotFleet#1584] feat(decommission): produce the Node store's read-
- only archive and its restore rehearsal\n- [BotFleet#1585] fix(decommission
- ): make the archived database readable on its own\, and add the parity pro
- be\n- [BotFleet#1586] Update dependency posthog-js to v1.443.0\n- [BotFlee
- t#1603] Update non-major dependencies\n- [BotFleet#1605] Update dependency
-  electron to v45.2.1\n- [Clutch#248] Show the tool calls in a thread as a 
- tree\, the way the web canvas shows them\n- [Clutch#249] Take the Web Canv
- as tab out\, and ask the sidecar how the host stands\n- [Congress.Trade#29
- 41] 2461: restore iOS ticker logos\n- [ContactLogo#291] Normalize Platform
-  Directories With a Temporary Web Root Bridge\n- [ContactLogo#294] chore(d
- eps): update dependency lucide-react to v1.65.0\n- [ContactLogo#295] Keep 
- The Deploy Root On The Live Vercel Root During The Bridge Phase\n  … +24
-  more
+ tatus (AFC-597 S2)\n- [AI-Fleet-Coordinator#1304] Support Draft PR Creatio
+ n and Preserve Bounded Relay Diagnostics\n- [AI-Fleet-Coordinator#1317] Mu
+ ster: App Icon That Follows Light and Dark Mode\n- [AI-Fleet-Coordinator#1
+ 319] Add the offline alert binding metadata audit (AFC-600)\n- [AI-Fleet-C
+ oordinator#1321] chore: record the fleet iOS versions in the manifest\n- [
+ AI-Fleet-Coordinator#1322] docs: require drafts and leading readiness crit
+ eria for held PRs\n- [AI-Fleet-Coordinator#1333] Show Hog Hunter's Mac Sta
+ tus In Muster Operations\n- [AI-Fleet-Coordinator#1334] Add Lane Placement
+  Detection\, Git Shim\, And Main Clone Checks\n- [AI-Fleet-Coordinator#133
+ 5] Use Consistent GitHub: And Linear: Display Titles\n- [AI-Fleet-Coordina
+ tor#1339] Add Worker Limits\, Registry\, CI Check And Design Doc\n- [AI-Fl
+ eet-Coordinator#1345] 620: role lane eligibility for BF-/GB- personas\n- [
+ AI-Fleet-Coordinator#1346] Rename the server listener surfaces to Eavesdro
+ pper\n- [AI-Fleet-Coordinator#1347] Record The Mac Lane Placement Guard In
+ stall\n- [AI-Fleet-Coordinator#1349] Add the fleet service-token skill and
+  refresh the stale skill packs\n- [AI-Fleet-Coordinator#1350] Move the Mac
+  housekeeper webhook onto a scoped service token\n- [AI-Fleet-Coordinator#
+ 1352] Add Mac coding-priority launcher and fix the watcher's webhook deliv
+ ery\n- [BotFleet#1547] Remove The Expression Picker\, Keep Color On TV-Fac
+ e And Add The Recolorable Flag\n- [BotFleet#1577] Add Placement Worker Rou
+ tes Behind An Optional Transport\n- [BotFleet#1578] Placement Transport T1
+ : Worker Client And Fsynced Report Spool\n- [BotFleet#1579] Add The Retain
+ ed Linux Closure Policy And Fixture Source\n- [BotFleet#1580] Add The Serv
+ er Placement Mode Record And The Applied Acknowledgement\n- [BotFleet#1581
+ ] Update dependency lucide-react to v1.65.0\n- [BotFleet#1583] Stage prote
+ cted-main binding preflight before credential migration\n- [BotFleet#1584]
+  feat(decommission): produce the Node store's read-only archive and its re
+ store rehearsal\n- [BotFleet#1585] fix(decommission): make the archived da
+ tabase readable on its own\, and add the parity probe\n- [BotFleet#1586] U
+ pdate dependency posthog-js to v1.443.0\n- [BotFleet#1603] Update non-majo
+ r dependencies\n- [BotFleet#1605] Update dependency electron to v45.2.1\n-
+  [Clutch#248] Show the tool calls in a thread as a tree\, the way the web 
+ canvas shows them\n- [Clutch#249] Take the Web Canvas tab out\, and ask th
+ e sidecar how the host stands\n- [Congress.Trade#2941] 2461: restore iOS t
+ icker logos\n- [ContactLogo#291] Normalize Platform Directories With a Tem
+ porary Web Root Bridge\n- [ContactLogo#294] chore(deps): update dependency
+  lucide-react to v1.65.0\n- [ContactLogo#295] Keep The Deploy Root On The 
+ Live Vercel Root During The Bridge Phase\n- [ContactLogo#296] Ignore the b
+ ridge build output so the deploy checkout stays clean\n- [ContactLogo#297]
+  Republish main when the production baseline is not verifiable\n- [Contact
+ Logo#298] chore(deps): update non-major dependencies\n- [DealDex#556] Mask
+  the retired fleet name in historical docs\n  … +20 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-04
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -947,7 +960,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 122 merged · 0 opened · 0 closed
@@ -1006,7 +1019,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
@@ -1069,7 +1082,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 62 merged · 0 opened · 0 closed
@@ -1128,7 +1141,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
 SUMMARY:Fleet: 28 merged · 0 opened · 0 closed
@@ -1168,7 +1181,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -1217,7 +1230,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261119T085444Z
+DTSTAMP:20261119T214042Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 108 merged · 0 opened · 0 closed

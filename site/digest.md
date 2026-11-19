@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-19 02:54 CST · timezone America/Chicago_
+_Generated 2026-11-19 15:40 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,11 +11,23 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-19
 
-*1 PRs merged · 0 issues opened · 0 issues closed*
+*13 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** `MiniMax` [#2310](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2310): Read a subagent's parent from the session store, not from the payload _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2338](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2338): The hook brings its own hook file current, and a lettered title is English _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2345](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2345): cf-usage-watchdog: refuse Zulip posts until a dedicated service binding exists _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2346](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2346): cf-usage-watchdog: dedicated Zulip service identity in config _(by jaywedgeworth22)_
+- **BF** [#2140](https://github.com/Simple-With-Us/BotFleet/pull/2140): Update non-major dependencies _(by renovate[bot])_
+- **BF** `MiniMax` [#2141](https://github.com/Simple-With-Us/BotFleet/pull/2141): Package the native host for real and ask the packaged executable who it is _(by jaywedgeworth22)_
+- **BF** [#2142](https://github.com/Simple-With-Us/BotFleet/pull/2142): Update non-major dependencies to v16.19.2 _(by renovate[bot])_
+- **BF** [#2143](https://github.com/Simple-With-Us/BotFleet/pull/2143): Update non-major dependencies to v16.19.3 _(by renovate[bot])_
+- **ST** [#5410](https://github.com/Simple-With-Us/Socratic-Trade/pull/5410): 4635: keep health and receipts queries off the event loop _(by jaywedgeworth22)_
 - **ST** [#5412](https://github.com/Simple-With-Us/Socratic-Trade/pull/5412): fix(broker-health): an order-capability probe timeout no longer halts Autopilot on the first strike (ST-4636) _(by jaywedgeworth22)_
+- **ST** [#5424](https://github.com/Simple-With-Us/Socratic-Trade/pull/5424): Update dependency lucide-react to v1.73.0 _(by renovate[bot])_
+- **ST** [#5425](https://github.com/Simple-With-Us/Socratic-Trade/pull/5425): Update dependency better-sqlite3 to v13.2.0 _(by renovate[bot])_
+- **ST** [#5426](https://github.com/Simple-With-Us/Socratic-Trade/pull/5426): Update dependency react-resizable-panels to v4.23.0 _(by renovate[bot])_
 
 ## 2026-11-18
 
@@ -1423,19 +1435,15 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-04
 
-*64 PRs merged · 0 issues opened · 0 issues closed*
+*60 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** `MiniMax` [#1265](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1265): fix( -registry): the CLI and the guard must name one registry file _(by jaywedgeworth22)_
 - **AFC** [#1276](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1276): perf(simple-tools-mcp): cut per-call Durable Object burn (R1+R2+R3+R4) _(by jaywedgeworth22)_
 - **AFC** [#1277](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1277): feat(listener): publish session letters in daemon status (AFC-597 S2) _(by jaywedgeworth22)_
-- **AFC** [#1298](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1298): Mirror the handbook (Fleet-OPS ed833baff3c3) _(by jaywedgeworth22)_
-- **AFC** [#1301](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1301): Fix Muster server update routing and verifiable receipts _(by jaywedgeworth22)_
 - **AFC** [#1304](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1304): Support Draft PR Creation and Preserve Bounded Relay Diagnostics _(by jaywedgeworth22)_
-- **AFC** [#1315](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1315): docs: Bitrig custom instructions for a fleet seat running in Bitrig _(by jaywedgeworth22)_
 - **AFC** [#1317](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1317): Muster: App Icon That Follows Light and Dark Mode _(by jaywedgeworth22)_
-- **AFC** [#1318](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1318): chore: net.dealdex 0.1.0 _(by jaywedgeworth22)_
 - **AFC** [#1319](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1319): Add the offline alert binding metadata audit (AFC-600) _(by jaywedgeworth22)_
 - **AFC** [#1321](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1321): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
 - **AFC** [#1322](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1322): docs: require drafts and leading readiness criteria for held PRs _(by jaywedgeworth22)_
