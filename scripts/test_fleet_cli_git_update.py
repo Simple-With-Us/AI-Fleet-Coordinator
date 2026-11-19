@@ -206,8 +206,9 @@ class GitUpdateTests(unittest.TestCase):
             result = U.update(self.home)
             second = U.update(self.home)
         self.assertEqual(result["wrappers_refreshed"], ["platform-letter"])
-        self.assertTrue(wrapper.read_text().startswith("#!/bin/bash\n" + marker))
-        self.assertIn("platform-letter-registry-env", wrapper.read_text())
+        self.assertTrue(wrapper.read_text().startswith("#!/usr/bin/python3 -I\n" + marker))
+        self.assertNotIn("platform-letter-registry-env", wrapper.read_text())
+        self.assertNotIn("operator-registry-env", wrapper.read_text())
         self.assertIn(
             "an older recall wrapper", other.read_text()
         )  # every other wrapper is only ever written when missing

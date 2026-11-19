@@ -11,7 +11,8 @@ import Foundation
 //
 //   * the Mac eavesdropper's own published state,  `~/.simple-tools/listener/status.json`,
 //     which holds the open sessions (the leases it holds alive),  the state of each seat
-//     it runs,  the wake it is running and the provider quota it reads
+//     it runs and the wake it is running (it once published a provider quota per seat;  since
+//     AFC-694 it runs no model and publishes none,  so the Quota column reads Not reported)
 //   * the seat partition (`docs/protocols/simple-tools-partition.toml`),  which says which
 //     machine's eavesdropper holds each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's last Zulip post
@@ -76,7 +77,8 @@ enum SeatFact<Value: Equatable & Sendable>: Equatable, Sendable {
 /// it runs (`daemon.status`).  It is not the CLI's envelope:  the CLI wraps this document in
 /// `{"running":…, "status":…}`,  and the file is the inner document on its own.
 struct ListenerStateDocument: Decodable, Equatable, Sendable {
-    /// The provider quota the eavesdropper reads for a seat (`adapters.provider_quota`).
+    /// A seat's provider quota, as an older eavesdropper published it.  Today's publishes none
+    /// (the listener runs no model since AFC-694), so every read of it is optional.
     struct Quota: Decodable, Equatable, Sendable {
         /// Whether the quota snapshot can speak for this seat's provider at all.
         var known: Bool?
@@ -131,8 +133,7 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
         var reportsRunning: Bool
         /// When the eavesdropper last had an event for this seat.
         var lastEvent: Double?
-        /// The provider quota the eavesdropper reads for this seat.  Only a seat whose wake
-        /// talks to a provider has one.
+        /// The seat's provider quota, when an older eavesdropper published one.  Today's never does.
         var quota: Quota?
 
         enum CodingKeys: String, CodingKey {
@@ -496,15 +497,15 @@ enum SeatListenerState: Equatable, Sendable {
     }
 }
 
-/// The provider quota the eavesdropper reads for one seat.
+/// The provider quota an eavesdropper published for one seat.  Today's publishes none.
 enum SeatQuotaReading: Equatable, Sendable {
     /// The provider said it will not serve.
     case exhausted(resetAt: Date?)
     /// The provider serves.  The percentage left is the lowest across its windows,  when the
     /// snapshot gave one.
     case available(remaining: Double?, resetAt: Date?)
-    /// The eavesdropper has no quota reading for this seat:  its wake talks to no provider,
-    /// or the quota snapshot cannot speak for the provider right now.
+    /// The eavesdropper has no quota reading for this seat.  Today's never has one:  it runs no
+    /// model (AFC-694).
     case notReported
 
     /// The label the column shows.
@@ -1300,11 +1301,11 @@ enum SeatActivityBuilder {
         return .unknown("The Mac's eavesdropper publishes no state for this seat.")
     }
 
-    /// The provider quota the Mac's eavesdropper reads for a seat.
+    /// The provider quota the Mac's eavesdropper published for a seat.
     ///
-    /// This is the reading the wake gate itself uses,  so this column and the Wake panel
-    /// cannot disagree.  A seat whose wake talks to no provider,  or whose provider the
-    /// quota snapshot cannot speak for,  reads as not reported:  never as having quota.
+    /// Today's eavesdropper runs no model and publishes no quota (AFC-694), and has no wake
+    /// gate that reads one.  A seat with no reading,  or one the reading cannot speak for,
+    /// reads as not reported:  never as having quota.
     private static func quota(
         for seat: String,
         place: SeatPlace,

@@ -23,6 +23,7 @@ from simple_tools import muse_session_rename as MR
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_muse as PLM
+from simple_tools import wake_pending as WP
 from simple_tools.tests.registry_fake import FakeRegistry
 
 SCRIPTS = Path(__file__).resolve().parents[2]
@@ -1152,6 +1153,20 @@ class HookFlowTests(Tree):
         self.assertEqual(self.transport.ops(), ["register"])
         self.assertEqual(self.note()["state"], "open")
         self.assertEqual(self.note()["ended"]["reason"], "other")
+
+    def test_a_parked_wake_reaches_the_next_prompt_as_context(self) -> None:
+        self.start()
+        WP.park(WP.state_dir(self.home), SID, "w-hook-1", "[MC wake] hello there")
+        out = self.prompt("continue working")
+        self.assertIn("[MC wake] hello there", out["additionalContext"])
+        self.assertEqual(WP.take(WP.state_dir(self.home), SID), [])
+        self.assertTrue(WP.is_consumed(WP.state_dir(self.home), "w-hook-1"))
+
+    def test_a_prompt_with_no_parked_wake_adds_no_wake_context(self) -> None:
+        self.start()
+        out = self.prompt("continue working")
+        if out is not None:
+            self.assertNotIn("[MC wake]", out.get("additionalContext", ""))
 
     def test_a_headless_run_a_launcher_run_and_an_opt_out_leave_no_trace(self) -> None:
         for words, env in ((("exec", "hi"), {}), (("serve",), {}), ((), {"AGENT_LAUNCHER": "botfleet"}), ((), {"SESSION_LETTER": "0"}),

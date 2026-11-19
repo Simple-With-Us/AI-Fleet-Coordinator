@@ -156,6 +156,4 @@ Two groups.  JET and the Grok bots GB-* are woken through their `wake = "http"`
 not by capture and surfacing alone;  there is no pick to make.
 ## What This Replaces
 
-The per-seat wake types (inbox, claude, muse, openrouter as listener options), their
-fallbacks, and any per-platform delivery executor.  The listener-side removal and the
-MiniMax seat's migration are the listener refactor this document contracts.
+The model wake types (`claude`, `muse` and `openrouter` as listener options, retired Nov 10, 2026 and refused at config load), their fallbacks, and any per-platform delivery executor.  `wake = "inbox"` stays, as capture only.  The listener-side removal is done;  the MiniMax seat's migration completes the listener refactor this document contracts.
