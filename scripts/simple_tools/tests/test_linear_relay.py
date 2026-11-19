@@ -2574,18 +2574,52 @@ class ReadablePostTests(WorkerCase):
         ]
         self.topic.messages = [past(1, "one"), past(2, "two"), past(3, "three")]
         self.topic.cap = 1
+        clock = {"now": 1000.0}
 
         def since(
             stream_id: int, topic: str, after_id: int, deadline: float | None = None
         ) -> list[dict]:
-            self.t[0] += 40  # the page takes the clock past the deadline
+            clock["now"] += 40  # the page takes the clock past the deadline
             return self.topic.since(stream_id, topic, after_id, deadline)
+
+        with mock.patch.object(lr.time, "monotonic", lambda: clock["now"]):
+            self.w = self.worker(history=self.topic.whole, history_since=since)
+            self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][1]["quote"], "two")  # the page before the deadline
+        self.assertEqual(entry["links"][2]["quote"], "cut 3")  # the one after it
+
+    def test_a_repair_that_changes_nothing_leaves_the_comment_alone(self) -> None:
+        # The note about the messages that were not read back is empty here, and an
+        # empty note is not a change, so the comment is not written again (Kody, PR
+        # 2340).
+        entry = self.old_entry(quote="the whole post")
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(self.lin.updated, [])
+
+    def test_an_empty_page_that_could_not_be_parsed_does_not_end_the_topic(self) -> None:
+        # A page the reader could not parse is empty as well, and it says nothing about
+        # the end of the topic, so the entry stays due (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            return [{"id": "no id at all"}]  # the reader cannot place it, so the page is empty
 
         self.w = self.worker(history=self.topic.whole, history_since=since)
         self.w.tick()
         self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
-        self.assertEqual(entry["links"][1]["quote"], "two")  # the page before the deadline
-        self.assertEqual(entry["links"][2]["quote"], "cut 3")  # the one after it
+        self.assertNotIn("no longer in Zulip", self.lin.updated[-1][1])
 
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean

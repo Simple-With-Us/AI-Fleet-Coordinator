@@ -508,16 +508,19 @@ class OperatorLinearComments:
         empty answer would mark the topic caught up.
 
         The deadline is the one the caller's walk shares, so a walk of several pages is
-        bounded in time as a whole and not page by page (Kody, PR 2340)."""
+        bounded in time as a whole and not page by page (Kody, PR 2340).  The Operator's
+        own budget bounds the read as well, so a walk never gets more time out of a read
+        than a read on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
             client,
             stream_id,
             topic,
             after_id=after_id,
-            deadline=(deadline if deadline is not None else time.monotonic() + HISTORY_READ_BUDGET),
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
     def _ensure_streams(self, client: ZulipClient | None) -> None:

@@ -2216,7 +2216,9 @@ class RelayWorker:
         if read is None:
             return None, False
         wanted = max((int(item["mid"]) for item in entry["links"]), default=0)
-        deadline = self.monotonic() + REPAIR_READ_BUDGET
+        # The reader compares the deadline with the real clock, so the deadline is
+        # computed with the real clock too (Kody, PR 2340).
+        deadline = time.monotonic() + REPAIR_READ_BUDGET
         pages = 0
         complete = False
         while (
@@ -2225,7 +2227,7 @@ class RelayWorker:
             and pages < MAX_REPAIR_PAGES
             and (not read or max(int(message["id"]) for message in read) < wanted)
         ):
-            if self.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 self.log("the repair read of %s ran out of time" % self._label(entry))
                 break
             newest = max((int(message["id"]) for message in read), default=0)
@@ -2241,9 +2243,10 @@ class RelayWorker:
                 break
             self._log_malformed(malformed, over)
             if not found:
-                # The topic ends here:  a message the entry holds that is newer than
-                # this is gone from Zulip (Kody, PR 2340).
-                complete = True
+                # The topic ends here only when the page was read whole:  a page the
+                # reader could not parse is empty as well, and it says nothing about
+                # the end of the topic (Kody, PR 2340).
+                complete = not malformed and not over
                 break
             known = {int(message["id"]) for message in read}
             read = list(read) + [message for message in found if int(message["id"]) not in known]
@@ -2301,7 +2304,7 @@ class RelayWorker:
         # The note about the messages that were not read back reaches the reader when
         # it changes, even when the re-render itself changed nothing (Jet, PR 2340).
         note = _repair_note(entry)
-        if note != entry.get("pending_repair"):
+        if note != entry.get("pending_repair", ""):
             entry["pending_repair"] = note
             entry["dirty"] = True
         # The text an entry holds is bounded the way a new message bounds it:  the whole
