@@ -352,6 +352,36 @@ class NestingTests(unittest.TestCase):
         out = zm.to_markdown(html)
         self.assertEqual(out, "[\\[embedded content\\]](https://x)")
 
+    def test_a_list_of_the_outer_document_holding_an_embed_keeps_its_items(self) -> None:
+        # A list that merely holds an embedded message is not the embed's list:  it
+        # belongs to the outer document, so its items are rendered (Kody, PR 2340).
+        html = '<ul><li>a</li><li>b<div class="message_embed">P</ul>'
+        out = zm.to_markdown(html)
+        self.assertEqual(out, "- a\n- b\n\n\\[embedded content\\]")
+
+    def test_a_list_opened_inside_an_embedded_message_is_dropped(self) -> None:
+        # A list that was opened inside the embedded message is the embed's list, so it
+        # is dropped with it (Kody, PR 2340).
+        html = '<div class="message_embed"><ul><li>x</li></ul></div>'
+        self.assertEqual(zm.to_markdown(html), "\\[embedded content\\]")
+
+    def test_an_embedded_message_with_a_nested_div_leaks_nothing(self) -> None:
+        # The embedded message ends on the div that matches it, so the blocks after an
+        # inner div stay inside it and never reach the comment (Kody, PR 2340).
+        html = '<div class="message_embed"><div class="message_embed_header">H</div><p>Body</p></div>'
+        self.assertEqual(zm.to_markdown(html), "\\[embedded content\\]")
+        fenced = (
+            '<div class="message_embed"><div class="message_embed_header">H</div>'
+            '<div class="codehilite"><pre><code>q</code></pre></div></div>'
+        )
+        self.assertEqual(zm.to_markdown(fenced), "\\[embedded content\\]")
+
+    def test_a_div_whose_class_holds_the_embed_name_is_not_an_embed(self) -> None:
+        # The class of the embed is matched as a whole, so the header of an embedded
+        # message does not open a second embed (Kody, PR 2340).
+        html = '<div class="message_embed_header">H</div>'
+        self.assertEqual(zm.to_markdown(html), "H")
+
 
 class CodeTests(unittest.TestCase):
     """The code of a post is shown as the sender wrote it."""

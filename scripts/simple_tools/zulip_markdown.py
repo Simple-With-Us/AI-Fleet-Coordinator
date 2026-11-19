@@ -248,11 +248,14 @@ class _Typed:
 class _List:
     """One list being read:  its finished items and the item being read."""
 
-    def __init__(self, ordered: bool) -> None:
+    def __init__(self, ordered: bool, in_embed: bool = False) -> None:
         self.ordered = ordered
         self.items: list[str] = []
         self.item: list[str] | None = None
         self.marker = 2  # the width of the marker of the item being read
+        # Whether the list was opened inside an embedded message:  such a list is
+        # dropped with it,  and a list that only holds the embed is not (Kody, PR 2340).
+        self.in_embed = in_embed
 
 
 class _Converter(HTMLParser):
@@ -267,6 +270,7 @@ class _Converter(HTMLParser):
         self.typed: list[_Typed] = []
         self.embed: list[str] | None = None
         self.embed_url = ""
+        self.embed_depth = 0
         self.lists: list[_List] = []
         self.quote = 0
 
@@ -407,9 +411,12 @@ class _Converter(HTMLParser):
         document (Kody, PR 2340)."""
         if not self.lists:
             return
-        if self.embed is not None:
-            self._keep_only_links()
-            ctx = self.lists[-1]
+        ctx = self.lists[-1]
+        if ctx.in_embed:
+            # The list belongs to the embedded message, so it is dropped with it (Kody,
+            # PR 2340).
+            if self.embed is not None:
+                self._keep_only_links()
             ctx.item = None
             self.lists.pop()
             return
@@ -472,17 +479,22 @@ class _Converter(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrd = {key: (value or "") for key, value in attrs}
         classes = attrd.get("class", "")
-        if tag == "div" and "codehilite" in classes:
+        if tag == "div" and "codehilite" in classes.split():
             self._flush(keep_inline=self.embed is not None)
             self.pre = []
+            if self.embed is not None:
+                self.embed_depth += 1
             return
-        if tag == "div" and "message_embed" in classes:
+        if tag == "div" and "message_embed" in classes.split():
             self._flush(keep_inline=True)
             self.embed = []
             self.embed_url = ""
+            self.embed_depth = 0
             return
         if tag in ("p", "div", "section", "article", "table", "tr", "thead", "tbody"):
             self._flush(keep_inline=self.embed is not None)
+            if tag == "div" and self.embed is not None:
+                self.embed_depth += 1
             return
         if tag == "br":
             self.buf.append("\n")
@@ -515,11 +527,11 @@ class _Converter(HTMLParser):
             return
         if tag in ("ul", "ol"):
             self._flush(keep_inline=self.embed is not None)
-            self.lists.append(_List(tag == "ol"))
+            self.lists.append(_List(tag == "ol", self.embed is not None))
             return
         if tag == "li":
             if not self.lists:
-                self.lists.append(_List(False))
+                self.lists.append(_List(False, self.embed is not None))
             ctx = self.lists[-1]
             ctx.item = []
             marker = "%d. " % (len(ctx.items) + 1) if ctx.ordered else "- "
@@ -581,6 +593,11 @@ class _Converter(HTMLParser):
             return
         if tag == "div":
             if self.embed is not None:
+                if self.embed_depth > 0:
+                    # A div inside the embedded message:  the message is not over yet
+                    # (Kody, PR 2340).
+                    self.embed_depth -= 1
+                    return
                 url = self.embed_url
                 self.embed = None
                 self.embed_url = ""
@@ -597,11 +614,12 @@ class _Converter(HTMLParser):
         if tag == "li":
             if not self.lists:
                 return
-            if self.embed is not None:
-                # The text of the item went into the embedded message, so the item is
-                # not rendered as a block of the outer document (Kody, PR 2340).
-                self._keep_only_links()
-                ctx = self.lists[-1]
+            ctx = self.lists[-1]
+            if ctx.in_embed:
+                # The item belongs to the embedded message, so it is dropped with it
+                # (Kody, PR 2340).
+                if self.embed is not None:
+                    self._keep_only_links()
                 ctx.item = None
                 return
             self._close_inline()  # the text of an open link stays in the item
@@ -648,8 +666,11 @@ class _Converter(HTMLParser):
             url = self.embed_url
             self.embed = None
             self.embed_url = ""
-            self.buf.append(
-                "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]"
+            # The placeholder is one text part, so its brackets are escaped here as they
+            # are on the path that closes the embed (Kody, PR 2340).
+            self._append_part(
+                "[embedded link: %s]" % _plain_attribute(url) if url else "[embedded content]",
+                _PART_TEXT,
             )
 
     def _emoji_name(self, attrd: dict[str, str], classes: str) -> str:
