@@ -26,7 +26,13 @@ SCRIPTS = Path(__file__).resolve().parent
 # A value that must never show up in any output.  It is not a credential:  it is the
 # marker a fake read would have returned.
 SENTINEL = "VALUE-SHOULD-NEVER-APPEAR"
-PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+# The synthetic project id the repo's own tests use, never the production one.
+PROJECT_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def synthetic_token() -> str:
+    """A service-token-shaped value, made up and assembled here so no token-shaped literal sits."""
+    return ".".join(["st", "synthetic", "notarealvalue", "notarealvalue"])
 
 
 def _load_reader():
@@ -51,7 +57,7 @@ class ReaderTestCase(unittest.TestCase):
         self.addCleanup(home_patch.stop)
         patch = mock.patch.multiple(
             fi,
-            token_from_store=mock.Mock(return_value=("st.fake-token", "ok")),
+            token_from_store=mock.Mock(return_value=(synthetic_token(), "ok")),
             infisical_project_id=mock.Mock(return_value=PROJECT_ID),
             fetch_verified=mock.Mock(return_value=SENTINEL),
             list_project_names=mock.Mock(return_value=("A_KEY", "B_KEY")),
@@ -176,7 +182,7 @@ class DoctorTests(ReaderTestCase):
     def test_the_report_holds_no_value_and_no_token(self) -> None:
         _code, out, _err = self.run_reader("doctor")
         self.assertNotIn(SENTINEL, out)
-        self.assertNotIn("st.fake-token", out)
+        self.assertNotIn(synthetic_token(), out)
         report = json.loads(out)
         self.assertEqual(
             set(report),
@@ -208,7 +214,7 @@ class DoctorTests(ReaderTestCase):
         self.assertEqual(report["ok"], False)
         self.assertEqual(report["reader_configured"], False)
         self.assertEqual(report["failure_reason"], "no-token")
-        self.assertNotIn("st.fake-token", out)
+        self.assertNotIn(synthetic_token(), out)
 
 
 class AccountTableTests(unittest.TestCase):

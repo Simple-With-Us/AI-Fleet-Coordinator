@@ -347,10 +347,11 @@ jobs:
     # The shared Infisical client (the one reader the fleet uses):  the consumer's own
     # scoped service token from the consumer's own store, the Mac keychain and the
     # server file store, the grant check, and no secret in argv, a message or a log.
+    # The scoped reader Muster starts (get, names and doctor) is gated in the same step.
     - name: Shared Infisical client tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest test_fleet_infisical_store -v
+        cd scripts && python3 -m unittest test_fleet_infisical_store test_infisical_scoped test_install_infisical_scoped -v
         bash -n install-infisical-scoped.sh
     # The shared direct Infisical command (`scripts/fleet_infisical_cli.py`):  get, names, run,
     # doctor and the allowlisted set, with the durable write ledger, the provider response

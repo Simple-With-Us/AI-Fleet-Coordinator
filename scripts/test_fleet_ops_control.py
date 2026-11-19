@@ -1,6 +1,6 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
 fake; credential tests use only a loopback provider and the actual isolated canonical worker.
 The bounded status reader also runs small Python children and a stand-in `docker` script.
 
@@ -177,7 +177,7 @@ class Base(unittest.TestCase):
                 raise foc.Failed("the Coolify token is not available")
             return value
 
-        # Pure control-flow tests retain their explicit synthetic credential seam.  The
+        # Pure control-flow tests retain their explicit synthetic credential seam.  The
         # CredentialTests subclass disables it and crosses the actual provider/worker path.
         isolated = (
             mock.patch.object(foc, "read_coolify_token", side_effect=fixture_token)
@@ -302,7 +302,7 @@ class AllowlistTests(Base):
 
 
 class AllowlistListShapeTests(Base):
-    """Each list of the allowlist must be a list.  A number, a flag, a string or an object in its
+    """Each list of the allowlist must be a list.  A number, a flag, a string or an object in its
     place is a refused file, never a traceback that takes every verb down with it."""
 
     LISTS = (
@@ -389,7 +389,7 @@ class AllowlistListShapeTests(Base):
 class AllowlistNotesTests(Base):
     """The owner copy an entry may carry (`role`, `stopConsequence`), `logsUnit` and the `watch` list."""
 
-    # The Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
+    # The Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
     # and the RAG mirror have no role: neither word the allowlist uses (`reporting`, `updater`)
     # describes them.
     MAC_NOTES = {
@@ -2803,6 +2803,8 @@ class CredentialTests(Base):
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
+        if folder.is_symlink():
+            raise ValueError(f"refusing symlink: {folder}")
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = folder / "ops-control.env"
         path.write_text(text)
@@ -2913,7 +2915,9 @@ class CredentialTests(Base):
         real.write_text(self.pair_text())
         os.chmod(real, 0o600)
         folder = self.home / ".config" / "fleet-tools"
-        folder.mkdir(parents=True, exist_ok=True)
+        if folder.is_symlink():
+            raise ValueError(f"refusing symlink: {folder}")
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         (folder / "ops-control.env").symlink_to(real)
         code, ans = self.redeploy()
         self.assertEqual((code, ans["detail"]), (1, "the Infisical credential file cannot be read"))
@@ -4805,8 +4809,8 @@ class OperatorFixtureStoreTests(Base):
 class ReducerModuleTests(Base):
     """The module the verb runs is read through descriptors and judged by fstat, never imported.
 
-    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
-    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
+    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
+    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
     it by naming this account the trusted one (`installed`); a folder owned by the calling
     account while root is the trusted one is a checkout (`checkout`)."""
 
@@ -4930,7 +4934,7 @@ class ReducerModuleTests(Base):
 
     def swap(self, folder, path, before, text):
         """Run the loader while the module file is replaced by an evil one `before` the open
-        of it or after it.  Returns (module, whether the evil code ran)."""
+        of it or after it.  Returns (module, whether the evil code ran)."""
         marker = self.home / "evil-ran"
         evil = self.home / "evil.py"
         evil.write_text("open(%r, 'w').write('ran')\n%s" % (str(marker), text))
