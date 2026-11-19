@@ -179,7 +179,7 @@ ctx = control.Context(
         "FLEET_OPS_CONTROL_INFISICAL_TOKEN", "INFISICAL_FLEET_OPS_PROJECT_ID",
         "FLEET_SECRETS_API", "INFISICAL_ENVIRONMENT", "INFISICAL_ENV",
     }},
-    http=lambda url, headers: calls.append(url) or 200,
+    http=lambda url, headers, method="GET": (calls.append(url) or 200, ""),
 )
 answer, status = control.check_token(ctx)
 print(json.dumps({
@@ -213,9 +213,9 @@ print(json.dumps({
         # the copied sibling source and the real disposable worker against the loopback fixture.
         self.install()
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token},
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
             project=project,
-            path="/coolify",
+            path="/coolify-deploy-only-token",
         ) as api:
             api.record_override = {"secretValueHidden": False}
             success = invoke(api)
@@ -227,9 +227,9 @@ print(json.dumps({
                 api.requests,
                 [
                     "/api/v2/service-token",
-                    "/api/v3/secrets/raw/COOLIFY_API_TOKEN?workspaceId="
+                    "/api/v3/secrets/raw/COOLIFY_DEPLOY_ONLY?workspaceId="
                     + project
-                    + "&environment=prod&secretPath=%2Fcoolify&viewSecretValue=true"
+                    + "&environment=prod&secretPath=%2Fcoolify-deploy-only-token&viewSecretValue=true"
                     "&expandSecretReferences=false&recursive=false&include_imports=false",
                 ],
             )
@@ -245,7 +245,7 @@ print(json.dumps({
             target.write_bytes((self.destination / name).read_bytes())
             target.chmod(0o600)
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+            {"COOLIFY_DEPLOY_ONLY": coolify_token}, project=project, path="/coolify-deploy-only-token"
         ) as api:
             api.record_override = {"secretValueHidden": False}
             isolated = invoke(api, reader_only)
@@ -257,7 +257,7 @@ print(json.dumps({
         # Bad scope is refused by the canonical grant verifier before the injected Coolify
         # request can observe any token.
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token},
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
             project=project,
             path="/wrong-folder",
         ) as api:
@@ -273,7 +273,7 @@ print(json.dumps({
         try:
             reader.unlink()
             with ScopedReadAPI(
-                {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+                {"COOLIFY_DEPLOY_ONLY": coolify_token}, project=project, path="/coolify-deploy-only-token"
             ) as api:
                 missing = invoke(api)
                 self.assertEqual(missing["status"], 1, missing)
@@ -282,9 +282,9 @@ print(json.dumps({
             reader.write_text("raise RuntimeError('broken copied reader')\n")
             reader.chmod(0o644)
             with ScopedReadAPI(
-                {"COOLIFY_API_TOKEN": coolify_token},
+                {"COOLIFY_DEPLOY_ONLY": coolify_token},
                 project=project,
-                path="/coolify",
+                path="/coolify-deploy-only-token",
             ) as api:
                 api.record_override = {"secretValueHidden": False}
                 broken = invoke(api)

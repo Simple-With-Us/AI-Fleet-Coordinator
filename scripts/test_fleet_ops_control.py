@@ -142,23 +142,25 @@ class Base(unittest.TestCase):
             directory.chmod(0o700)
         self.http_calls = []
         self.http_methods = []
+        self.http_body = ""
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def http(self, url, headers):
+    def http(self, url, headers, method="GET"):
         self.http_calls.append((url, dict(headers)))
-        self.http_methods.append("GET")
-        return self.http_status
+        self.http_methods.append(method)
+        return self.http_status, self.http_body
 
     def http_post(self, url, headers):
         self.http_calls.append((url, dict(headers)))
         self.http_methods.append("POST")
-        return self.http_status
+        return self.http_status, self.http_body
 
-    def ctx(self, platform="linux", runner=None, environ=None, http_status=200):
+    def ctx(self, platform="linux", runner=None, environ=None, http_status=200, http_body=""):
         self.runner = runner or FakeRunner()
         self.http_status = http_status
+        self.http_body = http_body
         return foc.Context(
             platform=platform,
             uid=os.getuid(),

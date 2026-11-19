@@ -730,6 +730,8 @@ COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # the deploy route about the nil uuid, which can name no resource:  the answer is a
 # not-found when the token is accepted for a deploy, and nothing is deployed.
 COOLIFY_CHECK_UUID = "00000000-0000-4000-8000-000000000000"
+# Coolify's own answer when the route answered and no resource carries the uuid.
+COOLIFY_NO_RESOURCE = "No resources found"
 COOLIFY_DEPLOY_PATH = "/api/v1/deploy?uuid=%s"
 # The control consumer's Infisical binding, and nothing else from its credential file.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
@@ -1239,7 +1241,10 @@ class NoAnswer(int):
 
 
 def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
-    """The HTTP status of one request, or 0 when there was no answer.  The body is discarded.
+    """(status, body) of one request, or (0, "") when there was no answer. 
+
+    The body is bounded and returned because the install check has to tell a refused
+    token from a route that no longer answers.  The caller never logs it.
 
     A `NoAnswer` (it is 0 too) means the request may have been sent.  `urllib.request` is imported
     here and not at the top of the file so that `ssl`, the proxy variables and the opener are set up
@@ -1266,29 +1271,30 @@ def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
             headers=headers,
         )
     except ValueError:
-        return 0
+        return 0, ""
     try:
         with opener.open(request, timeout=timeout) as response:
-            response.read(64 * 1024)
-            return response.status
+            raw = response.read(64 * 1024)
+            return response.status, raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return exc.code
+        raw = exc.read(64 * 1024)
+        return exc.code, raw.decode("utf-8", "replace")
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(exc, ValueError) or isinstance(
             reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError, PermissionError)
         ):
-            return 0
-        return NoAnswer(0)
+            return 0, ""
+        return NoAnswer(0), ""
 
 
 def http_get(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one GET, or 0 when there was no answer."""
+    """(status, body) of one GET, or (0, "") when there was no answer."""
     return http_request(url, headers, "GET", timeout)
 
 
 def http_post_request(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one POST with no body, or 0 when there was no answer."""
+    """(status, body) of one POST with no body, or (0, "") when there was no answer."""
     return http_request(url, headers, "POST", timeout)
 
 
@@ -1439,8 +1445,10 @@ class Context:
         self.home = Path(home) if home else Path.home()
         self.environ = dict(os.environ if environ is None else environ)
         self.runner = runner or run_command
-        self.http = http or http_get
-        self.http_post = http_post or http_post_request
+        # One injectable HTTP path:  a POST goes through the same seam, so a test that
+        # replaces `http` replaces every request the script makes.
+        self.http = http or http_request
+        self.http_post = http_post or (lambda url, headers: self.http(url, headers, method="POST"))
         self.now = now or time.time
         self.config_path = config_path
         self.status_path = status_path or (
@@ -3596,13 +3604,17 @@ def check_token(ctx):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http_post(
+            status, body = ctx.http_post(
                 base + (COOLIFY_DEPLOY_PATH % COOLIFY_CHECK_UUID),
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
             coolify_token = ""
-        if status not in (200, 404):
+        # The nil uuid names no resource, so a route that answers it proves the token is
+        # accepted for a deploy.  A not-found from another cause (a route that moved, a
+        # proxy) answers differently, and only Coolify's own answer counts as accepted.
+        accepted = status == 200 or (status == 404 and COOLIFY_NO_RESOURCE in body)
+        if not accepted:
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
     except Refused as exc:
         answer.update(detail=str(exc))
@@ -3663,7 +3675,7 @@ def execute(ctx, scope, action, target, commands):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http_post(
+            status, _body = ctx.http_post(
                 base + commands[0][2],
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
