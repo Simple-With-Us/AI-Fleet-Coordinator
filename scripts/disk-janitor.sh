@@ -1001,7 +1001,7 @@ fi
 # 2026-11-19 (MA): permanent delete for the low-free branch.  `find -delete`
 # unlinks directly, so no Trash-parking layer (the CleanMyMac CLI's
 # move-to-Trash semantics, the mavis-trash harness interception) can turn a
-# delete into a move that frees nothing -- the loop closed at lowfree-done.
+# delete into a move that frees nothing.
 janitor_purge() {
   [ -e "$1" ] || [ -L "$1" ] || return 0
   find "$1" -depth -delete 2>/dev/null
@@ -1014,8 +1014,9 @@ janitor_purge_contents() {
 # --- LOW FREE: clear regenerable caches + prod/dev build caches ---
 if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   janitor_heartbeat "lowfree-start"
-  # 2026-11-19 (MA): snapshot Trash; the end of this branch permanently
-  # deletes whatever the sweeps park there (see lowfree trash-purge below).
+  # 2026-11-19 (MA): snapshot Trash; right after the sweep block
+  # below, this branch permanently deletes whatever the sweeps
+  # parked there (see the trash-purge block after the sweeps).
   trash_snap="$(mktemp -t janitor-trash-snap 2>/dev/null || echo "/tmp/janitor-trash-snap.$$")"
   ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_snap"
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
@@ -1078,6 +1079,38 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
       printf '%s  CMM-SKIP cleanmymac not on PATH\n' "$(date '+%Y-%m-%d %H:%M')" >> "$LOG"
     fi
   fi
+  # Close the Trash loop while the window is still only the sweep
+  # block: permanently delete what the sweeps above parked in
+  # ~/.Trash.  The parking is why the pre-2026-11-19 branch looped --
+  # swept items sat in Trash, free space never rose, LOW_FREE stayed
+  # crossed, and the branch refired every tick (on 2026-11-17/18 it
+  # parked ~150 copies/day, and the CLI dev sweep was verified live
+  # on 2026-11-19 to move swept items into Trash instead of deleting
+  # them).  Only items that appeared during the sweep block are
+  # deleted; whatever was already in Trash beforehand is untouched,
+  # and every purged name is logged.  The window is deliberately
+  # just the sweep block, not the whole branch, so an unrelated item
+  # trashed during the branch's later, slower cache work is never
+  # caught by this purge.
+  if [ -d "$HOME_DIR/.Trash" ] && [ -n "${trash_snap:-}" ] && [ -f "$trash_snap" ]; then
+    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null || echo "/tmp/janitor-trash-after.$$")"
+    ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
+    parked_n=0
+    parked_names=""
+    while IFS= read -r parked_item; do
+      [ -n "$parked_item" ] || continue
+      if janitor_purge "$HOME_DIR/.Trash/$parked_item"; then
+        parked_n=$((parked_n + 1))
+        parked_names="${parked_names}${parked_item}; "
+      fi
+    done < <(comm -13 "$trash_snap" "$trash_after")
+    if [ "$parked_n" -gt 0 ]; then
+      actions="${actions}trash-purge(${parked_n}) "
+      printf '%s  lowfree trash-purge: permanently deleted %s items parked during the sweep block: %s\n' "$now" "$parked_n" "$parked_names" >> "$LOG"
+    fi
+    rm -f "$trash_after"
+  fi
+  [ -n "${trash_snap:-}" ] && rm -f "$trash_snap"
   janitor_purge "$HOME_DIR/.npm/_cacache"
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
   # sentry, pinecone, uptimerobot, coolify) are launched via `uvx`, which keeps that
@@ -1139,29 +1172,6 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   janitor_purge /Users/jay/apps/trading-live/.next/cache
   janitor_purge /Users/jay/apps/trading-codex/.next/cache
   actions="${actions}caches "
-  # 2026-11-19 (MA): close the Trash loop.  On 2026-11-17/18 this branch
-  # fired at 26-28G free and its sweeps parked the same cache dirs in
-  # ~/.Trash over and over (~150 copies/day; the CLI dev sweep alone
-  # was verified live on 2026-11-19 to move swept items into Trash
-  # instead of deleting them), so free space never rose, LOW_FREE stayed
-  # crossed, and the branch refired every tick.  Permanently delete only
-  # what appeared in Trash during THIS branch; whatever was already in
-  # Trash beforehand is untouched.
-  if [ -d "$HOME_DIR/.Trash" ] && [ -n "${trash_snap:-}" ] && [ -f "$trash_snap" ]; then
-    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null || echo "/tmp/janitor-trash-after.$$")"
-    ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
-    parked_n=0
-    while IFS= read -r parked_item; do
-      [ -n "$parked_item" ] || continue
-      janitor_purge "$HOME_DIR/.Trash/$parked_item" && parked_n=$((parked_n + 1))
-    done < <(comm -13 "$trash_snap" "$trash_after")
-    if [ "$parked_n" -gt 0 ]; then
-      actions="${actions}trash-purge(${parked_n}) "
-      printf '%s  lowfree trash-purge: permanently deleted %s items parked during this branch\n' "$now" "$parked_n" >> "$LOG"
-    fi
-    rm -f "$trash_after"
-  fi
-  [ -n "${trash_snap:-}" ] && rm -f "$trash_snap"
   janitor_heartbeat "lowfree-done"
 fi
 
