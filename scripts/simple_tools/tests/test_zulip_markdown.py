@@ -276,6 +276,29 @@ class BufferTests(unittest.TestCase):
 class NestingTests(unittest.TestCase):
     """The buffer that is open takes the text, and the buffers close from the inside out."""
 
+    def test_a_block_inside_an_embedded_message_keeps_the_link(self) -> None:
+        # A block tag read inside an embedded message keeps the link open, so the URL
+        # of the sender is not lost (Kody, PR 2340).
+        html = '<p><a href="https://x"><div class="message_embed"><p>quoted</p></div></a></p>'
+        self.assertEqual(zm.to_markdown(html), "[\\[embedded content\\]](https://x)")
+
+    def test_an_embedded_message_keeps_its_paragraph_whole(self) -> None:
+        # The paragraph does not split around the embedded message (Kody, PR 2340).
+        html = '<p>Hi <a href="https://x">L<div class="message_embed">P</div></a></p>'
+        self.assertEqual(zm.to_markdown(html), "Hi [L\\[embedded content\\]](https://x)")
+
+    def test_the_content_of_an_embedded_message_is_dropped(self) -> None:
+        # The content of an embedded message never reaches the comment:  the placeholder
+        # names it (Kody, PR 2340).
+        html = "<ul><li><div class=\"message_embed\">P</div></li></ul>"
+        self.assertEqual(zm.to_markdown(html), "- \\[embedded content\\]")
+
+    def test_a_mention_closes_with_the_paragraph_an_embedded_message_breaks(self) -> None:
+        # Only a link stays open for the embedded message:  a mention closes with the
+        # paragraph it is in (Kody, PR 2340).
+        html = '<p><span class="user-mention">@A</span><div class="message_embed">E</div></p>'
+        self.assertEqual(zm.to_markdown(html), "@A\\[embedded content\\]")
+
     def test_an_unbalanced_mention_inside_a_link_closes_with_it(self) -> None:
         # The buffers a link holds close with it, so the text after the end tag lands
         # outside the link (Kody, PR 2340).

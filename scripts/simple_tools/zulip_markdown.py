@@ -308,7 +308,7 @@ class _Converter(HTMLParser):
             return
         if self.embed is not None:
             # The content of an embedded message is dropped:  the placeholder names it.
-            self._sink().append(_escape_text(text) if kind == _PART_TEXT else text)
+            self.embed.append(_escape_text(text) if kind == _PART_TEXT else text)
             return
         parts = self._parts()
         if parts is not None:
@@ -433,10 +433,15 @@ class _Converter(HTMLParser):
         """End the paragraph being read.
 
         The inline elements close with it,  unless the caller keeps them open:  a link
-        that holds an embedded link keeps it,  so the URL of the sender is still shown
-        (Kody, PR 2340)."""
-        if not keep_inline:
-            self._close_inline()
+        that holds an embedded link keeps it,  so the URL of the sender is still shown.
+        The paragraph itself stays whole then,  and only a link stays open:  a mention or
+        a code span that is open closes with the paragraph it is in (Kody, PR 2340)."""
+        if keep_inline:
+            self._close_code()
+            while self.typed and self.typed[-1].kind != "link":
+                self._close_typed()
+            return
+        self._close_inline()
         if not self.buf:
             return
         block = "".join(self.buf).strip()
@@ -464,7 +469,7 @@ class _Converter(HTMLParser):
             self.embed_url = ""
             return
         if tag in ("p", "div", "section", "article", "table", "tr", "thead", "tbody"):
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             return
         if tag == "br":
             self.buf.append("\n")
@@ -590,7 +595,7 @@ class _Converter(HTMLParser):
             self._close_list()
             return
         if tag in ("p", "tr", "table", "section", "article", "thead", "tbody"):
-            self._flush()
+            self._flush(keep_inline=self.embed is not None)
             return
 
     def handle_data(self, data: str) -> None:
