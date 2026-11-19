@@ -6884,6 +6884,18 @@ class PauseTests(Base):
         code, answer = self.go("pause", "server", reader=reader)
         self.assertEqual((code, answer["result"]), (0, "done"))
 
+    def test_the_read_back_reads_a_drain_marker_as_a_pause(self):
+        # In the read-back the command has already run, and a drain-active entry is a
+        # well-formed pause the status shows:  it reads as a pause, so a change it shows
+        # is done and the operator never sees a refusal code word on a run that happened.
+        # Drain stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
+        before = self.status()
+        drain = dict(self.entry(by="drain"), defer=True)
+        reader = PauseReader([before, before, self.status({"*": drain})], over=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"]["all"]["setBy"], "drain")
+
     def test_the_pause_map_keeps_every_seat(self):
         # `pause_done` decides from the reduced map, so no seat may be dropped from it.
         raw = {"S%02d" % n: self.entry() for n in range(70)}

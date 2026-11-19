@@ -3056,17 +3056,24 @@ def run_pause(ctx, verb, seat):
         document, _reason = read_eavesdropper_status(ctx)
         if document is not None:
             # The same validated read as the plan's:  a pause file in another shape is not "nothing
-            # paused", so it can never confirm a resume.
+            # paused", so it can never confirm a resume.  A drain marker is the one readable
+            # special case in the read-back:  the command has already run here, and a drain-active
+            # entry is a well-formed pause the status shows, so a change it shows is done and the
+            # operator never sees a refusal code word attached to a run that happened.  Drain
+            # stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
             try:
                 pause = pause_in_force(document)
             except Refused as exc:
-                return {
-                    "ok": False,
-                    "result": "unknown",
-                    "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS[exc.error_code]}",
-                    "errorCode": exc.error_code,
-                    "pause": None,
-                }, 1
+                if exc.error_code == "drain_active":
+                    pause = reduce_pause(document)
+                else:
+                    return {
+                        "ok": False,
+                        "result": "unknown",
+                        "detail": f"{pause_name(seat)}:  {PAUSE_ERRORS[exc.error_code]}",
+                        "errorCode": exc.error_code,
+                        "pause": None,
+                    }, 1
             if pause_done(verb, seat, pause):
                 return {
                     "ok": True,
