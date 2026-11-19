@@ -45,19 +45,11 @@ try:
 except ImportError:  # pragma: no cover - Python 3.10 and older
     tomllib = None  # type: ignore[assignment]
 
-KNOWN_WAKES = ("inbox", "claude", "http", "muse", "openrouter")
-WORKER_WAKES = (
-    "claude",
-    "http",
-    "muse",
-    "openrouter",
-)  # adapters that run on a per-seat wake worker thread
-# The runtimes a wake may name as its fallback (AFC-291).  `muse` is the primary and `mcode` is the
-# fallback:  both shape the answer with `--output-schema`, but only muse can state "hold no tools",
-# so the order is fixed and a seat may not invert it (checked against the wake type in from_dict).
-# `openrouter` is both a wake type and a fallback:  one HTTPS call, no tools offered, so it needs
-# no containment acknowledgment and may stand behind any worker seat.
-KNOWN_FALLBACKS = ("mcode", "openrouter")
+KNOWN_WAKES = ("inbox", "http")
+# Retired on the owner's ruling of Nov 10, 2026 (one wake path):  the listener starts no model.  A seat
+# that still names one is refused as a wake problem, so it keeps capturing as an inbox seat.
+RETIRED_WAKES = ("claude", "muse", "openrouter")
+WORKER_WAKES = ("http",)  # the one wake that runs on a per-seat wake worker thread
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
 ENV_INSTANCE = (
@@ -80,25 +72,22 @@ WAKE_CAP_KEYS: tuple[str, ...] = (
     "owner_per_day",
     "owner_per_topic_per_hour",
 )
-# The rest of a seat's `budget` table.  Only `board_per_day` keeps a default, and its 0 is a feature
-# switch (the seat files nothing on the board), not a throttle.  The others have NO default (owner,
-# Nov 10, 2026:  wakes are liberal and nothing throttles them), so a key a seat leaves out is no
-# limit, the way the five wake count caps are.  The route suggestion caps (owner 2026-10-10:  what
-# one routing seat may page on the owner's behalf, counted from that seat's own ledger) are
-# `routes_per_hour`, `routes_per_day`, and `route_topic_minutes` since the last route posted in the
-# same topic;  a seat that wants one writes it in its own `budget`, and a route cap written there
-# still applies (wakes.route_budget_block).  `usd_per_day` is only accepted, so a config that names
-# it keeps loading:  nothing enforces it (wake accounting is frequency-only, owner 2026-10-13), so
-# writing it sets no ceiling, and seat_key_warnings says so.  The shipped server sample no longer
-# writes it.  The old defaults were $2 a day, 3 routes an hour, 10 a day and one per topic every 30
-# minutes.
+# The rest of a seat's `budget` table.  Only `board_per_day` keeps a default (0).  The others have NO
+# default (owner, Nov 10, 2026:  wakes are liberal and nothing throttles them), so a key a seat leaves
+# out is no limit, the way the five wake count caps are.  `board_per_day` and the route suggestion
+# caps (`routes_per_hour`, `routes_per_day` and `route_topic_minutes`) went with the retired wake
+# types (board filing and route suggestions):  they are still accepted, so a config that names them
+# keeps loading, and nothing reads them (wakes.route_budget_block has no caller;  seat_key_warnings
+# says each is left over).  `usd_per_day` is only accepted too:  nothing enforces it (wake
+# accounting is frequency-only, owner 2026-10-13), so writing it sets no ceiling, and
+# seat_key_warnings says so.  The shipped server sample no longer writes it.  The old defaults were
+# $2 a day, 3 routes an hour, 10 a day and one per topic every 30 minutes.
 BUDGET_DEFAULTS: dict[str, float] = {
     "board_per_day": 0,
 }
 # Every key a seat's `budget` table may carry:  the defaults above, the five wake count caps, and
-# the keys that no longer have a default:  the three route caps, still enforced when a config sets
-# them, and `usd_per_day`, accepted with a warning and never enforced, so a live config that names
-# one keeps loading.
+# the keys that no longer have a default:  the three route caps and `usd_per_day`, accepted with a
+# warning and never read or enforced, so a live config that names one keeps loading.
 BUDGET_KEYS_UNSET_BY_DEFAULT: tuple[str, ...] = (
     "usd_per_day",
     "routes_per_hour",
@@ -140,75 +129,44 @@ SEAT_KEYS: frozenset[str] = frozenset(
         "site_env",
     }
 )
-# The per-platform wake settings the one wake path removes.  Each still works exactly as before
-# while seats migrate, and each adds a deprecation warning (never an error, never a downgrade).
-SEAT_KEYS_LEGACY: frozenset[str] = frozenset(
-    {
-        "wake",
-        "model",
-        "claude",
-        "muse",
-        "mcode",
-        "mcode_model",
-        "provider",
-        "fallback",
-        "fallback_model",
-        "fallback_uncontained_ok",
-        "typing_indicator",
-        "route_enabled",
-    }
-)
+# The per-platform wake settings the one wake path removes.  `wake` still chooses between `http` and
+# `inbox`, and `claude` is still read, only for the liveness check of a live Claude Code session
+# (Daemon.agent_kinds), never to start one.  Each adds a deprecation warning, which is never an error
+# and never a downgrade;  a retired wake value (RETIRED_WAKES) is not a deprecation but a refusal:  it
+# is an error that downgrades the seat to inbox, and it gets no deprecation warning beside it.
+SEAT_KEYS_LEGACY: frozenset[str] = frozenset({"wake", "claude"})
 # Keys the parser already refuses with their own message (`bearer_locator` downgrades a seat's wake,
 # `allow_admin` stops the seat), so the schema adds nothing to say about them.
 SEAT_KEYS_RETIRED: frozenset[str] = frozenset({"bearer_locator", "allow_admin"})
 # Keys left over from a feature that was deleted.  A live config may still carry one, so it is ignored
 # with one warning that says it can be deleted:  never an error, never a downgrade of the seat.  The
-# Muse inbox bridge (AFC-326) was deleted on the owner's instruction of Nov 10, 2026.
-SEAT_KEYS_LEFTOVER: dict[str, str] = {"muse_bridge": "the deleted Muse inbox bridge"}
+# Muse inbox bridge (AFC-326) was deleted on the owner's instruction of Nov 10, 2026, and the claude,
+# muse and openrouter wake types were retired on his ruling of the same day (one wake path:  the
+# listener starts no model), so the settings that only those runtimes read are left over too.
+_RETIRED_RUNTIMES = "the retired claude, muse and openrouter wake types"
+SEAT_KEYS_LEFTOVER: dict[str, str] = {
+    "muse_bridge": "the deleted Muse inbox bridge",
+    "model": _RETIRED_RUNTIMES,
+    "muse": _RETIRED_RUNTIMES,
+    "mcode": _RETIRED_RUNTIMES,
+    "mcode_model": _RETIRED_RUNTIMES,
+    "provider": _RETIRED_RUNTIMES,
+    "fallback": _RETIRED_RUNTIMES,
+    "fallback_model": _RETIRED_RUNTIMES,
+    "fallback_uncontained_ok": _RETIRED_RUNTIMES,
+    "typing_indicator": _RETIRED_RUNTIMES,
+    "route_enabled": _RETIRED_RUNTIMES,
+}
 # Top-level tables left over the same way.  `[muse_bridge]` is ignored with one warning, except that
 # its `consult_backup` subtable is still read as the decider's declaration (`[decider.consult_backup]`)
 # while the new table is absent, so the owner's preset declaration is never lost by a deploy.
 TABLES_LEFTOVER: dict[str, str] = {"muse_bridge": "the deleted Muse inbox bridge"}
-# Settings inside a seat's `budget` table that go away with the wake types (route suggestions and the
-# per-seat board filing cap).  Still read, still enforced, and a warning when a seat sets one.
+# Settings inside a seat's `budget` table that went with the retired wake types (route suggestions and
+# the per-seat board filing cap).  Accepted, so a live config keeps loading, and ignored:  nothing reads
+# them since the wake types were retired, and a seat that sets one gets a leftover warning.
 BUDGET_KEYS_LEGACY: frozenset[str] = frozenset(
     {"board_per_day", "routes_per_hour", "routes_per_day", "route_topic_minutes"}
 )
-WAKE_MAX_BUDGET_USD = 0.25
-# The muse seat's default model (AFC-291).  The catalog carries three muse-spark-1.3 variants and
-# the plain `muse-spark-1.3` is 15x dearer than the contributor tier, so the default names the
-# contributor tier explicitly.  It is a default, not a hardcode:  `seat.X.model` still wins, so a
-# seat can be moved to another tier deliberately and the change shows up in the config.
-MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
-# The MiniMax Code fallback runtime's model (AFC-291).  `mcode exec` inherits MiniMax Code's own
-# `defaultModel` when it is given no `--model`, and a backup runtime must not be left to whatever
-# that install happens to carry.  The fallback therefore names its model on the command line, so the
-# backup runtime runs on a model the catalog serves instead of inheriting a stale default.  A seat
-# can still move deliberately: `seat.X.mcode_model` wins over this.
-#
-# Two namespaces, one name, and the trap in it.  The MiniMax Code RUNTIME CATALOG and the public
-# MiniMax API id list are different catalogs, and "not in the catalog" does not mean "dead".
-# `MiniMax-M3.1-Flash-Preview` was dropped from the runtime catalog on 2026-10-18 (BF-2494) while
-# api.minimax.io kept serving it, so the same id fails on one route and answers on another.  An id
-# must never be rewritten from one route's evidence; the fleet recall contribution
-# contrib/MM/2026-10-19/f11f7046 records that lesson, and it is a recall id rather than a path
-# in this repository.  The fallback pins the id the runtime catalog actually carries, which is
-# now also the id the CI autofix workflows send to api.minimax.io.
-MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
-# A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
-# muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.
-MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
-# The OpenRouter HTTP runtime's models.  `wake = "openrouter"` defaults to the Muse contributor tier run
-# through OpenRouter (so it needs no muse binary, no pin on one and no Meta login);  the fallback
-# defaults to MiniMax M3.1 Flash (owner, Nov 7, 2026:  muse spark 1.3 contributor first, MiniMax M3.1
-# Flash as backup;  the Oct 30 DeepSeek "latest" pick it replaces is quoted in
-# docs/protocols/simple-tools-listener.md).  The id is the same string MCODE_DEFAULT_MODEL carries, so
-# one model has one name on both routes.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
-# win, so a move to another model shows up in the config.  The id names a version, not a `~latest`
-# alias, so the pin fingerprints the exact upstream model;  a seat still on the old alias default reads
-# as a stale shape, and the Nov 3 advisory-pin ruling covers the move.
-OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
-OPENROUTER_FALLBACK_MODEL = "minimax/MiniMax-M3.1-Flash"
 # `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
 # adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
 OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}|@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79})$"
@@ -486,7 +444,6 @@ class SeatConfig:
         seat: str,
         bot: str,
         wake: str,
-        model: str,
         budget: dict[str, float],
         live: dict[str, int],
         claude: str | None,
@@ -498,16 +455,7 @@ class SeatConfig:
         key_env: str | None = None,
         site_env: str = DEFAULT_SITE_ENV,
         routine: RoutineConfig | None = None,
-        route_enabled: bool = True,
         held_back: dict[str, Any] | None = None,
-        muse: str | None = None,
-        provider: str | None = None,
-        mcode: str | None = None,
-        mcode_model: str = MCODE_DEFAULT_MODEL,
-        fallback: str | None = None,
-        fallback_uncontained_ok: bool = False,
-        fallback_model: str = OPENROUTER_FALLBACK_MODEL,
-        typing_indicator: bool = False,
         bracket_recipient_wakes: bool = False,
         bearer_file: str | None = None,
         config_problems: list[str] | None = None,
@@ -515,36 +463,18 @@ class SeatConfig:
         self.seat = seat
         self.bot = bot
         self.wake = wake
-        self.model = model
         self.budget = budget
         self.live = live
-        self.claude = (
-            claude  # an absolute path to the claude binary, else resolved on the wake PATH
-        )
-        self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
-        self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
-        # The model the MiniMax Code fallback runtime runs on.  It is named on the command line
-        # (mcode takes `--model provider/model`), so the fallback never inherits a MiniMax Code
-        # default that the catalog does not serve.  A seat may name another one deliberately.
-        self.mcode_model = mcode_model
-        # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
-        # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
-        self.fallback = fallback
-        # The fallback runtime's tools are live while it answers and a parent cannot undo a side
-        # effect that already happened inside the child, so trusting it is an explicit, named risk
-        # rather than a default.  False means the fallback is held and the hold is logged.
-        self.fallback_uncontained_ok = fallback_uncontained_ok
-        # The model the OpenRouter fallback runs on (`fallback = "openrouter"`), as `provider/name`.
-        # The fallback's model is its own setting, because `model` belongs to the seat's wake.
-        self.fallback_model = fallback_model
-        self.provider = provider  # the CodeCaps provider name this seat's quota is read under
+        # An absolute path to the claude binary, else resolved on the wake PATH.  Read only by the
+        # lease-liveness probe (Daemon.agent_kinds):  the listener starts no model.
+        self.claude = claude
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file", "infisical" or "env"
-        # The seat's own simple-board bearer FILE:  an absolute path to that seat's private 0600 bearer file (never
-        # the bearer itself), from this trusted daemon config only.  The CLI still verifies the bearer and takes the
-        # seat from the verifier, so a wake or request can never choose a credential.  None = this seat files no
-        # board item.
+        # The seat's own simple-board bearer FILE:  an absolute path to that seat's private 0600 bearer
+        # file (never the bearer itself), from this trusted daemon config only.  The listener files no
+        # board item since board filing went with the retired wake types;  the MCP server
+        # (mcp/stdio.py) still reads it.  None = no bearer file.
         self.bearer_file = bearer_file
         self.email_env = email_env
         self.key_env = key_env
@@ -553,12 +483,6 @@ class SeatConfig:
         # Wake-config problems found in this seat's section (AFC-358).  The seat connects and captures
         # anyway;  its wake was downgraded to inbox, and status shows the seat red until they are fixed.
         self.config_problems: list[str] = list(config_problems or [])
-        self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
-        # The per-seat switch for the typing indicator (AFC-515).  Off by default:  a seat that
-        # shows "is typing" while it thinks changes what every other seat and the owner sees in
-        # the conversation, so each seat turns it on for itself.  The indicator is cosmetic and
-        # never changes whether the seat answers.
-        self.typing_indicator = typing_indicator
         # The per-seat switch for bracket-recipient wakes.  Off by default:  a post whose leading
         # header names the seat in its recipient list (after the arrow) then counts as addressing
         # the seat the way its own mention does, so the seat wakes without an @.  Only the
@@ -574,47 +498,15 @@ class SeatConfig:
         """The one wake path's two shapes:  "routine" when the seat has a `routine` (an HTTP POST to a
         router that decides, delivers and wakes), else "capture" (it only fills its inbox).  Derived
         from the routine alone, so no setting can disagree with it.  `wake` stays as the older name
-        for the per-platform wake type while seats migrate;  every existing caller still reads it."""
+        for the same choice (`http` or `inbox`);  every existing caller still reads it."""
         return "routine" if self.routine is not None else "capture"
 
     @property
     def wake_max_usd(self) -> float:
-        """What one wake may cost, reserved against usd_per_day:  the claude run's maximum, a
-        routine's configured cost (default 0:  the daemon spends nothing; the routine's platform
-        bills its own run), nothing for inbox, and nothing for muse.
-
-        The muse value is 0.0 DELIBERATELY (AFC-291), not an oversight and not a rounding of the
-        claude number.  Three reasons, in order:
-
-        1.  There is no per-run dollar cap.  `muse exec` has no `--max-budget-usd` equivalent, so
-            the $0.25 the claude wake reserves is a number about a cap that does not exist.
-        2.  A subscription-backed run has no marginal cost.  The seat's user already pays the plan;
-            one more or one fewer wake in a window changes no bill, so reserving against
-            usd_per_day would subtract a fictional quantity from a real ceiling.
-        3.  The owner asked for exactly this (2026-10-11):  cost is not the concern.  What matters is
-            not spamming the fleet and not causing downstream cost by fanning one wake into many.
-
-        So the dollar axis carries no signal for a muse seat and the COUNT caps do the bounding:
-        wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day and owner_per_topic_per_hour
-        (WAKE_CAP_KEYS) are enforced first, exactly as they are for a claude seat, whenever the seat
-        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day is
-        still accepted in the config, with a warning, but nothing enforces it (wake accounting is
-        frequency-only, owner 2026-10-13), so it never blocks, which is correct, because the run
-        it would have blocked was never paid for.
-
-        The consequence to be explicit about:  the held-back machinery (heldback.py) and its
-        eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
-        0.0 a muse seat reserves nothing, so nothing is held back on cost grounds.  That is correct
-        rather than a gap:  a wake is held back when a COUNT cap is hit, and holding it back "in
-        case it turns out to be expensive" is not a reason that can apply to a run with no cost.
-
-        The openrouter value is 0.0 too, for a different reason:  it bills credits, not a subscription
-        window, but one call is bounded by the prompt it is given and by the request's `max_tokens`,
-        at the catalog's per-million prices (about $0.001 to $0.003 a wake at today's Muse and DeepSeek
-        Flash prices).  That is two orders of magnitude under the $0.25 a claude run reserves, so a
-        reserve would be a made-up number, and the count caps are the bound that matters."""
-        if self.wake == "claude":
-            return WAKE_MAX_BUDGET_USD
+        """What one wake may cost, reserved against usd_per_day:  a routine's configured cost
+        (default 0:  the daemon spends nothing;  the routine's platform bills its own run), and
+        nothing for an inbox seat, which never wakes.  The COUNT caps (WAKE_CAP_KEYS) are what bound
+        a seat;  usd_per_day is accepted with a warning and never enforced (owner 2026-10-13)."""
         if self.wake == "http" and self.routine is not None:
             return self.routine.cost_usd
         return 0.0
@@ -631,6 +523,11 @@ class SeatConfig:
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
+        self.operator_settings_revision: str | None = None
+        self.operator_settings_document: dict | None = None
+        self.operator_settings_source: str | None = None
+        self.operator_settings_error = False
+        self.operator_settings_snapshot_revision: str | None = None
         # `[decider.consult_backup]`:  the decider's OpenRouter declaration as written (None when the
         # file has none), its parsed form (None when absent or malformed), and the table it was read
         # from ("decider", or "muse_bridge" for a config that still holds the old location).
@@ -679,9 +576,9 @@ class Config:
             str, str | None
         ] = {}  # every [seat.X] section:  its own instance key, if any
         self.notify_banners = True
-        self.route_enabled = (
-            True  # daemon.route_enabled:  the listener-wide kill switch for route suggestions
-        )
+        # daemon.route_enabled:  still parsed so an old config loads;  nothing reads it since route
+        # suggestions went with the retired wake types (owner ruling, Nov 10, 2026).
+        self.route_enabled = True
         self.held_back_catch_up = (
             True  # the default for every seat's held_back.catch_up (heldback.py)
         )
@@ -733,9 +630,10 @@ class Config:
         self.registry_gone_report_window_minutes = REGISTRY_DEFAULTS["gone_report_window_minutes"]
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
-        # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
-        # when load per core is high; owner wakes are not delayed for load.  A cap limits how
-        # many muse/claude children run at once across every seat on this instance.
+        # Mac-only wake backpressure during host saturation (OPS-950).  It only ever held a claude or
+        # muse wake, so since those wake types were retired (owner ruling, Nov 10, 2026) nothing reads
+        # these:  the four [daemon] host_wake_* keys are still parsed, so a config (and Muster, which
+        # edits host_wake_load_per_core) keeps loading.
         self.host_wake_defer = False
         self.host_wake_load_per_core = 3.0
         self.host_wake_defer_max_minutes = 20.0
@@ -782,8 +680,7 @@ def _held_back(
                 problems.append("%s must be true or false" % name)
             elif value and wake not in WORKER_WAKES:
                 problems.append(
-                    '%s applies only to wake = "claude" or "http" (an inbox seat never wakes)'
-                    % name
+                    '%s applies only to wake = "http" (an inbox seat never wakes)' % name
                 )
             else:
                 held["catch_up"] = value
@@ -922,11 +819,24 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
                 "seat.%s.%s is left over from %s and is ignored;  it can be deleted"
                 % (seat, key, SEAT_KEYS_LEFTOVER[key])
             )
-        elif key in SEAT_KEYS_LEGACY or key.startswith("routes_"):
+        elif key == "wake" and section.get("wake") in RETIRED_WAKES:
+            continue  # refused with its own error at load (a retired wake type)
+        elif key.startswith("routes_"):
+            found.append(
+                "seat.%s.%s is left over from the retired wake types (route suggestions) and is "
+                "ignored;  it can be deleted" % (seat, key)
+            )
+        elif key in SEAT_KEYS_LEGACY:
             found.append(
                 "seat.%s.%s is deprecated:  it still works as before, and goes away when seats move "
                 "to the one wake path (a routine, or capture only)" % (seat, key)
             )
+            claude = section.get("claude") if key == "claude" else None
+            if key == "claude" and (not isinstance(claude, str) or not os.path.isabs(claude)):
+                found.append(
+                    "seat.%s.claude must be an absolute path;  it is ignored, so the liveness "
+                    "check of a live Claude Code session asks no binary" % seat
+                )
         else:
             found.append("seat.%s.%s is not a known seat setting and is ignored" % (seat, key))
     budget = section.get("budget")
@@ -934,8 +844,8 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
         for key in sorted(budget, key=str):
             if key in BUDGET_KEYS_LEGACY:
                 found.append(
-                    "seat.%s.budget.%s is deprecated:  it still works as before, and goes away with "
-                    "the wake types it belongs to" % (seat, key)
+                    "seat.%s.budget.%s is left over from the retired wake types (board filing and "
+                    "route suggestions) and is ignored;  it can be deleted" % (seat, key)
                 )
             elif key == "usd_per_day":
                 found.append(
@@ -1426,14 +1336,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(enabled, bool):
             problems.append("seat.%s.enabled must be true or false" % seat_name)
             enabled = True
-        route_enabled = section.get("route_enabled", True)
-        if not isinstance(route_enabled, bool):
-            wake_problems.append("seat.%s.route_enabled must be true or false" % seat_name)
-            route_enabled = True
-        typing_indicator = section.get("typing_indicator", False)
-        if not isinstance(typing_indicator, bool):
-            wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
-            typing_indicator = False
         bracket_recipient_wakes = section.get("bracket_recipient_wakes", False)
         if not isinstance(bracket_recipient_wakes, bool):
             wake_problems.append(
@@ -1506,7 +1408,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             creds != "infisical" or wake != "inbox" or bot != "Operator"
         ):
             problems.append("OPERATOR service requires bot=Operator, creds=infisical, wake=inbox")
-        if wake not in KNOWN_WAKES:
+        if wake in RETIRED_WAKES:
+            # First, because the daily banner and the status line show config_problems[0].
+            wake_problems.insert(
+                0,
+                'seat.%s.wake = "%s" is retired:  the listener starts no model (owner, Nov 10, '
+                '2026);  write wake = "http" with a routine, or wake = "inbox" to capture only;  '
+                "until then the seat only captures" % (seat_name, wake),
+            )
+            wake = "inbox"
+        elif wake not in KNOWN_WAKES:
             wake_problems.append(
                 "seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES))
             )
@@ -1515,126 +1426,14 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             routine = _routine(seat_name, section.get("routine"), wake_problems)
         elif "routine" in section:
             wake_problems.append('seat.%s.routine applies only to wake = "http"' % seat_name)
-        model = section.get("model") or (
-            MUSE_DEFAULT_MODEL
-            if wake == "muse"
-            else OPENROUTER_DEFAULT_MODEL
-            if wake == "openrouter"
-            else "sonnet"
-        )
-        if wake == "openrouter":
-            # An OpenRouter model id is `provider/name` (and may start with `~`), not a CLI alias.
-            if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
-                wake_problems.append(
-                    "seat.%s.model must be an OpenRouter model such as %s or an @preset/ reference"
-                    % (seat_name, OPENROUTER_DEFAULT_MODEL)
-                )
-        elif not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
-            wake_problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
+        # `claude` is still read:  it names the binary Daemon.agent_kinds asks whether a live Claude
+        # Code session is interactive.  The other runtime settings (`model`, `muse`, `mcode`,
+        # `fallback` and the rest) are left over and ignored with a warning (seat_key_warnings).
         claude = section.get("claude")
         if claude is not None and (not isinstance(claude, str) or not os.path.isabs(claude)):
-            wake_problems.append("seat.%s.claude must be an absolute path" % seat_name)
-        muse = section.get("muse")
-        if muse is not None and (not isinstance(muse, str) or not os.path.isabs(muse)):
-            wake_problems.append("seat.%s.muse must be an absolute path" % seat_name)
-        if wake != "muse" and "muse" in section:
-            wake_problems.append('seat.%s.muse applies only to wake = "muse"' % seat_name)
-        mcode = section.get("mcode")
-        if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
-            wake_problems.append("seat.%s.mcode must be an absolute path" % seat_name)
-        if "mcode" in section and wake not in ("claude", "muse"):
-            wake_problems.append(
-                'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
-            )
-        # The model the mcode fallback runs on:  `provider/model`, named on the command line.
-        mcode_model = section.get("mcode_model", MCODE_DEFAULT_MODEL)
-        if not isinstance(mcode_model, str) or not re.fullmatch(MCODE_MODEL_PATTERN, mcode_model):
-            wake_problems.append(
-                "seat.%s.mcode_model must be provider/model, such as %s"
-                % (seat_name, MCODE_DEFAULT_MODEL)
-            )
-        # The fallback runtime, tried only when the primary could not produce a usable answer.  It
-        # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
-        fallback = section.get("fallback")
-        if fallback is not None and fallback not in KNOWN_FALLBACKS:
-            wake_problems.append(
-                "seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS))
-            )
-        if fallback is not None and wake not in WORKER_WAKES:
-            wake_problems.append(
-                "seat.%s.fallback applies only to a wake that runs a turn" % seat_name
-            )
-        # An OpenRouter wake may name an OpenRouter fallback:  the same HTTPS call with another model
-        # (`fallback_model`, checked to differ below).  Every other runtime may not back itself.
-        if fallback is not None and fallback == wake and wake != "openrouter":
-            wake_problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
-        if fallback == "openrouter" and wake == "http":
-            # (An inbox seat is already refused above:  a fallback applies only to a wake that runs a
-            # turn.  An http wake is a remote routine that answers in Zulip itself, so it has no
-            # answer of the daemon's to fall back from.)
-            wake_problems.append(
-                'seat.%s.fallback = "openrouter" applies only to a claude, muse or openrouter wake'
-                % seat_name
-            )
-        # The mcode fallback runs a binary whose path (`mcode`) and model (`mcode_model`) belong to a
-        # claude or muse seat, so it does not stand behind an OpenRouter wake.
-        if fallback == "mcode" and wake == "openrouter":
-            wake_problems.append(
-                'seat.%s.fallback = "mcode" applies only to a claude or muse wake' % seat_name
-            )
-        # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
-        # parent cannot undo a side effect that already happened inside the child, so the fallback
-        # runtime is not contained to the posture an unattended wake needs (measured: asked to write
-        # a file under the wake argv, it wrote one).  A seat must say so explicitly in the config
-        # before the fallback is ever trusted, on top of pinning the binary.
-        if "fallback_uncontained_ok" in section and fallback is None:
-            wake_problems.append(
-                "seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name
-            )
-        # The OpenRouter runtime offers the model no tools, so there is nothing to acknowledge:  the
-        # flag would read as a risk that is not there, and it is refused rather than ignored.
-        if "fallback_uncontained_ok" in section and fallback == "openrouter":
-            wake_problems.append(
-                'seat.%s.fallback_uncontained_ok applies only to fallback = "mcode" (the openrouter '
-                "runtime offers the model no tools, so there is nothing to acknowledge)" % seat_name
-            )
-        uncontained = section.get("fallback_uncontained_ok", False)
-        if not isinstance(uncontained, bool):
-            wake_problems.append(
-                "seat.%s.fallback_uncontained_ok must be true or false" % seat_name
-            )
-        # The model the OpenRouter fallback runs on:  `provider/name`, its own setting because `model`
-        # belongs to the seat's wake.  Only meaningful with `fallback = "openrouter"`.
-        fallback_model = section.get("fallback_model", OPENROUTER_FALLBACK_MODEL)
-        if "fallback_model" in section and fallback != "openrouter":
-            wake_problems.append(
-                'seat.%s.fallback_model applies only with fallback = "openrouter"' % seat_name
-            )
-        if not isinstance(fallback_model, str) or not re.fullmatch(
-            OPENROUTER_MODEL_PATTERN, fallback_model
-        ):
-            wake_problems.append(
-                "seat.%s.fallback_model must be an OpenRouter model such as %s or an @preset/ reference"
-                % (seat_name, OPENROUTER_FALLBACK_MODEL)
-            )
-        elif fallback == "openrouter" and wake == "openrouter" and fallback_model == model:
-            # The same call twice cannot answer what the first one did not.
-            wake_problems.append(
-                "seat.%s.fallback_model must differ from model when both use openrouter" % seat_name
-            )
-        provider = section.get("provider")
-        if provider is not None:
-            if not isinstance(provider, str) or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider
-            ):
-                wake_problems.append(
-                    'seat.%s.provider must be a provider name such as "Claude Code" or "MiniMax"'
-                    % seat_name
-                )
-            elif wake not in ("claude", "muse"):
-                wake_problems.append(
-                    'seat.%s.provider applies only to wake = "claude" or "muse"' % seat_name
-                )
+            # Only the liveness check reads it, so a bad path is a warning (seat_key_warnings) and the
+            # check asks no binary:  an unrelated setting must never cost a seat its routine.
+            claude = None
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
@@ -1697,19 +1496,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if wake_problems:
             # Fail soft:  keep the seat connected and capturing, wake it by inbox only, and say why.
             errors.extend(wake_problems)
-            wake, routine, fallback, held_back = "inbox", None, None, None
-            claude = muse = mcode = None
-            uncontained = False
-            provider = None
-            mcode_model = MCODE_DEFAULT_MODEL
-            fallback_model = OPENROUTER_FALLBACK_MODEL
-            if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
-                model = "sonnet"
+            wake, routine, held_back = "inbox", None, None
         seat_cfg = SeatConfig(
             seat_name,
             bot,
             wake,
-            model,
             budget,
             L.live_limits(raw, seat_name),
             claude,
@@ -1720,16 +1511,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             key_env=key_env,
             site_env=site_env,
             routine=routine,
-            route_enabled=route_enabled,
             held_back=held_back,
-            muse=muse,
-            provider=provider,
-            mcode=mcode,
-            mcode_model=mcode_model,
-            fallback=fallback,
-            fallback_uncontained_ok=uncontained,
-            fallback_model=fallback_model,
-            typing_indicator=typing_indicator,
             bracket_recipient_wakes=bracket_recipient_wakes,
             bearer_file=bearer_file,
             config_problems=wake_problems,
@@ -1746,6 +1528,33 @@ def listener_api_key_env(seat: str, routine: RoutineConfig | None) -> str:
     if routine is not None and routine.auth == "hmac-sha256":
         return routine.key_env
     return env_code(seat) + "_ROUTINE_KEY"
+
+
+def routes_to_router(routine: RoutineConfig | None) -> bool:
+    """Whether a seat's wakes go to the one wake router:  its routine sends the router's bearer
+    (`key_env` is ROUTER_BEARER_ENV with `auth = "bearer"`, the one role _refuse_shared_env lets
+    that name have).  Decided from the config alone, never from the seat's name, so every seat the
+    router serves is treated alike (daemon.receipt_pass reads its receipts)."""
+    return routine is not None and routine.key_env == ROUTER_BEARER_ENV and routine.auth == "bearer"
+
+
+def router_routine(seat: str, sent: Any) -> RoutineConfig | None:
+    """The router routine a wake was sent with, rebuilt from the `receipt_routine` its `done` row
+    recorded (daemon.run_routine):  the router's bearer as a `bearer` key, with the recorded URL
+    variable, header and timeout, each checked as a seat's routine is (_routine).  None when the
+    record is not a mapping or any part of it fails a check (daemon._recover_receipts)."""
+    if not isinstance(sent, Mapping):
+        return None
+    given = {
+        "url_env": sent.get("url_env"),
+        "key_env": ROUTER_BEARER_ENV,
+        "auth": "bearer",
+        "header": sent.get("header"),
+        "timeout_seconds": sent.get("timeout"),
+    }
+    problems: list[str] = []
+    routine = _routine(seat, given, problems)
+    return routine if routine is not None and not problems else None
 
 
 def outgoing_webhook_token_env(seat: str) -> str:
@@ -1826,10 +1635,30 @@ def _refuse_shared_env(cfg: Config) -> None:
             cfg.skipped_seats.setdefault(seat, []).append(reason)
 
 
-def load(root: str, path: str | None = None) -> Config:
+def load(root: str, path: str | None = None, *, environ=None) -> Config:
     path = path or os.path.join(root, L.CONFIG_NAME)
     raw, error = L.load_config(root, path)
+    settings_metadata = None
+    settings_error = False
+    env = os.environ if environ is None else environ
+    if not error and env.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"):
+        from .server import operator_settings
+
+        try:
+            raw, settings_metadata = operator_settings.load_runtime(raw, path, environ=env)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            error = "canonical Operator settings unavailable; no verified configuration was loaded"
+            settings_error = True
     cfg = from_dict(raw)
+    cfg.operator_settings_error = settings_error
+    if settings_metadata:
+        cfg.operator_settings_revision = settings_metadata["revision"]
+        cfg.operator_settings_document = settings_metadata["document"]
+        cfg.operator_settings_source = settings_metadata["source"]
+    if cfg.operator_settings_source == "verified-copy":
+        cfg.warnings.append(
+            "Operator settings refresh failed; using the verified last-known-good copy"
+        )
     if error:
         cfg.errors.insert(0, error)
     elif not raw:
@@ -1839,6 +1668,16 @@ def load(root: str, path: str | None = None) -> Config:
             "daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
             "run simple-chat daemon init"
         )
+    if cfg.instance == "server" and not cfg.errors:
+        from .server import operator_settings
+
+        try:
+            snapshot = operator_settings.accepted_snapshot(raw, operator_settings._manifest())
+            cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            # Existing listeners remain usable before migration; initialization
+            # refuses when no complete schema-valid accepted snapshot exists.
+            pass
     return cfg
 
 

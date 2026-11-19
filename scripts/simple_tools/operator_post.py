@@ -2,12 +2,13 @@
 
 The rule, repeated for weeks and ruled again on Oct 30 2026: "anytime an agent's Zulip identity is
 used it has to be something they actually thought about and said."  The daemon composes text on
-a seat's behalf (a headless wake's reply, an escalation note, a quota notice, the held-wake digest,
-a typing indicator) and no seat thought or said any of it, so none of it goes out under a seat's
-bot.  It goes out as the pinned Operator bot, the deterministic service identity, with the seat's
+a seat's behalf (an escalation note, the `@all` reminder, the held-wake digest) and no seat thought
+or said any of it, so none of it goes out under a seat's bot.  It goes out as the pinned Operator bot, the deterministic service identity, with the seat's
 tag in the text saying whose wake it reports.  On Oct 28 the owner had already ruled that the
 MiniMax identity stops being used even where a headless wake used it, and this is the rest of that
-ruling.
+ruling.  (The headless wakes, whose replies and quota notices this once also carried, were retired
+on Nov 10, 2026:  the listener starts no model, and the Operator never answers on a platform's
+behalf.)
 
 This module is the one place the daemon gets that client:
 
