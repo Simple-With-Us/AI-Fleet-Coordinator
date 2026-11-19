@@ -1,4 +1,4 @@
-"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback.  No real fleet-secrets."""
+"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback.  No real reader."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from seat_mcp import __main__ as entry
 class MissingTokenTests(unittest.TestCase):
     def test_exit_2_with_a_one_line_message_that_names_the_folder(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
-        env["FLEET_SECRETS_BIN"] = "/nonexistent/fleet-secrets"
+        env["INFISICAL_SCOPED_READER"] = "/nonexistent/infisical-scoped.py"
         err = io.StringIO()
         with (
             mock.patch.dict(os.environ, env, clear=True),

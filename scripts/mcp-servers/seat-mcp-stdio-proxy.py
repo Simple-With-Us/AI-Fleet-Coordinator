@@ -21,8 +21,23 @@ from pathlib import Path
 # answer's own provenance before the value is used.
 TOKEN_ACCOUNT = "seat-mcp-ro"
 SECRET_FOLDER = "/seat-mcp"
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 BASE = "http://127.0.0.1:8793/mcp"
+
+
+def _shared_client_path() -> None:
+    """Put the shared client on the path, from wherever this host keeps it.
+
+    In the repository the client sits beside this file's parent;  on the Mac it is
+    installed beside the scoped reader, which is the one consumer-facing entry point.
+    """
+    here = Path(__file__).resolve()
+    for candidate in (here.parent.parent, Path.home() / "apps" / "infisical-scoped"):
+        if (candidate / "fleet_infisical.py").is_file():
+            sys.path.insert(0, str(candidate))
+            return
+
+
+_shared_client_path()
 
 
 def load_token() -> str:
