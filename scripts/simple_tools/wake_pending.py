@@ -163,7 +163,9 @@ def mark_consumed(state: str, wake_id: str, now: float | None = None) -> None:
     at = time.time() if now is None else now
 
     def rewrite() -> None:
-        ledger = {k: v for k, v in _read_ledger_unlocked(state).items() if at - v < CONSUMED_TTL_SECONDS}
+        ledger = {
+            k: v for k, v in _read_ledger_unlocked(state).items() if at - v < CONSUMED_TTL_SECONDS
+        }
         ledger[wake_id] = at
         _atomic_write_json(state, _ledger_path(state), ledger)
 
@@ -182,7 +184,9 @@ def park(state: str, session_id: str, wake_id: str, text: str) -> bool:
         return False
     folder = os.path.join(pending_dir(state), session_id)
     _private_dir(folder, state)
-    _atomic_write_json(folder, os.path.join(folder, wake_id + ".json"), {"wake_id": wake_id, "text": text})
+    _atomic_write_json(
+        folder, os.path.join(folder, wake_id + ".json"), {"wake_id": wake_id, "text": text}
+    )
     return True
 
 
