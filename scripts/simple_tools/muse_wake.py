@@ -610,9 +610,7 @@ def _wake_seen(transcript: str, wake_id: str) -> bool:
         return False
 
 
-def _handed_over(
-    state: str, transcript: str, wake: WR.Wake
-) -> WR.Delivery | None:
+def _handed_over(state: str, transcript: str, wake: WR.Wake) -> WR.Delivery | None:
     """`sent` when this wake already reached the chat through the hook (its id consumed,
     and confirmed when the transcript itself carries it), or None when it did not."""
     if not WP.is_consumed(state, wake.wake_id):
