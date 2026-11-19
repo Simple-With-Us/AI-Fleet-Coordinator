@@ -406,6 +406,18 @@ class UnletteredListingTests(unittest.TestCase):
         self.assertEqual(ZC.zcode_unlettered_sessions(self.where),
                          ["z-ready-%02d" % i for i in range(ZC.UNLETTERED_SCAN)])
 
+    def test_zcode_without_age_signal_skips_repair_pass(self) -> None:
+        path = os.path.join(self.home, ZC.STORE_SUBPATH)
+        os.makedirs(os.path.dirname(path))
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE session (id text, title text, task_type text, "
+                     "time_archived integer, time_deleted integer)")
+        conn.execute("INSERT INTO session VALUES (?, ?, ?, NULL, NULL)",
+                     ("z-new-unknown", "??: Starting", "interactive"))
+        conn.commit()
+        conn.close()
+        self.assertIsNone(ZC.zcode_unlettered_sessions(self.where))
+
     def test_zcode_store_under_a_home_whose_path_needs_escaping(self) -> None:
         self.where = {"HOME": os.path.join(self.home, "a b?c#d%")}
         path = os.path.join(self.where["HOME"], ZC.STORE_SUBPATH)
