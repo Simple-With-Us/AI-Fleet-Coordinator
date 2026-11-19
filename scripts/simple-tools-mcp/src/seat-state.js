@@ -972,8 +972,14 @@ export async function recordDiagnostic(store, entry, now = Date.now()) {
 
 /**
  * Newest aggregated diagnostics first, bounded to the retained 90-day window:  both
- * stores (the shared one and the relay check rows'), merged by last update, so
- * DIAGNOSTIC_TOTAL_CAP reads the whole log.
+ * stores (the shared one and the relay check rows'), so DIAGNOSTIC_TOTAL_CAP reads
+ * the whole log.  No kind can crowd the others out of the tail:  gr_bearer and
+ * gr_assert rows refresh constantly while a relay is failing, and a plain newest-N
+ * slice would fill the whole tail with them and hide token, mcp and provider
+ * refusals exactly while the relay is down (Kody, PR 2331).  So the kinds take
+ * turns, each contributing its newest row in rotation, until the tail is full or
+ * every row is in;  within one kind the order stays newest first, stable on equal
+ * times (each store is already in update order).
  */
 export async function diagnosticTail(store, limit = 40, now = Date.now()) {
   const max = Number.isInteger(limit) ? Math.max(0, Math.min(limit, DIAGNOSTIC_TOTAL_CAP)) : 40;
@@ -981,9 +987,34 @@ export async function diagnosticTail(store, limit = 40, now = Date.now()) {
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
   const live = (rows) => (rows ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
   const rows = [...live(await store.get("diagnostics")), ...live(await store.get("gr_diagnostics"))];
-  // Stable on equal times:  each store is already in update order.
-  rows.sort((a, b) => a.ts - b.ts);
-  return rows.slice(-max).reverse();
+  const byKind = new Map();
+  // Walk newest first (each store is already in update order), so rows whose
+  // timestamps tie keep newest-first within their kind, and the kind of the
+  // single newest row leads the rotation.
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    const kind = String(row.kind ?? "");
+    let group = byKind.get(kind);
+    if (!group) byKind.set(kind, (group = []));
+    group.push(row);
+  }
+  const groups = [...byKind.values()].map((list) => list.sort((a, b) => b.ts - a.ts));
+  // The kind holding the single newest row leads the rotation (stable on ties, so
+  // the walk order above decides).
+  groups.sort((a, b) => b[0].ts - a[0].ts);
+  const selected = [];
+  for (let offset = 0; selected.length < max; offset++) {
+    let added = false;
+    for (const group of groups) {
+      const row = group[offset];
+      if (row === undefined) continue;
+      selected.push(row);
+      added = true;
+      if (selected.length >= max) break;
+    }
+    if (!added) break;
+  }
+  return selected;
 }
 
 // ---------------------------------------------------------------- MCP Events (src/events.js)

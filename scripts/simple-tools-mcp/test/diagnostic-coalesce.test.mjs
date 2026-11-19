@@ -120,8 +120,14 @@ test("relay check rows keep their own store, so a busy relay cannot push wake ro
   assert.equal(wake.length, 100);
   assert.equal(relay.length, S.DIAGNOSTIC_TOTAL_CAP - 100);
   assert.equal(relay[0].reason, "cause_299");
-  // The merged read is newest first across both stores.
-  for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].ts >= rows[i].ts);
+  // Newest first within every kind (the kinds themselves take turns in the tail,
+  // so no kind can crowd the others out - Kody, PR 2331 review round 3).
+  const lastSeenTs = new Map();
+  for (const row of rows) {
+    const last = lastSeenTs.get(row.kind);
+    if (last !== undefined) assert.ok(last >= row.ts, `${row.kind} out of order`);
+    lastSeenTs.set(row.kind, row.ts);
+  }
   // And a wake row written later still lands ahead of the older relay rows.
   await S.recordDiagnostic(store, { kind: "wake", reason: "wake_late" }, NOW + 3_000);
   const [newest] = await S.diagnosticTail(store, 1, NOW + 3_001);
