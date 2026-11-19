@@ -382,7 +382,9 @@ def antigravity_rename(request: PL.TitleRequest) -> bool:
 # placeholder:  at most this many, only ones whose last change is old enough that their own start hook has finished
 # (a brand-new "??" can be its start in flight), never a killed one, and none untouched for over a week.
 UNLETTERED_SCAN = 20
-UNLETTERED_ROWS = 200  # the rows one store read takes, newest first, before the age window is applied
+UNLETTERED_ROWS = (
+    200  # the rows one store read takes, newest first, before the age window is applied
+)
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
 
