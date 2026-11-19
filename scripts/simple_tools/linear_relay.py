@@ -260,16 +260,26 @@ _KEYED_SECRET = re.compile(
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
+# A bare 40-character lowercase hex run is a git SHA-1:  commits and PR heads quote them in
+# prose that carries no credential, and withholding whole posts for a quoted SHA is the bug
+# AFC-834 records.  A run beside a URL query or a key name (`?sha=`, `token:`) is not bare,
+# and keeps withholding, as does any other length or a mixed-case run.
+_BARE_GIT_SHA = re.compile(r"(?<![?&=:/\w])[0-9a-f]{40}(?![0-9a-fA-F])")
+
+
 def has_secret(text: str) -> bool:
     """True when the text carries anything credential-shaped: the fleet's canonical scanner
     (`secretscan`, which knows Linear, Sentry, Infisical, Cloudflare and the other service
-    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments)."""
+    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments).
+    A bare 40-character lowercase hex run away from any query or key name is a git SHA-1,
+    not a credential, and cannot withhold a post on its own (AFC-834)."""
     text = text or ""
-    return (
-        secretscan.scan(text) is not None
-        or any(p.search(text) for p in _SECRET_PATTERNS)
-        or bool(_KEYED_SECRET.search(text))
-    )
+    if secretscan.scan(text) is not None or bool(_KEYED_SECRET.search(text)):
+        return True
+    # The bare SHAs are masked out before the wide rows run, at their own length, so no
+    # boundary shifts and no neighbouring pattern sees them.
+    probe = _BARE_GIT_SHA.sub("x" * 40, text)
+    return any(p.search(probe) for p in _SECRET_PATTERNS)
 
 
 def safe_text(text: str) -> str:

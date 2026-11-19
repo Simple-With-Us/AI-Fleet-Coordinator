@@ -818,6 +818,23 @@ class RelayTests(unittest.TestCase):
                       "credential rotation plan", "secret santa"):
             self.assertFalse(lr.has_secret(prose), prose)
 
+    def test_a_bare_git_sha_is_prose_and_keyed_or_query_hex_still_withholds(self) -> None:
+        # AFC-834:  the mirror withheld posts that quote a commit or PR head.  A bare
+        # 40-character lowercase run is a git SHA-1, and is not credential-shaped.
+        sha = "4027256f4b281a9c5d3e7f608192a4b5c6d7e8f9"
+        self.assertEqual(len(sha), 40)
+        self.assertFalse(lr.has_secret(sha), "a bare SHA is prose")
+        self.assertFalse(lr.has_secret("merged %s into main" % sha))
+        self.assertFalse(lr.has_secret("head %s; base a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0" % sha))
+        # Near a query or a key name the same run still withholds.
+        self.assertTrue(lr.has_secret("https://x.test/repo?sha=%s" % sha))
+        self.assertTrue(lr.has_secret("token: %s" % sha))
+        self.assertTrue(lr.has_secret("sha=%s" % sha))
+        # Other lengths, mixed case, and longer hex runs keep withholding.
+        self.assertTrue(lr.has_secret("a" * 32))
+        self.assertTrue(lr.has_secret("4027256F4B281A9C5D3E7F608192A4B5C6D7E8F9"))
+        self.assertTrue(lr.has_secret(sha + "0123456789abcdef0123456789abcdef"))
+
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:
         class CheckLinear:
