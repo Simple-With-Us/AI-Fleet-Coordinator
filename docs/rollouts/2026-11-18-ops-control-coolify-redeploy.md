@@ -3,7 +3,7 @@
 **Why.**  `scripts/fleet-ops-control.py` read a Coolify token from an Infisical secret and folder that
 do not exist: the Fleet-OPS prod project has no `/coolify` folder and no `COOLIFY_API_TOKEN`, so
 `server redeploy` and `--check-token` failed closed with "the Coolify token is not available" before
-any Coolify request.  The helper now fails with "the Coolify token is not available:  set
+any Coolify request.  The helper now fails with "the Coolify token is not available: set
 `FLEET_OPS_CONTROL_INFISICAL_TOKEN`", so the failure names the variable it needs.  The server's audit log carries those failures for the Eavesdropper redeploys on
 2026-11-18.
 
@@ -25,7 +25,7 @@ owned by the consumer's account, holding one line: `FLEET_OPS_CONTROL_INFISICAL_
 value is never on a command line, in an argv, in the answer or in the audit.  The path follows the
 running account's home, so the forced command, which runs as `jay`, reads that file, while a root
 shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with "the Coolify
-token is not available:  set FLEET_OPS_CONTROL_INFISICAL_TOKEN" even though the ssh path works.
+token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN" even though the ssh path works.
 
 **What was verified, and how.**
 
