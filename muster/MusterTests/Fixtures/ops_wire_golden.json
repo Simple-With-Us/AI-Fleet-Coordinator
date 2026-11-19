@@ -13,7 +13,10 @@
     {"action": "serverListenerSettings", "target": "server", "mode": "plan", "line": "server eavesdropper-settings server --plan --json"},
     {"action": "serverListenerSettings", "target": "server", "mode": "yes", "line": "server eavesdropper-settings server --yes --json"},
     {"action": "testWake", "target": "CLAUDE.BB.2.S", "mode": "plan", "line": "server test-wake CLAUDE.BB.2.S --plan --json"},
-    {"action": "testWake", "target": "CLAUDE.BB.2.S", "mode": "yes", "line": "server test-wake CLAUDE.BB.2.S --yes --json"}
+    {"action": "testWake", "target": "CLAUDE.BB.2.S", "mode": "yes", "line": "server test-wake CLAUDE.BB.2.S --yes --json"},
+    {"action": "eavesdropperPause", "verb": "pause", "target": "server", "mode": "plan", "line": "server pause server --plan --json"},
+    {"action": "eavesdropperPause", "verb": "pause-wakes", "target": "CLAUDE", "mode": "yes", "line": "server pause-wakes CLAUDE --yes --json"},
+    {"action": "eavesdropperPause", "verb": "resume", "target": "server", "mode": "yes", "line": "server resume server --yes --json"}
   ],
   "refusedAtGate": [
     "-- server restart fleet-server-status.timer --plan --json",

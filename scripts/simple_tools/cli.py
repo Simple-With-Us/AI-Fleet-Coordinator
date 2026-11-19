@@ -1162,6 +1162,11 @@ def build_parser(
     p.add_argument(
         "--include-self", action="store_true", help="also show messages this session posted"
     )
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="full message bodies in remote mode (default is a compact preview)",
+    )
 
     p = add("wait", "block until a new message from someone else arrives in a topic")
     topic_opt(p)
@@ -3520,6 +3525,8 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
+            if getattr(args, "full", False):
+                targs["full"] = True
         elif cmd == "show":
             #  One message by id with its whole body:  the hosted topic and search reads are
             #  compact by design, and a wake's standing rule is "open the message and read all

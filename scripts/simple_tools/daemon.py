@@ -1851,10 +1851,9 @@ class Daemon:
 
         It runs only the pinned realpath, only when the seat's wake pin file already carries
         `agents_ok` for that binary, and never while a pause covers the Claude seat, so the daemon
-        never starts an unchecked claude binary on its own.  Nothing in the listener writes that
-        pin any more (`daemon test-wake --pin` is gone), so the listing runs only on a host whose
-        old pin still matches the installed claude;  elsewhere liveness rests on the pid and its
-        start time."""
+        never starts an unchecked claude binary on its own.  `simple-chat daemon pin-claude`
+        writes that pin (it runs the listing once and pins the binary only when it answers);  on a
+        host where nobody has run it, liveness rests on the pid and its start time."""
         at, cached = self.agents_cache
         now = self.clock.monotonic()
         if now - at < AGENTS_CACHE_SECONDS:
