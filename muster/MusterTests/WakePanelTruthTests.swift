@@ -236,9 +236,9 @@ final class WakePanelTruthTests: XCTestCase {
     // MARK: Wakes or Captures Only
 
     /// A seat Wakes when its section holds a routine table, inline or under its own header.  With
-    /// no routine, an old wake line other than inbox is one today's listener still wakes the seat
-    /// by, so the seat is an Old Wake Setting, and only a seat with neither Captures Only.  What the
-    /// eavesdropper publishes as the seat's wake decides nothing.
+    /// no routine, an old wake line other than inbox is one today's listener refuses, so the seat
+    /// is an Old Wake Setting, and only a seat with neither Captures Only.  What the eavesdropper
+    /// publishes as the seat's wake decides nothing.
     func test_a_seat_wakes_by_its_routine_table_alone() {
         let json = #"{"running": true, "status": {"seats": {"OLD": {"wake": "openrouter"}, "QUIET": {"wake": "http"}}}}"#
         let model = WakeSettingsBuilder.build(sources(status: json))
@@ -251,11 +251,12 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(claude.routineForm, .subTable)
         XCTAssertEqual(setting(.routineURLEnv, of: claude).configured, .text("CLAUDE_ROUTINE_URL"))
         let old = seat("OLD", in: model)
-        XCTAssertEqual(old.kind, .oldWakeSetting(.stillWakes("openrouter")))
+        XCTAssertEqual(old.kind, .oldWakeSetting(.refused("openrouter")))
         XCTAssertEqual(old.kind.title, "Old Wake Setting")
+        XCTAssertFalse(old.kind.isWoken)
         XCTAssertEqual(
             old.kind.help,
-            "The listener still wakes this seat through its old wake = \"openrouter\" setting until the listener change lands.\u{00A0} Muster no longer edits it."
+            "The listener refuses this old wake = \"openrouter\" line, so this seat only captures until it is removed."
         )
         XCTAssertEqual(old.leftoverWake, "openrouter")
         let quiet = seat("QUIET", in: model)
@@ -267,10 +268,9 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(WakeSeatKind.capturesOnly.help.contains("kept in the seat's inbox"))
     }
 
-    /// With no routine, an old wake today's listener still runs (claude, muse, openrouter) is an
-    /// Old Wake Setting it still wakes;  `http` with no routine, or a word the listener does not
-    /// know, is one it refuses, and the seat only captures.  No wake line or `wake = "inbox"`
-    /// Captures Only.
+    /// With no routine, a retired wake (claude, muse, openrouter:  the listener starts no model),
+    /// `http`, or a word the listener does not know is an Old Wake Setting it refuses, and the
+    /// seat only captures.  No wake line or `wake = "inbox"` Captures Only.
     func test_an_old_wake_line_with_no_routine_is_an_old_wake_setting() {
         for wake in ["claude", "muse", "openrouter"] {
             let document = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nwake = \"\(wake)\"\n")
@@ -280,13 +280,13 @@ final class WakePanelTruthTests: XCTestCase {
                 form: document.routineForm(seat: "MM"), configProblem: nil,
                 leftoverWake: document.leftoverWake(seat: "MM")
             )
-            XCTAssertEqual(kind, .oldWakeSetting(.stillWakes(wake)), wake)
+            XCTAssertEqual(kind, .oldWakeSetting(.refused(wake)), wake)
             XCTAssertEqual(kind.title, "Old Wake Setting", wake)
-            XCTAssertTrue(kind.isWoken, wake)
+            XCTAssertFalse(kind.isWoken, wake)
             XCTAssertFalse(kind.hasRoutine, wake)
             XCTAssertEqual(
                 kind.help,
-                "The listener still wakes this seat through its old wake = \"\(wake)\" setting until the listener change lands.\u{00A0} Muster no longer edits it.",
+                "The listener refuses this old wake = \"\(wake)\" line, so this seat only captures until it is removed.",
                 wake
             )
         }
@@ -491,14 +491,14 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(unread.contains("was not read"))
     }
 
-    /// The routine and the caps apply to a seat that Wakes, the caps alone to one the listener
-    /// still wakes through an old wake line, and none of them to one that Captures Only, whose
-    /// file values are still shown when it holds them.
+    /// The routine and the caps apply to a seat that Wakes, and none of them to one with an old
+    /// wake setting or one that Captures Only, whose file values are still shown when it holds them.
     func test_settings_apply_by_kind() {
-        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.stillWakes("muse"))))
-        XCTAssertTrue(WakeSettingKey.liveLoopTurns.applies(to: .oldWakeSetting(.stillWakes("claude"))))
-        XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: .oldWakeSetting(.stillWakes("muse"))))
-        XCTAssertFalse(WakeSettingKey.routineTimeout.applies(to: .oldWakeSetting(.stillWakes("openrouter"))))
+        // A retired wake is refused (the listener starts no model), so nothing of it applies.
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.refused("muse"))))
+        XCTAssertFalse(WakeSettingKey.liveLoopTurns.applies(to: .oldWakeSetting(.refused("claude"))))
+        XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: .oldWakeSetting(.refused("muse"))))
+        XCTAssertFalse(WakeSettingKey.routineTimeout.applies(to: .oldWakeSetting(.refused("openrouter"))))
         // A seat today's listener drops to inbox is not woken, so its caps bind nothing.
         XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.refused("http"))))
         XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.routineNeedsHTTP(wake: nil))))

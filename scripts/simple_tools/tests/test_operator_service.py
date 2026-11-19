@@ -206,7 +206,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(self.config().errors, [])
 
     def test_operator_cannot_wake_model(self):
-        self.assertTrue(self.config(wake="claude").errors)
+        # Any wake but inbox stops the Operator seat outright (the rule reads the raw value), an
+        # http one and a retired one alike:  it is never downgraded to a capture seat.
+        for wake in ("http", "claude"):
+            with self.subTest(wake=wake):
+                cfg = self.config(wake=wake)
+                self.assertNotIn("OPERATOR", cfg.seats)
+                self.assertIn(
+                    "OPERATOR service requires bot=Operator, creds=infisical, wake=inbox",
+                    cfg.skipped_seats["OPERATOR"],
+                )
 
     def test_operator_cannot_use_file(self):
         self.assertTrue(self.config(creds="file").errors)
