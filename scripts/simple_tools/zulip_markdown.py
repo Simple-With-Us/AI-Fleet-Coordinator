@@ -279,9 +279,7 @@ class _Converter(HTMLParser):
             text = "".join(self.link).strip()
             self.link = None
             if text and self.embed is None:
-                self._sink().append(
-                    "[%s](%s)" % (_escape_text(text), _escape_url(self.href))
-                )
+                self._sink().append("[%s](%s)" % (_escape_text(text), _escape_url(self.href)))
         if self.mention is not None:
             name = "".join(self.mention).strip()
             self.mention = None
@@ -322,9 +320,7 @@ class _Converter(HTMLParser):
             parent = " " * self.lists[-1].marker
             # The text that follows the nested list starts on a line of its own, at
             # the indent of the item that holds it (Kody, PR 2340).
-            self.lists[-1].item.append(
-                "\n" + _indent(rendered, width) + "\n" + parent
-            )
+            self.lists[-1].item.append("\n" + _indent(rendered, width) + "\n" + parent)
         else:
             self.blocks.append(self._quoted(rendered))
 
