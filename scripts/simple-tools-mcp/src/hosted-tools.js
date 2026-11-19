@@ -2359,16 +2359,21 @@ export class HostedTools {
     const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
-    if (held && held !== claimName) {
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
+    const stealing = args.steal === true;
+    const steal_reason = String(args.reason ?? "").trim();
+    if (stealing && !steal_reason) {
+      throw new ToolError("invalid_argument", "steal requires reason:  one sentence naming why the claim is being taken.");
+    }
+    if (held && held !== claimName && !stealing) {
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
     const delegate = issue?.delegate ?? null;
     // Only an app delegate is a fleet claim marker, exactly as on the release
     // path:  a human delegation (Jay's triage, a colleague's) never holds a
     // claim, and claiming the issue delegates it to this seat's app user.
-    if (delegate?.id && delegate.app === true && delegate.id !== viewerId) {
+    if (delegate?.id && delegate.app === true && delegate.id !== viewerId && !stealing) {
       const heldBy = delegate.name || "another seat";
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: heldBy } });
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: heldBy } });
     }
     const workspace = await this.linearWorkspace();
     // A claim is In Progress plus the claimed:<seat> and seat:<seat> labels
@@ -2394,7 +2399,11 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
-    const body = this.linearBody(`CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session);
+    const stolen_from = stealing ? (held?.slice(CLAIM_PREFIX.length) || delegate?.name || "another holder") : "";
+    const body = this.linearBody(
+      `CLAIMED${stolen_from ? ` — taken from ${stolen_from}: ${steal_reason}` : ""}${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`,
+      args.session,
+    );
     audit.body_len = [...body].length;
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);

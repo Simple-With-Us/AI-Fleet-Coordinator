@@ -481,6 +481,44 @@ test("an issue held by another app delegate is refused with claim_held, and no m
   assert.equal(fake.mutations().length, 0);
 });
 
+test("a steal without reason is refused before any mutation is sent", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-324", identifier: "AFC-324", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-324", steal: true }), "invalid_argument");
+  assert.match(error.message, /reason/);
+  assert.equal(fake.mutations().length, 0);
+  // A bare reason with no steal is just ignored:  the held refusal still fires.
+  const held = toolError(await tools.call("linear_claim", { id: "AFC-324", reason: "unclaimed transfer" }), "claim_held");
+  assert.equal(held.held_by, "CLAUDE");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("steal with reason takes a label-held issue and records who it was taken from", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-325", identifier: "AFC-325", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-325", steal: true, reason: "holder parked it for a week with no update" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  assert.equal(claimed.held_by, null);
+  const update = fake.mutations()[0].body.variables;
+  // The other seat's claim label is dropped;  its seat: label stays (attribution).
+  assert.deepEqual(update.input.removedLabelIds, [fake.labelId("claimed:CLAUDE")]);
+  assert.equal(update.input.delegateId, fake.viewer.id);
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.equal(body.split("\n")[0], "CLAIMED — taken from CLAUDE: holder parked it for a week with no update");
+});
+
+test("steal with reason takes a delegate-held issue", async () => {
+  const { tools, fake } = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+  fake.addIssue({ id: "issue-326", identifier: "AFC-326", team: "AFC", delegate: { id: "user-claude", name: "Claude" } });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-326", steal: true, reason: "reclaiming for the transfer Jay asked for" }), "linear_claim");
+  assert.equal(claimed.label, null);
+  assert.equal(claimed.delegate, "Jet");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, "user-jet");
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.match(body, /CLAIMED — taken from Claude: reclaiming for the transfer Jay asked for/);
+});
+
 test("a human delegate is no claim hold:  claiming delegates to the seat's app user", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-314", identifier: "AFC-314", team: "AFC", delegate: { id: "user-jay", name: "Jay", app: false } });

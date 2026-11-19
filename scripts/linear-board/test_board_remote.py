@@ -475,7 +475,6 @@ class Remote(unittest.TestCase):
 
     def test_write_options_with_no_hosted_equivalent_are_refused(self):
         for argv in (
-            ["claim", "AFC-1", "--by", "CODEX", "--steal", "--reason", "r"],
             ["file", "--title", "T", "--fix", "f"],
             ["file", "--title", "T", "--by", "X"],
         ):
@@ -483,6 +482,21 @@ class Remote(unittest.TestCase):
                 code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)] * 2)
                 self.assertEqual(code, 2)
                 self.assertNotIn("linear_comment", [c["name"] for c in calls])
+
+    def test_claim_steal_maps_to_the_hosted_tool_with_reason(self):
+        answers = [rpc(self.IDANS), rpc({"id": "1"}, text="done")]
+        code, _, err, calls = self.run_writes(
+            ["claim", "AFC-1", "--by", "CODEX", "--steal", "--reason", "holder parked it"],
+            answers,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            calls[-1],
+            {
+                "name": "linear_claim",
+                "arguments": {"id": "AFC-1", "steal": True, "reason": "holder parked it", "identity": "CODEX"},
+            },
+        )
 
     def test_remote_text_file_uses_private_file_and_scans_before_network(self):
         with tempfile.TemporaryDirectory() as tmp:
