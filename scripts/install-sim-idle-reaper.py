@@ -43,6 +43,9 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 END_EVENTS = ("Stop", "SubagentStop", "SessionEnd")
 
 FILES = [
+    (os.path.join(REPO_SCRIPTS, "service_zulip.py"), os.path.join(HOME, "apps", "service_zulip.py"), 0o755),
+    (os.path.join(REPO_SCRIPTS, "simple_tools", "secretscan.py"), os.path.join(HOME, "apps", "simple_tools", "secretscan.py"), 0o644),
+    (os.path.join(REPO_SCRIPTS, "..", "fleet-apps.json"), os.path.join(HOME, "apps", "fleet-apps.json"), 0o644),
     (os.path.join(REPO_SCRIPTS, "sim-idle-reaper.py"), os.path.join(HOME, "apps", "sim-idle-reaper.py"), 0o755),
     (os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.py"), os.path.join(HOOKS_DIR, "sim-session-hook.py"), 0o755),
     (os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.sh"), os.path.join(HOOKS_DIR, "sim-session-hook.sh"), 0o755),

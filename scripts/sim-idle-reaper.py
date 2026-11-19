@@ -26,7 +26,7 @@ Otherwise it runs `xcrun simctl shutdown <udid>`:  never `shutdown all`, never e
 A load guard runs before the idle pass:  when the 1-minute load average reaches 800
 (the box is heading toward the 926 seen 2026-10-14), every considered simulator
 (`--udid` filter respected, in any letter case) is shut down unconditionally and one alert is
-posted to Zulip #Alerts, topic sim-idle-reaper, as the MA bot via the simple-chat CLI, untagged
+posted to Zulip #Alerts, topic sim-idle-reaper, under its bound dedicated service identity, untagged
 (house format `SEVERITY • service • what • link`, severity SEVERE), rate-limited to one post per
 hour.
 A post that may have reached Zulip (posted, timed out, or an unclear error) starts the hour;
@@ -53,6 +53,7 @@ import argparse
 import fcntl
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -75,10 +76,7 @@ BUSY_PATTERN = "xctestrun"
 LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"  # passive streamer, not use
 LOAD_GUARD_TRIP = 800.0  # 1-min loadavg: emergency-shutdown considered sims before load nears 900
 GUARD_ALERT_COOLDOWN_SEC = 3600  # at most one #Alerts post per hour while the guard keeps tripping
-# The fleet chat CLI;  it resolves the MA bot credential itself, never a file default.  An explicit
-# SIM_REAPER_SIMPLE_CHAT wins, then simple-chat on PATH, then this default location.
-SIMPLE_CHAT_ENV = "SIM_REAPER_SIMPLE_CHAT"
-SIMPLE_CHAT = os.path.join(HOME, ".local", "bin", "simple-chat")
+# Service sender is a sibling helper; no agent CLI override is consulted.
 ALERT_CHANNEL = "Alerts"  # the realm stream's own name;  Zulip matches stream names in any case
 ALERT_TOPIC = "sim-idle-reaper"  # #alerts topic = service name (docs/protocols/zulip-fleet-guide)
 ALERT_SEVERITY = "SEVERE"  # one of the guide's SEVERE / MODERATE / INFO
@@ -90,7 +88,7 @@ ALERT_TIMEOUT_SEC = 60
 RESOURCE_MENTIONS = (
     "@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**"
 )
-# simple-chat exits 2 (usage) and 3 (credential) before anything is sent:  provably unsent.
+# Service helper exits 2 (usage) and 3 (preflight refusal) before any message write.
 CHAT_UNSENT_EXITS = (2, 3)
 UDID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
@@ -355,20 +353,17 @@ def _chat_reason(stderr: str | None) -> str:
 
 
 def fleet_alert(content: str) -> str:
-    """Post one message to Zulip #Alerts as the MA bot via the simple-chat CLI.
+    """Post one message to Zulip #Alerts under its bound dedicated service identity.
 
-    simple-chat resolves the seat credential itself (no credential file default in
-    this script) and owns HTTPS/redirect/User-Agent handling.  Never raises.  The post goes
-    out with --no-tag, so the line in #Alerts starts with its severity as the guide's
-    `SEVERITY • service • what • link` format requires;  Zulip still shows the MA bot as sender.
+    service_zulip.py verifies the bound bot and owns HTTPS/redirect handling.  Never raises.  The line in #Alerts starts with its severity as the guide's
+    `SEVERITY • service • what • link` format requires;  No agent fallback is permitted.
 
     Returns "ok" (posted), "unsent" (provably never sent:  the CLI could not start, or it
     exited with a usage or credential error) or "unknown" (anything else, such as a timeout,
     a network error or a refusal that may follow a send).  The post is never retried here.
     """
-    chat = os.environ.get(SIMPLE_CHAT_ENV) or shutil.which("simple-chat") or SIMPLE_CHAT
-    argv = [chat, "--as", "MA", "post", "--no-tag"]
-    argv += ["--channel", ALERT_CHANNEL, "--topic", ALERT_TOPIC, content + "\n" + RESOURCE_MENTIONS]
+    argv = [sys.executable, str(Path(__file__).with_name("service_zulip.py")),
+            "--service", "sim-reaper", "post", content + "\n" + RESOURCE_MENTIONS]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=ALERT_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
