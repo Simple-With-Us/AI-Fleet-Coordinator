@@ -63,9 +63,9 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 # This client's own scoped read-only service tokens:  one grant per Infisical folder, each
 # named for the folder it covers and held in the consumer's own store (the owner's login
-# keychain on the Mac, a private file on a server).  The environment still wins when it
-# already binds a token, so a deployment that pins INFISICAL_AI_FLEET_COORDINATOR_TOKEN
-# keeps working.
+# keychain on the Mac, a private file on a server).  The store is the authority for the
+# token:  a token in the environment is only a copy of that same grant, and it is used
+# when the store has none.
 TOKEN_ACCOUNTS = {
     ("ai-fleet-coordinator", "/"): "notes-client-ro",
     ("ai-fleet-coordinator", W.KEY_PATH): "notes-operator-ro",
@@ -73,17 +73,25 @@ TOKEN_ACCOUNTS = {
 
 
 def _binding(scoped: Mapping[str, str], path: str) -> str:
-    """The one scoped token this read runs under:  the environment's, else this consumer's own."""
+    """The one scoped token this read runs under:  this consumer's own scoped service token
+    from its own store, else a copy of that same token in the environment.
+
+    The store is the authority:  a hand-set environment value never replaces the reviewed,
+    scope-limited grant.  A copy in the environment is only used when the store has no
+    usable token, which is how a host transports a value it already synced from Infisical.
+    """
+    account = TOKEN_ACCOUNTS.get((W.KEY_PROJECT, path))
+    status = "no-token"
+    if account:
+        token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+        if token:
+            return token
     bound = (scoped.get(FI.ENV_AI_FLEET_COORDINATOR_TOKEN) or "").strip()
     if bound:
         return FI.check_service_token(bound)
-    account = TOKEN_ACCOUNTS.get((W.KEY_PROJECT, path))
-    if not account:
-        raise FI.SecretsError("service-token-required: no scoped token covers " + path)
-    token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
-    if not token:
+    if account:
         raise FI.SecretsError("service-token-required: %s is not usable (%s)" % (account, status))
-    return token
+    raise FI.SecretsError("service-token-required: no scoped token covers " + path)
 
 
 def scoped_read(

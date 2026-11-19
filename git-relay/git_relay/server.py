@@ -1613,6 +1613,11 @@ def from_env() -> Relay:
         try:
             app_source = InfisicalSource(
                 path=(raw_secrets_path or "/github-apps").strip(),
+                # The relay's own store is the authority for the token:  the credential
+                # file the unit binds,  else this folder's registered account in the
+                # relay's own store.  A token in the process environment is only a copy
+                # of that same grant,  and it is used when the store has none.
+                account=APP_SOURCE_ACCOUNTS.get((raw_secrets_path or "/github-apps").strip(), ""),
                 credential_file=_credential_file_for(
                     "the App-credentials source",
                     "GIT_RELAY_APPS_CREDENTIAL_FILE",
@@ -1657,6 +1662,14 @@ def from_env() -> Relay:
         workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
         typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
     )
+
+
+# The relay's own scoped service tokens:  one grant per Infisical folder,  each
+# named for the folder it covers and held in the relay's own store.
+APP_SOURCE_ACCOUNTS = {
+    "/github-apps": "operator-github-apps-ro",
+    "/operator-github/callers": "operator-github-callers-ro",
+}
 
 
 def _require_infisical_client():

@@ -41,21 +41,47 @@ _shared_client_path()
 
 
 def load_token() -> str:
-    token = os.environ.get("SEAT_MCP_TOKEN", "").strip()
-    if not token:
-        try:
-            import fleet_infisical as FI
+    """SEAT_MCP_TOKEN, or a fail-closed refusal that names the unavailable source.
 
-            env = dict(os.environ)
-            env[FI.ENV_READ_PATHS] = SECRET_FOLDER
-            value, status = FI.fetch_scoped("SEAT_MCP_TOKEN", SECRET_FOLDER, TOKEN_ACCOUNT, env)
-            token = value if status == "ok" else ""
-        except Exception:
-            token = ""
-    if not token:
-        sys.stderr.write("SEAT_MCP_TOKEN missing in Infisical /seat-mcp\n")
+    A host that bound the token in the environment keeps it.  Otherwise the read runs
+    under this consumer's own scoped service token, and every failure says which
+    source was unavailable:  the shared client,  the token store,  or the read.  No
+    value ever appears in the refusal.
+    """
+    token = os.environ.get("SEAT_MCP_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        sys.stderr.write(
+            "seat-mcp: the shared Infisical client (fleet_infisical.py) is not importable, "
+            "so the %s scoped service token cannot be read\n" % TOKEN_ACCOUNT
+        )
         sys.exit(1)
-    return token
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
+        value, status = FI.fetch_scoped("SEAT_MCP_TOKEN", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+    except TimeoutError:
+        sys.stderr.write(
+            "seat-mcp: the Infisical read for the %s scoped service token timed out\n"
+            % TOKEN_ACCOUNT
+        )
+        sys.exit(1)
+    except Exception as exc:
+        sys.stderr.write(
+            "seat-mcp: the Infisical read for the %s scoped service token could not run (%s)\n"
+            % (TOKEN_ACCOUNT, type(exc).__name__)
+        )
+        sys.exit(1)
+    if status != "ok" or not value:
+        sys.stderr.write(
+            "seat-mcp: no usable token:  the %s scoped service token store is unavailable or "
+            "refused (%s),  and SEAT_MCP_TOKEN binds none\n" % (TOKEN_ACCOUNT, status)
+        )
+        sys.exit(1)
+    return value
 
 
 def post(token: str, body: bytes, timeout: float) -> bytes:

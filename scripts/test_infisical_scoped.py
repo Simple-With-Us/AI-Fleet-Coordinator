@@ -238,7 +238,16 @@ class AccountTableTests(unittest.TestCase):
         registry = json.loads(
             (SCRIPTS / "fleet_knobs" / "registry.json").read_text(encoding="utf-8")
         )
-        folders = {knob["folder"] for knob in registry["knobs"]}
+        # The shape is checked before the data is used:  a document that is not a
+        # dict,  whose knobs are not a list,  or whose entries are not dicts with a
+        # string folder,  is a broken registry and never a set of folders.
+        self.assertIsInstance(registry, dict)
+        knobs = registry.get("knobs")
+        self.assertIsInstance(knobs, list)
+        for knob in knobs:
+            self.assertIsInstance(knob, dict)
+            self.assertIsInstance(knob.get("folder"), str)
+        folders = {knob["folder"] for knob in knobs}
         self.assertIn("/", folders)
         for folder in folders:
             self.assertIn(("ai-fleet-coordinator", folder), reader.ACCOUNTS, folder)

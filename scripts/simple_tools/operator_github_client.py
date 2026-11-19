@@ -69,7 +69,7 @@ def caller_key(seat):
     except Exception:
         raise ClientError(name + " unavailable: Infisical lookup failed") from None
     if status != "ok":
-        if status in ("no-token", "keychain-locked", "token-unreadable"):
+        if status in ("no-token", "keychain-locked", "token-unreadable", "keychain-missing"):
             print(
                 name
                 + " unavailable: no scoped token "
@@ -80,6 +80,12 @@ def caller_key(seat):
                 file=sys.stderr,
             )
             raise SystemExit(127) from None
+        if status == "keychain-timeout":
+            print(
+                name + " unavailable: the scoped token store did not answer in time",
+                file=sys.stderr,
+            )
+            raise SystemExit(124) from None
         raise ClientError(name + " unavailable: Infisical lookup failed")
     if not 32 <= len(key) <= 4096:
         raise ClientError(name + " is missing or invalid")

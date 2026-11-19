@@ -107,8 +107,9 @@ INFISICAL_PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
 INFISICAL_PATH = "/zulip"
 # The reader's own scoped service tokens:  one read-only grant per Infisical folder, each
 # named for the folder it covers and held in the consumer's own store (the owner's login
-# keychain on the Mac, a private file on a server).  The environment still wins when it
-# already binds a token, so a deployment that pins INFISICAL_TOKEN keeps working.
+# keychain on the Mac, a private file on a server).  The store is the authority for the
+# token:  a token in the environment is only a copy of that same grant, and it is used
+# when the store has none.
 INFISICAL_TOKEN_ACCOUNTS = {
     INFISICAL_PATH: "zulip-ro",
     "/zulip_operator": "zulip-operator-ro",
@@ -626,8 +627,12 @@ def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
 
 
 def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
-    """The token this read uses:  the environment's own binding when it has one, else the
-    consumer's own scoped service token for that folder, read from the host's approved store.
+    """The token this read uses:  the consumer's own scoped service token for that folder,
+    read from the host's approved store, else a copy of that same token in the environment.
+
+    The store is the authority:  a hand-set environment value never replaces the reviewed,
+    scope-limited grant.  A copy in the environment is only used when the store has no
+    usable token, which is how a host transports a value it already synced from Infisical.
 
     There is no other source:  no shared reader, no machine identity and no cached copy.  A
     missing token, a locked keychain or an unreadable store yields nothing, and the refusal
@@ -635,16 +640,18 @@ def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
     """
     import fleet_infisical as FI
 
+    account = INFISICAL_TOKEN_ACCOUNTS.get(path)
+    status = "no-token"
+    if account:
+        token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+        if token:
+            return token
     bound = (scoped.get(FI.ENV_TOKEN) or "").strip()
     if bound:
         return FI.check_service_token(bound)
-    account = INFISICAL_TOKEN_ACCOUNTS.get(path)
-    if not account:
-        raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
-    token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
-    if not token:
+    if account:
         raise FI.SecretsError(f"service-token-required: {account} is not usable ({status})")
-    return token
+    raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
 
 
 def _infisical_context(

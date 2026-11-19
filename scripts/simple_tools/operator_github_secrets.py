@@ -53,6 +53,11 @@ def scoped_secret_get(path, name):
             name + " unavailable: Infisical lookup failed", outcome="refused"
         ) from None
     if status != "ok":
+        if status == "keychain-timeout":
+            raise RoutingError(
+                name + " unavailable: the scoped token store did not answer in time",
+                outcome="retryable",
+            )
         raise RoutingError(
             name + " unavailable: Infisical lookup failed (" + status + ")", outcome="refused"
         )

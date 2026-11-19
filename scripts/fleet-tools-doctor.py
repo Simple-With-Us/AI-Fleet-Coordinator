@@ -1502,6 +1502,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
 # The Zulip key prefix where it differs from the seat (simple_tools/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
+_names_reason_cache: dict[str, str] = {}
 _UNSET = object()
 
 # The doctor's own scoped token per Infisical folder:  one token per folder, so the doctor
@@ -1536,24 +1537,32 @@ def infisical_names(
 ) -> frozenset[str] | None:
     """Key NAMES in one Infisical folder, through the doctor's own scoped token.
 
-    No value reaches this process:  the shared client asks for names only.  The token is the
-    one bound in the environment, else the doctor's own store (the account below).  None when
-    the folder cannot be read.  Fleet-OPS unless `project` says otherwise.  Once per folder per run."""
+    No value reaches this process:  the shared client asks for names only.  The token is
+    the doctor's own, read from its own store (the account below);  a token bound in the
+    environment is only a copy of that same grant, and it is used when the store has none.
+    None when the folder cannot be read.  Fleet-OPS unless `project` says otherwise.  Once
+    per folder per run."""
     cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
     if cache_key in _names_cache:
         return _names_cache[cache_key]
     names: frozenset[str] | None = None
+    reason = ""
     client = shared_client()
-    if client is not None:
+    if client is None:
+        reason = "the shared Infisical client is not importable"
+    else:
         scoped = dict(env)
         scoped[client.ENV_READ_PATHS] = folder
+        account = DOCTOR_TOKEN_ACCOUNTS.get((project, folder), "")
+        status = "no-token"
         token = ""
-        try:
-            token = client.resolve_token(scoped, project_name=project)
-        except client.SecretsError:
-            account = DOCTOR_TOKEN_ACCOUNTS.get((project, folder), "")
-            if account:
-                token, _status = client.token_from_store(account, scoped, HOME)
+        if account:
+            token, status = client.token_from_store(account, scoped, HOME)
+        if not token:
+            try:
+                token = client.resolve_token(scoped, project_name=project)
+            except client.SecretsError:
+                token = ""
         if token:
             try:
                 project_id = client.infisical_project_id(scoped, HOME, project)
@@ -1562,10 +1571,26 @@ def infisical_names(
                 )
             except (client.SecretsError, OSError, ValueError):
                 names = None
+                reason = "the scoped read was refused"
             finally:
                 token = ""
+        elif account:
+            reason = "the %s service-token store is unavailable or refused (%s)" % (account, status)
+        else:
+            reason = "no scoped token is registered for %s %s" % (project, folder)
     _names_cache[cache_key] = names
+    _names_reason_cache[cache_key] = reason
     return names
+
+
+def infisical_names_reason(folder: str, project: str = "fleet-ops") -> str:
+    """Why the last listing of that folder could not be read, or "" when it was read.
+
+    The reason names the account whose store was refused,  so a report says which
+    credential is missing instead of a generic warning.
+    """
+    cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
+    return _names_reason_cache.get(cache_key, "")
 
 
 def seat_has_fleetlink_token(
@@ -1601,10 +1626,12 @@ def check_seat(
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
+        reason = infisical_names_reason("/zulip", "fleet-ops")
         report.add(
             f"seat:{seat}",
             "WARN",
-            "the doctor's own scoped token could not list Infisical Fleet-OPS names",
+            "the doctor's own scoped token could not list the Infisical Fleet-OPS /zulip names"
+            + (":  " + reason if reason else ""),
         )
         return
     prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)

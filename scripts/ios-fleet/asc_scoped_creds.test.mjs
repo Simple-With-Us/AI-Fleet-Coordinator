@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  API_BASE, ASC_NAMES, AscCredentialError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, LEGACY_ASC_ENV,
+  API_BASE, ASC_NAMES, AscCredentialError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE,
   PROJECT_ENV, SECRET_PATH, TOKEN_ENV, TOKEN_FILE_ENV, resolveFreshnessAscCredentials,
 } from "./asc_scoped_creds.mjs";
 import { EXIT_FAILED, main, makeDeps, parseArgs } from "./ios_testflight_freshness.mjs";
@@ -207,42 +207,31 @@ test("a token whose scope is not exactly prod:/asc read is refused before any se
   }
 });
 
-test("the legacy folder and unscoped route stay unused unless the flag or env opts in", async () => {
+test("the legacy folder and unscoped route stay unused:  there is no opt-in", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-legacy-opt-"));
   fs.writeFileSync(path.join(dir, "asc-api.mjs"), "// fixture\n");
   const base = { HOME: dir, PATH: "/usr/bin:/bin", IOS_FLEET_DIR: dir };
-  const run = (env, options = {}) => {
-    const spawned = [];
-    let fetched = false;
-    const deps = makeDeps(env, {
-      ...options,
-      fetchImpl() {
-        fetched = true;
-        throw new Error("scoped fetch");
-      },
-      execFileImpl() {
-        throw new Error("keychain");
-      },
-      runCmd(_cmd, args, opts) {
-        spawned.push({ args, env: opts.env });
-        return Promise.resolve('{"data":[]}\n');
-      },
-    });
-    return deps.asc("/v1/apps").then((body) => ({ body, spawned, fetched }));
-  };
-  await assert.rejects(() => run(base), /does not fall back|keychain/);
-  for (const [env, options] of [
-    [{ ...base, [LEGACY_ASC_ENV]: "1" }, {}],
-    [base, { allowLegacyAsc: true }],
-  ]) {
-    const result = await run(env, options);
-    assert.equal(result.fetched, false);
-    assert.equal(result.spawned.length, 1);
-    assert.equal(result.spawned[0].args[1], "GET");
-    assert.equal(result.spawned[0].env, env);
-  }
-  assert.equal(parseArgs(["--allow-legacy-asc-creds"]).allowLegacyAsc, true);
-  assert.equal(parseArgs([]).allowLegacyAsc, false);
+  const spawned = [];
+  let fetched = false;
+  const deps = makeDeps(base, {
+    fetchImpl() {
+      fetched = true;
+      throw new Error("scoped fetch");
+    },
+    execFileImpl() {
+      throw new Error("keychain");
+    },
+    runCmd(_cmd, args, opts) {
+      spawned.push({ args, env: opts.env });
+      return Promise.resolve('{"data":[]}\n');
+    },
+  });
+  await assert.rejects(() => deps.asc("/v1/apps"), /does not fall back|keychain/);
+  assert.equal(fetched, false);
+  assert.equal(spawned.length, 0, "the legacy helper never runs");
+  // The opt-in is gone:  the scoped token is the only credential source.
+  assert.throws(() => parseArgs(["--allow-legacy-asc-creds"]), /unknown argument/);
+  assert.equal("allowLegacyAsc" in parseArgs([]), false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

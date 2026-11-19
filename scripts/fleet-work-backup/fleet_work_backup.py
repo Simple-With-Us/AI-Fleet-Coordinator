@@ -2803,10 +2803,13 @@ def scoped_client():
 def read_credentials(cfg: Config) -> dict[str, str]:
     """The credentials this job uses, read through its own scoped token.
 
-    The environment still wins and is never second-guessed;  the token is the fallback,  never
-    the override.  There is no other credential source:  no retired reader command,  no shared
-    reader and no credential file.  A missing token,  an unreadable store or a failed read is
-    an empty dict,  so the caller reports the missing NAMES.  Values stay in this process.
+    The values a host already bound in the environment are the job's own binding and are
+    never second-guessed;  the token is this job's own scoped service token, read from its
+    own store, and it is the only credential the read runs under.  There is no other
+    credential source:  no retired reader command,  no shared reader and no credential file.
+    Without that token the job has no identity at all,  so the run stops there and says so;
+    a read that fails leaves the missing NAMES for the caller to report.  Values stay in
+    this process.
 
     Least privilege:  the token's grant names exactly the one folder,  and only the job's own
     names are asked for;  the B2 master key names are asked for only when
@@ -2817,32 +2820,39 @@ def read_credentials(cfg: Config) -> dict[str, str]:
         return {}
     client = scoped_client()
     if client is None:
-        return {}
+        raise RuntimeError(
+            f"fleet-work-backup: the shared Infisical client is not importable,  so the "
+            f"{CREDENTIAL_TOKEN_ACCOUNT} scoped service token cannot be read"
+        )
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
     token, status = client.token_from_store(CREDENTIAL_TOKEN_ACCOUNT, os.environ, cfg.home)
     if not token:
-        print(
-            f"fleet-work-backup: the {CREDENTIAL_TOKEN_ACCOUNT} service-token store has no "
-            f"token ({status})",
-            file=sys.stderr,
+        raise RuntimeError(
+            f"fleet-work-backup: the {CREDENTIAL_TOKEN_ACCOUNT} service-token store is "
+            f"unavailable or refused ({status}),  so this job has no identity"
         )
-        return {}
     env = dict(os.environ)
     env[client.ENV_READ_PATHS] = CREDENTIAL_FOLDER
     try:
         project = client.infisical_project_id(env, cfg.home)
     except client.SecretsError as exc:
-        print(f"fleet-work-backup: the Fleet-OPS project id is unavailable: {exc.message}", file=sys.stderr)
-        return {}
+        # The reason is the failure's own code,  never its message:  a message from the
+        # provider can carry a response body,  and that never reaches a log.
+        raise RuntimeError(
+            f"fleet-work-backup: the Fleet-OPS project id is unavailable:  the shared "
+            f"Infisical client refused it (code {exc.code})"
+        ) from None
     try:
         found = client.fetch_project(
             project, CREDENTIAL_FOLDER, env, token=token, names=wanted
         )
     except client.SecretsError as exc:
-        print(f"fleet-work-backup: the scoped read failed: {exc.message}", file=sys.stderr)
-        return {}
+        raise RuntimeError(
+            f"fleet-work-backup: the scoped read failed:  the {CREDENTIAL_TOKEN_ACCOUNT} scoped "
+            f"service token could not read {CREDENTIAL_FOLDER} (code {exc.code})"
+        ) from None
     out: dict[str, str] = {}
     for name in wanted:
         value = found.get(name)

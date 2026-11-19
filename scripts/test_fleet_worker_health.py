@@ -56,7 +56,11 @@ class WorkerHealthReader(unittest.TestCase):
         os.environ.pop("HEALTH_HMAC_KEY", None)
         try:
             with mock.patch.object(fleet_infisical, "fetch_scoped", return_value=("", "no-token")):
-                self.assertEqual(fwh.read_key(), "")
+                # A refused store is not an absent value:  the source that must be
+                # repaired is named.
+                with self.assertRaises(RuntimeError) as caught:
+                    fwh.read_key()
+                self.assertIn("worker-health-ro", str(caught.exception))
         finally:
             os.environ.clear()
             os.environ.update(old_env)

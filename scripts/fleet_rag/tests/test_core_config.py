@@ -19,10 +19,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import uuid
 from contextlib import redirect_stderr
 from unittest import mock
 
+import fleet_infisical as fi
 from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core
 
@@ -35,6 +37,19 @@ BYO = {
     "QDRANT_FLEET_COLLECTION": "my-agents",
 }
 SERVICE_TOKEN = "st." + "synthetic-recall-reader-token-value"
+
+
+def folders_asked_for(api):
+    """The folders the fake was asked to read,  in order.
+
+    The folder is in the request's query,  so a test that says which folder a route
+    names reads it from what the route actually asked for.
+    """
+    return [
+        urllib.parse.parse_qs(urllib.parse.urlsplit(path).query).get("secretPath", [""])[0]
+        for path in api.requests
+        if "/v3/secrets/raw/" in path
+    ]
 
 
 class FleetOpsRootReaderTests(unittest.TestCase):
@@ -50,7 +65,12 @@ class FleetOpsRootReaderTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = pathlib.Path(temporary.name).resolve()
         self.project = str(uuid.uuid4())
-        self.api = ScopedReadAPI({"TEI_URL": "https://tei.example.invalid"}, project=self.project)
+        # This route reads the folder its own grant covers:  a token names one grant.
+        self.api = ScopedReadAPI(
+            {"TEI_URL": "https://tei.example.invalid"},
+            project=self.project,
+            path=core.FLEET_OPS_FOLDER,
+        )
         self.api.__enter__()
         self.addCleanup(self.api.__exit__, None, None, None)
         self.env = {
@@ -58,9 +78,15 @@ class FleetOpsRootReaderTests(unittest.TestCase):
             "PATH": str(self.home),
             "INFISICAL_TOKEN": self.api.token,
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
-            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "FLEET_RAG_INFISICAL_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
         }
+        # The root reader takes its token from its own store first.  The store is
+        # stubbed here so a test never reads the host's own credential store, and the
+        # environment copy is what the read falls back to.
+        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        self.store.start()
+        self.addCleanup(self.store.stop)
 
     def test_the_root_route_reads_the_fleet_ops_project_with_its_own_binding(self):
         with mock.patch.dict(os.environ, self.env, clear=True):
@@ -72,6 +98,43 @@ class FleetOpsRootReaderTests(unittest.TestCase):
                 core.fleet_ops_secret("TEI_URL"), "https://tei.example.invalid"
             )
         self.assertTrue(any("workspaceId=" + self.project in path for path in self.api.requests))
+        asked = folders_asked_for(self.api)
+        self.assertTrue(asked)
+        self.assertEqual(set(asked), {core.FLEET_OPS_FOLDER})
+
+    def test_the_fleet_ops_route_asks_for_its_own_folder_and_not_the_project_root(self):
+        # The Fleet-OPS project root is an alias layer:  a name at the root comes back
+        # as an unexpanded reference,  which the shared client refuses.  The route
+        # names the folder where its literal lives,  and this pins that,  so a change
+        # back to the root cannot pass quietly.
+        self.assertNotEqual(core.FLEET_OPS_FOLDER, "/")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+        asked = folders_asked_for(self.api)
+        self.assertTrue(asked)
+        self.assertEqual(set(asked), {core.FLEET_OPS_FOLDER})
+        self.assertNotIn("/", asked)
+
+    def test_the_store_token_is_the_one_the_read_runs_under(self):
+        # The store is the authority:  with no token bound in the environment at all,
+        # the reader still reads, because the token comes from its own store.
+        asked = []
+
+        def fake_store(account, env=None, home=None):
+            asked.append(account)
+            return (self.api.token, "ok")
+
+        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        with (
+            mock.patch.object(fi, "token_from_store", fake_store),
+            mock.patch.dict(os.environ, env, clear=True),
+        ):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+        self.assertEqual(asked, [core.FLEET_OPS_TOKEN_ACCOUNT])
 
     def test_the_recall_token_is_never_a_fallback_for_the_fleet_ops_route(self):
         env = {
@@ -120,7 +183,14 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = pathlib.Path(temporary.name).resolve()
         self.project = str(uuid.uuid4())
-        self.api = ScopedReadAPI({"TEI_URL": "https://tei.example.invalid"}, project=self.project)
+        # Two routes,  two grants:  the recall reader's own project root,  and the
+        # Fleet-OPS folder its own grant covers.  A token names one grant,  so the
+        # fake holds one token per folder and answers the grant that was presented.
+        self.api = ScopedReadAPI(
+            {"TEI_URL": "https://tei.example.invalid"},
+            project=self.project,
+            grants={core.FLEET_OPS_FOLDER: {}},
+        )
         self.api.__enter__()
         self.addCleanup(self.api.__exit__, None, None, None)
         # The recall reader binds its own scoped token and its own project; another
@@ -137,9 +207,14 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         # project id.  The recall reader's scoped token is never a fallback for it.
         self.fleet_ops_env = {
             **self.env,
-            "INFISICAL_TOKEN": self.api.token,
+            "INFISICAL_TOKEN": self.api.token_for(core.FLEET_OPS_FOLDER),
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
         }
+        # The Fleet-OPS root route takes its token from its own store first;  the
+        # store is stubbed so the test never reads the host's own credential store.
+        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        self.store.start()
+        self.addCleanup(self.store.stop)
 
     def test_many_preserves_present_subset_through_real_named_reader_without_a_binary(self):
         import fleet_infisical as shared
@@ -277,9 +352,13 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             "CF_ACCESS_CLIENT_ID": "fixture-access-id",
             "CF_ACCESS_CLIENT_SECRET": "fixture-access-value",
         }
-        self.api.values = {
-            public_fallback.PUBLIC_INFISICAL_NAMES[key]: value for key, value in expected.items()
-        }
+        self.api.set_values(
+            core.FLEET_OPS_FOLDER,
+            {
+                public_fallback.PUBLIC_INFISICAL_NAMES[key]: value
+                for key, value in expected.items()
+            },
+        )
         with mock.patch.dict(os.environ, self.fleet_ops_env, clear=True):
             self.assertEqual(public_fallback.public_credentials(), expected)
         self.assertEqual(len(self.api.requests), 4)
@@ -288,10 +367,13 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         from fleet_rag import public_fallback
         import fleet_infisical as shared
 
-        self.api.values = {
-            "RECALL_API_TOKEN": "fixture-api-value",
-            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
-        }
+        self.api.set_values(
+            core.FLEET_OPS_FOLDER,
+            {
+                "RECALL_API_TOKEN": "fixture-api-value",
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
+            },
+        )
         real_popen = subprocess.Popen
         with (
             mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
@@ -308,7 +390,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         from fleet_rag import ingest
 
         url = "https://heartbeat.example.invalid/ping"
-        self.api.values[ingest.HEARTBEAT_KEY] = url
+        self.api.values_for(core.FLEET_OPS_FOLDER)[ingest.HEARTBEAT_KEY] = url
         with (
             mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
             mock.patch.object(ingest.urllib.request, "urlopen") as heartbeat,
@@ -316,7 +398,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             ingest._heartbeat()
             heartbeat.assert_called_once_with(url, timeout=10)
             heartbeat.reset_mock()
-            del self.api.values[ingest.HEARTBEAT_KEY]
+            del self.api.values_for(core.FLEET_OPS_FOLDER)[ingest.HEARTBEAT_KEY]
             ingest._heartbeat()
             heartbeat.assert_not_called()
 

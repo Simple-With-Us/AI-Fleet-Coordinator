@@ -15,6 +15,11 @@ class Tests(unittest.TestCase):
         self.home=Path(self.tmp.name)
         self.a={Z.ENV_INFISICAL_PROJECT:str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-a')),FI.ENV_TOKEN:'st.'+'synthetic-'*4}
         self.b={Z.ENV_INFISICAL_PROJECT:str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-b')),FI.ENV_TOKEN:'st.'+'synthetic-'*4}
+        # The reader takes its token from its own store first:  the store is stubbed here
+        # so a test never reads the host's own credential store,  and the copy in the
+        # environment stands in for the store's own token.
+        store=mock.patch.object(FI,'token_from_store',side_effect=lambda account,env=None,home=None:((env or {}).get(FI.ENV_TOKEN,''),'ok'))
+        store.start();self.addCleanup(store.stop)
     def test_values_and_names_do_not_cross_projects(self):
         def run(project,path,env,*,names=None,**kwargs):
             value='A' if project==self.a[Z.ENV_INFISICAL_PROJECT] else 'B'

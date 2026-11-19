@@ -57,19 +57,44 @@ def request_body(now=None):
 
 def read_key():
     """The signing key:  the environment value first, else this script's own scoped token
-    against Infisical Fleet-OPS prod root.  "" when neither answers;  never logged."""
+    against Infisical Fleet-OPS prod root.  "" when the folder holds no such name.
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself each raise,  naming the reader and the account,  so the source that
+    must be repaired stays visible.  The key is never logged.
+    """
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
     try:
         import fleet_infisical as FI
-
-        env = dict(os.environ)
-        env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    except ImportError:
+        raise RuntimeError(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        ) from None
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
         value, status = FI.fetch_scoped("HEALTH_HMAC_KEY", SECRET_FOLDER, TOKEN_ACCOUNT, env)
-    except Exception:
-        return ""
-    return value if status == "ok" else ""
+    except Exception as exc:
+        raise RuntimeError(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token could not run ("
+            + type(exc).__name__
+            + ")"
+        ) from None
+    if status != "ok":
+        raise RuntimeError(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
+        )
+    return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -196,7 +221,13 @@ def main(argv=None):
     parser.add_argument("--write", default=DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    key = read_key()
+    try:
+        key = read_key()
+    except RuntimeError as exc:
+        # The source that must be repaired is named,  and the run stops:  a report
+        # written without the key would say nothing about why.
+        sys.stderr.write("fleet-worker-health: %s\n" % exc)
+        return 2
     if not key:
         status, answer = 0, None
         doc = document(status, answer)

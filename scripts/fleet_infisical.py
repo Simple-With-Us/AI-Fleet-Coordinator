@@ -237,11 +237,22 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
     value = (env.get(env_name) or "").strip()
     if not value:
         try:
-            value = (
-                (home / project_file).read_text(encoding="utf-8").strip().splitlines()[0].strip()
-            )
-        except (OSError, UnicodeDecodeError, IndexError):
+            text = (home / project_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = None
+        if text is None:
             value = ""
+        else:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            # The file holds one identifier:  a file with two entries never silently
+            # selects one of them,  and a malformed entry is refused rather than trimmed
+            # into shape.
+            if len(lines) != 1:
+                raise SecretsError(
+                    f"the {_LABELS[project]} Infisical project id file (~/{project_file}) must "
+                    "hold exactly one identifier"
+                )
+            value = lines[0]
     if not value:
         raise SecretsError(
             f"the {_LABELS[project]} Infisical project id is not set:  set {env_name} or put it in ~/{project_file} "
@@ -1080,6 +1091,7 @@ def fetch_verified(
     path: str,
     env: Mapping[str, str],
     token: str | None = None,
+    timeout: float | None = None,
 ) -> str:
     """One folder-PROVEN secret, through the REST raw-secret endpoint.
 
@@ -1093,7 +1105,11 @@ def fetch_verified(
     reference, an oversized answer or a redirect fails closed.  The value
     never appears in a message or a log;  errors name the key, the folder,
     or the HTTP status only.  Exit 3 when the key is absent at that path.
+
+    `timeout`, when set, bounds the whole read:  the grant check and the fetch share
+    one deadline,  so a caller's own limit is never stretched by a slow provider.
     """
+    deadline = None if timeout is None else time.monotonic() + timeout
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
@@ -1101,7 +1117,7 @@ def fetch_verified(
     check_path(path)
     project = infisical_project_id(env, home_dir(env))
     token = token if token is not None else resolve_token(env)
-    verify_service_token(token, project, path, env)
+    verify_service_token(token, project, path, env, deadline=deadline)
     query = secret_query(project, path)
     status, answer = _api_json(
         "GET",
@@ -1110,6 +1126,7 @@ def fetch_verified(
         None,
         env,
         max_bytes=MAX_VERIFIED_BYTES,
+        deadline=deadline,
     )
     if status in (400, 404):
         raise SecretsError(f"key {name} is not in Infisical at {path}", 3)
@@ -2028,8 +2045,10 @@ def token_from_store(
 
     Returns (token, status).  The token is "" for every refusal.  The status says which
     refusal it was: "ok", "no-token" (the store has no such item), "keychain-locked" (the
-    keychain refused the read) or "token-unreadable" (the item is there but unreadable, or
-    what it holds is not a service token).
+    keychain refused the read), "keychain-timeout" (the keychain did not answer in time),
+    "keychain-missing" (the `security` command is not on this host, the shell's exit 127)
+    or "token-unreadable" (the item is there but unreadable, or what it holds is not a
+    service token).
 
     The value is never printed, logged or echoed.
     """
@@ -2054,6 +2073,13 @@ def _token_from_keychain(account: str) -> tuple[str, str]:
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        # A hung `security` call is its own refusal:  the keychain did not answer.
+        return "", "keychain-timeout"
+    except FileNotFoundError:
+        # The `security` binary is not on this host:  the command-not-found case,
+        # which the shell answers with exit 127.
+        return "", "keychain-missing"
     except (OSError, subprocess.SubprocessError):
         return "", "token-unreadable"
     if result.returncode == 0:
@@ -2119,12 +2145,13 @@ def fetch_scoped(
 
     The token comes from the consumer's own store (see `token_from_store`) and the read goes
     through `fetch_verified`, which checks the answer's own provenance as well as the grant.
-    The environment still wins for a consumer that reads the value itself; this is the
-    fallback path, never an override.
+    The store is the authority:  this path never reads a token from the environment,  so a
+    hand-set value can never replace the reviewed, scope-limited grant.
 
     Returns (value, status).  The value is "" for every failure, and the status says which:
     "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
-    it), "no-token", "keychain-locked", "token-unreadable" or "failed".
+    it), "no-token", "keychain-locked", "keychain-timeout", "keychain-missing",
+    "token-unreadable" or "failed".
 
     A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
     retry says so instead of reading a hung lookup as a broken credential.

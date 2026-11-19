@@ -39,6 +39,18 @@ regexes = ['''^MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE[A-Za-z0-9+/_-]{86}(==)?$''']
 # "-ro" is not one of those names, so it is reported whichever constant holds it, and every
 # other rule still reports the file.
 #
+# Each name is terminated by a boundary that refuses a trailing identifier character, so
+# only an exact account name is exempt:  a value that merely starts with one of these
+# names is reported like any other credential.
+#
+# The boundary is written as a trailing group, `["']?(?:[^A-Za-z0-9_-]|$)`, and not as a
+# negative lookahead:  gitleaks compiles these patterns with Go's regexp, which is RE2
+# and has no lookahead at all.  A `(?!)` here makes gitleaks panic while it loads the
+# config, and the secret-scanning job fails on every commit.  The trailing group refuses
+# the same characters, because RE2 explores every alternative of the group and finds the
+# match when one of them satisfies the boundary.  It comes after the optional closing
+# quote,  so a value that continues past the quote,  "zulip-ro"EXTRA,  is still reported.
+#
 # A new consumer's account name goes in the list below, and only there.
 [[allowlists]]
 description = "Infisical service-token account names assigned to a token-account constant"
@@ -46,9 +58,9 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "match"
 regexes = [
-  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:afc-wake-router-ro|alert-ingress-afc-ro|alert-ingress-fleetops-ro|alert-ingress-selftest-ro|apple-notes-ro|cf-usage-watchdog-ro|consumer-ro|cursor-surfaces-ro|dealdex-claude-ro|down-ro)["']?''',
-  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:fixture-consumer-ro|fleet-apps-sheet-sync-ro|fleet-config-check-ro|fleet-doctor-fleetlink-ro|fleet-doctor-linear-ro|fleet-doctor-zulip-ro|fleet-mode-digest-ro|fleet-tools-ro|fleet-work-backup-ro|grok-acp-ro)["']?''',
-  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:infra-phase0-ro|install-seat-key-ro|install-seat-key-zulip-ro|ios-publish-ro|ios-testflight-freshness-ro|mac-resource-watch-ro|muster-afc-code-mirrors-ro|muster-afc-ro|muster-afc-wake-router-ro|muster-fleetops-ro)["']?''',
-  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:notes-client-ro|notes-operator-ro|operator-github-apps-ro|operator-github-callers-ro|operator-thread-registry-ro|other-ro|outbox-bridge-ro|seat-mcp-ro|senate-relay-ro|sheet-read-ro)["']?''',
-  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:vm-name-ro|vm-ro|wake-ro|worker-health-ro|worker-secret-sync-ro|zulip-linkifiers-operator-ro|zulip-linkifiers-zulip-ro|zulip-operator-ro|zulip-provision-ro|zulip-ro)["']?''',
+  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:afc-wake-router-ro|alert-ingress-afc-ro|alert-ingress-fleetops-ro|alert-ingress-selftest-ro|apple-notes-ro|cf-usage-watchdog-ro|consumer-ro|cursor-surfaces-ro|dealdex-claude-ro|down-ro)["']?(?:[^A-Za-z0-9_-]|$)''',
+  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:fixture-consumer-ro|fleet-apps-sheet-sync-ro|fleet-config-check-ro|fleet-doctor-fleetlink-ro|fleet-doctor-linear-ro|fleet-doctor-zulip-ro|fleet-mode-digest-ro|fleet-rag-fleetops-ro|fleet-tools-ro|fleet-work-backup-ro|grok-acp-ro)["']?(?:[^A-Za-z0-9_-]|$)''',
+  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:infra-phase0-ro|install-seat-key-ro|install-seat-key-zulip-ro|ios-publish-ro|ios-testflight-freshness-ro|mac-resource-watch-ro|muster-afc-code-mirrors-ro|muster-afc-ro|muster-afc-wake-router-ro|muster-fleetops-ro)["']?(?:[^A-Za-z0-9_-]|$)''',
+  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:notes-client-ro|notes-operator-ro|operator-github-apps-ro|operator-github-callers-ro|operator-thread-registry-ro|other-ro|outbox-bridge-ro|seat-mcp-ro|senate-relay-ro|sheet-read-ro)["']?(?:[^A-Za-z0-9_-]|$)''',
+  '''(?i)\b[A-Za-z0-9_]*(?:TOKEN|ACCOUNT|READER|CREDENTIAL|KEYCHAIN)[A-Za-z0-9_]*\s*(?:=|=>|:)\s*["']?(?:vm-name-ro|vm-ro|wake-ro|worker-health-ro|worker-secret-sync-ro|zulip-linkifiers-operator-ro|zulip-linkifiers-zulip-ro|zulip-operator-ro|zulip-provision-ro|zulip-ro)["']?(?:[^A-Za-z0-9_-]|$)''',
 ]

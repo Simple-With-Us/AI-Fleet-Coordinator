@@ -27,6 +27,7 @@ class MissingTokenTests(unittest.TestCase):
         lines = err.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertIn("SEAT_MCP_TOKEN missing in Infisical /seat-mcp", lines[0])
+        self.assertIn("seat-mcp-ro", lines[0])
 
     def test_token_in_the_environment_starts_the_server(self) -> None:
         with (

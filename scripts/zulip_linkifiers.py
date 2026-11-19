@@ -207,8 +207,9 @@ CHECKS: list[tuple[str, str | None]] = [
 
 # This script's own scoped read-only service tokens:  one grant per Infisical folder, each
 # named for the folder it covers and held in the consumer's own store (the owner's login
-# keychain on the Mac, a private file on a server).  The environment still wins when it
-# already binds a token.
+# keychain on the Mac, a private file on a server).  The store is the authority for the
+# token:  a token in the environment is only a copy of that same grant, and it is used
+# when the store has none.
 TOKEN_ACCOUNTS = {
     "/zulip_operator": "zulip-linkifiers-operator-ro",
     "/zulip": "zulip-linkifiers-zulip-ro",
@@ -222,23 +223,30 @@ def _fleet_secret(name: str) -> str:
     /zulip_operator, and everything else is read from /zulip.  The project root is not a
     source for them:  a name at the root is a reference to a name in a subfolder, and the
     raw route returns the reference rather than the value.
+
+    The token comes from this script's own store:  a token in the environment is only a
+    copy of that same grant, and it is used when the store has none.  The project id comes
+    from the environment or the host's own file, so a host that keeps it only in the file
+    still reads.
     """
     import fleet_infisical as FI
 
     folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip"]
     env = dict(os.environ)
-    project = (env.get(FI.ENV_PROJECT) or "").strip()
-    if not project:
+    try:
+        project = FI.infisical_project_id(env, FI.home_dir(env), "fleet-ops")
+    except FI.SecretsError:
         return ""
+    scoped = dict(env)
+    scoped[FI.ENV_PROJECT] = project
     for folder in folders:
         account = TOKEN_ACCOUNTS.get(folder)
         if not account:
             continue
-        scoped = dict(env)
         scoped[FI.ENV_READ_PATHS] = folder
-        token = (env.get(FI.ENV_TOKEN) or "").strip()
+        token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
         if not token:
-            token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+            token = (env.get(FI.ENV_TOKEN) or "").strip()
         if not token:
             continue
         try:

@@ -117,21 +117,42 @@ function log(message) {
  *  identity and no cached copy:  a missing item, a locked keychain or a refused grant yields
  *  nothing. */
 const TOKEN_ACCOUNT = "fleet-mode-digest-ro";
+// The reader that holds this consumer's own scoped service token in the owner's keychain.
+const SECURITY_BIN = "/usr/bin/security";
 const SECRET_FOLDER = "/global-api-keys";
 // The API base is pinned:  an inherited INFISICAL_API_BASE must never be able to
 // send this consumer's scoped token to another host.
 const INFISICAL_API = "https://app.infisical.com";
 
-/** The scoped token from the owner's login keychain, or null.  Never printed or logged. */
+/** The scoped token from the owner's login keychain, and why there is none.
+ *  Never printed or logged. */
 function serviceToken() {
   // stdout is captured, never echoed;  stderr is discarded.
   const run = spawnSync(
-    "/usr/bin/security",
+    SECURITY_BIN,
     ["find-generic-password", "-s", "infisical-service-token", "-a", TOKEN_ACCOUNT, "-w"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
   );
-  if (run.error || run.status !== 0) return null;
-  return run.stdout?.trim() || null;
+  if (run.error) {
+    return {
+      token: null,
+      reason: `the scoped reader (${SECURITY_BIN}) could not run (${run.error.code || run.error.name})`,
+    };
+  }
+  if (run.status !== 0) {
+    return {
+      token: null,
+      reason: `the scoped reader (${SECURITY_BIN}) and the ${TOKEN_ACCOUNT} service-token store refused the read (status ${run.status})`,
+    };
+  }
+  const token = run.stdout?.trim() || null;
+  if (!token) {
+    return {
+      token: null,
+      reason: `the scoped reader (${SECURITY_BIN}) and the ${TOKEN_ACCOUNT} service-token store hold no token`,
+    };
+  }
+  return { token, reason: "" };
 }
 
 /** The Fleet-OPS project id:  the environment first, else the private inventory file. */
@@ -139,13 +160,21 @@ function projectId() {
   const fromEnv = process.env.INFISICAL_FLEET_OPS_PROJECT_ID?.trim();
   if (fromEnv) return fromEnv;
   try {
-    const first = readFileSync(
+    const text = readFileSync(
       join(homedir(), ".simple-tools", "fleet-ops-project-id"),
       "utf8",
-    )
-      .split("\n")[0]
-      ?.trim();
-    return first || null;
+    );
+    // The file holds exactly one identifier:  a file with two entries or a stray line
+    // never silently selects one of them,  and an identifier with anything else in it
+    // is refused rather than trimmed into shape.
+    const lines = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length !== 1) return null;
+    const id = lines[0];
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
+    return id;
   } catch {
     return null;
   }
@@ -167,15 +196,21 @@ function parseInfisicalSecret(answer) {
 }
 
 /** Value-blind secret load: env var first, then this consumer's own scoped token.
- *  Never printed, logged, or returned in any user-facing string. */
+ *  Never printed, logged, or returned in any user-facing string.  A refusal names
+ *  the account and the reason in `secretRefusal`, never a value. */
+let secretRefusal = "";
 async function resolveSecret(envVarNames) {
+  secretRefusal = "";
   for (const name of envVarNames) {
     const val = process.env[name]?.trim();
     if (val) return val;
   }
-  const token = serviceToken();
+  const { token, reason } = serviceToken();
   const project = projectId();
-  if (!token || !project) return null;
+  if (!token || !project) {
+    secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token is unavailable (${reason || "the project id is not bound"})`;
+    return null;
+  }
   for (const name of envVarNames) {
     const url =
       `${INFISICAL_API}/api/v3/secrets/raw/${encodeURIComponent(name)}` +
@@ -195,21 +230,37 @@ async function resolveSecret(envVarNames) {
     } catch {
       continue;
     }
-    if (!response.ok) continue;
+    if (!response.ok) {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token could not read ${name} from Infisical Fleet-OPS prod ${SECRET_FOLDER} (status ${response.status})`;
+      continue;
+    }
     let answer;
     try {
       answer = await response.json();
     } catch {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token read ${name} and the answer was not JSON`;
       continue;
     }
     // The shape of the answer is checked before any of it is read.  This script runs
     // under bare node with no zod on the path,  so the contract is checked here,  field
     // by field,  and every field the code goes on to use is one of them.
     const secret = parseInfisicalSecret(answer);
-    if (!secret) continue;
-    if (secret.secretKey !== name) continue;
-    if (secret.environment !== "prod" || secret.type !== "shared") continue;
-    if (secret.secretPath !== SECRET_FOLDER) continue;
+    if (!secret) {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token read ${name} and the answer was not the shape this read needs`;
+      continue;
+    }
+    if (secret.secretKey !== name) {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token read ${name} and the answer named another key`;
+      continue;
+    }
+    if (secret.environment !== "prod" || secret.type !== "shared") {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token read ${name} and the answer was not a shared prod row`;
+      continue;
+    }
+    if (secret.secretPath !== SECRET_FOLDER) {
+      secretRefusal = `the ${TOKEN_ACCOUNT} scoped service token read ${name} and the answer came from another folder`;
+      continue;
+    }
     const value = secret.secretValue;
     if (typeof value === "string" && value) return value;
   }
@@ -263,7 +314,11 @@ function hostOf(url) {
 async function fetchUsageMonitorMix() {
   const token = await resolveSecret(["USAGE_READ_TOKEN"]);
   if (!token) {
-    return { available: false, data: null, error: "USAGE_READ_TOKEN not found" };
+    return {
+      available: false,
+      data: null,
+      error: `USAGE_READ_TOKEN not found:  ${secretRefusal || "the read found no value"}`,
+    };
   }
   try {
     const data = await fetchJson(UM_MIX_URL, { authorization: `Bearer ${token}` });
@@ -280,7 +335,7 @@ async function fetchSentrySubagentMix() {
     return {
       available: false,
       rows: [],
-      error: "SENTRY_AUTH_TOKEN_FULLSCOPE not found",
+      error: `SENTRY_AUTH_TOKEN_FULLSCOPE not found:  ${secretRefusal || "the read found no value"}`,
     };
   }
   try {

@@ -6,7 +6,7 @@
 # the same client this repository uses, so that one file is installed once, at a stable path,
 # and those tools import it:
 #
-#   sys.path.insert(0, "/Users/jay/apps/infisical-scoped")
+#   sys.path.insert(0, os.path.expanduser("~/apps/infisical-scoped"))
 #   import fleet_infisical
 #
 # The reader next to it, `infisical-scoped.py`, is the one command a consumer outside
@@ -31,9 +31,11 @@ case "$DEST" in
   *) DEST="$PWD/$DEST" ;;
 esac
 
-install -d -m 0755 "$DEST"
-install -m 0644 "$SRC_DIR/fleet_infisical.py" "$DEST/fleet_infisical.py"
-install -m 0755 "$SRC_DIR/infisical-scoped.py" "$DEST/infisical-scoped.py"
+# `--` ends the option list:  a destination that begins with "-" is then an operand and
+# never an option, whatever the caller passed.
+install -d -m 0755 -- "$DEST"
+install -m 0644 -- "$SRC_DIR/fleet_infisical.py" "$DEST/fleet_infisical.py"
+install -m 0755 -- "$SRC_DIR/infisical-scoped.py" "$DEST/infisical-scoped.py"
 
 python3 - "$DEST/fleet_infisical.py" <<'PY'
 import ast, sys

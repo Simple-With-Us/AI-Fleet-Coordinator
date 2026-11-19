@@ -1,6 +1,10 @@
+import contextlib
 import importlib.util
+import io
 import os
+import sys
 import unittest
+import uuid
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
@@ -51,10 +55,18 @@ class ServiceTokenTestCase(unittest.TestCase):
         project = mock.patch.object(
             provision.scoped_secrets,
             "infisical_project_id",
-            lambda env, home, project="fleet-ops": "11111111-2222-3333-4444-555555555555",
+            lambda env, home, project="fleet-ops": str(uuid.uuid4()),
         )
         project.start()
         self.addCleanup(project.stop)
+        # The provisioner reads its token from its own store first.  The store is
+        # stubbed here so a test never reads the host's own credential store,  and the
+        # environment copy is what the read falls back to.
+        store = mock.patch.object(
+            provision.scoped_secrets, "token_from_store", return_value=("", "no-token")
+        )
+        store.start()
+        self.addCleanup(store.stop)
 
     def read(self, answers, absent=()):
         """Patch the scoped read and return the fake."""
@@ -87,6 +99,31 @@ class ScopedRead(ServiceTokenTestCase):
         self.assertEqual(len(read.calls), 1)
 
 
+class StoreFirst(ServiceTokenTestCase):
+    """The store is the authority for the token;  the environment only carries a copy."""
+
+    def test_the_store_token_is_the_one_the_read_runs_under(self):
+        seen = []
+
+        def fake_store(account, env=None, home=None):
+            seen.append(account)
+            return ("st." + "fixture-store-read-token-value", "ok")
+
+        read = self.read({"A": "one"})
+        with mock.patch.object(provision.scoped_secrets, "token_from_store", fake_store):
+            found = provision.scoped_values(["A"], "fleet-ops", "/zulip")
+        self.assertEqual(found, {"A": "one"})
+        self.assertEqual(seen, ["alert-ingress-fleetops-ro"])
+        self.assertEqual(len(read.calls), 1)
+
+    def test_an_unsupported_project_is_refused_before_a_read(self):
+        read = self.read({"A": "one"})
+        with self.assertRaises(provision.ReadError) as ctx:
+            provision.scoped_values(["A"], "not-a-project", "/zulip")
+        self.assertIn("unsupported Infisical project", str(ctx.exception))
+        self.assertEqual(read.calls, [])
+
+
 class ScopedReadContract(ServiceTokenTestCase):
     """The read keeps the contract the replaced reader enforced.
 
@@ -102,7 +139,7 @@ class ScopedReadContract(ServiceTokenTestCase):
     def test_a_row_without_its_provenance_is_refused(self):
         # The real client,  with an answer that omits its workspace:  the strict read
         # refuses it,  because the row cannot be tied to the folder it came from.
-        project = "11111111-2222-3333-4444-555555555555"
+        project = str(uuid.uuid4())
         record = {
             "type": "shared",
             "secretKey": "ONLY_ONE",
@@ -179,6 +216,45 @@ class BatchValues(ServiceTokenTestCase):
         )
         self.assertEqual(len(read.calls), 1)
         self.assertEqual(values["CLOUDFLARE_FLEET_API_TOKEN"], "the-token")
+
+
+class FleetOpsFolder(ServiceTokenTestCase):
+    """The Fleet-OPS read names the folder its own grant covers.
+
+    The Fleet-OPS project root is an alias layer:  a name at the root comes back as
+    an unexpanded reference,  which the shared client refuses.  The read names the
+    folder where the literal lives,  and this pins that,  so a change back to the
+    root cannot pass quietly.
+    """
+
+    def test_the_fleet_ops_read_names_its_own_folder_and_not_the_project_root(self):
+        seen = []
+
+        def fake_scoped_values(names, project, path):
+            seen.append((project, path))
+            if project == provision.FLEETOPS_SLUG:
+                # Stop here:  this test is about the folder the read asked for,  and
+                # nothing may be written.
+                raise provision.ReadError(
+                    "stop before any write", provision.EXIT_MISSING_EXECUTABLE
+                )
+            return {name: "fixture-value" for name in names}
+
+        with (
+            mock.patch.object(provision, "scoped_values", fake_scoped_values),
+            mock.patch.object(sys, "argv", ["provision-secrets.py", "--apply"]),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = provision.main()
+        self.assertEqual(code, provision.EXIT_MISSING_EXECUTABLE)
+        self.assertEqual(
+            seen,
+            [
+                (provision.AFC_SLUG, provision.SECRET_PATH),
+                (provision.FLEETOPS_SLUG, "/global-api-keys"),
+            ],
+        )
+        self.assertNotEqual(seen[-1][1], "/")
 
 
 class ServiceTokenWrites(ServiceTokenTestCase):

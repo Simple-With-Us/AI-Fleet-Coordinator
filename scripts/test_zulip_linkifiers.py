@@ -300,11 +300,15 @@ class CredentialTests(unittest.TestCase):
         env = {
             k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
-        env[FI.ENV_PROJECT] = "project-under-test"
+        env[FI.ENV_PROJECT] = "11111111-2222-3333-4444-555555555555"
         env[FI.ENV_TOKEN] = "st.test-token"
         with (
             mock.patch.dict("os.environ", env),
             mock.patch.object(FI, "fetch_verified", fake_fetch),
+            # The store holds no token here,  so the copy in the environment is the one
+            # the read runs under.  The store is stubbed so a test never reads the
+            # host's own credential store.
+            mock.patch.object(FI, "token_from_store", return_value=("", "no-token")),
         ):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
@@ -312,6 +316,28 @@ class CredentialTests(unittest.TestCase):
         # script's own scoped token,  and never from the seat folder.
         self.assertTrue(all(folder == "/zulip_operator" for _name, folder, _token in calls))
         self.assertTrue(all(token == "st.test-token" for _name, _folder, token in calls))
+
+    def test_the_store_token_is_the_one_the_read_runs_under(self):
+        # The store is the authority:  a copy in the environment never replaces it.
+        calls = []
+
+        def fake_fetch(name, folder, env, token=None):
+            calls.append((name, folder, token))
+            return "v"
+
+        env = {
+            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
+        }
+        env[FI.ENV_PROJECT] = "11111111-2222-3333-4444-555555555555"
+        env[FI.ENV_TOKEN] = "st.test-token"
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(FI, "fetch_verified", fake_fetch),
+            mock.patch.object(FI, "token_from_store", return_value=("st.store-token", "ok")),
+        ):
+            L.credentials(None, admin=True)
+        self.assertTrue(calls)
+        self.assertTrue(all(token == "st.store-token" for _name, _folder, token in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {

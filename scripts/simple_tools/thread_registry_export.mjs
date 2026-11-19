@@ -76,6 +76,7 @@ const READER_FOLDER = "/operator-thread-registry";
 function loadServiceAccount() {
   // The scoped read is the source,  and the environment only carries its result.
   let raw = "";
+  let refused = "the reader did not run";
   try {
     raw = execFileSync(
       "python3",
@@ -95,15 +96,19 @@ function loadServiceAccount() {
         stdio: ["ignore", "pipe", "ignore"],
       }
     ).replace(/\n$/, "");
-  } catch {
+  } catch (error) {
     raw = "";
+    // The reader's own reason, so the refusal names the unavailable source:  a missing
+    // reader, a refused token, or a reader that was killed.
+    const code = error && error.status !== undefined ? error.status : error && error.code;
+    refused = code === undefined || code === null ? "the reader did not answer" : `the reader answered ${code}`;
   }
   if (!raw) {
     raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
   }
   if (!raw) {
     throw new Error(
-      "Operator thread registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /operator-thread-registry"
+      `Operator thread registry service account missing: the scoped reader could not read it from Infisical Fleet-OPS prod ${READER_FOLDER} with the ${READER_ACCOUNT} scoped service token (${refused});  set OPERATOR_GOOGLE_SHEETS_SA or add the name to that folder`
     );
   }
   return JSON.parse(raw);

@@ -172,20 +172,21 @@ OPENER = urllib.request.build_opener(NoRedirect)
 def _read_token(project):
     """This provisioner's own scoped read-only service token for one project.
 
-    The environment wins when the deployment binds the token there;  the consumer's own
-    store (the owner's login keychain on the Mac, a private file on a server) is the
-    fallback.  There is no shared reader and no cached copy.  The value never appears in a
-    message.
+    The consumer's own store (the owner's login keychain on the Mac, a private file on a
+    server) is the authority:  the token is read from there.  A token bound in the
+    environment is only a copy of that same grant,  and it is used when the store has
+    none;  it never replaces the reviewed, scope-limited grant.  There is no shared
+    reader and no cached copy.  The value never appears in a message.
     """
+    account = READ_TOKEN_ACCOUNTS.get(project)
+    if not account:
+        raise ReadError(f"unsupported Infisical project {project!r}", EXIT_MISSING_EXECUTABLE)
     token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
-    account = READ_TOKEN_ACCOUNTS[project]
-    token = (os.environ.get(token_name) or "").strip()
+    token, status = scoped_secrets.token_from_store(account)
     if not token:
-        token, status = scoped_secrets.token_from_store(account)
-        if not token:
-            raise ReadError(
-                f"{token_name} is missing or unusable ({status})", EXIT_MISSING_EXECUTABLE
-            )
+        token = (os.environ.get(token_name) or "").strip()
+    if not token:
+        raise ReadError(f"{token_name} is missing or unusable ({status})", EXIT_MISSING_EXECUTABLE)
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048
@@ -205,17 +206,18 @@ def scoped_values(names, project, path):
     folder does not hold is simply absent, not an error:  the caller decides which ones it
     may do without.
     """
-    iterator = iter(names)
-    empty = object()
-    first = next(iterator, empty)
-    if first is empty:
+    # The names are a concrete sequence before anything else looks at them:  a
+    # generator would lose its first element to the emptiness check below.
+    wanted = list(names)
+    if not wanted:
         return {}
     token = _read_token(project)
     env = {k: v for k, v in os.environ.items() if k not in scoped_secrets.AUTH_ENV_VARS}
     env[scoped_secrets.ENV_READ_PATHS] = path
     if project == AFC_SLUG:
+        # The project id is passed to the read explicitly,  so it never has to travel
+        # in the environment.
         project_id = AFC
-        env[scoped_secrets.ENV_AI_FLEET_COORDINATOR_PROJECT_ID] = AFC
     else:
         try:
             project_id = scoped_secrets.infisical_project_id(
@@ -227,7 +229,7 @@ def scoped_values(names, project, path):
         # The strict contract the replaced reader enforced:  every row carries its own
         # workspace, environment and secretPath,  and its value is not hidden.
         return scoped_secrets.fetch_project(
-            project_id, path, env, token=token, names=names, strict_records=True
+            project_id, path, env, token=token, names=wanted, strict_records=True
         )
     except TimeoutError:
         # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first:
@@ -407,14 +409,18 @@ def main():
         values[name] = value
         print(f"  read  {name}  (len {len(value)})")
 
-    # 2. The existing own Fleet-OPS root reader fetches only the Cloudflare
+    # 2. The existing own Fleet-OPS reader fetches only the Cloudflare
     #    token in apply mode, before anything is written.  No machine identity
-    #    or other consumer binding participates in this read.
+    #    or other consumer binding participates in this read.  The folder is the
+    #    one the grant covers:  alert-ingress-fleetops-ro is scoped to Fleet-OPS
+    #    prod /global-api-keys,  and a grant covers exactly its own folder.  The
+    #    project root is an alias layer,  so the name is read where its literal
+    #    lives.
     fleetops_names = []
     if not dry:
         fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
     try:
-        fleetops = batch_values(fleetops_names, FLEETOPS_SLUG, "/")
+        fleetops = batch_values(fleetops_names, FLEETOPS_SLUG, "/global-api-keys")
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code

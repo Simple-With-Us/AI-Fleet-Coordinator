@@ -681,7 +681,7 @@ class RuleTests(unittest.TestCase):
         values = {
             "CLAUDE_ZULIP_EMAIL": "claude-bot@example.test",
             "CLAUDE_ZULIP_KEY": "fake-key",
-            "CLAUDE_ZULIP_SITE": "https://simplewithus.zulipchat.com",
+            "CLAUDE_ZULIP_SITE": "https://zulip.example.test",
         }
         asked = []
 
@@ -689,7 +689,12 @@ class RuleTests(unittest.TestCase):
             asked.append((name, folder, account))
             return (values.get(name, ""), "ok" if name in values else "absent")
 
-        with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+        # The bridge refuses a site that is not the fleet realm,  so the check is pointed at
+        # the synthetic host for this fixture:  the realm in the test is not a real one.
+        with (
+            mock.patch.object(fleet_infisical, "fetch_scoped", read),
+            mock.patch.object(bridge.ZulipClient, "REALM", "https://zulip.example.test"),
+        ):
             client = bridge.ZulipClient()
             self.assertEqual((client.email, client.key), ("claude-bot@example.test", "fake-key"))
             gone = bridge.ZulipClient(bot="NOBODY")

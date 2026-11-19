@@ -74,19 +74,31 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 def _load(name: str) -> str:
     """One credential:  the environment first, then this script's own scoped token against
-    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).  Only the
-    name is ever reported."""
+    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself are named,  so the source that must be repaired stays visible.  Only
+    the name is ever reported.
+    """
     value = os.environ.get(name, "").strip()
     if value:
         return value
     try:
         import fleet_infisical as FI
-
-        env = dict(os.environ)
-        env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    except ImportError:
+        raise SystemExit(
+            f"error: the shared Infisical client (fleet_infisical.py) is not importable,  so "
+            f"the {TOKEN_ACCOUNT} scoped service token cannot be read"
+        )
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
         found, status = FI.fetch_scoped(name, SECRET_FOLDER, TOKEN_ACCOUNT, env)
-    except Exception:
-        found, status = "", "unavailable"
+    except Exception as exc:
+        raise SystemExit(
+            f"error: the Infisical read for the {TOKEN_ACCOUNT} scoped service token could "
+            f"not run ({type(exc).__name__});  {name} is not available"
+        )
     if status == "ok" and found:
         return found
     raise SystemExit(

@@ -142,12 +142,16 @@ resolve_token() {
   # The account is one the token registry names for exactly that folder.  The registry
   # carries no row for this consumer yet, so the read uses the account documented for
   # that folder until the registry has one of its own for the iOS publish.
-  local pat=""
+  local pat="" reason=""
   # GITHUB_PAT is the fleet's write-capable GitHub credential, in the Fleet-OPS
   # prod /github folder, read with this consumer's own scoped service token.
-  pat="$(_scoped_secret GITHUB_PAT "/github" "github-pat-ro" 2>/dev/null || true)"
+  local err_file=""
+  err_file="$(mktemp)"
+  pat="$(_scoped_secret GITHUB_PAT "/github" "github-pat-ro" 2>"$err_file")" || pat=""
+  reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
   if [[ -z "$pat" ]]; then
-    echo "error: no GH_TOKEN and the github-pat-ro service token could not return GITHUB_PAT from Infisical Fleet-OPS prod /github;  cannot publish the manifest" >&2
+    echo "error: no GH_TOKEN and the github-pat-ro service token could not return GITHUB_PAT from Infisical Fleet-OPS prod /github through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})};  cannot publish the manifest" >&2
     return 1
   fi
   TOKEN="$pat"

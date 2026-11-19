@@ -2784,6 +2784,10 @@ class CredentialTests(Base):
     ROWS = RedeployTests.ROWS
     TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
     VALUE = "st." + "scoped-fleet-ops-control-token"
+    # The second token is assembled at runtime from a prefix and a suffix, so no
+    # credential-shaped literal sits in the source, and it stays distinct from the
+    # file-scoped token above.
+    PROCESS_VALUE = "st." + "different-process-reader" + "-token"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2832,7 +2836,7 @@ class CredentialTests(Base):
             "PATH": "/usr/bin",
             **self.SHARED_AUTH,
             **self.COORDINATES,
-            self.TOKEN_NAME: "st.different-process-reader-token",
+            self.TOKEN_NAME: self.PROCESS_VALUE,
         }
         code, ans = self.redeploy(inherited)
         # A server redeploy is submitted rather than run inline:  the merged code answers

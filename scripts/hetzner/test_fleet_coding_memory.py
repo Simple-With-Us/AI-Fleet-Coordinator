@@ -126,8 +126,8 @@ class PolicyTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def fetch_verified(self, name, path, env, token=None):
-                self.calls.append((name, path, dict(env), token))
+            def fetch_verified(self, name, path, env, token=None, timeout=None):
+                self.calls.append((name, path, dict(env), token, timeout))
                 return json.dumps(policy())
 
         client = FakeClient()
@@ -137,9 +137,10 @@ class PolicyTests(unittest.TestCase):
             mock.patch.object(m, "scoped_client", return_value=client),
         ):
             self.assertEqual(m.fetch_policy(), policy())
-        name, path, env, token = client.calls[0]
+        name, path, env, token, timeout = client.calls[0]
         self.assertEqual((name, path), ("CODING_RAM_POLICY", "/coding-memory"))
         self.assertEqual(token, "credential-token")
+        self.assertEqual(timeout, 20, "the caller's own timeout is forwarded to the read")
         self.assertEqual(env["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-id")
         self.assertEqual(env["INFISICAL_ENVIRONMENT"], "prod")
         self.assertEqual(env["INFISICAL_ENV"], "prod")

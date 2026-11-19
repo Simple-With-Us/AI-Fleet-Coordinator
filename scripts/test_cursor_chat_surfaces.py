@@ -171,9 +171,13 @@ class LoadApiKeyTests(unittest.TestCase):
             self.assertEqual(self.old_infisical_key(), "from_the_scoped_read")
         self.assertEqual(asked, [("CURSOR_API_KEY", "/global-api-keys", "cursor-surfaces-ro")])
 
-    def test_a_refused_scoped_read_yields_no_key(self) -> None:
+    def test_a_refused_scoped_read_names_the_source(self) -> None:
+        # A refused store is not an absent value:  the source that must be repaired is
+        # named,  so it is not mistaken for a key that is simply missing.
         with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):
-            self.assertIsNone(self.old_infisical_key())
+            with self.assertRaises(RuntimeError) as caught:
+                self.old_infisical_key()
+        self.assertIn("cursor-surfaces-ro", str(caught.exception))
 
 
 class SaveJsonTests(unittest.TestCase):

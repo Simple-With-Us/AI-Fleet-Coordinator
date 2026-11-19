@@ -456,15 +456,60 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+_WARNED = set()
+
+
+def _warn(message):
+    """One diagnostic on standard error.  A source name and a reason, never a value.
+
+    The same reason is reported once:  the three Zulip names share one source, and three
+    copies of one line say less than one line does.
+    """
+    if message in _WARNED:
+        return
+    _WARNED.add(message)
+    sys.stderr.write("outbox-bridge:  %s\n" % message)
+
+
 def _infisical_secret(name, folder):
-    """One Infisical value through this bridge's own scoped token, or None.  Never logged."""
+    """One Infisical value through this bridge's own scoped token, or None.
+
+    A failure says which source was unavailable:  the shared client,  the token store,
+    or the read itself.  The value never appears in the diagnostic.
+    """
     try:
         import fleet_infisical as FI
-
-        env = dict(os.environ)
-        env[FI.ENV_READ_PATHS] = folder
+    except ImportError:
+        _warn(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        )
+        return None
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = folder
+    try:
         value, status = FI.fetch_scoped(name, folder, TOKEN_ACCOUNT, env)
-    except Exception:
+    except TimeoutError:
+        _warn("the Infisical read for the " + TOKEN_ACCOUNT + " scoped service token timed out")
+        return None
+    except Exception as exc:
+        _warn(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token could not run ("
+            + type(exc).__name__
+            + ")"
+        )
+        return None
+    if status != "ok":
+        _warn(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
+        )
         return None
     return value or None
 

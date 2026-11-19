@@ -45,21 +45,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def load_secret() -> str:
     """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp through
-    this client's own scoped token."""
-    secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
-    if not secret:
-        try:
-            import fleet_infisical as FI
+    this client's own scoped token.
 
-            env = dict(os.environ)
-            env[FI.ENV_READ_PATHS] = SECRET_FOLDER
-            found, status = FI.fetch_scoped("GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, env)
-            secret = found if status == "ok" else ""
-        except Exception:
-            secret = ""
-    if not secret:
-        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
-    return secret
+    A host that bound the secret in the environment keeps it.  Otherwise the read runs
+    under this client's own scoped service token,  and every failure says which source
+    was unavailable:  the shared client,  the token store,  or the read.  No value ever
+    appears in the refusal.
+    """
+    secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
+    if secret:
+        return secret
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        sys.exit(
+            "grok-acp: the shared Infisical client (fleet_infisical.py) is not importable, "
+            "so the %s scoped service token cannot be read" % TOKEN_ACCOUNT
+        )
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
+        found, status = FI.fetch_scoped("GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+    except TimeoutError:
+        sys.exit(
+            "grok-acp: the Infisical read for the %s scoped service token timed out" % TOKEN_ACCOUNT
+        )
+    except Exception as exc:
+        sys.exit(
+            "grok-acp: the Infisical read for the %s scoped service token could not run (%s)"
+            % (TOKEN_ACCOUNT, type(exc).__name__)
+        )
+    if status != "ok" or not found:
+        sys.exit(
+            "grok-acp: no usable secret:  the %s scoped service token store is unavailable or "
+            "refused (%s),  and GROK_AGENT_SECRET binds none" % (TOKEN_ACCOUNT, status)
+        )
+    return found
 
 
 def is_rpc_response(msg: dict) -> bool:

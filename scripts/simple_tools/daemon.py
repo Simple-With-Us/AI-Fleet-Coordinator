@@ -1333,7 +1333,10 @@ class Daemon:
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
-            service = OPL.service_token(self.env, token_file)
+            # The consumer's own store (the configured token file) is the authority:  a
+            # host-bound variable is only a copy of that same grant,  and it is used
+            # when the store has none.
+            service = OPL.service_token(self.env, token_file, store_first=True)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.

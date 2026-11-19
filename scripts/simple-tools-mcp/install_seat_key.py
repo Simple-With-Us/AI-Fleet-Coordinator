@@ -250,14 +250,38 @@ def http_json(
 def infisical_pair(
     email_name: str, key_name: str, project: str = INFISICAL_PROJECT
 ) -> tuple[str, str]:
-    """(email, key) for a seat from Infisical.  Neither is printed."""
+    """(email, key) for a seat from Infisical.  Neither is printed.
+
+    The read runs under this consumer's own scoped service token, read from its own
+    store:  the store is the authority,  and a token bound in the environment is only a
+    copy of that same grant,  used when the store has none.
+    """
     if project == INFISICAL_PROJECT:
         token_name = AFC_TOKEN_ENV
+        # No account is registered for this project's folder yet,  so this branch has
+        # no store to read and falls back to the deployment's own binding.
+        account = ""
     elif project == fleet_ops_project():
         token_name = FLEET_OPS_TOKEN_ENV
+        account = HANDOFF_ZULIP_TOKEN_ACCOUNT
     else:
         fail("unsupported Infisical project")
-    token = os.environ.get(token_name, "").strip()
+    token = ""
+    status = "no-token"
+    if account:
+        token, status = scoped_secrets.token_from_store(
+            account, os.environ, scoped_secrets.home_dir(os.environ)
+        )
+    if not token:
+        token = os.environ.get(token_name, "").strip()
+    if not token:
+        if account:
+            fail(
+                f"no usable service token for {project}{INFISICAL_PATH}:  the {account} "
+                f"service-token store is unavailable or refused ({status})  and "
+                f"{token_name} binds none"
+            )
+        fail(f"{token_name} is missing or is not a valid service token")
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048

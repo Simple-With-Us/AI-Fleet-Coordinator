@@ -2351,7 +2351,7 @@ fi
 # token actually holds.  It pins the API base,  checks the grant against the
 # folder asked for,  and checks the answer's own provenance,  so no token ever
 # reaches an argument list and no inherited API base can redirect it.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 
 # One value on standard output.  The reader's own reason goes to standard error
 # and its exit code says whether the name was absent (3), the grant refused the
@@ -2367,11 +2367,19 @@ _scoped_secret() {
 }
 
 # One secret on stdout:  the environment value first, else this consumer's own scoped token
-# against Infisical Fleet-OPS prod root, else nothing.
+# against Infisical Fleet-OPS prod /global-api-keys, else nothing.  A failed read says which
+# source was unavailable:  the reader, the account, or the folder.
 _pushover_secret() {
   local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>/dev/null || true)"
+    local err_file="" reason=""
+    err_file="$(mktemp)"
+    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>"$err_file")" || value=""
+    reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
+    rm -f "$err_file"
+    if [[ -z "$value" ]]; then
+      echo "apple-notes: ${name} is not available:  the apple-notes-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})}" >&2
+    fi
   fi
   printf '%s' "$value"
 }

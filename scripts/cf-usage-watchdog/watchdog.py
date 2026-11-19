@@ -645,7 +645,9 @@ class Connections:
                 token = (env.get(FI.ENV_TOKEN) or "").strip()
                 if not token:
                     raise PollError(
-                        f"the {account} service-token store is unavailable or refused ({status})"
+                        "credential-fetch-failed:  the shared Infisical client "
+                        f"(fleet_infisical.py) and the {account} service-token store are "
+                        f"unavailable or refused ({status})"
                     )
             values = FI.fetch_project(project, conf["path"], env, token=token, names=(name,))
         except PollError:
@@ -653,8 +655,14 @@ class Connections:
         except TimeoutError:
             # A hung lookup is not a broken credential:  it is retryable.
             raise PollError("credential-fetch-timeout") from None
-        except Exception:
-            raise PollError("credential-fetch-failed") from None
+        except Exception as exc:
+            # The reason code stays the machine-readable one this file uses,  and the
+            # message names the client and the account that must be repaired.
+            raise PollError(
+                "credential-fetch-failed:  the shared Infisical client (fleet_infisical.py) "
+                f"could not run the scoped read for the {account} service token "
+                f"({type(exc).__name__})"
+            ) from None
         value = values.get(name, "")
         return value or None
 
@@ -1854,11 +1862,37 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def validate_config(cfg: dict) -> list:
+    """The problems in one configuration,  never a value.
+
+    The shape is checked before the data is used:  a document that is not a mapping,
+    or an Infisical section that is not a mapping of names,  is a broken configuration
+    and never a folder to read.
+    """
     problems = []
-    for name, profile in cfg.get("profiles", {}).items():
+    if not isinstance(cfg, dict):
+        return ["the configuration is not a mapping"]
+    infisical = cfg.get("infisical")
+    if not isinstance(infisical, dict):
+        problems.append("infisical is not a mapping")
+    else:
+        for key in ("project", "path", "account_id_key", "api_token_key"):
+            if not isinstance(infisical.get(key), str) or not infisical.get(key):
+                problems.append(f"infisical.{key} is not a name")
+        account = infisical.get("token_account")
+        if account is not None and (not isinstance(account, str) or not account):
+            problems.append("infisical.token_account is not a name")
+    metrics = cfg.get("metrics")
+    if not isinstance(metrics, dict):
+        problems.append("metrics is not a mapping")
+        metrics = {}
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        problems.append("profiles is not a mapping")
+        profiles = {}
+    for name, profile in profiles.items():
         for section in ("per_resource", "account"):
-            for metric, rule in profile.get(section, {}).items():
-                if metric not in cfg["metrics"]:
+            for metric, rule in (profile.get(section) or {}).items():
+                if metric not in metrics:
                     problems.append(f"{name}.{section} names unknown metric {metric}")
                 if not set(rule) & {"day", "month", "level", "rate_5m"}:
                     problems.append(f"{name}.{section}.{metric} has no threshold")

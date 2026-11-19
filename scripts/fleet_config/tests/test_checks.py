@@ -1148,6 +1148,12 @@ class SecretStoreCredentialTests(TempHome):
         self.api = FakeInfisicalAPI(
             names, project=self.PROJECT, permissions=permissions, status=status
         )
+        # The check reads its token from its own store first.  The store is stubbed here
+        # so a test never reads the host's own credential store,  and the copy in the
+        # environment is what the read falls back to.
+        store = mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token"))
+        store.start()
+        self.addCleanup(store.stop)
         self.ctx = self.ctx.__class__(
             home=self.ctx.home,
             now=self.ctx.now,

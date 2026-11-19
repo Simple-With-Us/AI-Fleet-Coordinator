@@ -223,8 +223,13 @@ public extension FleetSecrets {
     static let listableProjects: Set<String> = ["fleet-ops", "ai-fleet-coordinator"]
 
     /// Where the values the app reads live:  the recall admin token is an AI Fleet
-    /// Coordinator root secret,  and the reader reaches it through that project's own
-    /// scoped token.
+    /// Coordinator root secret.
+    ///
+    /// The read runs under Muster's own scoped service token,  read from Muster's own
+    /// store by the reader:  the token in the process environment is only a copy of that
+    /// same grant,  and it never replaces the reviewed,  scope-limited one.  This app
+    /// binds no credential of its own,  so the environment it hands the reader carries
+    /// no token at all.
     static let valueProject = "ai-fleet-coordinator"
     static let valueFolder = "/"
 

@@ -3431,9 +3431,11 @@ class MiscCase(unittest.TestCase):
                         fwb.read_credentials(cfg),
                         {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"},
                     )
-                client.token = ""  # no token in the store
+                client.token = ""  # no token in the store:  the job has no identity
                 with mock.patch.dict(os.environ, names):
-                    self.assertEqual(fwb.read_credentials(cfg), {})
+                    with self.assertRaises(RuntimeError) as ctx:
+                        fwb.read_credentials(cfg)
+                self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(ctx.exception))
                 client.token = "st." + "a" * 40
                 with mock.patch.dict(os.environ, {n: "v" for n in fwb.CRED_NAMES.values()}):
                     self.assertEqual(

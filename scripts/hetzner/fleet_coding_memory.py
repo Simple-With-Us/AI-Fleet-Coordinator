@@ -214,7 +214,7 @@ def fetch_policy(timeout: int = 20) -> dict[str, Any]:
     env["INFISICAL_ENV"] = "prod"
     env[client.ENV_READ_PATHS] = POLICY_PATH
     try:
-        value = client.fetch_verified(POLICY_NAME, POLICY_PATH, env, token=token)
+        value = client.fetch_verified(POLICY_NAME, POLICY_PATH, env, token=token, timeout=timeout)
     except client.SecretsError:
         raise RuntimeError("scoped settings bridge read failed") from None
     return validate_policy(value)

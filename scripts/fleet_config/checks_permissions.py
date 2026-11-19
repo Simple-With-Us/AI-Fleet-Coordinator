@@ -385,8 +385,9 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     log.  The listing is cached on the context, so one status run asks the secret store
     once per folder rather than once per rule.
 
-    No child process starts:  the retired reader command is gone,  and the token in the
-    environment still wins over the one in the checker's own store.
+    No child process starts:  the retired reader command is gone,  and the checker's own
+    store holds the token that the read runs under;  a token bound in the environment is
+    only a copy of that same grant, and it is used when the store has none.
     """
     cache_key = "infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
@@ -411,14 +412,16 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     env = dict(ctx.child_env())
     env["HOME"] = str(home)
     env[FI.ENV_READ_PATHS] = folder
-    token = ""
-    try:
-        token = FI.resolve_token(env)
-    except FI.SecretsError:
-        token, _status = FI.token_from_store(account, env, home)
+    token, status = FI.token_from_store(account, env, home)
+    if not token:
+        try:
+            token = FI.resolve_token(env)
+        except FI.SecretsError:
+            token = ""
     if not token:
         raise CheckError(
-            "the check holds no scoped token for the secret-store folder %s" % folder,
+            "the %s service-token store for the secret-store folder %s is unavailable or "
+            "refused (%s)" % (account, folder, status),
             ReasonCode.ERROR,
         )
     try:

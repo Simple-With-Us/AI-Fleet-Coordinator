@@ -278,11 +278,18 @@ def infisical_many(names: Iterable[str]) -> dict[str, str]:
 # routes have different projects,  different folders and different grants.
 FLEET_OPS_TOKEN_ENV = "INFISICAL_TOKEN"
 FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
+# This reader's own account in the shared registry:  the token lives in the consumer's
+# own store,  and a token in the environment is only a copy of that same grant.
+FLEET_OPS_TOKEN_ACCOUNT = "fleet-rag-fleetops-ro"
+# The folder this reader's own names live in.  The Fleet-OPS project root is an alias
+# layer:  a name at the root is a reference to a name in a subfolder,  and the raw
+# route returns the reference rather than the value,  so the read names the folder
+# where its literal is.
+FLEET_OPS_FOLDER = "/global-api-keys"
 FLEET_OPS_ENV_NAMES = (
     FLEET_OPS_TOKEN_ENV,
     FLEET_OPS_PROJECT_ENV,
     "FLEET_RAG_INFISICAL_API",
-    "FLEET_SECRETS_API",
     "INFISICAL_ENVIRONMENT",
     "INFISICAL_ENV",
     "HOME",
@@ -290,12 +297,13 @@ FLEET_OPS_ENV_NAMES = (
 
 
 def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
-    """Present named values from this consumer's explicit Fleet-OPS root reader.
+    """Present named values from this consumer's explicit Fleet-OPS reader.
 
-    The binding is the environment's own `INFISICAL_TOKEN` with the Fleet-OPS project
-    id;  the recall reader's own scoped token is never a fallback for this route.
-    A missing binding, an invalid name or a failed read returns an empty map,  and the
-    unavailable source is named on standard error,  never a value.
+    The token is this reader's own scoped service token,  read from its own store;  a
+    token bound in the environment is only a copy of that same grant,  and it is used
+    when the store has none.  The recall reader's own scoped token is never a fallback
+    for this route.  A missing binding, an invalid name or a failed read returns an
+    empty map,  and the unavailable source is named on standard error,  never a value.
     """
     wanted = [name for name in names if name]
     if not wanted:
@@ -303,35 +311,48 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
     source = {
         key: value for key in FLEET_OPS_ENV_NAMES if (value := os.environ.get(key)) is not None
     }
-    token = (source.get(FLEET_OPS_TOKEN_ENV) or "").strip()
-    if not token:
-        eprint(f"fleet_rag: the Fleet-OPS root reader has no {FLEET_OPS_TOKEN_ENV} binding")
-        return {}
     try:
         import fleet_infisical as secrets
     except ImportError:
         eprint("fleet_rag: the shared Infisical client is not importable")
         return {}
+    # The store is the authority for the token:  a hand-set environment value never
+    # replaces the reviewed,  scope-limited grant.
+    token, status = secrets.token_from_store(
+        FLEET_OPS_TOKEN_ACCOUNT, source, secrets.home_dir(source)
+    )
+    if not token:
+        token = (source.get(FLEET_OPS_TOKEN_ENV) or "").strip()
+    if not token:
+        eprint(
+            "fleet_rag: the Fleet-OPS reader has no usable token:  the "
+            f"{FLEET_OPS_TOKEN_ACCOUNT} service-token store is unavailable or refused "
+            f"({status})  and {FLEET_OPS_TOKEN_ENV} binds none"
+        )
+        return {}
     # This reader's own API base wins,  so a self-hosted Infisical is honoured here
     # exactly as it is on the recall route.
-    api_base = source.get("FLEET_RAG_INFISICAL_API") or source.get("FLEET_SECRETS_API")
+    api_base = source.get("FLEET_RAG_INFISICAL_API")
     if api_base:
         source[secrets.ENV_API] = api_base
     try:
         project = secrets.infisical_project_id(source, secrets.home_dir(source), "fleet-ops")
         got = secrets.bounded_fetch_project(
             project,
-            "/",
+            FLEET_OPS_FOLDER,
             source,
             token=token,
             names=wanted,
             timeout=FLEET_SECRETS_TIMEOUT,
         )
     except TimeoutError:
-        eprint("fleet_rag: the Fleet-OPS root read timed out")
+        eprint("fleet_rag: the Fleet-OPS read timed out")
         return {}
     except Exception as exc:
-        reason = getattr(exc, "message", "") or type(exc).__name__
+        # The reason is the failure's own code,  never its message:  a message from an
+        # external call can carry a response body,  and that never reaches a log.
+        code = getattr(exc, "code", None)
+        reason = f"code {code}" if isinstance(code, int) else type(exc).__name__
         eprint(f"fleet_rag: the Fleet-OPS root read failed: {reason}")
         return {}
     return {key: value for key, value in got.items() if isinstance(value, str) and value}

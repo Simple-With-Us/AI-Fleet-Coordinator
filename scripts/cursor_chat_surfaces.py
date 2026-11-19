@@ -55,6 +55,11 @@ LIVE_FILES = (
 JsonDict = dict[str, Any]
 
 
+def _warn(message: str) -> None:
+    """One diagnostic on standard error.  A source name and a reason, never a value."""
+    sys.stderr.write("cursor-surfaces:  %s\n" % message)
+
+
 def state_path(*parts: str) -> Path:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.chmod(0o700)
@@ -71,21 +76,46 @@ def _env_api_key() -> str | None:
 
 def _infisical_key() -> str | None:
     """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from Infisical, through this consumer's own
-    scoped token.  None when the token is missing, the store is locked or the name is absent.
-    Never logged."""
+    scoped token.  None when the folder holds no such name.
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself each raise,  naming the reader and the account,  so the source that
+    must be repaired stays visible.  The value never appears in the diagnostic.
+    """
     try:
         import fleet_infisical as FI
     except ImportError:
-        return None
-    try:
-        env = dict(os.environ)
-        env[FI.ENV_READ_PATHS] = SECRET_FOLDER
-        for name in API_KEY_NAMES:
+        raise RuntimeError(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        ) from None
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    for name in API_KEY_NAMES:
+        try:
             value, status = FI.fetch_scoped(name, SECRET_FOLDER, TOKEN_ACCOUNT, env)
-            if status == "ok" and value:
-                return value
-    except Exception:
-        return None
+        except TimeoutError:
+            raise RuntimeError(
+                "the Infisical read for the " + TOKEN_ACCOUNT + " scoped service token timed out"
+            ) from None
+        except Exception as exc:
+            raise RuntimeError(
+                "the Infisical read for the "
+                + TOKEN_ACCOUNT
+                + " scoped service token could not run ("
+                + type(exc).__name__
+                + ")"
+            ) from None
+        if status == "ok":
+            return value or None
+        raise RuntimeError(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
+        )
     return None
 
 

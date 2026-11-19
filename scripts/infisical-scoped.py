@@ -174,7 +174,12 @@ def _get(args: argparse.Namespace) -> int:
     except FI.UsageError as exc:
         raise ReaderError(exc.message, EXIT_USAGE) from None
     except FI.SecretsError as exc:
-        raise ReaderError(exc.message, EXIT_ABSENT if exc.code == 3 else EXIT_REFUSED) from None
+        # The reason is the failure's own code, never its message:  a message from the
+        # provider can carry a response body,  and that never reaches a log.
+        raise ReaderError(
+            f"the scoped read was refused (code {exc.code})",
+            EXIT_ABSENT if exc.code == 3 else EXIT_REFUSED,
+        ) from None
     sys.stdout.write(value + "\n")
     return EXIT_OK
 
@@ -198,7 +203,8 @@ def _names(args: argparse.Namespace) -> int:
     except FI.UsageError as exc:
         raise ReaderError(exc.message, EXIT_USAGE) from None
     except FI.SecretsError as exc:
-        raise ReaderError(exc.message, EXIT_REFUSED) from None
+        # The reason is the failure's own code, never its message.
+        raise ReaderError(f"the scoped read was refused (code {exc.code})", EXIT_REFUSED) from None
     if not found:
         raise ReaderError("that folder holds no name", EXIT_ABSENT)
     for name in found:

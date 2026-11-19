@@ -10,7 +10,7 @@ set -euo pipefail
 # token actually holds.  It pins the API base,  checks the grant against the
 # folder asked for,  and checks the answer's own provenance,  so no token ever
 # reaches an argument list and no inherited API base can redirect it.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 
 # One value on standard output.  The reader's own reason goes to standard error
 # and its exit code says whether the name was absent (3), the grant refused the
@@ -35,7 +35,7 @@ if [[ "${SENATE_RELAY_REQUIRE:-0}" == "1" && -z "${SENATE_RELAY_SECRET:-}" ]]; t
   else
     # Fail closed, and say which source is unavailable:  the store that holds the token,
     # the status it answered with, and the folder the name lives in.
-    echo "senate-relay: SENATE_RELAY_SECRET is not available:  the scout-runtime-ro service-token store or the read was refused (status: ${status});  expected Infisical Fleet-OPS prod /senate-relay" >&2
+    echo "senate-relay: SENATE_RELAY_SECRET is not available:  the scout-runtime-ro service-token store or the read was refused (status: ${status});  expected Infisical Fleet-OPS prod /senate-relay through the shared scoped reader at ${INFISICAL_SCOPED_READER}" >&2
     exit 1
   fi
 fi

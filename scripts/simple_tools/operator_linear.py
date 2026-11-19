@@ -200,20 +200,26 @@ def _default_http(
         return status, {}
 
 
-def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
-    """The scoped Infisical service token for the key fetch:  the host-bound variable
-    wins;  else the configured file (default DEFAULT_SERVICE_TOKEN_FILE).  "" when
-    neither source yields one — the feature is simply unconfigured.  A file that
-    exists but is group- or other-readable raises CredentialRefused:  a service token
-    must not sit in a file other accounts can read."""
+def service_token(
+    env: Mapping[str, str], token_file: str | None = None, *, store_first: bool = False
+) -> str:
+    """The scoped Infisical service token for the key fetch.
+
+    The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE).
+    With ``store_first`` the store is the authority and the host-bound variable is only
+    a copy of that same grant, used when the store has none;  without it the historical
+    order holds and the host-bound variable wins.  "" when neither source yields one —
+    the feature is simply unconfigured.  A file that exists but is group- or
+    other-readable raises CredentialRefused:  a service token must not sit in a file
+    other accounts can read."""
     bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
-    if bound:
+    if bound and not store_first:
         return bound
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except OSError:
-        return ""
+        return bound
     if mode & 0o077:
         raise CredentialRefused(
             "token_file_permissions",
@@ -221,9 +227,10 @@ def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
             "must be owner-only" % (path, mode),
         )
     try:
-        return _strip_quotes(path.read_text("utf-8"))
+        stored = _strip_quotes(path.read_text("utf-8"))
     except OSError:
-        return ""
+        return bound
+    return stored or bound
 
 
 def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:

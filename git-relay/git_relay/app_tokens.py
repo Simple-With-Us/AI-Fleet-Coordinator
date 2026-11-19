@@ -224,6 +224,15 @@ def load_infisical_client():
     raise AppTokenError("the shared Infisical client is not installed on this host")
 
 
+# The relay's own scoped service tokens:  one grant per Infisical folder,  each
+# named for the folder it covers and held in the relay's own store (a private
+# file on a server).  The account is the token's registry name.
+TOKEN_ACCOUNTS = {
+    "/github-apps": "operator-github-apps-ro",
+    "/operator-github/callers": "operator-github-callers-ro",
+}
+
+
 class InfisicalSource:
     """Reads named secrets through the shared Infisical client.
 
@@ -255,6 +264,7 @@ class InfisicalSource:
         environ=os.environ,
         client=None,
         project: str | None = None,
+        account: str | None = None,
     ):
         if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
             raise AppTokenError(f"secret folder path is not a usable folder path: {path!r}")
@@ -263,6 +273,7 @@ class InfisicalSource:
         self._environ = environ
         self._client = client
         self._project = project
+        self._account = account if account is not None else TOKEN_ACCOUNTS.get(path, "")
         self._cache: dict[str, str] = {}
         self._missing: set[str] = set()
         self._scoped_env: dict | None = None
@@ -274,7 +285,14 @@ class InfisicalSource:
         return self._client
 
     def _read_token(self) -> str:
-        """The one scoped service token this source runs under."""
+        """The one scoped service token this source runs under.
+
+        The relay's own store is the authority:  the credential file the unit binds
+        (systemd LoadCredential),  else the registered account's own store.  A token
+        in the process environment is only a copy of that same grant,  and it is used
+        when the store has none;  it never replaces the reviewed,  scope-limited
+        grant the store holds.
+        """
         if self._credential_file:
             try:
                 with open(self._credential_file, "r", encoding="utf-8") as handle:
@@ -284,6 +302,16 @@ class InfisicalSource:
             if not token:
                 raise AppTokenError(f"credential file empty for {self._path}")
             return token
+        if self._account:
+            client = self._module()
+            try:
+                token, _status = client.token_from_store(
+                    self._account, self._environ, client.home_dir(self._environ)
+                )
+            except Exception:  # noqa: BLE001 - a store that cannot be read is a refusal, named by the name only
+                token = ""
+            if token:
+                return token
         token = (self._environ.get("INFISICAL_TOKEN") or "").strip()
         if not token:
             raise AppTokenError(f"no scoped service token is bound for {self._path}")
