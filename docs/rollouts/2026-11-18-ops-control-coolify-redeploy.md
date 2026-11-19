@@ -28,7 +28,7 @@ token is not available" even though the ssh path works.
 
 **What was verified, and how.**
 
-- `env -i HOME=/home/jay PATH=/usr/bin:/bin /usr/bin/python3 -I
+- `sudo -u jay env -i HOME=/home/jay PATH=/usr/bin:/bin /usr/bin/python3 -I
   /home/jay/.local/lib/fleet-resource-control/fleet-ops-control.py --check-token` on the server answered
   `"result": "done"` with the detail "the Coolify token is available and accepted".  The check reads the
   token the way a redeploy does and posts the deploy route the nil uuid, which names no resource, so
@@ -36,9 +36,11 @@ token is not available" even though the ssh path works.
 - The same script with `server redeploy l40rxd4rbj1pnogmbtetzmsf --plan` answered
   `"result": "planned"` with the command `[["coolify", "POST", "/api/v1/deploy?uuid=l40rxd4rbj1pnogmbtetzmsf"]]`.
   A plan sends nothing.
-- The installed copy on the server is the merged helper, installed as `jay` by
-  `scripts/hetzner/install-resource-control.sh` from the server's own checkout, so the commands above run
-  the code that is on `main`.
+- The installed copy on the server is the helper this change ships, installed as `jay` by
+  `scripts/hetzner/install-resource-control.sh` from the server's own checkout, and the installed file is
+  byte for byte the branch's `scripts/fleet-ops-control.py`.    The command above runs as `jay` with `HOME=/home/jay`, because `env -i` clears the environment but
+  leaves the effective UID alone, and the helper refuses a credential file that another account owns;  a
+  root shell proves nothing about the ssh path, where the forced command runs as `jay`.
 
 **What was not done.**  No redeploy was triggered: the Eavesdropper redeploy is the owner's call, and
 the plan above is what it would run.
