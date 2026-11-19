@@ -85,11 +85,13 @@ PROJECT_SOURCES = {
     ),
 }
 
-# Retired Keychain identifiers retained for compatibility callers; this module never reads them.
+# Retired Keychain identifiers kept for compatibility callers; this module never reads
+# them.  They are named apart from the live ones so no live constant is shadowed by a
+# retired name.
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
-KEYCHAIN_SERVICE = "fleet-secrets"
-KEYCHAIN_CLIENT_ID = "infisical-client-id"
-KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
+RETIRED_KEYCHAIN_SERVICE = "fleet-secrets"
+RETIRED_KEYCHAIN_CLIENT_ID = "infisical-client-id"
+RETIRED_KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
 ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
 ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
@@ -1263,7 +1265,7 @@ def _api_json(
         headers={
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
-            "User-Agent": "fleet-secrets",
+            "User-Agent": "fleet-infisical",
         },
     )
     max_bytes = MAX_OUTPUT_BYTES if max_bytes is None else max_bytes

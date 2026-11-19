@@ -169,7 +169,7 @@ class LoadApiKeyTests(unittest.TestCase):
 
         with mock.patch.object(fleet_infisical, "fetch_scoped", read):
             self.assertEqual(self.old_infisical_key(), "from_the_scoped_read")
-        self.assertEqual(asked, [("CURSOR_API_KEY", "/", "cursor-surfaces-ro")])
+        self.assertEqual(asked, [("CURSOR_API_KEY", "/global-api-keys", "cursor-surfaces-ro")])
 
     def test_a_refused_scoped_read_yields_no_key(self) -> None:
         with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):

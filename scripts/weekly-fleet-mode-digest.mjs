@@ -149,6 +149,21 @@ function projectId() {
   }
 }
 
+/**
+ * The shape of one Infisical secret answer,  checked before it is used:  a map with
+ * the five fields the read goes on to use,  each one of the right type.
+ */
+function parseInfisicalSecret(answer) {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) return null;
+  const secret = answer.secret;
+  if (!secret || typeof secret !== "object" || Array.isArray(secret)) return null;
+  const fields = ["secretKey", "environment", "secretPath", "type", "secretValue"];
+  for (const field of fields) {
+    if (typeof secret[field] !== "string") return null;
+  }
+  return secret;
+}
+
 /** Value-blind secret load: env var first, then this consumer's own scoped token.
  *  Never printed, logged, or returned in any user-facing string. */
 async function resolveSecret(envVarNames) {
@@ -171,6 +186,9 @@ async function resolveSecret(envVarNames) {
         method: "GET",
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        // A redirect is not followed:  the bearer token must not travel to a host
+        // the read did not choose.
+        redirect: "error",
       });
     } catch {
       continue;
@@ -182,8 +200,11 @@ async function resolveSecret(envVarNames) {
     } catch {
       continue;
     }
-    const secret = answer?.secret;
-    if (!secret || typeof secret !== "object") continue;
+    // The shape of the answer is checked before any of it is read.  This script runs
+    // under bare node with no zod on the path,  so the contract is checked here,  field
+    // by field,  and every field the code goes on to use is one of them.
+    const secret = parseInfisicalSecret(answer);
+    if (!secret) continue;
     if (secret.secretKey !== name) continue;
     if (secret.environment !== "prod" || secret.type !== "shared") continue;
     if (secret.secretPath !== SECRET_FOLDER) continue;

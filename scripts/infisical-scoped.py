@@ -225,7 +225,12 @@ def _doctor(args: argparse.Namespace) -> int:
     report["environment_ok"] = refusal is None
     project_id = ""
     token = ""
-    account = _account_for(project, folder, getattr(args, "account", None))
+    try:
+        account = _account_for(project, folder, getattr(args, "account", None))
+    except ReaderError:
+        # The doctor reports the uncovered token instead of raising out of it:  the
+        # report is what names the missing grant.
+        account = None
     if account is None:
         reason = reason or "no-scoped-token"
     else:

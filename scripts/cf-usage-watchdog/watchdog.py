@@ -635,16 +635,24 @@ class Connections:
             env = dict(self.env)
             env[FI.ENV_READ_PATHS] = conf["path"]
             project = FI.infisical_project_id(env, FI.home_dir(env), conf["project"])
-            # The environment still wins:  the unit's own env file carries this watcher's
-            # token, and the consumer's own store is the fallback.
-            token = (env.get(FI.ENV_TOKEN) or "").strip()
+            # This watcher's own registered token is the source:  its grant covers
+            # exactly the one folder this read declares.  An ambient token may carry a
+            # wider grant,  and the client refuses a read whose declared folders are not
+            # the grant's folders,  so it is the fallback and never the first choice.
+            account = conf.get("token_account", TOKEN_ACCOUNT)
+            token, status = FI.token_from_store(account, env)
             if not token:
-                token, status = FI.token_from_store(conf.get("token_account", TOKEN_ACCOUNT), env)
+                token = (env.get(FI.ENV_TOKEN) or "").strip()
                 if not token:
-                    raise PollError("credential-fetch-" + status)
+                    raise PollError(
+                        f"the {account} service-token store is unavailable or refused ({status})"
+                    )
             values = FI.fetch_project(project, conf["path"], env, token=token, names=(name,))
         except PollError:
             raise
+        except TimeoutError:
+            # A hung lookup is not a broken credential:  it is retryable.
+            raise PollError("credential-fetch-timeout") from None
         except Exception:
             raise PollError("credential-fetch-failed") from None
         value = values.get(name, "")

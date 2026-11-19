@@ -65,18 +65,41 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// The reader is the one implementation the fleet uses.  Its path is a full path because a
+// timer inherits no useful PATH, and it is overridable for a host that installs it elsewhere.
+const READER =
+  process.env.INFISICAL_SCOPED_READER ||
+  join(homedir(), "apps", "infisical-scoped", "infisical-scoped.py");
+const READER_ACCOUNT = "operator-thread-registry-ro";
+const READER_FOLDER = "/operator-thread-registry";
+
 function loadServiceAccount() {
-  let raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
-  if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
-    try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/operator-thread-registry"], {
+  // The scoped read is the source,  and the environment only carries its result.
+  let raw = "";
+  try {
+    raw = execFileSync(
+      "python3",
+      [
+        READER,
+        "get",
+        "OPERATOR_GOOGLE_SHEETS_SA",
+        "--folder",
+        READER_FOLDER,
+        "--project",
+        "fleet-ops",
+        "--account",
+        READER_ACCOUNT,
+      ],
+      {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
-      }).replace(/\n$/, "");
-    } catch {
-      raw = "";
-    }
+      }
+    ).replace(/\n$/, "");
+  } catch {
+    raw = "";
+  }
+  if (!raw) {
+    raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
   }
   if (!raw) {
     throw new Error(

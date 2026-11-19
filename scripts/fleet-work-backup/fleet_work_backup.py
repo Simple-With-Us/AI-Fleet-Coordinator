@@ -70,9 +70,13 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-# The shared scoped Infisical client is installed beside this module (and beside it in a
-# checkout),  so it is importable by path without an install step.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The shared scoped Infisical client is installed beside this module,  and in a checkout it
+# lives one directory up (scripts/fleet_infisical.py),  so both layouts are importable
+# without an install step.
+_HERE = Path(__file__).resolve().parent
+for _candidate in (_HERE, _HERE.parent):
+    if str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
 
 VERSION = "2"
 TAG = "fleet-work"
@@ -2807,7 +2811,7 @@ def read_credentials(cfg: Config) -> dict[str, str]:
     Least privilege:  the token's grant names exactly the one folder,  and only the job's own
     names are asked for;  the B2 master key names are asked for only when
     FLEET_WORK_BACKUP_ALLOW_MASTER=1,  the same gate ``restic_env`` applies before it uses them.
-    One name is read at a time,  so a name that is absent or unreadable does not hide the
+    One read covers every name,  and a name that is absent or unreadable does not hide the
     names that are there."""
     if all(os.environ.get(n) for n in CRED_NAMES.values()):
         return {}
@@ -2817,23 +2821,30 @@ def read_credentials(cfg: Config) -> dict[str, str]:
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    token, _status = client.token_from_store(CREDENTIAL_TOKEN_ACCOUNT, os.environ, cfg.home)
+    token, status = client.token_from_store(CREDENTIAL_TOKEN_ACCOUNT, os.environ, cfg.home)
     if not token:
+        print(
+            f"fleet-work-backup: the {CREDENTIAL_TOKEN_ACCOUNT} service-token store has no "
+            f"token ({status})",
+            file=sys.stderr,
+        )
         return {}
     env = dict(os.environ)
     env[client.ENV_READ_PATHS] = CREDENTIAL_FOLDER
     try:
         project = client.infisical_project_id(env, cfg.home)
-    except client.SecretsError:
+    except client.SecretsError as exc:
+        print(f"fleet-work-backup: the Fleet-OPS project id is unavailable: {exc.message}", file=sys.stderr)
+        return {}
+    try:
+        found = client.fetch_project(
+            project, CREDENTIAL_FOLDER, env, token=token, names=wanted
+        )
+    except client.SecretsError as exc:
+        print(f"fleet-work-backup: the scoped read failed: {exc.message}", file=sys.stderr)
         return {}
     out: dict[str, str] = {}
     for name in wanted:
-        try:
-            found = client.fetch_project(
-                project, CREDENTIAL_FOLDER, env, token=token, names=[name]
-            )
-        except client.SecretsError:
-            continue
         value = found.get(name)
         if isinstance(value, str) and value:
             out[name] = value

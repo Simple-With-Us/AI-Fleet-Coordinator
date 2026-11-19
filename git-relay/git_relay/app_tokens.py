@@ -376,8 +376,16 @@ class InfisicalSource:
             values = client.fetch_project(project, self._path, env, token=self._token, names=wanted)
         except client.SecretsError:
             raise AppTokenError(f"the store lookup failed for {wanted[0]}") from None
+        # The shape of an external answer is checked before any of it is read:  a
+        # non-mapping,  or a name that does not carry a string,  is refused rather
+        # than coerced into a credential.
+        if not isinstance(values, dict):
+            raise AppTokenError(f"the store lookup returned no map for {wanted[0]}")
         for name in wanted:
-            value = str(values.get(name) or "").strip()
+            raw = values.get(name)
+            if not isinstance(raw, str) or not raw.strip():
+                raise AppTokenError(f"there is no value for {name}")
+            value = raw.strip()
             if not value:
                 self._missing.add(name)
                 raise AppTokenError(f"there is no value for {name}")

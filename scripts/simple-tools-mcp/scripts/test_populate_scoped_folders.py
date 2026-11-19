@@ -266,7 +266,7 @@ class TestGate(Base):
         # The script's own calls name the script;  the shared client's calls name the
         # client.  Neither is the runtime's default agent.
         self.assertTrue(
-            all(a in (psf.USER_AGENT, "fleet-secrets") for a in self.fake.agents),
+            all(a in (psf.USER_AGENT, "fleet-infisical") for a in self.fake.agents),
             "every API call names itself explicitly",
         )
 
@@ -405,7 +405,7 @@ class TestApply(Base):
         # The script's own calls name the script;  the shared client's calls name the
         # client.  Neither is the runtime's default agent.
         self.assertTrue(
-            all(a in (psf.USER_AGENT, "fleet-secrets") for a in self.fake.agents),
+            all(a in (psf.USER_AGENT, "fleet-infisical") for a in self.fake.agents),
             "every API call names itself explicitly",
         )
 

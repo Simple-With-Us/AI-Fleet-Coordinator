@@ -57,30 +57,32 @@ const READER_ACCOUNT = "operator-thread-registry-ro";
 const READER_FOLDER = "/operator-thread-registry";
 
 function loadServiceAccount() {
-  let raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
+  // The scoped read is the source,  and the environment only carries its result.
+  let raw = "";
+  try {
+    raw = execFileSync(
+      "python3",
+      [
+        READER,
+        "get",
+        "OPERATOR_GOOGLE_SHEETS_SA",
+        "--folder",
+        READER_FOLDER,
+        "--project",
+        "fleet-ops",
+        "--account",
+        READER_ACCOUNT,
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).replace(/\n$/, "");
+  } catch {
+    raw = "";
+  }
   if (!raw) {
-    try {
-      raw = execFileSync(
-        "python3",
-        [
-          READER,
-          "get",
-          "OPERATOR_GOOGLE_SHEETS_SA",
-          "--folder",
-          READER_FOLDER,
-          "--project",
-          "fleet-ops",
-          "--account",
-          READER_ACCOUNT,
-        ],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        },
-      ).replace(/\n$/, "");
-    } catch {
-      raw = "";
-    }
+    raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
   }
   if (!raw) {
     throw new Error(
