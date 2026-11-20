@@ -30,7 +30,9 @@ def step(job, name):
 def run(script, env):
     with tempfile.TemporaryDirectory() as td:
         e = dict(os.environ, **env, GITHUB_OUTPUT=str(pathlib.Path(td) / "out"))
-        return subprocess.run(["bash", "-eu", "-c", script], env=e, text=True, capture_output=True)
+        return subprocess.run(
+            ["bash", "-eu", "-c", script], env=e, text=True, capture_output=True
+        )
 
 
 class Provenance(unittest.TestCase):
@@ -63,7 +65,13 @@ class Provenance(unittest.TestCase):
 
     def test_valid_schedule(self):
         self.assert_guard(
-            dict(EVENT_NAME="schedule", PR_HEAD_REPO="", PR_BASE_REF="", REARM_PR_NUMBER="7"), True
+            dict(
+                EVENT_NAME="schedule",
+                PR_HEAD_REPO="",
+                PR_BASE_REF="",
+                REARM_PR_NUMBER="7",
+            ),
+            True,
         )
 
     def test_valid_dispatch(self):
@@ -108,24 +116,40 @@ class Provenance(unittest.TestCase):
 class Credentials(unittest.TestCase):
     def test_protected_missing_fails_no_fallback(self):
         for job in ["classify", "arm"]:
-            s = next(x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds")
+            s = next(
+                x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds"
+            )
             for app, key in [("", ""), ("id", ""), ("", "marker")]:
-                p = run(s["run"], dict(PROTECTED_MODE="true", MERGE_APP_ID=app, MERGE_APP_KEY=key))
+                p = run(
+                    s["run"],
+                    dict(PROTECTED_MODE="true", MERGE_APP_ID=app, MERGE_APP_KEY=key),
+                )
                 self.assertNotEqual(p.returncode, 0, p.stdout)
 
     def test_legacy_presence_semantics_preserved(self):
         for job in ["classify", "arm"]:
-            s = next(x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds")
+            s = next(
+                x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds"
+            )
             for app, key in [("", ""), ("id", ""), ("", "marker"), ("id", "marker")]:
-                p = run(s["run"], dict(PROTECTED_MODE="false", MERGE_APP_ID=app, MERGE_APP_KEY=key))
+                p = run(
+                    s["run"],
+                    dict(PROTECTED_MODE="false", MERGE_APP_ID=app, MERGE_APP_KEY=key),
+                )
                 self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_protected_present(self):
         for j in ["classify", "arm"]:
-            s = next(x for x in D["jobs"][j]["steps"] if x.get("id") == "merge_app_creds")
+            s = next(
+                x for x in D["jobs"][j]["steps"] if x.get("id") == "merge_app_creds"
+            )
             p = run(
                 s["run"],
-                dict(PROTECTED_MODE="true", MERGE_APP_ID="id", MERGE_APP_KEY="harmless-marker"),
+                dict(
+                    PROTECTED_MODE="true",
+                    MERGE_APP_ID="id",
+                    MERGE_APP_KEY="harmless-marker",
+                ),
             )
             self.assertEqual(p.returncode, 0, p.stderr)
 
@@ -149,7 +173,8 @@ class Structure(unittest.TestCase):
             "${{ inputs.use_protected_merge_app && 'fleet-merge-automation' || (inputs.use_wise_relay && 'merge-shepherd' || '') }}",
         )
         self.assertEqual(
-            D["on"]["workflow_call"]["inputs"]["use_protected_merge_app"]["default"], "false"
+            D["on"]["workflow_call"]["inputs"]["use_protected_merge_app"]["default"],
+            "false",
         )
 
     def test_no_legacy_fallback_protected(self):
@@ -160,7 +185,8 @@ class Structure(unittest.TestCase):
                     if "secrets.merge_token" in v:
                         consumers.append(v)
                         self.assertIn(
-                            "(inputs.use_protected_merge_app == false && secrets.merge_token)", v
+                            "(inputs.use_protected_merge_app == false && secrets.merge_token)",
+                            v,
                         )
         self.assertEqual(len(consumers), 6)
 
@@ -223,6 +249,53 @@ class DefaultBaseFence(unittest.TestCase):
         self.assertNotEqual(code, 0, out)
         self.assertIn("base is not default branch", out)
         self.assertTrue(any("--disable-auto" in c for c in calls), calls)
+
+
+class FailurePathDisarm(unittest.TestCase):
+    def test_early_failure_without_classify_url_disarms_exact_context_pr(self):
+        script = D["jobs"]["disarm"]["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            gh = root / "gh"
+            gh.write_text(
+                '#!/bin/bash\nif [[ "$*" == *graphql* ]]; then echo "github-actions[bot]"; elif [[ "$*" == *--disable-auto* ]]; then touch "$MARKER"; printf "%s" "$*" > "$CALLS"; elif [ -f "$MARKER" ]; then echo off; else echo armed; fi\n'
+            )
+            gh.chmod(0o755)
+            env = dict(
+                os.environ,
+                PATH=td + ":" + os.environ["PATH"],
+                MARKER=str(root / "off"),
+                CALLS=str(root / "calls"),
+                PR_URL="",
+                REPO="Simple-With-Us/Example",
+                PR_NUMBER="7",
+                REASON="classify failed",
+                GH_TOKEN="fake",
+            )
+            p = subprocess.run(
+                ["bash", "-eu", "-c", script], env=env, text=True, capture_output=True
+            )
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertTrue((root / "off").exists())
+            self.assertIn(
+                "https://github.com/Simple-With-Us/Example/pull/7",
+                (root / "calls").read_text(),
+            )
+
+    def test_invalid_coordinates_reject_before_gh(self):
+        script = D["jobs"]["disarm"]["steps"][0]["run"]
+        for n in ["", "x", "7;echo bad"]:
+            p = run(
+                script,
+                dict(
+                    PR_URL="",
+                    REPO="Simple-With-Us/Example",
+                    PR_NUMBER=n,
+                    REASON="earlyfailure",
+                    GH_TOKEN="fake",
+                ),
+            )
+            self.assertNotEqual(p.returncode, 0)
 
 
 if __name__ == "__main__":

@@ -1528,11 +1528,20 @@ jobs:
     steps:
       - name: Disable any armed auto-merge (inline port of disable-pr-automerge.sh)
         env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ needs.classify.outputs.pr_url }}
           REASON: ${{ needs.classify.outputs.skip == 'true' && needs.classify.outputs.reason || 'arm job failed after a pass - clearing any prior arm' }}
         run: |
           set -euo pipefail
+          # Guard/credentials may fail before classify writes outputs. Coordinates
+          # still come from this run context, never a caller-provided URL.
+          if [ -z "$PR_URL" ]; then
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Disarm PR number invalid"; exit 1; }
+            [[ "$REPO" =~ ^Simple-With-Us/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Disarm repository invalid"; exit 1; }
+            PR_URL="https://github.com/$REPO/pull/$PR_NUMBER"
+          fi
           echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"
           if ! actor="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>/dev/null)"; then
             echo "::error::Cannot verify repository token principal; refusing disarm write."
