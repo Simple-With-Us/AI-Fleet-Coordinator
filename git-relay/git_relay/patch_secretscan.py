@@ -116,9 +116,7 @@ _SOURCE_RHS = re.compile(
 # A complete, unquoted dotted identifier chain (a property access or a call
 # target) is a source expression, not a stored literal.  Bare runs, quoted
 # values, env-prefixed forms and lowercase-only chains remain candidates.
-_DOTTED_RHS = re.compile(
-    r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)"
-)
+_DOTTED_RHS = re.compile(r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)")
 
 
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
