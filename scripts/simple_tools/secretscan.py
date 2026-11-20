@@ -150,13 +150,22 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
         tail = re.search(r"[(,]\s*$", before)
         if tail is None:
             return False
-        depth = 0
-        for ch in before:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth = max(0, depth - 1)
-        labeled_arg = depth > 0
+        # The innermost open paren must be a call paren (right after an
+        # identifier char), and parens inside string literals are skipped, so
+        # a parenthetical aside in prose or a quoted paren cannot open a call.
+        stack = []
+        quote = ""
+        for i, ch in enumerate(before):
+            if quote:
+                if ch == quote and before[i - 1] != "\\":
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
+                stack.append(i > 0 and (before[i - 1].isalnum() or before[i - 1] in "_$"))
+            elif ch == ")" and stack:
+                stack.pop()
+        labeled_arg = bool(stack) and stack[-1] and not quote
         if not labeled_arg:
             return False
     if _SOURCE_RHS.match(text, start) is not None:
