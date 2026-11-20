@@ -1,5 +1,11 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {generateKeyPairSync}from'node:crypto';
-import {resolveIsolatedTestflightKey,PROJECT,SECRET_PATH,SECRET_NAME,ACCOUNT}from'./testflight_infisical_key.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {generateKeyPairSync,createHash}from'node:crypto';
+import {readFileSync} from 'node:fs';
+import {resolveIsolatedTestflightKey as productionResolver,PROJECT_SHA256}from'./testflight_infisical_key.mjs';
+const PROJECT='12345678-1234-1234-1234-123456789abc';
+// Synthetic fixture module changes ONLY the trust-anchor digest. Production has no selector seam.
+const fixtureDigest=createHash('sha256').update(PROJECT).digest('hex');
+const fixtureSource=readFileSync(new URL('./testflight_infisical_key.mjs',import.meta.url),'utf8').replace(PROJECT_SHA256,fixtureDigest);
+const {resolveIsolatedTestflightKey,SECRET_PATH,SECRET_NAME,ACCOUNT}=await import('data:text/javascript;base64,'+Buffer.from(fixtureSource).toString('base64'));
 const pem=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
 function world({meta={},row={},execFail=false,large=false}={}){const calls=[];return {calls,execImpl:(file,args,opts,cb)=>{calls.push({file,args});cb(execFail?Error('synthetic-secret-upstream-error'):null,'st.synthetic-scoped-service-reader')},fetchImpl:async(url,opts)=>{calls.push({url,opts});const data=url.includes('/v2/service-token')?{workspace:PROJECT,permissions:['read'],scopes:[{environment:'prod',secretPath:SECRET_PATH}],expiresAt:'2099-01-01T00:00:00Z',...meta}:{secret:{secretKey:SECRET_NAME,secretPath:SECRET_PATH,workspace:PROJECT,environment:'prod',type:'shared',secretValueHidden:false,secretValue:pem,...row}};return new Response(large?'x'.repeat(140000):JSON.stringify(data),{status:200})}}}
 test('keychain-only exact reader, metadata first, exact isolated named secret, returns RSA object',async()=>{const w=world();const key=await resolveIsolatedTestflightKey(w);assert.equal(key.asymmetricKeyType,'rsa');assert.deepEqual(w.calls[0].args,['find-generic-password','-s','infisical-service-token','-a',ACCOUNT,'-w']);assert.match(w.calls[1].url,/v2\/service-token$/);const q=new URL(w.calls[2].url);assert.equal(q.searchParams.get('secretPath'),SECRET_PATH);for(const n of ['recursive','include_imports','expandSecretReferences'])assert.equal(q.searchParams.get(n),'false');assert.equal(w.calls.length,3)});
@@ -7,3 +13,10 @@ for(const [name,meta]of Object.entries({wrongProject:{workspace:'other'},write:{
 for(const [name,row]of Object.entries({wrongName:{secretKey:'OTHER'},wrongPath:{secretPath:'/github-apps'},hidden:{secretValueHidden:true},reference:{secretValue:'${other.KEY}'},wrongEnvironment:{environment:'dev'},invalidKey:{secretValue:'synthetic secret unparseable'},wrongType:{type:'personal'}}))test(name+' secret row fails closed without upstream text',async()=>{const w=world({row});await assert.rejects(()=>resolveIsolatedTestflightKey(w),e=>e.message==='dedicated-testflight-isolated-binding-unavailable')});
 test('missing keychain refuses without inherited fallback/network',async()=>{const w=world({execFail:true});await assert.rejects(()=>resolveIsolatedTestflightKey(w));assert.equal(w.calls.length,1)});
 test('stream size cap refuses before secret request',async()=>{const w=world({large:true});await assert.rejects(()=>resolveIsolatedTestflightKey(w));assert.equal(w.calls.length,2)});
+
+test('real digest path rejects another well-formed project before secret access',async()=>{const w=world();await assert.rejects(()=>productionResolver(w));assert.equal(w.calls.length,2)});
+test('contradictory projectId fails closed even with accepted workspace digest',async()=>{const w=world({meta:{projectId:'other'}});await assert.rejects(()=>resolveIsolatedTestflightKey(w));assert.equal(w.calls.length,2)});
+
+for(const workspace of ['12345678-1234-1234-1234-123456789ABC',null,123,{},[]]) {
+ test(`production resolver refuses invalid workspace ${JSON.stringify(workspace)} before secret access`,async()=>{const w=world({meta:{workspace}});await assert.rejects(()=>productionResolver(w));assert.equal(w.calls.length,2)});
+}

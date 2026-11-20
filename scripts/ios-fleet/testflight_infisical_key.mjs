@@ -1,13 +1,14 @@
 // Dedicated service custody adapter. Never reads a PEM file or inherited token.
 import {execFile} from 'node:child_process';
-import {createPrivateKey} from 'node:crypto';
-// Non-secret reviewed trust anchor. Do not select it from the runtime environment:
-// token metadata must match this project before any secret-value request.
-export const PROJECT='8dae6d03-8f12-48b2-adf3-e5c1b881c8c5';
+import {createPrivateKey,createHash} from 'node:crypto';
+// Fleet-OPS project inventory is private. Pin its reviewed digest, as the repository
+// project-ID checker does; read the identifier only from scoped token metadata.
+export const PROJECT_SHA256='98523bf1fe1594f019e654a36f5fec6331bc9863270199b39c4c0977198e83c2';
 export const SECRET_PATH='/testflight-github';
 export const SECRET_NAME='GH_APP_SWU_TESTFLIGHT_PRIVATE_KEY';
 export const ACCOUNT='ios-testflight-github-ro';
 const BASE='https://app.infisical.com/api';
+const projectDigest=(value)=>createHash('sha256').update(value).digest('hex');
 const refused=()=>new Error('dedicated-testflight-isolated-binding-unavailable');
 function keychain(execImpl) {
   return new Promise((resolve,reject)=>{
@@ -37,15 +38,17 @@ export async function resolveIsolatedTestflightKey({execImpl=execFile,fetchImpl=
       return JSON.parse(Buffer.concat(chunks).toString('utf8'));
     }
     const m=await get('/v2/service-token',131072);
-    if(m.workspace!==PROJECT || ('projectId'in m&&m.projectId!==PROJECT) || !Array.isArray(m.permissions)||m.permissions.length!==1||m.permissions[0]!=='read'||!Array.isArray(m.scopes)||m.scopes.length!==1)throw refused();
+    const project=m.workspace;
+    if(typeof project!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(project)||projectDigest(project)!==PROJECT_SHA256)throw refused();
+    if(m.workspace!==project || ('projectId'in m&&m.projectId!==project) || !Array.isArray(m.permissions)||m.permissions.length!==1||m.permissions[0]!=='read'||!Array.isArray(m.scopes)||m.scopes.length!==1)throw refused();
     const scope=m.scopes[0];if(!scope||Object.keys(scope).sort().join(',')!=='environment,secretPath'||scope.environment!=='prod'||scope.secretPath!==SECRET_PATH)throw refused();
     // Initial issuance is finite. Registered non-expiring support is not inferred
     // from older reader approval, and requires a future explicit binding record.
     if(typeof m.expiresAt!=='string'||!/(?:Z|[+-]\d{2}:\d{2})$/.test(m.expiresAt)||!Number.isFinite(Date.parse(m.expiresAt))||Date.parse(m.expiresAt)<=now())throw refused();
-    const q=new URLSearchParams({workspaceId:PROJECT,environment:'prod',secretPath:SECRET_PATH,viewSecretValue:'true',expandSecretReferences:'false',recursive:'false',include_imports:'false'});
+    const q=new URLSearchParams({workspaceId:project,environment:'prod',secretPath:SECRET_PATH,viewSecretValue:'true',expandSecretReferences:'false',recursive:'false',include_imports:'false'});
     const payload=await get(`/v3/secrets/raw/${SECRET_NAME}?${q}`,65536);
     const s=payload.secret;
-    if(!s||s.secretKey!==SECRET_NAME||s.secretPath!==SECRET_PATH||s.workspace!==PROJECT||s.environment!=='prod'||s.type!=='shared'||s.secretValueHidden!==false||typeof s.secretValue!=='string'||!s.secretValue||/\$\{[^}]+\}/.test(s.secretValue))throw refused();
+    if(!s||s.secretKey!==SECRET_NAME||s.secretPath!==SECRET_PATH||s.workspace!==project||s.environment!=='prod'||s.type!=='shared'||s.secretValueHidden!==false||typeof s.secretValue!=='string'||!s.secretValue||/\$\{[^}]+\}/.test(s.secretValue))throw refused();
     const k=createPrivateKey(s.secretValue);if(k.asymmetricKeyType!=='rsa')throw refused();
     return k;
   } catch {throw refused();}
