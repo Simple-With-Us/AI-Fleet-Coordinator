@@ -143,6 +143,7 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
         # call keeps the paren open and an earlier string argument is fine.
         # The separator must be the labeled-argument colon:  a `=` keyword
         # argument inside parens keeps the `=` path's stricter treatment.
+        # Clearing is limited to call syntax; prose and quoted pairs still refuse.
         if ":" not in text[match.start() : start]:
             return False
         before = text[max(0, match.start() - 300) : match.start()]
