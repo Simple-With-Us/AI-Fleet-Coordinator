@@ -363,6 +363,9 @@ def cmd_correct(a: argparse.Namespace) -> int:
         url=a.url,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_correct", kwargs, lambda: recall_api.recall_correct(**kwargs)
     )
@@ -386,6 +389,9 @@ def cmd_retract(a: argparse.Namespace) -> int:
         seat=a.seat,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_retract", kwargs, lambda: recall_api.recall_retract(**kwargs)
     )
@@ -579,13 +585,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "text",
         nargs="?",
-        help="the text, or - to read it from stdin (prefer --file / - for anything "
-        "that might contain a credential)",
+        help="the text, or - to read it from stdin (prefer --file / - for long "
+        "text, so it stays out of the shell history)",
     )
     c.add_argument(
         "--file",
-        help="read the text from PATH (- for stdin); safest for log excerpts, "
-        "command lines, or config snippets that might hold a credential",
+        help="read the text from PATH (- for stdin); keeps long text out of the "
+        "shell history.  Credential-shaped content is refused before transmission "
+        "on every route:  redact secrets from the excerpt first",
     )
     c.add_argument("--category", required=True, choices=recall_api.CONTRIB_CATEGORIES)
     c.add_argument("--app", default="fleet")
