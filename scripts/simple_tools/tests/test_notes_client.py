@@ -37,6 +37,7 @@ NOW = 1761170400.0
 SESSION = "11112222-3333-4444-5555-666677778888"
 TITLE = "[AFC, Claude] Client Check"
 MASTER = "⭐️ Background Jobs Master List"
+NOTE_ID = "x-coredata://F44FD42D-76BD-4A93-AE0E-2DAA56546B84/ICNote/p12348"
 
 def hdr(request: Any, name: str) -> str | None:
     """urllib stores header names capitalized ("X-simple-tools-principal")."""
@@ -825,6 +826,20 @@ class HostTests(unittest.TestCase):
         )
         NC.call(host, "CLAUDE", self.req("read", rid="readrequest-01"), wait=0, scan=self.scan)
         self.assertNotIn("identity", gw.calls[0][1])
+
+    def test_off_a_mac_a_delete_carries_the_note_it_names(self):
+        """A hosted delete names its note:  the hosted tool refuses a delete with no note_id, so the id travels
+        with the write, beside the bot it acts as."""
+        host, gw = self.fleet()
+        gw.queue(
+            "notes_delete",
+            {"request_id": "requestid-0001", "action": "delete", "status": "done", "transport": "operator", "note_id": NOTE_ID},
+        )
+        out = NC.call(host, "CLAUDE", self.req("delete", rid="requestid-0001", note_id=NOTE_ID), wait=0, scan=self.scan)
+        self.assertEqual(out.get("status"), "done")
+        sent = gw.calls[0][1]
+        self.assertEqual(sent.get("note_id"), NOTE_ID)
+        self.assertEqual(sent.get("identity"), "CLAUDE")
 
     def test_off_a_mac_a_read_and_a_list_answer_their_results(self):
         note = {"title": MASTER, "body": "<div>x</div>", "format": "html"}

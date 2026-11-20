@@ -671,7 +671,16 @@ def _fleet_call(host, seat, request, wait):
     args = {
         key: value
         for key, value in request.items()
-        if key in ("title", "markdown", "session", "format", "query", "limit", "request_id")
+        if key in (
+            "title",
+            "markdown",
+            "session",
+            "format",
+            "query",
+            "limit",
+            "request_id",
+            "note_id",  # a delete names its note;  the hosted tool refuses a delete with no note_id
+        )
     }
     if action in N.WRITE_ACTIONS:
         # The gateway refuses a write that names no bot (docs/protocols/per-call-identity.md), so the writer's own
