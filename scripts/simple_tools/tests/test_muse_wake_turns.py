@@ -130,6 +130,30 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         both = ["w-rider-1", "w-rider-2"]
         self.assertEqual(answer["turn"], self.echo(both, both))
 
+    def test_turn_drops_a_consumed_trailing_rider(self) -> None:
+        # A rider the hook already handed over must not run again inside the turn
+        # prompt:  the trailing consumed rider is dropped and the rest still ride.
+        WP.mark_consumed(WP.state_dir(str(self.home)), "w-rider-2")
+        answer = self._deliver(self.turn_request())
+        delivery = answer["delivery"]
+        self.assertEqual((delivery["outcome"], delivery["ack"]), ("sent", "confirmed"))
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn("w-rider-1", self.calls[0]["argv"][-1])
+        self.assertNotIn("w-rider-2", self.calls[0]["argv"][-1])
+        self.assertEqual(answer["turn"], self.echo(["w-rider-1"], ["w-rider-1"]))
+
+    def test_turn_with_a_consumed_middle_rider_runs_the_head_alone(self) -> None:
+        # A consumed rider that is not trailing cannot be dropped as a prefix, so the
+        # head runs alone and every rider goes back to pending uncarried.
+        WP.mark_consumed(WP.state_dir(str(self.home)), "w-rider-1")
+        answer = self._deliver(self.turn_request())
+        delivery = answer["delivery"]
+        self.assertEqual((delivery["outcome"], delivery["ack"]), ("sent", "confirmed"))
+        self.assertEqual(len(self.calls), 1)
+        self.assertNotIn("w-rider-1", self.calls[0]["argv"][-1])
+        self.assertNotIn("w-rider-2", self.calls[0]["argv"][-1])
+        self.assertEqual(answer["turn"], self.echo([], []))
+
     def test_turn_without_the_turn_id_in_the_transcript_is_sent_unknown_riders_carried_unconfirmed(
         self,
     ) -> None:

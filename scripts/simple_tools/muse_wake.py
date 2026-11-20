@@ -565,6 +565,25 @@ def _via_exec(
         # Singles only:  a turn's prompt also carries the head's id, so a turn request
         # must reach the turn-id check below, which is the one that reports the riders.
         return WR.Delivery("sent", "exec", ack="confirmed")
+    if riders and echo is not None:
+        # A rider the hook already handed over must not run again inside this prompt.
+        # Drop a trailing consumed run (carried stays a prefix of the offer);  when a
+        # consumed rider is not trailing, drop them all and run the head alone, so no
+        # rider's text runs twice.  Dropped riders go back to pending:  the consumed
+        # one closes through the hook path on its own retry.
+        try:
+            state = WP.state_dir(_pending_home(env))
+            bad = {r.wake_id for r in riders if WP.is_consumed(state, r.wake_id)}
+        except (OSError, ValueError):
+            bad = set()
+        if bad:
+            kept = list(riders)
+            while kept and kept[-1].wake_id in bad:
+                kept.pop()
+            if any(r.wake_id in bad for r in kept):
+                kept = []
+            if len(kept) != len(riders):
+                riders = tuple(kept)
     binary = _binary(env, config)
     if not binary:
         return WR.Delivery("failed", "exec", code="muse-not-found")
