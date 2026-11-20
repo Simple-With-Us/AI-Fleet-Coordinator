@@ -52,10 +52,18 @@ class ReviewedGenericTests(unittest.TestCase):
         repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
         for body in (
             self.body,
-            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n",
             "let token = '" + "b" * 32 + "'\n",
+            "let token = Widget" + "Presentation.shortCadence9(cadence: cadence)\n",
+            "let token = widget" + "presentation.shortcadence(cadence: cadence)\n",
+            "let token = Correct" + ".Horse.Battery\n",
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_letters_only_dotted_calls_are_not_secrets(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        self.assertIsNone(secretscan.scan_file(
+            repo, path,
+            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n"))
 
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
