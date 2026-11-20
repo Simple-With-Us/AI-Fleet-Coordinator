@@ -216,6 +216,11 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
             "app/package-lock.json",
             "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
         ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/deno.lock",
+            "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
+        ),
     }
 )
 
