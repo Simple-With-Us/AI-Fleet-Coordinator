@@ -87,7 +87,12 @@ never trip a row by itself; a link's URL stays in the text, so a credential insi
 caught.  The post itself is relayed as readable Markdown:  its link openers stay escaped and
 never live, and its code spans and fenced blocks keep the sender's own formatting.  The
 Zulip-shaped row also withholds an opaque 32-character id, a cost
-accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
+accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A bare
+git commit id is not a credential:  a run of 40 lowercase hex characters (SHA-1) 
+or 64 (SHA-256) that stands on its own, in prose or in a URL path, is carried into the
+comment as it is.  The same run next to a credential name (`token=<id>`,  `"token": "<id>"`) 
+or inside a URL query (`?sig=<id>`) is still withheld whole, and a run of any other length
+is still a secret.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  Neither
 the comment nor the log says which row matched, so a reader cannot tell from Linear why one id was

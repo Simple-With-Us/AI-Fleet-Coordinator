@@ -288,19 +288,64 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}"),
+)
+# The two opaque-run rows, kept apart from the prefix rows:  a bare git commit id is one of
+# them, and a commit id is not a credential (AFC-834).
+_OPAQUE_RUN_PATTERNS = (
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{40,}={0,2}\b"),
 )
-# A keyword counts only as an assignment (`password: x`, `token=x`), so prose such as "token
-# refresh" or "password reset" is not withheld; a bare `Bearer` needs a token-shaped value.
+# The names that turn an assignment into a credential.
+_CREDENTIAL_NAME = (
+    r"api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
+    r"|authorization|credential"
+)
+# A keyword counts only as an assignment (`password: x`, `token=x`, `"token": "x"`), so prose
+# such as "token refresh" or "password reset" is not withheld; a bare `Bearer` needs a
+# token-shaped value.
 _KEYED_SECRET = re.compile(
-    r"(?i)\b(?:api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
-    r"|authorization|credential)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)[\"']?\b(?:" + _CREDENTIAL_NAME + r")\b[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
     r"|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"
 )
+# The text right before a value that is assigned to a credential name:  `token=`, `"token": "`.
+_ASSIGNED_TO_CREDENTIAL = re.compile(
+    r"(?i)[\"']?\b(?:" + _CREDENTIAL_NAME + r")\b[\"']?\s*[:=]\s*[\"']?$"
+)
+# The text right before a value that is a URL query parameter:  `?sig=`, `&token=`.
+_URL_QUERY_VALUE = re.compile(r"[?&][A-Za-z0-9_.\-]{1,40}=[^\s]*$")
 # The markdown that can change the shape of the comment: emphasis, code spans, links, html,
 # tables, strikethrough and the quote delimiter.
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
+
+
+def _bare_commit_id(text: str, match: re.Match[str]) -> bool:
+    """True when the matched opaque run is a bare git commit id rather than a credential.
+
+    A commit id is 40 lowercase hex characters (SHA-1) or 64 (SHA-256), and it stands on its
+    own:  it is not the value of a credential name and it is not a URL query value.  A post
+    that quotes a commit id is a post the mirror must carry, so the run is not a secret."""
+    run = match.group(0)
+    if len(run) not in (40, 64) or not re.fullmatch(r"[0-9a-f]+", run):
+        return False
+    before = text[: match.start()]
+    if _ASSIGNED_TO_CREDENTIAL.search(before):
+        return False
+    if _URL_QUERY_VALUE.search(before):
+        return False
+    return True
+
+
+def _carries_opaque_run(text: str) -> bool:
+    """True when the text carries a long opaque run that is not a bare git commit id.
+
+    A 40- or 64-character lowercase hex run is a commit id when it stands alone, and a post
+    that quotes one is not a post about a credential.  The same run next to a credential name
+    or inside a URL query is still a credential (AFC-834)."""
+    for pattern in _OPAQUE_RUN_PATTERNS:
+        for match in pattern.finditer(text):
+            if not _bare_commit_id(text, match):
+                return True
+    return False
 
 
 def has_secret(text: str) -> bool:
@@ -311,6 +356,7 @@ def has_secret(text: str) -> bool:
     return (
         secretscan.scan(text) is not None
         or any(p.search(text) for p in _SECRET_PATTERNS)
+        or _carries_opaque_run(text)
         or bool(_KEYED_SECRET.search(text))
     )
 

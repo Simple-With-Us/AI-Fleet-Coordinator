@@ -822,6 +822,23 @@ class RelayTests(unittest.TestCase):
                       "credential rotation plan", "secret santa"):
             self.assertFalse(lr.has_secret(prose), prose)
 
+    def test_a_bare_commit_id_is_not_a_secret(self) -> None:
+        # A commit id stands alone:  in prose, after a word, or in a URL path.  It is not a
+        # credential, and a post that quotes one must reach Linear (AFC-834).
+        for run in ("a" * 40, "b" * 64):
+            for text in ("the commit is %s" % run, "merged as %s" % run,
+                         "https://example.com/commit/%s" % run):
+                self.assertFalse(lr.has_secret(text), text)
+
+    def test_a_commit_id_that_is_a_credential_is_still_a_secret(self) -> None:
+        run = "c" * 40
+        for text in ("token=%s" % run, '"token": "%s"' % run,
+                     "https://example.com/cb?sig=%s" % run,
+                     "the id is %s" % ("d" * 32),
+                     "the digest is %s" % ("A" * 40),
+                     "the run is %s" % ("e" * 45)):
+            self.assertTrue(lr.has_secret(text), text)
+
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:
         class CheckLinear:
@@ -2488,14 +2505,37 @@ class ReadablePostTests(WorkerCase):
         self.assertIn("the commit is here", body)
         self.assertNotIn(sha, body)
 
-    def test_a_long_hex_run_in_the_text_is_still_withheld_whole(self) -> None:
-        # The text itself is still scanned:  this is the row AFC-834 is about, and this
-        # change does not touch it.
+    def test_a_bare_commit_id_is_carried_whole(self) -> None:
+        # A 40-character lowercase hex run is a git commit id, and a post that quotes one is a
+        # post the mirror must carry (AFC-834).
         sha = "a" * 40
         self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
         body = self.lin.created[0][1]
+        self.assertNotIn(lr.WITHHELD, body)
+        self.assertIn(sha, body)
+
+    def test_a_commit_id_next_to_a_credential_name_is_still_withheld_whole(self) -> None:
+        sha = "b" * 40
+        self.w.handle_event(message(1, "AFC-1 relay", "token=%s" % sha))
+        body = self.lin.created[0][1]
         self.assertIn(lr.WITHHELD, body)
         self.assertNotIn(sha, body)
+
+    def test_a_commit_id_in_a_url_query_is_still_withheld_whole(self) -> None:
+        sha = "c" * 40
+        html = '<p><a href="https://example.com/cb?sig=%s">the link</a></p>' % sha
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(sha, body)
+
+    def test_an_opaque_id_is_still_withheld_whole(self) -> None:
+        # A 32-character run is not a commit id, and it stays a secret.
+        oid = "d" * 32
+        self.w.handle_event(message(1, "AFC-1 relay", "the id is %s" % oid))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(oid, body)
 
     def test_a_credential_inside_a_link_url_is_still_withheld_whole(self) -> None:
         token = "ghp_" + "fake" * 9
