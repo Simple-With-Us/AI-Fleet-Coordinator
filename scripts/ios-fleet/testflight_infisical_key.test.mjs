@@ -1,7 +1,8 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {generateKeyPairSync,createHash}from'node:crypto';
+import test from 'node:test';import assert from 'node:assert/strict';import {generateKeyPairSync,createHash,randomUUID}from'node:crypto';
 import {readFileSync} from 'node:fs';
 import {resolveIsolatedTestflightKey as productionResolver,PROJECT_SHA256}from'./testflight_infisical_key.mjs';
-const PROJECT='12345678-1234-1234-1234-123456789abc';
+// Ephemeral synthetic project per test process, never real inventory or environment config.
+const PROJECT=randomUUID();
 // Synthetic fixture module changes ONLY the trust-anchor digest. Production has no selector seam.
 const fixtureDigest=createHash('sha256').update(PROJECT).digest('hex');
 const fixtureSource=readFileSync(new URL('./testflight_infisical_key.mjs',import.meta.url),'utf8').replace(PROJECT_SHA256,fixtureDigest);
@@ -17,6 +18,6 @@ test('stream size cap refuses before secret request',async()=>{const w=world({la
 test('real digest path rejects another well-formed project before secret access',async()=>{const w=world();await assert.rejects(()=>productionResolver(w));assert.equal(w.calls.length,2)});
 test('contradictory projectId fails closed even with accepted workspace digest',async()=>{const w=world({meta:{projectId:'other'}});await assert.rejects(()=>resolveIsolatedTestflightKey(w));assert.equal(w.calls.length,2)});
 
-for(const workspace of ['12345678-1234-1234-1234-123456789ABC',null,123,{},[]]) {
+for(const workspace of [PROJECT.toUpperCase(),null,123,{},[]]) {
  test(`production resolver refuses invalid workspace ${JSON.stringify(workspace)} before secret access`,async()=>{const w=world({meta:{workspace}});await assert.rejects(()=>productionResolver(w));assert.equal(w.calls.length,2)});
 }
