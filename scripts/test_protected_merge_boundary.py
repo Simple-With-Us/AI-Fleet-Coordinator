@@ -128,7 +128,6 @@ class Credentials(unittest.TestCase):
                         self.assertNotIn(name, p.stdout)
                 self.assertNotIn("marker", p.stdout)
 
-
     def test_legacy_presence_semantics_preserved(self):
         for job in ["classify", "arm"]:
             s = next(x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds")
