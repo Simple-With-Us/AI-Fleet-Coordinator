@@ -163,8 +163,8 @@ class Base(unittest.TestCase):
             core.ENV_PROJECT: PROJECT,
             core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER_PROJECT,
             core.ENV_TOKEN: "st.test-service-token-fixture",
-            core.ENV_AI_FLEET_COORDINATOR_TOKEN: "st.ai-fleet-token-fixture",
-            core.ENV_WRITE_TOKEN: "st.test-write-token-fixture",
+            core.COORDINATOR_READ_TOKEN_ENV_NAME: "st.ai-fleet-token-fixture",
+            core.WRITE_TOKEN_ENV_NAME: "st.test-write-token-fixture",
         }
         self.exec_calls = []
         patches = [
@@ -336,7 +336,7 @@ class RunTests(Base):
                 world = self.use(World())
                 env = dict(self.env)
                 env.pop(core.ENV_TOKEN)
-                env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+                env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
                 code, _out, err = self.call(*args, env=env)
                 self.assertEqual(code, 4)
                 self.assertIn(core.ENV_TOKEN, err)
@@ -347,7 +347,7 @@ class RunTests(Base):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
 
         class TTY:
             def isatty(self):
@@ -428,7 +428,7 @@ class RunTests(Base):
             "INFISICAL_TOKEN": "STORED_TOKEN_SENTINEL",
             "INFISICAL_CLIENT_ID": "STORED_ID_SENTINEL",
             "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
-            core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
+            core.UNIVERSAL_AUTH_SECRET_ENV_NAME: "STORED_UA_SENTINEL",
         }
         self.use(World(secrets=secrets))
         self.call("run", "--only", "ALPHA", "--", "mycmd")
@@ -439,8 +439,8 @@ class RunTests(Base):
             {k for k in self.env if k.startswith("INFISICAL_")}
             - {
                 core.ENV_TOKEN,
-                core.ENV_AI_FLEET_COORDINATOR_TOKEN,
-                core.ENV_WRITE_TOKEN,
+                core.COORDINATOR_READ_TOKEN_ENV_NAME,
+                core.WRITE_TOKEN_ENV_NAME,
             },
         )
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
@@ -455,12 +455,12 @@ class RunTests(Base):
         self.use(World())
         self.env[core.ENV_TOKEN] = "st.parent-token-fixture"
         self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
-        self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
+        self.env[core.UNIVERSAL_AUTH_SECRET_ENV_NAME] = "PARENT_SECRET_SENTINEL"
         self.call("run", "--only", "ALPHA,BETA", "--", "mycmd")
         self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(len(self.exec_calls), 2)
         for _, _, env in self.exec_calls:
-            for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
+            for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.UNIVERSAL_AUTH_SECRET_ENV_NAME):
                 self.assertNotIn(var, env)
             self.assertEqual(env["ALPHA"], VAL_A)
 
@@ -527,7 +527,7 @@ class ScopedServiceTokenTests(Base):
         world = self.use(World())
         code, _, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")
         self.assertEqual(code, 0)
-        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(world.fetches[0][3], self.env[core.COORDINATOR_READ_TOKEN_ENV_NAME])
 
 
 class NoValueInErrorsTests(Base):
@@ -627,7 +627,7 @@ class DoctorTests(Base):
         world = World()
         self.use(world)
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
-        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        self.env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
         code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
         rep = json.loads(out)
         self.assertEqual(code, 0)
@@ -650,7 +650,7 @@ class DoctorTests(Base):
         self.assertFalse(rep["writer_configured"])
         self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
         self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
-        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(world.fetches[0][3], self.env[core.COORDINATOR_READ_TOKEN_ENV_NAME])
         self.assertNoSentinel(out, err)
 
     def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
@@ -805,7 +805,7 @@ class SetTests(Base):
         method, path, token, body = next(row for row in self.api if row[0] == "PATCH")
         self.assertEqual(
             (method, path, token),
-            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
+            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.WRITE_TOKEN_ENV_NAME]),
         )
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
         self.assertEqual(
@@ -983,10 +983,10 @@ class SetTests(Base):
     def test_set_requires_separate_write_token(self):
         self.use(World())
         env = dict(self.env)
-        env.pop(core.ENV_WRITE_TOKEN)
+        env.pop(core.WRITE_TOKEN_ENV_NAME)
         code, _out, err = self.run_set("CACHE_K", "--path", "/linear", env=env)
         self.assertEqual(code, 4)
-        self.assertIn(core.ENV_WRITE_TOKEN, err)
+        self.assertIn(core.WRITE_TOKEN_ENV_NAME, err)
         self.assertEqual(self.api, [])
 
     def test_an_empty_value_and_a_bad_name_are_usage_errors_before_any_call(self):

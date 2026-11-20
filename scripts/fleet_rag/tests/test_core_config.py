@@ -324,13 +324,24 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
                 [path for path in self.api.requests if "/v3/secrets/raw/" in path], []
             )
 
-    def test_real_verifier_refuses_other_scopes_write_permissions_and_indefinite_expiry(self):
+    def test_explicit_null_expiry_read_only_binding_reads_named_value(self):
+        self.api.metadata_override = {"expiresAt": None}
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"})
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+
+    def test_real_verifier_refuses_other_scopes_write_permissions_and_invalid_expiry(self):
         for metadata in (
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/another-purpose"}]},
             {"scopes": [{"environment": "staging", "secretPath": "/"}]},
             {"permissions": ["read", "write"]},
-            {"expiresAt": None},
+            {"expiresAt": None, "permissions": ["read", "write"]},
+            {"expiresAt": None, "workspace": str(uuid.uuid4())},
+            {"expiresAt": "invalid"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
         ):
             self.api.metadata_override = metadata
             self.api.requests.clear()
@@ -928,9 +939,17 @@ class PrimaryBindingTests(unittest.TestCase):
             self.assertNotIn("INFISICAL_TOKEN", args[2])
             self.assertEqual((kwargs["token"], kwargs["timeout"]), (api.token, 30.0))
             self.assertEqual(len(api.requests), 2)
+            api.metadata_override = {"expiresAt": None}
+            api.requests.clear()
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(core.infisical_fetch(("TEI_URL",)), {"TEI_URL": "https://tei.invalid"})
+            self.assertEqual(len(api.requests), 2)
             for change in (
                 {"permissions": ["read", "write"]},
-                {"expiresAt": None},
+                {"expiresAt": None, "permissions": ["read", "write"]},
+                {"expiresAt": None, "workspace": str(uuid.uuid4())},
+                {"expiresAt": "invalid"},
+                {"expiresAt": "2099-01-01T00:00:00"},
                 {"expiresAt": "2000-01-01T00:00:00Z"},
                 {"workspace": str(uuid.uuid4())},
                 {"scopes": [{"environment": "dev", "secretPath": "/"}]},

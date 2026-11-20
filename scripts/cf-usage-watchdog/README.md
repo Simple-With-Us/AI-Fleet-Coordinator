@@ -24,13 +24,13 @@ Mode and profile are the fleet knobs `CF_USAGE_WATCHDOG_MODE` (`observe` by defa
 - **observe** alerts and logs what it would have tripped.  It changes nothing on Cloudflare.
 - **enforce** also runs the actions below.  At most 1 Worker trips per run and 3 per UTC day, so a bad reading cannot take the whole account down.
 
-A failed poll alerts after 5 minutes and never trips.  So does an answer that is not the shape the query asked for, an empty Workers answer, which would otherwise read as all clear, and any unexpected error in a run.  The poll shares Cloudflare's GraphQL quota of about 300 queries per 5 minutes with whatever else uses the same credential, and the alert names the code `budget` when that is why it is blind.  A dataset that comes back at the 2,000-row limit may have lost rows, so its totals and top contributor cannot be trusted: that alerts within the run, and nothing trips or escalates on it, while retries of actions already decided go on.  The run exits 1 on a failed poll, an alert nobody received, a failed inventory read or an unexpected error on one Worker, so the unit shows as failed.
+A failed poll alerts after 5 minutes and never trips. An unchanged failed-poll incident does not post again merely because an hour passed. A changed failure reason posts once, and recovery posts once; failed recovery delivery remains pending for retry. Each failed poll is still logged.  So does an answer that is not the shape the query asked for, an empty Workers answer, which would otherwise read as all clear, and any unexpected error in a run.  The poll shares Cloudflare's GraphQL quota of about 300 queries per 5 minutes with whatever else uses the same credential, and the alert names the code `budget` when that is why it is blind.  A dataset that comes back at the 2,000-row limit may have lost rows, so its totals and top contributor cannot be trusted: that alerts within the run, and nothing trips or escalates on it, while retries of actions already decided go on.  The run exits 1 on a failed poll, an alert nobody received, a failed inventory read or an unexpected error on one Worker, so the unit shows as failed.
 
 ## Actions, in order
 
 Each one is logged with the version that was live before it, in the journal and in `events.jsonl`.
 
-1. Page through Pushover. A post to Zulip is refused (`dedicated-service-binding-required`) until the watchdog has a dedicated service binding, because service automation cannot represent an agent seat.
+1. Post directly to Zulip as the dedicated Watchdog service bot, in Work-In-Progress / Cloudflare Usage, and page through Pushover. The sender checks the credential's actual bot identity before posting. No agent seat or hosted chat wrapper is used.
 2. `PUT /workers/scripts/{name}/secrets` with `GUARD_MODE=off`, then label the newest deployment with a message starting `GUARD-TRIPPED` so a deployer can refuse to undo the trip.  If the secret write fails, the label still goes on and the write repeats each minute.  A refusal sends the Worker to the fallback stop at once, and a network fault, a 408, a 429 or a 5xx does after 2 more tries, because the fallback takes hostnames down.  The fallback stop never runs without the label: until the label lands it is held, with an alert each hour, because a redeploy over an unlabelled stop would quietly restore the cron triggers.
 3. If the rate has not fallen after 2 polls that hold minutes from after the trip, the fallback stop: empty the cron triggers, turn off workers.dev and preview URLs, and detach custom domains.  With the 2-minute lag that is about 5 minutes after the trip.  The rate has fallen when it is under the threshold (a rate trip on one Worker), under half the Worker's own rate at the trip (a rate trip on an account-wide rule, whose threshold is not that Worker's), or under half the rate at the trip (a day trip).  The steps left are saved after each one, so a crash repeats none that landed, a domain already gone counts as done, and a step that fails runs again each minute until it lands, with an alert each hour.
 
@@ -40,7 +40,7 @@ Every action writes exactly one row, whatever happens to it, and an unexpected e
 
 One gap stays open in the label.  It reads the live split and posts it straight back, and Cloudflare's create-deployment call takes no precondition, so a deploy landing between those two calls would be replaced by the older split.  A second read just before the post would leave the same gap after it, so there is none.  The newer version stays in the Worker's history and can be deployed again, after a re-arm if the label is still on.  Nothing detects the overwrite automatically, but the `action` or `rearm_step` row's `label_versions` field records the split that was posted, and `rearm` prints it, so an operator can compare it with the Worker's history.
 
-**The alert path is Pushover only for now.** A post to Zulip is refused (`dedicated-service-binding-required`) until the watchdog has a dedicated service binding, so configure Pushover before turning on enforce. The daily check names it when it is missing.
+**Alert delivery is independent of Cloudflare.** The Watchdog bot posts directly to Zulip over HTTPS, with redirects refused. Pushover is the separate page path. Both rely on their own credentials and network access; a missing or mismatched service identity fails closed without using an agent seat.
 
 ## Why the stop is the fallback and not a stub version
 
@@ -58,16 +58,17 @@ Re-arm is manual.  `python3 watchdog.py status` lists trips.  `python3 watchdo
 
 ## Daily check
 
-Once a UTC day it reads the account again and compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  Preview URLs count as drift unless a registry row says `preview_urls: true`, since off is the fleet's rule.  workers.dev counts only where a row says `workers_dev: false`, since some Workers are served from it.  The file may be absent, and its absence is only logged.  It tries to post to Zulip when the differences change, which is refused and logged until the binding exists, and it never pages.  It also names a missing page path or heartbeat.  It waits for a good inventory read rather than comparing an old one.
+Once a UTC day it reads the account again and compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  Preview URLs count as drift unless a registry row says `preview_urls: true`, since off is the fleet's rule.  workers.dev counts only where a row says `workers_dev: false`, since some Workers are served from it.  The file may be absent, and its absence is only logged.  It posts to Zulip when the differences change, and it never pages.  It also names a missing page path or heartbeat.  It waits for a good inventory read rather than comparing an old one.
 
 ## Credentials
 
-Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read through the consumer's own scoped service token and held in memory only.
+Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read directly through `fleet_infisical` with this service's explicit read-only token and held in memory only. No PATH helper, CLI login or machine identity fallback is used.
 
 | Key | Holds | Needed |
 | --- | --- | --- |
 | `CF_USAGE_WATCHDOG_ACCOUNT_ID` | The account to watch.  Not a credential, but this repo is public, so it stays out of git.  `CF_USAGE_WATCHDOG_ACCOUNT_ID` in the environment overrides it for a manual run | Yes |
 | `CF_USAGE_WATCHDOG_API_TOKEN` | Cloudflare token | Yes |
+| `CF_USAGE_WATCHDOG_ZULIP_EMAIL`, `CF_USAGE_WATCHDOG_ZULIP_API_KEY` | Dedicated Watchdog service bot, verified as user 1222575 before each alert | For Zulip alerts |
 | `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY` | The direct page path | Before enforce |
 | `CF_USAGE_WATCHDOG_HEARTBEAT_URL` | Better Stack heartbeat URL, pinged after each good poll | Optional |
 

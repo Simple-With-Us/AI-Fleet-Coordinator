@@ -34,7 +34,7 @@ class ProtocolIntegrationTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             core.ENV_PROJECT: self.project,
-            core.ENV_WRITE_TOKEN: self.token,
+            core.WRITE_TOKEN_ENV_NAME: self.token,
             "GH_TOKEN": self.value,
         }
         self.calls, self.mutations = [], []

@@ -429,9 +429,15 @@ export function makeDeps(env = process.env, options = {}) {
       const file = path.join(sdir, `freshness-alert-${process.pid}.md`);
       fs.writeFileSync(file, body, { mode: 0o600 });
       try {
-        const seat = env.IOS_TF_FRESHNESS_SEAT || "CLAUDE";
-        await runCmd("simple-chat", ["post", "--as", seat, "--session", "tfresh", "--channel", ALERT_CHANNEL,
-          "--topic", ALERT_TOPIC, "--body-file", file], { env, timeout: 60_000 });
+        try {
+          await runCmd("python3", [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "service_zulip.py"),
+            "--service", "testflight", "post", "--body-file", file], { env, timeout: 60_000 });
+        } catch (err) {
+          // Only helper usage/preflight refusal is known unsent. All other outcomes may have landed.
+          err.deliveryUnknown = ![2, 3].includes(err.code);
+          err.message = err.deliveryUnknown ? "service alert delivery unknown" : "service alert unavailable; binding or content preflight refused";
+          throw err;
+        }
       } finally {
         fs.rmSync(file, { force: true });
       }
@@ -1463,8 +1469,14 @@ export async function runCheck(opts, deps, registry) {
             // A failed post never changes the exit code;  the next run retries
             // because the alert stamps are rolled back.
             report.alert.error = String(err.message || err).slice(0, 200);
-            for (const k of plan.apps) if (state.apps[k]) delete state.apps[k].alert;
-            if (plan.checkFailed) delete state.checkFailure;
+            if (err.deliveryUnknown) {
+              report.alert.outcome = "unknown";
+              for (const k of plan.apps) if (state.apps[k]?.alert) state.apps[k].alert.outcome = "unknown";
+              if (plan.checkFailed && state.checkFailure) state.checkFailure.outcome = "unknown";
+            } else {
+              for (const k of plan.apps) if (state.apps[k]) delete state.apps[k].alert;
+              if (plan.checkFailed) delete state.checkFailure;
+            }
           }
         }
       }

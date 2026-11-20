@@ -590,8 +590,8 @@ def infisical_login() -> str | None:
             (env.get(name) or "").strip()
             for name in (
                 secrets.ENV_TOKEN,
-                secrets.ENV_AI_FLEET_COORDINATOR_TOKEN,
-                secrets.ENV_WRITE_TOKEN,
+                secrets.COORDINATOR_READ_TOKEN_ENV_NAME,
+                secrets.WRITE_TOKEN_ENV_NAME,
             )
         ):
             raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")

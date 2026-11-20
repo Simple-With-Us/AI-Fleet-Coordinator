@@ -7,13 +7,13 @@ day-to-date over a threshold, and a 5-minute rate over a threshold.  Two named p
 and enforce.  See README.md for the design, the stop action and the operating steps.
 
 Standard library only, plus this repo's stdlib-only fleet_knobs for the mode and the profile.
-Credentials come from this watcher's own scoped Infisical service token, live in memory only and
-never reach a log or a message.
+Credentials use direct scoped service-token reads, live in memory only and never reach a log or a message.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import fcntl
@@ -35,15 +35,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
 CONFIG_PATH = HERE / "config.json"
 REGISTRY_PATH = HERE.parent / "worker-registry.json"
 API_BASE = "https://api.cloudflare.com/client/v4"
-# This watcher's own scoped read-only service token:  the project and folder its config names.
-# The token lives in the consumer's own store (the owner's login keychain on the Mac, a private
-# file on a server);  the shared Infisical client checks the token's own grant and the answer's
-# own provenance before a value is used.
-TOKEN_ACCOUNT = "cf-usage-watchdog-ro"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 CHICAGO = ZoneInfo("America/Chicago")
 GAP = "  "  # Between sentences in owner-facing text.
@@ -57,6 +51,10 @@ INVENTORY_WANTED_RETRY_SECONDS = 60
 INVENTORY_MAX_AGE_SECONDS = 86400
 ACCOUNT_ID_ENV = "CF_USAGE_WATCHDOG_ACCOUNT_ID"
 ACCOUNT_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
+# The token lives in the consumer's own store (the owner's login keychain on the Mac, a private
+# file on a server);  the shared Infisical client checks the token's own grant and the answer's
+# own provenance before a value is used.
+TOKEN_ACCOUNT = "cf-usage-watchdog-ro"
 MINUTE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z")
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
@@ -604,12 +602,14 @@ class Connections:
         runner: Callable = subprocess.run,
         opener: Callable = NO_REDIRECT_OPENER.open,
         env: dict | None = None,
+        secret_reader: Callable | None = None,
     ) -> None:
         self.cfg = cfg
         self.runner = runner
         self.opener = opener
         self.env = dict(os.environ if env is None else env)
         self.timeout = cfg["limits"]["http_timeout_seconds"]
+        self.secret_reader = secret_reader
         self._token: str | None = None
         self._heartbeat_url: str | None = None
 
@@ -626,45 +626,44 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """One value through this watcher's own scoped token, or None when it is absent.
-        Raises PollError on any other failure."""
+        """Named direct read using only this service's own scoped token.
+
+        The service's own registered account is the source:  its grant covers exactly the
+        one folder this read declares,  and the client refuses a read whose declared
+        folders are not the grant's folders.  The environment may carry a copy of that
+        same token and is the fallback when the store holds no usable one.  An ambient
+        token with a wider grant is never the first choice,  and there is no PATH helper,
+        CLI login or machine identity in this path.
+        """
         conf = self.cfg["infisical"]
         try:
-            import fleet_infisical as FI
+            if self.secret_reader is not None:
+                return self.secret_reader(name)
+            # Import from this installation, never a PATH helper or implicit login.
+            if str(HERE.parent) not in sys.path:
+                sys.path.insert(0, str(HERE.parent))
+            import fleet_infisical as fi
 
-            env = dict(self.env)
-            env[FI.ENV_READ_PATHS] = conf["path"]
-            project = FI.infisical_project_id(env, FI.home_dir(env), conf["project"])
-            # This watcher's own registered token is the source:  its grant covers
-            # exactly the one folder this read declares.  An ambient token may carry a
-            # wider grant,  and the client refuses a read whose declared folders are not
-            # the grant's folders,  so it is the fallback and never the first choice.
             account = conf.get("token_account", TOKEN_ACCOUNT)
-            token, status = FI.token_from_store(account, env)
+            token, status = fi.token_from_store(account, self.env)
             if not token:
-                token = (env.get(FI.ENV_TOKEN) or "").strip()
+                token = (self.env.get("INFISICAL_TOKEN") or "").strip()
                 if not token:
                     raise PollError(
-                        "credential-fetch-failed:  the shared Infisical client "
+                        "credential-binding-missing:  the shared Infisical client "
                         f"(fleet_infisical.py) and the {account} service-token store are "
                         f"unavailable or refused ({status})"
                     )
-            values = FI.fetch_project(project, conf["path"], env, token=token, names=(name,))
+            project = fi.infisical_project_id(self.env, fi.home_dir(self.env), conf["project"])
+            values = fi.fetch_project(
+                project, conf["path"], self.env, token=token, names=[name], timeout=30
+            )
         except PollError:
             raise
-        except TimeoutError:
-            # A hung lookup is not a broken credential:  it is retryable.
-            raise PollError("credential-fetch-timeout") from None
         except Exception as exc:
-            # The reason code stays the machine-readable one this file uses,  and the
-            # message names the client and the account that must be repaired.
-            raise PollError(
-                "credential-fetch-failed:  the shared Infisical client (fleet_infisical.py) "
-                f"could not run the scoped read for the {account} service token "
-                f"({type(exc).__name__})"
-            ) from None
-        value = values.get(name, "")
-        return value or None
+            # No provider error, response body, credential or URL reaches logs.
+            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
+        return values.get(name) or None
 
     def token(self) -> str:
         if self._token is None:
@@ -739,14 +738,59 @@ class Connections:
             raise ApiError(200, error_codes(answer.get("errors")))
         return answer.get("result")
 
-    def zulip(self, text: str) -> bool | None:
-        # Posting is disabled until the watchdog has a dedicated service binding:  service
-        # automation cannot represent any agent seat.  None means not configured, as in page().
-        print(
-            json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}),
-            flush=True,
-        )
-        return None
+    def zulip(self, text: str) -> bool:
+        """Only this service's explicitly bound Watchdog identity. Never a seat wrapper."""
+        conf = self.cfg["zulip"]
+        try:
+            email = self._secret(conf["email_key"])
+            key = self._secret(conf["api_key_key"])
+            if email != "watchdog-bot@simplewithus.zulipchat.com" or not key:
+                raise PollError("dedicated-service-binding-required")
+            auth = base64.b64encode(f"{email}:{key}".encode()).decode("ascii")
+            headers = {"Authorization": "Basic " + auth}
+            _, identity_raw = self._request(
+                "GET", "https://simplewithus.zulipchat.com/api/v1/users/me", headers=headers
+            )
+            identity = json.loads(identity_raw)
+            if (
+                not isinstance(identity, dict)
+                or identity.get("result") != "success"
+                or identity.get("user_id") != 1222575
+                or identity.get("email") != email
+                or identity.get("is_bot") is not True
+            ):
+                raise PollError("dedicated-service-identity-mismatch")
+            body = urllib.parse.urlencode(
+                {"type": "stream", "to": conf["channel"], "topic": conf["topic"], "content": text}
+            ).encode()
+            _, raw = self._request(
+                "POST",
+                "https://simplewithus.zulipchat.com/api/v1/messages",
+                body,
+                {
+                    "Authorization": "Basic " + auth,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            answer = json.loads(raw)
+            if not isinstance(answer, dict) or answer.get("result") != "success":
+                raise PollError("service-post-refused")
+            print(
+                json.dumps(
+                    {
+                        "event": "zulip_sent",
+                        "sender": email,
+                        "channel": conf["channel"],
+                        "topic": conf["topic"],
+                        "message_id": answer.get("id"),
+                    }
+                ),
+                flush=True,
+            )
+            return True
+        except Exception as exc:
+            print(json.dumps({"event": "zulip_failed", "error": type(exc).__name__}), flush=True)
+            return False
 
     def page(self, title: str, text: str) -> bool | None:
         """Pushover directly, the one path that does not go through a Worker on this account.
@@ -875,14 +919,10 @@ class Watchdog:
         zulip_ok = self.conn.zulip(text)
         paged = self.conn.page(title, "\n".join(shown)) if page else None
         self.store.event("notify", title=title, zulip=zulip_ok, page=paged)
-        # A disabled channel answers None, and that is not a failed delivery:  the event row is
-        # the record, and one-shot callers (the daily check) still persist their state.  Only an
-        # attempted channel that failed counts as undelivered.
-        attempted = zulip_ok is not None or paged is not None
         delivered = bool(zulip_ok or paged)
-        if attempted and not delivered:
+        if not delivered:
             self.undelivered = True
-        return delivered or not attempted
+        return delivered
 
     def describe(self, breach: dict, previous: dict) -> str:
         spec = self.cfg["metrics"][breach["metric"]]
@@ -1432,9 +1472,9 @@ class Watchdog:
         self.store.event("poll_failed", reason=reason, minutes=round((self.epoch - since) / 60, 1))
         if self.epoch - since < self.limits["poll_fail_alert_minutes"] * 60:
             return
-        if (
-            self.epoch - self.state.get("poll_fail_alerted", 0)
-            < self.limits["realert_minutes"] * 60
+        if self.state.get("poll_fail_alerted") and self.state.get("poll_fail_reason") in (
+            None,
+            reason,
         ):
             return
         minutes = round((self.epoch - since) / 60)
@@ -1445,6 +1485,7 @@ class Watchdog:
             ],
         ):
             self.state["poll_fail_alerted"] = self.epoch
+            self.state["poll_fail_reason"] = reason
 
     def run(self) -> int:
         try:
@@ -1523,15 +1564,17 @@ class Watchdog:
             breaches = evaluate(self.cfg, self.profile, usage)
         self.apply_breaches(breaches, inventory)
         self.daily_check_if_due(inventory)
-        # Last, so a crash above still counts toward the blind alert.
-        if (
-            self.state.pop("poll_failed_since", None) is not None
-            and self.state.pop("poll_fail_alerted", None) is not None
+        # A successful read closes the active blind incident even if its recovery
+        # message is not delivered. Keep delivery pending separately, so a later
+        # outage with the same cause starts a new five-minute alert window.
+        if self.state.pop("poll_failed_since", None) is not None:
+            if self.state.pop("poll_fail_alerted", None):
+                self.state["poll_recovery_pending"] = True
+            self.state.pop("poll_fail_reason", None)
+        if self.state.get("poll_recovery_pending") and self.notify(
+            "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
         ):
-            self.notify(
-                "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
-            )
-        self.state.pop("poll_fail_alerted", None)
+            self.state.pop("poll_recovery_pending", None)
         self.prune()
         self.store.save(self.state)
         failed = self.undelivered or self.worker_failed or self.state.get("inventory_failed")
@@ -1843,37 +1886,11 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def validate_config(cfg: dict) -> list:
-    """The problems in one configuration,  never a value.
-
-    The shape is checked before the data is used:  a document that is not a mapping,
-    or an Infisical section that is not a mapping of names,  is a broken configuration
-    and never a folder to read.
-    """
     problems = []
-    if not isinstance(cfg, dict):
-        return ["the configuration is not a mapping"]
-    infisical = cfg.get("infisical")
-    if not isinstance(infisical, dict):
-        problems.append("infisical is not a mapping")
-    else:
-        for key in ("project", "path", "account_id_key", "api_token_key"):
-            if not isinstance(infisical.get(key), str) or not infisical.get(key):
-                problems.append(f"infisical.{key} is not a name")
-        account = infisical.get("token_account")
-        if account is not None and (not isinstance(account, str) or not account):
-            problems.append("infisical.token_account is not a name")
-    metrics = cfg.get("metrics")
-    if not isinstance(metrics, dict):
-        problems.append("metrics is not a mapping")
-        metrics = {}
-    profiles = cfg.get("profiles")
-    if not isinstance(profiles, dict):
-        problems.append("profiles is not a mapping")
-        profiles = {}
-    for name, profile in profiles.items():
+    for name, profile in cfg.get("profiles", {}).items():
         for section in ("per_resource", "account"):
-            for metric, rule in (profile.get(section) or {}).items():
-                if metric not in metrics:
+            for metric, rule in profile.get(section, {}).items():
+                if metric not in cfg["metrics"]:
                     problems.append(f"{name}.{section} names unknown metric {metric}")
                 if not set(rule) & {"day", "month", "level", "rate_5m"}:
                     problems.append(f"{name}.{section}.{metric} has no threshold")

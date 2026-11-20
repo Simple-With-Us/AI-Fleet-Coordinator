@@ -51,10 +51,10 @@ assert '_fleet_infisical_write_ledger' not in sys.modules
 value = secrets.token_urlsafe(40)
 project = str(uuid.uuid4())
 env = {'HOME':sys.argv[2], core.ENV_PROJECT:project,
-       core.ENV_WRITE_TOKEN:'st.' + secrets.token_urlsafe(32)}
+       core.WRITE_TOKEN_ENV_NAME:'st.' + secrets.token_urlsafe(32)}
 calls = []
 def api(method, endpoint, token, body, environ, **kwargs):
-    assert token == env[core.ENV_WRITE_TOKEN]
+    assert token == env[core.WRITE_TOKEN_ENV_NAME]
     calls.append((method, endpoint))
     if endpoint == '/v2/service-token':
         return 200, dict(workspace=project, permissions=['read','write'],
@@ -108,7 +108,7 @@ def forbidden(*args, **kwargs):
     raise AssertionError('provider called without the required ledger')
 core._api_json = forbidden
 env = {'HOME':sys.argv[2], core.ENV_PROJECT:str(uuid.uuid4()),
-       core.ENV_WRITE_TOKEN:'st.' + secrets.token_urlsafe(32)}
+       core.WRITE_TOKEN_ENV_NAME:'st.' + secrets.token_urlsafe(32)}
 cli.sys.stdin = io.StringIO(secrets.token_urlsafe(40))
 out, err = io.StringIO(), io.StringIO()
 assert cli.main(['set','CACHE_FIXTURE','--path','/linear'],env,out,err) == 4

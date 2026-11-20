@@ -37,8 +37,8 @@ class ScopedTokens(unittest.TestCase):
     def setUp(self):
         self.env = {
             core.ENV_TOKEN: READ,
-            core.ENV_AI_FLEET_COORDINATOR_TOKEN: COORDINATOR_READ,
-            core.ENV_WRITE_TOKEN: WRITE,
+            core.COORDINATOR_READ_TOKEN_ENV_NAME: COORDINATOR_READ,
+            core.WRITE_TOKEN_ENV_NAME: WRITE,
             core.ENV_PROJECT: PROJECT,
             core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER,
         }
@@ -178,21 +178,21 @@ class ScopedTokens(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_writer_never_borrows_reader_and_readonly_writer_is_rejected(self):
-        self.env.pop(core.ENV_WRITE_TOKEN)
+        self.env.pop(core.WRITE_TOKEN_ENV_NAME)
         with (
             self.writer_journal() as intent,
             self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"),
         ):
             core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(self.calls, [])
-        self.env[core.ENV_WRITE_TOKEN] = READ
+        self.env[core.WRITE_TOKEN_ENV_NAME] = READ
         self.metadata[READ] = grant(paths=("/linear",))
         with self.writer_journal() as intent, self.assertRaises(core.SecretsError):
             core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(len(self.calls), 1)
 
     def test_bad_optional_writer_binding_does_not_disable_valid_reader(self):
-        self.env[core.ENV_WRITE_TOKEN] = "st.malformed-writer-binding"
+        self.env[core.WRITE_TOKEN_ENV_NAME] = "st.malformed-writer-binding"
         self.assertEqual(core.fetch_all("/", self.env), {"ALPHA": VALUE})
         self.assertTrue(self.calls)
         self.assertTrue(all(call[2] == READ for call in self.calls))
@@ -201,7 +201,7 @@ class ScopedTokens(unittest.TestCase):
         env = {
             core.ENV_PROJECT: PROJECT,
             core.ENV_AUTOMATION_ID: VALUE,
-            core.ENV_AUTOMATION_SECRET: VALUE,
+            core.AUTOMATION_SECRET_ENV_NAME: VALUE,
             "INFISICAL_SHARED_CLIENT_SECRET": VALUE,
         }
         with self.assertRaisesRegex(core.SecretsError, "service-token-required"):
@@ -234,14 +234,14 @@ class ScopedTokens(unittest.TestCase):
     def test_run_removes_both_bootstrap_tokens_and_rejects_reserved_injection(self):
         self.env.update(
             INFISICAL_CLIENT_ID="legacy-id-sentinel",
-            INFISICAL_CLIENT_SECRET="legacy-secret-sentinel",
+            INFISICAL_CLIENT_SECRET="test-only",
         )
         child = []
         with mock.patch.object(cli.os, "execvpe", side_effect=lambda *args: child.append(args[2])):
             cli.main(["run", "--only", "ALPHA", "--", "synthetic-command"], env=self.env)
         self.assertEqual(child[0]["ALPHA"], VALUE)
         self.assertNotIn(core.ENV_TOKEN, child[0])
-        self.assertNotIn(core.ENV_WRITE_TOKEN, child[0])
+        self.assertNotIn(core.WRITE_TOKEN_ENV_NAME, child[0])
         self.assertNotIn("INFISICAL_CLIENT_ID", child[0])
         self.assertNotIn("INFISICAL_CLIENT_SECRET", child[0])
 
@@ -260,7 +260,7 @@ class ScopedTokens(unittest.TestCase):
     def test_knobs_named_read_preserves_project_folder_names_and_budget(self):
         env = {**self.env, knobs.ENV_KNOBS_TOKEN: COORDINATOR_READ}
         env.pop(core.ENV_TOKEN, None)
-        env.pop(core.ENV_WRITE_TOKEN, None)
+        env.pop(core.WRITE_TOKEN_ENV_NAME, None)
         self.records = [dict(self.records[0], workspace=OTHER)]
         with (
             mock.patch.object(knobs, "HELPER_LOADER", return_value=core),
@@ -273,7 +273,7 @@ class ScopedTokens(unittest.TestCase):
         self.assertIsNotNone(self.calls[-1][4]["deadline"])
 
     def test_knobs_never_borrows_generic_or_writer_token(self):
-        env = {core.ENV_TOKEN: READ, core.ENV_WRITE_TOKEN: WRITE}
+        env = {core.ENV_TOKEN: READ, core.WRITE_TOKEN_ENV_NAME: WRITE}
         with (
             mock.patch.object(knobs, "HELPER_LOADER", return_value=core),
             mock.patch.dict(os.environ, env, clear=True),
@@ -313,8 +313,8 @@ class RagWorkerScopedTokens(unittest.TestCase):
                 "FLEET_RAG_INFISICAL_PROJECT": OTHER,
                 "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
                 "FLEET_RECALL_INFISICAL_TOKEN": api.token,
-                core.ENV_AI_FLEET_COORDINATOR_TOKEN: COORDINATOR_READ,
-                core.ENV_WRITE_TOKEN: WRITE,
+                core.COORDINATOR_READ_TOKEN_ENV_NAME: COORDINATOR_READ,
+                core.WRITE_TOKEN_ENV_NAME: WRITE,
             }
             with (
                 mock.patch.dict(os.environ, env, clear=True),

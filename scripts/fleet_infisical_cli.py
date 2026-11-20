@@ -398,7 +398,7 @@ def doctor_report(
     )
     rep["auth_mode"] = "token" if rep["reader_configured"] else "missing"
     rep["writer_configured"] = primary_project == core.DEFAULT_PROJECT and bool(
-        (env.get(core.ENV_WRITE_TOKEN) or "").strip()
+        (env.get(core.WRITE_TOKEN_ENV_NAME) or "").strip()
     )
     rep["fetch_names_ok"] = False
     rep["names_count"] = 0
