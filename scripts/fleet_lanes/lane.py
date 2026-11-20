@@ -1084,6 +1084,29 @@ def _make_parent(ctx: Ctx, parent: Path, write_root: Path) -> None:
         raise ToolFailure(f"cannot create {parent}: {exc}")
 
 
+def _strip_group_write(path: Path) -> None:
+    """Remove the group-write and setgid bits a shared volume's setgid folders give every new
+    checkout.
+
+    A lane on the fleet volume inherits group-writable files and folders, and repo code that
+    judges modules by owner and mode (`fleet-ops-control.py`'s `_read_module_source`) refuses a
+    group-writable checkout, so tests that load judged modules fail in the lane and nowhere
+    else.  The lane stays readable by the group; only the write bits go, inside the lane alone.
+    Best effort:  a chmod that fails is left alone (the checkout still exists, so git keeps
+    working and a later tool or seat can finish the job)."""
+    if not path.is_dir():
+        return
+    candidates = [path, *path.rglob("*")]
+    candidates.reverse()  # deepest first, so a failed chmod cannot orphan the rest
+    for p in candidates:
+        try:
+            mode = p.lstat().st_mode
+            if mode & 0o022:
+                os.chmod(p, mode & ~0o022)
+        except OSError:
+            continue
+
+
 def _branch_state(run: Runner, tree: Path, branch: str) -> tuple[bool, bool]:
     """(exists locally, exists as a remote-tracking ref).  Raises Refusal if the name collides with
     another branch (a parent `claude` or children `claude/x/y`)."""
@@ -1323,6 +1346,7 @@ def _new_lane(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) -> i
         added = run(argv, cwd=tree)
         if not added.ok:
             raise ToolFailure(f"git worktree add failed: {_why(added)}")
+        _strip_group_write(path)
         _confirm_added(ctx, run, tree, path, branch, start)
         if args.reuse_branch:
             manifest["base_sha"] = _head_sha(run, path, "HEAD")
@@ -1452,6 +1476,7 @@ def _new_review(ctx: Ctx, args: argparse.Namespace, app: L.App, seat: L.Seat) ->
         added = run(["git", "worktree", "add", "--detach", str(path), sha], cwd=tree)
         if not added.ok:
             raise ToolFailure(f"git worktree add failed: {_why(added)}")
+        _strip_group_write(path)
         _confirm_added(ctx, run, tree, path, None, sha)
         _write_manifest(ctx, run, tree, path, manifest)
     ctx.say(f"created review checkout {path}")

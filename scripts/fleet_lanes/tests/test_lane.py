@@ -1572,6 +1572,38 @@ class RoleLaneNewTests(WorldCase):
 
 
 class LaneNewTests(WorldCase):
+    def test_a_setgid_shared_volume_checkout_is_stripped_of_group_write(self) -> None:
+        #  The fleet volume's lanes root is a setgid, group-writable folder, and a
+        #  group-write umask makes git's new worktree inherit group-write bits — which
+        #  repo code that judges modules by owner and mode refuses, so judged-module
+        #  tests fail in the lane and nowhere else.  The lane is stripped on creation;
+        #  the shared folders around it keep their own bits.
+        w = self.w
+        root = w.roots.lanes_root
+        repo_root = root / "DealDex"
+        root.mkdir(mode=0o2775, exist_ok=True)
+        os.chmod(root, 0o2775)
+        repo_root.mkdir(mode=0o2775, exist_ok=True)
+        os.chmod(repo_root, 0o2775)
+        old_umask = os.umask(0o002)
+        try:
+            res = w.lane(
+                "new",
+                "DealDex",
+                "fix-thing",
+                "--purpose",
+                "Fix the thing",
+                "--board",
+                "a7dfde0e",
+            )
+        finally:
+            os.umask(old_umask)
+        path = w.lane_path()
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        offenders = [p for p in [path, *path.rglob("*")] if p.stat().st_mode & 0o022]
+        self.assertEqual(offenders, [], "the lane must carry no group-write or setgid bits")
+        self.assertNotEqual(root.stat().st_mode & 0o022, 0, "the shared root keeps its own bits")
+
     def test_happy_path(self) -> None:
         w = self.w
         res = w.lane(
