@@ -751,11 +751,11 @@
     }
   },
   "producer_sha256": {
-    "scripts/fleet-ops-control.py": "5b6e6cfd6b63e32250526c2243a7bc1daaabe365fa626363c058c4f4c5911276",
-    "scripts/simple_tools/server/eavesdropper_settings_edit.py": "9e7aa82e78e9d90c992ec5d6db6d9120ef5d0cf805b7bf2d83b273d818359131",
+    "scripts/fleet-ops-control.py": "9c2ba373b17447494ea73baf9c0e05f1412c2f25bb6ca7747119ec880f3f6fdc",
+    "scripts/simple_tools/server/eavesdropper_settings_edit.py": "2a1d43e1b8daf41b3e1fcf65a8a5d59c905d3219d5b4542250b057962beb37f7",
     "scripts/simple_tools/server/operator_settings.py": "673fe7833c2c672c124e480548d5a4cc4720dbe9265f775659c12fd3edb860fb",
     "scripts/simple_tools/operator_github_state.py": "a86f230b4902252be43b918bef1768c645744b0106d3edfade5a169f97f1cf89"
   },
   "schema_path": "scripts/fleet-ops-eavesdropper-settings.json",
-  "schema_sha256": "e700cd4d25f02dce21e61a04492f13f85d73fa4f771dbedd0f9d72e6615701b5"
+  "schema_sha256": "ab3427af06e7846b68c2d748f41e3579858e2fb16b6390e1caede7b4b587de22"
 }
