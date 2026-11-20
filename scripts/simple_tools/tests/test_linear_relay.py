@@ -844,10 +844,10 @@ class RelayTests(unittest.TestCase):
         self.assertTrue(lr.has_secret("https://x.test/files/%s" % sha))
         self.assertTrue(lr.has_secret('"registry_hash": "%s"' % sha))
         self.assertTrue(lr.has_secret(sha + "Zk9+/=="))
-        # Quoted hex is withheld by the canonical scanner's own quoted-hex rule (a quote
-        # makes the run credential-shaped for every caller), so the relay rows cannot and
-        # should not exempt it:  bare quoted, punctuation-led, and prose-quoted forms all
-        # keep withholding (Kody, PR 2344 round 2;  the exemption stays bare and unquoted).
+        # Quoted forms keep withholding because `_sha_is_exposed` refuses to exempt
+        # quote-adjacent runs (a quote makes the run credential-shaped for the
+        # exemption's purposes), so the relay's wide-hex row still sees them;  the
+        # canonical scanner has no quoted-hex rule of its own (Kody, PR 2344 round 3).
         self.assertTrue(lr.has_secret('"' + sha + '"'))
         self.assertTrue(lr.has_secret('("%s")' % sha))
         self.assertTrue(lr.has_secret('merged "%s" into main' % sha))
