@@ -402,8 +402,8 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
 # --------------------------------------------------------------------------------------------
 #
 # The repair pass (`repair_unlettered`) replays the start of the chats this row names, so a chat
-# whose letter never landed is lettered and titled.  Two kinds of chat are named here, and one kind
-# is deliberately not.
+# whose letter never landed is lettered and titled.  One kind of chat is named here, and one kind is
+# deliberately not.
 #
 # - A sub-thread the hook never lettered:  a task row with a parent whose title carries no letter.
 #   The hook refused it at its start when the store did not hold its row yet, and a sub-thread that
@@ -423,7 +423,9 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
 UNLETTERED_SCAN = 20
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
-#: How many rows one query reads at a time.
+#: How many rows one query reads at a time.  The query leaves out the chats that already carry a
+#: letter on their title, so the rows it returns are candidates:  the bound counts candidates and not
+#: rows, and a busy host's lettered chats cannot spend it.
 UNLETTERED_BATCH = 200
 #: The hook's own no-letter mark, as a SQL pattern.  LIKE reads only % and _ as wildcards, so the two
 #: question marks are the mark itself.
