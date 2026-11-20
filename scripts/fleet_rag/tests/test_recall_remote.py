@@ -203,21 +203,29 @@ class RemoteRecall(unittest.TestCase):
         self.assertEqual(calls[0][2]["params"]["name"], "recall_stats")
 
     def test_hosted_default_precedence(self):
-        cases = (
-            ({"AGENT_SEAT": "CODEX"}, "search", True),
-            ({"AGENT_SEAT": "CODEX"}, "stats", True),
-            ({"AGENT_SEAT": "CODEX"}, "doctor", False),
-            ({"AGENT_SEAT": "CODEX"}, "contribute", False),
-            ({"AGENT_SEAT": "CODEX", "SIMPLE_RECALL_REMOTE": "0"}, "search", False),
-            ({"AGENT_SEAT": "CODEX", "QDRANT_URL": "http://q.example"}, "search", False),
-            ({}, "search", False),
-        )
-        for env, cmd, expected in cases:
-            with self.subTest(env=env, cmd=cmd), mock.patch.dict(os.environ, env, clear=True):
-                self.assertEqual(recall.hosted_default(cmd), expected)
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            cases = (
+                ({"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}, "search", True),
+                ({"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}, "stats", True),
+                ({"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}, "doctor", False),
+                ({"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}, "contribute", False),
+                # A declared seat with no usable own bearer keeps the direct route instead of
+                # failing hosted on the missing credential;  a typo'd seat has no canonical file.
+                ({"AGENT_SEAT": "CODEX"}, "search", False),
+                ({"AGENT_SEAT": "1bad"}, "search", False),
+                ({"AGENT_SEAT": "CODEX", "SIMPLE_RECALL_REMOTE": "0", "SIMPLE_TOOLS_BEARER": BEARER}, "search", False),
+                ({"AGENT_SEAT": "CODEX", "QDRANT_URL": "http://q.example", "SIMPLE_TOOLS_BEARER": BEARER}, "search", False),
+                ({}, "search", False),
+            )
+            for env, cmd, expected in cases:
+                with self.subTest(env=env, cmd=cmd), \
+                        mock.patch.dict(os.environ, {**env, "HOME": td}, clear=True):
+                    self.assertEqual(recall.hosted_default(cmd), expected)
 
     def test_local_only_flags_keep_the_direct_route(self):
-        with mock.patch.dict(os.environ, {"AGENT_SEAT": "CODEX"}, clear=True):
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}, clear=True):
             recall._ARGV = ["q", "--source", "board"]
             self.assertFalse(recall.hosted_default("search"))
             recall._ARGV = ["q", "--no-rerank"]
