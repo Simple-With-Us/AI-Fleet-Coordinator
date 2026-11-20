@@ -239,17 +239,9 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(doctor.post_changes(report, runner))
         self.assertFalse(doctor.post_changes(report, runner))
         self.assertEqual(
-            calls[0][:6],
-            [
-                "simple-chat",
-                "post",
-                "--channel",
-                "Work-In-Progress",
-                "--topic",
-                "fleet tools doctor",
-            ],
+            calls[0][:5],
+            [sys.executable, str(HERE / "service_zulip.py"), "--service", "doctor", "post"],
         )
-        self.assertEqual(calls[0][6], "--json")
         self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][-1])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
         self.assertIn("every check passes again", calls[1][-1])
@@ -261,10 +253,10 @@ class SeatAndMcpTests(unittest.TestCase):
 
         def runner(argv, **kw):
             calls.append(argv)
-            if argv[1] == "post":
+            if argv[4] == "post":
                 out = json.dumps({"id": next(ids), "channel": "x", "topic": "y"}) + "\n"
                 return subprocess.CompletedProcess(argv, 0, out, "")
-            if argv[1] == "edit":
+            if argv[4] == "edit":
                 return subprocess.CompletedProcess(
                     argv, edit_code, "", "" if edit_code == 0 else edit_err
                 )
@@ -287,8 +279,8 @@ class SeatAndMcpTests(unittest.TestCase):
         runner = self.chat_runner(calls, [4101])
         report = self.failing_report(("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(report, runner))
-        self.assertEqual(calls[0][1], "post")
-        self.assertIn("--json", calls[0])
+        self.assertEqual(calls[0][4], "post")
+        self.assertNotIn("--as", calls[0])
         self.assertEqual(self.state()["message_id"], 4101)
         self.assertEqual(self.state()["checks"], ["tool:gitleaks"])
 
@@ -301,8 +293,8 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post", "edit"])
-        self.assertEqual(calls[1][2:4], ["--id", "4101"])
+        self.assertEqual([c[4] for c in calls], ["post", "edit"])
+        self.assertEqual(calls[1][5:7], ["--id", "4101"])
         self.assertIn("tool:gh: 2.60.0, latest 2.62.0", calls[1][-1])
         self.assertEqual(self.state()["message_id"], 4101)
         self.assertEqual(self.state()["failing"], ["tool:gh: 2.60.0, latest 2.62.0"])
@@ -318,11 +310,11 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.post_changes(self.failing_report(("tool:gh", "behind")), runner)
         added = self.failing_report(("tool:gh", "behind"), ("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(added, runner))
-        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
         cleared = self.failing_report(("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(cleared, runner))
-        self.assertEqual([c[1] for c in calls], ["post", "post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post", "post"])
         self.assertEqual(self.state()["message_id"], 4103)
 
     def test_a_failed_edit_falls_back_to_a_new_post(self):
@@ -333,7 +325,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post", "edit", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "edit", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
         self.assertEqual(self.state()["failing"], ["tool:gh: behind by 2"])
 
@@ -343,7 +335,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
         def runner(argv, **kw):
             calls.append(argv)
-            if argv[1] == "edit":
+            if argv[4] == "edit":
                 raise FileNotFoundError(argv[0])
             return subprocess.CompletedProcess(argv, 0, json.dumps({"id": next(ids)}), "")
 
@@ -351,7 +343,7 @@ class SeatAndMcpTests(unittest.TestCase):
             json.dumps({"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101})
         )
         self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
-        self.assertEqual([c[1] for c in calls], ["edit", "post"])
+        self.assertEqual([c[4] for c in calls], ["edit", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
 
     def test_an_edit_that_may_have_landed_posts_nothing_and_retries_next_run(self):
@@ -378,7 +370,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
                 (self.home / "state.json").write_text(json.dumps(old))
                 self.assertFalse(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
-                self.assertEqual([c[1] for c in calls], ["edit"])
+                self.assertEqual([c[4] for c in calls], ["edit"])
                 self.assertEqual(self.state(), old)
                 # The next run edits the same message again.
                 retry = []
@@ -387,8 +379,8 @@ class SeatAndMcpTests(unittest.TestCase):
                         self.failing_report(("tool:gh", "b")), self.chat_runner(retry, [])
                     )
                 )
-                self.assertEqual([c[1] for c in retry], ["edit"])
-                self.assertEqual(retry[0][2:4], ["--id", "4101"])
+                self.assertEqual([c[4] for c in retry], ["edit"])
+                self.assertEqual(retry[0][5:7], ["--id", "4101"])
                 self.assertEqual(self.state()["message_id"], 4101)
 
     def test_an_old_state_without_an_id_posts_as_before(self):
@@ -398,7 +390,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post"])
+        self.assertEqual([c[4] for c in calls], ["post"])
         self.assertEqual(self.state()["message_id"], 4101)
         # An unchanged set against the old state is still silent.
         (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 2"]}))
@@ -417,7 +409,7 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
         self.assertNotIn("message_id", self.state())
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
-        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post"])
 
     def test_a_post_that_may_have_landed_is_not_posted_again(self):
         # Kody on PR 1467:  a post that timed out, or failed with a network or internal error, may
@@ -451,7 +443,7 @@ class SeatAndMcpTests(unittest.TestCase):
                         self.chat_runner(calls, [4101]),
                     )
                 )
-                self.assertEqual([c[1] for c in calls], ["post"])
+                self.assertEqual([c[4] for c in calls], ["post"])
 
     def test_a_refused_or_impossible_post_is_tried_again_next_run(self):
         # Zulip refused it (exit 3), or simple-chat is missing:  nothing was posted, so nothing is
@@ -468,7 +460,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 self.assertFalse((self.home / "state.json").exists())
                 calls = []
                 self.assertTrue(doctor.post_changes(report, self.chat_runner(calls, [4101])))
-                self.assertEqual([c[1] for c in calls], ["post"])
+                self.assertEqual([c[4] for c in calls], ["post"])
 
     def test_posted_message_id_reads_only_a_positive_integer_id(self):
         self.assertEqual(doctor.posted_message_id('{"id": 7, "channel": "c"}\n'), 7)

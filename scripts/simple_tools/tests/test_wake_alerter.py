@@ -296,11 +296,11 @@ class KeyLookupTests(unittest.TestCase):
         with mock.patch.object(FI, "fetch_project") as fetch:
             self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], "")
             fetch.assert_not_called()
-        os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN] = "st." + "afc-synthetic-" * 3
+        os.environ[FI.COORDINATOR_READ_TOKEN_ENV_NAME] = "st." + "afc-synthetic-" * 3
         with mock.patch.object(FI, "fetch_project", return_value={"ECHO_ROUTINE_KEY": KEY}) as fetch:
             self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], KEY)
         self.assertEqual(fetch.call_args.args[0], os.environ["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"])
-        self.assertEqual(fetch.call_args.kwargs["token"], os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(fetch.call_args.kwargs["token"], os.environ[FI.COORDINATOR_READ_TOKEN_ENV_NAME])
 
     def test_hook_children_receive_no_infisical_bootstrap_binding(self):
         os.environ.update({"INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "private-binding",

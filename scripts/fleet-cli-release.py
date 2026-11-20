@@ -132,6 +132,7 @@ EXACT = frozenset(
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
         "scripts/simple_tools/operator_github_state.py",
+        "scripts/service_zulip.py",
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",

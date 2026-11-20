@@ -196,6 +196,15 @@ The Operator's Linear project webhook keeps Zulip and the repo linkifiers equal 
 
 Each value is never printed, logged or written to a file.
 
+## Fleet activity daily digest (AFC-846)
+
+`.github/workflows/fleet-activity-site.yml` builds the public `activity.jays.services` daily digest (`scripts/build-fleet-daily-digest.py`), including Linear issues opened and closed for verified-public repositories only.  It loads `LINEAR_API_KEY` from this project, `prod`, folder `/fleet-activity`, via `scripts/infisical-fetch.mjs` and the scoped read-only service token `INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN` (kept in `/github-actions` so the `ai-fleet-coordinator-gh-actions` sync copies it into repository Actions secrets).
+
+| Name | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `LINEAR_API_KEY` | `/fleet-activity` | Secret read-only Linear API key; read by `fleet-activity-site.yml` via `scripts/infisical-fetch.mjs` |
+| `INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN` | `/github-actions` | Secret read-only service token, scope `prod:/fleet-activity`, synced to GitHub Actions secrets |
+
 ## Linear living comments (the Zulip -> Linear relay, folded into the Operator)
 
 The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the owner's Linear developer token — a personal API key with Write permission — held in this project, `prod`, folder `/linear`, as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.  (Owner ruling 2026-11-03:  the lane first minted tokens from the Operator app's OAuth pair, but the app's registered scopes are `read` + `comments:create` only, so comment edits fail;  the developer token replaces the pair for this job, and the pair is no longer read by the daemon.)  The daemon reads the key through ONE scoped read-only Infisical service token, `operator-linear-read`, scoped to exactly `prod` `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens" row 61), resolved from the runtime-only variable `OPERATOR_LINEAR_INFISICAL_TOKEN` or the `[linear_comments] infisical_token_file` — never through a machine identity, and no Linear token is bound to the container.  The key is fetched at daemon start and held in memory only.  Nothing reads a seat's Linear credential for this job.

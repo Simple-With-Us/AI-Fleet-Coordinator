@@ -28,7 +28,7 @@ class RunNamedReadTests(unittest.TestCase):
             "ALPHA": "old-value",
             core.ENV_PROJECT: self.project,
             core.ENV_TOKEN: self.token,
-            core.ENV_WRITE_TOKEN: "st." + secrets.token_urlsafe(32),
+            core.WRITE_TOKEN_ENV_NAME: "st." + secrets.token_urlsafe(32),
         }
         self.metadata = dict(
             workspace=self.project,
