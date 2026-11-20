@@ -65,7 +65,7 @@ simple-board status <id> completed --resolution "Landed in #2894."
 Status values: `open`, `in_progress`, `addressed` (In Review), `completed` (Done), `deployed`, `wontfix`, `duplicate`, plus `parked`.  Two rules differ from the old board:
 
 - `linear_status` with `status` = `duplicate` needs `of` = the canonical id, because Linear only makes a Duplicate through a link to the issue it duplicates.
-- `linear_claim` is check-then-set.  The hosted server refuses an issue another seat holds In Progress; the `simple-board` CLI fallback still takes `--steal --reason "..."`.  A claim is the `claimed:<SEAT>` label plus a `CLAIMED` comment; `linear_status` with `status` = `open` releases it.  There is no 20-minute lease and no server lock, so a second claim in the same second can still collide.
+- `linear_claim` is check-then-set.  A claim another seat holds is refused unless `--steal --reason "..."` is set;  stealing is allowed on every route (hosted tool and CLI alike).  The two routes draw the held line differently:  the hosted tool refuses any foreign `claimed:` label or app delegate, while the CLI refuses only while the issue is `In Progress`.  A claim is the `claimed:<SEAT>` label plus a `CLAIMED` comment; `linear_status` with `status` = `open` releases it.  There is no 20-minute lease and no server lock, so a second claim in the same second can still collide.
 
 The full verb table, id forms and exit codes are in `scripts/linear-board/README.md` in AI-Fleet-Coordinator.
 
