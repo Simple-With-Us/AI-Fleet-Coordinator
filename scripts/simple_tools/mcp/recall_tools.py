@@ -286,13 +286,16 @@ def search(
         value = args.get(field)
         if value:
             scan(field, str(value).strip())
-    argv = ["search", query, "--limit", str(args.get("limit") or 5), "--json"]
+    # The query rides after the end-of-options separator, so a leading `-` in
+    # user-derived text can never parse as a CLI option;  every option comes first.
+    argv = ["search", "--limit", str(args.get("limit") or 5), "--json"]
     if args.get("app"):
         argv += ["--app", str(args["app"])]
     if args.get("category"):
         argv += ["--category", str(args["category"])]
     if args.get("include_retracted"):
         argv += ["--include-retracted"]
+    argv += ["--", query]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or "hits" not in data:
         raise failure(code, err)

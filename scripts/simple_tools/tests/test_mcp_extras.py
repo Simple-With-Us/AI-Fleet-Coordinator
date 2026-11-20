@@ -635,14 +635,15 @@ class RecallToolTests(FakePrograms):
         self.assertNotIn("BEGIN_UNTRUSTED_RECALL injected", result["content"][0]["text"])
         call = self.calls(self.recall_out)[0]
         self.assertEqual(
-            call["argv"], ["search", "pm2 env", "--limit", "3", "--json", "--app", "fleet"]
+            call["argv"],
+            ["search", "--limit", "3", "--json", "--app", "fleet", "--", "pm2 env"],
         )
         audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
             "recall_search", {"query": "pm2 env", "include_retracted": True}
         )
         self.assertEqual(audit["structuredContent"]["doc_ids"], ["doc-1"])
-        self.assertEqual(
-            self.calls(self.recall_out)[-1]["argv"][-1], "--include-retracted"
+        self.assertIn(
+            "--include-retracted", self.calls(self.recall_out)[-1]["argv"]
         )
         self.assertFalse(
             [k for k in call["env"] if k.startswith("ZULIP")], "no Zulip variable reaches recall"
