@@ -37,7 +37,7 @@
  * ahead or identical means the shipped sha contains the newest native commit.
  *
  * THE REMEDY (--ship-behind) dispatches the app's OWN ship workflow with
- * `gh workflow run`, never a local xcodebuild, and only when every guard holds:
+ * the dedicated service API, never a local xcodebuild, and only when every guard holds:
  * autoRemedy is on and the workflow is active;  the iOS compile check on main
  * is green;  2.5 hours have passed since the app's last upload (the documented
  * fleet gate, enforced here because ContactLogo does not use ship-testflight.sh;
@@ -61,9 +61,11 @@
  * run and does not fall back to fleet-secrets /asc or a legacy key folder.
  * --allow-legacy-asc-creds or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1 opts back into
  * that helper fallback.  asc-api.mjs stderr is never echoed, because a crash
- * there can name a key path.  GitHub calls go through the gh CLI;  Zulip
+ * there can name a key path.  GitHub calls require the dedicated TestFlight App;  Zulip
  * through simple-chat.
  */
+import { randomUUID } from "node:crypto";
+import { makeServiceGitHub } from "./testflight_github_service.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -239,7 +241,7 @@ function runCmd(cmd, args, { timeout = 90_000, env = process.env } = {}) {
   });
 }
 
-/** First stderr line of a failed gh call (gh never prints credentials). */
+/** Safe diagnostic text from a failed child call. */
 function ghError(err) {
   const line = String(err.stderr || "").split("\n").map((l) => l.trim()).find(Boolean) || "";
   return (line || `exit ${err.code ?? "?"}`).slice(0, 200);
@@ -341,6 +343,9 @@ export async function ascRequest(run, apiPath, guard = makeAscGuard(), { timeout
 
 export function makeDeps(env = process.env, options = {}) {
   const sdir = stateDir(env);
+  const deadline = (options.clock || Date.now)() + (options.runtimeBudgetMs ?? 10 * MINUTE);
+  const remaining = (cap) => { const n = deadline - (options.clock || Date.now)(); if (n <= 0) throw new Error("freshness-runtime-deadline-exceeded"); return Math.max(1, Math.min(cap,n)); };
+  const github = options.serviceGitHub || makeServiceGitHub();
   const ascGuard = makeAscGuard();
   const allowLegacy = legacyAscAllowed(env, options.allowLegacyAsc === true);
   const run = options.runCmd || runCmd;
@@ -350,7 +355,7 @@ export function makeDeps(env = process.env, options = {}) {
     if (!prepared) {
       prepared = resolveFreshnessAscCredentials({
         env,
-        fetchImpl: options.fetchImpl,
+        fetchImpl: (url, init) => (options.fetchImpl || fetch)(url, {...init, signal: AbortSignal.timeout(remaining(30000))}),
         readFileImpl: options.readFileImpl,
         statImpl: options.statImpl,
         execFileImpl: options.execFileImpl,
@@ -363,38 +368,40 @@ export function makeDeps(env = process.env, options = {}) {
   const deps = {
     now: () => new Date(),
     async gh(apiPath) {
-      try {
-        const out = await runCmd("gh", ["api", "-X", "GET", apiPath], { env });
-        return JSON.parse(out);
-      } catch (err) {
-        const e = new Error(`gh api ${apiPath.split("?")[0]}: ${ghError(err)}`);
-        e.notFound = /HTTP 404|Not Found/.test(String(err.stderr || ""));
-        throw e;
-      }
+      remaining(1); return github(apiPath);
     },
     async ghDispatch(repoFull, workflow, ref, inputs) {
-      const args = ["workflow", "run", workflow, "--repo", repoFull, "--ref", ref];
-      for (const [k, v] of Object.entries(inputs || {})) args.push("-f", `${k}=${v}`);
+      let normalizedInputs;
       try {
-        await runCmd("gh", args, { env });
-      } catch (err) {
-        throw new Error(`gh workflow run ${workflow}: ${ghError(err)}`);
+      remaining(1);
+      if (ref !== "main" || !/^[A-Za-z0-9_.-]+$/.test(workflow)) {
+        throw new Error("dedicated-testflight-dispatch-ref-or-workflow-refused");
       }
+      normalizedInputs = Object.fromEntries(Object.entries(inputs || {}).map(([k,v]) => {
+        if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(k) || !["string", "number", "boolean"].includes(typeof v) || (typeof v === "number" && !Number.isFinite(v))) throw new Error("dedicated-testflight-workflow-input-refused");
+        return [k, String(v)];
+      }));
+      } catch (err) { err.dispatchOutcome = "not-attempted"; throw err; }
+      return github(`repos/${repoFull}/actions/workflows/${workflow}/dispatches`, {
+        method: "POST", body: { ref, inputs: normalizedInputs, return_run_details: true },
+      });
     },
     async prepareAsc() {
-      await ascEnvironment();
+      remaining(1); await ascEnvironment();
     },
     async asc(apiPath) {
+      remaining(1);
       const script = resolveFleetFile("asc-api.mjs", env);
       if (!script) throw new Error("asc-api.mjs not found (set IOS_FLEET_DIR or install ~/apps/ios-fleet)");
       const childEnv = await ascEnvironment();
-      return ascRequest((opts) => run(process.execPath, [script, "GET", apiPath], { env: childEnv, ...opts }), apiPath, ascGuard);
+      return ascRequest((opts) => run(process.execPath, [script, "GET", apiPath], { env: childEnv, ...opts, timeout: remaining(opts.timeout) }), apiPath, ascGuard);
     },
     async buildWindow(appKey) {
+      remaining(1);
       const script = resolveFleetFile("build-window.sh", env);
       if (!script) return "normal";
       try {
-        const out = await runCmd("bash", [script, appKey], { env, timeout: 30_000 });
+        const out = await runCmd("bash", [script, appKey], { env, timeout: remaining(30_000) });
         return out.trim() === "background" ? "background" : "normal";
       } catch {
         return "normal"; // fail open, like ship-testflight.sh
@@ -412,7 +419,8 @@ export function makeDeps(env = process.env, options = {}) {
     readState() {
       try {
         return JSON.parse(fs.readFileSync(path.join(sdir, "freshness-state.json"), "utf8"));
-      } catch {
+      } catch (err) {
+        if (err.code !== "ENOENT") throw new Error("freshness-state-unreadable; automatic dispatch refused");
         return { schemaVersion: 1, apps: {} };
       }
     },
@@ -433,7 +441,7 @@ export function makeDeps(env = process.env, options = {}) {
       try {
         try {
           await runCmd("python3", [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "service_zulip.py"),
-            "--service", "testflight", "post", "--body-file", file], { env, timeout: 60_000 });
+            "--service", "testflight", "post", "--body-file", file], { env, timeout: remaining(60_000) });
         } catch (err) {
           // Only helper usage/preflight refusal is known unsent. All other outcomes may have landed.
           err.deliveryUnknown = ![2, 3].includes(err.code);
@@ -1135,7 +1143,7 @@ export function dispatchCommand(owner, r) {
 export async function runRemedies(results, state, deps, registry, { dryRun = false, maxShips = 1, now, extraInflight = [] }) {
   const nowMs = now.getTime();
   state.apps = state.apps || {};
-  const fleetInflight = [...results.filter((r) => r.pipeline?.inflight?.length).map((r) => r.key), ...extraInflight];
+  const fleetInflight = [...results.filter((r) => r.pipeline?.inflight?.length).map((r) => r.key), ...extraInflight, ...Object.entries(state.apps).filter(([,s]) => s.remedy?.dispatchOutcome === "unknown").map(([k]) => k)];
   let dispatched = 0;
   const GROUP_ONLY_BLOCK =
     "behind only from external beta groups; a ship workflow cannot fix group membership or testers";
@@ -1167,6 +1175,7 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
     if (r.compile?.state !== "green") { decide("blocked", `compile check on main is ${r.compile?.state || "unknown"}`); continue; }
     if (!r.rateGate.open) { decide("deferred", `rate gate:  last upload ${r.rateGate.hoursSinceUpload}h ago, ${r.rateGate.minutesLeft}m left of ${r.rateGate.hours}h`); continue; }
     if (r.shipped?.isMainHead) { decide("blocked", "main HEAD is already the shipped sha"); continue; }
+    if (s.remedy?.dispatchOutcome === "unknown") { decide("blocked", "previous dispatch outcome unknown; reconciliation required before automatic retry"); continue; }
     if (s.remedy && s.remedy.headSha === r.mainHead.sha) {
       decide("blocked", `already dispatched once for main HEAD ${short(r.mainHead.sha)} at ${ownerTime(s.remedy.at)};  a new main commit re-arms it`);
       continue;
@@ -1180,15 +1189,35 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
       dispatched++;
       continue;
     }
+    // Persist intent BEFORE any possible POST. An interrupted/ambiguous request must
+    // never be blindly dispatched again, even if token cleanup or later state writes fail.
+    s.remedy = { at: new Date(nowMs).toISOString(), headSha: r.mainHead.sha, targetSha: r.native.sha, workflow: r.pipeline.workflow, repo: `${registry.owner}/${r.repo}`, ref: "main", intentId: randomUUID(), dispatchOutcome: "unknown" };
+    try { await deps.writeState(state); }
+    catch { delete s.remedy; decide("failed", "dispatch intent could not be persisted; no request made"); continue; }
     try {
-      await deps.ghDispatch(`${registry.owner}/${r.repo}`, r.pipeline.workflow, "main", r.pipeline.inputs);
+      const outcome = await deps.ghDispatch(`${registry.owner}/${r.repo}`, r.pipeline.workflow, "main", r.pipeline.inputs);
+      s.remedy.dispatchOutcome = outcome?.dispatchOutcome || "accepted";
+      s.remedy.revocationFailed = outcome?.revocationFailed === true;
+      if (outcome?.runId) s.remedy.runId = outcome.runId;
       decide("dispatched", cmd);
-      s.remedy = { at: new Date(nowMs).toISOString(), headSha: r.mainHead.sha, targetSha: r.native.sha, workflow: r.pipeline.workflow };
+      r.remedy.revocationFailed = s.remedy.revocationFailed;
       fleetInflight.push(r.key);
       dispatched++;
     } catch (err) {
-      decide("failed", String(err.message || err).slice(0, 200));
+      if (["not-attempted", "rejected"].includes(err.dispatchOutcome)) {
+        delete s.remedy;
+        decide("failed", "dedicated service refused before dispatch or GitHub explicitly rejected request");
+      } else {
+        decide("dispatch-unknown", "dispatch acceptance unknown; automatic retry held pending reconciliation");
+        s.remedy.revocationFailed = err.revocationFailed === true;
+        fleetInflight.push(r.key);
+        dispatched++;
+      }
+      r.remedy.revocationFailed = err.revocationFailed === true;
     }
+    // The durable pre-dispatch intent remains protective if this write fails.
+    try { await deps.writeState(state); } catch { r.remedy.stateWriteFailed = true; }
+
   }
   return dispatched;
 }
@@ -1233,7 +1262,7 @@ export function planAlerts(results, state, registry, { now, exitCode, errors = [
     if (r.status === "current") {
       delete s.behindSince;
       delete s.alert;
-      delete s.remedy;
+      if (s.remedy?.dispatchOutcome !== "unknown") delete s.remedy;
       continue;
     }
     if (!s.behindSince) s.behindSince = new Date(nowMs).toISOString();
@@ -1449,6 +1478,14 @@ export async function runCheck(opts, deps, registry) {
       const extraInflight = fullRun ? [] : await otherAppsInFlight(ctx, registry, keys, now);
       await runRemedies(results, state, deps, registry, { dryRun: opts.dryRun, maxShips: opts.maxShips, now, extraInflight });
     }
+    for (const [appKey, saved] of Object.entries(state?.apps || {})) {
+      if (saved.remedy?.dispatchOutcome === "unknown") errors.push(`${appKey}: reconciliation-required for intent ${saved.remedy.intentId || "legacy-unknown"}; automatic catch-up held; no retry without recorded disposition`);
+    }
+    for (const r of results) {
+      if (r.remedy?.revocationFailed) errors.push(`${r.key}: dedicated service token revocation failed; dispatch acceptance preserved`);
+      if (r.remedy?.action === "dispatch-unknown") errors.push(`${r.key}: dispatch outcome unknown; automatic retry held`);
+      if (r.remedy?.stateWriteFailed) errors.push(`${r.key}: dispatch outcome state update failed; durable dispatch intent retained`);
+    }
     const exitCode = exitCodeFor(results, errors);
     const report = {
       schemaVersion: 1,
@@ -1505,7 +1542,7 @@ async function otherAppsInFlight(ctx, registry, checkedKeys, now) {
       const j = await ctx.gh(`repos/${registry.owner}/${a.repo}/actions/workflows/${a.ship.workflow}/runs?branch=${encodeURIComponent(a.branch || "main")}&per_page=20`);
       return splitInflight(j.workflow_runs, now.getTime(), Number(registry.inflightMaxHours ?? DEFAULT_INFLIGHT_MAX_HOURS)).live.length ? k : null;
     } catch {
-      return null;
+      return k; // Unknown other-app run visibility cannot establish serial clearance.
     }
   });
   return hits.filter(Boolean);
