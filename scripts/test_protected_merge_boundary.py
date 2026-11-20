@@ -30,9 +30,7 @@ def step(job, name):
 def run(script, env):
     with tempfile.TemporaryDirectory() as td:
         e = dict(os.environ, **env, GITHUB_OUTPUT=str(pathlib.Path(td) / "out"))
-        return subprocess.run(
-            ["bash", "-eu", "-c", script], env=e, text=True, capture_output=True
-        )
+        return subprocess.run(["bash", "-eu", "-c", script], env=e, text=True, capture_output=True)
 
 
 class Provenance(unittest.TestCase):
@@ -116,9 +114,7 @@ class Provenance(unittest.TestCase):
 class Credentials(unittest.TestCase):
     def test_protected_missing_fails_no_fallback(self):
         for job in ["classify", "arm"]:
-            s = next(
-                x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds"
-            )
+            s = next(x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds")
             for app, key in [("", ""), ("id", ""), ("", "marker")]:
                 p = run(
                     s["run"],
@@ -128,9 +124,7 @@ class Credentials(unittest.TestCase):
 
     def test_legacy_presence_semantics_preserved(self):
         for job in ["classify", "arm"]:
-            s = next(
-                x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds"
-            )
+            s = next(x for x in D["jobs"][job]["steps"] if x.get("id") == "merge_app_creds")
             for app, key in [("", ""), ("id", ""), ("", "marker"), ("id", "marker")]:
                 p = run(
                     s["run"],
@@ -140,9 +134,7 @@ class Credentials(unittest.TestCase):
 
     def test_protected_present(self):
         for j in ["classify", "arm"]:
-            s = next(
-                x for x in D["jobs"][j]["steps"] if x.get("id") == "merge_app_creds"
-            )
+            s = next(x for x in D["jobs"][j]["steps"] if x.get("id") == "merge_app_creds")
             p = run(
                 s["run"],
                 dict(
