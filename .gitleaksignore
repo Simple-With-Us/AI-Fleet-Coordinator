@@ -145,3 +145,8 @@ eaef7728bc36e12af3d316ecb1302c6644cff39e:scripts/build-workflow-client-release.p
 # The value is a git commit id, not a credential.  The PR squash-merges;  if main's push-range scan
 # flags the squash commit, it gets its own fingerprint (the PR #359 squash entry above is the precedent).
 81535dfc3c6d35bd53488e571418247d727b8197:scripts/build-push-client-release.py:generic-api-key:16
+
+# Squash commit of PR #2368 on main (the scanner pin bump):  the same literal the branch entry above
+# silences, re-introduced under the squash commit id;  fingerprints are per commit (the PR #359 squash
+# entry above is the precedent).
+745a5da3857e9625bb78deb08ab8f29586a95c34:scripts/build-push-client-release.py:generic-api-key:16
