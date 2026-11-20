@@ -1604,6 +1604,42 @@ class LaneNewTests(WorldCase):
         self.assertEqual(offenders, [], "the lane must carry no group-write or setgid bits")
         self.assertNotEqual(root.stat().st_mode & 0o022, 0, "the shared root keeps its own bits")
 
+    def test_the_strip_never_follows_a_symlink_out_of_the_lane(self) -> None:
+        #  A checkout can carry the repo's own symlinks, and os.chmod follows them:  a
+        #  group-writable target outside the lane must keep its bits.
+        w = self.w
+        outside = w.root / "outside-target.txt"
+        outside.write_text("do not touch", encoding="utf-8")
+        os.chmod(outside, 0o664)
+        res = w.lane(
+            "new",
+            "DealDex",
+            "fix-thing",
+            "--purpose",
+            "Fix the thing",
+            "--board",
+            "a7dfde0e",
+        )
+        path = w.lane_path()
+        self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
+        link = path / "linked.txt"
+        os.symlink(outside, link)  # a Linux symlink's own mode is 0777:  group-write set
+        setgid_dir = path / "setgid-dir"
+        setgid_dir.mkdir()
+        os.chmod(setgid_dir, 0o2755)  # setgid without group-write:  the guard must still clear it
+        setgid_file = path / "setgid-file.txt"
+        setgid_file.write_text("x", encoding="utf-8")
+        os.chmod(setgid_file, 0o644 | 0o2000)
+        K._strip_group_write(path)
+        self.assertEqual(setgid_dir.stat().st_mode & 0o2000, 0, "a setgid-only dir loses the bit")
+        self.assertEqual(setgid_file.stat().st_mode & 0o2000, 0, "a setgid-only file loses the bit")
+        self.assertEqual(
+            outside.stat().st_mode & 0o022,
+            0o020,
+            "the outside target keeps its own bits:  the strip never followed the link",
+        )
+        self.assertTrue(link.is_symlink(), "the link itself stays a link")
+
     def test_happy_path(self) -> None:
         w = self.w
         res = w.lane(

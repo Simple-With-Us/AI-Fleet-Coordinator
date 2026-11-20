@@ -98,6 +98,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -1091,20 +1092,31 @@ def _strip_group_write(path: Path) -> None:
     A lane on the fleet volume inherits group-writable files and folders, and repo code that
     judges modules by owner and mode (`fleet-ops-control.py`'s `_read_module_source`) refuses a
     group-writable checkout, so tests that load judged modules fail in the lane and nowhere
-    else.  The lane stays readable by the group; only the write bits go, inside the lane alone.
-    Best effort:  a chmod that fails is left alone (the checkout still exists, so git keeps
-    working and a later tool or seat can finish the job)."""
+    else.  The setgid bit goes too:  a folder that keeps it would hand the same bits to every
+    directory created in the lane later, defeating the strip at handoff.  The lane stays
+    readable by the group; only the write and setgid bits go, inside the lane alone.  Best
+    effort:  a chmod that fails is left alone (the checkout still exists, so git keeps working
+    and a later tool or seat can finish the job)."""
     if not path.is_dir():
         return
+    clear = 0o022 | 0o2000  # group-write, other-write, setgid
     candidates = [path, *path.rglob("*")]
     candidates.reverse()  # deepest first, so a failed chmod cannot orphan the rest
     for p in candidates:
         try:
             mode = p.lstat().st_mode
-            if mode & 0o022:
-                os.chmod(p, mode & ~0o022)
         except OSError:
             continue
+        if stat.S_ISLNK(mode):
+            #  A checkout can carry the repo's own symlinks;  os.chmod would follow one
+            #  and change a target that may live outside the lane.  A link's own mode is
+            #  not used on Linux, so leaving it alone loses nothing.
+            continue
+        if mode & clear:
+            try:
+                os.chmod(p, mode & ~clear)
+            except OSError:
+                continue
 
 
 def _branch_state(run: Runner, tree: Path, branch: str) -> tuple[bool, bool]:
