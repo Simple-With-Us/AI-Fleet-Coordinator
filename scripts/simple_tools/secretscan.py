@@ -142,7 +142,7 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     value = chain.group(0)
     if value.startswith(("process.env.", "import.meta.env.")):
         return False
-    return re.search(r"[a-z][A-Z]", value)
+    return re.search(r"[a-z][A-Z]", value) is not None
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
