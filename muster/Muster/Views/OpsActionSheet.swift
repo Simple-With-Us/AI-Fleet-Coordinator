@@ -212,6 +212,9 @@ struct OpsActionSheet: View {
                 if let settings = outcome.listenerSettings {
                     listenerSettingsBlock(settings)
                 }
+                if let pause = outcome.pause {
+                    pauseBlock(pause, heading: "In Force Now")
+                }
                 commandsDisclosure(outcome, title: "Exact Commands")
                 // A helper that says where it ran is checked:  a mismatch never reaches
                 // this phase.  A helper that does not say shows nothing.
@@ -277,6 +280,12 @@ struct OpsActionSheet: View {
                 }
                 if let settings = outcome.listenerSettings {
                     listenerSettingsBlock(settings)
+                }
+                if let testWake = outcome.testWake {
+                    testWakeBlock(testWake)
+                }
+                if let pause = outcome.pause {
+                    pauseBlock(pause, heading: "The Eavesdropper's Status Shows")
                 }
                 if let logText = outcome.logText {
                     logBlock(logText, heading: outcome.journalHeading, countLine: outcome.journalCountLine)
@@ -394,6 +403,35 @@ struct OpsActionSheet: View {
                 Text(warning)
                     .font(.caption)
                     .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// The Eavesdropper's pause, as a pause or resume plan read it before anything ran, or as the
+    /// run read it back from the status after.
+    private func pauseBlock(_ pause: OperatorPauseState, heading: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(heading)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(pause.lines, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What a test wake came to:  the chat it addressed, whether the router accepted the dry run,
+    /// what it would have picked, that nothing was delivered, and the wake id.
+    private func testWakeBlock(_ testWake: OperatorTestWake) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(testWake.lines, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

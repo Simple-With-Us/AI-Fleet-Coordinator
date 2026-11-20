@@ -537,6 +537,11 @@ SPEC = PL.PlatformSpec(
     close_reasons=(),
     title_writer=grok_rename,
     locations=("mac",),
+    unlettered_feed=(
+        "hook-only:  the store lists chats (summary.json), but a chat is a chat of ours only inside Grok's own hook"
+        " runner (grok_session_id), so no start can be replayed from outside it;  every Grok chat is a TUI chat whose"
+        " next prompt asks again"
+    ),
 )
 
 

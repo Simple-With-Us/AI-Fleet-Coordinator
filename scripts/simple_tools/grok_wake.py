@@ -218,7 +218,9 @@ def _wake_from(data: object) -> WR.Wake:
 
 def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     """Why this wake must not run, or None when the registry still holds this chat.
-    Nothing has been prompted yet, so a registry that cannot be read is `failed`."""
+    Nothing has been prompted yet, so a registry that cannot be read is `busy` and is tried
+    again without spending an attempt;  a host with no registry address or key is `failed`,
+    because a retry does not fix it."""
     try:
         answer = WR.registry_api.call(
             env,
@@ -227,9 +229,10 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no prompt without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        # A host with no registry address or key is a deployment fault, not an outage.
+        return WR.registry_failure(env)
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code=WR.registry_trouble(answer))
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
