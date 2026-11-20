@@ -13,7 +13,7 @@ BASE = {
     "scripts/git-tools/git": "fb1b0b85d5d8f8ae1551c74a6813ff6bd7fbc8d9d2dd40b12a6939a5748266e6",
     "scripts/git-tools/catalog.json": "a92812f6893791957552246167fe6f46baaf198f73f0d5be427f668ce05971ea",
     "scripts/git-tools/export_catalog.py": "727f0e66aee78660c01cb9d36e5861a547fd2d962664e54f1397e9d4d57ceed9",
-    "scripts/simple_tools/secretscan.py": "f29d222d0d6af9726b93c268134cf4fe4c84af10a60da9460250aef9892c253c",
+    "scripts/simple_tools/secretscan.py": "0e920cb2031b0d261aa9c7b94fc2c972d89f72c02a73646a139791a409b641f9",
 }
 INPUTS = {
     "git": "47e12d5c2f9cbd8f3284801849cfa09f85abbb447ba3f69e4b504ba6853da6b4",
