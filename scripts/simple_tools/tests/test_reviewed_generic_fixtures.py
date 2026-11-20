@@ -112,6 +112,11 @@ class ReviewedGenericTests(unittest.TestCase):
         body = "bar(x), token: snapshot.wind" + "ow.window\n"
         self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
+    def test_labeled_argument_requires_colon_separator(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        body = "foo(token=snapshot.wind" + "ow.window)\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
             self.assertIsNone(secretscan.scan_file(self.repo, self.path, self.body))
