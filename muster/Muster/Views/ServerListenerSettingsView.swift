@@ -132,6 +132,8 @@ private struct ServerSettingRowView: View {
                 .font(.system(size: 11, design: .monospaced)).frame(width: 190)
         case .pairs?:
             ServerPresencePairsEditor(draft: $draft, channelNames: row.channelNames)
+        case .seats(let count, let length)?:
+            ServerSeatListEditor(draft: $draft, maxItems: count, maxLength: length)
         case nil:
             // Identity pins and unknown fields are status, rather than disabled controls.
             VStack(alignment: .leading, spacing: 2) {
@@ -199,5 +201,52 @@ private struct ServerPresencePairsEditor: View {
 
     private func update(_ values: [[String]]) {
         draft = ServerSettingValue.list(values.map { .list($0.map(ServerSettingValue.text)) }).json ?? "[]"
+    }
+}
+
+/// Seat lists stay typed strings, without exposing JSON or changing routing on display.
+struct ServerSeatListEditor: View {
+    @Binding var draft: String
+    let maxItems: Int
+    let maxLength: Int
+
+    private var seats: [String] {
+        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return [] }
+        return values.compactMap { if case .text(let name) = $0 { return name } else { return nil } }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(seats.indices, id: \.self) { index in
+                HStack {
+                    TextField("Seat name", text: field(index))
+                        .accessibilityLabel("Seat Name \(index + 1)")
+                    Button {
+                        var values = seats
+                        guard values.indices.contains(index) else { return }
+                        values.remove(at: index)
+                        update(values)
+                    } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.borderless).accessibilityLabel("Remove Seat \(index + 1)")
+                }.textFieldStyle(.roundedBorder)
+            }
+            Button("Add Seat", systemImage: "plus") { update(seats + [""]) }
+                .disabled(seats.count >= maxItems)
+            Text("Uppercase seat names, up to \(maxLength) characters each.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.font(.system(size: 11)).frame(minWidth: 240)
+    }
+
+    private func field(_ index: Int) -> Binding<String> {
+        Binding(get: { seats.indices.contains(index) ? seats[index] : "" }, set: { value in
+            var values = seats
+            guard values.indices.contains(index) else { return }
+            values[index] = value
+            update(values)
+        })
+    }
+
+    private func update(_ values: [String]) {
+        draft = ServerSettingValue.list(values.map(ServerSettingValue.text)).json ?? "[]"
     }
 }
