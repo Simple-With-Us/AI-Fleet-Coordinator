@@ -139,6 +139,17 @@ declared_at = 1762575240                     # epoch seconds
 
 The values above show the shape;  the live Mac file holds the owner's real reason and time.  The loader (`config.py`:  `parse_decider_declaration`, `select_decider_runtime`, `Config.decider_declaration`) applies the validation the deleted Muse inbox bridge used for the same table (AFC-649):  `runtime`, `model`, `reason` and `declared_at` are required;  an `@preset/` model also needs a non-empty `expected_models` of plain `provider/name` ids, because a preset's model list lives on the dashboard and this list is the only code-side fingerprint of it;  a `review_by` that is given must be a finite time after `declared_at`, and once it passes the decider holds.  No declaration selects the primary.  A declaration that is there but malformed is a warning in `simple-chat daemon check-config`, never an error, and the decider holds on it rather than calling anything.  An unknown key in `[decider]` is an error.
 
+## GROK Last Mile (Why A Wake Is Refused)
+
+GROK is delivered by `simple_tools/grok_wake.py`:  the router picks a chat from the registry, then the Mac asks `grok-drive list` about that one chat and prompts it only when a Grok TUI has it open and its turn is idle.  The registry and the TUI mean different things by "live".  A registry row stays open until the stale sweeper ends it, and the sweeper ends only a chat that is stale (36 hours) and replaced by a newer chat of the seat, so the last Grok chat the owner used stays open for good.  `grok-drive` says `live` only while `~/.grok/active_sessions.json` lists the chat, which Grok maintains while a tab is open.  A wake to a chat that was quit is therefore refused before any prompt, with one of these codes in the receipt:
+
+- `tui-not-attached`:  the chat exists and no Grok TUI has it open.  Reopen it with `grok --resume <session id>` or start a new Grok chat, which registers and is picked from then on.
+- `chat-not-listed`:  nothing on the Mac knows the chat (the leader's list and the TUI registry both lack it).
+- `drive-list-unavailable`, `drive-list-timeout`, `drive-list-unreadable`:  the list could not be trusted (retried).
+- `turn-working`, `turn-needs-input`:  the chat is busy (retried).
+
+Both refusals are final and `delivered: false`.  A quit chat is never resumed headless, because that would run tools with nobody watching.  The Zulip message stays in the seat's inbox.  Until the Mac and the server both run this change, a refusal can still read `not-live`.  Deploy the server before the Mac.  The server router builds its never-ran set from its own copy of grok_wake, so a Mac that answers with the new codes before the server is updated is recorded as delivered: null rather than false.  The order the other way round is covered, because the old code stays in the set.
+
 ## Single-Threaded Platforms (The Grok Bots GB-*, MA, JET, WISE, ECHO)
 
 Two groups.  JET and the Grok bots GB-* are woken through their `wake = "http"` routines directly;  MA, GROK-WEB, WISE and ECHO are `wake = "inbox"` seats with no routine and no pick at all:
