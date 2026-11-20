@@ -150,10 +150,10 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
         tail = re.search(r"[(,]\s*$", before)
         if tail is None:
             return False
-        # Some open paren must be a call paren (right after an identifier
-        # char), so a grouping paren inside a call does not hide it, and
-        # parens inside string literals are skipped, so a parenthetical aside
-        # in prose or a quoted paren cannot open a call.
+        # The innermost open paren must be a call paren (right after an
+        # identifier char). Balanced grouping pairs are popped when they
+        # close, so they do not hide the call; parens inside string literals
+        # are skipped, so prose or a quoted paren cannot open a call.
         stack = []
         quote = ""
         for i, ch in enumerate(before):
@@ -166,7 +166,7 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
                 stack.append(i > 0 and (before[i - 1].isalnum() or before[i - 1] in "_$"))
             elif ch == ")" and stack:
                 stack.pop()
-        labeled_arg = any(stack) and not quote
+        labeled_arg = bool(stack) and stack[-1] and not quote
         if not labeled_arg:
             return False
     if _SOURCE_RHS.match(text, start) is not None:
