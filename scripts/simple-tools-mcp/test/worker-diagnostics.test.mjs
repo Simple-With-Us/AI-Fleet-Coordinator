@@ -94,7 +94,7 @@ test("refreshed relay rows cannot crowd token and mcp rows out of the recent tai
   // A relay storm:  ten distinct gr_assert causes (the relay check rows' own store),
   // continuously refreshed and therefore always the newest, against two token and
   // two mcp rows recorded once each.
-  for (let i = 0; i < 10; i += 1) await record(logGate, { kind: "gr_assert", reason: `bad_signature_${i}`, status: 401 });
+  for (let i = 0; i < 10; i += 1) await record(logGate, { kind: "gr_assert", reason: `cause_${i}`, status: 401 });
   await record(logGate, { kind: "token", reason: "token_a", status: 401 });
   await record(logGate, { kind: "token", reason: "token_b", status: 401 });
   await record(logGate, { kind: "mcp", reason: "mcp_a", status: 502 });
@@ -106,7 +106,7 @@ test("refreshed relay rows cannot crowd token and mcp rows out of the recent tai
   // with rows keeps its newest slots, so both token and both mcp rows stay visible
   // next to the two newest gr_assert rows.
   assert.deepEqual(out.recent.slice(0, 6).map((r) => r.kind), ["gr_assert", "mcp", "token", "gr_assert", "mcp", "token"]);
-  assert.deepEqual(out.recent.slice(0, 6).map((r) => r.reason), ["bad_signature_9", "mcp_b", "token_b", "bad_signature_8", "mcp_a", "token_a"]);
+  assert.deepEqual(out.recent.slice(0, 6).map((r) => r.reason), ["cause_9", "mcp_b", "token_b", "cause_8", "mcp_a", "token_a"]);
   assert.deepEqual(out.recent.filter((r) => r.kind === "token").map((r) => r.reason), ["token_b", "token_a"]);
   assert.deepEqual(out.recent.filter((r) => r.kind === "mcp").map((r) => r.reason), ["mcp_b", "mcp_a"]);
 });
