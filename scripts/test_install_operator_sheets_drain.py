@@ -91,7 +91,7 @@ def fake_core(found=None, error=None):
         calls.append({"project": project, "path": path, "env": env, "token": token, "names": names})
         if error:
             raise SecretsError(error)
-        return {"OPERATOR_GOOGLE_SHEETS_SA": FAKE_SA} if found is None else found
+        return {"GOOGLE_SHEETS_SA": FAKE_SA} if found is None else found
 
     core = types.SimpleNamespace(
         SecretsError=SecretsError,
@@ -474,7 +474,7 @@ class PythonBlockTests(unittest.TestCase):
                     "path": "/google-sheets-sa",
                     "env": {},  # no caller variable can redirect the API or widen the folders
                     "token": FAKE_TOKEN,
-                    "names": ["OPERATOR_GOOGLE_SHEETS_SA"],
+                    "names": ["GOOGLE_SHEETS_SA"],
                 }
             ],
         )
@@ -488,7 +488,7 @@ class PythonBlockTests(unittest.TestCase):
         core, _ = fake_core(found={})
         with self.assertRaises(self.block.InstallError) as caught:
             self.block.fetch_service_account(core, FAKE_TOKEN, {})
-        self.assertIn("OPERATOR_GOOGLE_SHEETS_SA is not in Fleet-OPS prod", str(caught.exception))
+        self.assertIn("GOOGLE_SHEETS_SA is not in Fleet-OPS prod", str(caught.exception))
 
     def test_service_account_shape_is_checked_without_echoing_it(self):
         self.assertEqual(self.block.check_service_account(FAKE_SA), FAKE_SA.encode())

@@ -94,7 +94,7 @@ Before step 1 the script checks that `/etc/operator-sheets`, if it exists, is ro
    `operator_sheets_google.mjs`, `operator_sheets_drain.mjs` and, for the Zulip Threads sync,
    `thread_registry_export.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root; a file
    whose content, mode or owner differs is replaced);
-2. reads `OPERATOR_GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
+2. reads `GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
 3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids, the registry container and store, and the knobs, and prints the names (never the values) of settings that changed, were kept or were dropped;
 4. runs a preflight, with a 120 s limit on each read, to check that the registry's
    `pending-outbox` and `export-attempts` reads inside the container return JSON lists (it prints
@@ -138,7 +138,7 @@ The app redeploy (Eavesdropper image) must land before the first fenced drain: t
   `node thread_registry_export.mjs rows.json` on a host with the key prints the plan and
   writes nothing.  `--write` writes, and only while no drain run holds the writer lease
   (`OPERATOR_SHEETS_LOCK`, default `/tmp/operator-sheets-drain.lock`);  stop
-  `operator-sheets-drain.timer` and let a running drain finish first.
+  `operator-sheets-drain.timer` and let a running drain finish first.  Rows with credential-shaped cells are refused and counted before anything is written, and only the refusal count is logged.
 - Inspect the fence in the store: `docker exec -w /app/scripts eavesdropper python3 -m simple_tools.operator_registry export-attempts --db /data/operator/registry.sqlite3 --limit 20`.
 - Pending backlog: same CLI, `pending-outbox --limit 5`.
 - An `ambiguous` fence row names the duplicated ID and its sheet rows; resolve by hand in the sheet (delete the wrong duplicate), then let the next timer run reconcile.

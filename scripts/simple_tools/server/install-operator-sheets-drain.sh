@@ -12,7 +12,7 @@
 #      operator_sheets_export.mjs, operator_sheets_google.mjs, operator_sheets_drain.mjs and
 #      thread_registry_export.mjs (the Zulip Threads sync the same run does, AFC-823) into
 #      /usr/local/lib/operator-sheets-drain (0644, root);
-#   2. reads OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
+#   2. reads GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
 #      with the caller's scoped READ-only service token and writes /etc/operator-sheets/sa.json
 #      (0600, root);
 #   3. writes /etc/operator-sheets/drain.env (0600, root): the workbook id, sheet ids and the
@@ -272,7 +272,7 @@ done
 # --- 2 and 3. sa.json from Infisical, and drain.env ----------------------------------------
 
 if [[ "$DRY" -eq 1 ]]; then
-  say "would read OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa"
+  say "would read GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa"
   say "  with the read-only service token in $TOKEN_FILE (the token is not read in a dry run)"
   say "would write $ETC_DIR/sa.json (0600, root) if its content changed"
   say "would write $ETC_DIR/drain.env (0600, root) if its content changed, with:"
@@ -301,7 +301,7 @@ import sys
 
 ROOT_UID = 0
 SECRET_PATH = "/google-sheets-sa"
-SECRET_NAME = "OPERATOR_GOOGLE_SHEETS_SA"
+SECRET_NAME = "GOOGLE_SHEETS_SA"
 MAX_TOKEN_BYTES = 8192
 MAX_ENV_BYTES = 64 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW

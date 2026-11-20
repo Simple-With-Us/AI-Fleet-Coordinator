@@ -366,8 +366,8 @@ test("adapter: an update writes B:M and O, never the key, and Purpose only when 
     assert.deepEqual(api.bodies[0], {
       valueInputOption: "RAW",
       data: [
-        { range: `${SHEET_TAB}!B2:M2`, values: [desired.slice(1, 13)] },
-        { range: `${SHEET_TAB}!O2:O2`, values: [["later"]] },
+        { range: `'${SHEET_TAB}'!B2:M2`, values: [desired.slice(1, 13)] },
+        { range: `'${SHEET_TAB}'!O2:O2`, values: [["later"]] },
       ],
     });
     assert.equal(api.grid[0][7], "9");
@@ -375,7 +375,7 @@ test("adapter: an update writes B:M and O, never the key, and Purpose only when 
     await adapter.updateRow(2, row("10:a", { purpose: "from the projection" }), {
       writePurpose: true,
     });
-    assert.deepEqual(api.bodies[1].data.map((d) => d.range), [`${SHEET_TAB}!B2:O2`]);
+    assert.deepEqual(api.bodies[1].data.map((d) => d.range), [`'${SHEET_TAB}'!B2:O2`]);
     assert.equal(api.grid[0][13], "from the projection");
     assert.deepEqual(api.calls, ["batchUpdate", "batchUpdate"]);
   });

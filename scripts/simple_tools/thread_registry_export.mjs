@@ -28,8 +28,8 @@
 //
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  The CLI reads its key JSON
-// from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /google-sheets-sa (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
+// from GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
+// /google-sheets-sa (key GOOGLE_SHEETS_SA) through fleet-secrets — the
 // same approved resolution shape as the other fleet Sheets readers.  The drain
 // runner reads the same key from /etc/operator-sheets/sa.json, which its installer
 // fetches from that Infisical path.  The sheet must be shared (Editor) with that service
@@ -93,11 +93,11 @@ function base64url(input) {
 }
 
 function loadServiceAccount() {
-  let raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
+  let raw = process.env.GOOGLE_SHEETS_SA || "";
   if (!raw) {
     const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
+      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).replace(/\n$/, "");
@@ -107,7 +107,7 @@ function loadServiceAccount() {
   }
   if (!raw) {
     throw new Error(
-      "Operator thread registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /google-sheets-sa"
+      "Operator thread registry service account missing: set GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /google-sheets-sa"
     );
   }
   return JSON.parse(raw);
@@ -370,11 +370,12 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
       // never written: a row that moved under the write then keeps its own key and the
       // next run repairs it.  Purpose (N) is written only when the caller asks.
       const r = rowNumber;
+      const q = quotedTab(tab);
       const data = writePurpose
-        ? [{ range: `${tab}!B${r}:O${r}`, values: [cells.slice(1, 15)] }]
+        ? [{ range: `${q}!B${r}:O${r}`, values: [cells.slice(1, 15)] }]
         : [
-          { range: `${tab}!B${r}:M${r}`, values: [cells.slice(1, COL_PURPOSE)] },
-          { range: `${tab}!O${r}:O${r}`, values: [[cells[COL_UPDATED]]] },
+          { range: `${q}!B${r}:M${r}`, values: [cells.slice(1, COL_PURPOSE)] },
+          { range: `${q}!O${r}:O${r}`, values: [[cells[COL_UPDATED]]] },
         ];
       await call("/values:batchUpdate", {
         method: "POST",

@@ -84,8 +84,8 @@ test("a body stream failure still throws the status-only error", async () => {
 test("token endpoint non-JSON 502 names the status and leaks no body secrets", async () => {
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const private_key = privateKey.export({ type: "pkcs8", format: "pem" });
-  const savedEnv = process.env.OPERATOR_GOOGLE_SHEETS_SA;
-  process.env.OPERATOR_GOOGLE_SHEETS_SA = JSON.stringify({
+  const savedEnv = process.env.GOOGLE_SHEETS_SA;
+  process.env.GOOGLE_SHEETS_SA = JSON.stringify({
     client_email: "t@example.iam.gserviceaccount.com", private_key,
   });
   const saved = globalThis.fetch;
@@ -98,8 +98,8 @@ test("token endpoint non-JSON 502 names the status and leaks no body secrets", a
     });
   } finally {
     globalThis.fetch = saved;
-    if (savedEnv === undefined) delete process.env.OPERATOR_GOOGLE_SHEETS_SA;
-    else process.env.OPERATOR_GOOGLE_SHEETS_SA = savedEnv;
+    if (savedEnv === undefined) delete process.env.GOOGLE_SHEETS_SA;
+    else process.env.GOOGLE_SHEETS_SA = savedEnv;
   }
 });
 
@@ -123,6 +123,18 @@ test("a payload with the wrong workbook fails validation before the workbook che
       err: (m) => calls.push(["err", m]),
     }),
     /thread-rows row 0 is not 15 cells/,
+  );
+  assert.deepEqual(calls, []);
+  // The same shape with a well-formed row must reach the workbook and tab guard.
+  await assert.rejects(
+    runCli(["payload.json"], {
+      readText: () => JSON.stringify({ spreadsheetId: "nope", tab: SHEET_TAB, rows: [row] }),
+      getToken: async () => { throw new Error("must not fetch a token"); },
+      makeAdapter: () => { throw new Error("must not build an adapter"); },
+      out: (m) => calls.push(["out", m]),
+      err: (m) => calls.push(["err", m]),
+    }),
+    /different workbook or tab/,
   );
   assert.deepEqual(calls, []);
 });

@@ -118,9 +118,9 @@ The drain authenticates as a **service account**, never as an agent's Google ide
 Owner ruling (Nov 3, 2026):  the **existing fleet Sheets service account is reused** for
 the Operator registries;  no dedicated SA is created for this registry.
 
-- Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
+- Env:  `GOOGLE_SHEETS_SA` (the service-account JSON), or
 - Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
-  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the approved
+  `GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the approved
   fleet Sheets route, no purpose-scoped copy.  The CLI never writes the key to disk
   or prints it.
 - On the server, the scheduled drain reads the same key from
