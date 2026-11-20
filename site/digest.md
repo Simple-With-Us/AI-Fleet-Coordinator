@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-20 02:41 CST · timezone America/Chicago_
+_Generated 2026-11-20 15:19 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,19 +11,32 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-20
 
-*9 PRs merged · 0 issues opened · 0 issues closed*
+*22 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** `Claude` [#2315](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2315): Wake Router: Deliver A Held Chat's Pending Wakes As One Idle Turn (AFC-831) _(by jaywedgeworth22)_
 - **AFC** `Z Code` [#2337](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2337): fix(installer): name the line the stale-seat emit points at _(by jaywedgeworth22)_
+- **AFC** `Z Code` [#2359](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2359): strip group-write bits from a new lane checkout _(by jaywedgeworth22)_
 - **AFC** [#2363](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2363): scanner: admit reviewed Congress.Trade app/deno.lock exact bytes (public integrity) _(by jaywedgeworth22)_
+- **AFC** [#2364](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2364): CLIs load the seat bearer from the canonical store; recall hosted by default for declared seats _(by jaywedgeworth22)_
 - **AFC** `MiniMax` [#2366](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2366): Letters: Free A Letter When A Chat Is Archived (AFC-855) _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2367](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2367): Fence merge service jobs to protected environment and trusted context _(by jaywedgeworth22)_
 - **AFC** [#2368](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2368): push client: pin the scanner past #2361 (CodeCaps caption false positive) _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2369](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2369): Name The Writer On A Hosted simple-notes Write (AFC-856) _(by jaywedgeworth22)_
+- **AFC** [#2370](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2370): chore(gitleaks): fingerprint the PR #2368 squash commit's scanner-pin literal _(by jaywedgeworth22)_
+- **AFC** [#2372](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2372): push client: pin the scanner past #2363 (Congress.Trade deno.lock admission) _(by jaywedgeworth22)_
+- **AFC** [#2374](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2374): gitleaksignore: fingerprint PR #2372 squash commit _(by jaywedgeworth22)_
 - **BF** `Z Code` [#2146](https://github.com/Simple-With-Us/BotFleet/pull/2146): Pin The Runtime-Identity Fingerprint Walk Off The Serving Path _(by jaywedgeworth22)_
 - **BF** `Z Code` [#2147](https://github.com/Simple-With-Us/BotFleet/pull/2147): fix(native-release): point the Sparkle key fetch at prod /botfleet-server _(by jaywedgeworth22)_
 - **BF** `Z Code` [#2148](https://github.com/Simple-With-Us/BotFleet/pull/2148): Cover ETXTBSY In The Rollback-Probe Recheck Retry _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2150](https://github.com/Simple-With-Us/BotFleet/pull/2150): fix(native-release): give the ASC step the same GitHub fallbacks as packaging _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2151](https://github.com/Simple-With-Us/BotFleet/pull/2151): fix(native-release): read the canonical update pair from /botfleet-server _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2152](https://github.com/Simple-With-Us/BotFleet/pull/2152): fix(native-release): archive on the xcode-27 image _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2153](https://github.com/Simple-With-Us/BotFleet/pull/2153): fix(native-release): sign with the pinned Sparkle 2.9.6 tools _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2154](https://github.com/Simple-With-Us/BotFleet/pull/2154): fix(native-release): hand sign_update the base64 key text it reads _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2155](https://github.com/Simple-With-Us/BotFleet/pull/2155): fix(native-release): diagnose the sign_update key format on the live dispatch _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2156](https://github.com/Simple-With-Us/BotFleet/pull/2156): fix(native-release): log the signing attempts fully — vault values are masked _(by jaywedgeworth22)_
 
 ## 2026-11-19
 
@@ -1411,13 +1424,10 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-05
 
-*63 PRs merged · 0 issues opened · 0 issues closed*
+*60 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1280](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1280): fix: custody write verbs, truthful census pagination, guarded merge receipt, opt-in large text (R-verbs corrective) _(by jaywedgeworth22)_
-- **AFC** [#1291](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1291): Adopt Scoped Infisical Clients _(by jaywedgeworth22)_
-- **AFC** [#1293](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1293): Update dependency agents to v0.29.0 _(by renovate[bot])_
 - **AFC** [#1324](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1324): Make The Server Report Say What Is True _(by jaywedgeworth22)_
 - **AFC** [#1326](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1326): Muster Menu Names The Machine _(by jaywedgeworth22)_
 - **AFC** [#1327](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1327): Add Release Retention To Fleet CLI And Name Receiver Refusals In Sync _(by jaywedgeworth22)_
