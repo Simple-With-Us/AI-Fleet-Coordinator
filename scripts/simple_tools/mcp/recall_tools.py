@@ -273,19 +273,19 @@ def search(
     *,
     env: Mapping[str, str],
     runner: Runner | None = None,
-    scan: Callable[[str, str], None] | None = None,
+    scan: Callable[[str, str], None],
 ) -> tuple[str, dict[str, Any]]:
     query = str(args["query"]).strip()
     if not query:
         raise RecallUnavailable("invalid_argument", "argument 'query' must not be blank")
-    # The same pre-upstream gate the recall writes run:  a query, app or category that
-    # looks like it holds a secret is refused here, before anything is sent anywhere,
-    # and the refusal names the field and kind, never the value.
-    if scan is not None:
-        for field in ("query", "app", "category"):
-            value = args.get(field)
-            if value:
-                scan(field, str(value).strip())
+    # The same pre-upstream gate the recall writes run, and it is mandatory, not
+    # optional:  every caller supplies the route's scanner, and a query, app or
+    # category that looks like it holds a secret is refused here, before anything
+    # is sent anywhere.  The refusal names the field and kind, never the value.
+    for field in ("query", "app", "category"):
+        value = args.get(field)
+        if value:
+            scan(field, str(value).strip())
     argv = ["search", query, "--limit", str(args.get("limit") or 5), "--json"]
     if args.get("app"):
         argv += ["--app", str(args["app"])]

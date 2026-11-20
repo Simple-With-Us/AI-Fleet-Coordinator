@@ -92,7 +92,9 @@ class StopHookTests(HookBase):
         self.assertTrue(out["reason"].startswith(REASON_START))
         self.assertIn("recall_contribute", out["reason"])
         self.assertIn("search for duplicates", out["reason"])
-        self.assertIn("finish without filler or a public declaration", out["reason"])
+        # The message names the acknowledgment the hook's predicate accepts, so a seat
+        # that follows it exactly is not blocked again (Kody PR #2211, thread Upp9).
+        self.assertIn("finish by saying `no lesson`", out["reason"])
         self.assertNotIn("reply with", out["reason"])
         marker = self.state / "hook-nudged" / "sess-1"
         self.assertTrue(marker.is_file())

@@ -52,6 +52,6 @@ From now on in every session:
 ## How to tell it is really using it
 
 - `recall digest --days 7` lists agent contributions by seat; a `CODEX` line means it contributed.
-- `recall "<topic>" --seat CODEX` returns Codex's own contributions.
+- `recall -- "<topic>" --seat CODEX` returns Codex's own contributions.
 - The Stop hook nudge (`~/.claude/hooks/fleet-recall-stop.py`) is Claude Code only; Codex has no
   equivalent, so the AGENTS.md stanza and this prompt are what enforce the habit.

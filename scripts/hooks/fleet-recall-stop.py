@@ -25,7 +25,8 @@ MIN_TOOLS_DEFAULT = 25
 REASON = (
     "Fleet recall: this session did substantial work.\u00a0 Consider whether a useful, durable "
     "lesson would help the fleet; if so, search for duplicates and call recall_contribute.\u00a0 "
-    "If none is appropriate, finish without filler or a public declaration."
+    "If none is appropriate, finish by saying `no lesson` — that two-word reply is the "
+    "acknowledgment this hook accepts — and add nothing else."
 )
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]")
 _CONTRIB_CMD = re.compile(r"recall\s+contribute\b")

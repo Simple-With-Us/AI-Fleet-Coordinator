@@ -1526,6 +1526,15 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(["--repo-only", "--home-only"])
 
+    def _fixture_parent(self, path: Path) -> None:
+        """Create the fixture parent dirs owner-only, refusing a symlinked path so the
+        fixture tree cannot be redirected outside its TemporaryDirectory."""
+        for directory in (path.parent, *reversed(path.parent.parents)):
+            if directory.is_symlink():
+                raise AssertionError(f"fixture path is a symlink: {directory}")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.parent.chmod(0o700)
+
     def test_selected_home_refresh_preserves_unrelated_and_retired_files(self) -> None:
         protected = [
             self.home / ".fx/skills/board-ops/SKILL.md",
@@ -1534,7 +1543,7 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             self.home / ".cursor/rules/fleet-recall.mdc",
         ]
         for path in protected:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            self._fixture_parent(path)
             path.write_bytes(b'description: "leave this unrelated file alone"\n')
             path.chmod(0o600)
             os.utime(path, (1, 1))
@@ -1567,7 +1576,7 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             self.repo / "skills/board-ops/SKILL.md",
         ]
         for path in protected:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            self._fixture_parent(path)
             path.write_text("preserve existing task-independent content\n")
         before = {p: p.read_bytes() for p in protected}
         self._run(["--repo-only", "--skill", "session-start"])
