@@ -150,3 +150,10 @@ eaef7728bc36e12af3d316ecb1302c6644cff39e:scripts/build-workflow-client-release.p
 # silences, re-introduced under the squash commit id;  fingerprints are per commit (the PR #359 squash
 # entry above is the precedent).
 745a5da3857e9625bb78deb08ab8f29586a95c34:scripts/build-push-client-release.py:generic-api-key:16
+
+# Push-client scanner pin bump (second, covering PR #2363's CT admission):  the pinned scanner
+# literal sits on the same assignment shape as the PR #2368 entry above, under this branch
+# commit id;  fingerprints are per commit, so the squash commit gets its own follow-up entry
+# after merge (PR #2370 precedent).
+83b3925839b49b582bcb3749d936ed8656da594d:scripts/build-push-client-release.py:generic-api-key:16
+
