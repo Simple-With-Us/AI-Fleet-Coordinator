@@ -187,6 +187,59 @@ class RemoteRecall(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(recall.remote_selected())
 
+    def test_a_declared_seat_without_a_local_corpus_defaults_to_hosted(self):
+        calls = []
+
+        def fake(url, headers, body, timeout):
+            calls.append((url, headers, json.loads(body)))
+            return reply({"points": 5})
+
+        env = {"AGENT_SEAT": "CODEX", "SIMPLE_TOOLS_BEARER": BEARER}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(recall, "_remote_post", fake), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = recall.main(["stats", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][2]["params"]["name"], "recall_stats")
+
+    def test_hosted_default_precedence(self):
+        cases = (
+            ({"AGENT_SEAT": "CODEX"}, "search", True),
+            ({"AGENT_SEAT": "CODEX"}, "doctor", False),
+            ({"AGENT_SEAT": "CODEX", "SIMPLE_RECALL_REMOTE": "0"}, "search", False),
+            ({"AGENT_SEAT": "CODEX", "QDRANT_URL": "http://q.example"}, "search", False),
+            ({}, "search", False),
+        )
+        for env, cmd, expected in cases:
+            with self.subTest(env=env, cmd=cmd), mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(recall.hosted_default(cmd), expected)
+
+    def test_the_canonical_file_supplies_the_bearer(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td).resolve()
+            store = home / ".secrets" / "fleet-tools"
+            store.mkdir(parents=True)
+            store.chmod(0o700)
+            store.parent.chmod(0o700)
+            bearer_file = store / "codex"
+            bearer_file.write_text(BEARER + "\n")
+            bearer_file.chmod(0o600)
+            calls = []
+
+            def fake(url, headers, body, timeout):
+                calls.append((url, headers, json.loads(body)))
+                return reply({"points": 5})
+
+            env = {"SIMPLE_RECALL_REMOTE": "1", "AGENT_SEAT": "CODEX", "HOME": str(home)}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(recall, "_remote_post", fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                code = recall.main(["stats", "--json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(calls[0][1]["Authorization"], "Bearer " + BEARER)
+
 
 class TransportErrors(unittest.TestCase):
     def test_a_truncated_or_malformed_http_answer_is_a_clean_error(self):
