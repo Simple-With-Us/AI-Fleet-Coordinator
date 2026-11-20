@@ -160,7 +160,10 @@ of the topic the read reached is gone as well.
 A repair that fails is logged with the type of the failure and never with its text, so no
 message or topic content reaches the log.  The entry then waits REFRESH_RETRY seconds before it
 is tried again, like an entry whose topic could not be read, so a topic that keeps failing does
-not take the cycle's one repair every cycle and the other stale comments are repaired too.
+not take the cycle's one repair every cycle and the other stale comments are repaired too.  A
+repair a topic's next message triggers fails the same way:  it is logged with the type of the
+failure, the entry waits REFRESH_RETRY seconds, and the message that triggered it is recorded
+either way.
 
 ## Environment
 

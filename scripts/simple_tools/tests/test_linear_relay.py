@@ -2746,6 +2746,24 @@ class ReadablePostTests(WorkerCase):
         self.assertTrue(seen)  # the deadline reached the reader
         self.assertTrue(all(deadline is not None for deadline in seen))
 
+    def test_a_failed_repair_of_a_live_message_waits_before_it_is_tried_again(self) -> None:
+        # A repair a topic's next message triggers fails the same way the cycle's does:  the
+        # log carries the type of the failure and never its text, and the entry waits
+        # REFRESH_RETRY before it is tried again (Kody, PR 2340).
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "the whole post")]
+        # The repair itself fails, while the message that triggers it is a good one
+        # (Kody, PR 2340).
+        with mock.patch.object(lr.RelayWorker, "_refresh", side_effect=ValueError("boom")):
+            self.w.handle_event(message(2, "AFC-1 relay", "the next message"))
+        failures = [line for line in self.logs if "the repair of" in line]
+        self.assertTrue(failures)
+        self.assertIn("ValueError", failures[0])
+        # The log carries the type of the failure and never its text (Kody, PR 2340).
+        self.assertNotIn("not an id", failures[0])
+        key = lr.ledger_key("AFC-1", 5, "AFC-1 relay")
+        self.assertGreaterEqual(self.w._refresh_retry.get(key, 0.0), self.t[0] + lr.REFRESH_RETRY)
+
     def test_a_bad_stored_message_id_does_not_stop_the_other_repairs(self) -> None:
         # A failure in one entry's repair is logged with its type and does not stop the
         # repairs of the other entries (Kody, PR 2340).

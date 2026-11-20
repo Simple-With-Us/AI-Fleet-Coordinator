@@ -2685,7 +2685,17 @@ class RelayWorker:
                 # the next edit of it carries the whole posts.  A topic that could not be
                 # read waits REFRESH_RETRY, so every message of it does not read it again
                 # (Kody, PR 2340).  The message itself is recorded either way.
-                self._repair(entry, key, stream_id, topic, reads)
+                try:
+                    self._repair(entry, key, stream_id, topic, reads)
+                except Exception as exc:  # noqa: BLE001 - one bad repair must not stop the message
+                    # The log names the entry and the type of the failure, never the text
+                    # of the exception, which can hold message or topic content (Kody, PR
+                    # 2340).  The entry waits REFRESH_RETRY, so the next message of the
+                    # topic does not retry the repair at once (Kody, PR 2340).
+                    self.log(
+                        "the repair of %s failed (%s)" % (self._label(entry), type(exc).__name__)
+                    )
+                    self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             if self._append(entry, mid, sender, content, now):
                 self._note_recorded(key, mid)
                 self._flush(key, now)  # creates at once; edits wait for the interval
