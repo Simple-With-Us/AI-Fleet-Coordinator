@@ -308,7 +308,12 @@ def _own_seat_file_bearer() -> str:
     except OSError:
         return ""
     try:
-        with os.fdopen(fd, "rb") as handle:
+        handle = os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        return ""
+    try:
+        with handle:
             info = os.fstat(handle.fileno())
             if (
                 not stat.S_ISREG(info.st_mode)
