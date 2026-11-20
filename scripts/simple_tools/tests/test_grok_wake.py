@@ -317,13 +317,22 @@ class GrokWake(unittest.TestCase):
     def test_a_fallback_list_without_a_completeness_signal_is_retried(self) -> None:
         # The plain-list fallback of an older helper names no `complete`:  a one-page
         # answer cannot prove the chat absent, so it retries instead of refusing
-        # (Kody, PR 2306 round 3).
+        # (Kody, PR 2306 round 3).  The all-pages answer omits `sessions`, so the
+        # fallback branch actually runs (Kody, PR 2306 round 4).
+        calls: list[list[str]] = []
+
         def runner(argv, timeout):
+            calls.append(list(argv))
+            if "--all-pages" in argv:
+                return 0, json.dumps({"ok": False, "error": "older helper"}), ""
             return 0, json.dumps({"ok": True, "count": 0, "sessions": []}), ""
 
         answer = GW.deliver_request(request(), env=self.env, runner=runner)
         self.assertEqual(answer["delivery"]["outcome"], "failed")
         self.assertEqual(answer["delivery"]["code"], "drive-list-unavailable")
+        self.assertEqual([call[2] for call in calls], ["list", "list"])
+        self.assertIn("--all-pages", calls[0])
+        self.assertNotIn("--all-pages", calls[1])
 
     def test_an_incomplete_list_without_the_chat_is_retried(self) -> None:
         drive = Drive([])

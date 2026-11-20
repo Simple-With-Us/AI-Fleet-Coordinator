@@ -415,8 +415,11 @@ def deliver_request(
             )
             if payload is None or not isinstance(payload.get("sessions"), list):
                 remaining = deadline - time.monotonic()
-                if remaining > 0:
-                    _code, payload = _invoke(env, ["list"], remaining, runner)
+                if remaining <= 0:
+                    # The budget is spent and the answer cannot be trusted:  that is the
+                    # timeout it was, not an unreadable inventory (Kody, PR 2306 round 3).
+                    return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
+                _code, payload = _invoke(env, ["list"], remaining, runner)
         except subprocess.TimeoutExpired:
             return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
