@@ -1636,8 +1636,8 @@
    "unit": "wakes",
    "step": 1,
    "secret": false,
-   "default": null,
-   "default_text": "unset",
+   "default": "1",
+   "default_text": "1",
    "cap_names": [],
    "safe": null,
    "narrower": "min",
@@ -1657,7 +1657,7 @@
    "example": "",
    "once": false,
    "requires_explicit": true,
-   "note": "most wakes one idle turn may carry for one chat;  unset means off, and only a platform that declares turns uses more;  a turn may run the resume limit once per wake it carries, so it can outlast the shutdown wait",
+   "note": "most wakes one idle turn may carry for one chat;  1 is off, and unset counts as not set;  only a platform that declares turns uses more;  a turn may run the resume limit once per wake it carries, so it can outlast the shutdown wait",
    "folder": "/wake-router"
   },
   {

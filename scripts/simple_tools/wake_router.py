@@ -159,7 +159,7 @@ It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn
     def deliver_turn(target: Target, head: Wake, riders: tuple[Wake, ...], turn_id: str) -> Turn
 
 with the same rules as `deliver` (an exception is `failed`), and only while the setting
-`turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  unset means off) is 2 or more;  the core
+`turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1 is off, and unset counts as not set) is 2 or more;  the core
 never goes past TURN_MAX_WAKES.  Every other seat, and every wake that cannot ride, takes the path
 above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply or a session id) and
 only to the same session, letter, generation and host as the head, so a pick the router is not
@@ -436,10 +436,10 @@ ROUTER_DEFAULTS: dict[str, Any] = {
     # can start, and the unit's TimeoutStopSec is longer than this.  A delivery still running at the
     # end of it is closed by the replay as interrupted, never run again.
     "shutdown_wait_seconds": 1000,
-    # Most wakes one idle turn may carry for one chat;  unset (None) is off, and only a platform
-    # with deliver_turn uses more (module docstring, Turns).  `_turn_cap` treats anything that is
-    # not an int as off, so an unset knob and an unreadable one both mean single wakes.
-    "turn_max_wakes": None,
+    # Most wakes one idle turn may carry for one chat;  1 is off, and only a platform with
+    # deliver_turn uses more (module docstring, Turns).  `_turn_cap` treats anything that is
+    # not an int as off, so an unreadable knob also means single wakes.
+    "turn_max_wakes": 1,
 }
 
 

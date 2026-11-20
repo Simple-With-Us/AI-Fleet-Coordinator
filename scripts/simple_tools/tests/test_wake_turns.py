@@ -288,8 +288,8 @@ class Defaults(TurnBase):
         self.assertEqual(self.calls, [("D", "w-1"), ("D", "w-2"), ("D", "w-3")])
         self.assertEqual(self.turn_args, [])
 
-    def test_router_defaults_turn_max_wakes_is_unset(self) -> None:
-        self.assertIsNone(WR.ROUTER_DEFAULTS["turn_max_wakes"])
+    def test_router_defaults_turn_max_wakes_is_one(self) -> None:
+        self.assertEqual(WR.ROUTER_DEFAULTS["turn_max_wakes"], 1)
         self.assertEqual((WR.TURN_MAX_WAKES, WR.TURN_MAX_PROMPT_CHARS), (8, 3500))
 
     def test_unreadable_counts_only_for_a_real_bool_true(self) -> None:
