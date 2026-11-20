@@ -36,6 +36,10 @@ name: Auto-merge reusable (fleet)
 on:
   workflow_call:
     inputs:
+      use_protected_merge_app:
+        description: Dedicated environment-only service App mode; rejects legacy fallback
+        type: boolean
+        default: false
       use_wise_relay:
         description: Fetch a dedicated Infisical credential and mint inside this job
         type: boolean
@@ -226,12 +230,11 @@ jobs:
 
   classify:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.use_protected_merge_app && 'fleet-merge-automation' || '' }}
+    # Include draft events so converted_to_draft produces skip and disarm.
     if: >
       inputs.rearm_pr_number != '' ||
-      (
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      )
+      github.event.pull_request.head.repo.full_name == github.repository
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       reason: ${{ steps.check.outputs.reason }}
@@ -241,6 +244,47 @@ jobs:
       receipt_id: ${{ steps.check.outputs.receipt_id }}
       resolved_gate: ${{ steps.check.outputs.resolved_gate }}
     steps:
+      - name: Enforce protected merge execution provenance before any checkout or mint
+        if: inputs.use_protected_merge_app
+        env:
+          USE_WISE: ${{ inputs.use_wise_relay }}
+          EXPECTED_ACTOR: ${{ inputs.expected_merge_actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXECUTION_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSABLE_REPOSITORY: ${{ job.workflow_repository }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REARM_PR_NUMBER: ${{ inputs.rearm_pr_number }}
+          SELF_GUARD: ${{ inputs.self_guard_paths }}
+        run: |
+          set -euo pipefail
+          fail() { echo '::error::Protected merge provenance rejected'; exit 1; }
+          [ "$USE_WISE" = 'false' ] || fail
+          [ "$EXPECTED_ACTOR" = 'swu-merge-automation[bot]' ] || fail
+          [ "$OWNER" = 'Simple-With-Us' ] || fail
+          [ "$REUSABLE_REPOSITORY" = 'Simple-With-Us/AI-Fleet-Coordinator' ] || fail
+          [ -n "$DEFAULT_BRANCH" ] || fail
+          [ "$EXECUTION_REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail
+          [ "$CALLER_WORKFLOW_REF" = "$REPO/.github/workflows/auto-merge-prs.yml@refs/heads/$DEFAULT_BRANCH" ] || fail
+          case ",$SELF_GUARD," in
+            *,.github/workflows/auto-merge-prs.yml,*) ;;
+            *) fail ;;
+          esac
+          case "$EVENT_NAME" in
+            pull_request_target)
+              [ "$PR_HEAD_REPO" = "$REPO" ] || fail
+              [ "$PR_BASE_REF" = "$DEFAULT_BRANCH" ] || fail
+              [ -z "$REARM_PR_NUMBER" ] || fail
+              ;;
+            schedule|workflow_dispatch)
+              [[ "$REARM_PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || fail
+              ;;
+            *) fail ;;
+          esac
       - uses: actions/checkout@v7
         if: inputs.require_codeowners_gate
         with:
@@ -249,15 +293,23 @@ jobs:
           # mode the dispatch ref is caller-chosen and must never supply the
           # gate, so the checkout pins the repository's declared default
           # branch (the base for this fleet's PRs) from the event payload.
-          ref: ${{ inputs.rearm_pr_number != '' && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
+          ref: ${{ (inputs.use_protected_merge_app || inputs.rearm_pr_number != '') && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
           fetch-depth: 1
       - name: Check for merge service App credentials
         id: merge_app_creds
         env:
+          PROTECTED_MODE: ${{ inputs.use_protected_merge_app }}
           MERGE_APP_ID: ${{ secrets.merge_app_id }}
           MERGE_APP_KEY: ${{ secrets.merge_app_private_key }}
         run: |
           set -euo pipefail
+          if [ "${PROTECTED_MODE:-false}" = true ] && { [ -z "$MERGE_APP_ID" ] || [ -z "$MERGE_APP_KEY" ]; }; then
+            missing=()
+            [ -n "$MERGE_APP_ID" ] || missing+=(MERGE_APP_ID)
+            [ -n "$MERGE_APP_KEY" ] || missing+=(MERGE_APP_KEY)
+            echo "::error::Protected merge App credentials missing: ${missing[*]}; no legacy fallback"
+            exit 1
+          fi
           # Step if: cannot reference the secrets context (AFC-308), so
           # presence is detected here and consumed via outputs.
           if [ -n "$MERGE_APP_ID" ] && [ -n "$MERGE_APP_KEY" ]; then
@@ -282,6 +334,9 @@ jobs:
       - name: Classify PR for auto-merge eligibility
         id: check
         env:
+          PROTECTED_MODE: ${{ inputs.use_protected_merge_app }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_DRAFT: ${{ github.event.pull_request.draft }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
           PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.repository, inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number) }}
@@ -297,7 +352,7 @@ jobs:
           REVIEW_GATE: ${{ inputs.review_gate }}
           REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
           APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
-          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
           REARM_PR_NUMBER: ${{ inputs.rearm_pr_number }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           SELF_GUARD: ${{ inputs.self_guard_paths }}
@@ -321,6 +376,8 @@ jobs:
           # empty (Kody #2267).
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
+          [ "${EVENT_DRAFT:-false}" != true ] || skip "PR is a draft"
+
           if [ -n "$REARM_PR_NUMBER" ]; then
             # Fetch and validate the rearm PR.  Repository-token reads only
             # (no personal-credential fallback for a re-arm), fails closed on
@@ -333,6 +390,9 @@ jobs:
             [ "$(jq -r '.state' <<< "$rearm_json")" = "open" ] || skip "rearm PR is not open"
             [ "$(jq -r '.draft' <<< "$rearm_json")" = "false" ] || skip "rearm PR is a draft"
             [ "$(jq -r '.head.repo.full_name' <<< "$rearm_json")" = "$REPO" ] || skip "rearm PR head repo mismatch"
+            if [ "${PROTECTED_MODE:-false}" = true ]; then
+              [ "$(jq -r .base.ref <<< "$rearm_json")" = "$DEFAULT_BRANCH" ] || skip "rearm PR base is not default branch"
+            fi
             BASE="$(jq -r '.base.sha' <<< "$rearm_json")"
             HEAD="$(jq -r '.head.sha' <<< "$rearm_json")"
             HEAD_REF="$(jq -r '.head.ref' <<< "$rearm_json")"
@@ -696,7 +756,7 @@ jobs:
 
   arm:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.use_wise_relay && 'merge-shepherd' || '' }}
+    environment: ${{ inputs.use_protected_merge_app && 'fleet-merge-automation' || (inputs.use_wise_relay && 'merge-shepherd' || '') }}
     needs: classify
     if: needs.classify.outputs.skip == 'false'
     permissions:
@@ -706,13 +766,62 @@ jobs:
       actions: read
       issues: read
     steps:
+      - name: Enforce protected merge execution provenance before any checkout or mint
+        if: inputs.use_protected_merge_app
+        env:
+          USE_WISE: ${{ inputs.use_wise_relay }}
+          EXPECTED_ACTOR: ${{ inputs.expected_merge_actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXECUTION_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          REUSABLE_REPOSITORY: ${{ job.workflow_repository }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REARM_PR_NUMBER: ${{ inputs.rearm_pr_number }}
+          SELF_GUARD: ${{ inputs.self_guard_paths }}
+        run: |
+          set -euo pipefail
+          fail() { echo '::error::Protected merge provenance rejected'; exit 1; }
+          [ "$USE_WISE" = 'false' ] || fail
+          [ "$EXPECTED_ACTOR" = 'swu-merge-automation[bot]' ] || fail
+          [ "$OWNER" = 'Simple-With-Us' ] || fail
+          [ "$REUSABLE_REPOSITORY" = 'Simple-With-Us/AI-Fleet-Coordinator' ] || fail
+          [ -n "$DEFAULT_BRANCH" ] || fail
+          [ "$EXECUTION_REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail
+          [ "$CALLER_WORKFLOW_REF" = "$REPO/.github/workflows/auto-merge-prs.yml@refs/heads/$DEFAULT_BRANCH" ] || fail
+          case ",$SELF_GUARD," in
+            *,.github/workflows/auto-merge-prs.yml,*) ;;
+            *) fail ;;
+          esac
+          case "$EVENT_NAME" in
+            pull_request_target)
+              [ "$PR_HEAD_REPO" = "$REPO" ] || fail
+              [ "$PR_BASE_REF" = "$DEFAULT_BRANCH" ] || fail
+              [ -z "$REARM_PR_NUMBER" ] || fail
+              ;;
+            schedule|workflow_dispatch)
+              [[ "$REARM_PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || fail
+              ;;
+            *) fail ;;
+          esac
       - name: Check for merge service App credentials
         id: merge_app_creds
         env:
+          PROTECTED_MODE: ${{ inputs.use_protected_merge_app }}
           MERGE_APP_ID: ${{ secrets.merge_app_id }}
           MERGE_APP_KEY: ${{ secrets.merge_app_private_key }}
         run: |
           set -euo pipefail
+          if [ "${PROTECTED_MODE:-false}" = true ] && { [ -z "$MERGE_APP_ID" ] || [ -z "$MERGE_APP_KEY" ]; }; then
+            missing=()
+            [ -n "$MERGE_APP_ID" ] || missing+=(MERGE_APP_ID)
+            [ -n "$MERGE_APP_KEY" ] || missing+=(MERGE_APP_KEY)
+            echo "::error::Protected merge App credentials missing: ${missing[*]}; no legacy fallback"
+            exit 1
+          fi
           # Step if: cannot reference the secrets context (AFC-308), so
           # presence is detected here and consumed via outputs.
           if [ -n "$MERGE_APP_ID" ] && [ -n "$MERGE_APP_KEY" ]; then
@@ -741,7 +850,9 @@ jobs:
         # parse or pagination uncertainty aborts the job before any merge
         # command runs - a schedule sweep never rescues a stale classification.
         env:
-          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          PROTECTED_MODE: ${{ inputs.use_protected_merge_app }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
           FALLBACK_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
@@ -781,6 +892,9 @@ jobs:
           [ "$live_head" = "$CLASSIFIED_HEAD" ] || abort "head drifted: classified $CLASSIFIED_HEAD, live $live_head"
           [ "$(jq -r '.draft' "$pr_json")" = "false" ] || abort "PR became a draft"
           [ "$(jq -r '.head.repo.full_name' "$pr_json")" = "$REPO" ] || abort "head repo changed"
+          if [ "${PROTECTED_MODE:-false}" = true ]; then
+            [ "$(jq -r .base.ref "$pr_json")" = "$DEFAULT_BRANCH" ] || abort "base is not default branch"
+          fi
           live_labels="$(jq -c '[.labels[].name]' "$pr_json")"
           IFS=',' read -ra holds <<< "$HOLD_LABELS"
           for h in "${holds[@]}"; do
@@ -1314,7 +1428,7 @@ jobs:
         if: ${{ !inputs.use_wise_relay }}
         id: token-gate
         env:
-          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
         run: |
           set -euo pipefail
           if [ -z "$MERGE_TOKEN" ]; then
@@ -1331,7 +1445,7 @@ jobs:
       - name: Probe the merge token (presence is not validity - ST-4393)
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
         run: |
           set -euo pipefail
           out="$(gh api rate_limit 2>&1)" && { echo "merge token accepted."; exit 0; }
@@ -1345,7 +1459,7 @@ jobs:
       - name: Require the configured bot principal before arming
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
         run: |
           set -euo pipefail
@@ -1366,7 +1480,7 @@ jobs:
       - name: Enable auto-merge (squash + delete branch)
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || (inputs.use_protected_merge_app == false && secrets.merge_token) || '' }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ needs.classify.outputs.pr_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}
@@ -1420,11 +1534,20 @@ jobs:
     steps:
       - name: Disable any armed auto-merge (inline port of disable-pr-automerge.sh)
         env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ needs.classify.outputs.pr_url }}
           REASON: ${{ needs.classify.outputs.skip == 'true' && needs.classify.outputs.reason || 'arm job failed after a pass - clearing any prior arm' }}
         run: |
           set -euo pipefail
+          # Guard/credentials may fail before classify writes outputs. Coordinates
+          # still come from this run context, never a caller-provided URL.
+          if [ -z "$PR_URL" ]; then
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Disarm PR number invalid"; exit 1; }
+            [[ "$REPO" =~ ^Simple-With-Us/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Disarm repository invalid"; exit 1; }
+            PR_URL="https://github.com/$REPO/pull/$PR_NUMBER"
+          fi
           echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"
           if ! actor="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>/dev/null)"; then
             echo "::error::Cannot verify repository token principal; refusing disarm write."

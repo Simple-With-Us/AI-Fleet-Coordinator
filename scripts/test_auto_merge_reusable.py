@@ -592,7 +592,8 @@ class RearmWiringContract(unittest.TestCase):
     def test_the_classify_gate_admits_rearm_and_keeps_the_event_path(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("inputs.rearm_pr_number != ''", text)
-        self.assertIn("github.event.pull_request.draft == false", text)
+        self.assertIn("EVENT_DRAFT: ${{ github.event.pull_request.draft }}", text)
+        self.assertIn('skip "PR is a draft"', text)
 
     def test_classify_outputs_pr_url_for_arm_and_disarm(self):
         text = WORKFLOW.read_text(encoding="utf-8")
