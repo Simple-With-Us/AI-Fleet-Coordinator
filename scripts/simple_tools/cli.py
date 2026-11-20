@@ -3341,12 +3341,14 @@ class RemoteError(Exception):
 
 def _own_bearer(env: Mapping[str, str]) -> str:
     """The calling bot's own bearer from the declared seat's canonical file, or "" (the
-    environment had none).  fleet_bearer.own_bearer does the read;  its FleetError is
-    re-raised as RemoteError, never carrying the bearer."""
+    environment had none).  The snapshot's own HOME locates the canonical file, not the
+    process home:  a caller holding an env from a hook or test gets that env's file.
+    fleet_bearer.own_bearer does the read;  its FleetError is re-raised as RemoteError,
+    never carrying the bearer."""
     from . import fleet_bearer
 
     try:
-        return fleet_bearer.own_bearer(env)
+        return fleet_bearer.own_bearer(env, home=env.get("HOME") or None)
     except fleet_bearer.FleetError as exc:
         raise RemoteError(str(exc)) from None
 
