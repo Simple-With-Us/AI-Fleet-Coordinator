@@ -159,7 +159,7 @@ It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn
     def deliver_turn(target: Target, head: Wake, riders: tuple[Wake, ...], turn_id: str) -> Turn
 
 with the same rules as `deliver` (an exception is `failed`), and only while the setting
-`turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1, the default, is off) is 2 or more;  the core
+`turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  unset means off) is 2 or more;  the core
 never goes past TURN_MAX_WAKES.  Every other seat, and every wake that cannot ride, takes the path
 above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply or a session id) and
 only to the same session, letter, generation and host as the head, so a pick the router is not
@@ -436,9 +436,10 @@ ROUTER_DEFAULTS: dict[str, Any] = {
     # can start, and the unit's TimeoutStopSec is longer than this.  A delivery still running at the
     # end of it is closed by the replay as interrupted, never run again.
     "shutdown_wait_seconds": 1000,
-    # Most wakes one idle turn may carry for one chat;  1 is off, and only a platform with
-    # deliver_turn uses more (module docstring, Turns).
-    "turn_max_wakes": 1,
+    # Most wakes one idle turn may carry for one chat;  unset (None) is off, and only a platform
+    # with deliver_turn uses more (module docstring, Turns).  `_turn_cap` treats anything that is
+    # not an int as off, so an unset knob and an unreadable one both mean single wakes.
+    "turn_max_wakes": None,
 }
 
 
@@ -1232,7 +1233,8 @@ def turn_echo_read(
     must be a prefix of what was offered, in order, and confirmed some of carried."""
     if not isinstance(echo, dict) or echo.get("contract") != TURN_CONTRACT:
         return None
-    if echo.get("id") != turn_id or echo.get("unreadable") is True:
+    unreadable = echo.get("unreadable", False)
+    if echo.get("id") != turn_id or (type(unreadable) is bool and unreadable):
         return None
     carried, confirmed = echo.get("carried"), echo.get("confirmed")
     if not isinstance(carried, list) or not all(isinstance(i, str) for i in carried):
@@ -1988,9 +1990,13 @@ class Router:
             # receipt keeps it visible, so an operator can see what is not settled.
             self._finish(entry, pick, status="unknown", delivered=None, result=result)
         else:
-            if outcome == "busy" and self._turn_cap() >= 2:
+            held = result is not None and result.code in ("chat-live", "chat-live-parked")
+            if outcome == "busy" and held and self._turn_cap() >= 2:
                 # Its chat is in a live turn:  this wake goes alone from now on, so no rider is
-                # marked for every try until the chat lets go (module docstring, Turns).
+                # marked for every try until the chat lets go (module docstring, Turns).  Only a
+                # held chat counts:  a transient busy may clear, but a parked wake must also go
+                # alone, because the hook may already have handed it over and batching it into a
+                # later turn would run it again.
                 entry["busy_seen"] = True
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
 
@@ -2105,8 +2111,9 @@ class Router:
     def _gather(self, entry: dict[str, Any], pick: Pick, turn_id: str) -> list[dict[str, Any]]:
         """The wakes that may ride with this head, marked running so no worker claims them:  the
         run of exact-address wakes for the same chat that comes next, in arrival order, within
-        the caps.  A wake not picked yet, or one of this chat that cannot ride, ends the run;
-        another chat's wake is passed over.  There is no deduplication by message id."""
+        the caps.  An unpicked wake that could want this chat, or one of this chat that cannot
+        ride, ends the run;  one addressed to another seat or letter is passed over like any
+        other chat's wake.  There is no deduplication by message id."""
         target = pick.target
         if not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping:
             return []
@@ -2121,7 +2128,15 @@ class Router:
                 if other is entry or _order(other) <= mine or other.get("receipt") is not None:
                     continue
                 if other["pick"] is None:
-                    break  # it may want this chat, as in `_behind`
+                    # Unpicked:  it may want this chat, as in `_behind`, unless it is addressed
+                    # to another seat or letter (a missing letter never proves another chat).
+                    w = other.get("wake") or {}
+                    m = entry.get("wake") or {}
+                    wletter = w.get("letter") or ""
+                    mletter = m.get("letter") or ""
+                    if wletter and mletter and (w.get("seat") != m.get("seat") or wletter != mletter):
+                        continue
+                    break
                 if _session_of(other) != session:
                     continue
                 if not self._may_ride(other, key, now) or len(riders) + 2 > cap:
@@ -2313,16 +2328,24 @@ class Router:
             elif wake_id not in carried:  # no echo at all, or not this far:  not carried
                 self._unboard([rider])
             elif outcome in ("sent", "completed"):
-                delivered = True if outcome == "completed" or wake_id in confirmed else None
-                close(rider, "delivered", delivered, ack, result.code)
+                if outcome == "completed" or wake_id in confirmed:
+                    close(rider, "delivered", True, ack, result.code)
+                else:
+                    close(rider, "unknown", None, ack, TURN_UNCONFIRMED)
             elif outcome == "refused":
                 close(rider, "dead", None, ack, result.code)
             else:
                 close(rider, "unknown", None, ack, result.code)
         # What the head's receipt says was carried:  null only when the riders were closed
-        # because nobody can tell;  [] when none was carried and they went back.
-        carried_ids = [i for i in ids if i in carried]
-        entry["turn"]["carried"] = None if ran and unreadable else carried_ids
+        # because nobody can tell;  [] when none was carried and they went back, and always []
+        # when the turn cannot have run, even if its echo names riders.
+        if not ran:
+            carried_ids = []
+        elif unreadable:
+            carried_ids = None
+        else:
+            carried_ids = [i for i in ids if i in carried]
+        entry["turn"]["carried"] = carried_ids
         self._settle(entry, pick, result)
 
     # ---- the receipt ------------------------------------------------------------------------

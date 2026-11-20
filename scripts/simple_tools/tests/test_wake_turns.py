@@ -288,9 +288,18 @@ class Defaults(TurnBase):
         self.assertEqual(self.calls, [("D", "w-1"), ("D", "w-2"), ("D", "w-3")])
         self.assertEqual(self.turn_args, [])
 
-    def test_router_defaults_turn_max_wakes_is_one(self) -> None:
-        self.assertEqual(WR.ROUTER_DEFAULTS["turn_max_wakes"], 1)
+    def test_router_defaults_turn_max_wakes_is_unset(self) -> None:
+        self.assertIsNone(WR.ROUTER_DEFAULTS["turn_max_wakes"])
         self.assertEqual((WR.TURN_MAX_WAKES, WR.TURN_MAX_PROMPT_CHARS), (8, 3500))
+
+    def test_unreadable_counts_only_for_a_real_bool_true(self) -> None:
+        base = {"contract": CONTRACT_TEXT, "id": TURN_ID, "carried": ["w-1"], "confirmed": ["w-1"]}
+        self.assertIsNone(WR.turn_echo_read(dict(base, unreadable=True), TURN_ID, ["w-1"]))
+        for not_unreadable in (False, 0, 1, "true", ""):
+            with self.subTest(value=not_unreadable):
+                echo = dict(base, unreadable=not_unreadable)
+                self.assertEqual(WR.turn_echo_read(echo, TURN_ID, ["w-1"]), (("w-1",), ("w-1",)))
+        self.assertEqual(WR.turn_echo_read(dict(base), TURN_ID, ["w-1"]), (("w-1",), ("w-1",)))
 
     def test_command_platform_still_builds_positionally(self) -> None:
         platform = WR.command_platform(
@@ -532,6 +541,15 @@ class Gather(TurnBase):
         self.drain(router)
         self.assertEqual(self.calls, [("T", "w-1", ("w-2",)), ("T", "w-3", ("w-4",))])
 
+    def test_an_unpicked_wake_for_another_letter_is_passed_over(self) -> None:
+        router = self.turns()
+        self.letters(router, "w-1", "w-2")
+        self.letters(router, "x-1", letter="BB")
+        self.letters(router, "w-3")
+        self.prime(router, only={"w-1", "w-2", "w-3"})
+        self.drain(router)
+        self.assertEqual(self.calls, [("T", "w-1", ("w-2", "w-3")), ("D", "x-1")])
+
     def test_other_chats_wakes_are_skipped_not_stopping_and_never_held_by_the_turn(self) -> None:
         router = self.turns()
         self.letters(router, "w-1", "w-2")
@@ -641,7 +659,7 @@ class Gather(TurnBase):
         self.letters(router, "w-1")
         kept = self.kept("w-1")
         kept["busy_seen"] = "yes"
-        self.pending("w-1").write_text(json.dumps(kept), encoding="utf-8")
+        WR.atomic_write(self.pending("w-1"), kept)
         self.assertEqual(self.turns().replay(), 0)
         self.assertIn("w-1 pending-unreadable", self.stderr.getvalue())
 
@@ -847,10 +865,10 @@ class Records(TurnBase):
         old = "t-" + "a" * 16
         head = self.kept("w-1")
         head["turn"] = {"id": old, "riders": ["w-2"], "message_ids": [1001, 1002]}
-        self.pending("w-1").write_text(json.dumps(head), encoding="utf-8")
+        WR.atomic_write(self.pending("w-1"), head)
         rider = self.kept("w-2")
         rider["ride"] = {"turn": old, "head": "w-1", "index": 1}
-        self.pending("w-2").write_text(json.dumps(rider), encoding="utf-8")
+        WR.atomic_write(self.pending("w-2"), rider)
         again = self.turns()
         self.assertEqual(again.replay(), 2)
         for wake_id in ("w-1", "w-2"):
@@ -870,11 +888,11 @@ class Records(TurnBase):
             attempts=1,
             turn={"id": TURN_ID, "riders": ["w-9"], "message_ids": [1001, 1009]},
         )
-        self.pending("w-1").write_text(json.dumps(head), encoding="utf-8")
+        WR.atomic_write(self.pending("w-1"), head)
         for wake_id, name in (("w-2", "ride"), ("w-3", "turn")):
             kept = self.kept(wake_id)
             kept[name] = TURN_ID  # a string where a mark is an object
-            self.pending(wake_id).write_text(json.dumps(kept), encoding="utf-8")
+            WR.atomic_write(self.pending(wake_id), kept)
         again = self.turns()
         self.assertEqual(again.replay(), 1)
         self.assertEqual(sorted(again._entries), ["w-1"])
@@ -958,7 +976,7 @@ class Crash(TurnBase):
         head whose done file names that turn."""
         rider = self.kept("w-3")
         rider.update(attempts=1, in_flight=True, ride={"turn": TURN_ID, "head": "w-1", "index": 2})
-        self.pending("w-3").write_text(json.dumps(rider), encoding="utf-8")
+        WR.atomic_write(self.pending("w-3"), rider)
         if head is None:
             self.pending("w-1").unlink()
         elif "receipt" in head:
@@ -966,10 +984,10 @@ class Crash(TurnBase):
             done.mkdir(mode=0o700, exist_ok=True)
             turn = {"id": TURN_ID, "role": "head", "members": ["w-1", "w-2", "w-3"]}
             record = {"wake_id": "w-1", "status": "delivered", "turn": {**turn, **head["receipt"]}}
-            (done / "w-1.json").write_text(json.dumps(record), encoding="utf-8")
+            WR.atomic_write(done / "w-1.json", record)
             self.pending("w-1").unlink()
         else:
-            self.pending("w-1").write_text(json.dumps({**self.kept("w-1"), **head}), "utf-8")
+            WR.atomic_write(self.pending("w-1"), {**self.kept("w-1"), **head})
 
     def test_replay_releases_a_marked_rider_only_when_its_head_proves_it_was_not_carried(
         self,
@@ -1080,29 +1098,46 @@ class Settle(TurnBase):
         self.prime(router)
 
     def test_busy_unreachable_and_failed_return_riders_untouched(self) -> None:
-        cases = (("busy", 30, 0), ("unreachable", 300, 0), ("failed", 30, 1))
-        for outcome, wait, failures in cases:
-            with self.subTest(outcome):
+        # Only a held chat's busy (chat-live, or chat-live-parked for a parked Mac wake) sets
+        # busy_seen:  a transient busy may clear, so its head stays batchable.
+        cases = (
+            ("busy", "chat-live", 30, 0, True),
+            ("busy", "chat-live-parked", 30, 0, True),
+            ("busy", "fake-busy", 30, 0, False),
+            ("unreachable", "fake-unreachable", 300, 0, False),
+            ("failed", "fake-failed", 30, 1, False),
+        )
+        for outcome, code, wait, failures, alone in cases:
+            with self.subTest(outcome=outcome, code=code):
                 self.fresh()
                 router = self.turns()
                 self.three(router)
-                self.answers = [WR.Turn(WR.Delivery(outcome, code="fake-" + outcome))]
+                self.answers = [WR.Turn(WR.Delivery(outcome, code=code))]
                 now = self.clock.now
                 self.assertTrue(router.run_once())
                 head = self.kept("w-1")
                 self.assertEqual(head["next_at"], now + wait)
                 self.assertEqual((head["attempts"], head["failures"]), (1, failures))
                 self.assertFalse({"in_flight", "turn"} & set(head))
-                self.assertEqual(head.get("busy_seen", False), outcome == "busy")
+                self.assertEqual(head.get("busy_seen", False), alone)
                 for wake_id in ("w-2", "w-3"):
                     self.assertClean(router, wake_id)
                 self.clock.now += wait
                 self.drain(router)
-                if outcome == "busy":  # its chat answered busy:  the head goes alone from now on
+                if alone:  # its chat answered busy:  the head goes alone from now on
                     after = [("D", "w-1"), ("T", "w-2", ("w-3",))]
                 else:
                     after = [("T", "w-1", ("w-2", "w-3"))]
                 self.assertEqual(self.calls, [("T", "w-1", ("w-2", "w-3"))] + after)
+
+    def test_a_turn_that_ran_nothing_carries_nothing_even_when_its_echo_names_riders(self) -> None:
+        router = self.turns()
+        self.three(router)
+        self.answers = [WR.Turn(WR.Delivery("refused", code="unknown-host"), ("w-2",))]
+        self.assertTrue(router.run_once())
+        record = self.done("w-1")
+        self.assertEqual((record["status"], record["delivered"]), ("dead", False))
+        self.assertEqual(record["turn"]["carried"], [])
 
     def test_a_never_ran_refusal_kills_the_head_alone_and_returns_riders(self) -> None:
         router = self.turns()
@@ -1153,8 +1188,10 @@ class Settle(TurnBase):
         self.assertEqual((found["w-1"]["delivered"], found["w-1"]["ack"]), (True, "confirmed"))
         self.assertEqual((found["w-2"]["delivered"], found["w-2"]["ack"]), (True, "confirmed"))
         self.assertEqual((found["w-3"]["delivered"], found["w-3"]["ack"]), (None, "unknown"))
-        for record in found.values():
-            self.assertEqual(record["status"], "delivered")
+        # A sent rider the reply never confirmed is unknown, never delivered.
+        self.assertEqual(found["w-3"]["status"], "unknown")
+        for wake_id in ("w-1", "w-2"):
+            self.assertEqual(found[wake_id]["status"], "delivered")
 
     def test_completed_marks_every_carried_rider_delivered_true(self) -> None:
         router = self.turns()

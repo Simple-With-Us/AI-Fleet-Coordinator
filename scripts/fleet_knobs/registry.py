@@ -777,17 +777,18 @@ REGISTRY: tuple[Spec, ...] = (
         folder=WAKE_ROUTER_FOLDER,
         unit="deliveries",
     ),
-    # AFC-831:  one idle turn of a chat may carry several of its pending wakes.  Off at 1;  the
-    # router never goes past 8 (wake_router.TURN_MAX_WAKES), whatever this says.
+    # AFC-831:  one idle turn of a chat may carry several of its pending wakes.  Unset means off;
+    # the router never goes past 8 (wake_router.TURN_MAX_WAKES), whatever this says.
     _S(
         "WAKE_ROUTER_TURN_MAX_WAKES",
         "int",
         "W2",
-        default=1,
+        default=None,
+        requires_explicit=True,
         narrower="min",
         minimum=1,
         maximum=8,
-        note="most wakes one idle turn may carry for one chat;  1 is off, and only a platform "
+        note="most wakes one idle turn may carry for one chat;  unset means off, and only a platform "
         "that declares turns uses more;  a turn may run the resume limit once per wake it "
         "carries, so it can outlast the shutdown wait",
         group="Wake Router",

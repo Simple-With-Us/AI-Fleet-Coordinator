@@ -9,12 +9,15 @@ its own `test_turn_*` methods run here.  A few pin today's behaviour and pass wi
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import unittest
 from unittest import mock
 
 from simple_tools import muse_wake as MW
+from simple_tools import wake_pending as WP
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
 from simple_tools.tests import test_muse_wake_delivery as base
@@ -121,12 +124,23 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         self.assertEqual((delivery["outcome"], delivery["ack"]), ("sent", "unknown"))
         self.assertEqual(answer["turn"], self.echo(["w-rider-1", "w-rider-2"], []))
 
+    def test_turn_confirmation_needs_the_turn_id_not_just_wake_ids(self) -> None:
+        def run(argv, **kwargs):
+            scrubbed = list(argv)
+            scrubbed[-1] = scrubbed[-1].replace(TURN_ID, "")
+            return self._runner()(scrubbed, **kwargs)
+
+        answer = self._deliver(self.turn_request(), runner=run)
+        delivery = answer["delivery"]
+        self.assertEqual((delivery["outcome"], delivery["ack"]), ("sent", "unknown"))
+        self.assertEqual(answer["turn"], self.echo(["w-rider-1", "w-rider-2"], []))
+
     def test_turn_on_a_live_chat_is_busy_runner_never_called_and_carries_nothing(self) -> None:
         lock = self.session_dir / ".session.lock"
         lock.write_text("pid=%d\n" % os.getpid(), encoding="utf-8")
         answer = self._deliver(self.turn_request())
         delivery = answer["delivery"]
-        self.assertEqual((delivery["outcome"], delivery["code"]), ("busy", "chat-live"))
+        self.assertEqual((delivery["outcome"], delivery["code"]), ("busy", "chat-live-parked"))
         self.assertEqual(self.calls, [])
         self.assertEqual(answer["turn"], self.echo([], []))
 
@@ -138,12 +152,22 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         )
         self.assertEqual(answer["turn"], self.echo(["w-rider-1", "w-rider-2"], []))
 
+    def _reset_delivery_state(self) -> None:
+        # Each delivery below is independent, so the spool and the transcript start empty every
+        # time:  without the reset a previous turn's ids would answer `sent` instead of running,
+        # and there would be no new call to time.
+        shutil.rmtree(WP.state_dir(str(self.home)), ignore_errors=True)
+        transcript = self.session_dir / "session.jsonl"
+        transcript.write_text(json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8")
+
     def test_turn_exec_runs_the_resume_limit_once_per_wake_it_carries(self) -> None:
         resume = MW.DEFAULTS["resume_timeout_seconds"]
         self._deliver(self.turn_request([rider(1), rider(2)]))
         self.assertEqual(self.calls[-1]["timeout"], resume * 3)
+        self._reset_delivery_state()
         self._deliver(self.turn_request([rider(1)]))
         self.assertEqual(self.calls[-1]["timeout"], resume * 2)
+        self._reset_delivery_state()
         self._deliver(self.turn_request(dispatch=False))  # a single wake keeps its own limit
         self.assertEqual(self.calls[-1]["timeout"], resume)
 
@@ -172,6 +196,7 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         for label, bad in cases.items():
             with self.subTest(label):
                 self.calls.clear()
+                self._reset_delivery_state()
                 request = self.turn_request([rider(1), bad, rider(3)])
                 answer = self._deliver(request)
                 kept = WR.turn_riders_from(request["turn"], base.WAKE_ID)
@@ -180,6 +205,7 @@ class MuseTurns(base.MuseWakeDeliveryTest):
                 self.assertEqual(answer["turn"]["carried"], ["w-rider-1"])
         with self.subTest("more than seven riders"):
             self.calls.clear()
+            self._reset_delivery_state()
             request = self.turn_request([rider(n) for n in range(1, 9)])
             answer = self._deliver(request)
             self.assertEqual(
