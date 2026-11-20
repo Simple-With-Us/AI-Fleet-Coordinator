@@ -11,6 +11,9 @@ retries, the "??" title, the end-of-turn report and the install;  this file is o
   CD, the next CE), and MiniMax Code sends the CHILD's own session id as a subagent event's session id, so the
   parent is read from the session store's own parent column and never from the payload.  MiniMax Code has no end event, so no hook closes a registration:  the assigner's own
   sweep frees the letter of a chat nobody came back to.
+- Archiving a chat reaches no hook either, and the archive flag is in the session store's own
+  `archived` column.  This row reads it (`minimax_gone`, the spec's `gone_sessions`), so a chat's
+  start reports the archived chats and the assigner closes their rows.
 - The session id is the payload's `session_id` (__MAVIS_RUNTIME_SESSION_ID in the chat's own shell).
 - The session store is MiniMax Code's own SQLite table, `local_runtime_sessions` in
   `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`):  a `conversation` or `task` row
@@ -39,7 +42,8 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from . import platform_letter as PL
@@ -102,12 +106,29 @@ def store_file(env: Mapping[str, str]) -> str:
     return os.path.join(root, "v2", "sqlite", "runtime-state.sqlite")
 
 
+def _read_only(path: str) -> sqlite3.Connection:
+    """The session store opened read-only, its path percent-encoded for the URI.
+
+    A path with a `?` or a `#` in it would otherwise end the file name early or carry
+    parameters of its own, so the URI would name another file, or none, and `mode=ro`
+    would not be the only thing in it.
+
+    A path that cannot be resolved at all is an unreadable store, which is what the callers
+    answer for, so the path's own failure (an `OSError`, a `ValueError`, a `RuntimeError`)
+    is turned into the store's own error and never out of the reader."""
+    try:
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise sqlite3.OperationalError(str(exc)) from exc
+    return sqlite3.connect(uri, uri=True, timeout=2)
+
+
 def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     path = store_file(env)
     if not sid or not os.path.isfile(path):
         return {}
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=2)
+        conn = _read_only(path)
         try:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -233,6 +254,62 @@ def _extra(raw: object) -> dict[str, Any]:
     except ValueError:
         value = {}
     return value if isinstance(value, dict) else {}
+
+
+# --------------------------------------------------------------------------------------------
+# Which chats the app has archived (AFC-855)
+# --------------------------------------------------------------------------------------------
+#
+# Archiving a MiniMax Code chat reaches no hook event:  the runtime's hook list has no archive
+# event, and its `SessionEnd` fires when a chat ends, not when it is filed away.  The archive is
+# in the session store's own `archived` column, the same one `minimax_wake.py` reads before it
+# wakes a chat, so that is where this row learns that a chat is gone.  The library's gone report,
+# made on a chat's start, then has the assigner close the row and free the pair.
+
+#: The most session ids one query names (SQLite's own limit on the variables of a statement is 999).
+GONE_BATCH = 200
+
+
+def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The chats of these ids the session store knows are archived, by the store's own `archived` column.
+
+    A chat the store does not know is not named:  it may be a chat of another host's store, or one
+    the store has not written yet.  A store with no `archived` column (one from before the runtime
+    wrote it) names none, and a store that cannot be read names none either.  Ids only."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return set()
+    wanted = sorted({sid for sid in session_ids if isinstance(sid, str) and sid})
+    if not wanted:
+        return set()
+    gone: set[str] = set()
+    try:
+        conn = _read_only(path)
+        try:
+            if "archived" not in _columns(conn):
+                return set()
+            for start in range(0, len(wanted), GONE_BATCH):
+                chunk = wanted[start : start + GONE_BATCH]
+                rows = conn.execute(
+                    "SELECT session_id FROM local_runtime_sessions"
+                    " WHERE archived = 1 AND session_id IN (%s)" % ",".join("?" * len(chunk)),
+                    chunk,
+                ).fetchall()
+                gone.update(str(row[0]) for row in rows)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    return gone
+
+
+def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The spec's `gone_sessions`:  which of these chats MiniMax Code has archived.
+
+    The archive flag is the session store's own `archived` column, the same one `minimax_wake.py`
+    reads before it wakes a chat.  The library asks this adapter on a chat's start, and a report
+    that names an archived chat has the assigner close its row and free the letter.  Ids only."""
+    return archived_sessions(env, session_ids)
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
@@ -407,6 +484,7 @@ SPEC = PL.PlatformSpec(
     quiet_events=("Stop",),
     chat_payload=minimax_chat_payload,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
+    gone_sessions=minimax_gone,
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,
