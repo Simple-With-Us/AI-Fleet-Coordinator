@@ -88,18 +88,18 @@ PROJECT_SOURCES = {
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 KEYCHAIN_SERVICE = "fleet-secrets"
 KEYCHAIN_CLIENT_ID = "infisical-client-id"
-KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
+KEYCHAIN_CLIENT_SECRET_ACCOUNT_NAME = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
-ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
-ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
+COORDINATOR_READ_TOKEN_ENV_NAME = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+WRITE_TOKEN_ENV_NAME = "INFISICAL_WRITE_TOKEN"
 MAX_NAMED_READS = 8
 ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 ENV_WRITE_PATHS = "INFISICAL_WRITE_PATHS"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
-ENV_CLIENT_SECRET = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
+UNIVERSAL_AUTH_SECRET_ENV_NAME = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
 # Retired universal-auth variable names are stripped from helper environments.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
-ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
+AUTOMATION_SECRET_ENV_NAME = "INFISICAL_AUTOMATION_CLIENT_SECRET"
 
 MACHINE_MODES = ()
 
@@ -107,12 +107,12 @@ MACHINE_MODES = ()
 AUTH_ENV_VARS = frozenset(
     {
         ENV_TOKEN,
-        ENV_AI_FLEET_COORDINATOR_TOKEN,
-        ENV_WRITE_TOKEN,
+        COORDINATOR_READ_TOKEN_ENV_NAME,
+        WRITE_TOKEN_ENV_NAME,
         ENV_CLIENT_ID,
-        ENV_CLIENT_SECRET,
+        UNIVERSAL_AUTH_SECRET_ENV_NAME,
         ENV_AUTOMATION_ID,
-        ENV_AUTOMATION_SECRET,
+        AUTOMATION_SECRET_ENV_NAME,
         "INFISICAL_CLIENT_ID",
         "INFISICAL_CLIENT_SECRET",
         "INFISICAL_SHARED_CLIENT_ID",
@@ -346,7 +346,7 @@ def project_token_name(project_name: str) -> str:
     if project_name == "fleet-ops":
         return ENV_TOKEN
     if project_name == "ai-fleet-coordinator":
-        return ENV_AI_FLEET_COORDINATOR_TOKEN
+        return COORDINATOR_READ_TOKEN_ENV_NAME
     raise UsageError("unknown Infisical project")
 
 
@@ -416,6 +416,11 @@ def validate_service_metadata(
     if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
         raise SecretsError("token-scope-mismatch")
     expiry = metadata.get("expiresAt")
+    # Infisical represents an explicitly nonexpiring token with JSON null. Only
+    # read-only grants may use that compatibility path; writers stay finite.
+    # An absent field is malformed metadata, not a nonexpiring registration.
+    if "expiresAt" in metadata and expiry is None and tuple(permissions) == ("read",):
+        return
     try:
         if not isinstance(expiry, str):
             raise ValueError()
@@ -1310,7 +1315,7 @@ def resolve_token(
     """Resolve one explicit binding, without cross-purpose or identity fallback."""
     if writer and project_name != DEFAULT_PROJECT:
         raise SecretsError("write-token-project-mismatch: writes are configured for Fleet-OPS only")
-    name = ENV_WRITE_TOKEN if writer else project_token_name(project_name)
+    name = WRITE_TOKEN_ENV_NAME if writer else project_token_name(project_name)
     token = (env.get(name) or "").strip()
     if not token:
         raise SecretsError(f"service-token-required: {name} is not set")
@@ -1412,7 +1417,9 @@ class WriteError(SecretsError):
         )
         self.retryable = retryable is True and not self.request_may_have_been_sent
         self.reason = reason if reason == "token-expired-or-invalid" else None
-        self.required_binding = required_binding if required_binding == ENV_WRITE_TOKEN else None
+        self.required_binding = (
+            required_binding if required_binding == WRITE_TOKEN_ENV_NAME else None
+        )
         if self.reason:
             self.message += ": " + self.reason
         if self.required_binding:
@@ -1815,7 +1822,9 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             provider_status=exc.provider_status or 0,
         )
         _write_checkpoint(ledger, namespace, intent, record, "refused")
-        missing = ENV_WRITE_TOKEN if token is None and not env.get(ENV_WRITE_TOKEN) else None
+        missing = (
+            WRITE_TOKEN_ENV_NAME if token is None and not env.get(WRITE_TOKEN_ENV_NAME) else None
+        )
         raise WriteError(
             "refused",
             intent,

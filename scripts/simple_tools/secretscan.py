@@ -113,6 +113,12 @@ _SOURCE_RHS = re.compile(
 )
 
 
+# A complete, unquoted dotted identifier chain (a property access or a call
+# target) is a source expression, not a stored literal.  Bare runs, quoted
+# values, env-prefixed forms and lowercase-only chains remain candidates.
+_DOTTED_RHS = re.compile(r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)")
+
+
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
     start = match.start("value")
     # An optional quote consumed by the detector means this is a literal, always.
@@ -128,7 +134,15 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     )
     if assignment is None:
         return False
-    return _SOURCE_RHS.match(text, start) is not None
+    if _SOURCE_RHS.match(text, start) is not None:
+        return True
+    chain = _DOTTED_RHS.match(text, start)
+    if chain is None:
+        return False
+    value = chain.group(0)
+    if value.startswith(("process.env.", "import.meta.env.")):
+        return False
+    return re.search(r"[a-z][A-Z]", value) is not None
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
@@ -158,6 +172,11 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "Simple-With-Us/CodeCaps",
             "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
             "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
+        ),
+        (
+            "Simple-With-Us/CodeCaps",
+            "ios/CodeCapsCompanion/App/Models/CompanionQuotaModel.swift",
+            "1e44f5721cf37b067a3a1a2091fc316d2a9f95546effc22d756126eca687894b",
         ),
         (
             "Simple-With-Us/Usage-Monitor",

@@ -26,6 +26,11 @@ class ReviewedGenericTests(unittest.TestCase):
                 "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
             ),
             (
+                "Simple-With-Us/CodeCaps",
+                "ios/CodeCapsCompanion/App/Models/CompanionQuotaModel.swift",
+                "1e44f5721cf37b067a3a1a2091fc316d2a9f95546effc22d756126eca687894b",
+            ),
+            (
                 "Simple-With-Us/Usage-Monitor",
                 "scripts/lib/run-session-token-collector.mjs",
                 "e96f73542ff0a5923af4d53981f96693bb67f80444e54cf94a520737ac5418f4",
@@ -47,10 +52,18 @@ class ReviewedGenericTests(unittest.TestCase):
         repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
         for body in (
             self.body,
-            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n",
             "let token = '" + "b" * 32 + "'\n",
+            "let token = Widget" + "Presentation.shortCadence9(cadence: cadence)\n",
+            "let token = widget" + "presentation.shortcadence(cadence: cadence)\n",
+            "let token = Correct" + ".Horse.Battery\n",
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_letters_only_dotted_calls_are_not_secrets(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        self.assertIsNone(secretscan.scan_file(
+            repo, path,
+            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n"))
 
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):

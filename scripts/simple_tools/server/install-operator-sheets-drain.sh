@@ -9,15 +9,17 @@
 # Run it as root from a clean AI-Fleet-Coordinator checkout at origin/main; it refuses any other
 # checkout.  Safe to run again: an unchanged file is left alone.  In order, it:
 #   1. stops the timer while it works, if the timer is running, and installs
-#      operator_sheets_export.mjs, operator_sheets_google.mjs and operator_sheets_drain.mjs into
+#      operator_sheets_export.mjs, operator_sheets_google.mjs, operator_sheets_drain.mjs and
+#      thread_registry_export.mjs (the Zulip Threads sync the same run does, AFC-823) into
 #      /usr/local/lib/operator-sheets-drain (0644, root);
-#   2. reads OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry
+#   2. reads GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
 #      with the caller's scoped READ-only service token and writes /etc/operator-sheets/sa.json
 #      (0600, root);
 #   3. writes /etc/operator-sheets/drain.env (0600, root): the workbook id, sheet ids and the
 #      optional knobs, and prints the names of the settings that changed;
 #   4. preflight: the registry's pending-outbox and export-attempts reads, inside the container,
-#      return JSON (the second fails on an image without the fence or a store before schema v2);
+#      return JSON (the second fails on an image without the fence or a store before schema v2),
+#      and thread_registry export-rows returns the thread rows (only a warning when it does not);
 #   5. installs operator-sheets-drain.service and .timer into /etc/systemd/system and reloads
 #      systemd.  It never enables the timer; it starts it again only if step 1 stopped it.
 #
@@ -25,7 +27,7 @@
 #   OPERATOR_SHEETS_WORKBOOK_ID      the SWU Operator workbook id (required; it is not in this repo)
 #   OPERATOR_SHEETS_TOKEN_FILE       a root-owned file, mode 0600 or 0400, holding the scoped
 #                                    read-only Infisical service token for Fleet-OPS prod
-#                                    /operator-thread-registry (required).  The script never mints,
+#                                    /google-sheets-sa (required).  The script never mints,
 #                                    prints or echoes the token and never puts it on a command line.
 #   INFISICAL_FLEET_OPS_PROJECT_ID   the Fleet-OPS project id (or root's ~/.simple-tools/fleet-ops-project-id)
 #   OPERATOR_SHEETS_SESSIONS_SHEET_ID  default 20964676
@@ -45,14 +47,15 @@ SCRIPTS="$(cd -P -- "$SIMPLE_TOOLS/.." && pwd)"
 REPO="$(cd -P -- "$SCRIPTS/.." && pwd)"
 SERVICE=operator-sheets-drain.service
 TIMER=operator-sheets-drain.timer
-MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs)
+MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs
+  thread_registry_export.mjs)
 PREFLIGHT_TIMEOUT=120
 
 DRY=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) echo "install-operator-sheets-drain: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -269,7 +272,7 @@ done
 # --- 2 and 3. sa.json from Infisical, and drain.env ----------------------------------------
 
 if [[ "$DRY" -eq 1 ]]; then
-  say "would read OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry"
+  say "would read GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa"
   say "  with the read-only service token in $TOKEN_FILE (the token is not read in a dry run)"
   say "would write $ETC_DIR/sa.json (0600, root) if its content changed"
   say "would write $ETC_DIR/drain.env (0600, root) if its content changed, with:"
@@ -297,8 +300,8 @@ import stat
 import sys
 
 ROOT_UID = 0
-SECRET_PATH = "/operator-thread-registry"
-SECRET_NAME = "OPERATOR_GOOGLE_SHEETS_SA"
+SECRET_PATH = "/google-sheets-sa"
+SECRET_NAME = "GOOGLE_SHEETS_SA"
 MAX_TOKEN_BYTES = 8192
 MAX_ENV_BYTES = 64 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -579,9 +582,28 @@ if not isinstance(rows, list):
 print(len(rows))'
 }
 
+# The Zulip Threads sync's read (AFC-823):  prints the number of thread rows when export-rows
+# returns its payload object in time; prints nothing and fails otherwise.  The rows carry topic
+# names and are never printed.
+thread_rows() {
+  local out
+  out="$(timeout "$PREFLIGHT_TIMEOUT" docker exec -w /app/scripts "$CONTAINER" \
+    python3 -m simple_tools.thread_registry export-rows 2>/dev/null)" || return 1
+  printf '%s' "$out" | "$PYTHON" -I -c 'import json, sys
+try:
+    payload = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+    raise SystemExit(1)
+print(len(payload["rows"]))'
+}
+
 if [[ "$DRY" -eq 1 ]]; then
   say "would check that 'docker exec $CONTAINER ... operator_registry pending-outbox --db $REGISTRY_DB --limit 1' returns JSON within ${PREFLIGHT_TIMEOUT} s"
   say "would check that '... operator_registry export-attempts --db $REGISTRY_DB --limit 1' returns JSON (the export fence, schema v2)"
+  say "would check that '... thread_registry export-rows' returns the thread rows" \
+    "(only a warning when it does not: the Zulip Threads sync, AFC-823)"
 else
   rows="$(registry_list pending-outbox --db "$REGISTRY_DB" --limit 1)" ||
     die "preflight failed: pending-outbox in $CONTAINER did not return a JSON list within ${PREFLIGHT_TIMEOUT} s; the units were not installed"
@@ -589,6 +611,15 @@ else
   attempts="$(registry_list export-attempts --db "$REGISTRY_DB" --limit 1)" ||
     die "preflight failed: export-attempts in $CONTAINER did not return a JSON list: the image lacks the export fence CLI or the store is not yet at schema v2 (redeploy the Eavesdropper app and let it write once); the units were not installed"
   say "preflight ok: export-attempts returned JSON ($attempts row(s) at --limit 1)"
+  # A thread read problem never stops the install:  the Sessions and Events drain does not
+  # depend on it, and the thread sync logs its own failure code each run until it is fixed.
+  if threads="$(thread_rows)"; then
+    say "preflight ok: thread_registry export-rows returned $threads thread row(s)"
+  else
+    say "warning: thread_registry export-rows in $CONTAINER did not return the thread rows" \
+      "within ${PREFLIGHT_TIMEOUT} s; the Zulip Threads sync will log a failure each run" \
+      "until it does (the Sessions and Events drain is not affected)" >&2
+  fi
 fi
 
 # --- 5. systemd units; the timer is never enabled here ------------------------------------

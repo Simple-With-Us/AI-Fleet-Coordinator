@@ -141,7 +141,8 @@ struct ServerSettingsSaveRequest: Equatable {
             return ServerSettingsBuilder.looksLikeCredential(text)
                 ? ServerSettingsValidationProblem(code: "secret_refused", field: path, reason: "looks like a credential; the edit was not sent.", verifiedFields: diagnosticFields) : nil
         case .list(let values):
-            guard values.count <= 32 else { return invalid("contains too many entries.") }
+            let seatList = ["notes_queue.worker_seats", "notes_queue.server_seats"].contains(path)
+            guard values.count <= (seatList ? 64 : 32) else { return invalid("contains too many entries.") }
             for (index, value) in values.enumerated() {
                 if let problem = valueProblem(value, path: "\(path)[\(index)]", references: references,
                                               diagnosticFields: diagnosticFields, depth: depth + 1) { return problem }
