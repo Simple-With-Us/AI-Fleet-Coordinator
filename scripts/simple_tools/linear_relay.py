@@ -320,9 +320,7 @@ _MD_SPECIALS = set('\\`*_[]<>|~!"')
 # shape alone does not prove it is one:  it is also the shape of credential material, so the
 # run is masked rather than exempted, and the value itself never reaches the ledger or the
 # comment (AFC-834).
-_COMMIT_ID_WORD = re.compile(
-    r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])"
-)
+_COMMIT_ID_WORD = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])")
 
 
 def _mask_commit_ids(text: str) -> str:
@@ -332,6 +330,7 @@ def _mask_commit_ids(text: str) -> str:
     carried and the value itself is neither stored nor relayed.  A run that is the value of a
     credential assignment, or a URL query value, is not masked:  the scan then withholds the
     whole field, as it always did, because that run is credential material (AFC-834)."""
+
     def replace(match: re.Match[str]) -> str:
         before = text[: match.start()]
         if _ASSIGNED_TO_CREDENTIAL.search(before) or _URL_QUERY_VALUE.search(before):
