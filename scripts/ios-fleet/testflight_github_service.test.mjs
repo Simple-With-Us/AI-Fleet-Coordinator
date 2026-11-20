@@ -70,3 +70,7 @@ test('failed resolver promise is not retried in the same run and never emits ups
 test('new run-scoped adapter resolves anew, not a process-global private key cache',async()=>{
  let keys=0;for(let i=0;i<2;i++){const g=makeServiceGitHub({key:()=>{keys++;throw Error('synthetic-refusal')}});await assert.rejects(()=>g('repos/Simple-With-Us/Example/commits/main'))}assert.equal(keys,2);
 });
+
+test('encoded path traversal and separators refuse before any network',async()=>{for(const suffix of ['%2e%2e/Other','a/%2e%2e/%2e%2e/Other','a%2fb','a%5Cb','a%23b','%252e%252e/Other']){const w=world();await assert.rejects(()=>w.github('repos/Simple-With-Us/Example/'+suffix),/dedicated-testflight-service-auth-unavailable/);assert.equal(w.calls.length,0);}});
+test('deadline before alert spawn is definitely unsent and cleans temporary body',async()=>{let t=0,n=0;const d=makeDeps({}, {clock:()=>t,runtimeBudgetMs:100,runCmd:async()=>n++,serviceGitHub:async()=>{}});t=101;await assert.rejects(()=>d.post('fixture alert'),e=>/deadline/.test(e.message)&&e.deliveryUnknown!==true);assert.equal(n,0);});
+test('alert child delivery uncertainty remains protective but preflight is unsent',async()=>{for(const code of [2,3,1]){const d=makeDeps({}, {runCmd:async()=>{const e=Error('fixture refusal');e.code=code;throw e;},serviceGitHub:async()=>{}});await assert.rejects(()=>d.post('fixture alert'),e=>e.deliveryUnknown===(code===1));}});

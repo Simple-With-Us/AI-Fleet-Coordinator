@@ -439,9 +439,11 @@ export function makeDeps(env = process.env, options = {}) {
       const file = path.join(sdir, `freshness-alert-${process.pid}.md`);
       fs.writeFileSync(file, body, { mode: 0o600 });
       try {
+        // Deadline refusal is definitely unsent, outside delivery classification.
+        const timeout = remaining(60_000);
         try {
-          await runCmd("python3", [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "service_zulip.py"),
-            "--service", "testflight", "post", "--body-file", file], { env, timeout: remaining(60_000) });
+          await run("python3", [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "service_zulip.py"),
+            "--service", "testflight", "post", "--body-file", file], { env, timeout });
         } catch (err) {
           // Only helper usage/preflight refusal is known unsent. All other outcomes may have landed.
           err.deliveryUnknown = ![2, 3].includes(err.code);

@@ -28,6 +28,9 @@ export function makeServiceGitHub({ key = resolveIsolatedTestflightKey, fetchImp
   return async function github(route, { method = 'GET', body } = {}) {
     let token, result, failure, revokeFailed = false, dispatchAttempted = false, dispatchAccepted = false;
     try {
+      const routePath = route.split('?')[0];
+      // Never let encoded separators or dot segments change path interpretation.
+      if (/%(?:2e|2f|5c|23|25)/i.test(routePath)) throw refusal();
       const m = /^repos\/Simple-With-Us\/([A-Za-z0-9_.-]+)(?:\/|$)/.exec(route);
       if (!m || !new URL(API + '/' + route).pathname.startsWith('/repos/Simple-With-Us/' + m[1] + '/') || route.split(/[/?]/).some(s => s === '..' || s === '.') || /[\\\s#]/.test(route)) throw refusal();
       const write = method !== 'GET';
