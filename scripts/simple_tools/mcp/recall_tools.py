@@ -300,7 +300,9 @@ def search(
         try:
             limit = int(str(raw_limit).strip())
         except ValueError:
-            raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer") from None
+            raise RecallUnavailable(
+                "invalid_argument", "argument 'limit' must be an integer"
+            ) from None
     # The input schema pins limit to 1..10;  the same bounds hold for the coerced
     # values, so zero, a negative, or an oversized limit is a usage error here
     # rather than wrong slicing downstream.
