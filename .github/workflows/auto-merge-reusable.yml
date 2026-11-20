@@ -174,6 +174,18 @@ on:
           PAT or GitHub App installation token with contents + pull-requests
           write.  Probed before use; absent means a loud no-op.
         required: false
+      merge_app_id:
+        description: >-
+          Optional dedicated merge service GitHub App id.  When BOTH this and
+          merge_app_private_key are set, the classify and arm jobs mint their
+          own per-job installation token (scoped to the caller repository,
+          revoked automatically at job end) instead of consuming merge_token.
+        required: false
+      merge_app_private_key:
+        description: >-
+          Private key for the merge_app_id service App.  Only consumed inside
+          the minting job; never leaves the job.
+        required: false
 
 permissions:
   contents: read
@@ -239,6 +251,34 @@ jobs:
           # branch (the base for this fleet's PRs) from the event payload.
           ref: ${{ inputs.rearm_pr_number != '' && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
           fetch-depth: 1
+      - name: Check for merge service App credentials
+        id: merge_app_creds
+        env:
+          MERGE_APP_ID: ${{ secrets.merge_app_id }}
+          MERGE_APP_KEY: ${{ secrets.merge_app_private_key }}
+        run: |
+          set -euo pipefail
+          # Step if: cannot reference the secrets context (AFC-308), so
+          # presence is detected here and consumed via outputs.
+          if [ -n "$MERGE_APP_ID" ] && [ -n "$MERGE_APP_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mint merge service token (per-job, auto-revoked at job end)
+        if: steps.merge_app_creds.outputs.present == 'true'
+        id: merge_app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.merge_app_id }}
+          private-key: ${{ secrets.merge_app_private_key }}
+          owner: Simple-With-Us
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: read
+          permission-checks: read
+          permission-actions: read
+          permission-issues: read
       - name: Classify PR for auto-merge eligibility
         id: check
         env:
@@ -257,11 +297,12 @@ jobs:
           REVIEW_GATE: ${{ inputs.review_gate }}
           REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
           APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
-          MERGE_TOKEN: ${{ secrets.merge_token }}
+          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
           REARM_PR_NUMBER: ${{ inputs.rearm_pr_number }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           SELF_GUARD: ${{ inputs.self_guard_paths }}
           HOLD_LABELS: ${{ inputs.hold_labels }}
+          HOLD_GUARD_REF: 013709e7746033c87e54fce8069089fe9509e7bc
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           REQUIRE_GATE: ${{ inputs.require_codeowners_gate }}
           GATE_SCRIPT: ${{ inputs.gate_script }}
@@ -307,6 +348,29 @@ jobs:
               skip "hold label '$h' present"
             fi
           done
+
+          # Timeline ownership gate (hold-guard slice 2), IN ADDITION to the
+          # caller-configured hold_labels presence check above: for the
+          # evaluator's hold families (do-not-merge(:*), do-not-auto-merge(:*),
+          # do-not-automerge(:*), needs-human-merge) a hold is ACTIVE unless
+          # GitHub's own event log shows the actor who applied it (numeric
+          # actor id) removed it; removal by anyone else leaves it ACTIVE,
+          # and unknown-owner holds never release automatically.
+          # armer_hold_check.sh exits nonzero on held AND on evaluation
+          # error - both fail closed.  Canonical scripts live in AFC
+          # scripts/hold-guard/, fetched at a pinned ref like every other
+          # shared fleet asset.
+          hg_ref="${HOLD_GUARD_REF:-}"
+          [ -n "$hg_ref" ] || skip "hold-guard ref not configured - fail closed"
+          hg_dir="$(mktemp -d /tmp/hold-guard.XXXXXX)"
+          hg_base="https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/${hg_ref}/scripts/hold-guard"
+          if ! curl -fsSL "$hg_base/hold_guard.py" -o "$hg_dir/hold_guard.py" \
+            || ! curl -fsSL "$hg_base/armer_hold_check.sh" -o "$hg_dir/armer_hold_check.sh"; then
+            skip "hold-guard fetch failed - fail closed"
+          fi
+          if ! hg_reason="$(REPO="$REPO" PR_NUMBER="$PR_NUMBER" bash "$hg_dir/armer_hold_check.sh")"; then
+            skip "merge hold active or unevaluable: $hg_reason"
+          fi
 
           # Owner rule 2026-10-21: never merge while a Kodus review is running on
           # the head commit or an autofix run involving this PR is queued or in
@@ -642,6 +706,34 @@ jobs:
       actions: read
       issues: read
     steps:
+      - name: Check for merge service App credentials
+        id: merge_app_creds
+        env:
+          MERGE_APP_ID: ${{ secrets.merge_app_id }}
+          MERGE_APP_KEY: ${{ secrets.merge_app_private_key }}
+        run: |
+          set -euo pipefail
+          # Step if: cannot reference the secrets context (AFC-308), so
+          # presence is detected here and consumed via outputs.
+          if [ -n "$MERGE_APP_ID" ] && [ -n "$MERGE_APP_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mint merge service token (per-job, auto-revoked at job end)
+        if: steps.merge_app_creds.outputs.present == 'true'
+        id: merge_app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.merge_app_id }}
+          private-key: ${{ secrets.merge_app_private_key }}
+          owner: Simple-With-Us
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-actions: read
+          permission-issues: read
       - name: Re-verify PR state at the arming boundary
         # Classification convinced the gate minutes ago; arming re-reads the
         # exact head, the newest review request, active review/autofix runs,
@@ -649,7 +741,7 @@ jobs:
         # parse or pagination uncertainty aborts the job before any merge
         # command runs - a schedule sweep never rescues a stale classification.
         env:
-          GH_TOKEN: ${{ secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
           FALLBACK_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
@@ -665,6 +757,7 @@ jobs:
           REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           HOLD_LABELS: ${{ inputs.hold_labels }}
+          HOLD_GUARD_REF: 013709e7746033c87e54fce8069089fe9509e7bc
         run: |
           set -euo pipefail
           abort() {
@@ -696,6 +789,21 @@ jobs:
               abort "hold label '$h' appeared after classification"
             fi
           done
+
+          # Boundary re-runs the timeline-ownership gate on live state
+          # (setter-only release, unknown-owner holds never release), matching
+          # classification.  Evaluation failure aborts.
+          hg_ref="${HOLD_GUARD_REF:-}"
+          [ -n "$hg_ref" ] || abort "hold-guard ref not configured at boundary"
+          hg_dir="$(mktemp -d /tmp/hold-guard.XXXXXX)"
+          hg_base="https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/${hg_ref}/scripts/hold-guard"
+          if ! curl -fsSL "$hg_base/hold_guard.py" -o "$hg_dir/hold_guard.py" \
+            || ! curl -fsSL "$hg_base/armer_hold_check.sh" -o "$hg_dir/armer_hold_check.sh"; then
+            abort "hold-guard fetch failed at boundary"
+          fi
+          if ! hg_reason="$(REPO="$REPO" PR_NUMBER="$PR_NUMBER" GH_TOKEN="$GATE_TOKEN" bash "$hg_dir/armer_hold_check.sh")"; then
+            abort "merge hold active or unevaluable at boundary: $hg_reason"
+          fi
 
           # Lane restriction re-check (Kody 4433065293): classify admitted
           # the PR inside its caller lane on the event payload, but the head
@@ -1206,7 +1314,7 @@ jobs:
         if: ${{ !inputs.use_wise_relay }}
         id: token-gate
         env:
-          MERGE_TOKEN: ${{ secrets.merge_token }}
+          MERGE_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
         run: |
           set -euo pipefail
           if [ -z "$MERGE_TOKEN" ]; then
@@ -1223,7 +1331,7 @@ jobs:
       - name: Probe the merge token (presence is not validity - ST-4393)
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
         run: |
           set -euo pipefail
           out="$(gh api rate_limit 2>&1)" && { echo "merge token accepted."; exit 0; }
@@ -1237,7 +1345,7 @@ jobs:
       - name: Require the configured bot principal before arming
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
         run: |
           set -euo pipefail
@@ -1258,7 +1366,7 @@ jobs:
       - name: Enable auto-merge (squash + delete branch)
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.merge_token }}
+          GH_TOKEN: ${{ steps.merge_app.outputs.token || secrets.merge_token }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ needs.classify.outputs.pr_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}

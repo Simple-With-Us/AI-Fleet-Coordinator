@@ -21,6 +21,7 @@ GitHub: the fake records its arguments and answers what the test tells it to.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -33,6 +34,29 @@ ARM_STEP_NAME = "Enable auto-merge (squash + delete branch)"
 # The message gh prints when a merge queue refuses the flag.  The backticks are
 # part of it, so a pattern that ignores them matches both spellings.
 QUEUE_REFUSAL = "X Cannot use `-d` or `--delete-branch` when merge queue enabled"
+
+
+HOLD_GUARD_REF = "013709e7746033c87e54fce8069089fe9509e7bc"
+
+FAKE_CURL = """#!/bin/bash
+# Serves the hold-guard scripts from the repo under test instead of the
+# network, so the armer's pinned fetch runs offline in these tests.
+if [ -n "${FAKE_CURL_FAIL:-}" ]; then
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+[ -n "$out" ] && [ -n "$url" ] || { echo "curl: bad fake invocation" >&2; exit 2; }
+cp "$FAKE_HOLD_GUARD_DIR/${url##*/}" "$out"
+"""
 
 FAKE_GH = """#!/bin/bash
 printf '%s\\n' "$*" >> "$GH_CALLS"
@@ -294,6 +318,21 @@ if [[ "$*" == *repos/*/pulls/* && "$*" != *comments* && "$*" != *reviews* && "$*
 fi
 H="1111111111111111111111111111111111111111"
 case "$*" in
+  *issues/*/labels*)
+    case "$GH_FAKE_MODE" in
+      hold_active|hold_unknown_owner) printf '%s\n' '[{"name":"do-not-merge"}]' ;;
+      *) printf '%s\n' '[]' ;;
+    esac
+    exit 0
+    ;;
+  *issues/*/events*)
+    case "$GH_FAKE_MODE" in
+      hold_active) printf '%s\n' '[[{"id":1,"event":"labeled","created_at":"2026-10-30T13:00:00Z","label":{"name":"do-not-merge"},"actor":{"id":42,"login":"alice"}}]]' ;;
+      hold_owner_released) printf '%s\n' '[[{"id":1,"event":"labeled","created_at":"2026-10-30T13:00:00Z","label":{"name":"do-not-merge"},"actor":{"id":42,"login":"alice"}},{"id":2,"event":"unlabeled","created_at":"2026-10-30T14:00:00Z","label":{"name":"do-not-merge"},"actor":{"id":42,"login":"alice"}}]]' ;;
+      *) printf '%s\n' '[[]]' ;;
+    esac
+    exit 0
+    ;;
   *check-runs*)
     case "$GH_FAKE_MODE" in
       kody_api_fails) echo "gh: api down" >&2; exit 1 ;;
@@ -456,6 +495,8 @@ def run_classify_full(
     request_pattern: str = "@kody[ \t]+start-review",
     outputs: dict | None = None,
     rearm_pr_number: str = "",
+    extra_env: dict | None = None,
+    drop_env: tuple = (),
 ) -> tuple[int, str, str, list[str]]:
     """Run the classify step with a fake `gh`; return (exit code, output, skip reason, gh calls)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -465,6 +506,9 @@ def run_classify_full(
         fake = root / "gh"
         fake.write_text(FAKE_GH_CLASSIFY, encoding="utf-8")
         fake.chmod(0o755)
+        fake_curl = root / "curl"
+        fake_curl.write_text(FAKE_CURL, encoding="utf-8")
+        fake_curl.chmod(0o755)
         script = root / "classify.sh"
         script.write_text(step_script(CLASSIFY_STEP_NAME), encoding="utf-8")
         env = dict(os.environ)
@@ -502,8 +546,14 @@ def run_classify_full(
                 "REQUIRE_GATE": "false",
                 "GATE_SCRIPT": "",
                 "REARM_PR_NUMBER": rearm_pr_number,
+                "HOLD_GUARD_REF": HOLD_GUARD_REF,
+                "FAKE_HOLD_GUARD_DIR": str(REPO / "scripts" / "hold-guard"),
             }
         )
+        if extra_env:
+            env.update(extra_env)
+        for key in drop_env:
+            env.pop(key, None)
         proc = subprocess.run(
             ["bash", str(script)],
             capture_output=True,
@@ -997,6 +1047,20 @@ FAKE_GH_ARM_GUARD = r"""#!/bin/bash
 printf '%s\n' "$*" >> "$GH_CALLS"
 HEAD_OK="1111111111111111111111111111111111111111"
 case "$*" in
+  *issues/*/labels*)
+    case "$GH_FAKE_MODE" in
+      hold_active|hold_unknown_owner) printf '%s\n' '[{"name":"do-not-merge"}]' ;;
+      *) printf '%s\n' '[]' ;;
+    esac
+    exit 0
+    ;;
+  *issues/*/events*)
+    case "$GH_FAKE_MODE" in
+      hold_active) printf '%s\n' '[[{"id":1,"event":"labeled","created_at":"2026-10-30T13:00:00Z","label":{"name":"do-not-merge"},"actor":{"id":42,"login":"alice"}}]]' ;;
+      *) printf '%s\n' '[[]]' ;;
+    esac
+    exit 0
+    ;;
   *check-runs/124599873261*)
     SHA="$HEAD_OK"; CONC="success"; STARTED="2026-10-30T13:05:00Z"
     case "$GH_FAKE_MODE" in
@@ -1117,6 +1181,8 @@ def run_arm_guard(
     classified_receipt: str = "124599873261",
     review_gate: str = "",
     restrict: str = "",
+    extra_env: dict | None = None,
+    drop_env: tuple = (),
 ) -> tuple[int, str, list[str]]:
     """Run the arming-boundary guard step with a fake `gh`; return (exit code, combined output)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1124,6 +1190,9 @@ def run_arm_guard(
         fake = root / "gh"
         fake.write_text(FAKE_GH_ARM_GUARD, encoding="utf-8")
         fake.chmod(0o755)
+        fake_curl = root / "curl"
+        fake_curl.write_text(FAKE_CURL, encoding="utf-8")
+        fake_curl.chmod(0o755)
         script = root / "guard.sh"
         script.write_text(step_script(GUARD_STEP_NAME), encoding="utf-8")
         env = dict(os.environ)
@@ -1149,8 +1218,14 @@ def run_arm_guard(
                 "REVIEW_REQUEST_PATTERN": "^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)",
                 "HOLD_LABELS": "do-not-automerge,needs-human-merge",
                 "RESTRICT": restrict,
+                "HOLD_GUARD_REF": HOLD_GUARD_REF,
+                "FAKE_HOLD_GUARD_DIR": str(REPO / "scripts" / "hold-guard"),
             }
         )
+        if extra_env:
+            env.update(extra_env)
+        for key in drop_env:
+            env.pop(key, None)
         proc = subprocess.run(
             ["bash", str(script)],
             capture_output=True,
@@ -1501,6 +1576,141 @@ class HttpMethodSource(unittest.TestCase):
     def test_reusable_reads_pin_get(self):
         self.check_file(WORKFLOW)
 
+
+
+class ClassifyHoldGuard(unittest.TestCase):
+    """Hold-guard slice 2: timeline-ownership gate runs inside classify,
+    in addition to the caller-configured hold_labels presence check."""
+
+    def test_clear_timeline_reaches_later_gates(self) -> None:
+        code, output, reason = run_classify("clear", require_approval="false")
+        self.assertEqual(code, 0, output)
+        # "compare API failed" is a gate AFTER the hold gate: reaching it
+        # proves a clear evaluation passes silently.
+        self.assertIn("compare API failed", reason)
+
+    def test_active_hold_blocks(self) -> None:
+        code, output, reason = run_classify("hold_active", require_approval="false")
+        self.assertEqual(code, 0, output)
+        self.assertIn("merge hold", reason)
+
+    def test_unknown_owner_hold_never_releases(self) -> None:
+        # label present, no applying event in the log: permanent block.
+        code, output, reason = run_classify("hold_unknown_owner", require_approval="false")
+        self.assertEqual(code, 0, output)
+        self.assertIn("merge hold", reason)
+
+    def test_owner_released_hold_clears(self) -> None:
+        code, output, reason = run_classify("hold_owner_released", require_approval="false")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_fetch_failure_fails_closed(self) -> None:
+        code, output, reason = run_classify(
+            "clear", require_approval="false", extra_env={"FAKE_CURL_FAIL": "1"}
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("hold-guard fetch failed", reason)
+
+    def test_missing_ref_fails_closed(self) -> None:
+        code, output, reason = run_classify(
+            "clear", require_approval="false", drop_env=("HOLD_GUARD_REF",)
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn("hold-guard ref not configured", reason)
+
+
+class ArmBoundaryHoldGuard(unittest.TestCase):
+    """Hold-guard slice 2: the arming boundary re-runs the timeline gate on
+    live state and aborts (with disarm) on held or unevaluable."""
+
+    def test_active_hold_aborts_and_disarms(self) -> None:
+        code, out, recorded = run_arm_guard("hold_active")
+        self.assertEqual(code, 1, out)
+        self.assertIn("merge hold", out)
+        self.assertTrue([c for c in recorded if "--disable-auto" in c], recorded)
+
+    def test_fetch_failure_aborts_and_disarms(self) -> None:
+        code, out, recorded = run_arm_guard("clean", extra_env={"FAKE_CURL_FAIL": "1"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("hold-guard fetch failed at boundary", out)
+        self.assertTrue([c for c in recorded if "--disable-auto" in c], recorded)
+
+    def test_missing_ref_aborts_and_disarms(self) -> None:
+        code, out, recorded = run_arm_guard("clean", drop_env=("HOLD_GUARD_REF",))
+        self.assertEqual(code, 1, out)
+        self.assertIn("hold-guard ref not configured at boundary", out)
+        self.assertTrue([c for c in recorded if "--disable-auto" in c], recorded)
+
+    def test_clean_timeline_still_passes(self) -> None:
+        code, out, _recorded = run_arm_guard("clean")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Arming boundary re-verified", out)
+
+
+class MintWiringContract(unittest.TestCase):
+    """Static contract for the in-job merge-token mint (review condition):
+    both consuming jobs mint their own per-job token, the mint step precedes
+    every consumer in the same job, every token env prefers the minted token
+    over secrets.merge_token, and the classify mint is read-only while the
+    arm mint carries the explicit write scope the merge needs."""
+
+    TEXT = WORKFLOW.read_text(encoding="utf-8")
+    MINT_PIN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
+    TOKEN_ENV = re.compile(r"^\s+(?:MERGE_TOKEN|GH_TOKEN): \$\{\{ ")
+
+    @classmethod
+    def _job_body(cls, name: str, *following: str) -> str:
+        start = cls.TEXT.index(f"\n  {name}:\n")
+        ends = [cls.TEXT.find(f"\n  {o}:\n", start) for o in following]
+        ends = [e for e in ends if e != -1]
+        end = min(ends) if ends else len(cls.TEXT)
+        return cls.TEXT[start:end]
+
+    @classmethod
+    def _mint_block(cls, body: str) -> str:
+        start = body.index(cls.MINT_PIN)
+        nxt = body.find("\n      - name:", start)
+        return body[start : nxt if nxt != -1 else len(body)]
+
+    def test_classify_and_arm_each_mint_in_job(self) -> None:
+        for body in (
+            self._job_body("classify", "arm"),
+            self._job_body("arm", "disarm"),
+        ):
+            self.assertIn(self.MINT_PIN, body)
+            self.assertIn("id: merge_app\n", body)
+
+    def test_every_token_env_prefers_the_minted_token(self) -> None:
+        consumers = [
+            line
+            for line in self.TEXT.splitlines()
+            if self.TOKEN_ENV.match(line) and "secrets.merge_token" in line
+        ]
+        self.assertGreaterEqual(len(consumers), 6)  # classify + 5 in arm
+        for line in consumers:
+            self.assertIn("steps.merge_app.outputs.token ||", line)
+
+    def test_mint_precedes_every_consumer_in_the_same_job(self) -> None:
+        for body in (
+            self._job_body("classify", "arm"),
+            self._job_body("arm", "disarm"),
+        ):
+            mint_at = body.index("id: merge_app\n")
+            for line in body.splitlines():
+                if self.TOKEN_ENV.match(line) and "steps.merge_app.outputs.token" in line:
+                    self.assertLess(mint_at, body.index(line))
+
+    def test_classify_mint_is_read_only(self) -> None:
+        block = self._mint_block(self._job_body("classify", "arm"))
+        self.assertIn("permission-contents: read", block)
+        self.assertIn("permission-pull-requests: read", block)
+        self.assertNotIn(": write", block)
+
+    def test_arm_mint_write_scope_is_explicit(self) -> None:
+        block = self._mint_block(self._job_body("arm", "disarm"))
+        self.assertIn("permission-contents: write", block)
+        self.assertIn("permission-pull-requests: write", block)
 
 if __name__ == "__main__":
     unittest.main()
