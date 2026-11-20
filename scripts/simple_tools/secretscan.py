@@ -132,6 +132,12 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     assignment = re.search(
         r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line
     )
+    labeled_arg = False
+    if assignment is None:
+        # A labeled call argument (`token: value` right after `(` or `,`) is call
+        # syntax in Swift and Kotlin, not a JSON/YAML pair or a prose colon.
+        assignment = re.search(r"[(,] *[A-Za-z_$][A-Za-z0-9_$.]* *: *$", line)
+        labeled_arg = assignment is not None
     if assignment is None:
         return False
     if _SOURCE_RHS.match(text, start) is not None:
@@ -142,7 +148,11 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     value = chain.group(0)
     if value.startswith(("process.env.", "import.meta.env.")):
         return False
-    return re.search(r"[a-z][A-Z]", value) is not None
+    if re.search(r"[a-z][A-Z]", value) is not None:
+        return True
+    # Lowercase-only chains stay candidates after `=`, but in a labeled call
+    # argument a property chain is idiomatically lowercase (Swift/Kotlin).
+    return labeled_arg
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
