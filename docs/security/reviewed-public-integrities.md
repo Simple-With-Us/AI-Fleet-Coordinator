@@ -1,6 +1,6 @@
 # Exact Public Package Integrity Reviews
 
-The owner explicitly authorized a reviewed integrity exception on November 13, 2026: “Allow a reviewed integrity exception.”  This record covers the two complete CT lockfiles below, within AFC-786.  It grants no publication, credential, destination or deployment authority by itself; the source change must pass normal review, checks and merge before installation.
+The owner explicitly authorized a reviewed integrity exception on November 13, 2026: “Allow a reviewed integrity exception.”  This record covers the two complete CT lockfiles below, within AFC-786;  the dated section at the end records the app/deno.lock admission of November 19, 2026.  It grants no publication, credential, destination or deployment authority by itself; the source change must pass normal review, checks and merge before installation.
 
 ## Immutable Files
 
@@ -49,7 +49,7 @@ Each of those 13 artifacts and both Hono versions were independently checked aga
 
 ## Admission Boundary
 
-`scripts/simple_tools/secretscan.py::scan_file` and its byte-identical relay vendor contain a separate immutable public-integrity registry of exactly these two `(repository, path, whole-file SHA-256)` triples.  For an exact match, every nonempty loaded credential is refused first, including a short value and a value supplied through an iterator.  The unchanged strict scanner then runs; only its `a Zulip-shaped API key` result is admitted for these exact reviewed bytes.  Every other provider, dedicated or generic detector remains active.
+`scripts/simple_tools/secretscan.py::scan_file` and its byte-identical relay vendor contain a separate immutable public-integrity registry of these `(repository, path, whole-file SHA-256)` triples:  the two above and, after the dated review below, the app/deno.lock triple.  For an exact match, every nonempty loaded credential is refused first, including a short value and a value supplied through an iterator.  The unchanged strict scanner then runs; only its `a Zulip-shaped API key` result is admitted for these exact reviewed bytes.  Every other provider, dedicated or generic detector remains active.
 
 The relay's `unreviewed_file_secret` still checks loaded values and its own provider patterns before reaching this subtype.  These files are not added to the legacy synthetic-fixture early-return registry.  General Python `scan()`, JavaScript `scanSecret()`, message scans, provider patterns and gitleaks settings are unchanged.  The existing generic-assignment fixture registry keeps its separate boundary.
 
@@ -64,3 +64,50 @@ Synthetic tests cover exact admission, strict general scanning and redaction, de
 After normal source review and merge, use the existing fleet CLI release/update mechanism and the approved pinned relay deployment transaction with its backup, smoke checks and rollback.  Verify the actual qualified deployment entrypoint before installation; a deployment document is not proof of a live qualified runner.  Do not patch a live scanner or registry to unblock publication, alter credentials or service settings, or retry the previously refused CT payload before the reviewed release is installed and verified.
 
 Kodus-Config's `AGENTS.md` (blob `a48ea625234d8f7c48910e04f3300b72219c4c44`) forbids an allowlist in its `.gitleaks.toml`; its README (blob `1fd3cd08e319d0ef93f1e31b053c6c2227062470`) explains why whole-folder/provider suppression was removed.  This change alters neither repository's gitleaks configuration nor any provider detector.  The owner's explicit exception is confined to the reviewed release-code boundary described above.
+
+## Congress.Trade app/deno.lock, reviewed November 19, 2026
+
+- Repository: `Simple-With-Us/Congress.Trade`
+- Path: `app/deno.lock`
+- SHA-256: `faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084`
+- Size: 97,957 UTF-8 bytes.
+- Provenance: renovate dependency-update candidate bytes held locally by the
+  publishing worker on the Mac;  these are the exact bytes the publication
+  route carries.  Baseline:  main `app/deno.lock`, git blob
+  `1eac82267150a7d3c1a35c7032dfbeca20db7065`, SHA-256
+  `b5198e827aebc3e7cf9e480d1f0aeea8e42b4c47de5a06695cae7a380ba6f3b2`, fetched
+  through the seat's own relay.
+
+The complete file was parsed strictly (UTF-8, duplicate-key and
+nonfinite-number rejection) and reviewed in full, not only the changed lines.
+Root keys are exactly version, specifiers, npm, remote, redirects and
+workspace:  29 specifiers, 392 npm entries, 35 remote entries, 3 redirects.
+Every npm integrity value is canonical base64 for a recognized SHA-256,
+SHA-384 or SHA-512 digest of the correct length;  every remote value is a
+lowercase 64-hex digest;  all 41 URLs use HTTPS on deno.land without user
+information.  The complete dependency delta against main is one package:
+@aws-sdk/client-s3 3.1167.0 to 3.1168.0;  no remote or redirect change.
+
+The strict scanner's only result on the complete bytes is a Zulip-shaped API
+key:  exactly 16 matches, and lexical JSON string intervals prove every match
+falls inside an npm integrity value.  No assigned-secret, dedicated-provider
+or bearer-header pattern matched.  The 16 implicated npm artifacts plus the
+changed @aws-sdk/client-s3@3.1168.0 were independently checked against npm
+version metadata and actual tarball bytes:  metadata name, version, integrity
+and tarball URL matched the lock, and SHA-512 of each streamed tarball matched
+its integrity value:  17 verified artifacts and 24,302,925 downloaded bytes
+total, bounded as before, hashed in memory, never saved, extracted or
+executed;  integrity strings are deliberately not reproduced here.
+
+The admission boundary is unchanged:  the registry gains exactly one more
+(repository, path, whole-file SHA-256) triple, for these reviewed bytes only.
+Nonempty loaded credentials refuse first, the unchanged strict scanner runs,
+and only its a Zulip-shaped API key result is admitted for these exact bytes;
+every other detector stays active.  A changed byte, a different repository or
+a different path loses admission;  a regenerated lockfile requires a new
+complete content review.  The registry length pins in the git-relay and
+scripts test suites now expect three admissions.  This record is an
+independent source review;  it is not an owner approval.  Normal source
+review, checks and merge must finish before the scanner is installed;  do not
+patch a live registry to unblock publication.
+
