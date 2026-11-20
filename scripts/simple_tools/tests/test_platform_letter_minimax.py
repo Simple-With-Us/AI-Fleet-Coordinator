@@ -91,6 +91,21 @@ class ArchiveFlagTests(StoreBase):
             fh.write(b"this is not a session store" * 8)
         self.assertEqual(PM.minimax_gone(self.env(), frozenset({"m-0001"})), set())
 
+    def test_a_store_whose_path_carries_a_question_mark_is_still_read(self) -> None:
+        # The path goes into the SQLite URI, so a `?` or a `#` in it would end the file name
+        # early and name another file, or none.  The path is percent-encoded, so the row is found.
+        home = os.path.join(self.tmp.name, "we?ird #home")
+        os.makedirs(os.path.join(home, ".minimax", "v2", "sqlite"))
+        path = os.path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        conn = sqlite3.connect(path)
+        with conn:
+            conn.execute(DDL)
+            conn.execute("INSERT INTO local_runtime_sessions VALUES ('m-0001', 'The Chat', 'conversation', NULL, 1)")
+        conn.close()
+        env = self.env(HOME=home)
+        self.assertEqual(PM.minimax_gone(env, frozenset({"m-0001"})), {"m-0001"})
+        self.assertEqual(PM.minimax_title({"session_id": "m-0001"}, env), "The Chat")
+
     def test_the_data_dir_moves_the_store(self) -> None:
         # MINIMAX_DATA_DIR moves ~/.minimax, so the store is read where the runtime wrote it.
         other = os.path.join(self.tmp.name, "elsewhere")

@@ -42,6 +42,7 @@ import os
 import re
 import sqlite3
 import time
+from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -105,12 +106,21 @@ def store_file(env: Mapping[str, str]) -> str:
     return os.path.join(root, "v2", "sqlite", "runtime-state.sqlite")
 
 
+def _read_only(path: str) -> sqlite3.Connection:
+    """The session store opened read-only, its path percent-encoded for the URI.
+
+    A path with a `?` or a `#` in it would otherwise end the file name early or carry
+    parameters of its own, so the URI would name another file, or none, and `mode=ro`
+    would not be the only thing in it."""
+    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+
+
 def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     path = store_file(env)
     if not sid or not os.path.isfile(path):
         return {}
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=2)
+        conn = _read_only(path)
         try:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -266,7 +276,7 @@ def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set
         return set()
     gone: set[str] = set()
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=2)
+        conn = _read_only(path)
         try:
             if "archived" not in _columns(conn):
                 return set()
