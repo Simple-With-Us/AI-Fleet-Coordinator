@@ -423,10 +423,12 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
 UNLETTERED_SCAN = 20
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
-#: How many rows one query reads at a time.  The query leaves out the chats that already carry a
-#: letter on their title, so the rows it returns are candidates:  the bound counts candidates and not
-#: rows, and a busy host's lettered chats cannot spend it.
+#: How many rows one query reads at a time, and how many notes one scan reads.  The query leaves out
+#: the chats that carry a letter on their title and the chats whose own note holds one, so the rows
+#: it returns are candidates:  the bound counts candidates and not rows, and a busy host's lettered
+#: chats cannot spend it.
 UNLETTERED_BATCH = 200
+UNLETTERED_NOTES = 500
 #: The hook's own no-letter mark, as a SQL pattern.  LIKE reads only % and _ as wildcards, so the two
 #: question marks are the mark itself.
 UNLETTERED_MARK = PL.UNLETTERED + ": %"
@@ -436,12 +438,63 @@ LETTER_GLOB_ONE = "[A-Z]: *"
 LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
 
 
-def _unlettered_children(conn: sqlite3.Connection, env: Mapping[str, str], now: float) -> tuple[list[str], int]:
-    """The sub-threads of this host that hold no letter on their title, newest first, and how many
-    rows of the store could not be named.
+def _lettered_sids(env: Mapping[str, str]) -> set[str]:
+    """The session ids whose own note holds a letter, read from the seat's notes folder in one batch.
 
-    A row that names no session id is skipped and counted:  a corrupt row must not read as a chat that
-    was considered and left alone."""
+    The letter is in the note and the note is a file, so the lettered chats are read from the
+    folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
+    the listing and are used as query values only, so a name the store holds can never place a read
+    outside the folder.
+
+    A note that is not open, or whose label is not a letter, says nothing:  such a chat holds no
+    letter, and the pass may name it."""
+    folder = os.path.dirname(PL.note_path(env, SEAT, ""))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return set()
+    notes: list[tuple[float, str, str]] = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            notes.append((os.stat(path).st_mtime, path, name[:-5]))
+        except OSError:
+            continue
+    notes.sort(reverse=True)
+    held: set[str] = set()
+    for _, path, sid in notes[:UNLETTERED_NOTES]:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                note = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(note, dict):
+            continue
+        label = note.get("label")
+        if note.get("state") == "open" and isinstance(label, str) and PL.LABEL_RE.fullmatch(label):
+            held.add(sid)
+    return held
+
+
+def _unlettered_children(
+    conn: sqlite3.Connection, now: float, held: set[str]
+) -> tuple[list[str], int]:
+    """The sub-threads of this host that hold no letter, newest first, and how many rows of the
+    store could not be named.
+
+    The chats whose own note holds a letter are left out in the query, so the bound counts the
+    candidates and not the rows:  a host whose newest sub-threads are all lettered cannot spend the
+    scan's bound on them and starve a genuinely unlettered older row.  A row that names no session
+    id is skipped and counted:  a corrupt row must not read as a chat that was considered and left
+    alone, and only a well-formed id is ever named (the library's own check), so a name the store
+    holds can never place anything outside the notes folder."""
+    clause = ""
+    params: list[Any] = []
+    if held:
+        clause = " AND session_id NOT IN (%s)" % ",".join("?" * len(held))
+        params.extend(sorted(held))
     rows = conn.execute(
         "SELECT session_id FROM local_runtime_sessions"
         " WHERE session_kind = ?"
@@ -452,17 +505,18 @@ def _unlettered_children(conn: sqlite3.Connection, env: Mapping[str, str], now: 
         " AND title IS NOT NULL AND title != ''"
         " AND title NOT LIKE ?"
         " AND title NOT GLOB ?"
-        " AND title NOT GLOB ?"
+        " AND title NOT GLOB ?" + clause +
         " ORDER BY updated_at_ms DESC LIMIT ?",
-        (
+        [
             "task",
             (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
             (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
             UNLETTERED_MARK,
             LETTER_GLOB_ONE,
             LETTER_GLOB_TWO,
+            *params,
             UNLETTERED_BATCH,
-        ),
+        ],
     ).fetchall()
     found: list[str] = []
     malformed = 0
@@ -470,28 +524,13 @@ def _unlettered_children(conn: sqlite3.Connection, env: Mapping[str, str], now: 
         if not isinstance(sid, str) or not sid:
             malformed += 1
             continue
-        if _holds_a_letter(env, sid):
-            # The chat holds a letter already, and the repair pass skips a chat that holds one (a
-            # platform with no title writer cannot change that record), so naming it would spend a
-            # slot of the scan on a chat the pass will not touch, and starve a real candidate.
+        try:
+            checked = PL.SI.check(sid, "a listed session id")
+        except ValueError:
+            malformed += 1
             continue
-        found.append(sid)
+        found.append(checked)
     return found, malformed
-
-
-def _holds_a_letter(env: Mapping[str, str], sid: str) -> bool:
-    """True when the chat's own note holds a letter.
-
-    A note that is gone, or that holds no letter, says nothing:  the chat is a candidate, and the
-    pass asks the assigner for one."""
-    try:
-        with open(PL.note_path(env, SEAT, sid), encoding="utf-8") as fh:
-            note = json.load(fh)
-    except (OSError, ValueError):
-        return False
-    if not isinstance(note, dict):
-        return False
-    return bool(str(note.get("label") or ""))
 
 
 def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
@@ -512,7 +551,7 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     try:
         conn = _read_only(path)
         try:
-            children, broken = _unlettered_children(conn, env, now)
+            children, broken = _unlettered_children(conn, now, _lettered_sids(env))
             malformed += broken
             for sid in children:
                 if sid not in found:

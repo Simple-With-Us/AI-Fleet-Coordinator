@@ -218,6 +218,42 @@ class MiniMaxRepairRow(Base):
         self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
         self.assertNotIn("m-0109", self.scan())
 
+    def test_a_chat_whose_note_is_not_open_is_named(self) -> None:
+        # A closed or a mismatched note holds no letter, so the chat is a candidate:  the pass asks
+        # the assigner for one.  Only an open note with a letter on it holds a letter.
+        self.add("m-0110", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0110", {"state": "closed", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0110", self.scan())
+
+    def test_a_chat_whose_note_carries_a_malformed_label_is_named(self) -> None:
+        # A label that is not a letter is not a letter:  the note is broken, the chat holds none, and
+        # the pass may name it.  The letter test is the established one:  the note is open and its
+        # label is one or two capitals.
+        self.add("m-0111", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0111", {"state": "open", "label": "??", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0111", self.scan())
+
+    def test_a_row_whose_session_id_is_not_a_session_id_is_not_named(self) -> None:
+        # The session id the store holds is checked with the library's own check before anything is
+        # done with it:  a name that is not a session id can never become a note path, so it can
+        # never read a file outside the notes folder.  Such a row is counted, not named.
+        self.add("../escape", "Child work", kind="task", parent="m-0100")
+        found = self.scan()
+        self.assertIsInstance(found, list)
+        self.assertNotIn("../escape", found)
+
+    def test_a_lettered_row_cannot_starve_an_unlettered_one(self) -> None:
+        # The scan's bound counts the candidates, not the rows:  a host whose newest sub-threads are
+        # all lettered cannot spend the bound on them and leave a genuinely unlettered older row
+        # unreached.  The lettered chats are left out in the query, so the row below is named even
+        # though two hundred lettered rows are newer than it.
+        for index in range(200):
+            sid = "m-0200-%03d" % index
+            self.add(sid, "Work without a letter", kind="task", parent="m-0000")
+            self.write_note(sid, {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.add("m-0299", "Child work", kind="task", parent="m-0000", age=7200.0)
+        self.assertIn("m-0299", self.scan())
+
     def test_an_archived_chat_is_not_named(self) -> None:
         self.add("m-0106", "Child work", kind="task", parent="m-0100", archived=1)
         self.assertNotIn("m-0106", self.scan())
