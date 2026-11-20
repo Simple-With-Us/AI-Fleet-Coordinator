@@ -671,7 +671,8 @@ def _fleet_call(host, seat, request, wait):
     args = {
         key: value
         for key, value in request.items()
-        if key in (
+        if key
+        in (
             "title",
             "markdown",
             "session",
