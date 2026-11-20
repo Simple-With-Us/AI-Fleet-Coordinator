@@ -380,6 +380,33 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         }
     }
 
+
+    func test_seat_list_controls_are_typed_bounded_and_preserve_read_only_mode() throws {
+        let schema = try settingsSchema()
+        let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true)
+        let rows = groups.flatMap(\.rows)
+        for key in ["notes_queue.worker_seats", "notes_queue.server_seats"] {
+            let row = try XCTUnwrap(rows.first { $0.id == key })
+            XCTAssertEqual(row.control, .seats(maxItems: 64, maxLength: 32))
+            XCTAssertEqual(try ServerSettingsBuilder.value(#"["JET","CODEX","7-CUSTOM_1"]"#, for: row).get(),
+                           .list([.text("JET"), .text("CODEX"), .text("7-CUSTOM_1")]))
+            XCTAssertEqual(try ServerSettingsBuilder.value("[]", for: row).get(), .list([]))
+            for invalid in [#"["lower"]"#, #"[17]"#, #"[["JET"]]"#, #"["BAD NAME"]"#,
+                            #"[""]"#, ServerSettingValue.list(Array(repeating: .text("JET"), count: 65)).json!] {
+                XCTAssertThrowsError(try ServerSettingsBuilder.value(invalid, for: row).get(), invalid)
+            }
+            let values = ServerSettingValue.list(Array(repeating: .text("JET"), count: 64))
+            XCTAssertEqual(try ServerSettingsBuilder.value(values.json!, for: row).get(), values)
+            let request = try ServerSettingsBuilder.request(edits: [key: values.json!], rows: rows, forAutosave: true).get()
+            XCTAssertEqual(request.set[key], values)
+            XCTAssertNotNil(request.standardInput)
+            let oldRows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema).flatMap(\.rows)
+            let old = try XCTUnwrap(oldRows.first { $0.id == key })
+            XCTAssertFalse(old.isEditable)
+            XCTAssertEqual(old.readOnlyReason, ServerSettingsCopy.seats)
+        }
+    }
+
     func test_typed_controls_cover_all_exposed_config_and_preserve_presence_case() throws {
         let schema = try settingsSchema()
         let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true,

@@ -1021,6 +1021,18 @@ test("main --ship-behind --alert:  dispatches without alerting, then a later run
   assert.match(rep2.alert.error, /simple-chat/);
   assert.match(rep2.alert.body, /has not landed/);
   assert.equal(later.calls.states.at(-1).apps.b.alert, undefined, "alert stamp rolled back so the next run retries");
+  const uncertain = fakeDeps({ repos: world, builds, state: JSON.parse(JSON.stringify(saved)) });
+  uncertain.deps.now = later.deps.now;
+  uncertain.deps.post = async () => { const err = new Error("service send uncertain"); err.deliveryUnknown = true; throw err; };
+  const unknownOut = sink();
+  await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], uncertain.deps, unknownOut);
+  assert.equal(JSON.parse(unknownOut.text).alert.outcome, "unknown");
+  const unknownState = uncertain.calls.states.at(-1);
+  assert.equal(unknownState.apps.b.alert.outcome, "unknown");
+  const retryUnknown = fakeDeps({ repos: world, builds, state: unknownState });
+  retryUnknown.deps.now = later.deps.now;
+  await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], retryUnknown.deps, sink());
+  assert.equal(retryUnknown.calls.posts.length, 0, "uncertain delivery is not blindly reposted");
 });
 
 test("main --app --ship-behind still sees another app's ship in flight", async () => {
@@ -1191,13 +1203,13 @@ test("assertRegistryPathsExist rejects a path GitHub does not have on main", asy
 });
 
 test("registry paths in testflight-apps.json exist on each repo's main branch", async (t) => {
-  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) {
+  const githubReadCredential = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!githubReadCredential) {
     t.skip("needs GH_TOKEN or GITHUB_TOKEN to verify paths on GitHub");
     return;
   }
   const reg = loadRegistry(path.join(HERE, "testflight-apps.json"));
-  const deps = makeDeps({ ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token });
+  const deps = makeDeps({ ...process.env, GH_TOKEN: githubReadCredential, GITHUB_TOKEN: githubReadCredential });
   try {
     await deps.gh("repos/Simple-With-Us/AI-Fleet-Coordinator/contents/README.md?ref=main");
   } catch (err) {
