@@ -50,7 +50,7 @@ class ReviewedPublicIntegrityTests(TestCase):
         )
         self.assertEqual(len(_REVIEWED_FIXTURES), 13)
         self.assertTrue(all(repo == REPO for repo, _path, _digest in _REVIEWED_FIXTURES))
-        self.assertEqual(len(patch_secretscan._REVIEWED_PUBLIC_INTEGRITIES), 2)
+        self.assertEqual(len(patch_secretscan._REVIEWED_PUBLIC_INTEGRITIES), 3)
 
     def test_relay_full_file_gate_keeps_loaded_and_own_provider_checks(self):
         self.assertEqual(
