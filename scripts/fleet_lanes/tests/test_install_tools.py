@@ -7922,6 +7922,19 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertTrue(all(c.status == "WARN" for c in checks), [c.detail for c in checks])
         self.assertTrue(any("read-only" in c.detail for c in checks))
 
+    def test_a_readonly_bashrc_with_a_current_block_reads_current_everywhere(self) -> None:
+        """The Kody round-4 disagreement:  a read-only profile whose marked block is already current
+        needs nothing from apply, so the doctor passes it, plan calls it current, and neither names
+        a refusal for a healthy host.  The refusal only exists when a write is owed."""
+        self.install_zcode()
+        (self.home / ".bashrc").chmod(0o444)
+        self.addCleanup((self.home / ".bashrc").chmod, 0o644)
+        sp = self.seat_plan()
+        self.assertEqual(sp.bashrc_action, "none")
+        self.assertEqual(sp.state, "current")
+        checks = [c for c in self.verify("zcode") if c.name == "bashrc block"]
+        self.assertEqual([c.status for c in checks], ["PASS"], [c.detail for c in checks])
+
     def test_verify_warns_on_a_seat_bin_apply_refuses_to_manage(self) -> None:
         """A symlinked seat dir and a seat dir that is a plain file are states apply deliberately
         refuses to manage, so the doctor WARNS with the by-hand remediation instead of FAILing on a

@@ -8320,20 +8320,23 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
         except UnicodeDecodeError:
             bashrc_reason = f"{bashrc} is not UTF-8 text; fix or convert it first"
         else:
-            # The writability check mirrors apply's refusal exactly:  a readable profile without the
-            # owner-write bit is one apply will refuse, so plan reports refused here too and never
-            # promises a write that cannot happen (a plan/apply disagreement would leave the doctor
-            # naming an `apply zcode` remediation apply then refuses to run).
-            if not stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200:
-                bashrc_reason = (
-                    f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
-                    "apply does not override the owner's write protection"
-                )
+            try:
+                bashrc_action, hand_line, stray = _zcode_bashrc_classify(text)
+            except Refused as exc:
+                bashrc_reason = str(exc)
             else:
-                try:
-                    bashrc_action, hand_line, stray = _zcode_bashrc_classify(text)
-                except Refused as exc:
-                    bashrc_reason = str(exc)
+                # The writability check mirrors apply's refusal exactly, but only when a write is
+                # actually owed:  a read-only profile whose marked block is already current needs
+                # nothing from apply, and calling that refused while the doctor passes it would
+                # make plan and the doctor disagree about a healthy host.  A read-only profile
+                # that still needs the block is one apply will refuse, so plan reports refused
+                # here and never promises a write that cannot happen.
+                if bashrc_action != "none" and not stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200:
+                    bashrc_action = "refused"
+                    bashrc_reason = (
+                        f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
+                        "apply does not override the owner's write protection"
+                    )
     current = (
         not blocked
         and dir_state == "ok"
