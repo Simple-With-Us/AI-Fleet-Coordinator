@@ -128,6 +128,115 @@ class ClaudeRow(Base):
             self.assertTrue(commands[0].endswith("platform-letter hook --platform claude"), commands[0])
 
 
+class MiniMaxRepairRow(Base):
+    """The MiniMax row names the chats a repair pass may replay (AFC-857):  the sub-threads the hook
+    never lettered.  A chat still on the hook's own "?:" mark is not named:  it holds no letter, which
+    is the state the owner defined for it, and the "?:" chats on a host are mostly the app's own runs,
+    which would take the seat's pairs."""
+
+    DDL = (
+        "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+        " parent_session_id TEXT, archived INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)"
+    )
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(self.store))
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(self.DDL)
+        conn.close()
+        self.now = time.time()
+
+    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "",
+            archived: int = 0, age: float = 3600.0) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, title, kind, parent or None, archived,
+                 int((self.now - age) * 1000), int(self.now * 1000)),
+            )
+        conn.close()
+
+    def note_for(self, sid: str) -> dict:
+        with open(PL.note_path(self.env(), PM.SEAT, sid), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def title_of(self, sid: str) -> str:
+        conn = sqlite3.connect(self.store)
+        row = conn.execute("SELECT title FROM local_runtime_sessions WHERE session_id = ?", (sid,)).fetchone()
+        conn.close()
+        return str(row[0] or "")
+
+    def scan(self) -> list[str] | None:
+        return PM.minimax_unlettered_sessions(self.env())
+
+    def repair(self) -> dict:
+        return PL.repair_unlettered(PM.SPEC, self.env(), PM.SEAT, "mac", now=self.now, force=True)
+
+    def test_a_sub_thread_the_hook_never_lettered_is_named(self) -> None:
+        # The hook refused a sub-thread at its start when the store did not hold its row yet, and a
+        # sub-thread that ends never prompts again, so nothing else ever asked for its letter.  The
+        # repair pass replays its start, and the letter goes on the title.
+        self.add("m-0100", "Parent work")
+        self.add("m-0101", "Child work", kind="task", parent="m-0100")
+        self.assertIn("m-0101", self.scan())
+
+    def test_a_chat_that_carries_its_letter_is_not_named(self) -> None:
+        self.add("m-0102", "AA: Lettered work")
+        self.assertNotIn("m-0102", self.scan())
+
+    def test_a_chat_on_the_no_letter_mark_is_not_named(self) -> None:
+        # "?:" is the state the owner defined for a chat that asked for a letter and got none, and the
+        # "?:" chats on a host are mostly the app's own runs:  lettering them would take the seat's
+        # pairs from the chats the fleet addresses.
+        self.add("m-0103", "??: Waiting for a letter")
+        self.assertNotIn("m-0103", self.scan())
+
+    def test_a_chat_that_carries_its_letter_is_not_named_again(self) -> None:
+        # The letter is on the chat, so there is nothing for the pass to do for it.
+        self.add("m-0105", "AA: Work", kind="task", parent="m-0100")
+        self.assertNotIn("m-0105", self.scan())
+
+    def test_an_archived_chat_is_not_named(self) -> None:
+        self.add("m-0106", "Child work", kind="task", parent="m-0100", archived=1)
+        self.assertNotIn("m-0106", self.scan())
+
+    def test_a_chat_older_than_the_window_is_not_named(self) -> None:
+        self.add("m-0107", "Child work", kind="task", parent="m-0100", age=30 * 86400)
+        self.assertNotIn("m-0107", self.scan())
+
+    def test_a_store_this_old_names_nothing(self) -> None:
+        # A store without the columns the scan needs answers None:  no pass this time, never a silent
+        # empty list that reads as "there is nothing to repair".
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("DROP TABLE local_runtime_sessions")
+            conn.execute("CREATE TABLE local_runtime_sessions (session_id TEXT, title TEXT)")
+        conn.close()
+        self.assertIsNone(self.scan())
+
+    def test_the_repair_letters_and_titles_a_sub_thread_the_hook_never_lettered(self) -> None:
+        self.add("m-0200", "Parent work")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        done = self.repair()
+        self.assertIn("m-0201", done.get("asked") or [])
+        child = self.note_for("m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertEqual(self.title_of("m-0201"), "%s: Child work" % child["label"])
+
+    def test_a_chat_is_never_its_own_parent(self) -> None:
+        # A row that says the chat is its own parent is a row the store has not finished writing.  A
+        # child that read it took a MAIN pair instead of the pair after its parent's, and it took a pair
+        # a main chat was owed.  An unknown parent is no parent:  the chat waits for the next event.
+        self.add("m-0300", "Child work", kind="task", parent="m-0300")
+        self.assertEqual(PM.minimax_parent({"session_id": "m-0300"}, self.env()), "")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0300", "parent_session_id": "m-0300"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "")
+
+
 class MiniMaxRow(Base):
     DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
            " parent_session_id TEXT)")

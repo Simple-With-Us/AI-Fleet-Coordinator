@@ -41,6 +41,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -217,6 +218,7 @@ def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    sid = _sid(payload, env)
     if _is_subagent_event(payload):
         # The parent's id is NOT in MiniMax Code's user hook payload:  it lives in the event's
         # `subagentContext`, which the payload builder does not copy, and the payload's own session id is the
@@ -224,15 +226,21 @@ def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
         # parent, and the child took a letter from the wrong place in the tree.  The session store has the
         # parent on the child's own row, so it is read from there, after a short wait for that row:  the
         # store writes it a moment after the event, and a child read too early had no parent at all.
-        parent = _wait_for_parent(env, _sid(payload, env), CHILD_ROW_WAIT)
-        if parent:
+        parent = _wait_for_parent(env, sid, CHILD_ROW_WAIT)
+        if parent and parent != sid:
             return parent
         for key in PARENT_ID_KEYS:
             value = payload.get(key)
-            if isinstance(value, str) and value:
+            if isinstance(value, str) and value and value != sid:
                 return value
         return ""
-    return str(_row(env, _sid(payload, env)).get("parent_session_id") or "")
+    parent = str(_row(env, sid).get("parent_session_id") or "")
+    # A chat is never its own parent.  A row that says so is a row the store has not finished writing, and
+    # a child that reads itself as its parent takes a MAIN pair instead of the pair after its parent's:  it
+    # takes a pair a main chat is owed, and its own family never learns of the child.  The parent is
+    # unknown here, and an unknown parent is no parent:  the chat waits for the next event, which reads the
+    # row once the store has written it.
+    return "" if parent == sid else parent
 
 
 def minimax_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
@@ -389,6 +397,114 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------------------------
+# The chats a repair pass may name (AFC-857)
+# --------------------------------------------------------------------------------------------
+#
+# The repair pass (`repair_unlettered`) replays the start of the chats this row names, so a chat
+# whose letter never landed is lettered and titled.  Two kinds of chat are named here, and one kind
+# is deliberately not.
+#
+# - A sub-thread the hook never lettered:  a task row with a parent whose title carries no letter.
+#   The hook refused it at its start when the store did not hold its row yet, and a sub-thread that
+#   ends never prompts again, so nothing else ever asks for its letter.  The pass replays its start,
+#   the store holds its row by then, and the parent is known:  the chat takes the pair after its
+#   parent's and its title carries it.
+#
+# A chat still titled "??: " is NOT named.  It holds no letter, which is the state the owner defined for
+# a chat that asked for one and got none (owner, Nov 11, 2026:  "a chat with no letter titles itself
+# '??: Title', retries later by itself"), and on a host the "?:" chats are mostly the app's own runs:
+# a wake runner, a bot session.  Lettering them would take the seat's pairs (there are twenty-six of
+# them) from the chats the fleet addresses, one run at a time, and the owner did not ask for those
+# chats to be renamed.  A chat that runs again asks for its letter itself.
+
+#: The most chats one scan names, and the age window a candidate may have:  a chat that is starting
+#: now runs its own hook, and one older than the window is history the fleet does not address.
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+#: How many rows one query reads at a time.
+UNLETTERED_BATCH = 200
+#: The hook's own no-letter mark, as a SQL pattern.  LIKE reads only % and _ as wildcards, so the two
+#: question marks are the mark itself.
+UNLETTERED_MARK = PL.UNLETTERED + ": %"
+#: The prefixes a chat that holds a letter carries:  one capital letter or two, then a colon and a
+#: space.  A GLOB pattern is case sensitive, so a lower-case word is never taken for a letter.
+LETTER_GLOB_ONE = "[A-Z]: *"
+LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
+
+
+def _unlettered_children(conn: sqlite3.Connection, now: float) -> tuple[list[str], int]:
+    """The sub-threads of this host that hold no letter on their title, newest first, and how many
+    rows of the store could not be named.
+
+    A row that names no session id is skipped and counted:  a corrupt row must not read as a chat that
+    was considered and left alone."""
+    rows = conn.execute(
+        "SELECT session_id FROM local_runtime_sessions"
+        " WHERE session_kind = ?"
+        " AND parent_session_id IS NOT NULL AND parent_session_id != ''"
+        " AND (archived IS NULL OR archived = 0)"
+        " AND (created_at_ms IS NULL OR (created_at_ms >= ? AND created_at_ms <= ?))"
+        " AND title IS NOT NULL AND title != ''"
+        " AND title NOT LIKE ?"
+        " AND title NOT GLOB ?"
+        " AND title NOT GLOB ?"
+        " ORDER BY updated_at_ms DESC LIMIT ?",
+        (
+            "task",
+            (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
+            (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+            UNLETTERED_MARK,
+            LETTER_GLOB_ONE,
+            LETTER_GLOB_TWO,
+            UNLETTERED_BATCH,
+        ),
+    ).fetchall()
+    found: list[str] = []
+    malformed = 0
+    for (sid,) in rows:
+        if not isinstance(sid, str) or not sid:
+            malformed += 1
+            continue
+        found.append(sid)
+    return found, malformed
+
+
+def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's MiniMax sub-threads that hold no letter on their title, for the repair pass
+    (`repair_unlettered`):  the ones the hook refused at their start because the store did not hold
+    their row yet.  Ids only, newest first, at most UNLETTERED_SCAN of them.
+
+    Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the
+    columns it needs) answers None:  no pass this time.  A row whose session id is malformed is skipped
+    and said out loud on stderr, so one corrupt row neither stops the pass nor passes unnoticed.  A
+    chat's title is read again in its own replayed start before anything changes."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return None
+    now = time.time()
+    found: list[str] = []
+    malformed = 0
+    try:
+        conn = _read_only(path)
+        try:
+            children, broken = _unlettered_children(conn, now)
+            malformed += broken
+            for sid in children:
+                if sid not in found:
+                    found.append(sid)
+                if len(found) >= UNLETTERED_SCAN:
+                    break
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None  # a store this old cannot say what it holds:  no pass
+    if malformed:
+        sys.stderr.write("platform-letter minimax: %d malformed session id(s) skipped\n" % malformed)
+    return found[:UNLETTERED_SCAN]
+
+
 def _data_dir(env: Mapping[str, str]) -> str:
     return str(env.get("MINIMAX_DATA_DIR") or "") or os.path.join(
         str(env.get("HOME") or os.path.expanduser("~")), ".minimax"
@@ -485,6 +601,7 @@ SPEC = PL.PlatformSpec(
     chat_payload=minimax_chat_payload,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     gone_sessions=minimax_gone,
+    unlettered_sessions=minimax_unlettered_sessions,
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,
