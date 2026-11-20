@@ -1577,7 +1577,6 @@ class HttpMethodSource(unittest.TestCase):
         self.check_file(WORKFLOW)
 
 
-
 class ClassifyHoldGuard(unittest.TestCase):
     """Hold-guard slice 2: timeline-ownership gate runs inside classify,
     in addition to the caller-configured hold_labels presence check."""
@@ -1711,6 +1710,7 @@ class MintWiringContract(unittest.TestCase):
         block = self._mint_block(self._job_body("arm", "disarm"))
         self.assertIn("permission-contents: write", block)
         self.assertIn("permission-pull-requests: write", block)
+
 
 if __name__ == "__main__":
     unittest.main()
