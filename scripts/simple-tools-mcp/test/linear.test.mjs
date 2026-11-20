@@ -588,6 +588,10 @@ test("a later steal with a different reason lands its own comment", async () => 
   const bodies = comments().map((m) => m.body.variables.input.body.split("\n")[0]);
   assert.ok(bodies[0].includes("first take"), bodies[0]);
   assert.ok(bodies[1].includes("second take, refreshed reason"), bodies[1]);
+  // Two mutations with the same fixed id would silently replace the first record:
+  // assert the identities themselves differ, not just the mutation count.
+  const ids = comments().map((m) => m.body.variables.input.id);
+  assert.notEqual(ids[0], ids[1], "the second takeover carries its own comment id");
 });
 
 test("a foreign claim after the caller's own label is still named and removed", async () => {
