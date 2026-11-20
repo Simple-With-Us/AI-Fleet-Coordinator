@@ -134,11 +134,20 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     )
     labeled_arg = False
     if assignment is None:
-        # A labeled call argument (`token: value` right after `(` or `,`) is call
-        # syntax in Swift and Kotlin, not a JSON/YAML pair or a prose colon.
-        assignment = re.search(r"[(,] *[A-Za-z_$][A-Za-z0-9_$.]* *: *$", line)
-        labeled_arg = assignment is not None
-    if assignment is None:
+        # A labeled call argument (Swift/Kotlin) puts the keyword label right
+        # after `(` or `,` belonging to an unclosed `(` in the same statement,
+        # possibly across lines.  Comma prose has no call paren, and quoted or
+        # line-start colon pairs (JSON/YAML) never reach this path.
+        before = text[max(0, match.start() - 300) : match.start()]
+        tail = re.search(r"[(,]\s*$", before)
+        if tail is not None:
+            seg = before[: tail.start() + 1]
+            boundary = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
+            seg = seg[boundary + 1 :]
+            labeled_arg = seg.count("(") > seg.count(")") and not any(
+                c in seg for c in "\"'`"
+            )
+    if assignment is None and not labeled_arg:
         return False
     if _SOURCE_RHS.match(text, start) is not None:
         return True
