@@ -90,6 +90,7 @@ RECALL_MODULES = (
     "contribute_guard",
     "core",
     "doctor",
+    "fleet_bearer",
     "health",
     "infisical_settings",
     "public_fallback",
