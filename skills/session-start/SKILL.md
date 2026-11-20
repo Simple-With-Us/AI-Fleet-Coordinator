@@ -46,7 +46,7 @@ Skim channel, topic, and sender for your own seat or a repo you are about to tou
 Search shared memory **before** re-deriving a lesson or asking the owner something a past ruling probably answers:
 
 ```bash
-recall "<what this session is about>" --limit 5
+recall --limit 5 -- "<what this session is about>"
 ```
 
 or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issue / note / doc.  Cloud seats reach the same tools through the fleet MCP gateway and REST twin (`docs/RECALL-ACCESS-CHECK.md` names the hostnames).  Owner 2026-09-02: **contribute every reusable lesson** at closeout (`recall_contribute`); do not bulk-ingest chat logs as lessons.
