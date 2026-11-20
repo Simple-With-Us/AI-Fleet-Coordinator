@@ -2134,7 +2134,11 @@ class Router:
                     m = entry.get("wake") or {}
                     wletter = w.get("letter") or ""
                     mletter = m.get("letter") or ""
-                    if wletter and mletter and (w.get("seat") != m.get("seat") or wletter != mletter):
+                    if (
+                        wletter
+                        and mletter
+                        and (w.get("seat") != m.get("seat") or wletter != mletter)
+                    ):
                         continue
                     break
                 if _session_of(other) != session:
