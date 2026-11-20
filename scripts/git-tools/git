@@ -276,21 +276,39 @@ def _prompt_terminal_available() -> bool:
     return True
 
 
+# Mirrored from simple_tools/fleet_bearer.py (TOKEN, SEAT_ALIASES):  this file stays self-contained.
+_SEAT_TOKEN = re.compile(r"(?:sbt_([a-z][a-z0-9-]{1,19})|gbb_([a-z][a-z0-9]{1,19}))_([A-Za-z0-9_-]{43})")
+_SEAT_ALIASES = {
+    "INSTINCT": "WISE",
+    "WISE-INSTINCT": "WISE",
+    "ECHO-INSTINCT": "WISE",
+    "MUSE-ASSIST": "MA",
+    "ROB": "MA",
+    "ROB-MUSE": "MA",
+}
+
+
 def _own_seat_file_bearer() -> str:
     """The declared seat's own bearer from its canonical private file (~/.secrets/fleet-tools/<seat>,
     the fleet convention), or "" when no seat is declared or the file is absent, malformed, unsafe or
-    another seat's.  Held only in process memory, never logged."""
+    another seat's.  The file is opened O_NOFOLLOW and every check runs on that one descriptor, so a
+    swapped symlink never redirects the read.  Held only in process memory, never logged."""
     seats = {
-        env(name).strip().lower() for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
+        _SEAT_ALIASES.get(env(name).strip().upper(), env(name).strip().upper())
+        for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
     } - {""}
     if len(seats) != 1:
         return ""
-    stem = next(iter(seats))
+    stem = next(iter(seats)).lower()
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,19}", stem):
         return ""
     path = Path.home().joinpath(".secrets", "fleet-tools", stem)
     try:
-        info = path.lstat()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.getuid()
@@ -299,10 +317,11 @@ def _own_seat_file_bearer() -> str:
             or info.st_size > 256
         ):
             return ""
-        raw = path.read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError):
-        return ""
-    match = TOKEN.fullmatch(raw)
+        try:
+            raw = handle.read(257).decode("ascii").strip()
+        except UnicodeError:
+            return ""
+    match = _SEAT_TOKEN.fullmatch(raw)
     if not match:
         return ""
     file_seat = (match[1] or ("gb-" + match[2])).lower()
