@@ -289,12 +289,18 @@ def search(
     # The query rides after the end-of-options separator, so a leading `-` in
     # user-derived text can never parse as a CLI option;  every option comes first,
     # in single --flag=VALUE tokens so no user-controlled value can be reinterpreted
-    # as a flag of its own.  A non-integer limit is a usage error, answered here
-    # rather than crashing inside int().
+    # as a flag of its own.  A numeric-string limit coerces like the sibling routes;
+    # bools and true garbage answer invalid_argument instead of crashing.
     raw_limit = args.get("limit")
-    if raw_limit is not None and (isinstance(raw_limit, bool) or not isinstance(raw_limit, int)):
+    if isinstance(raw_limit, bool):
         raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer")
-    limit = raw_limit if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) else 5
+    if raw_limit is None:
+        limit = 5
+    else:
+        try:
+            limit = int(str(raw_limit).strip())
+        except ValueError:
+            raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer") from None
     argv = ["search", "--limit=" + str(limit), "--json"]
     if args.get("app"):
         argv += ["--app=" + str(args["app"])]
