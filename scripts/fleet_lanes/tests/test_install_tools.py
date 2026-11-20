@@ -22,6 +22,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -7498,7 +7499,10 @@ class ZcodeBashToolSeatDefaultTests(World):
         self.assertIn("seat default installed", r.detail)
         d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
         self.assertTrue(d.is_dir())
-        self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o755)
+        # The directory itself is private to the owner (0700):  it holds only this host's seat
+        # shims, and listing or traversing it is nobody else's business.  The shims stay 0755
+        # because they are executables every Z Code shell runs.
+        self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o700)
         for tool in T.ZCODE_SEAT_TOOLS:
             p = self.shim_path(tool)
             self.assertEqual(
@@ -7746,6 +7750,28 @@ class ZcodeBashToolSeatDefaultTests(World):
 
     # -- shim behavior (the guard, run as a real shell)
 
+    def _run_tracked(self, cmd: list[str], env: dict[str, str], timeout: int = 30) -> subprocess.CompletedProcess:
+        """subprocess.run that cannot orphan a spawned shim on an interrupt:  the child runs in its own
+        process group, and any exception (an assertion, a timeout, a KeyboardInterrupt) kills the whole
+        group before propagating, so a mid-test teardown never leaves a shim or a sourced-shell child
+        behind to hold the fixture's files open."""
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except BaseException:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=10)
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
     def test_the_shim_sets_the_seat_only_for_a_seatless_zcode_shell(self) -> None:
         """The precedence contract, run through the real shim:  a Z Code shell with no seat gets ZC; a
         launcher assignment, an existing seat or a chat tag wins; a process outside Z Code passes
@@ -7763,9 +7789,7 @@ class ZcodeBashToolSeatDefaultTests(World):
         )
         for extra, want in cases:
             with self.subTest(env=extra):
-                out = subprocess.run(
-                    [shim], capture_output=True, text=True, env=self.child_env(extra), timeout=30
-                )
+                out = self._run_tracked([shim], self.child_env(extra))
                 self.assertEqual(out.stdout, want, out)
 
     def test_the_shim_execs_the_resolved_target_with_arguments(self) -> None:
@@ -7774,12 +7798,9 @@ class ZcodeBashToolSeatDefaultTests(World):
             body='#!/bin/sh\n[ "$1" = "--format" ] && [ "$2" = claude ] && echo ARGS-OK\n',
         )
         self.install_zcode()
-        out = subprocess.run(
+        out = self._run_tracked(
             [str(self.shim_path(T.ZCODE_SEAT_TOOLS[0])), "--format", "claude"],
-            capture_output=True,
-            text=True,
-            env=self.child_env({}),
-            timeout=30,
+            self.child_env({}),
         )
         self.assertEqual(out.stdout.strip(), "ARGS-OK", out)
 
@@ -7793,7 +7814,7 @@ class ZcodeBashToolSeatDefaultTests(World):
             f'source "{self.home / ".bashrc"}" && printf "%s\\n" "$AGENT_SEAT" && '
             'printf "%s\\n" "${PATH%%:*}"'
         )
-        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        out = self._run_tracked(["/bin/bash", "-c", script], base)
         self.assertEqual(out.returncode, 0, out.stderr)
         seat1, seat2, front = out.stdout.strip().split("\n")
         self.assertEqual((seat1, seat2), ("ZC", "ZC"))
@@ -7801,7 +7822,7 @@ class ZcodeBashToolSeatDefaultTests(World):
         # A launcher assignment set before the shell starts is never overridden.
         base = self.child_env({"HOME": str(self.home), "AGENT_LAUNCH_SEAT": "BF-TRADER"})
         script = f'source "{self.home / ".bashrc"}" && printf "%s\\n" "${{AGENT_SEAT:-unset}}"'
-        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        out = self._run_tracked(["/bin/bash", "-c", script], base)
         self.assertEqual(out.stdout.strip(), "unset", out)
 
     def test_the_snapshot_baked_shim_dir_is_deduped_and_re_froned(self) -> None:
@@ -7834,7 +7855,7 @@ class ZcodeBashToolSeatDefaultTests(World):
             f'source "{self.home / ".bashrc"}" && command -v simple-chat && printf "%s\\n" "$PATH" && '
             f'source "{self.home / ".bashrc"}" && command -v simple-chat && printf "%s\\n" "$PATH"'
         )
-        out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, env=base, timeout=30)
+        out = self._run_tracked(["/bin/bash", "-c", script], base)
         self.assertEqual(out.returncode, 0, out.stderr)
         resolved_1, path_1, resolved_2, path_2 = out.stdout.strip().split("\n")
         self.assertEqual(resolved_1, shim, f"first source resolves the shim, not the decoy: {path_1}")
@@ -7845,6 +7866,84 @@ class ZcodeBashToolSeatDefaultTests(World):
             self.assertLess(
                 entries.index(shim_dir), entries.index(str(decoy)), path
             )  # the shims beat the decoy that PATH once put ahead
+
+    def test_the_block_drops_empty_path_elements(self) -> None:
+        """A trailing or doubled colon in PATH would otherwise survive the dedupe as an empty
+        element, and an empty PATH element means the current directory — an executable lookup in
+        whatever directory the shell happens to sit in.  The block drops them instead of keeping
+        them, and the shim dir still comes out at the front."""
+        self.install_zcode()
+        base = self.child_env(
+            {
+                "HOME": str(self.home),
+                "ZCODE_SESSION_ID": "sess_x",
+                "PATH": f"{self.toolbin}:/usr/bin:/bin:",
+            }
+        )
+        script = (
+            f'source "{self.home / ".bashrc"}" && printf "%s\\n" "${{PATH%%:*}}" && '
+            'printf "%s\\n" "$PATH"'
+        )
+        out = self._run_tracked(["/bin/bash", "-c", script], base)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        front, path = out.stdout.strip().split("\n")
+        self.assertEqual(front, str(self.home / T.ZCODE_SEAT_BIN_DIRNAME))
+        self.assertNotIn("", path.split(":"), path)
+
+    def test_a_readonly_bashrc_is_refused_by_apply_and_warned_by_verify(self) -> None:
+        """A profile without the owner-write bit is apply's refused state, not a broken install:
+        plan reports refused (so it never promises a write apply will not do), apply refuses, and
+        verify WARNS with the owner's choices instead of FAILing on a remediation apply would then
+        refuse to run."""
+        bashrc = self.home / ".bashrc"
+        bashrc.write_text("# the owner's own bashrc\n", encoding="utf-8")
+        bashrc.chmod(0o444)
+        self.addCleanup(bashrc.chmod, 0o644)
+        r = self.install_zcode()
+        # The hooks config still lands (it is independent); the seat default is the refused half.
+        self.assertIn("seat default not written", r.detail)
+        self.assertIn("read-only", r.detail)
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            str(SCRIPTS_DIR),
+            "--registry",
+            str(REGISTRY_FILE),
+            "--sha",
+            SHA,
+            "zcode",
+        )
+        self.assertIn("seat default REFUSED", out)
+        self.assertIn("read-only", out)
+        checks = [c for c in self.verify("zcode") if c.name == "bashrc block"]
+        self.assertTrue(checks)
+        self.assertTrue(all(c.status == "WARN" for c in checks), [c.detail for c in checks])
+        self.assertTrue(any("read-only" in c.detail for c in checks))
+
+    def test_verify_warns_on_a_seat_bin_apply_refuses_to_manage(self) -> None:
+        """A symlinked seat dir and a seat dir that is a plain file are states apply deliberately
+        refuses to manage, so the doctor WARNS with the by-hand remediation instead of FAILing on a
+        command apply would refuse to run.  A genuinely missing dir stays a FAIL, because that is
+        the one state a re-apply does fix."""
+        self.install_zcode()
+        d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
+        real = self.tmp / "seat-bin-elsewhere"
+        real.mkdir()
+        shutil.rmtree(d)
+        d.symlink_to(real)
+        checks = [c for c in self.verify("zcode") if c.name == "seat shim dir"]
+        self.assertTrue(checks)
+        self.assertTrue(all(c.status == "WARN" for c in checks), [c.detail for c in checks])
+        self.assertTrue(any("symlink" in c.detail for c in checks))
+        d.unlink()
+        d.write_text("not a directory", encoding="utf-8")
+        checks = [c for c in self.verify("zcode") if c.name == "seat shim dir"]
+        self.assertTrue(all(c.status == "WARN" for c in checks), [c.detail for c in checks])
+        d.unlink()
+        checks = [c for c in self.verify("zcode") if c.name == "seat shim dir"]
+        self.assertEqual([c.status for c in checks], ["FAIL"], [c.detail for c in checks])
 
     # -- verify
 
@@ -7870,9 +7969,9 @@ class ZcodeBashToolSeatDefaultTests(World):
         p.chmod(0o755)
         # a shim dir with the wrong mode
         d = self.home / T.ZCODE_SEAT_BIN_DIRNAME
-        os.chmod(d, 0o700)
-        self.assertFails(self.verify("zcode"), "expected 0755")
         os.chmod(d, 0o755)
+        self.assertFails(self.verify("zcode"), "expected 0700")
+        os.chmod(d, 0o700)
         # a bashrc without the block
         (self.home / ".bashrc").unlink()
         self.assertFails(self.verify("zcode"), "bashrc block")
