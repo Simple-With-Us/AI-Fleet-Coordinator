@@ -113,6 +113,14 @@ _SOURCE_RHS = re.compile(
 )
 
 
+# A complete, unquoted dotted identifier chain (a property access or a call
+# target) is a source expression, not a stored literal.  Bare runs, quoted
+# values, env-prefixed forms and lowercase-only chains remain candidates.
+_DOTTED_RHS = re.compile(
+    r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)"
+)
+
+
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
     start = match.start("value")
     # An optional quote consumed by the detector means this is a literal, always.
@@ -128,7 +136,15 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     )
     if assignment is None:
         return False
-    return _SOURCE_RHS.match(text, start) is not None
+    if _SOURCE_RHS.match(text, start) is not None:
+        return True
+    chain = _DOTTED_RHS.match(text, start)
+    if chain is None:
+        return False
+    value = chain.group(0)
+    if value.startswith(("process.env.", "import.meta.env.")):
+        return False
+    return any(c.isupper() for c in value)
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
