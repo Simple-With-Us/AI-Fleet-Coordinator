@@ -294,7 +294,7 @@ def search(
     raw_limit = args.get("limit")
     if isinstance(raw_limit, bool):
         raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer")
-    if raw_limit is None:
+    if raw_limit is None or not str(raw_limit).strip():
         limit = 5
     else:
         try:
