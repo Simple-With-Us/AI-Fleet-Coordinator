@@ -881,7 +881,12 @@ class HostTests(unittest.TestCase):
         name, arguments, write = gw.calls[0]
         self.assertEqual((name, write), ("notes_create", True))
         self.assertEqual(arguments["request_id"], "requestid-0001")
-        self.assertNotIn("identity", arguments, "the gateway derives the seat from the bearer")
+        self.assertEqual(
+            arguments["identity"],
+            "CLAUDE",
+            "a hosted write names its own seat:  a bearer whose gateway connection has no default"
+            " identity otherwise answers identity_required before the Operator's seat lists are read",
+        )
 
     def test_off_a_mac_the_shared_key_is_never_read(self):
         gw = FakeFleet()

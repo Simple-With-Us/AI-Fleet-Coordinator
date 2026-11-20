@@ -648,6 +648,13 @@ def _fleet_tool(host, seat, tool, args, write=False):
             host._fleet_client = Client(host.bearer_file, seat, identity_env=host.env)
         if seat is not None and host._fleet_client.seat != canonical_hint(seat):
             raise FleetError("not_authorized", "fleet bearer does not name the requested bot")
+        if write and seat is not None and "identity" not in args:
+            #  A hosted write must name the bot it acts as, and a bearer whose gateway
+            #  connection has no default identity (any newly enrolled seat) otherwise
+            #  answers identity_required before the Operator's seat lists are read.
+            #  The notes tools carry the caller's own seat, so naming it here is the
+            #  same statement the bearer already makes.
+            args = {**args, "identity": seat}
         result = host._fleet_client.call(tool, args, write)
         data = result.get("structuredContent")
         if not isinstance(data, dict):

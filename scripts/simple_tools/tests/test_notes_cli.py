@@ -523,7 +523,12 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(sent["session"], SESSION)
         self.assertEqual(sent["request_id"], "cli-update-0001")
         self.assertEqual(sent["wait_seconds"], 0)
-        self.assertNotIn("identity", sent, "the gateway derives the seat from the bearer")
+        self.assertEqual(
+            sent["identity"],
+            "CLAUDE",
+            "a hosted write names its own seat:  a bearer whose gateway connection has no default"
+            " identity otherwise answers identity_required before the Operator's seat lists are read",
+        )
         self.assertEqual([c[0] for c in gw.calls], ["notes_update", "notes_status"])
         self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")
