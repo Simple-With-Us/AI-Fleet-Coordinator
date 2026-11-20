@@ -301,6 +301,11 @@ def search(
             limit = int(str(raw_limit).strip())
         except ValueError:
             raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer") from None
+    # The input schema pins limit to 1..10;  the same bounds hold for the coerced
+    # values, so zero, a negative, or an oversized limit is a usage error here
+    # rather than wrong slicing downstream.
+    if limit < 1 or limit > 10:
+        raise RecallUnavailable("invalid_argument", "argument 'limit' must be between 1 and 10")
     argv = ["search", "--limit=" + str(limit), "--json"]
     if args.get("app"):
         argv += ["--app=" + str(args["app"])]
