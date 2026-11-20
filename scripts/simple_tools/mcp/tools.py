@@ -2644,7 +2644,9 @@ class Tools:
     def _tool_recall_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall(
             lambda: RECALL.search(
-                args, env=self.agent.rt.env, scan=lambda field, value: self._scan("search", **{field: value})
+                args,
+                env=self.agent.rt.env,
+                scan=lambda field, value: self._scan("search", **{field: value}),
             )
         )
 
