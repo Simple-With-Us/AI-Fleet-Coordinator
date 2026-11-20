@@ -1,6 +1,8 @@
 // Dedicated service custody adapter. Never reads a PEM file or inherited token.
 import {execFile} from 'node:child_process';
 import {createPrivateKey} from 'node:crypto';
+// Non-secret reviewed trust anchor. Do not select it from the runtime environment:
+// token metadata must match this project before any secret-value request.
 export const PROJECT='8dae6d03-8f12-48b2-adf3-e5c1b881c8c5';
 export const SECRET_PATH='/testflight-github';
 export const SECRET_NAME='GH_APP_SWU_TESTFLIGHT_PRIVATE_KEY';
