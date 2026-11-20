@@ -55,6 +55,7 @@ class ReviewedGenericTests(unittest.TestCase):
             "let token = '" + "b" * 32 + "'\n",
             "let token = Widget" + "Presentation.shortCadence9(cadence: cadence)\n",
             "let token = widget" + "presentation.shortcadence(cadence: cadence)\n",
+            "let token = Correct" + ".Horse.Battery\n",
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
