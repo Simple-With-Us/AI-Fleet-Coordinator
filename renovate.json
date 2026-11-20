@@ -76,7 +76,6 @@
     "labels": [
       "security"
     ],
-    "minimumReleaseAge": null,
-    "internalChecksFilter": "none"
+    "minimumReleaseAge": null
   }
 }
