@@ -2926,6 +2926,14 @@ class CredentialTests(Base):
                     (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
                 )
 
+    def test_explicit_null_expiry_read_only_binding_redeploys_via_named_value(self):
+        self.api.metadata_override = {"expiresAt": None}
+        code, ans = self.redeploy()
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(self.http_calls)
+
     def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
         cases = (
             {"workspace": str(uuid.uuid4())},
@@ -2938,7 +2946,9 @@ class CredentialTests(Base):
                 ]
             },
             {"permissions": ["read", "write"]},
-            {"expiresAt": None},
+            {"expiresAt": None, "permissions": ["read", "write"]},
+            {"expiresAt": None, "workspace": str(uuid.uuid4())},
+            {"expiresAt": "invalid"},
             {"expiresAt": "2000-01-01T00:00:00Z"},
             {"expiresAt": "2099-01-01T00:00:00"},
         )

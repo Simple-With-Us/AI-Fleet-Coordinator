@@ -207,6 +207,15 @@ class BoundedReader(ReaderTestCase):
                 provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
             self.assertEqual(api.requests, [])
 
+    def test_explicit_null_expiry_read_only_binding_reads_named_value(self):
+        project = str(uuid.uuid4())
+        with ScopedReadAPI({"A": "test-only"}, project=project) as api:
+            api.metadata_override = {"expiresAt": None}
+            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
+            self.assertEqual(provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/"), "test-only")
+            self.assertEqual(len(api.requests), 2)
+            self.assertEqual(api.requests[0], "/api/v2/service-token")
+
     def test_invalid_metadata_and_strict_records_fail_without_values(self):
         project = str(uuid.uuid4())
         failures = (
@@ -214,7 +223,10 @@ class BoundedReader(ReaderTestCase):
             {"metadata_override": {"scopes": [{"environment": "prod", "secretPath": "/wrong"}]}},
             {"metadata_override": {"scopes": [{"environment": "dev", "secretPath": "/"}]}},
             {"metadata_override": {"permissions": ["read", "write"]}},
-            {"metadata_override": {"expiresAt": None}},
+            {"metadata_override": {"expiresAt": None, "permissions": ["read", "write"]}},
+            {"metadata_override": {"expiresAt": None, "workspace": str(uuid.uuid4())}},
+            {"metadata_override": {"expiresAt": "invalid"}},
+            {"metadata_override": {"expiresAt": "2099-01-01T00:00:00"}},
             {"metadata_override": {"expiresAt": "2000-01-01T00:00:00Z"}},
             {"record_override": {"secretValueHidden": True}},
             {"record_override": {"secretValueHidden": "false"}},
