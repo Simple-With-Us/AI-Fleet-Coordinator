@@ -75,7 +75,7 @@ class MatchPinnedReview(unittest.TestCase):
 
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
-        self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 2)
+        self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 3)
         self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 2)
         key, census = next(
             (key, census)
