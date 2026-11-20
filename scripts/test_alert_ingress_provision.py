@@ -212,7 +212,9 @@ class BoundedReader(ReaderTestCase):
         with ScopedReadAPI({"A": "test-only"}, project=project) as api:
             api.metadata_override = {"expiresAt": None}
             self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            self.assertEqual(provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/"), "test-only")
+            self.assertEqual(
+                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/"), "test-only"
+            )
             self.assertEqual(len(api.requests), 2)
             self.assertEqual(api.requests[0], "/api/v2/service-token")
 

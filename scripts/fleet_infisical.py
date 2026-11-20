@@ -1417,7 +1417,9 @@ class WriteError(SecretsError):
         )
         self.retryable = retryable is True and not self.request_may_have_been_sent
         self.reason = reason if reason == "token-expired-or-invalid" else None
-        self.required_binding = required_binding if required_binding == WRITE_TOKEN_ENV_NAME else None
+        self.required_binding = (
+            required_binding if required_binding == WRITE_TOKEN_ENV_NAME else None
+        )
         if self.reason:
             self.message += ": " + self.reason
         if self.required_binding:
@@ -1820,7 +1822,9 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             provider_status=exc.provider_status or 0,
         )
         _write_checkpoint(ledger, namespace, intent, record, "refused")
-        missing = WRITE_TOKEN_ENV_NAME if token is None and not env.get(WRITE_TOKEN_ENV_NAME) else None
+        missing = (
+            WRITE_TOKEN_ENV_NAME if token is None and not env.get(WRITE_TOKEN_ENV_NAME) else None
+        )
         raise WriteError(
             "refused",
             intent,
