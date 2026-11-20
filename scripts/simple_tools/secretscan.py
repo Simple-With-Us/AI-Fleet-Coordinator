@@ -144,9 +144,7 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
             seg = before[: tail.start() + 1]
             boundary = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
             seg = seg[boundary + 1 :]
-            labeled_arg = seg.count("(") > seg.count(")") and not any(
-                c in seg for c in "\"'`"
-            )
+            labeled_arg = seg.count("(") > seg.count(")") and not any(c in seg for c in "\"'`")
     if assignment is None and not labeled_arg:
         return False
     if _SOURCE_RHS.match(text, start) is not None:
