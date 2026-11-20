@@ -121,6 +121,13 @@ class Credentials(unittest.TestCase):
                     dict(PROTECTED_MODE="true", MERGE_APP_ID=app, MERGE_APP_KEY=key),
                 )
                 self.assertNotEqual(p.returncode, 0, p.stdout)
+                for name, value in [("MERGE_APP_ID", app), ("MERGE_APP_KEY", key)]:
+                    if not value:
+                        self.assertIn(name, p.stdout)
+                    else:
+                        self.assertNotIn(name, p.stdout)
+                self.assertNotIn("marker", p.stdout)
+
 
     def test_legacy_presence_semantics_preserved(self):
         for job in ["classify", "arm"]:

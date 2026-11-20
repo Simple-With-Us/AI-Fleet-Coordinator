@@ -304,7 +304,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${PROTECTED_MODE:-false}" = true ] && { [ -z "$MERGE_APP_ID" ] || [ -z "$MERGE_APP_KEY" ]; }; then
-            echo "::error::Protected merge App credentials missing; no legacy fallback"
+            missing=()
+            [ -n "$MERGE_APP_ID" ] || missing+=(MERGE_APP_ID)
+            [ -n "$MERGE_APP_KEY" ] || missing+=(MERGE_APP_KEY)
+            echo "::error::Protected merge App credentials missing: ${missing[*]}; no legacy fallback"
             exit 1
           fi
           # Step if: cannot reference the secrets context (AFC-308), so
@@ -813,7 +816,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${PROTECTED_MODE:-false}" = true ] && { [ -z "$MERGE_APP_ID" ] || [ -z "$MERGE_APP_KEY" ]; }; then
-            echo "::error::Protected merge App credentials missing; no legacy fallback"
+            missing=()
+            [ -n "$MERGE_APP_ID" ] || missing+=(MERGE_APP_ID)
+            [ -n "$MERGE_APP_KEY" ] || missing+=(MERGE_APP_KEY)
+            echo "::error::Protected merge App credentials missing: ${missing[*]}; no legacy fallback"
             exit 1
           fi
           # Step if: cannot reference the secrets context (AFC-308), so
