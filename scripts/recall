@@ -729,8 +729,9 @@ def build_parser() -> argparse.ArgumentParser:
 # SIMPLE_RECALL_REMOTE=1 sends the supported recall tools to the hosted ST-MCP endpoint with the bot's own bearer
 # (SIMPLE_TOOLS_BEARER, or the declared seat's canonical file ~/.secrets/fleet-tools/<seat> when the environment
 # has none).  A process that declares a fleet seat (AGENT_LAUNCH_SEAT, AGENT_SEAT or AGENT_TAG) and has no local
-# corpus configured (no QDRANT_URL) runs the hosted verbs this way by default (hosted_default below);  an explicit
-# SIMPLE_RECALL_REMOTE=0 keeps the direct route.  The hosted server serves Recall from ONE shared backend
+# corpus configured (no QDRANT_URL) runs the hosted READ verbs this way by default (hosted_default below;  writes
+# keep their explicit SIMPLE_RECALL_REMOTE opt-in, and a search flag with no hosted equivalent keeps the direct
+# route).  An explicit SIMPLE_RECALL_REMOTE=0 keeps the direct route too.  The hosted server serves Recall from ONE shared backend
 # credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
 # constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
 # failure never falls back to the direct or public route.  Every other verb, and every search flag with no
@@ -747,16 +748,23 @@ def remote_selected() -> bool:
     return os.environ.get("SIMPLE_RECALL_REMOTE", "").strip() == "1"
 
 
+# Search flags with no hosted equivalent:  an invocation naming one keeps the direct route.
+_LOCAL_ONLY_FLAGS = ("--source", "--seat", "--since-days", "--per-doc", "--no-rerank", "--no-lessons", "--full")
+
+
 def hosted_default(cmd: str) -> bool:
     """Hosted by default for a process that declares a fleet seat:  the seat's own bearer
-    (environment or its canonical file) is the only credential the hosted verbs need.
+    (environment or its canonical file) is the only credential the hosted read verbs need.
     An explicit SIMPLE_RECALL_REMOTE switch decides either way, a configured local corpus
-    (QDRANT_URL) keeps the direct route, and a verb with no hosted route stays local."""
-    if cmd not in ("search", "stats", "contribute", "correct", "retract"):
+    (QDRANT_URL) keeps the direct route, a verb with no hosted route stays local, a write
+    keeps its explicit opt-in, and a search flag with no hosted equivalent stays direct."""
+    if cmd not in ("search", "stats"):
         return False
     if os.environ.get("SIMPLE_RECALL_REMOTE", "").strip():
         return False
     if os.environ.get("QDRANT_URL", "").strip():
+        return False
+    if any(x == f or x.startswith(f + "=") for x in _ARGV for f in _LOCAL_ONLY_FLAGS):
         return False
     return any(
         os.environ.get(name, "").strip()
