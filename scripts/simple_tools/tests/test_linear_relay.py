@@ -839,9 +839,18 @@ class RelayTests(unittest.TestCase):
         # (Kody, PR 2344).
         self.assertFalse(lr.has_secret("https://x.test/o/r/commit/%s" % sha))
         self.assertFalse(lr.has_secret("https://x.test/o/r/pull/12/commits/%s" % sha))
+        # An arbitrary path segment is not a commit reference:  it keeps withholding
+        # (Kody, PR 2344 round 2).
+        self.assertTrue(lr.has_secret("https://x.test/files/%s" % sha))
         self.assertTrue(lr.has_secret('"registry_hash": "%s"' % sha))
         self.assertTrue(lr.has_secret(sha + "Zk9+/=="))
+        # Quoted hex is withheld by the canonical scanner's own quoted-hex rule (a quote
+        # makes the run credential-shaped for every caller), so the relay rows cannot and
+        # should not exempt it:  bare quoted, punctuation-led, and prose-quoted forms all
+        # keep withholding (Kody, PR 2344 round 2;  the exemption stays bare and unquoted).
         self.assertTrue(lr.has_secret('"' + sha + '"'))
+        self.assertTrue(lr.has_secret('("%s")' % sha))
+        self.assertTrue(lr.has_secret('merged "%s" into main' % sha))
 
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:

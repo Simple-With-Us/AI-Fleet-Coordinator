@@ -262,10 +262,51 @@ _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 # A bare 40-character lowercase hex run is a git SHA-1:  commits and PR heads quote them in
 # prose and in commit/pull URL paths, and withholding whole posts for a quoted SHA is the bug
-# AFC-834 records.  Not exempt:  a run in a query or keyed position (`?sha=`, `token:`, a JSON
-# `"key": "..."`), one that continues into a longer base64 run, any other length, or a
-# mixed-case run (Kody, PR 2344).
-_BARE_GIT_SHA = re.compile(r"(?<![?&=:\w\"])[0-9a-f]{40}(?![A-Za-z0-9+/=])")
+# AFC-834 records.  The context decides, per match (Kody, PR 2344):  a run is exempt in
+# commit-ish URL paths (`commit/`, `commits/`, `tree/`, `blob/`) and at plain-prose
+# boundaries (start, whitespace, an opening bracket, a prose quote);  it keeps withholding
+# in a query or keyed position (`?sha=`, `token:`, a JSON `"key": "`), mid-run, or when it
+# continues into a longer base64 run, as does any other length or a mixed-case run.
+_BARE_GIT_SHA = re.compile(r"\b[0-9a-f]{40}(?![A-Za-z0-9+/=])")
+
+
+def _sha_is_exposed(text: str, start: int) -> bool:
+    """True when the 40-character run at `start` sits in commit prose or a commit-ish URL
+    path, and is therefore a quotable git SHA rather than a credential context."""
+    before = text[:start]
+    for segment in ("commit/", "commits/", "tree/", "blob/"):
+        if before.endswith(segment):
+            return True
+    if before == "":
+        return True
+    last = before[-1]
+    if last in " \t([{":
+        return True
+    if last == '"':
+        # A quote that closes a JSON key/value (`": "`) is a keyed context;  a quote after
+        # prose words (`merged "…`) is prose;  a quote with nothing or only punctuation
+        # before it is ambiguous and keeps withholding, the safer side.
+        stem = before[:-1]
+        if not stem:
+            return False
+        if stem.endswith(":"):
+            return False
+        return stem[-1].isalnum()
+    return False
+
+
+def _mask_bare_shas(text: str) -> str:
+    """Mask only the bare git SHAs, with a character outside every credential alphabet:  the
+    mask also breaks any wider run a URL path would otherwise extend across the SHA."""
+    parts: list[str] = []
+    last = 0
+    for match in _BARE_GIT_SHA.finditer(text):
+        if _sha_is_exposed(text, match.start()):
+            parts.append(text[last:match.start()])
+            parts.append("!" * 40)
+            last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def has_secret(text: str) -> bool:
@@ -280,7 +321,7 @@ def has_secret(text: str) -> bool:
     # The bare SHAs are masked out before the wide rows run, with a character outside
     # every credential alphabet:  the mask also breaks any wider run a URL path or a
     # neighbouring segment would otherwise extend across the SHA (Kody, PR 2344).
-    probe = _BARE_GIT_SHA.sub("!" * 40, text)
+    probe = _mask_bare_shas(text)
     return any(p.search(probe) for p in _SECRET_PATTERNS)
 
 
