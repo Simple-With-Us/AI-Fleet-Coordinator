@@ -16,7 +16,9 @@ class HostedTests(unittest.TestCase):
             row=["server time",who,args["requesting_seat"],args["request"],args["action_taken"],args["result"]]
             if bad_receipt: row[1]="OTHER"
             return {"structuredContent":{"dry_run":args["dry_run"],"tab":"Peer-Actions Registry","row":row}}
-        with mock.patch.dict(os.environ, env if env is not None else {"AGENT_SEAT":"WISE", "SIMPLE_TOOLS_BEARER":"test-bearer"},clear=True), \
+        env = dict({"AGENT_SEAT":"WISE", "SIMPLE_TOOLS_BEARER":"test-bearer"} if env is None else env)
+        env.setdefault("HOME", "/nonexistent")  # keep the canonical bearer-file route hermetic
+        with mock.patch.dict(os.environ, env, clear=True), \
              mock.patch.object(T,"_remote_write_identity",return_value=who) as identity, \
              mock.patch.object(T,"_remote_call",side_effect=call), \
              mock.patch.object(C.P,"log_row",side_effect=AssertionError("direct fallback")), \
