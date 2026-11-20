@@ -176,6 +176,10 @@ SPEC = PL.PlatformSpec(
     current_title=PL.from_payload("title"),
     stored_title=PL.from_payload("title"),
     locations=("mac",),
+    unlettered_feed=(
+        "no hooks:  fx has no hook to replay;  its sync run registers the store's live sessions itself, so that run"
+        " is the way back for a chat with no letter"
+    ),
 )
 
 

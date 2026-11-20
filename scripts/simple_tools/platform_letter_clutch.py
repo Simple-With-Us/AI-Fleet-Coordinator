@@ -94,6 +94,10 @@ SPEC = PL.PlatformSpec(
     events=EVENTS,
     close_reasons=CLOSE_REASONS,
     locations=("mac",),
+    unlettered_feed=(
+        'hook-only:  the Harness hook bridge takes no title, so no session ever shows the "??: " mark to look for,'
+        " and the adapter reads no Harness store;  a session with no letter asks again at its next prompt"
+    ),
 )
 
 #: The shared JSON installer writes the entries; its answer carries MOUNT as its `trust` step, the part
