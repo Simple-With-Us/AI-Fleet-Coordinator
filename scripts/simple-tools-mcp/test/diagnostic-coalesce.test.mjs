@@ -111,7 +111,7 @@ test("the writer refuses a count that is not a sane positive integer", async () 
 test("relay check rows keep their own store, so a busy relay cannot push wake rows out", async () => {
   const store = S.memoryStore();
   for (let i = 0; i < 100; i += 1) await S.recordDiagnostic(store, { kind: "wake", reason: `wake_${i}` }, NOW + i);
-  // Far more distinct relay causes than its own store keeps (Kody, PR 2331).
+  // Far more distinct relay causes than its own store keeps.
   for (let i = 0; i < 300; i += 1) await S.recordDiagnostic(store, { kind: i % 2 ? "gr_bearer" : "gr_assert", reason: `cause_${i}` }, NOW + 1_000 + i);
   const rows = await S.diagnosticTail(store, S.DIAGNOSTIC_TOTAL_CAP, NOW + 2_000);
   const wake = rows.filter((r) => r.kind === "wake");
@@ -121,7 +121,7 @@ test("relay check rows keep their own store, so a busy relay cannot push wake ro
   assert.equal(relay.length, S.DIAGNOSTIC_TOTAL_CAP - 100);
   assert.equal(relay[0].reason, "cause_299");
   // Newest first within every kind (the kinds themselves take turns in the tail,
-  // so no kind can crowd the others out - Kody, PR 2331 review round 3).
+  // so no kind can crowd the others out).
   const lastSeenTs = new Map();
   for (const row of rows) {
     const last = lastSeenTs.get(row.kind);
