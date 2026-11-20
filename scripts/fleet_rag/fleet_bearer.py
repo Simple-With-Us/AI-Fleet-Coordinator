@@ -134,9 +134,7 @@ def own_bearer(env=None, home=None):
     except OSError:
         return ""
     if not stat.S_ISREG(info.st_mode):
-        raise FleetError(
-            "not_configured", "this seat's own bearer file is not a regular file"
-        )
+        raise FleetError("not_configured", "this seat's own bearer file is not a regular file")
     file_seat, value = private_bearer(path)
     if file_seat != seat:
         raise FleetError(
