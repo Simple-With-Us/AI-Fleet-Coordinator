@@ -99,6 +99,19 @@ class ReviewedGenericTests(unittest.TestCase):
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
+    def test_labeled_argument_earlier_string_arg_and_closure(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "foo(label: \"x\", token: snapshot.wind" + "ow.window)\n",
+            "foo({ bar in\n    baz(x) }, token: snapshot.wind" + "ow.window)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_balanced_call_before_comma_refuses(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        body = "bar(x), token: snapshot.wind" + "ow.window\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
             self.assertIsNone(secretscan.scan_file(self.repo, self.path, self.body))
