@@ -2252,8 +2252,15 @@ class Router:
             try:
                 # `_turn_cap` only allows a turn when deliver_turn is callable.
                 turn = self.platform.deliver_turn(pick.target, head, told, turn_id)
-            except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
-                turn = Turn(Delivery("failed", code="deliver-error-%s" % type(exc).__name__))
+            except Exception as exc:  # noqa: BLE001 - the write may already have been sent
+                # Indeterminate, never failed:  a platform's exception can come after the
+                # remote write, so retrying it as a failed try could run the turn twice.  The
+                # turn closes unknown and unreadable, and the receipt keeps it visible for
+                # reconciliation (claude_wake maps its own delivery errors the same way).
+                turn = Turn(
+                    Delivery("unknown", code="deliver-error-%s" % type(exc).__name__),
+                    unreadable=True,
+                )
             if not isinstance(turn, Turn) or not isinstance(turn.delivery, Delivery):
                 turn = Turn(Delivery("refused", code=TURN_BAD_ANSWER), unreadable=True)
             self._settle_turn(entry, pick, riders, turn)

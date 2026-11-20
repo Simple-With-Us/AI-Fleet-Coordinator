@@ -9,7 +9,6 @@ its own `test_turn_*` methods run here.  A few pin today's behaviour and pass wi
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -116,6 +115,21 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         both = ["w-rider-1", "w-rider-2"]
         self.assertEqual(answer["turn"], self.echo(both, both))
 
+    def test_turn_short_circuit_reports_the_riders_carried_and_confirmed(self) -> None:
+        # A retry that finds the turn id already in the transcript must not run the
+        # turn again, and must still report every rider as carried and confirmed:  the
+        # recorded prompt names them all, so the router must not deliver them again.
+        request = self.turn_request()
+        transcript = self.session_dir / "session.jsonl"
+        with open(transcript, "a", encoding="utf-8") as handle:
+            handle.write(self.expected(request) + "\n")
+        answer = self._deliver(request)
+        delivery = answer["delivery"]
+        self.assertEqual(self.calls, [])
+        self.assertEqual((delivery["outcome"], delivery["ack"]), ("sent", "confirmed"))
+        both = ["w-rider-1", "w-rider-2"]
+        self.assertEqual(answer["turn"], self.echo(both, both))
+
     def test_turn_without_the_turn_id_in_the_transcript_is_sent_unknown_riders_carried_unconfirmed(
         self,
     ) -> None:
@@ -158,7 +172,7 @@ class MuseTurns(base.MuseWakeDeliveryTest):
         # and there would be no new call to time.
         shutil.rmtree(WP.state_dir(str(self.home)), ignore_errors=True)
         transcript = self.session_dir / "session.jsonl"
-        transcript.write_text(json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8")
+        WR.atomic_write(transcript, {"cwd": str(self.work)})
 
     def test_turn_exec_runs_the_resume_limit_once_per_wake_it_carries(self) -> None:
         resume = MW.DEFAULTS["resume_timeout_seconds"]

@@ -561,7 +561,9 @@ def _via_exec(
     except (KeyError, TypeError, ValueError):
         return WR.Delivery("failed", "exec", code="settings-unreadable")
     transcript = os.path.join(session_dir, "session.jsonl")
-    if _wake_seen(transcript, wake.wake_id):
+    if _wake_seen(transcript, wake.wake_id) and not riders:
+        # Singles only:  a turn's prompt also carries the head's id, so a turn request
+        # must reach the turn-id check below, which is the one that reports the riders.
         return WR.Delivery("sent", "exec", ack="confirmed")
     binary = _binary(env, config)
     if not binary:
@@ -587,6 +589,17 @@ def _via_exec(
     # the wake id for a single wake.  Either way the earlier run is the hand-over.
     needle = turn_id if riders else wake.wake_id
     if needle and _wake_seen(transcript, needle):
+        if riders and echo is not None:
+            # The transcript already holds this turn's prompt, which names every rider:  say
+            # so, or the router reads the echo as carrying nobody and delivers them again.
+            echo["carried"] = tuple(rider.wake_id for rider in riders)
+            echo["confirmed"] = echo["carried"]
+            try:
+                state = WP.state_dir(_pending_home(env))
+                for rider in riders:
+                    WP.mark_delivered(state, session_id, rider.wake_id)
+            except OSError:
+                pass
         return WR.Delivery("sent", "exec", ack="confirmed")
     try:
         offset = os.path.getsize(transcript)

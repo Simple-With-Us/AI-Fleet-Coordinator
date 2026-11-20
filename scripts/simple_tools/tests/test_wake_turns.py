@@ -1277,7 +1277,12 @@ class Settle(TurnBase):
         head = self.kept("w-1")
         self.assertEqual((head["attempts"], head["next_at"]), (1, now + 30))
 
-    def test_deliver_turn_raising_is_a_failed_try_and_riders_return(self) -> None:
+    def test_deliver_turn_raising_closes_the_turn_unknown_and_unreadable(self) -> None:
+        # A platform's exception can come after the remote write was sent, so it is
+        # indeterminate, never a failed try:  retrying it could run the turn twice.  The
+        # head and its riders close unknown, the receipt keeps them visible, and no
+        # second turn runs.  (Contract change from failed-plus-retry:  claude_wake maps
+        # its own delivery errors unknown and unreadable the same way.)
         router = self.turns()
         self.three(router)
 
@@ -1286,14 +1291,22 @@ class Settle(TurnBase):
 
         self.inside = boom
         self.assertTrue(router.run_once())
-        head = self.kept("w-1")
-        self.assertEqual((head["attempts"], head["failures"]), (1, 1))
+        head = self.done("w-1")
+        self.assertEqual(
+            (head["status"], head["delivered"], head["code"]),
+            ("unknown", None, "deliver-error-RuntimeError"),
+        )
+        self.assertIsNone(head["turn"]["carried"])
         for wake_id in ("w-2", "w-3"):
-            self.assertClean(router, wake_id)
+            record = self.done(wake_id)
+            self.assertEqual(
+                (record["status"], record["delivered"], record["code"]),
+                ("unknown", None, WR.TURN_UNCONFIRMED),
+            )
         self.inside = None
         self.clock.now += router.config["retry_backoff"][0]
         self.drain(router)
-        self.assertEqual(self.calls, [("T", "w-1", ("w-2", "w-3"))] * 2)
+        self.assertEqual(self.calls, [("T", "w-1", ("w-2", "w-3"))])
 
     def test_a_return_value_that_is_not_a_turn_is_refused_and_riders_unknown(self) -> None:
         router = self.turns()
