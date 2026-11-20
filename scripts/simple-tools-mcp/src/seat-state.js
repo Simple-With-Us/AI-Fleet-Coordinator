@@ -926,9 +926,20 @@ const DIAGNOSTIC_CAP = 100;
 // The git relay's check-route rows (AFC-844) keep a store of their own, so a busy relay
 // can never push wake, token, mcp or provider rows out of the shared 100 (Kody, PR 2331).
 const GR_DIAGNOSTIC_KINDS = new Set(["gr_bearer", "gr_assert"]);
-const GR_DIAGNOSTIC_CAP = 40;
-export const DIAGNOSTIC_TOTAL_CAP = DIAGNOSTIC_CAP + GR_DIAGNOSTIC_CAP;
-const diagnosticStore = (kind) => (GR_DIAGNOSTIC_KINDS.has(kind) ? { key: "gr_diagnostics", cap: GR_DIAGNOSTIC_CAP } : { key: "diagnostics", cap: DIAGNOSTIC_CAP });
+const GR_DIAGNOSTIC_CAP = 20;
+export const DIAGNOSTIC_TOTAL_CAP = DIAGNOSTIC_CAP + 2 * GR_DIAGNOSTIC_CAP;
+// One bounded store PER relay kind, not one shared:  a flood of gr_bearer refusals must
+// not evict a live gr_assert row while its outage is still running, or the per-kind
+// rotation in diagnosticTail would rotate over a hole (Kody, PR 2331 round 5).
+const GR_DIAGNOSTIC_STORES = {
+  gr_bearer: { key: "gr_diagnostics_bearer", cap: GR_DIAGNOSTIC_CAP },
+  gr_assert: { key: "gr_diagnostics_assert", cap: GR_DIAGNOSTIC_CAP },
+};
+const diagnosticStore = (kind) =>
+  GR_DIAGNOSTIC_KINDS.has(kind)
+    ? GR_DIAGNOSTIC_STORES[kind]
+    : { key: "diagnostics", cap: DIAGNOSTIC_CAP };
+const GR_DIAGNOSTIC_KEYS = Object.values(GR_DIAGNOSTIC_STORES).map((store) => store.key);
 const SAFE_DIAGNOSTIC_KIND = /^[a-z][a-z0-9_-]{0,39}$/i;
 const SAFE_DIAGNOSTIC_REASON = /^[a-z0-9_:-]{1,80}$/i;
 const SAFE_DIAGNOSTIC_SEAT = /^[A-Z][A-Z0-9_-]{0,39}$/;
@@ -986,7 +997,12 @@ export async function diagnosticTail(store, limit = 40, now = Date.now()) {
   if (max === 0) return [];
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
   const live = (rows) => (rows ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
-  const rows = [...live(await store.get("diagnostics")), ...live(await store.get("gr_diagnostics"))];
+  const rows = [
+    ...live(await store.get("diagnostics")),
+    ...live(await store.get("gr_diagnostics")),
+    ...live(await store.get("gr_diagnostics_bearer")),
+    ...live(await store.get("gr_diagnostics_assert")),
+  ];
   const byKind = new Map();
   // Walk newest first (each store is already in update order), so rows whose
   // timestamps tie keep newest-first within their kind, and the kind of the
@@ -999,9 +1015,10 @@ export async function diagnosticTail(store, limit = 40, now = Date.now()) {
     group.push(row);
   }
   const groups = [...byKind.values()].map((list) => list.sort((a, b) => b.ts - a.ts));
-  // The kind holding the single newest row leads the rotation (stable on ties, so
-  // the walk order above decides).
-  groups.sort((a, b) => b[0].ts - a[0].ts);
+  // The seat's own wake rows lead the tail in full (their bounded store already caps
+  // them at 100, so they can never crowd the relay kinds out of the rotation);  the
+  // relay kinds take turns behind them (stable on ties, so the walk order decides).
+  groups.sort((a, b) => (b[0].kind === "wake") - (a[0].kind === "wake") || b[0].ts - a[0].ts);
   const selected = [];
   for (let offset = 0; selected.length < max; offset++) {
     let added = false;
