@@ -766,7 +766,9 @@ jobs:
     # arguments and answers what the test tells it to.
     - name: Auto-merge reusable workflow contract
       timeout-minutes: 10
-      run: python3 scripts/test_auto_merge_reusable.py
+      run: |
+        python3 scripts/test_auto_merge_reusable.py
+        python3 scripts/test_protected_merge_boundary.py
     # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
     # transport is injected, and the workflow job is checked by reading the file.
     - name: Fleet hold label provisioning
