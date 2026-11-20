@@ -837,7 +837,8 @@ class HostTests(unittest.TestCase):
                 "error": {"code": "not_found", "message": "no note"},
             },
         )
-        self.assertEqual(gw.calls[-1], ("notes_status", {"request_id": "requestid-0001"}, False))
+        self.assertEqual(gw.calls[-1], ("notes_status", {"request_id": "requestid-0001", "identity": "CLAUDE"}, False))
+        #  a seat-scoped read names its seat too:  a bearer with no gateway default identity otherwise answers identity_required
         gw.queue(
             "notes_log",
             {"entries": [{"id": "e1", "ts": "2026-10-22T22:00:00Z"}], "source": "operator", "count": 1},
