@@ -82,7 +82,7 @@ sudo OPERATOR_SHEETS_WORKBOOK_ID=<workbook id> \
 Then run the same command without `--dry-run`.  The caller supplies:
 
 - `OPERATOR_SHEETS_WORKBOOK_ID`: the SWU Operator workbook id.  It is not in this repository, so the caller sets it.
-- `OPERATOR_SHEETS_TOKEN_FILE`: a root-owned file, mode 0600 or 0400, holding a scoped read-only Infisical service token for Fleet-OPS prod `/operator-thread-registry`.  Minting it needs the owner's approval, and the script never mints, prints or echoes it, or puts it on a command line.  The script refuses a token whose grant is wider than that folder or can write.
+- `OPERATOR_SHEETS_TOKEN_FILE`: a root-owned file, mode 0600 or 0400, holding a scoped read-only Infisical service token for Fleet-OPS prod `/google-sheets-sa`.  Minting it needs the owner's approval, and the script never mints, prints or echoes it, or puts it on a command line.  The script refuses a token whose grant is wider than that folder or can write.
 - `INFISICAL_FLEET_OPS_PROJECT_ID`, unless root's `~/.simple-tools/fleet-ops-project-id` already holds it.
 - Optional: `OPERATOR_SHEETS_SESSIONS_SHEET_ID` (default 20964676), `OPERATOR_SHEETS_EVENTS_SHEET_ID` (default 1449318075), `OPERATOR_REGISTRY_CONTAINER` (default `eavesdropper`) and `OPERATOR_REGISTRY_DB` (default `/data/operator/registry.sqlite3`).  A swapped pair of sheet ids fails closed, because the transport checks each sheet id's tab title before any write.
 - Optional drain knobs: `OPERATOR_SHEETS_PAGE_LIMIT` (1 to 5000) and `OPERATOR_SHEETS_LOCK`.  When one is not set, a value already in `drain.env` is kept, so a hand-set knob survives a rerun.
@@ -94,7 +94,7 @@ Before step 1 the script checks that `/etc/operator-sheets`, if it exists, is ro
    `operator_sheets_google.mjs`, `operator_sheets_drain.mjs` and, for the Zulip Threads sync,
    `thread_registry_export.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root; a file
    whose content, mode or owner differs is replaced);
-2. reads `OPERATOR_GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/operator-thread-registry` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
+2. reads `OPERATOR_GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
 3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids, the registry container and store, and the knobs, and prints the names (never the values) of settings that changed, were kept or were dropped;
 4. runs a preflight, with a 120 s limit on each read, to check that the registry's
    `pending-outbox` and `export-attempts` reads inside the container return JSON lists (it prints

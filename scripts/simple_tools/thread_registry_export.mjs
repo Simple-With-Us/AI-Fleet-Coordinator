@@ -29,8 +29,8 @@
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  The CLI reads its key JSON
 // from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
-// same resolution shape as sheet-read.mjs, a different, purpose-scoped secret.  The drain
+// /google-sheets-sa (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
+// same approved resolution shape as the other fleet Sheets readers.  The drain
 // runner reads the same key from /etc/operator-sheets/sa.json, which its installer
 // fetches from that Infisical path.  The sheet must be shared (Editor) with that service
 // account's client_email or every call 403s and the drain writes nothing.  This module
@@ -49,6 +49,7 @@ import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import crypto from "node:crypto";
+import { scanCellText } from "./operator_sheets_google.mjs";
 
 export const SPREADSHEET_ID = "1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE";
 export const SHEET_TAB = "Zulip Threads";
@@ -96,7 +97,7 @@ function loadServiceAccount() {
   if (!raw) {
     const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/operator-thread-registry"], {
+      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).replace(/\n$/, "");
@@ -106,7 +107,7 @@ function loadServiceAccount() {
   }
   if (!raw) {
     throw new Error(
-      "Operator thread registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /operator-thread-registry"
+      "Operator thread registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /google-sheets-sa"
     );
   }
   return JSON.parse(raw);
@@ -307,7 +308,7 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
   }
   return {
     async validateHeaders() {
-      const data = await call(`/values/${encodeURIComponent(tab + "!A1:O1")}`);
+      const data = await call(`/values/${encodeURIComponent(quotedTab(tab) + "!A1:O1")}`);
       return (data.values && data.values[0]) || [];
     },
     async readRows() {
@@ -321,7 +322,7 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
           throw sheetsError("Sheets read stopped before its last page", { code: "stopped" });
         }
         const endRow = Math.min(startRow + PAGE_SIZE - 1, rowCount);
-        const data = await call(`/values/${encodeURIComponent(`${tab}!A${startRow}:O${endRow}`)}`);
+        const data = await call(`/values/${encodeURIComponent(`${quotedTab(tab)}!A${startRow}:O${endRow}`)}`);
         const values = data.values || [];
         if (!Array.isArray(values) || values.length > endRow - startRow + 1 ||
             values.some((cells) => !Array.isArray(cells))) {
@@ -337,7 +338,7 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
     async readKeys(rowNumbers) {
       if (!rowNumbers.length) return [];
       const ranges = rowNumbers
-        .map((r) => `ranges=${encodeURIComponent(`${tab}!A${r}`)}`).join("&");
+        .map((r) => `ranges=${encodeURIComponent(`${quotedTab(tab)}!A${r}`)}`).join("&");
       const data = await call(`/values:batchGet?${ranges}`);
       const found = data?.valueRanges;
       if (!Array.isArray(found) || found.length !== rowNumbers.length) {
@@ -358,7 +359,7 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
     },
     async appendRow(cells) {
       const data = await call(
-        `/values/${encodeURIComponent(tab + "!A:O")}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+        `/values/${encodeURIComponent(quotedTab(tab) + "!A:O")}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
         { method: "POST", body: JSON.stringify({ values: [cells] }) }
       );
       const match = /!A(\d+):/.exec(data.updates?.updatedRange || "");
@@ -444,6 +445,12 @@ export function planUpserts(existing, desired) {
 // next run re-reads the tab and plans it again.  An adapter without readKeys (the
 // in-memory test sheets) skips that check.  An update writes Purpose only when the
 // desired row carries one, which the projection never does.
+// A tab title quoted for A1 notation:  the Sheets API requires single quotes around
+// titles with spaces or punctuation, and a literal quote doubles.
+export function quotedTab(tab) {
+  return `'${String(tab).replace(/'/g, "''")}'`;
+}
+
 export async function drainThreadRows({
   adapter, desired, dryRun = false, log = () => {}, shouldStop = () => false,
 }) {
@@ -502,10 +509,10 @@ export async function drainThreadRows({
   } catch (err) {
     result.failed = 1;
     result.partial = true;
-    result.error = err.message;
     result.code = typeof err?.code === "string" ? err.code : "write_failed";
     result.status = Number.isSafeInteger(err?.status) ? err.status : null;
-    log(`thread registry drain stopped: ${err.message}`);
+    result.error = result.code;
+    log(`thread registry drain stopped: code=${result.code} status=${result.status ?? "unknown"}`);
   }
   return finish();
 }
@@ -563,10 +570,10 @@ export async function runCli(argv, {
     return 2;
   }
   const payload = JSON.parse(readText(file));
-  if (payload?.spreadsheetId !== SPREADSHEET_ID || payload?.tab !== SHEET_TAB) {
+  validatePayload(payload);
+  if (payload.spreadsheetId !== SPREADSHEET_ID || payload.tab !== SHEET_TAB) {
     throw new Error("thread-rows payload names a different workbook or tab; refusing to drain");
   }
-  validatePayload(payload);
   const lockPath = env.OPERATOR_SHEETS_LOCK || DEFAULT_LOCK;
   const lease = write ? await takeLease(lockPath) : null;
   if (write && lease === null) {
@@ -577,9 +584,13 @@ export async function runCli(argv, {
   try {
     const token = await getToken();
     const adapter = makeAdapter(token);
+    // Credential-shaped cells never reach the sheet on the manual path either:  drop them
+    // here the way the scheduled drain does, and count what was refused.
+    const clean = payload.rows.filter((row) => row.every((cell) => scanCellText(cell) === null));
     const result = await drainThreadRows({
-      adapter, desired: payload.rows, dryRun: !write, log: (m) => err(m),
+      adapter, desired: clean, dryRun: !write, log: (m) => err(m),
     });
+    result.refused = payload.rows.length - clean.length;
     out(JSON.stringify({ dryRun: !write, ...result }));
     return result.failed ? 1 : 0;
   } finally {

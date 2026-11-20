@@ -119,23 +119,20 @@ Owner ruling (Nov 3, 2026):  the **existing fleet Sheets service account is reus
 the Operator registries;  no dedicated SA is created for this registry.
 
 - Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
-- Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
-  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the same
-  resolution shape as the existing `/google-sheets-sa` secret, a separate purpose-scoped
-  path that holds a copy of that fleet credential.  The CLI never writes the key to disk
+- Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
+  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the approved
+  fleet Sheets route, no purpose-scoped copy.  The CLI never writes the key to disk
   or prints it.
 - On the server, the scheduled drain reads the same key from
   `/etc/operator-sheets/sa.json` (`OPERATOR_SHEETS_SA_FILE`), which
   `install-operator-sheets-drain.sh` writes (0600, root) from that Infisical path with its
   scoped read-only service token.  The two routes above are the CLI's, for manual runs.
 
-**What is needed (owner/admin action):**  place the fleet Sheets service account's JSON
-in Infisical Fleet-OPS prod at `/operator-thread-registry` under
-`OPERATOR_GOOGLE_SHEETS_SA`, and share the "Operator Thread Registry" sheet with that
-service account's `client_email` as Editor.  Without the share, the CLI exits with an
+**What is needed (owner/admin action):**  share the "Operator Thread Registry" sheet with
+that service account's `client_email` as Editor.  Without the share, the CLI exits with an
 error, and the scheduled drain logs the fixed code `sheet_http_403` on every run and
 writes no thread rows while the Sessions and Events export carries on.  The code reads
-only the purpose-scoped key above and never falls back to another credential silently.
+only the approved key above and never falls back to another credential silently.
 
 ## Follow-Ups
 

@@ -134,7 +134,7 @@ The drain authenticates as a **dedicated service account for the Operator
 registries**, never as an agent's Google identity:
 
 - Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
-- Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
+- Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
   `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the
   same seam, the same key, as the thread registry's drain;  one seam serves both
   tabs.  The key is never written to disk or printed.  There is no fallback to any

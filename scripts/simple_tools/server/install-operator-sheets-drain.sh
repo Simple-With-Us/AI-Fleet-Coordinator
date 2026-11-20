@@ -12,7 +12,7 @@
 #      operator_sheets_export.mjs, operator_sheets_google.mjs, operator_sheets_drain.mjs and
 #      thread_registry_export.mjs (the Zulip Threads sync the same run does, AFC-823) into
 #      /usr/local/lib/operator-sheets-drain (0644, root);
-#   2. reads OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry
+#   2. reads OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
 #      with the caller's scoped READ-only service token and writes /etc/operator-sheets/sa.json
 #      (0600, root);
 #   3. writes /etc/operator-sheets/drain.env (0600, root): the workbook id, sheet ids and the
@@ -27,7 +27,7 @@
 #   OPERATOR_SHEETS_WORKBOOK_ID      the SWU Operator workbook id (required; it is not in this repo)
 #   OPERATOR_SHEETS_TOKEN_FILE       a root-owned file, mode 0600 or 0400, holding the scoped
 #                                    read-only Infisical service token for Fleet-OPS prod
-#                                    /operator-thread-registry (required).  The script never mints,
+#                                    /google-sheets-sa (required).  The script never mints,
 #                                    prints or echoes the token and never puts it on a command line.
 #   INFISICAL_FLEET_OPS_PROJECT_ID   the Fleet-OPS project id (or root's ~/.simple-tools/fleet-ops-project-id)
 #   OPERATOR_SHEETS_SESSIONS_SHEET_ID  default 20964676
@@ -272,7 +272,7 @@ done
 # --- 2 and 3. sa.json from Infisical, and drain.env ----------------------------------------
 
 if [[ "$DRY" -eq 1 ]]; then
-  say "would read OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry"
+  say "would read OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa"
   say "  with the read-only service token in $TOKEN_FILE (the token is not read in a dry run)"
   say "would write $ETC_DIR/sa.json (0600, root) if its content changed"
   say "would write $ETC_DIR/drain.env (0600, root) if its content changed, with:"
@@ -300,7 +300,7 @@ import stat
 import sys
 
 ROOT_UID = 0
-SECRET_PATH = "/operator-thread-registry"
+SECRET_PATH = "/google-sheets-sa"
 SECRET_NAME = "OPERATOR_GOOGLE_SHEETS_SA"
 MAX_TOKEN_BYTES = 8192
 MAX_ENV_BYTES = 64 * 1024

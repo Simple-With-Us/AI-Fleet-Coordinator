@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -362,9 +362,13 @@ class ExportRowsCliTest(unittest.TestCase):
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)  # a read only:  the store is unchanged
 
-    def test_export_rows_on_a_missing_store_is_empty_and_creates_nothing(self):
-        payload = self.run_cli("export-rows")
-        self.assertEqual(payload["rows"], [])
+    def test_export_rows_on_a_missing_store_refuses_instead_of_empty(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = TR._main(["export-rows", "--state-root", self.root])
+        self.assertNotEqual(code, 0)
+        self.assertIn("refusing an empty export", err.getvalue())
         self.assertFalse(os.path.exists(self.path))
 
     def test_stats_counts_threads_and_messages(self):

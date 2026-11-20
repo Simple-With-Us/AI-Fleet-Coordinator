@@ -163,7 +163,7 @@ class ShellTests(unittest.TestCase):
             self.assertRegex(
                 out, r"(would install|unchanged) /usr/local/lib/operator-sheets-drain/" + name
             )
-        self.assertIn("Fleet-OPS prod /operator-thread-registry", out)
+        self.assertIn("Fleet-OPS prod /google-sheets-sa", out)
         self.assertIn("the token is not read in a dry run", out)
         self.assertIn("OPERATOR_SHEETS_WORKBOOK_ID=workbook_FIXTURE-1", out)
         self.assertIn("OPERATOR_SHEETS_SESSIONS_SHEET_ID=20964676", out)
@@ -471,7 +471,7 @@ class PythonBlockTests(unittest.TestCase):
             [
                 {
                     "project": "00000000-0000-4000-8000-000000000000",
-                    "path": "/operator-thread-registry",
+                    "path": "/google-sheets-sa",
                     "env": {},  # no caller variable can redirect the API or widen the folders
                     "token": FAKE_TOKEN,
                     "names": ["OPERATOR_GOOGLE_SHEETS_SA"],

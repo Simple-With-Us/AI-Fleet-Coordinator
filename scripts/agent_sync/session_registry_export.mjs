@@ -14,7 +14,7 @@
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  Its key JSON comes
 // from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
+// /google-sheets-sa (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
 // same credential seam as the thread registry's drain;  one seam serves both tabs of
 // the workbook.  The workbook must be shared (Editor) with that service account's
 // client_email or every call 403s and the drain writes nothing.  Credentials are never
@@ -53,7 +53,7 @@ function loadServiceAccount() {
   if (!raw) {
     const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/operator-thread-registry"], {
+      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).replace(/\n$/, "");
@@ -63,7 +63,7 @@ function loadServiceAccount() {
   }
   if (!raw) {
     throw new Error(
-      "Operator session registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /operator-thread-registry"
+      "Operator session registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /google-sheets-sa"
     );
   }
   return JSON.parse(raw);
