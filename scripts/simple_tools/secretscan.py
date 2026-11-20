@@ -141,6 +141,10 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
         # line-start colon pairs (JSON/YAML) never reach this path.  Paren
         # depth is tracked across the whole window so a closure inside the
         # call keeps the paren open and an earlier string argument is fine.
+        # The separator must be the labeled-argument colon:  a `=` keyword
+        # argument inside parens keeps the `=` path's stricter treatment.
+        if ":" not in text[match.start() : start]:
+            return False
         before = text[max(0, match.start() - 300) : match.start()]
         tail = re.search(r"[(,]\s*$", before)
         if tail is None:
