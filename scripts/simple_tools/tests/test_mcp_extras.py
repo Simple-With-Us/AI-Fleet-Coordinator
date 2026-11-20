@@ -478,7 +478,11 @@ class NotesToolTests(McpHarness):
         self.assertEqual(sent["markdown"], "body")
         self.assertEqual(sent["session"], SESSION)
         self.assertEqual(sent["summary"], "short")
-        self.assertNotIn("identity", sent, "the gateway derives the seat from this bot's own bearer")
+        self.assertEqual(
+            sent.get("identity"),
+            "CLAUDE",
+            "a write names the bot it acts as;  the gateway checks it against this bot's own bearer",
+        )
         self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")
     def test_the_wait_is_25_seconds_by_default_capped_at_ninety_and_zero_answers_queued(self):
