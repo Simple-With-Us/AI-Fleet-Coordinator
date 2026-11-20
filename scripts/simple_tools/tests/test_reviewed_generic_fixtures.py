@@ -83,6 +83,22 @@ class ReviewedGenericTests(unittest.TestCase):
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
+    def test_labeled_argument_multiline_and_second_position(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "foo(\n    token: snapshot.wind" + "ow.window,\n    label: label)\n",
+            "foo(a: 1, token: snapshot.wind" + "ow.window)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_requires_call_paren(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "Hello, token: snapshot.wind" + "ow.window\n",
+            "(done), token: snapshot.wind" + "ow.window\n",
+        ):
+            self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
             self.assertIsNone(secretscan.scan_file(self.repo, self.path, self.body))
