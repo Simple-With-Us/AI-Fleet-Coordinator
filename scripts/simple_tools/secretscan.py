@@ -125,28 +125,35 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     if start and text[start - 1] in "\"'":
         return False
     line = text[text.rfind("\n", 0, start) + 1 : start]
-    # A source line containing quotes or template delimiters is conservatively scanned.
-    if any(c in line for c in "\"'`"):
-        return False
     # Existing `if (...) cfg.key =` lines use the assignment's exact suffix.
     assignment = re.search(
         r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line
     )
     labeled_arg = False
-    if assignment is None:
+    if assignment is not None:
+        # A source line containing quotes or template delimiters is conservatively scanned.
+        if any(c in line for c in "\"'`"):
+            return False
+    else:
         # A labeled call argument (Swift/Kotlin) puts the keyword label right
-        # after `(` or `,` belonging to an unclosed `(` in the same statement,
-        # possibly across lines.  Comma prose has no call paren, and quoted or
-        # line-start colon pairs (JSON/YAML) never reach this path.
+        # after `(` or `,` while an earlier `(` is still unclosed, possibly
+        # across lines.  Comma prose has no call paren, and quoted or
+        # line-start colon pairs (JSON/YAML) never reach this path.  Paren
+        # depth is tracked across the whole window so a closure inside the
+        # call keeps the paren open and an earlier string argument is fine.
         before = text[max(0, match.start() - 300) : match.start()]
         tail = re.search(r"[(,]\s*$", before)
-        if tail is not None:
-            seg = before[: tail.start() + 1]
-            boundary = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
-            seg = seg[boundary + 1 :]
-            labeled_arg = seg.count("(") > seg.count(")") and not any(c in seg for c in "\"'`")
-    if assignment is None and not labeled_arg:
-        return False
+        if tail is None:
+            return False
+        depth = 0
+        for ch in before:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+        labeled_arg = depth > 0
+        if not labeled_arg:
+            return False
     if _SOURCE_RHS.match(text, start) is not None:
         return True
     chain = _DOTTED_RHS.match(text, start)
