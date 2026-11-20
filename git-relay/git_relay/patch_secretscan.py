@@ -221,11 +221,6 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
             "app/deno.lock",
             "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
         ),
-        (
-            "Simple-With-Us/Congress.Trade",
-            "app/deno.lock",
-            "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
-        ),
     }
 )
 
