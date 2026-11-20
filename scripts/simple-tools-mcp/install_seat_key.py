@@ -255,7 +255,7 @@ def infisical_pair(
     env[scoped_secrets.ENV_API] = INFISICAL_API + "/api"
     env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
     token_binding = (
-        scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN
+        scoped_secrets.COORDINATOR_READ_TOKEN_ENV_NAME
         if project == INFISICAL_PROJECT
         else scoped_secrets.ENV_TOKEN
     )

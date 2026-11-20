@@ -292,6 +292,16 @@ this path can block or break a prompt: a failure is silent, a registry that refu
 too old to know the op) is asked again after ten minutes, and a transcript outside the platform's
 own folder is never read.
 
+### 3.3b: Letters:  What A Host May Do (AFC-694, AFC-701)
+
+Decided Wed, Nov 18, 2026 (CLAUDE, under the one-Operator rule at the top of this page).  The question was where the letter client's `repair` and `gone` carriers run, since nothing tracked scheduled them.  The answer keeps one sweeper and gives no host a timer.
+
+- **One sweeper.**  The stale sweep that frees idle letters is the Eavesdropper's own (`listener_registry.Sweeper`), on its own timer, for every platform and host, with one stale window.  No host sweeps, closes a row it did not see end, or runs a timer, LaunchAgent, cron row or unit for letters.
+- **A host reports.**  A chat's start sends the gone report (`report-gone`) for its platform:  the chats the adapter knows are archived (`gone_sessions`, and `gone_elsewhere` for the chats its app runs at another location), at most once an hour per platform and location.  The assigner closes only the rows named and refuses a report that would close more than its share of a location's live rows.  `platform-letter gone --apply` sends the same report by hand.
+- **A host requests.**  A chat's start, prompt and turn ask again for a missing letter, at most every ten minutes.  `platform-letter request` asks at once, and a chat with no note yet asks too:  its platform's own session id names it, and its start runs now.  A chat's start also sets off the unlettered repair:  one detached `platform-letter repair --platform P --location L` run, at most once an hour per platform and location, which replays the start of this host's chats still titled `??: ` (the ones an app drove with no hook of their own).  That hook-triggered run is the repair's only carrier.  It requests letters and never sweeps, and the chat's own start never waits for it.
+- **Which chats a row can repair is data in its row.**  A row either lists its `??` chats from the platform's own store (`unlettered_sessions`:  Antigravity, the Claude desktop app, Codex and ZCode, and MiniMax once its own pull request lands) or says why it cannot (`unlettered_feed`:  Clutch, Cursor, fx, Grok, Muse and OpenCode are hook-only, or set no title, or have no hook at all).
+- **Retired:  the Mac's own letter sweep** (`com.jay.operator-letter-sweep`, `~/.local/bin/operator-letter-sweep.sh`).  It ran the registry's stale sweep from the Mac every 15 minutes, a second sweeper beside the Eavesdropper's, so it is retired (AFC-701).  The host steps are in the job's row of [MAC-LOCAL-PROCESSES.md](../MAC-LOCAL-PROCESSES.md).
+
 ### 3.4: The Linear mirror, one message at a time
 
 The relay's key becomes two-keyed:  an issue named by the topic keeps the standing

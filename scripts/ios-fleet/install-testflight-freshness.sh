@@ -55,6 +55,11 @@ install_one() {
   return 0
 }
 
+# Install only code and registry, never credential values. --no-launchd preserves containment.
+if [[ "$DRY" -eq 0 ]]; then mkdir -p "$DEST/../simple_tools"; fi
+install_one "$REPO/scripts/service_zulip.py" "$DEST/../service_zulip.py" 755 || true
+install_one "$REPO/scripts/simple_tools/secretscan.py" "$DEST/../simple_tools/secretscan.py" 644 || true
+install_one "$REPO/fleet-apps.json" "$DEST/../fleet-apps.json" 644 || true
 install_one "$HERE/ios_testflight_freshness.mjs" "$DEST/ios_testflight_freshness.mjs" 755 || true
 install_one "$HERE/asc_scoped_creds.mjs" "$DEST/asc_scoped_creds.mjs" 644 || true
 install_one "$HERE/testflight-apps.json" "$DEST/testflight-apps.json" 644 || true
