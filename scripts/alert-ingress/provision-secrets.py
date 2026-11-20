@@ -23,15 +23,19 @@ What this does, in order:
      PUT, under the names the Worker asks for
      (workers/alert-ingress/src/index.js, credentialSlug()).
 
-Every credential is read from the environment first and the canonical named reader
-second, so a value the environment already holds is never fetched again.  Folder reads and
-generated-secret writes use separate, caller-scoped Infisical service tokens.
+Every credential is read from the environment first and from Infisical
+second, so a value the environment already holds is never fetched again.  Folder reads and
+generated-secret writes use separate, caller-scoped Infisical service tokens:  each is its own
+read-only (or writer) grant on exactly one project and folder, and each lives in this
+provisioner's own store (the owner's login keychain on the Mac, a private file on a server) or
+in the deployment's own environment binding.  The shared Infisical client checks the token's
+own grant and the answer's own provenance before a value is used.
 
 Names and lengths are printed; no value is ever printed, logged or persisted.
 The values live in this process's memory for the length of the run.
 
-Generated-secret writes retain the separate scoped AFC write token and the
-existing direct-write approval and unknown-outcome contract.
+The shared reader's write allowlist does not cover these names, so the writes use this
+provisioner's own scoped AFC write token.
 """
 
 import json
@@ -42,7 +46,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from itertools import chain
 
 # This checkout/payload must carry the canonical library beside scripts/alert-ingress.
 # A missing sibling never authorizes an executable, user-site or PATH fallback.
@@ -126,6 +129,11 @@ VENDOR_ISSUED = ("SENTRY_WEBHOOK_SECRET",)
 READ_TOKEN_AFC = "ALERT_INGRESS_AFC_READ_TOKEN"
 READ_TOKEN_FLEETOPS = "ALERT_INGRESS_FLEETOPS_READ_TOKEN"
 WRITE_TOKEN_AFC = "ALERT_INGRESS_AFC_WRITE_TOKEN"
+# The same two read grants, named for this provisioner's own store:  one per project and folder.
+READ_TOKEN_ACCOUNTS = {
+    AFC_SLUG: "alert-ingress-afc-ro",
+    FLEETOPS_SLUG: "alert-ingress-fleetops-ro",
+}
 
 # The read operation retains the old subprocess's 90-second limit and timeout exit.
 EXIT_TIMEOUT = 124
@@ -161,60 +169,74 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def fleet_secrets_get(name, project, path):
-    """Compatibility entrypoint: one canonical named read, or None when absent."""
-    return fleet_secrets_get_many((name,), project, path).get(name)
+def _read_token(project):
+    """This provisioner's own scoped read-only service token for one project.
 
-
-def fleet_secrets_get_many(names, project, path):
-    """Read only the requested names using this provisioner's existing own binding.
-
-    Missing names are omitted by the shared reader.  No executable, CLI output,
-    absence parsing, batch retry or single-name fanout participates in the read.
+    The consumer's own store (the owner's login keychain on the Mac, a private file on a
+    server) is the authority:  the token is read from there.  A token bound in the
+    environment is only a copy of that same grant,  and it is used when the store has
+    none;  it never replaces the reviewed, scope-limited grant.  There is no shared
+    reader and no cached copy.  The value never appears in a message.
     """
-    iterator = iter(names)
-    empty = object()
-    first = next(iterator, empty)
-    if first is empty:
+    account = READ_TOKEN_ACCOUNTS.get(project)
+    if not account:
+        raise ReadError(f"unsupported Infisical project {project!r}", EXIT_MISSING_EXECUTABLE)
+    token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
+    token, status = scoped_secrets.token_from_store(account)
+    if not token:
+        token = (os.environ.get(token_name) or "").strip()
+    if not token:
+        raise ReadError(f"{token_name} is missing or unusable ({status})", EXIT_MISSING_EXECUTABLE)
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise ReadError(f"{token_name} is missing or invalid")
+    return token
+
+
+def scoped_values(names, project, path):
+    """Every requested name in ONE scoped read.
+
+    The read goes through the shared Infisical client with this provisioner's own read-only
+    token for that project, so ten per-name reads -- ten exports of the same folder -- become
+    one.  The client checks the token's own grant and the answer's own provenance, and
+    refuses an unresolved reference, so a literal ${...} is never returned.  A name the
+    folder does not hold is simply absent, not an error:  the caller decides which ones it
+    may do without.
+    """
+    # The names are a concrete sequence before anything else looks at them:  a
+    # generator would lose its first element to the emptiness check below.
+    wanted = list(names)
+    if not wanted:
         return {}
-    if (project, path) == (AFC_SLUG, SECRET_PATH):
-        token_name = READ_TOKEN_AFC
-    elif (project, path) == (FLEETOPS_SLUG, "/"):
-        token_name = READ_TOKEN_FLEETOPS
+    token = _read_token(project)
+    env = {k: v for k, v in os.environ.items() if k not in scoped_secrets.AUTH_ENV_VARS}
+    env[scoped_secrets.ENV_READ_PATHS] = path
+    if project == AFC_SLUG:
+        # The project id is passed to the read explicitly,  so it never has to travel
+        # in the environment.
+        project_id = AFC
     else:
-        raise ReadError("unsupported provisioner read purpose")
-    read_token = require_service_token((os.environ.get(token_name) or "").strip(), token_name)
-    try:
-        project_id = (
-            AFC
-            if project == AFC_SLUG
-            else scoped_secrets.infisical_project_id(
-                os.environ, scoped_secrets.home_dir(os.environ), FLEETOPS_SLUG
+        try:
+            project_id = scoped_secrets.infisical_project_id(
+                env, scoped_secrets.home_dir(env), project
             )
-        )
-        env = {
-            key: os.environ[key]
-            for key in (scoped_secrets.ENV_API, *scoped_secrets.ENV_NAMES)
-            if key in os.environ
-        }
-        env[scoped_secrets.ENV_READ_PATHS] = path
-        return scoped_secrets.bounded_fetch_project(
-            project_id,
-            path,
-            env,
-            token=read_token,
-            names=chain((first,), iterator),
-            timeout=READ_TIMEOUT,
-            writer=False,
-            max_output_bytes=READ_MAX_OUTPUT_BYTES,
-            strict_records=True,
+        except scoped_secrets.SecretsError as exc:
+            raise ReadError(f"the Infisical project id is unusable ({exc.message})") from None
+    try:
+        # The strict contract the replaced reader enforced:  every row carries its own
+        # workspace, environment and secretPath,  and its value is not hidden.
+        return scoped_secrets.fetch_project(
+            project_id, path, env, token=token, names=wanted, strict_records=True
         )
     except TimeoutError:
-        raise ReadError("Infisical scoped read timed out", EXIT_TIMEOUT) from None
-    except scoped_secrets.SecretsError as error:
-        if error.message == "bounded-read-timeout":
-            raise ReadError("Infisical scoped read timed out", EXIT_TIMEOUT) from None
-        raise ReadError("Infisical scoped read failed") from None
+        # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first:
+        # a hung read is a timeout,  not a broken credential.
+        raise ReadError("the scoped Infisical read timed out", EXIT_TIMEOUT) from None
+    except scoped_secrets.SecretsError as exc:
+        raise ReadError(f"the scoped Infisical read failed ({exc.message})") from None
 
 
 def batch_values(names, project, path):
@@ -233,7 +255,7 @@ def batch_values(names, project, path):
         else:
             missing.append(name)
     if missing:
-        fetched = fleet_secrets_get_many(missing, project, path)
+        fetched = scoped_values(missing, project, path)
         for name in missing:
             value = fetched.get(name)
             if not value:
@@ -349,7 +371,7 @@ def main():
     from_env = {name: os.environ.get(name, "").strip() for name in wanted}
     to_fetch = [name for name in wanted if not from_env[name]]
     try:
-        fetched = fleet_secrets_get_many(to_fetch, AFC_SLUG, SECRET_PATH)
+        fetched = scoped_values(to_fetch, AFC_SLUG, SECRET_PATH)
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code
@@ -387,14 +409,18 @@ def main():
         values[name] = value
         print(f"  read  {name}  (len {len(value)})")
 
-    # 2. The existing own Fleet-OPS root reader fetches only the Cloudflare
-    #    token in apply mode, before anything is written.  No machine identity
-    #    or other consumer binding participates in this read.
+    # 2. The existing own Fleet-OPS reader fetches only the Cloudflare
+    #    token in apply mode, before anything is written.  No machine identity
+    #    or other consumer binding participates in this read.  The folder is the
+    #    one the grant covers:  alert-ingress-fleetops-ro is scoped to Fleet-OPS
+    #    prod /global-api-keys,  and a grant covers exactly its own folder.  The
+    #    project root is an alias layer,  so the name is read where its literal
+    #    lives.
     fleetops_names = []
     if not dry:
         fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
     try:
-        fleetops = batch_values(fleetops_names, FLEETOPS_SLUG, "/")
+        fleetops = batch_values(fleetops_names, FLEETOPS_SLUG, "/global-api-keys")
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code

@@ -6,10 +6,12 @@
 # Bind 12419 — NOT 2419.
 set -euo pipefail
 
-# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359), read through `fleet-secrets`.
-FLEET_SECRETS="${FLEET_SECRETS:-${HOME}/.local/bin/fleet-secrets}"
+# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).  It is read through the
+# shared scoped reader with this consumer's own service token, so the value never reaches a
+# command line and never lands in a file.
+READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
-  GROK_AGENT_SECRET="$("$FLEET_SECRETS" get GROK_AGENT_SECRET --path /grok-acp)" \
+  GROK_AGENT_SECRET="$(python3 "$READER" get GROK_AGENT_SECRET --folder /grok-acp --project fleet-ops --account grok-acp-ro)" \
     || { echo "missing GROK_AGENT_SECRET in Infisical /grok-acp" >&2; exit 1; }
 fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then

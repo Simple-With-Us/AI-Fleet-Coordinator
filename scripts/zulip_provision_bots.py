@@ -13,9 +13,10 @@ Run it in your own terminal:
 Credentials (AFC-359:  the owner's key is not needed, nothing prompts, no credential folder is read):
 it signs in only as the realm-admin bot (role 200, administrator).  Each of
 ZULIP_OPERATOR_EMAIL and ZULIP_OPERATOR_API_KEY is read from the environment first, then
-from Infisical Fleet-OPS folder /zulip_operator through `fleet-secrets get NAME --path /zulip_operator`
-(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  ZULIP_OPERATOR_SITE is
-read the same way and defaults to the realm when absent.  A fleet-secrets failure stops the
+from Infisical Fleet-OPS folder /zulip_operator through this script's own scoped read-only
+service token (the account `zulip-provision-ro`, read from the consumer's own store).  The
+shared Infisical client checks the token's own grant before the value is used.  ZULIP_OPERATOR_SITE is
+read the same way and defaults to the realm when absent.  A refused read stops the
 run with a message naming the folder and the key, never the value.
 
 The caller must be an administrator or the owner (role <= 200);  anyone else is refused.
@@ -52,7 +53,6 @@ import argparse
 import base64
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -69,14 +69,22 @@ DEFAULT_OUT_DIR = "~/.simple-tools/provisioned"
 ROLE_OWNER, ROLE_ADMIN = 100, 200
 
 
-def fleet_secrets_bin():
-    return os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+# This script's own scoped read-only service token:  Fleet-OPS prod /zulip_operator, the
+# one folder it reads.  The token lives in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server);  the shared Infisical client checks the
+# token's own grant and the answer's own provenance before a value is used.
+TOKEN_ACCOUNT = "zulip-provision-ro"
 
 
 def admin_secret(name, required=True):
-    """A realm-admin value:  env var of that name first, then fleet-secrets /zulip_operator.
+    """A realm-admin value:  the environment first,  then this script's own scoped token
+    against Infisical /zulip_operator.
 
-    Never prints a value or the tool's stderr.  Returns "" for a missing optional value and
+    A host that already bound the value keeps it:  the environment is the value's own
+    binding,  and the store is where a host that bound nothing reads it.  The scoped token
+    is the only credential this read uses.
+
+    Never prints a value or a backend detail.  Returns "" for a missing optional value and
     exits with a message naming the folder and key for a missing required one.
     """
     value = os.environ.get(name, "").strip()
@@ -84,30 +92,24 @@ def admin_secret(name, required=True):
         return value
     problem = ""
     try:
-        proc = subprocess.run(
-            [fleet_secrets_bin(), "get", name, "--path", ADMIN_FOLDER],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode != 0:
-            problem = f"fleet-secrets exited {proc.returncode}"
+        import fleet_infisical as FI
+
+        env = dict(os.environ)
+        env[FI.ENV_READ_PATHS] = ADMIN_FOLDER
+        found, status = FI.fetch_scoped(name, ADMIN_FOLDER, TOKEN_ACCOUNT, env)
+        if status == "ok":
+            value = found
         else:
-            value = proc.stdout.rstrip("\n").strip()
-            if not value:
-                problem = "fleet-secrets returned an empty value"
-    except (OSError, ValueError, subprocess.SubprocessError) as err:
-        problem = f"fleet-secrets could not run ({type(err).__name__})"
+            problem = f"the scoped token read refused ({status})"
+    except Exception as err:
+        problem = f"the Infisical read could not run ({type(err).__name__})"
     if value:
         return value
     if not required:
         return ""
     raise SystemExit(
         f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER} ({problem}).  Set env {name} or "
-        f"fix `fleet-secrets get {name} --path {ADMIN_FOLDER}`."
+        f"give this consumer its {TOKEN_ACCOUNT} token for {ADMIN_FOLDER}."
     )
 
 

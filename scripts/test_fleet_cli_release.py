@@ -285,6 +285,12 @@ class ReleaseTests(unittest.TestCase):
     def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
         self.assertIn("scripts/fleet_infisical.py", release.TOOL_REQUIRED)
         self.assertNotIn("scripts/fleet_infisical.py", release.BASE_REQUIRED)
+        bundle = make_bundle()
+        bundle["files"].pop("scripts/fleet_infisical.py")
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(bundle).encode())
+        # The retired reader and its installer ship in no bundle at all.
         ledger = "scripts/simple_tools/operator_github_state.py"
         self.assertIn(ledger, release.TOOL_REQUIRED)
         self.assertNotIn(ledger, release.BASE_REQUIRED)
@@ -293,20 +299,12 @@ class ReleaseTests(unittest.TestCase):
         bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(bundle).encode())
-        for name in ("__init__", "core"):
-            path = "scripts/fleet_secrets/%s.py" % name
-            self.assertTrue(release.allowed_path(path), path)
-            self.assertIn(path, release.TOOL_REQUIRED)
-            self.assertNotIn(path, release.BASE_REQUIRED)
-            bundle = make_bundle()
-            bundle["files"].pop(path)
-            bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
-            with self.assertRaisesRegex(release.Refused, "bad_file_set"):
-                release.decode_bundle(json.dumps(bundle).encode())
         for path in (
             "scripts/fleet-secrets",
             "scripts/fleet_secrets/cli.py",
             "scripts/fleet_secrets/__main__.py",
+            "scripts/fleet_secrets/__init__.py",
+            "scripts/fleet_secrets/core.py",
             "scripts/fleet_secrets/linux-entrypoint.py",
             "scripts/fleet_secrets/tests/test_scoped_tokens.py",
             "scripts/install-fleet-secrets.sh",

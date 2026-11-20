@@ -9,7 +9,7 @@ description: >-
 > **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
-Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to `fleet-secrets`.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
+Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to a shared reader.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
 
 ## Inventory Before Issuance
 

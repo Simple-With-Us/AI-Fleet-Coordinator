@@ -9,7 +9,7 @@ description: >-
 > **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
-Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to `fleet-secrets`.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
+Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to a shared reader.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
 
 ## Inventory Before Issuance
 

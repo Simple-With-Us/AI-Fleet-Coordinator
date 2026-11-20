@@ -1,8 +1,8 @@
 """Tests for scripts/zulip_provision_bots.py:  python3 scripts/test_zulip_provision_bots.py
 
-Runs the script against a fake Zulip server on 127.0.0.1 and a fake fleet-secrets.
-Every key below is a made-up test value.  Nothing here touches the real realm,
-Infisical or the retired credentials folder.
+Runs the script against a fake Zulip server on 127.0.0.1 and a fake scoped Infisical
+read.  Every key below is a made-up test value.  Nothing here touches the real realm,
+the real Infisical, the token store or the retired credentials folder.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import json
 import os
 import re
 import stat
-import sys
 import tempfile
 import threading
 import unittest
@@ -23,6 +22,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+import fleet_infisical
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("provision_bots", HERE / "zulip_provision_bots.py")
@@ -149,25 +150,6 @@ class FakeZulip:
         return [r for r in self.requests if r[0] == "POST"]
 
 
-FAKE_SECRETS = """#!{python}
-import os, sys
-log = {log!r}
-with open(log, "a") as fh:
-    fh.write(" ".join(sys.argv[1:]) + "\\n")
-if os.environ.get("FAKE_FS_FAIL") == "1":
-    sys.stderr.write("LEAKY-STDERR-should-never-surface test-admin-key-AAAA1111\\n")
-    sys.exit(3)
-values = {{
-    "ZULIP_OPERATOR_EMAIL": "{email}",
-    "ZULIP_OPERATOR_API_KEY": "{key}",
-    "ZULIP_OPERATOR_SITE": "{site}",
-}}
-if sys.argv[1:2] != ["get"] or sys.argv[3:5] != ["--path", "/zulip_operator"] or sys.argv[2] not in values:
-    sys.exit(3)
-print(values[sys.argv[2]])
-"""
-
-
 class ProvisionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -176,22 +158,11 @@ class ProvisionTests(unittest.TestCase):
         self.home.mkdir()
         self.out = self.root / "out"
         self.fake = FakeZulip()
-        self.fs_log = self.root / "fs.log"
-        self.fs_log.write_text("")
-        fs = self.root / "fleet-secrets"
-        fs.write_text(
-            FAKE_SECRETS.format(
-                python=sys.executable,
-                log=str(self.fs_log),
-                email=ADMIN_EMAIL,
-                key=ADMIN_KEY,
-                site=self.fake.url,
-            )
-        )
-        fs.chmod(0o755)
-        self.fs = fs
+        self.reads = []
+        self.read = mock.patch.object(fleet_infisical, "fetch_scoped", self.fake_read)
+        self.read.start()
         env = {k: v for k, v in os.environ.items() if not k.startswith("REALM_ADMIN_")}
-        env.update({"HOME": str(self.home), "FLEET_SECRETS_BIN": str(fs)})
+        env.update({"HOME": str(self.home)})
         self.env = mock.patch.dict(os.environ, env, clear=True)
         self.env.start()
         self.realm = mock.patch.object(prov, "REALM", self.fake.url)
@@ -219,8 +190,24 @@ class ProvisionTests(unittest.TestCase):
                 code = exc
         return code, out.getvalue(), err.getvalue()
 
+    def fake_read(self, name, folder, account, env=None):
+        """The scoped read, faked:  the three Operator names, and a refusal on demand.
+
+        The refusal carries a reason word only;  a value never reaches a message."""
+        self.reads.append(f"get {name} --path {folder}")
+        if os.environ.get("FAKE_FS_FAIL") == "1":
+            return ("", "failed")
+        value = {
+            "ZULIP_OPERATOR_EMAIL": ADMIN_EMAIL,
+            "ZULIP_OPERATOR_API_KEY": ADMIN_KEY,
+            "ZULIP_OPERATOR_SITE": self.fake.url,
+        }.get(name)
+        if value is None:
+            return ("", "absent")
+        return (value, "ok")
+
     def fs_calls(self):
-        return [line for line in self.fs_log.read_text().splitlines() if line]
+        return list(self.reads)
 
     def assert_no_keys(self, *streams):
         text = "\n".join(streams)
@@ -230,7 +217,7 @@ class ProvisionTests(unittest.TestCase):
 
     # -- credentials -----------------------------------------------------------------------
 
-    def test_credentials_from_fleet_secrets_zulipadmin_when_env_is_empty(self):
+    def test_credentials_from_the_scoped_token_when_env_is_empty(self):
         code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
         calls = self.fs_calls()
@@ -245,19 +232,19 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn("role 200", out)
         self.assertIn("/zulip_operator", out)
 
-    def test_env_wins_over_fleet_secrets(self):
+    def test_env_wins_over_the_scoped_read(self):
         with mock.patch.dict(os.environ, {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": self.fake.url}):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.fs_calls(), [])
 
     def test_site_defaults_to_realm_when_absent(self):
-        # fleet-secrets can not answer SITE (exit 3) but EMAIL and KEY are in env.
+        # The scoped read can not answer SITE but EMAIL and KEY are in env.
         with mock.patch.dict(os.environ, {**ADMIN_ENV, "FAKE_FS_FAIL": "1"}):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
 
-    def test_fleet_secrets_failure_names_folder_and_key_but_no_value_or_stderr(self):
+    def test_a_refused_read_names_folder_and_key_but_no_value_or_stderr(self):
         with mock.patch.dict(os.environ, {"FAKE_FS_FAIL": "1"}):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
@@ -268,8 +255,8 @@ class ProvisionTests(unittest.TestCase):
         self.assert_no_keys(msg, out, err)
         self.assertEqual(self.fake.requests, [])
 
-    def test_missing_binary_fails_loudly_too(self):
-        with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": str(self.root / "nope")}):
+    def test_a_missing_token_fails_loudly_too(self):
+        with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
         self.assertIn("/zulip_operator", str(code.code))
@@ -429,11 +416,10 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o700)
 
-    def test_undecodable_fleet_secrets_output_does_not_crash(self):
-        self.fs.write_text("#!/bin/sh\nprintf 'ok\\377\\376'\n")
-        value = prov.admin_secret("ZULIP_OPERATOR_SITE", required=False)
-        self.assertIsInstance(value, str)
-        self.assertTrue(value.startswith("ok"))
+    def test_an_empty_value_is_treated_as_absent(self):
+        with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "ok")):
+            value = prov.admin_secret("ZULIP_OPERATOR_SITE", required=False)
+        self.assertEqual(value, "")
 
     def test_empty_stdin_at_the_prompt_stops_cleanly(self):
         with mock.patch("builtins.input", side_effect=EOFError):

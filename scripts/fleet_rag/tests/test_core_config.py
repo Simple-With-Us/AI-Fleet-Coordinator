@@ -9,6 +9,7 @@ account, no handoff file, no edit to core.py.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
@@ -18,9 +19,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import uuid
+from contextlib import redirect_stderr
 from unittest import mock
 
+import fleet_infisical as fi
 from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core
 
@@ -33,6 +37,131 @@ BYO = {
     "QDRANT_FLEET_COLLECTION": "my-agents",
 }
 SERVICE_TOKEN = "st." + "synthetic-recall-reader-token-value"
+
+
+def folders_asked_for(api):
+    """The folders the fake was asked to read,  in order.
+
+    The folder is in the request's query,  so a test that says which folder a route
+    names reads it from what the route actually asked for.
+    """
+    return [
+        urllib.parse.parse_qs(urllib.parse.urlsplit(path).query).get("secretPath", [""])[0]
+        for path in api.requests
+        if "/v3/secrets/raw/" in path
+    ]
+
+
+class FleetOpsRootReaderTests(unittest.TestCase):
+    """The Fleet-OPS root route is its own reader, with its own binding and its own grant.
+
+    The public fallback and the ingest heartbeat need names that live in Fleet-OPS.
+    The recall reader's own scoped token must never stand in for that route,  and a
+    missing binding must name the unavailable source instead of failing quietly.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = pathlib.Path(temporary.name).resolve()
+        self.project = str(uuid.uuid4())
+        # This route reads the folder its own grant covers:  a token names one grant.
+        self.api = ScopedReadAPI(
+            {"TEI_URL": "https://tei.example.invalid"},
+            project=self.project,
+            path=core.FLEET_OPS_FOLDER,
+        )
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": str(self.home),
+            "INFISICAL_TOKEN": self.api.token,
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+            "FLEET_RAG_INFISICAL_API": self.api.env["FLEET_SECRETS_API"],
+            "INFISICAL_ENVIRONMENT": "prod",
+        }
+        # The root reader takes its token from its own store first.  The store is
+        # stubbed here so a test never reads the host's own credential store, and the
+        # environment copy is what the read falls back to.
+        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        self.store.start()
+        self.addCleanup(self.store.stop)
+
+    def test_the_root_route_reads_the_fleet_ops_project_with_its_own_binding(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL", "NOT_THERE"]),
+                {"TEI_URL": "https://tei.example.invalid"},
+            )
+            self.assertEqual(
+                core.fleet_ops_secret("TEI_URL"), "https://tei.example.invalid"
+            )
+        self.assertTrue(any("workspaceId=" + self.project in path for path in self.api.requests))
+        asked = folders_asked_for(self.api)
+        self.assertTrue(asked)
+        self.assertEqual(set(asked), {core.FLEET_OPS_FOLDER})
+
+    def test_the_fleet_ops_route_asks_for_its_own_folder_and_not_the_project_root(self):
+        # The Fleet-OPS project root is an alias layer:  a name at the root comes back
+        # as an unexpanded reference,  which the shared client refuses.  The route
+        # names the folder where its literal lives,  and this pins that,  so a change
+        # back to the root cannot pass quietly.
+        self.assertNotEqual(core.FLEET_OPS_FOLDER, "/")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+        asked = folders_asked_for(self.api)
+        self.assertTrue(asked)
+        self.assertEqual(set(asked), {core.FLEET_OPS_FOLDER})
+        self.assertNotIn("/", asked)
+
+    def test_the_store_token_is_the_one_the_read_runs_under(self):
+        # The store is the authority:  with no token bound in the environment at all,
+        # the reader still reads, because the token comes from its own store.
+        asked = []
+
+        def fake_store(account, env=None, home=None):
+            asked.append(account)
+            return (self.api.token, "ok")
+
+        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        with (
+            mock.patch.object(fi, "token_from_store", fake_store),
+            mock.patch.dict(os.environ, env, clear=True),
+        ):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+        self.assertEqual(asked, [core.FLEET_OPS_TOKEN_ACCOUNT])
+
+    def test_the_recall_token_is_never_a_fallback_for_the_fleet_ops_route(self):
+        env = {
+            key: value
+            for key, value in self.env.items()
+            if key != "INFISICAL_TOKEN"
+        }
+        env["FLEET_RECALL_INFISICAL_TOKEN"] = self.api.token
+        env["FLEET_RAG_INFISICAL_PROJECT"] = self.project
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
+        self.assertEqual([path for path in self.api.requests if "/v3/secrets/raw/" in path], [])
+
+    def test_a_missing_binding_names_the_unavailable_source(self):
+        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(stderr):
+            self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
+        self.assertIn("INFISICAL_TOKEN", stderr.getvalue())
+        self.assertNotIn(self.api.token, stderr.getvalue())
+
+    def test_an_invalid_name_never_reaches_the_provider(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(core.fleet_ops_many([]), {})
+            self.assertEqual(core.fleet_ops_many([""]), {})
+            self.assertIsNone(core.fleet_ops_secret(""))
+        self.assertEqual(self.api.requests, [])
 
 
 class ExplodingHttp:
@@ -54,17 +183,38 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = pathlib.Path(temporary.name).resolve()
         self.project = str(uuid.uuid4())
-        self.api = ScopedReadAPI({"TEI_URL": "https://tei.example.invalid"}, project=self.project)
+        # Two routes,  two grants:  the recall reader's own project root,  and the
+        # Fleet-OPS folder its own grant covers.  A token names one grant,  so the
+        # fake holds one token per folder and answers the grant that was presented.
+        self.api = ScopedReadAPI(
+            {"TEI_URL": "https://tei.example.invalid"},
+            project=self.project,
+            grants={core.FLEET_OPS_FOLDER: {}},
+        )
         self.api.__enter__()
         self.addCleanup(self.api.__exit__, None, None, None)
+        # The recall reader binds its own scoped token and its own project; another
+        # consumer's binding is another purpose and never a substitute for this one.
         self.env = {
             "HOME": str(self.home),
             "PATH": str(self.home),
-            "INFISICAL_TOKEN": self.api.token,
-            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
-            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "FLEET_RECALL_INFISICAL_TOKEN": self.api.token,
+            "FLEET_RAG_INFISICAL_PROJECT": self.project,
+            "FLEET_RAG_INFISICAL_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
         }
+        # The Fleet-OPS root route is a different binding:  its own token and its own
+        # project id.  The recall reader's scoped token is never a fallback for it.
+        self.fleet_ops_env = {
+            **self.env,
+            "INFISICAL_TOKEN": self.api.token_for(core.FLEET_OPS_FOLDER),
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+        }
+        # The Fleet-OPS root route takes its token from its own store first;  the
+        # store is stubbed so the test never reads the host's own credential store.
+        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        self.store.start()
+        self.addCleanup(self.store.stop)
 
     def test_many_preserves_present_subset_through_real_named_reader_without_a_binary(self):
         import fleet_infisical as shared
@@ -76,7 +226,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             mock.patch.object(subprocess, "run", side_effect=AssertionError("no CLI subprocess")),
             mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
         ):
-            got = core.fleet_secrets_many(["TEI_URL", "NOT_THERE"])
+            got = core.infisical_many(["TEI_URL", "NOT_THERE"])
         self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
         self.assertEqual(worker.call_count, 1)
         self.assertEqual(worker.call_args.kwargs["env"], {"PATH": os.defpath})
@@ -85,37 +235,43 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         self.assertTrue(any("/raw/TEI_URL?" in path for path in self.api.requests))
         self.assertTrue(any("/raw/NOT_THERE?" in path for path in self.api.requests))
 
-    def test_single_get_strips_while_many_preserves_raw_values_and_reserved_names(self):
+    def test_single_get_and_many_preserve_raw_values_and_reserved_names(self):
+        # The reader never rewrites a value: the single-name helper returns exactly what
+        # the many-name reader returns, byte for byte.
         self.api.values["INFISICAL_EXAMPLE"] = "  fixture-value\n"
         with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(
-                core.fleet_secrets_many(["INFISICAL_EXAMPLE"]),
+                core.infisical_many(["INFISICAL_EXAMPLE"]),
                 {"INFISICAL_EXAMPLE": "  fixture-value\n"},
             )
-            self.assertEqual(core.fleet_secret_get("INFISICAL_EXAMPLE"), "fixture-value")
-            self.assertIsNone(core.fleet_secret_get("NOT_THERE"))
+            self.assertEqual(core.infisical_secret_get("INFISICAL_EXAMPLE"), "  fixture-value\n")
+            self.assertEqual(core.infisical_secret("INFISICAL_EXAMPLE"), "  fixture-value\n")
+            self.assertIsNone(core.infisical_secret_get("NOT_THERE"))
 
     def test_empty_or_invalid_selection_does_no_provider_work(self):
         for names in ([], [""], ["bad-name"], ["TEI_URL\n"], [object()]):
             with self.subTest(names=names), mock.patch.dict(os.environ, self.env, clear=True):
-                self.assertEqual(core.fleet_secrets_many(names), {})
+                self.assertEqual(core.infisical_many(names), {})
         with mock.patch.dict(os.environ, self.env, clear=True):
-            self.assertIsNone(core.fleet_secret_get(""))
-            self.assertIsNone(core.fleet_secret_get("bad-name"))
+            self.assertIsNone(core.infisical_secret_get(""))
+            self.assertIsNone(core.infisical_secret_get("bad-name"))
         self.assertEqual(self.api.requests, [])
 
     def test_no_default_binding_never_substitutes_another_purpose(self):
-        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        env = {
+            key: value for key, value in self.env.items() if key != "FLEET_RECALL_INFISICAL_TOKEN"
+        }
         for binding in (
-            "FLEET_RECALL_INFISICAL_TOKEN",
+            "INFISICAL_TOKEN",
             "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
             "INFISICAL_WRITE_TOKEN",
+            "FLEET_KNOBS_INFISICAL_TOKEN",
         ):
             with self.subTest(binding=binding), mock.patch.dict(
                 os.environ, {**env, binding: self.api.token}, clear=True
             ):
-                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
-                self.assertIsNone(core.fleet_secret_get("TEI_URL"))
+                self.assertEqual(core.infisical_many(["TEI_URL"]), {})
+                self.assertIsNone(core.infisical_secret_get("TEI_URL"))
         with (
             mock.patch.dict(
                 os.environ,
@@ -124,41 +280,49 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             ),
             mock.patch.object(core, "_read_token_file", side_effect=AssertionError("foreign file")),
         ):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
         self.assertEqual(self.api.requests, [])
 
     def test_recall_project_provider_and_broad_path_declarations_do_not_change_this_route(self):
+        # The reader's own project and API are its configuration; another project's
+        # declaration and a broad read-path declaration do not move this route.
         env = {
             **self.env,
-            "FLEET_RAG_INFISICAL_PROJECT": str(uuid.uuid4()),
-            "FLEET_RAG_INFISICAL_API": "http://127.0.0.1:1/api",
+            "INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4()),
             "INFISICAL_READ_PATHS": "/,/another-purpose",
         }
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(
-                core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+                core.infisical_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
             )
+        self.assertTrue(any("workspaceId=" + self.project in path for path in self.api.requests))
 
     def test_existing_default_project_id_file_is_metadata_not_another_token_source(self):
+        # The retired default-project file is neither a project source nor a token
+        # source: it names another project, and the read still runs on this reader's own.
         metadata = self.home / ".simple-tools" / "fleet-ops-project-id"
         metadata.parent.mkdir()
-        metadata.write_text(self.project + "\n")
-        env = {
-            key: value for key, value in self.env.items() if key != "INFISICAL_FLEET_OPS_PROJECT_ID"
-        }
-        with mock.patch.dict(os.environ, env, clear=True):
+        metadata.write_text(str(uuid.uuid4()) + "\n")
+        with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(
-                core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+                core.infisical_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
             )
+        self.assertTrue(any("workspaceId=" + self.project in path for path in self.api.requests))
 
-    def test_missing_or_malformed_default_project_does_no_provider_work(self):
+    def test_missing_or_malformed_own_project_never_reaches_a_secret_read(self):
+        # The reader discovers no default project: its own project is its configuration,
+        # and a project it cannot use is refused by the grant check before any read.
         env = {
-            key: value for key, value in self.env.items() if key != "INFISICAL_FLEET_OPS_PROJECT_ID"
+            key: value for key, value in self.env.items() if key != "FLEET_RAG_INFISICAL_PROJECT"
         }
-        for extra in ({}, {"INFISICAL_FLEET_OPS_PROJECT_ID": "not-a-project-id"}):
-            with self.subTest(extra=extra), mock.patch.dict(os.environ, {**env, **extra}, clear=True):
-                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
-        self.assertEqual(self.api.requests, [])
+        for extra in ({}, {"FLEET_RAG_INFISICAL_PROJECT": "not-a-project-id"}):
+            with self.subTest(extra=extra), mock.patch.dict(
+                os.environ, {**env, **extra}, clear=True
+            ):
+                self.assertEqual(core.infisical_many(["TEI_URL"]), {})
+            self.assertEqual(
+                [path for path in self.api.requests if "/v3/secrets/raw/" in path], []
+            )
 
     def test_real_verifier_refuses_other_scopes_write_permissions_and_indefinite_expiry(self):
         for metadata in (
@@ -171,13 +335,13 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             self.api.metadata_override = metadata
             self.api.requests.clear()
             with self.subTest(metadata=metadata), mock.patch.dict(os.environ, self.env, clear=True):
-                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+                self.assertEqual(core.infisical_many(["TEI_URL"]), {})
             self.assertEqual(self.api.requests, ["/api/v2/service-token"])
 
     def test_provider_failure_returns_empty_without_a_cli_fallback(self):
         self.api.status = 503
         with mock.patch.dict(os.environ, self.env, clear=True):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
         self.assertEqual(self.api.requests, ["/api/v2/service-token"])
 
     def test_public_fallback_resolves_its_missing_environment_values_through_the_real_reader(self):
@@ -188,10 +352,14 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             "CF_ACCESS_CLIENT_ID": "fixture-access-id",
             "CF_ACCESS_CLIENT_SECRET": "fixture-access-value",
         }
-        self.api.values = {
-            public_fallback.PUBLIC_INFISICAL_NAMES[key]: value for key, value in expected.items()
-        }
-        with mock.patch.dict(os.environ, self.env, clear=True):
+        self.api.set_values(
+            core.FLEET_OPS_FOLDER,
+            {
+                public_fallback.PUBLIC_INFISICAL_NAMES[key]: value
+                for key, value in expected.items()
+            },
+        )
+        with mock.patch.dict(os.environ, self.fleet_ops_env, clear=True):
             self.assertEqual(public_fallback.public_credentials(), expected)
         self.assertEqual(len(self.api.requests), 4)
 
@@ -199,13 +367,16 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         from fleet_rag import public_fallback
         import fleet_infisical as shared
 
-        self.api.values = {
-            "RECALL_API_TOKEN": "fixture-api-value",
-            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
-        }
+        self.api.set_values(
+            core.FLEET_OPS_FOLDER,
+            {
+                "RECALL_API_TOKEN": "fixture-api-value",
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
+            },
+        )
         real_popen = subprocess.Popen
         with (
-            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
             mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
             mock.patch.object(core, "http_json", side_effect=AssertionError("public request without credentials")),
         ):
@@ -219,15 +390,15 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         from fleet_rag import ingest
 
         url = "https://heartbeat.example.invalid/ping"
-        self.api.values[ingest.HEARTBEAT_KEY] = url
+        self.api.values_for(core.FLEET_OPS_FOLDER)[ingest.HEARTBEAT_KEY] = url
         with (
-            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.dict(os.environ, self.fleet_ops_env, clear=True),
             mock.patch.object(ingest.urllib.request, "urlopen") as heartbeat,
         ):
             ingest._heartbeat()
             heartbeat.assert_called_once_with(url, timeout=10)
             heartbeat.reset_mock()
-            del self.api.values[ingest.HEARTBEAT_KEY]
+            del self.api.values_for(core.FLEET_OPS_FOLDER)[ingest.HEARTBEAT_KEY]
             ingest._heartbeat()
             heartbeat.assert_not_called()
 
@@ -255,7 +426,7 @@ class OptionalReaderCompatibilityTests(unittest.TestCase):
         program = (
             "import json,sys;sys.path[:0]=sys.argv[1:];"
             "from fleet_rag import core;"
-            "print(json.dumps(core.fleet_secrets_many(['TEI_URL'])))"
+            "print(json.dumps(core.infisical_many(['TEI_URL'])))"
         )
         for variant in variants:
             with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
@@ -282,9 +453,9 @@ class CleanEnvironmentTests(unittest.TestCase):
         patcher = mock.patch.object(core, "http_json", self.http)
         patcher.start()
         self.addCleanup(patcher.stop)
-        optional_reader = mock.patch.object(core, "fleet_secrets_many", return_value={})
-        optional_reader.start()
-        self.addCleanup(optional_reader.stop)
+        no_binding = mock.patch.object(core, "read_token_binding", lambda: None)
+        no_binding.start()
+        self.addCleanup(no_binding.stop)
 
     def env(self, **extra: str) -> dict[str, str]:
         return {**BYO, "FLEET_RAG_HANDOFF_FILE": str(self.absent), **extra}
@@ -304,7 +475,7 @@ class CleanEnvironmentTests(unittest.TestCase):
 
     def test_complete_environment_ignores_unrelated_generic_service_token(self) -> None:
         with (mock.patch.dict(os.environ, self.env(INFISICAL_TOKEN="st." + "x" * 32), clear=True),
-              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("unexpected fetch"))):
+              mock.patch.object(core, "infisical_many", side_effect=AssertionError("unexpected fetch"))):
             cfg = core.load_config()
         self.assertEqual({key: cfg[key] for key in BYO}, BYO)
         self.assertEqual(self.http.calls, [])
@@ -341,18 +512,37 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.http.calls, [])
 
 
-class RetiredIdentityTests(unittest.TestCase):
-    """Legacy identity fields never become an optional reader credential route."""
+class ScopedReaderFallbackTests(unittest.TestCase):
+    """The Mac path:  env first, then the reader's own scoped service token."""
 
-    def test_identity_environment_is_ignored(self) -> None:
-        env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
-        with mock.patch.dict(os.environ, env, clear=True):
+    def test_many_returns_only_present_names(self) -> None:
+        found = {"TEI_URL": "https://tei.example.invalid"}
+        with mock.patch.object(core, "infisical_fetch", return_value=found):
+            got = core.infisical_many(["TEI_URL", "NOT_THERE"])
+        self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
+
+    def test_identity_never_falls_back_to_another_reader(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
             self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
 
+    def test_identity_environment_beats_the_reader(self) -> None:
+        env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
+
+    def test_missing_binding_is_just_absent(self) -> None:
+        with mock.patch.object(core, "infisical_fetch", side_effect=core.FleetRagError("no token")):
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
+            self.assertIsNone(core.infisical_secret("TEI_URL"))
+
+    def test_failing_read_is_just_absent(self) -> None:
+        with mock.patch.object(core, "infisical_fetch", side_effect=core.FleetRagError("boom")):
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {})
+
     def test_missing_config_does_not_borrow_a_foreign_project_loader(self) -> None:
         with (mock.patch.dict(os.environ, {"QDRANT_API_KEY": "k"}, clear=True),
-              mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("foreign fallback"))):
+              mock.patch.object(core, "infisical_many", side_effect=AssertionError("foreign fallback"))):
             with self.assertRaises(core.FleetRagError):
                 core.load_config()
 
@@ -440,18 +630,22 @@ class StandaloneScopedReaderTests(unittest.TestCase):
             env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "FLEET_RAG_HOME": str(stable)}
             installed = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(installed.returncode, 0, installed.stderr)
-            package = stable / "fleet_secrets"
-            self.assertEqual(sorted(p.name for p in package.iterdir()), ["__init__.py", "core.py"])
+            # The installed reader ships the shared client.  The retired package and the
+            # retired command are gone from it, and a host that still holds one loses it.
+            client = stable / "fleet_infisical.py"
+            shared = pathlib.Path(__file__).resolve().parents[2] / "fleet_infisical.py"
+            self.assertEqual(client.read_bytes(), shared.read_bytes())
+            self.assertFalse((stable / "fleet_secrets").exists())
             self.assertFalse((stable / "fleet-secrets").exists())
-            (package / "cli.py").write_text("# stale code must not ship\n")
+            client.write_text("# stale client must not ship\n")
             (stable / "state/keep").write_text("preserved")
             again = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(again.returncode, 0, again.stderr)
-            self.assertFalse((package / "cli.py").exists())
+            self.assertEqual(client.read_bytes(), shared.read_bytes())
             self.assertEqual((stable / "state/keep").read_text(), "preserved")
             boot = (
                 "import json,os,sys;sys.path.insert(0,sys.argv[1]);"
-                "from fleet_rag import core;import fleet_secrets.core as verifier;"
+                "from fleet_rag import core;import fleet_infisical as verifier;"
                 "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
                 "print(json.dumps(core.infisical_fetch({'RECALL_API_URL'})))"
             )

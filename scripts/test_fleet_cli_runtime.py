@@ -407,10 +407,8 @@ class ActualRuntime(unittest.TestCase):
         self.assertFalse((self.release / "scripts/fleet_lanes/install_tools.py").exists())
 
     def test_produced_runtime_uses_real_scoped_verifier_for_knobs_and_recall(self):
-        package = self.release / "scripts/fleet_secrets"
-        self.assertEqual(
-            sorted(path.name for path in package.iterdir()), ["__init__.py", "core.py"]
-        )
+        self.assertTrue((self.release / "scripts/fleet_infisical.py").exists())
+        self.assertFalse((self.release / "scripts/fleet_secrets").exists())
         self.assertFalse((self.release / "scripts/fleet-secrets").exists())
         code = r"""
 import json, os, sys, urllib.parse
@@ -431,7 +429,7 @@ def audit(event, args):
             raise RuntimeError('outside_home_credentials_forbidden')
 sys.addaudithook(audit)
 sys.path.insert(0, sys.argv[1])
-import fleet_secrets.core as verifier
+import fleet_infisical as verifier
 assert os.path.commonpath([sys.argv[1], verifier.__file__]) == sys.argv[1]
 if sys.argv[2] == 'knobs':
     from fleet_knobs import source

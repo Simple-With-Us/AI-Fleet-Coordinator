@@ -1,26 +1,28 @@
 # Muster live-pass fixes (AFC-592)
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 ## Summary
 
 The live verification of the Muster overhaul (PR 1239, AFC-590) drove the merged app through Settings, Wake Settings, the Fleet filter, Controls, Recall Settings and a refresh cycle.  Three defects and one misleading error survived the fake-only tests, and this change fixes them.  Nothing here touches a secret value: names, exit codes and booleans only.
 
 ## Findings and fixes
 
-1. `fleet-secrets names` failed fleet-wide (exit 5) whenever any value at the path was an unexpanded Infisical reference (observed: `BF_BUILDER_LINEAR_CLIENT_ID`).  `cmd_names` called `reject_unresolved` on every value although it prints only keys, against `core.fetch_all`'s own contract that callers reject the values they use.  Listing keys now skips the rejection.  `get` and `run` still fail closed on the keys they use, and `doctor` still reports the unresolved count.
+1. the names-only scoped read failed fleet-wide (exit 5) whenever any value at the path was an unexpanded Infisical reference (observed: `BF_BUILDER_LINEAR_CLIENT_ID`).  `cmd_names` called `reject_unresolved` on every value although it prints only keys, against `core.fetch_all`'s own contract that callers reject the values they use.  Listing keys now skips the rejection.  `get` and `run` still fail closed on the keys they use, and `doctor` still reports the unresolved count.
 2. Muster reported every Secret Names failure as "could not read / in time", including plain non-zero exits.  `CommandExitError` now carries the exit status, and `FleetSecretError` maps exit 3 to missing, any other exit to a new refused case, and only a no-answer failure to unavailable.  The same mapping now serves `get`, so an unresolved key no longer reports as absent.
 3. The Settings window ignored the stored theme (Dark rendered only in the main window).  `MusterSettingsView` now applies `preferredColorScheme` from the same AppStorage value.
 4. The Fleet filter's "App Kind" label wrapped letter by letter in a 16pt column beside the segmented picker.  The picker is now `labelsHidden`; the options name themselves and the title remains the accessibility label.
 
 ## Files
 
-- `scripts/fleet_secrets/cli.py` and its tests.
+- the retired reader's CLI and its tests.
 - `muster/Muster/FleetServices/FleetSecrets.swift`, `muster/Muster/FleetServices/StartupPolicy.swift`, `muster/Muster/MusterApp.swift`, `muster/Muster/FleetView.swift`, and `muster/MusterTests/B3bPanelsTests.swift`.
 
 ## Verification
 
 - New tests failed first: the Python names test saw exit 5 instead of 0, and the Swift tests did not compile against the missing refused case and status.
 - `cd scripts && python3 -m unittest fleet_secrets.tests.test_fleet_secrets` — 103 tests, OK.
-- Focused Muster tests (`SecretNamesTests`, `RecallSettingsTests`) pass; the full Muster suite and a live re-check (Secret Names listing, Settings theme, filter label) run after merge, with `bash scripts/install-fleet-secrets.sh` re-run so the Mac's installed copy matches.
+- Focused Muster tests (`SecretNamesTests`, `RecallSettingsTests`) pass; the full Muster suite and a live re-check (Secret Names listing, Settings theme, filter label) run after merge, with the Mac's installed copy re-matched.  (That reader and its installer are retired since Nov 17, 2026.)
 
 ## Follow-ups left open on purpose
 

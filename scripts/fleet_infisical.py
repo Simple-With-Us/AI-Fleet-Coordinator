@@ -16,6 +16,7 @@ import os
 import re
 import selectors
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -84,11 +85,13 @@ PROJECT_SOURCES = {
     ),
 }
 
-# Retired Keychain identifiers retained for compatibility callers; this module never reads them.
+# Retired Keychain identifiers kept for compatibility callers; this module never reads
+# them.  They are named apart from the live ones so no live constant is shadowed by a
+# retired name.
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
-KEYCHAIN_SERVICE = "fleet-secrets"
-KEYCHAIN_CLIENT_ID = "infisical-client-id"
-KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
+RETIRED_KEYCHAIN_SERVICE = "fleet-secrets"
+RETIRED_KEYCHAIN_CLIENT_ID = "infisical-client-id"
+RETIRED_KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
 ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
 ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
@@ -193,6 +196,18 @@ class UsageError(SecretsError):
         super().__init__(message, 2)
 
 
+class SecretsTimeout(SecretsError, TimeoutError):
+    """A socket timeout against Infisical:  transient,  never a refusal.
+
+    It is a `SecretsError`,  so every fail-closed path still catches it,  and a
+    `TimeoutError`,  so a consumer that can retry says "retryable" instead of
+    reading a hung lookup as a broken credential.
+    """
+
+    def __init__(self, message: str = "fetch-failed: timeout") -> None:
+        super().__init__(message, 4)
+
+
 # --------------------------------------------------------------------------- configuration
 
 
@@ -222,11 +237,22 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
     value = (env.get(env_name) or "").strip()
     if not value:
         try:
-            value = (
-                (home / project_file).read_text(encoding="utf-8").strip().splitlines()[0].strip()
-            )
-        except (OSError, UnicodeDecodeError, IndexError):
+            text = (home / project_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = None
+        if text is None:
             value = ""
+        else:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            # The file holds one identifier:  a file with two entries never silently
+            # selects one of them,  and a malformed entry is refused rather than trimmed
+            # into shape.
+            if len(lines) != 1:
+                raise SecretsError(
+                    f"the {_LABELS[project]} Infisical project id file (~/{project_file}) must "
+                    "hold exactly one identifier"
+                )
+            value = lines[0]
     if not value:
         raise SecretsError(
             f"the {_LABELS[project]} Infisical project id is not set:  set {env_name} or put it in ~/{project_file} "
@@ -473,6 +499,41 @@ def verify_service_token(
         exc.failure_kind = "refused"
         raise
     return paths
+
+
+def token_scopes(token: str, env: Mapping[str, str]) -> tuple[str, ...]:
+    """The prod folders one service token's own grant covers.
+
+    A consumer that reads a folder the token does not hold must fail closed,
+    and a consumer that holds more than one folder must declare exactly the
+    grant's set:  the shared client refuses a read whose declared folders are
+    not the grant's folders.  This is how a consumer learns that set from the
+    store instead of hard-coding it, so a grant that changes on the server
+    stops the read rather than widening it.
+
+    The answer is a list of folder paths, never a value and never a token.
+    """
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_service_token(token)
+    status, metadata = _api_json("GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024)
+    if status != 200 or not isinstance(metadata, dict):
+        raise SecretsError("token-verification-failed")
+    scopes = metadata.get("scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise SecretsError("token-scope-mismatch")
+    paths: list[str] = []
+    for scope in scopes:
+        if not isinstance(scope, dict) or scope.get("environment") != ENVIRONMENT:
+            raise SecretsError("token-scope-mismatch")
+        secret_path = scope.get("secretPath")
+        if not isinstance(secret_path, str):
+            raise SecretsError("token-scope-mismatch")
+        paths.append(check_path(secret_path))
+    if len(paths) != len(set(paths)):
+        raise SecretsError("token-scope-mismatch")
+    return tuple(paths)
 
 
 def secret_query(project: str, path: str, *, values: bool = True) -> str:
@@ -1030,6 +1091,7 @@ def fetch_verified(
     path: str,
     env: Mapping[str, str],
     token: str | None = None,
+    timeout: float | None = None,
 ) -> str:
     """One folder-PROVEN secret, through the REST raw-secret endpoint.
 
@@ -1043,7 +1105,11 @@ def fetch_verified(
     reference, an oversized answer or a redirect fails closed.  The value
     never appears in a message or a log;  errors name the key, the folder,
     or the HTTP status only.  Exit 3 when the key is absent at that path.
+
+    `timeout`, when set, bounds the whole read:  the grant check and the fetch share
+    one deadline,  so a caller's own limit is never stretched by a slow provider.
     """
+    deadline = None if timeout is None else time.monotonic() + timeout
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
@@ -1051,7 +1117,7 @@ def fetch_verified(
     check_path(path)
     project = infisical_project_id(env, home_dir(env))
     token = token if token is not None else resolve_token(env)
-    verify_service_token(token, project, path, env)
+    verify_service_token(token, project, path, env, deadline=deadline)
     query = secret_query(project, path)
     status, answer = _api_json(
         "GET",
@@ -1060,6 +1126,7 @@ def fetch_verified(
         None,
         env,
         max_bytes=MAX_VERIFIED_BYTES,
+        deadline=deadline,
     )
     if status in (400, 404):
         raise SecretsError(f"key {name} is not in Infisical at {path}", 3)
@@ -1175,6 +1242,16 @@ def _decode_json(raw: bytes):
     return value
 
 
+def _is_timeout(reason: object) -> bool:
+    """True when a transport failure is a timeout rather than a refusal.
+
+    `socket.timeout` is listed beside `TimeoutError` because the two are only the
+    same class from Python 3.10 on,  and the Mac still runs part of this code
+    under 3.9,  where a read timeout is not a `TimeoutError`.
+    """
+    return isinstance(reason, (TimeoutError, socket.timeout))
+
+
 def _api_json(
     method: str,
     path: str,
@@ -1205,7 +1282,7 @@ def _api_json(
         headers={
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
-            "User-Agent": "fleet-secrets",
+            "User-Agent": "fleet-infisical",
         },
     )
     max_bytes = MAX_OUTPUT_BYTES if max_bytes is None else max_bytes
@@ -1227,12 +1304,25 @@ def _api_json(
         if on_status is not None:
             on_status(status)
         raw = exc.read(limit)
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+    except urllib.error.URLError as exc:
+        # A connect timeout arrives wrapped in a URLError.  It is transient,  not a refusal.
+        if _is_timeout(exc.reason):
+            raise SecretsTimeout() from None
         if (
             not response_seen
             and on_unsent is not None
             and isinstance(getattr(exc, "reason", exc), ConnectionRefusedError)
         ):
+            on_unsent()
+        return 0, None
+    # `socket.timeout` is only an alias of `TimeoutError` from Python 3.10 on,  and the
+    # Mac still runs part of this code under 3.9,  so both names are caught here.
+    except (TimeoutError, socket.timeout):  # noqa: UP041 - both names are needed on 3.9
+        # A read timeout is transient too.  It reaches the consumer as a timeout,  so a
+        # consumer that can retry says so instead of reporting a broken credential.
+        raise SecretsTimeout() from None
+    except OSError as exc:
+        if not response_seen and on_unsent is not None and isinstance(exc, ConnectionRefusedError):
             on_unsent()
         return 0, None
     finally:
@@ -1903,7 +1993,187 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
             raise WriteError("outcome_unknown", intent, provider_status=record["provider_status"])
     finally:
-        body.clear()
+        body = {}
+        token = ""
+
+
+# --------------------------------------------------------------------------- the consumer's own store
+#
+# The shared reader is retired.  Every consumer that needs a secret now holds its own scoped
+# service token, and the token lives in that consumer's own store on its own host: the
+# owner's login keychain on the Mac, a private file on a server.  Nothing is shared, so a
+# consumer's grant can be revoked without touching anyone else, and a consumer that reads
+# one folder never holds a grant on another.
+#
+# Mac:     one generic-password item per token.  The service is KEYCHAIN_SERVICE and the
+#          account is the token's registry name, so a reader holding the registry row can
+#          find the item by that name.
+# Server:  a file owned by the consumer account, mode 0600, inside a parent directory of
+#          mode 0700.
+#
+# The token value never appears in a message, a log or an exception.
+
+KEYCHAIN_SERVICE = "infisical-service-token"
+TOKEN_STORE_DIR = ".config/infisical/tokens"
+SECURITY_BIN = "/usr/bin/security"
+# `security find-generic-password` exit codes:  44 is errSecItemNotFound (no such item) and
+# 36 is errSecInteractionNotAllowed (the keychain is locked, or the caller is outside the
+# owner's GUI session).  Both are refusals, and the caller has to be able to tell them apart.
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+
+
+def _is_macos() -> bool:
+    """True on the Mac, where the owner's login keychain is the approved store."""
+    return sys.platform.startswith("darwin")
+
+
+def _token_file(home: Path, account: str) -> Path:
+    return home / TOKEN_STORE_DIR / (account + ".token")
+
+
+def token_from_store(
+    account: str,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> tuple[str, str]:
+    """The consumer's own scoped service token from the host's approved store, and why.
+
+    The account is the token's registry name, for example "cursor-surfaces-ro".  The store is
+    the one the host's policy allows: the owner's login keychain on the Mac, a private file
+    on a server.
+
+    Returns (token, status).  The token is "" for every refusal.  The status says which
+    refusal it was: "ok", "no-token" (the store has no such item), "keychain-locked" (the
+    keychain refused the read), "keychain-timeout" (the keychain did not answer in time),
+    "keychain-missing" (the `security` command is not on this host, the shell's exit 127)
+    or "token-unreadable" (the item is there but unreadable, or what it holds is not a
+    service token).
+
+    The value is never printed, logged or echoed.
+    """
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if not account or account.strip() != account or "/" in account or account.startswith("."):
+        return "", "no-token"
+    if _is_macos():
+        return _token_from_keychain(account)
+    return _token_from_file(home, account)
+
+
+def _token_from_keychain(account: str) -> tuple[str, str]:
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        # A hung `security` call is its own refusal:  the keychain did not answer.
+        return "", "keychain-timeout"
+    except FileNotFoundError:
+        # The `security` binary is not on this host:  the command-not-found case,
+        # which the shell answers with exit 127.
+        return "", "keychain-missing"
+    except (OSError, subprocess.SubprocessError):
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = (result.stdout or "").strip()
+        if not token:
+            return "", "no-token"
+        try:
+            return check_service_token(token), "ok"
+        except SecretsError:
+            return "", "token-unreadable"
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _token_from_file(home: Path, account: str) -> tuple[str, str]:
+    path = _token_file(home, account)
+    try:
+        info = path.lstat()
+    except OSError:
+        return "", "no-token"
+    if not path.is_file() or path.is_symlink():
+        return "", "token-unreadable"
+    parent = path.parent
+    try:
+        parent_info = parent.lstat()
+        file_info = info
+    except OSError:
+        return "", "token-unreadable"
+    if not parent.is_dir() or parent.is_symlink():
+        return "", "token-unreadable"
+    uid = os.getuid()
+    if parent_info.st_uid != uid or file_info.st_uid != uid:
+        return "", "token-unreadable"
+    if (parent_info.st_mode & 0o777) != 0o700 or (file_info.st_mode & 0o777) != 0o600:
+        return "", "token-unreadable"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "", "token-unreadable"
+    token = raw.strip()
+    if not token:
+        return "", "no-token"
+    try:
+        return check_service_token(token), "ok"
+    except SecretsError:
+        return "", "token-unreadable"
+
+
+def fetch_scoped(
+    name: str,
+    folder: str,
+    account: str,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """One secret, through the consumer's own scoped token, and the status.
+
+    The token comes from the consumer's own store (see `token_from_store`) and the read goes
+    through `fetch_verified`, which checks the answer's own provenance as well as the grant.
+    The store is the authority:  this path never reads a token from the environment,  so a
+    hand-set value can never replace the reviewed, scope-limited grant.
+
+    Returns (value, status).  The value is "" for every failure, and the status says which:
+    "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
+    it), "no-token", "keychain-locked", "keychain-timeout", "keychain-missing",
+    "token-unreadable" or "failed".
+
+    A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
+    retry says so instead of reading a hung lookup as a broken credential.
+
+    The value never appears in a message, a log or an exception.
+    """
+    env = os.environ if env is None else env
+    token, status = token_from_store(account, env)
+    if not token:
+        return "", status
+    try:
+        return fetch_verified(name, folder, env, token), "ok"
+    except TimeoutError:
+        # The timeout reaches the consumer instead of being reported as a refusal.
+        raise
+    except SecretsError as exc:
+        message = exc.message
+        if exc.code == 3:
+            return "", "absent"
+        if "token-verification-failed" in message or "status-403" in message:
+            return "", "forbidden"
+        return "", "failed"
 
 
 def reconcile_secret(

@@ -66,7 +66,7 @@ MARKER_BLOCK = "fleet-lane-map"
 CREDENTIAL_MODE = "0600"
 
 # The secret-store folder the Zulip credentials live in:  Infisical, project
-# Fleet-OPS, prod, path /zulip.  The fleet-secrets CLI takes the same path.
+# Fleet-OPS, prod, path /zulip.  The shared Infisical client takes the same path.
 SECRET_STORE_PATH = "/zulip"
 
 # The fleet skills pack, one directory per skill, at the repo root.
@@ -665,9 +665,9 @@ def _credential_rule(seat: str, platform: str) -> dict[str, object]:
     """The rule that pins a seat's Zulip credential in the secret store.
 
     The credential lives in Infisical, project Fleet-OPS, path ``/zulip``, under the
-    seat's key names.  The check asks the ``fleet-secrets`` CLI whether those names
-    are there, and the ``names`` verb prints names only, so no value can reach a
-    result.
+    seat's key names.  The check asks the shared Infisical client, with the checker's
+    own scoped token for that folder, whether those names are there, and a names-only
+    listing never carries a value into a result.
     """
     keys = _secret_store_keys(seat)
     reference = "the %s Zulip credential" % seat
@@ -683,9 +683,10 @@ def _credential_rule(seat: str, platform: str) -> dict[str, object]:
             "names": list(keys),
         },
         seat,
-        "The check asks the fleet-secrets CLI for key NAMES and never for a value, so "
-        "a secret cannot reach a result, a reason or a log.  A secret store that "
-        "cannot be reached is a failing UNKNOWN, never a pass.",
+        "The check asks the shared Infisical client, with the checker's own scoped "
+        "token for that folder, for key NAMES and never for a value, so a secret cannot "
+        "reach a result, a reason or a log.  A secret store that cannot be reached is a "
+        "failing UNKNOWN, never a pass.",
     )
 
 

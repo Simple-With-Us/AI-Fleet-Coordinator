@@ -4,8 +4,8 @@
 POSTs a signed request to https://agents.simplewithus.com/internal/health/linear
 (src/health.js) and writes ~/.local/state/fleet-tools/worker-health.json, mode 0600,
 atomically.  The answer holds ages, counts and fixed codes only.  The signing key is
-HEALTH_HMAC_KEY from Fleet-OPS (`fleet-secrets get`), read into memory and never printed
-or written.  A reader treats a file older than 45 minutes, missing, malformed or with
+HEALTH_HMAC_KEY from Fleet-OPS, read into memory through this script's own scoped read-only
+service token and never printed or written.  A reader treats a file older than 45 minutes, missing, malformed or with
 another schemaVersion as unknown.  Python 3.9, standard library only.
 
   fleet-worker-health.py [--url URL] [--write PATH] [--dry-run]
@@ -22,12 +22,13 @@ import hmac
 import json
 import os
 import secrets
-import shutil
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 CONTRACT = "simple-tools-health/1"
 SIGNATURE_HEADER = "x-simple-tools-health-signature"
@@ -35,6 +36,12 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
+# This script's own scoped read-only service token:  Fleet-OPS prod root, the folder the
+# signing key is read from.  The token lives in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server);  the shared Infisical client checks the
+# token's own grant and the answer's own provenance before the value is used.
+TOKEN_ACCOUNT = "worker-health-ro"
+SECRET_FOLDER = "/"
 
 
 def sign(key, body):
@@ -49,17 +56,45 @@ def request_body(now=None):
 
 
 def read_key():
+    """The signing key:  the environment value first, else this script's own scoped token
+    against Infisical Fleet-OPS prod root.  "" when the folder holds no such name.
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself each raise,  naming the reader and the account,  so the source that
+    must be repaired stays visible.  The key is never logged.
+    """
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
-    binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
     try:
-        out = subprocess.run(
-            [binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
+        import fleet_infisical as FI
+    except ImportError:
+        raise RuntimeError(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        ) from None
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
+        value, status = FI.fetch_scoped("HEALTH_HMAC_KEY", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+    except Exception as exc:
+        raise RuntimeError(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token could not run ("
+            + type(exc).__name__
+            + ")"
+        ) from None
+    if status != "ok":
+        raise RuntimeError(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
         )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -186,7 +221,13 @@ def main(argv=None):
     parser.add_argument("--write", default=DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    key = read_key()
+    try:
+        key = read_key()
+    except RuntimeError as exc:
+        # The source that must be repaired is named,  and the run stops:  a report
+        # written without the key would say nothing about why.
+        sys.stderr.write("fleet-worker-health: %s\n" % exc)
+        return 2
     if not key:
         status, answer = 0, None
         doc = document(status, answer)

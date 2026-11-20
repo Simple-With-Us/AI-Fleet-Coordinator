@@ -10,33 +10,58 @@
 
 set -uo pipefail
 
-# Cron's PATH is minimal, so the absolute path;  override with FLEET_SECRETS_BIN.
-FLEET_SECRETS="${FLEET_SECRETS_BIN:-/Users/jay/.local/bin/fleet-secrets}"
+# Cron's PATH is minimal, so the reader's full path;  override with INFISICAL_SCOPED_READER.
+READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+# Environment first, then the shared scoped reader with this watcher's own service token
+# (OPS-1096;  the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
-  TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"
+READER_REASON=""
+if [ -z "$TOKEN" ] && [ ! -x "$READER" ]; then
+  READER_REASON="the shared scoped reader is not installed at ${READER}"
+fi
+if [ -z "$TOKEN" ] && [ -x "$READER" ]; then
+  # The folder is the one the token's own grant covers:  hetzner-cx43-watch-ro is scoped to
+  # Fleet-OPS prod /global-api-keys, and a grant covers exactly its own folder.
+  READER_ERR="$(mktemp)"
+  TOKEN="$(python3 "$READER" get HCLOUD_TOKEN --folder /global-api-keys --project fleet-ops --account hetzner-cx43-watch-ro 2>"$READER_ERR")" || TOKEN=""
+  READER_REASON="$(tr '\n' ' ' <"$READER_ERR" 2>/dev/null || true)"
+  rm -f "$READER_ERR"
 fi
 if [ -z "$TOKEN" ]; then
-  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"
+  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty:  the hetzner-cx43-watch-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${READER}${READER_REASON:+ (${READER_REASON})}" >> "$LOG"
   exit 1
 fi
+
+# The API token goes into a curl config file, so it has to be one line of plain
+# characters:  a quote, a backslash or a space would mangle the header.
+case "$TOKEN" in
+  *[!A-Za-z0-9._~+/=-]*)
+    echo "$STAMP  ERROR: HCLOUD_TOKEN has characters the request header cannot carry" >> "$LOG"
+    exit 1
+    ;;
+esac
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-curl -sS --max-time 20 -H "Authorization: Bearer $TOKEN" \
+# The bearer token never reaches an argument list:  the auth header goes to curl
+# on standard input with curl --config -, so no process table shows it.
+curl -sS --max-time 20 --config - \
   'https://api.hetzner.cloud/v1/server_types?per_page=50' \
-  -o "$TMP/st.json" 2>/dev/null
-curl -sS --max-time 20 -H "Authorization: Bearer $TOKEN" \
+  -o "$TMP/st.json" 2>/dev/null <<HETZNER_HEADER
+header = "Authorization: Bearer ${TOKEN}"
+HETZNER_HEADER
+curl -sS --max-time 20 --config - \
   'https://api.hetzner.cloud/v1/datacenters' \
-  -o "$TMP/dc.json" 2>/dev/null
+  -o "$TMP/dc.json" 2>/dev/null <<HETZNER_HEADER
+header = "Authorization: Bearer ${TOKEN}"
+HETZNER_HEADER
 
 RESULT="$(/usr/bin/python3 - "$TMP/st.json" "$TMP/dc.json" "$DC" "$CURRENT_TYPE" <<'PY'
 import json, sys

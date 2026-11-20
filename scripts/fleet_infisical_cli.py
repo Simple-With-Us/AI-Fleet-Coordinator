@@ -46,14 +46,14 @@ from fleet_infisical import SecretsError, UsageError
 MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
 
 USAGE = (
-    "usage: fleet-secrets run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
-    "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
-    "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
-    "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
-    "       fleet-secrets set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
+    "usage: fleet-infisical run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
+    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-infisical get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
+    "       fleet-infisical names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-infisical set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
     "           [--request-id UUID --request-created-at EPOCH_MS] [--reconcile|--clear-unsettled]\n"
     "           (value on standard input; reconcile and clear-unsettled read no value)\n"
-    "       fleet-secrets doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
+    "       fleet-infisical doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
 )
 
 
@@ -336,7 +336,7 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
 def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if "--" not in args:
         raise UsageError(
-            "run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]"
+            "run needs `--` before the command:  fleet-infisical run --only NAME -- CMD [ARG...]"
         )
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
@@ -485,14 +485,14 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
     *,
-    prog: str = "fleet-secrets",
+    prog: str = "fleet-infisical",
 ) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
     if not argv or argv[0] in ("-h", "--help", "help"):
-        (out if argv else err).write(USAGE.replace("fleet-secrets", prog))
+        (out if argv else err).write(USAGE.replace("fleet-infisical", prog))
         return 0 if argv else 2
     cmd, rest = argv[0], argv[1:]
     try:
@@ -512,7 +512,7 @@ def main(
     except SecretsError as exc:
         err.write(f"{prog}: {exc.message}\n")
         if isinstance(exc, UsageError):
-            err.write(USAGE.replace("fleet-secrets", prog))
+            err.write(USAGE.replace("fleet-infisical", prog))
         return exc.code
 
 

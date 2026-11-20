@@ -62,7 +62,7 @@ Once a UTC day it reads the account again and compares the live Worker list, `li
 
 ## Credentials
 
-Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read through `fleet-secrets` and held in memory only.
+Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read through the consumer's own scoped service token and held in memory only.
 
 | Key | Holds | Needed |
 | --- | --- | --- |

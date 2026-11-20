@@ -447,7 +447,7 @@ class LaunchTests(unittest.TestCase):
         import urllib.parse
         from pathlib import Path
 
-        from fleet_secrets import cli, core
+        import fleet_infisical as core
 
         from whatsapp_bridge import launch
 
@@ -525,7 +525,7 @@ class LaunchTests(unittest.TestCase):
                     core.subprocess, "run", side_effect=AssertionError("subprocess fallback")
                 ),
                 patch.object(
-                    cli.os,
+                    launch.os,
                     "execvpe",
                     side_effect=lambda program, argv, env: children.append(
                         (program, argv, dict(env))
@@ -565,7 +565,7 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(children[0][1][-1], request_id)
 
     def test_missing_send_switch_defaults_off_without_weakening_required_keys(self):
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         from whatsapp_bridge import launch
 

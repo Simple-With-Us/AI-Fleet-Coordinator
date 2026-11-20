@@ -35,7 +35,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -119,7 +118,7 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
 def fleet_ops_project() -> str:
     """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
     line of ~/.simple-tools/fleet-ops-project-id (same sources as
-    scripts/fleet_secrets/core.py).  Fails closed when neither holds a UUID."""
+    scripts/fleet_infisical.py).  Fails closed when neither holds a UUID."""
     value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
     if not value:
         try:
@@ -167,22 +166,38 @@ def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, 
     return INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY", secret_name, email_var
 
 
+# This script's own scoped read-only service token for the handoff names:  Fleet-OPS prod
+# root, the folder they are read from.  The token lives in the consumer's own store (the
+# owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
+# checks the token's own grant and the answer's own provenance before the value is used.
+HANDOFF_TOKEN_ACCOUNT = "install-seat-key-ro"
+HANDOFF_FOLDER = "/global-api-keys"
+# The Zulip names live in their own folder, so they carry their own grant.
+HANDOFF_ZULIP_TOKEN_ACCOUNT = "install-seat-key-zulip-ro"
+HANDOFF_ZULIP_FOLDER = "/zulip"
+
+
 def handoff(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    handoff file is retired (AFC-359).  Only the name is ever reported."""
+    """One credential:  the environment first, then this script's own scoped token against
+    the Infisical Fleet-OPS folder that holds it.  The flat handoff file is retired
+    (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+    folder = HANDOFF_ZULIP_FOLDER if "ZULIP" in name else HANDOFF_FOLDER
+    account = HANDOFF_ZULIP_TOKEN_ACCOUNT if "ZULIP" in name else HANDOFF_TOKEN_ACCOUNT
     try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    fail(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
+        env = dict(os.environ)
+        env[scoped_secrets.ENV_READ_PATHS] = folder
+        found, status = scoped_secrets.fetch_scoped(name, folder, account, env)
+    except Exception:
+        found, status = "", "unavailable"
+    if status == "ok" and found:
+        return found
+    fail(
+        f"{name} is not in the environment or this consumer's scoped token "
+        f"({status};  name only, no value printed)"
+    )
 
 
 def wrangler_vars() -> dict:
@@ -235,14 +250,38 @@ def http_json(
 def infisical_pair(
     email_name: str, key_name: str, project: str = INFISICAL_PROJECT
 ) -> tuple[str, str]:
-    """(email, key) for a seat from Infisical.  Neither is printed."""
+    """(email, key) for a seat from Infisical.  Neither is printed.
+
+    The read runs under this consumer's own scoped service token, read from its own
+    store:  the store is the authority,  and a token bound in the environment is only a
+    copy of that same grant,  used when the store has none.
+    """
     if project == INFISICAL_PROJECT:
         token_name = AFC_TOKEN_ENV
+        # No account is registered for this project's folder yet,  so this branch has
+        # no store to read and falls back to the deployment's own binding.
+        account = ""
     elif project == fleet_ops_project():
         token_name = FLEET_OPS_TOKEN_ENV
+        account = HANDOFF_ZULIP_TOKEN_ACCOUNT
     else:
         fail("unsupported Infisical project")
-    token = os.environ.get(token_name, "").strip()
+    token = ""
+    status = "no-token"
+    if account:
+        token, status = scoped_secrets.token_from_store(
+            account, os.environ, scoped_secrets.home_dir(os.environ)
+        )
+    if not token:
+        token = os.environ.get(token_name, "").strip()
+    if not token:
+        if account:
+            fail(
+                f"no usable service token for {project}{INFISICAL_PATH}:  the {account} "
+                f"service-token store is unavailable or refused ({status})  and "
+                f"{token_name} binds none"
+            )
+        fail(f"{token_name} is missing or is not a valid service token")
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048

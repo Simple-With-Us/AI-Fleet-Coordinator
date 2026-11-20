@@ -113,7 +113,7 @@ cli.sys.stdin = io.StringIO(secrets.token_urlsafe(40))
 out, err = io.StringIO(), io.StringIO()
 assert cli.main(['set','CACHE_FIXTURE','--path','/linear'],env,out,err) == 4
 assert not out.getvalue()
-assert err.getvalue().strip() == 'fleet-secrets: write-state-unavailable'
+assert err.getvalue().strip() == 'fleet-infisical: write-state-unavailable'
 print('missing-ledger-refused')
 """
         result = run_fixture(

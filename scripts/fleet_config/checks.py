@@ -183,8 +183,9 @@ def expand_target(target: str, home: os.PathLike[str]) -> str:
 
 # The programs this package may start.  Every one of them is a fleet tool with a fixed
 # shape,  so the allowlist is a closed set:  a command that is not on it is refused
-# before any process exists.
-ALLOWED_COMMANDS: frozenset[str] = frozenset({"fleet-secrets", "security"})
+# before any process exists.  The secret store is read in-process,  through the shared
+# Infisical client,  so no reader command is started at all.
+ALLOWED_COMMANDS: frozenset[str] = frozenset({"security"})
 
 # The scripts this package may run with the interpreter,  by file name.  The MAC level
 # doctor is the only one.

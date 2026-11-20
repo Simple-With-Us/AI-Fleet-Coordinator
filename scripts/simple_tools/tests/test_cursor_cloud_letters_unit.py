@@ -4,7 +4,7 @@ one Operator unit, no seat's own copy).
 The unit and timer must name no seat, no ssh remote and no shared registry env file, and the unit must run the sweep
 with --api-only and --no-dm.  The installer runs under a temporary test root (CURSOR_LETTERS_INSTALL_TEST_ROOT):  no
 real home, no systemctl and no network.  Its runtime is a synthetic fleet-cli folder whose simple_tools is this
-checkout's, beside stub fleet_knobs and fleet_secrets packages that answer from a fixture file, so the installer's
+checkout's, beside a stub fleet_knobs package and a stubbed shared client that answer from a fixture file, so the installer's
 check runs the real `cursor_cloud_letters check`.  Fixture tokens are built in parts at run time, so no
 credential-shaped literal sits in this file, and every run's output is checked for them.
 
@@ -147,8 +147,7 @@ class InstallerTests(unittest.TestCase):
         runtime.mkdir(parents=True)
         (runtime / "simple_tools").symlink_to(SCRIPTS / "simple_tools")
         (runtime / "fleet_infisical.py").write_text(SECRETS_STUB)
-        for package, files in (("fleet_knobs", {"knobs.py": KNOBS_STUB, "registry.py": REGISTRY_STUB}),
-                               ("fleet_secrets", {"core.py": SECRETS_STUB})):
+        for package, files in (("fleet_knobs", {"knobs.py": KNOBS_STUB, "registry.py": REGISTRY_STUB}),):
             (runtime / package).mkdir()
             (runtime / package / "__init__.py").write_text("")
             for name, text in files.items():

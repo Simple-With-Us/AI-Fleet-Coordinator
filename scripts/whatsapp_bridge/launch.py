@@ -1,7 +1,7 @@
 """Isolated service-token startup adapter; inert until approved installation.
 
-The shared fleet_infisical module and compatibility package are copied to release/lib at deploy.  Each
-mode reads its own dedicated, server-scoped, read-only AFC service token from
+The shared fleet_infisical client is copied to release/lib at deploy.  Each mode reads its own
+dedicated, server-scoped, read-only AFC service token from
 systemd LoadCredential.  Ambient/shared credentials are never a fallback.
 """
 
@@ -105,32 +105,47 @@ def arguments(mode, release, request_id=None):
     ]
 
 
-def run_poll_with_optional_send(command, prepared):
-    # Same isolated /jet service scope and fixed allowlist as cmd_run. SEND is
-    # the only optional entry, and absent means off; required secrets stay strict.
+def run_with_secrets(command, prepared, optional=()):
+    """Start the command with the named values from one Infisical folder in its environment.
+
+    The read goes through the shared client with the token this unit already holds (its own
+    systemd service credential), so the token's grant and the answer's own provenance are
+    checked before anything is injected.  The values never reach an argument list, a message
+    or a log.  A name in `optional` that the folder does not hold takes its default;  every
+    other name is strict.
+    """
     import fleet_infisical as core
     from fleet_infisical import SecretsError
 
-    secrets = core.fetch_all(core.check_path("/jet"), prepared)
+    split = list(command).index("--")
+    folder = command[command.index("--path") + 1]
+    wanted = [name for name in command[command.index("--only") + 1].split(",") if name]
+    executable = command[split + 1 :]
+    secrets = core.fetch_all(core.check_path(folder), prepared)
     chosen = {}
-    for name in POLL_NAMES:
-        if name == "WHATSAPP_BRIDGE_SEND_ENABLED":
-            chosen[name] = secrets.get(name, "off")
+    for name in wanted:
+        if name in optional and name not in secrets:
+            chosen[name] = "off"
         elif name not in secrets:
-            raise SecretsError(f"key {name} is not in Infisical at /jet", 3)
+            raise SecretsError(f"key {name} is not in Infisical at {folder}", 3)
         else:
             chosen[name] = secrets[name]
     core.reject_unresolved(chosen)
     child = {k: v for k, v in prepared.items() if k not in core.AUTH_ENV_VARS}
     child.update(chosen)
-    executable = command[command.index("--") + 1 :]
     try:
         os.execvpe(executable[0], executable, child)
     except FileNotFoundError:
         raise SecretsError("command not found", 127) from None
     except OSError:
-        raise SecretsError("could not start poll bridge", 126) from None
+        raise SecretsError("could not start the bridge", 126) from None
     return 0
+
+
+def run_poll_with_optional_send(command, prepared):
+    # Same isolated /jet service scope and fixed allowlist as the other modes. SEND is
+    # the only optional entry, and absent means off; required secrets stay strict.
+    return run_with_secrets(command, prepared, optional=("WHATSAPP_BRIDGE_SEND_ENABLED",))
 
 
 class CredentialSourceError(ValueError):
@@ -212,11 +227,10 @@ if __name__ == "__main__":
         sys.exit(1)
     except ImportError:
         print(
-            '{"state":"isolated_start_failed","source":"fleet_secrets_dependency"}', file=sys.stderr
+            '{"state":"isolated_start_failed","source":"infisical_client_dependency"}',
+            file=sys.stderr,
         )
         sys.exit(1)
     except Exception:  # noqa: BLE001 - never expose credential-bearing loader exceptions
-        print(
-            '{"state":"isolated_start_failed","source":"fleet_secrets/Infisical"}', file=sys.stderr
-        )
+        print('{"state":"isolated_start_failed","source":"infisical_client"}', file=sys.stderr)
         sys.exit(1)

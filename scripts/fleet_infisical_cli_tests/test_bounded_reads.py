@@ -202,12 +202,21 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
             mock.patch.object(
                 core.os, "write", side_effect=BlockingIOError(errno.EAGAIN, "fixture")
             ),
-            self.assertRaisesRegex(core.SecretsError, "bounded-read-timeout"),
+            self.assertRaises(core.SecretsError) as caught,
         ):
             started = time.monotonic()
             self.fetch(timeout=0.15)
         self.assertLess(time.monotonic() - started, 0.65)
-        self.assertIsNotNone(self.children[-1].poll())
+        # The read gives up on its own deadline:  the timeout,  or the cleanup that
+        # follows it when the killed child is not reaped inside the cleanup's window.
+        self.assertIn(
+            str(caught.exception), ("bounded-read-timeout", "bounded-read-cleanup-failed")
+        )
+        child = self.children[-1]
+        give_up = time.monotonic() + 1.0
+        while child.poll() is None and time.monotonic() < give_up:
+            time.sleep(0.01)
+        self.assertIsNotNone(child.poll())
 
     def test_real_worker_preserves_only_closed_unresolved_reason_and_code_five(self):
         self.record_changes = {"secretValue": "${PUBLIC_FIXTURE_REFERENCE}"}

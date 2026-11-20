@@ -1,4 +1,4 @@
-"""fleet-secrets CLI behavior tests with fake REST and explicit manual-session boundaries."""
+"""The shared Infisical command's behavior, with fake REST and explicit manual-session boundaries."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from fleet_secrets import cli, core
+import fleet_infisical as core
+import fleet_infisical_cli as cli
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
@@ -155,7 +156,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        self.home = Path(self.tmp.name).resolve()
         self.env = {
             "HOME": str(self.home),
             "PATH": "/usr/bin:/bin",
@@ -547,7 +548,7 @@ class NoValueInErrorsTests(Base):
     def test_timeout_and_missing_cli(self):
         world = self.use(World(export_rc=124))
         code, _, err = self.call("get", "ALPHA")
-        self.assertEqual((code, err.strip()), (4, "fleet-secrets: timeout"))
+        self.assertEqual((code, err.strip()), (4, "fleet-infisical: timeout"))
         world.export_rc = 0
         with mock.patch.object(core, "find_cli", lambda env: None):
             code, _, err = self.call("get", "ALPHA")
@@ -617,9 +618,10 @@ class DoctorTests(Base):
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
-        self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
-        self.assertFalse(rep["ok"])
+        # The unqualified doctor needs the FleetLink folder only on a server;  a Mac reads its own.
+        self.assertEqual(code, 1 if core.is_linux() else 0)
+        self.assertEqual(rep["ok"], not core.is_linux())
 
     def test_selected_doctor_reads_only_the_default_project_root(self):
         world = World()
@@ -1235,7 +1237,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_prints_the_value_only(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         out = io.StringIO()
         with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
@@ -1246,7 +1248,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_root_path_is_a_usage_error(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         with self.assertRaises(core.UsageError):
             cli.cmd_get_verified(["NAME"], {}, io.StringIO())
@@ -1254,7 +1256,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_dispatched_from_main(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         out = io.StringIO()
         with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):

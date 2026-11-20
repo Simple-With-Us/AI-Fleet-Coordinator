@@ -27,7 +27,8 @@ The assertions are made against the messages this run posted, not against every
 message the topic holds:  the ids present before the run are the baseline, so a
 second run over a healthy ingress proves the same thing the first one did.
 
-Secrets are read from the environment first and from `fleet-secrets` second,
+Secrets are read from the environment first and from this selftest's own scoped
+service token second,
 and are never printed:  names and lengths only.  --cleanup first sends each test
 incident its recovery, so none stays firing in /status, then deletes the one-line
 alert messages this test created in #alerts and #Alerts-Log and the raw copies in
@@ -39,9 +40,6 @@ import argparse
 import base64
 import json
 import os
-import pathlib
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -101,47 +99,68 @@ def masked_preview(secret):
     return secret[:8] + "…" + secret[-4:]
 
 
-def fs_get(name, project, path):
-    """One value through `fleet-secrets get`, or None when it is absent.
+# This selftest's own scoped read-only service token:  one grant on the one Infisical
+# folder it reads, held in the consumer's own store (the owner's login keychain on the
+# Mac, a private file on a server).  The environment still wins when it already binds a
+# token.
+TOKEN_ACCOUNTS = {
+    ("ai-fleet-coordinator", "/zulip"): "alert-ingress-selftest-ro",
+}
 
-    A missing binary, a timeout and a refused read are all this script's own
+
+def fs_get(name, project, path):
+    """One value through this selftest's own scoped token, or None when it is absent.
+
+    A missing token, a timeout and a refused read are all this script's own
     failures, so they are raised as `Failed` and never as a raw traceback.
     """
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+    import fleet_infisical as FI
+
+    account = TOKEN_ACCOUNTS.get((project, path))
+    if not account:
+        raise Failed(f"{name} could not be read:  no scoped token covers {project}{path}")
+    env = dict(os.environ)
+    scoped = dict(env)
+    scoped[FI.ENV_READ_PATHS] = path
     try:
-        proc = subprocess.run(
-            [binary, "get", name, "--path", path, "--project", project],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=90,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise Failed(f"{name} could not be read:  fleet-secrets timed out", EXIT_TIMEOUT) from None
-    except FileNotFoundError:
+        project_id = FI.infisical_project_id(scoped, FI.home_dir(scoped), project)
+    except FI.SecretsError:
         raise Failed(
-            f"{name} could not be read:  fleet-secrets is not installed",
+            f"{name} could not be read:  the {project} project is not bound",
             EXIT_MISSING_EXECUTABLE,
         ) from None
+    # The project id goes in the client's default-project slot:  `fetch_verified`
+    # resolves the project from there, and the grant check, the query and the
+    # provenance check then all use one workspace.
+    scoped[FI.ENV_PROJECT] = project_id
+    token = (env.get(FI.ENV_AI_FLEET_COORDINATOR_TOKEN) or "").strip()
+    if not token:
+        token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+    if not token:
+        raise Failed(
+            f"{name} could not be read:  the scoped token is not bound",
+            EXIT_MISSING_EXECUTABLE,
+        )
+    try:
+        return FI.fetch_verified(name, path, scoped, token=token)
+    except TimeoutError:
+        # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first
+        # and keeps its own exit code.
+        raise Failed(
+            f"{name} could not be read:  the scoped read timed out", EXIT_TIMEOUT
+        ) from None
+    except FI.SecretsError as error:
+        if error.code == 3:
+            return None
+        raise Failed(f"{name} could not be read ({error.code})") from None
     except OSError as error:
         raise Failed(
-            f"{name} could not be read:  fleet-secrets could not run ({type(error).__name__})"
+            f"{name} could not be read:  the store could not run ({type(error).__name__})"
         ) from None
-    if proc.returncode == 3:
-        return None
-    if proc.returncode != 0:
-        raise Failed(f"{name} could not be read (exit {proc.returncode})")
-    try:
-        return proc.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        raise Failed(f"{name} could not be read (unreadable output)")
 
 
 def secret_get(name, project, path):
-    """One credential:  the environment first, then fleet-secrets.
+    """One credential:  the environment first, then this selftest's own store.
 
     The value is never printed.
     """

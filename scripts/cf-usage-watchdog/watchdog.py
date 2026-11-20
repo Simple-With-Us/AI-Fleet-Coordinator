@@ -7,7 +7,8 @@ day-to-date over a threshold, and a 5-minute rate over a threshold.  Two named p
 and enforce.  See README.md for the design, the stop action and the operating steps.
 
 Standard library only, plus this repo's stdlib-only fleet_knobs for the mode and the profile.
-Credentials come from fleet-secrets, live in memory only and never reach a log or a message.
+Credentials come from this watcher's own scoped Infisical service token, live in memory only and
+never reach a log or a message.
 """
 
 from __future__ import annotations
@@ -34,9 +35,15 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
 CONFIG_PATH = HERE / "config.json"
 REGISTRY_PATH = HERE.parent / "worker-registry.json"
 API_BASE = "https://api.cloudflare.com/client/v4"
+# This watcher's own scoped read-only service token:  the project and folder its config names.
+# The token lives in the consumer's own store (the owner's login keychain on the Mac, a private
+# file on a server);  the shared Infisical client checks the token's own grant and the answer's
+# own provenance before a value is used.
+TOKEN_ACCOUNT = "cf-usage-watchdog-ro"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 CHICAGO = ZoneInfo("America/Chicago")
 GAP = "  "  # Between sentences in owner-facing text.
@@ -619,28 +626,45 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """One value from fleet-secrets, or None when it is absent.  Raises PollError on any other failure."""
+        """One value through this watcher's own scoped token, or None when it is absent.
+        Raises PollError on any other failure."""
         conf = self.cfg["infisical"]
-        command = [
-            "fleet-secrets",
-            "get",
-            name,
-            "--path",
-            conf["path"],
-            "--project",
-            conf["project"],
-        ]
         try:
-            done = self.runner(
-                command, capture_output=True, text=True, timeout=30, check=False, env=self.env
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
-        if done.returncode == 3:
-            return None
-        if done.returncode != 0:
-            raise PollError(f"credential-fetch-exit-{done.returncode}")
-        return done.stdout.strip() or None
+            import fleet_infisical as FI
+
+            env = dict(self.env)
+            env[FI.ENV_READ_PATHS] = conf["path"]
+            project = FI.infisical_project_id(env, FI.home_dir(env), conf["project"])
+            # This watcher's own registered token is the source:  its grant covers
+            # exactly the one folder this read declares.  An ambient token may carry a
+            # wider grant,  and the client refuses a read whose declared folders are not
+            # the grant's folders,  so it is the fallback and never the first choice.
+            account = conf.get("token_account", TOKEN_ACCOUNT)
+            token, status = FI.token_from_store(account, env)
+            if not token:
+                token = (env.get(FI.ENV_TOKEN) or "").strip()
+                if not token:
+                    raise PollError(
+                        "credential-fetch-failed:  the shared Infisical client "
+                        f"(fleet_infisical.py) and the {account} service-token store are "
+                        f"unavailable or refused ({status})"
+                    )
+            values = FI.fetch_project(project, conf["path"], env, token=token, names=(name,))
+        except PollError:
+            raise
+        except TimeoutError:
+            # A hung lookup is not a broken credential:  it is retryable.
+            raise PollError("credential-fetch-timeout") from None
+        except Exception as exc:
+            # The reason code stays the machine-readable one this file uses,  and the
+            # message names the client and the account that must be repaired.
+            raise PollError(
+                "credential-fetch-failed:  the shared Infisical client (fleet_infisical.py) "
+                f"could not run the scoped read for the {account} service token "
+                f"({type(exc).__name__})"
+            ) from None
+        value = values.get(name, "")
+        return value or None
 
     def token(self) -> str:
         if self._token is None:
@@ -1819,11 +1843,37 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def validate_config(cfg: dict) -> list:
+    """The problems in one configuration,  never a value.
+
+    The shape is checked before the data is used:  a document that is not a mapping,
+    or an Infisical section that is not a mapping of names,  is a broken configuration
+    and never a folder to read.
+    """
     problems = []
-    for name, profile in cfg.get("profiles", {}).items():
+    if not isinstance(cfg, dict):
+        return ["the configuration is not a mapping"]
+    infisical = cfg.get("infisical")
+    if not isinstance(infisical, dict):
+        problems.append("infisical is not a mapping")
+    else:
+        for key in ("project", "path", "account_id_key", "api_token_key"):
+            if not isinstance(infisical.get(key), str) or not infisical.get(key):
+                problems.append(f"infisical.{key} is not a name")
+        account = infisical.get("token_account")
+        if account is not None and (not isinstance(account, str) or not account):
+            problems.append("infisical.token_account is not a name")
+    metrics = cfg.get("metrics")
+    if not isinstance(metrics, dict):
+        problems.append("metrics is not a mapping")
+        metrics = {}
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        problems.append("profiles is not a mapping")
+        profiles = {}
+    for name, profile in profiles.items():
         for section in ("per_resource", "account"):
-            for metric, rule in profile.get(section, {}).items():
-                if metric not in cfg["metrics"]:
+            for metric, rule in (profile.get(section) or {}).items():
+                if metric not in metrics:
                     problems.append(f"{name}.{section} names unknown metric {metric}")
                 if not set(rule) & {"day", "month", "level", "rate_5m"}:
                     problems.append(f"{name}.{section}.{metric} has no threshold")

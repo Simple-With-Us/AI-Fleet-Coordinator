@@ -1,7 +1,7 @@
 ---
 name: secret-handoff
 description: >-
-  Fleet secret handling — scoped Infisical service tokens, fleet-secrets, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response.  Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth.  Trigger even when the user does not say "secret."
+  Fleet secret handling — scoped Infisical service tokens, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response.  Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth.  Trigger even when the user does not say "secret."
 ---
 
 # Secret handoff (GROK)
@@ -26,21 +26,21 @@ If you are operating within a BotFleet environment and need an API key or custom
 
 ## Fleet keys come from a scoped Infisical service token
 
-A consumer that reads one folder of Infisical on its own (an app on its own project, or a host reading one webhook folder) does not use `fleet-secrets` and never uses the shared Automation identity: it gets its own scoped service token, one project, one environment, one folder, read-only unless write is required, with an expiry, stored in a 0600 file outside every repo and registered in the fleet references registry.  `service-tokens` carries the whole lifecycle, from minting to the registry row to the revocation.
+A consumer that reads one folder of Infisical on its own (an app on its own project, or a host reading one webhook folder) never uses the shared Automation identity: it gets its own scoped service token, one project, one environment, one folder, read-only unless write is required, with an expiry, stored in the consumer's own store (the owner's login keychain on the Mac, a 0600 file outside every repo on a server) and registered in the fleet references registry.  `service-tokens` carries the whole lifecycle, from minting to the registry row to the revocation.
 
 The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
-The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A noninteractive read with no token fails closed and names that variable; an explicit interactive `get` or `names` from an operator's terminal may fall back to the operator's own read-only Infisical CLI login session, never for automation.  `fleet-secrets set` writes only its built-in allowlist and requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`; the CLI login session is refused for writes.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
+There is no shared reader any more.  `fleet-secrets` is retired (owner directive, Tue, Nov 17, 2026):  the CLI, its package and its installer are gone from the repository, from the release bundle and from both hosts.  Every consumer holds its own scoped, read-only service token, named `<consumer>-ro`, scoped to exactly one project, environment `prod` and one folder, and reads the Infisical raw-secret route with it, directly or through `scripts/fleet_infisical.py` (`fetch_verified`, `fetch_scoped`, `token_from_store`).  On the Mac the token lives in the owner's login keychain as one generic-password item (service `infisical-service-token`, account `<consumer>-ro`); on a server it is a 0600 file inside a 0700 directory, at `~/.config/infisical/tokens/<consumer>-ro.token`.  The consumer's own scoped service token, read from the consumer's own store, is the authoritative credential for its folder:  the environment may carry a copy of that same token, used only when the store holds no usable token, and a hand-set environment value must never replace the reviewed, scope-limited grant;  the read's own scope check still decides whether any token may read a folder at all.  There is no fallback to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached copy.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.
 
 On the Mac:
 
-- `fleet-secrets get NAME` prints one value (no trailing newline, no quote-wrapping).  Exit 3 means the key is absent.
-- `fleet-secrets run --only A,B -- CMD` runs a command with just those keys as environment variables.
-- `fleet-secrets names` lists key names only.  `fleet-secrets doctor` prints booleans and counts only.
+- One value:  `scripts/fleet_infisical.py`'s `fetch_scoped(name, folder, account)` returns the value and a status (`ok`, `absent`, `forbidden`, `no-token`, `keychain-locked`, `token-unreadable`, `failed`);  never print it.
+- A few values:  resolve them once at start, hold them in memory, and hand them to a command as its environment;  never put a value in argv, a log or a transcript.
+- Names only:  `list_project_names(project, folder, env)` returns one folder's key names and never a value.
 
 Cloud: there is no key-names endpoint now (the old Mac key-names endpoint was retired 2026-10-19); ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
-Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Every app reads only its own project's keys, so a credential another app owns is never that app's credential: a shared service gets its own scoped token in the consuming app's own project instead of a copy of another app's key, and no app is taught to read `fleet-secrets` or the retired flat file.
+Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Every app reads only its own project's keys, so a credential another app owns is never that app's credential: a shared service gets its own scoped token in the consuming app's own project instead of a copy of another app's key, and no app is taught to read a shared reader or the retired flat file.
 
 When the owner hands you a new secret, it arrives as the path to a `chmod 600` file (never chat text).  Never print the value.  Prefer scoped, revocable credentials.  Remind the owner they can revoke when the task is done.
 
@@ -52,7 +52,7 @@ The relay tools are **live** (verified Nov 4 2026): a seat connected through Fle
 
 ## Zulip bot credentials
 
-Each seat bot's key is its own credential and nobody else's.  Every seat, Mac or cloud, resolves its `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY` and `<BOT>_ZULIP_SITE` at runtime through the same approved path: the process environment first (only when it already holds the Infisical-backed value), then the consumer's own scoped Infisical service token (or verify with the MCP tool `whoami`).  An independent container value is not a credential source.  A seat that cannot resolve the credential (env empty and `fleet-secrets get` unavailable or missing) stops and asks the owner or operator for a qualified route.  It never pastes, mints or invents a key, never opens Infisical by hand as a second path, and never reads another seat's value.  A missing required credential fails with an error naming the variable.  Infisical Fleet-OPS `/zulip` is the one home of a seat's Zulip key; there is no independent credential source for it.  The CLI accepts an operator-set override for a single invocation (`--rc PATH`, or `ZULIP_RC`); that is not a second home for the key, and an eavesdropper seat never reads the CLI's generic variable triple, so two seats cannot alias one bot.  The MCP tool `whoami` and the CLI `simple-chat whoami` show which source it used, never the key.
+Each seat bot's key is its own credential and nobody else's.  Every seat, Mac or cloud, resolves its `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY` and `<BOT>_ZULIP_SITE` at runtime through the same approved path: the consumer's own scoped Infisical service token (or verify with the MCP tool `whoami`), read from the consumer's own store and authoritative for its folder:  the environment may carry a copy of that same token, used only when the store holds no usable token, and a hand-set environment value must never replace the reviewed, scope-limited grant;  An independent container value is not a credential source.  A seat that cannot resolve the credential (its own scoped token missing or refused) stops and asks the owner or operator for a qualified route.  It never pastes, mints or invents a key, never opens Infisical by hand as a second path, and never reads another seat's value.  A missing required credential fails with an error naming the variable.  Infisical Fleet-OPS `/zulip` is the one home of a seat's Zulip key; there is no independent credential source for it.  The CLI accepts an operator-set override for a single invocation (`--rc PATH`, or `ZULIP_RC`); that is not a second home for the key, and an eavesdropper seat never reads the CLI's generic variable triple, so two seats cannot alias one bot.  The MCP tool `whoami` and the CLI `simple-chat whoami` show which source it used, never the key.
 
 Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message: delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical (the only home of the key), and note the leak on the Linear issue (the MCP tool `linear_comment`, with `id` and `body`) without the value.
 
@@ -66,17 +66,21 @@ Forbidden:
 grep '^[A-Z0-9_]+=' ~/.secrets/some-file
 grep '^ADMIN' ~/.secrets/some-file
 rg TOKEN ~/.secrets/
-fleet-secrets run -- env
+# env, printenv, or any whole-environment dump
 # Read / open-file / cat / less / bat on any secrets file
 ```
 
-Allowed:  the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
+Allowed:  the consumer's own scoped service token, read from its own store through `scripts/fleet_infisical.py` (`token_from_store` and `fetch_scoped`);  a missing or refused token fails closed and says which refusal it was.
 
 ```bash
-fleet-secrets names
+# names only, one folder, never a value
+python3 -c 'import os,sys; sys.path.insert(0,"scripts"); from fleet_infisical import token_from_store, list_project_names; t,s=token_from_store("consumer-ro"); sys.exit("consumer-ro service-token store unavailable or refused: "+s) if s!="ok" else print("\n".join(list_project_names("fleet-ops","/",os.environ,token=t)))'
 
-TOKEN="$(fleet-secrets get SOME_KEY)" || exit $?
-fleet-secrets run --only SOME_KEY -- some-command
+# one value, into a variable, never printed
+TOKEN="$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from fleet_infisical import fetch_scoped; v,s=fetch_scoped("SOME_KEY","/","consumer-ro"); sys.exit("consumer-ro scoped read unavailable or refused: "+s) if s!="ok" else sys.stdout.write(v)')" || exit $?
+
+# a command that needs that key, with the value off its command line
+SOME_KEY="$TOKEN" some-command
 ```
 
 Never add `2>&1` to a command that touches a secret.  If you must keep a value out of output you will see, redact on stdout only, with the secret on file descriptor 3 so it never reaches the process table (`some-command | python3 -c 'import sys; tok = open(3).read().rstrip("\n"); data = sys.stdin.read(); sys.stdout.write(data.replace(tok, "[REDACTED]") if tok else data)' 3<<<"$TOKEN"`).  The `secret-safety` pack carries the full form; never write `sed "s/$TOKEN/[REDACTED]/g"`.
@@ -139,7 +143,7 @@ Never put `COOLIFY_AGENTS` into Infisical as app `COOLIFY_API_TOKEN`.  Prefer e
 Do not declare a Cloudflare credential dead without a real resource call.
 
 1. `/user/tokens/verify` only understands **user-owned** tokens.  Account-owned tokens 401 there by design — use `/accounts/{id}/tokens/verify` or `GET /zones`.
-2. Global API Key "9103 Unknown X-Auth-Key" can mean the **wrong email**, not a dead key.  This fleet has multiple Cloudflare logins.  Try the pairing in FLEET-PROTOCOL.md / the `CLOUDFLARE_*` names from the shared `fleet-secrets names` reader before concluding.
+2. Global API Key "9103 Unknown X-Auth-Key" can mean the **wrong email**, not a dead key.  This fleet has multiple Cloudflare logins.  Try the pairing in FLEET-PROTOCOL.md / the `CLOUDFLARE_*` names from the folder's own scoped token before concluding.
 
 Empty `success:true` on a filtered Bearer call means "valid, not scoped to that filter," not dead.  Prefer `CLOUDFLARE_FLEET_API_TOKEN` for ordinary work.
 

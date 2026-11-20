@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
+import fleet_infisical as core
+import fleet_infisical_cli as cli
 from fleet_knobs import source as knobs
 from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core as rag
 from fleet_rag import infisical_settings as settings
-
-from fleet_secrets import cli, core
 
 PROJECT = "00000000-0000-4000-8000-000000000001"
 OTHER = "00000000-0000-4000-8000-000000000002"
@@ -64,7 +64,7 @@ class ScopedTokens(unittest.TestCase):
         self.original_open = os.open
         for target in ("subprocess.run", "os.open"):
             patch = mock.patch(
-                "fleet_secrets.core." + target,
+                "fleet_infisical." + target,
                 side_effect=AssertionError("credential store or login used"),
             )
             patch.start()
@@ -100,7 +100,7 @@ class ScopedTokens(unittest.TestCase):
             mock.patch.object(core.os, "open", self.original_open),
             tempfile.TemporaryDirectory() as root,
         ):
-            yield lambda: core.new_write_intent(Path(root) / "writer", "routing-test")
+            yield lambda: core.new_write_intent(Path(root).resolve() / "writer", "routing-test")
 
     def test_reader_metadata_precedes_bounded_v3_request_without_expansion(self):
         self.assertEqual(core.fetch_all("/", self.env), {"ALPHA": VALUE})
@@ -307,7 +307,7 @@ class ScopedTokens(unittest.TestCase):
 
 
 class RagWorkerScopedTokens(unittest.TestCase):
-    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
+    def test_rag_load_rejects_foreign_binding_instead_of_another_reader(self):
         with ScopedReadAPI({}, project=PROJECT) as api:
             env = {
                 "FLEET_RAG_INFISICAL_PROJECT": OTHER,
@@ -318,9 +318,6 @@ class RagWorkerScopedTokens(unittest.TestCase):
             }
             with (
                 mock.patch.dict(os.environ, env, clear=True),
-                mock.patch.object(
-                    rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
-                ) as fallback,
                 mock.patch.object(
                     rag, "_read_token_file", side_effect=AssertionError("file token fallback")
                 ) as token_file,
@@ -335,7 +332,12 @@ class RagWorkerScopedTokens(unittest.TestCase):
             self.assertEqual(bounded.call_args.args[:2], (OTHER, "/"))
             self.assertEqual(bounded.call_args.kwargs["token"], api.token)
             self.assertEqual(bounded.call_args.kwargs["timeout"], 30.0)
-            fallback.assert_not_called()
+            # The retired shared reader is no longer a fallback:  the module holds the
+            # recall reader's own scoped read and the Fleet-OPS root read,  and no other.
+            self.assertEqual(
+                sorted(name for name in dir(rag) if name.endswith("_many")),
+                ["fleet_ops_many", "infisical_many"],
+            )
             token_file.assert_not_called()
             self.assertEqual(api.requests, ["/api/v2/service-token"])
 

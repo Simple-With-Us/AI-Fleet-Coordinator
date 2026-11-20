@@ -12,6 +12,8 @@ SPEC = importlib.util.spec_from_file_location(
 fwh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fwh)
 
+import fleet_infisical
+
 
 class WorkerHealthReader(unittest.TestCase):
     def test_signature_matches_the_worker_scheme(self):
@@ -49,16 +51,45 @@ class WorkerHealthReader(unittest.TestCase):
             self.assertEqual((doc["worst"], doc["error"]), ("unknown", code))
         self.assertFalse(fwh.document(200, {"contract": "other"}, 0)["reachable"])
 
-    def test_read_key_survives_a_missing_binary(self):
-        old_env, old_which = dict(os.environ), fwh.shutil.which
+    def test_read_key_survives_a_missing_token(self):
+        old_env = dict(os.environ)
         os.environ.pop("HEALTH_HMAC_KEY", None)
-        fwh.shutil.which = lambda name: "/nonexistent/fleet-secrets"
         try:
-            self.assertEqual(fwh.read_key(), "")
+            with mock.patch.object(fleet_infisical, "fetch_scoped", return_value=("", "no-token")):
+                # A refused store is not an absent value:  the source that must be
+                # repaired is named.
+                with self.assertRaises(RuntimeError) as caught:
+                    fwh.read_key()
+                self.assertIn("worker-health-ro", str(caught.exception))
         finally:
-            fwh.shutil.which = old_which
             os.environ.clear()
             os.environ.update(old_env)
+
+    def test_read_key_comes_from_the_environment_first(self):
+        old_env = dict(os.environ)
+        os.environ["HEALTH_HMAC_KEY"] = "from-the-environment"
+        try:
+            self.assertEqual(fwh.read_key(), "from-the-environment")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    def test_read_key_uses_the_own_scoped_token(self):
+        old_env = dict(os.environ)
+        os.environ.pop("HEALTH_HMAC_KEY", None)
+        asked = []
+
+        def read(name, folder, account, env=None):
+            asked.append((name, folder, account))
+            return ("from-the-scoped-token", "ok")
+
+        try:
+            with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+                self.assertEqual(fwh.read_key(), "from-the-scoped-token")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+        self.assertEqual(asked, [("HEALTH_HMAC_KEY", "/", "worker-health-ro")])
 
     def test_requests_carry_an_explicit_user_agent(self):
         self.assertTrue(fwh.USER_AGENT.startswith("fleet-worker-health/"))

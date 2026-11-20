@@ -8,14 +8,18 @@ against a fixture that is right there in the temporary tree.
 from __future__ import annotations
 
 import builtins
+import http.server
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.parse
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
+from unittest import mock
 
 from fleet_config import contract
 from fleet_config.checks import CheckContext, default_registry, sha256_text
@@ -1048,25 +1052,119 @@ class CredentialTests(TempHome):
         self.assertNotIn(self.SENTINEL, still_there.reason)
 
 
+class FakeInfisicalAPI:
+    """A loopback Infisical for the secret-store credential check.
+
+    It answers the two calls the shared client makes:  the token's own metadata and a
+    names-only listing of one folder.  No value ever leaves it.
+    """
+
+    def __init__(self, names, *, project, path="/zulip", permissions=("read",), status=200):
+        self.names = list(names)
+        self.project = project
+        self.path = path
+        self.permissions = list(permissions)
+        self.status = status
+        self.requests = []
+        self.token = "st." + "a" * 40
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                fake.requests.append(self.path)
+                parsed = urllib.parse.urlsplit(self.path)
+                if self.headers.get("Authorization") != "Bearer " + fake.token:
+                    return self.answer(401, {})
+                if parsed.path == "/api/v2/service-token":
+                    return self.answer(
+                        fake.status,
+                        {
+                            "workspace": fake.project,
+                            "scopes": [{"environment": "prod", "secretPath": fake.path}],
+                            "permissions": fake.permissions,
+                            "expiresAt": "2099-01-01T00:00:00Z",
+                        },
+                    )
+                if parsed.path == "/api/v3/secrets/raw":
+                    return self.answer(
+                        200,
+                        {
+                            "secrets": [
+                                {
+                                    "secretKey": name,
+                                    "type": "shared",
+                                    "workspace": fake.project,
+                                    "environment": "prod",
+                                    "secretPath": fake.path,
+                                }
+                                for name in fake.names
+                            ]
+                        },
+                    )
+                return self.answer(404, {})
+
+            def answer(self, status, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def base(self) -> str:
+        return "http://127.0.0.1:%d/api" % self.server.server_address[1]
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
 class SecretStoreCredentialTests(TempHome):
     """The secret-store credential check, which asks for key NAMES and never values."""
 
     SENTINEL = "sentinel-secret-value-do-not-leak"
+    PROJECT = "11111111-2222-3333-4444-555555555555"
 
-    def fake_secrets(self, body: str) -> None:
-        """Put a fake ``fleet-secrets`` on PATH that prints `body`."""
-        directory = os.path.join(self.home, "bin")
-        os.makedirs(directory, exist_ok=True)
-        script = os.path.join(directory, "fleet-secrets")
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\n" + body + "\n")
-        os.chmod(script, 0o755)
+    def setUp(self) -> None:
+        super().setUp()
+        self.api = None
+
+    def tearDown(self) -> None:
+        if self.api is not None:
+            self.api.close()
+        super().tearDown()
+
+    def fake_store(self, names, *, permissions=("read",), status=200) -> FakeInfisicalAPI:
+        """A loopback Infisical holding these key NAMES, bound as the check's scoped token."""
+        self.api = FakeInfisicalAPI(
+            names, project=self.PROJECT, permissions=permissions, status=status
+        )
+        # The check reads its token from its own store first.  The store is stubbed here
+        # so a test never reads the host's own credential store,  and the copy in the
+        # environment is what the read falls back to.
+        store = mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token"))
+        store.start()
+        self.addCleanup(store.stop)
         self.ctx = self.ctx.__class__(
             home=self.ctx.home,
             now=self.ctx.now,
             timeout=self.ctx.timeout,
-            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
+            env={
+                "FLEET_SECRETS_API": self.api.base,
+                "INFISICAL_TOKEN": self.api.token,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT,
+            },
         )
+        return self.api
 
     def rule(self, names=("CLAUDE_ZULIP_KEY",)) -> Rule:
         return make_rule(
@@ -1078,7 +1176,7 @@ class SecretStoreCredentialTests(TempHome):
         )
 
     def test_a_present_key_passes_and_only_names_are_reported(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_EMAIL\necho CLAUDE_ZULIP_KEY")
+        self.fake_store(["CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY"])
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.PASS)
         self.assertEqual(result.observed.names, ("CLAUDE_ZULIP_KEY",))
@@ -1086,45 +1184,47 @@ class SecretStoreCredentialTests(TempHome):
         self.assertNotIn(self.SENTINEL, json.dumps(result_to_dict(result)))
 
     def test_an_absent_key_is_missing_and_not_a_pass(self):
-        self.fake_secrets("echo SOME_OTHER_KEY")
+        self.fake_store(["SOME_OTHER_KEY"])
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.MISSING)
         self.assertIs(result.reason_code, ReasonCode.MISSING)
         self.assertTrue(contract.is_failing(result))
 
     def test_an_unreachable_secret_store_is_a_failing_unknown(self):
-        # No fleet-secrets on PATH at all:  the check must not report a pass.
-        self.ctx = self.ctx.__class__(
-            home=self.ctx.home,
-            now=self.ctx.now,
-            timeout=self.ctx.timeout,
-            env={"PATH": os.path.join(self.home, "empty")},
-        )
+        # The store answers nothing:  the check must not report a pass.
+        self.fake_store(["CLAUDE_ZULIP_KEY"], status=500)
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
         self.assertTrue(contract.is_failing(result))
 
-    def test_a_failing_command_is_a_failing_unknown(self):
-        self.fake_secrets("exit 4")
+    def test_a_failing_read_is_a_failing_unknown(self):
+        self.fake_store(["CLAUDE_ZULIP_KEY"], permissions=("read", "write"))
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
 
+    def test_no_scoped_token_is_a_failing_unknown(self):
+        # No token in the environment and none in the checker's own store.
+        with mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token")):
+            result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
+
     def test_unreadable_output_is_a_failing_unknown(self):
-        self.fake_secrets("echo 'not a key name!'")
+        self.fake_store(["not a key name!"])
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_a_rule_with_no_key_to_look_for_is_unparseable(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        self.fake_store(["CLAUDE_ZULIP_KEY"])
         result = check_credential_key_present(self.rule(names=()), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_the_folder_must_be_a_path_the_check_may_ask_for(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        self.fake_store(["CLAUDE_ZULIP_KEY"])
         rule = self.rule()
         rule = replace(
             rule,
@@ -1135,26 +1235,13 @@ class SecretStoreCredentialTests(TempHome):
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_one_run_asks_the_secret_store_once_per_folder(self):
-        directory = os.path.join(self.home, "bin")
-        os.makedirs(directory, exist_ok=True)
-        calls = os.path.join(self.home, "calls")
-        script = os.path.join(directory, "fleet-secrets")
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\necho called >> %s\necho CLAUDE_ZULIP_KEY\n" % calls)
-        os.chmod(script, 0o755)
-        self.ctx = self.ctx.__class__(
-            home=self.ctx.home,
-            now=self.ctx.now,
-            timeout=self.ctx.timeout,
-            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
-        )
+        api = self.fake_store(["CLAUDE_ZULIP_KEY"])
         first = check_credential_key_present(self.rule(), "claude", self.ctx)
         second = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(first.state, CheckState.PASS)
         self.assertIs(second.state, CheckState.PASS)
-        with open(calls, encoding="utf-8") as handle:
-            recorded = handle.read().strip().splitlines()
-        self.assertEqual(len(recorded), 1)
+        listings = [r for r in api.requests if r.startswith("/api/v3/secrets/raw")]
+        self.assertEqual(len(listings), 1)
 
 
 class RegistryTests(unittest.TestCase):

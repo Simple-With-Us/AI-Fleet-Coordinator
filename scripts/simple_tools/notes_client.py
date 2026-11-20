@@ -61,18 +61,51 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def fleet_secrets_get(
+# This client's own scoped read-only service tokens:  one grant per Infisical folder, each
+# named for the folder it covers and held in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server).  The store is the authority for the
+# token:  a token in the environment is only a copy of that same grant, and it is used
+# when the store has none.
+TOKEN_ACCOUNTS = {
+    ("ai-fleet-coordinator", "/"): "notes-client-ro",
+    ("ai-fleet-coordinator", W.KEY_PATH): "notes-operator-ro",
+}
+
+
+def _binding(scoped: Mapping[str, str], path: str) -> str:
+    """The one scoped token this read runs under:  this consumer's own scoped service token
+    from its own store, else a copy of that same token in the environment.
+
+    The store is the authority:  a hand-set environment value never replaces the reviewed,
+    scope-limited grant.  A copy in the environment is only used when the store has no
+    usable token, which is how a host transports a value it already synced from Infisical.
+    """
+    account = TOKEN_ACCOUNTS.get((W.KEY_PROJECT, path))
+    status = "no-token"
+    if account:
+        token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+        if token:
+            return token
+    bound = (scoped.get(FI.ENV_AI_FLEET_COORDINATOR_TOKEN) or "").strip()
+    if bound:
+        return FI.check_service_token(bound)
+    if account:
+        raise FI.SecretsError("service-token-required: %s is not usable (%s)" % (account, status))
+    raise FI.SecretsError("service-token-required: no scoped token covers " + path)
+
+
+def scoped_read(
     name: str,
     path: str,
     env: Mapping[str, str],
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
-    """One direct, scoped Infisical read; the legacy function name and runner argument are API compatibility only."""
+    """One direct, scoped Infisical read through this client's own service token."""
     scoped = dict(env)
     scoped[FI.ENV_READ_PATHS] = path
     try:
         project = FI.infisical_project_id(scoped, FI.home_dir(scoped), W.KEY_PROJECT)
-        binding = FI.resolve_token(scoped, project_name=W.KEY_PROJECT)
+        binding = _binding(scoped, path)
         values = FI.fetch_project(project, path, scoped, token=binding, names=(name,), timeout=30.0)
     except TimeoutError:
         # A hung lookup is not a missing value:  say so, so the caller does not go looking for a key that is there.
@@ -105,7 +138,7 @@ def base_url(
         except Exception:  # noqa: BLE001 - an unreadable knob reads as not configured, never as a crash
             raw = ""
     if not raw:
-        raw = fleet_secrets_get(KNOB, KNOB_PATH, env, runner).strip()
+        raw = scoped_read(KNOB, KNOB_PATH, env, runner).strip()
     if not raw:
         return None
     parts = urllib.parse.urlsplit(raw)
@@ -158,7 +191,7 @@ class KeySource:
             self._value = None
 
     def _fetch(self) -> str:
-        return fleet_secrets_get(self.name, W.KEY_PATH, self.env, self.runner)
+        return scoped_read(self.name, W.KEY_PATH, self.env, self.runner)
 
 
 class OperatorClient:

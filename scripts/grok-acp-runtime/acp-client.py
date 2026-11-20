@@ -34,31 +34,53 @@ HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
-FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
+# This client's own scoped read-only service token:  Fleet-OPS prod /grok-acp, the one folder
+# it reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac,
+# a private file on a server);  the shared Infisical client checks the token's own grant and the
+# answer's own provenance before the value is used.
+TOKEN_ACCOUNT = "grok-acp-ro"
+SECRET_FOLDER = "/grok-acp"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def load_secret() -> str:
-    """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp (`fleet-secrets get`)."""
+    """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp through
+    this client's own scoped token.
+
+    A host that bound the secret in the environment keeps it.  Otherwise the read runs
+    under this client's own scoped service token,  and every failure says which source
+    was unavailable:  the shared client,  the token store,  or the read.  No value ever
+    appears in the refusal.
+    """
     secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
-    if not secret:
-        try:
-            proc = subprocess.run(
-                [FLEET_SECRETS, "get", "GROK_AGENT_SECRET", "--path", "/grok-acp"],
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                secret = proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            secret = ""
-    if not secret:
-        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
-    return secret
+    if secret:
+        return secret
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        sys.exit(
+            "grok-acp: the shared Infisical client (fleet_infisical.py) is not importable, "
+            "so the %s scoped service token cannot be read" % TOKEN_ACCOUNT
+        )
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
+        found, status = FI.fetch_scoped("GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+    except TimeoutError:
+        sys.exit(
+            "grok-acp: the Infisical read for the %s scoped service token timed out" % TOKEN_ACCOUNT
+        )
+    except Exception as exc:
+        sys.exit(
+            "grok-acp: the Infisical read for the %s scoped service token could not run (%s)"
+            % (TOKEN_ACCOUNT, type(exc).__name__)
+        )
+    if status != "ok" or not found:
+        sys.exit(
+            "grok-acp: no usable secret:  the %s scoped service token store is unavailable or "
+            "refused (%s),  and GROK_AGENT_SECRET binds none" % (TOKEN_ACCOUNT, status)
+        )
+    return found
 
 
 def is_rpc_response(msg: dict) -> bool:

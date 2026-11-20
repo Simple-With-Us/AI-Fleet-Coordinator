@@ -35,18 +35,29 @@ DSH_RUNTIME = Path.home() / "apps" / "dsh-runtime"
 SHELLULAR_AGENTS = Path.home() / ".shellular" / "agents.json"
 ACP_SESSIONS = Path.home() / ".cursor" / "acp-sessions"
 API_KEY_NAMES = ("CURSOR_API_KEY", "CURSOR_SYNC_API_KEY")
-FLEET_SECRETS_BIN = (
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)  # OPS-818:  Fleet-OPS in Infisical
+# This consumer's own scoped read-only service token:  Fleet-OPS prod root, the folder the
+# Cursor key is read from.  The token lives in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server);  the shared Infisical client checks the
+# token's own grant and the answer's own provenance before the value is used.
+TOKEN_ACCOUNT = "cursor-surfaces-ro"
+SECRET_FOLDER = "/global-api-keys"
 REPO_SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_SCRIPTS))
 LIVE_FILES = (
     "cursor_chat_surfaces.py",
     "cursor_acp_cloud_bridge.py",
     "cursor-chat-surfaces",
     "cursor-machine-worker.sh",
+    # The shared Infisical client the live copy reads its own scoped token with.
+    "fleet_infisical.py",
 )
 
 JsonDict = dict[str, Any]
+
+
+def _warn(message: str) -> None:
+    """One diagnostic on standard error.  A source name and a reason, never a value."""
+    sys.stderr.write("cursor-surfaces:  %s\n" % message)
 
 
 def state_path(*parts: str) -> Path:
@@ -63,30 +74,58 @@ def _env_api_key() -> str | None:
     return None
 
 
-def _fleet_secrets_key() -> str | None:
-    """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from `fleet-secrets get`, or None.  Never logged."""
-    binary = shutil.which("fleet-secrets") or (
-        str(FLEET_SECRETS_BIN) if FLEET_SECRETS_BIN.is_file() else None
-    )
-    if not binary:
-        return None
+def _infisical_key() -> str | None:
+    """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from Infisical, through this consumer's own
+    scoped token.  None when the folder holds no such name.
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself each raise,  naming the reader and the account,  so the source that
+    must be repaired stays visible.  The value never appears in the diagnostic.
+    """
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        raise RuntimeError(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        ) from None
+    env = dict(os.environ)
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
     for name in API_KEY_NAMES:
         try:
-            proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        value = proc.stdout.strip() if proc.returncode == 0 else ""
-        if value:
-            return value
+            value, status = FI.fetch_scoped(name, SECRET_FOLDER, TOKEN_ACCOUNT, env)
+        except TimeoutError:
+            raise RuntimeError(
+                "the Infisical read for the " + TOKEN_ACCOUNT + " scoped service token timed out"
+            ) from None
+        except Exception as exc:
+            raise RuntimeError(
+                "the Infisical read for the "
+                + TOKEN_ACCOUNT
+                + " scoped service token could not run ("
+                + type(exc).__name__
+                + ")"
+            ) from None
+        if status == "ok":
+            return value or None
+        raise RuntimeError(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
+        )
     return None
 
 
 def load_api_key() -> str | None:
-    """CURSOR_API_KEY or CURSOR_SYNC_API_KEY from the environment, else Infisical Fleet-OPS (`fleet-secrets get`)."""
+    """CURSOR_API_KEY or CURSOR_SYNC_API_KEY from the environment, else Infisical Fleet-OPS
+    through this consumer's own scoped token."""
     env = _env_api_key()
     if env:
         return env
-    return _fleet_secrets_key()
+    return _infisical_key()
 
 
 def github_https_url(remote: str) -> str | None:
@@ -434,8 +473,8 @@ def cmd_status() -> int:
         + (
             "present"
             if key
-            else "MISSING (CURSOR_SYNC_API_KEY in Infisical Fleet-OPS via `fleet-secrets get`, "
-            "or CURSOR_API_KEY in the environment)"
+            else "MISSING (CURSOR_SYNC_API_KEY in Infisical Fleet-OPS, read with this "
+            "consumer's own scoped token, or CURSOR_API_KEY in the environment)"
         )
     )
     print(f"  My Machines worker: {'up' if worker_running() else 'down'}")
@@ -487,7 +526,8 @@ def cmd_list_cloud() -> int:
     key = load_api_key()
     if not key:
         print(
-            "No Cursor API key.  Use CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).",
+            "No Cursor API key.  Use CURSOR_SYNC_API_KEY in Infisical Fleet-OPS (this "
+            "consumer's own scoped token), or CURSOR_API_KEY in the environment.",
             file=sys.stderr,
         )
         return 2
@@ -628,7 +668,8 @@ def cmd_install(shellular: bool) -> int:
         print("restart Shellular to pick up the spawn: pm2 restart shellular")
     if not load_api_key():
         print(
-            "Still need CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).  "
+            "Still need CURSOR_SYNC_API_KEY in Infisical Fleet-OPS (this consumer's own "
+            "scoped token).  "
             "Without it the Cursor bridge execs local cursor-agent acp and iOS cannot see those chats."
         )
         return 2

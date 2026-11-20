@@ -26,6 +26,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
+import fleet_infisical
 import watchdog as wd
 
 UTC = dt.UTC
@@ -156,6 +157,47 @@ class Base(unittest.TestCase):
         self.state = self.store.load()
         self.state["inventory"] = json.loads(json.dumps(INVENTORY))
         self.state["daily_check_day"] = NOW.strftime("%Y-%m-%d")
+        # The scoped Infisical read, faked:  a name the folder holds is present, another is
+        # absent, and a third fails.  No test reaches the network or the token store.
+        self.secret_values: dict = {}
+        self.secret_codes: dict = {}
+        self.fetches: list = []
+        for target, replacement in (
+            (
+                fleet_infisical,
+                "token_from_store",
+            ),
+        ):
+            pass
+        token = mock.patch.object(
+            fleet_infisical,
+            "token_from_store",
+            lambda account, env=None, home=None: ("st." + "f" * 40, "ok"),
+        )
+        token.start()
+        self.addCleanup(token.stop)
+        project = mock.patch.object(
+            fleet_infisical,
+            "infisical_project_id",
+            lambda env, home, project="fleet-ops": "11111111-2222-3333-4444-555555555555",
+        )
+        project.start()
+        self.addCleanup(project.stop)
+        fetch = mock.patch.object(fleet_infisical, "fetch_project", self.fake_fetch)
+        fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def fake_fetch(self, project, path, env, *, token=None, names=None, **kwargs):
+        """The scoped read, faked:  a name the folder holds is present, another is absent."""
+        self.fetches.append((project, path, tuple(names or ())))
+        found = {}
+        for name in names or ():
+            code = self.secret_codes.get(name, 0 if name in self.secret_values else 404)
+            if code == 0:
+                found[name] = self.secret_values[name]
+            elif code != 404:
+                raise fleet_infisical.SecretsError("fetch-failed")
+        return found
 
     def poll(self, account=None, at=NOW, mode="enforce", profile="paid") -> int:
         if account is not None:
@@ -1003,10 +1045,6 @@ class ConnectionTests(Base):
 
         def run(command, **kwargs):
             self.commands.append((command, kwargs))
-            if command[0] == "fleet-secrets":
-                name = command[2]
-                code = (codes or {}).get(name, 0 if name in values else 3)
-                return SimpleNamespace(returncode=code, stdout=values.get(name, ""))
             return SimpleNamespace(returncode=0, stdout="")
 
         return run
@@ -1037,6 +1075,8 @@ class ConnectionTests(Base):
         return open_
 
     def conn(self, values, responses=(), codes=None, env=None):
+        self.secret_values = values
+        self.secret_codes = codes or {}
         return wd.Connections(
             self.cfg,
             runner=self.runner(values, codes),
@@ -1044,29 +1084,19 @@ class ConnectionTests(Base):
             env=env or {},
         )
 
-    def test_secrets_come_from_fleet_secrets_by_the_named_key_and_folder(self):
+    def test_secrets_come_from_the_scoped_token_by_the_named_key_and_folder(self):
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN})
         self.assertEqual(conn.token(), self.TOKEN)
-        command = self.commands[0][0]
-        self.assertEqual(
-            command,
-            [
-                "fleet-secrets",
-                "get",
-                "CF_USAGE_WATCHDOG_API_TOKEN",
-                "--path",
-                "/cf-usage-watchdog",
-                "--project",
-                "ai-fleet-coordinator",
-            ],
-        )
+        project, path, names = self.fetches[0]
+        self.assertEqual(path, "/cf-usage-watchdog")
+        self.assertEqual(names, ("CF_USAGE_WATCHDOG_API_TOKEN",))
 
     def test_absent_or_failed_credential_is_a_poll_failure(self):
         with self.assertRaises(wd.PollError):
             self.conn({}).graphql("q", {})
         with self.assertRaises(wd.PollError) as caught:
             self.conn({}, codes={"CF_USAGE_WATCHDOG_API_TOKEN": 4}).graphql("q", {})
-        self.assertIn("exit-4", str(caught.exception))
+        self.assertIn("credential-fetch-failed", str(caught.exception))
 
     def test_graphql_errors_are_a_poll_failure_even_with_data(self):
         answer = json.dumps(
@@ -1155,7 +1185,9 @@ class ConnectionTests(Base):
         conn = self.conn({"CF_USAGE_WATCHDOG_HEARTBEAT_URL": url}, [b"", b""])
         self.assertTrue(conn.heartbeat())
         self.assertTrue(conn.heartbeat())
-        self.assertEqual(len([c for c in self.commands if c[0][0] == "fleet-secrets"]), 1)
+        self.assertEqual(
+            len([f for f in self.fetches if "CF_USAGE_WATCHDOG_HEARTBEAT_URL" in f[2]]), 1
+        )
         self.assertEqual(self.requests[0].full_url, url)
 
     def test_heartbeat_absent_is_none(self):
@@ -1225,11 +1257,10 @@ class StoreTests(Base):
 
 class AccountIdTests(Base):
     def conn(self, values, env=None):
+        self.secret_values = values
+
         def run(command, **kwargs):
-            name = command[2]
-            return SimpleNamespace(
-                returncode=0 if name in values else 3, stdout=values.get(name, "")
-            )
+            return SimpleNamespace(returncode=0, stdout="")
 
         return wd.Connections(self.cfg, runner=run, env=env or {})
 
@@ -1340,13 +1371,13 @@ class HttpSafetyTests(Base):
         self.assertFalse([c for c in self.fake.writes() if c[1].endswith("/schedules")])
 
     def test_a_failed_page_credential_read_logs_why_and_stays_false(self):
-        def run(command, **kwargs):
-            return SimpleNamespace(returncode=4, stdout="")
-
-        conn = wd.Connections(self.cfg, runner=run, env={})
+        self.secret_codes = {"PUSHOVER_APP_TOKEN": 4}
+        conn = wd.Connections(
+            self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=0), env={}
+        )
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.page("title", "text"))
-        self.assertIn("credential-fetch-exit-4", out.getvalue())
+        self.assertIn("credential-fetch-failed", out.getvalue())
 
     def test_only_machine_codes_survive_from_an_error_body(self):
         errors = [

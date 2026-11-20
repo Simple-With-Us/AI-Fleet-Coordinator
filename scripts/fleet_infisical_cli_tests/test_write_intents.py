@@ -32,7 +32,7 @@ class WriteIntentTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name) / "writer"
+        self.directory = Path(self.temporary.name).resolve() / "writer"
         self.token = "st." + secrets.token_urlsafe(32)
         self.value = secrets.token_urlsafe(40)
         self.env = {core.ENV_PROJECT: PROJECT, core.ENV_WRITE_TOKEN: self.token}
@@ -157,7 +157,7 @@ class WriteIntentTests(unittest.TestCase):
     def test_timeout_202_or_server_error_is_unknown_and_no_new_id_purpose_or_noop_bypasses_it(self):
         for status in (0, 202, 500, 503):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as root:
-                self.directory = Path(root) / "writer"
+                self.directory = Path(root).resolve() / "writer"
                 self.intent = self.new_intent()
                 self.statuses, self.no_ack = [status], True
                 self.calls.clear()
@@ -245,7 +245,7 @@ class WriteIntentTests(unittest.TestCase):
             (OSError("synthetic provider text"), "outcome_unknown"),
         ):
             with self.subTest(kind=type(failure).__name__), tempfile.TemporaryDirectory() as root:
-                self.directory = Path(root) / "writer"
+                self.directory = Path(root).resolve() / "writer"
                 self.intent = self.new_intent()
                 outer = self.api
 
@@ -284,7 +284,7 @@ class WriteIntentTests(unittest.TestCase):
     def test_crash_boundaries_distinguish_prepared_cancellation_from_sending_and_acked(self):
         for phase in ("prepared", "sending", "acknowledged"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as root:
-                self.directory = Path(root) / "writer"
+                self.directory = Path(root).resolve() / "writer"
                 self.intent = self.new_intent()
                 self.statuses, self.crash = [200], phase
                 with self.assertRaises(Crash):
@@ -421,7 +421,7 @@ class WriteIntentTests(unittest.TestCase):
     def test_definite_refusal_preserves_safe_status_retryability_and_terminal_id_on_restart(self):
         for status in (401, 403, 429):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as root:
-                self.directory = Path(root) / "writer"
+                self.directory = Path(root).resolve() / "writer"
                 self.intent, self.statuses = self.new_intent(), [status]
                 error = self.assert_outcome("refused", self.put)
                 self.assertEqual(
@@ -682,7 +682,7 @@ class WriteIntentTests(unittest.TestCase):
                 core._check_recovery_identity(raw, self.intent)
 
     def test_clear_unsettled_cli_without_request_id_names_clear_unsettled(self):
-        from fleet_secrets import cli as fs_cli
+        import fleet_infisical_cli as fs_cli
 
         with self.assertRaisesRegex(
             fs_cli.UsageError, "clear-unsettled requires the original request identity"
@@ -691,32 +691,6 @@ class WriteIntentTests(unittest.TestCase):
 
 
 class ReadOnlyInstallTests(unittest.TestCase):
-    def test_actual_linux_entrypoint_help_works_with_spec_loaded_fi_and_no_auth(self):
-        with tempfile.TemporaryDirectory() as root:
-            directory = Path(root)
-            (directory / "fleet_infisical.py").write_bytes(Path(core.__file__).read_bytes())
-            entry = directory / "linux-entrypoint.py"
-            entry.write_bytes(
-                (Path(core.__file__).parent / "fleet_secrets" / "linux-entrypoint.py").read_bytes()
-            )
-            delegate = directory / "fleet-secrets-cli"
-            delegate.write_text("#!/bin/sh\nprintf 'isolated help succeeded\\n'\n")
-            delegate.chmod(0o700)
-            run = subprocess.run(
-                [sys.executable, "-I", "-B", str(entry), "--help"],
-                capture_output=True,
-                text=True,
-                env={},
-                timeout=10,
-            )
-            self.assertEqual(
-                (run.returncode, run.stdout, run.stderr), (0, "isolated help succeeded\n", "")
-            )
-            self.assertEqual(
-                sorted(path.name for path in directory.iterdir()),
-                ["fleet-secrets-cli", "fleet_infisical.py", "linux-entrypoint.py"],
-            )
-
     def test_fi_only_install_reads_without_importing_sqlite_or_creating_writer_state(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root) / "fleet_infisical.py"

@@ -61,7 +61,7 @@ Checks:
               token exists
   mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
-              fleet-secrets, fleetlink), then each registry tool's install and version
+              fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
               the server's fleet-cli-git-update and fleet-tools-doctor timers);  on the server,
               updater:fleet-server-status.timer also says whether the collector's report is
@@ -152,8 +152,6 @@ SHIPPED = (
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
     "scripts/fleet_knobs/",
-    "scripts/fleet_secrets/__init__.py",
-    "scripts/fleet_secrets/core.py",
     "scripts/fleet_infisical.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
@@ -206,9 +204,7 @@ SHIPPED_EXACT = frozenset(
         # routines POST to).
         "scripts/zc-wake-bridge",
         "scripts/ag-wake-bridge",
-        # The shared scoped client and the compatibility imports its existing consumers use.
-        "scripts/fleet_secrets/__init__.py",
-        "scripts/fleet_secrets/core.py",
+        # The shared scoped client every consumer imports.
         "scripts/fleet_infisical.py",
         "docs/protocols/simple-tools-guide.md",
         "scripts/simple_tools/wake/wake-schema.json",
@@ -466,8 +462,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # What each Mac installer copies out of the runtime, so a copy can be compared blob by blob with
 # main.  `files` are (installed path, repo path);  `trees` are (installed dir, repo dir, recursive):
-# recursive mirrors rsync --delete without tests/ and __pycache__/ (install-fleet-rag.sh), and
-# not recursive is the top-level *.py files (install-fleet-secrets.sh).
+# recursive mirrors tests/ and __pycache__/ (install-fleet-rag.sh).
 COPY_SETS = {
     "recall": {
         "root": "apps/fleet-rag",
@@ -487,13 +482,6 @@ COPY_SETS = {
         "files": (("fleet-mode", "scripts/fleet-mode"), ("FLEET-MODE.md", "docs/FLEET-MODE.md")),
         "trees": (),
         "fix": "copy scripts/fleet-mode and docs/FLEET-MODE.md to ~/apps",
-    },
-    "fleet-secrets": {
-        "root": ".local/share/fleet-secrets",
-        "entry": "fleet-secrets",
-        "files": (("fleet-secrets", "scripts/fleet-secrets"),),
-        "trees": (("fleet_secrets", "scripts/fleet_secrets", False),),
-        "fix": "bash scripts/install-fleet-secrets.sh",
     },
 }
 # The server's wrappers exec current/<script> (fleet-cli-release.py wrapper_files).
@@ -1519,38 +1507,95 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
 # The Zulip key prefix where it differs from the seat (simple_tools/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
+_names_reason_cache: dict[str, str] = {}
 _UNSET = object()
+
+# The doctor's own scoped token per Infisical folder:  one token per folder, so the doctor
+# proves a folder only with a grant that names that folder.  The account is the token's
+# registry name in the host's approved store (the owner's keychain on the Mac, the doctor's
+# own token file on a server).
+DOCTOR_TOKEN_ACCOUNTS = {
+    ("fleet-ops", "/zulip"): "fleet-doctor-zulip-ro",
+    ("fleet-ops", "/linear"): "fleet-doctor-linear-ro",
+    ("ai-fleet-coordinator", "/fleetlink"): "fleet-doctor-fleetlink-ro",
+}
+
+
+def shared_client():
+    """The shared scoped Infisical client, imported from beside this script.
+
+    The doctor runs as `python3 -I` on the server, which leaves this folder off sys.path,
+    so the path is added here.  None when the client is not beside the doctor:  the doctor
+    then reports the listing as unknown rather than failing the whole run."""
+    scripts = Path(__file__).resolve().parent
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    try:
+        import fleet_infisical
+    except ImportError:
+        return None
+    return fleet_infisical
 
 
 def infisical_names(
     folder: str, env: dict[str, str], project: str = "fleet-ops"
 ) -> frozenset[str] | None:
-    """Key NAMES in one Infisical folder (`fleet-secrets names`:  no value reaches this process), or None when
-    fleet-secrets is missing or fails.  Fleet-OPS unless `project` says otherwise.  Once per folder per run."""
+    """Key NAMES in one Infisical folder, through the doctor's own scoped token.
+
+    No value reaches this process:  the shared client asks for names only.  The token is
+    the doctor's own, read from its own store (the account below);  a token bound in the
+    environment is only a copy of that same grant, and it is used when the store has none.
+    None when the folder cannot be read.  Fleet-OPS unless `project` says otherwise.  Once
+    per folder per run."""
     cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
     if cache_key in _names_cache:
         return _names_cache[cache_key]
-    binary = (
-        env.get("FLEET_SECRETS_BIN")
-        or shutil.which("fleet-secrets")
-        or str(HOME / ".local/bin/fleet-secrets")
-    )
     names: frozenset[str] | None = None
-    try:
-        proc = subprocess.run(
-            [binary, "names", "--path", folder, "--project", project],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if proc.returncode == 0:
-            names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
-    except (OSError, subprocess.SubprocessError):
-        names = None
+    reason = ""
+    client = shared_client()
+    if client is None:
+        reason = "the shared Infisical client is not importable"
+    else:
+        scoped = dict(env)
+        scoped[client.ENV_READ_PATHS] = folder
+        account = DOCTOR_TOKEN_ACCOUNTS.get((project, folder), "")
+        status = "no-token"
+        token = ""
+        if account:
+            token, status = client.token_from_store(account, scoped, HOME)
+        if not token:
+            try:
+                token = client.resolve_token(scoped, project_name=project)
+            except client.SecretsError:
+                token = ""
+        if token:
+            try:
+                project_id = client.infisical_project_id(scoped, HOME, project)
+                names = frozenset(
+                    client.list_project_names(project_id, folder, scoped, token=token, timeout=60)
+                )
+            except (client.SecretsError, OSError, ValueError):
+                names = None
+                reason = "the scoped read was refused"
+            finally:
+                token = ""
+        elif account:
+            reason = "the %s service-token store is unavailable or refused (%s)" % (account, status)
+        else:
+            reason = "no scoped token is registered for %s %s" % (project, folder)
     _names_cache[cache_key] = names
+    _names_reason_cache[cache_key] = reason
     return names
+
+
+def infisical_names_reason(folder: str, project: str = "fleet-ops") -> str:
+    """Why the last listing of that folder could not be read, or "" when it was read.
+
+    The reason names the account whose store was refused,  so a report says which
+    credential is missing instead of a generic warning.
+    """
+    cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
+    return _names_reason_cache.get(cache_key, "")
 
 
 def seat_has_fleetlink_token(
@@ -1586,7 +1631,13 @@ def check_seat(
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
-        report.add(f"seat:{seat}", "WARN", "fleet-secrets could not list Infisical Fleet-OPS names")
+        reason = infisical_names_reason("/zulip", "fleet-ops")
+        report.add(
+            f"seat:{seat}",
+            "WARN",
+            "the doctor's own scoped token could not list the Infisical Fleet-OPS /zulip names"
+            + (":  " + reason if reason else ""),
+        )
         return
     prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)
     zulip = all(f"{prefix}_ZULIP_{part}" in zulip_names for part in ("EMAIL", "KEY", "SITE"))
@@ -1610,7 +1661,7 @@ def check_seat(
     ]
     notes = ["missing " + ", ".join(missing)] if missing else []
     if unreadable:
-        notes.append("fleet-secrets could not list Infisical fleetlink token names")
+        notes.append("the doctor's own scoped token could not list Infisical fleetlink token names")
     if missing:
         status = "FAIL"
     elif unreadable:
@@ -1689,7 +1740,8 @@ MCP_CANONICAL_NAME = "simple-chat"
 def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     """Client files supply only nonsecret locale settings, never credentials or identity.
 
-    Approved credentials come from the process environment or fleet-secrets.  Client-file
+    Approved credentials come from the process environment or the consumer's own scoped
+    token.  Client-file
     values cannot override either source or redirect credential lookup.
     """
     servers = client_servers(seat, home)
@@ -2260,7 +2312,7 @@ def mac_copy_revision(runner: Callable = subprocess.run, tip: str | None = None)
 def check_mac_copies(
     report: Report, runner: Callable = subprocess.run, tip: str | None = None
 ) -> None:
-    """The Mac's installed copies (the fleet-rag install, fleet-mode, fleet-secrets) against the tip of main.
+    """The Mac's installed copies (the fleet-rag install, fleet-mode) against the tip of main.
 
     These rows are about a copy on disk, not about where the Mac's commands run, so they hold for
     every Mac, whichever runtime layout this one has.  They rode check_mac_tools until AFC-1052:
@@ -2272,15 +2324,15 @@ def check_mac_copies(
     the layout's runtime dict.
     """
     rt = mac_copy_revision(runner, tip)
-    for name in ("recall", "fleet-mode", "fleet-secrets"):
+    for name in ("recall", "fleet-mode"):
         add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
 
 
 def check_server_tools(
     report: Report, rt: dict, checkouts: dict, runner: Callable = subprocess.run
 ) -> None:
-    """Server:  each wrapper execs current/<script>, fleet-secrets points at its Linux entry point,
-    and fleetlink runs from a FleetLink checkout on main."""
+    """Server:  each wrapper execs current/<script>, and fleetlink runs from a FleetLink
+    checkout on main."""
     for name, script in SERVER_WRAPPERS.items():
         path = HOME / ".local/bin" / name
         try:
@@ -2300,32 +2352,6 @@ def check_server_tools(
             add_tool_row(
                 report, name, dict(common, status="FAIL", state="missing", detail=why, reason=why)
             )
-    link = HOME / ".local/bin/fleet-secrets"
-    common = {"category": "fleet-tool", "tool": "fleet-secrets"}
-    target = os.path.realpath(link) if link.exists() else ""
-    if not target:
-        why = f"{link} is not installed"
-        add_tool_row(
-            report,
-            "fleet-secrets",
-            dict(common, status="FAIL", state="missing", detail=why, reason=why),
-        )
-    elif os.path.basename(target) != "linux-entrypoint.py":
-        why = f"{link} points at {target}, not linux-entrypoint.py (docs/protocols/fleet-cli-from-git.md)"
-        add_tool_row(
-            report,
-            "fleet-secrets",
-            dict(common, status="FAIL", state="stale", detail=why, reason=why),
-        )
-    else:
-        extra = ((target, "scripts/fleet_secrets/linux-entrypoint.py"),)
-        add_tool_row(
-            report,
-            "fleet-secrets",
-            compare_copy(
-                "fleet-secrets", COPY_SETS["fleet-secrets"], RUNTIME / "repo", rt, runner, extra
-            ),
-        )
     share = HOME / ".local/bin/fleetlink"
     common = {"category": "fleet-tool", "tool": "fleetlink"}
     fleetlink = checkouts.get("FleetLink", "unknown")
@@ -3044,7 +3070,7 @@ def host_document(
 
 def expected_server_checks() -> list[str]:
     checks = ["runtime"] + [f"updater:{unit}" for unit in SERVER_TIMERS]
-    checks += [f"tool:{name}" for name in (*SERVER_WRAPPERS, "fleet-secrets", "fleetlink")]
+    checks += [f"tool:{name}" for name in (*SERVER_WRAPPERS, "fleetlink")]
     return checks
 
 

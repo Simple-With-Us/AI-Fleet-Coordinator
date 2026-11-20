@@ -1,20 +1,32 @@
+"""The named-secret adapter, over the consumer's own scoped service token.
+
+    cd scripts/simple_tools/tests && python3 -m unittest test_operator_github_secrets -v
+
+No network and no token store:  the shared client's scoped read is faked.
+"""
+
 import os
-import subprocess
 import unittest
 from unittest.mock import patch
 
-from simple_tools.operator_github_secrets import NamedSecrets, fleet_secrets_get
+import fleet_infisical
+from simple_tools.operator_github_secrets import NamedSecrets, scoped_secret_get
 from simple_tools.github_token_router import RoutingError
+
+
+def fake_read(value="mock", status="ok"):
+    """A fake scoped read:  one name, one value, one status."""
+
+    def read(name, folder, account, env=None):
+        read.calls.append((name, folder, account))
+        return (value, status)
+
+    read.calls = []
+    return read
 
 
 class Tests(unittest.TestCase):
     def setUp(self):
-        p = patch(
-            "simple_tools.operator_github_secrets.fleet_secrets_bin",
-            return_value="fleet-secrets",
-        )
-        p.start()
-        self.addCleanup(p.stop)
         self.calls = []
 
         def read(path, name):
@@ -44,92 +56,65 @@ class Tests(unittest.TestCase):
             self.loader.app_credentials("swu-echo")
         self.assertEqual(self.calls, [])
 
-    def test_default_transport_uses_fleet_secrets_get(self):
-        class Done:
-            returncode = 0
-            stdout = b"v\n"
-
-        with patch(
-            "simple_tools.operator_github_secrets.subprocess.run", return_value=Done()
-        ) as run:
-            self.assertEqual(
-                NamedSecrets(["CODEX"], []).caller_key("CODEX"), "v"
-            )
-            args = run.call_args[0][0]
-            self.assertEqual(
-                args, [
-                    "fleet-secrets",
-                    "get",
+    def test_the_default_transport_reads_through_the_scoped_token(self):
+        read = fake_read("v")
+        with patch.object(fleet_infisical, "fetch_scoped", read):
+            self.assertEqual(NamedSecrets(["CODEX"], []).caller_key("CODEX"), "v")
+        self.assertEqual(
+            read.calls,
+            [
+                (
                     "OPERATOR_GITHUB_CALLER_CODEX_HMAC",
-                    "--path",
                     "/operator-github/callers",
-                    "--project",
-                    "fleet-ops",
-                ]
-            )
+                    "operator-github-callers-ro",
+                )
+            ],
+        )
 
-    def test_default_transport_never_consults_environment(self):
-        import os
-
-        class Done:
-            returncode = 0
-            stdout = b"from-cli\n"
-
-        with patch.dict(
-            os.environ, {"OPERATOR_GITHUB_CALLER_CODEX_HMAC": "from-env"}
-        ):
-            with patch(
-                "simple_tools.operator_github_secrets.subprocess.run", return_value=Done()
-            ):
+    def test_the_default_transport_never_consults_the_environment(self):
+        read = fake_read("from-the-store")
+        with patch.dict(os.environ, {"OPERATOR_GITHUB_CALLER_CODEX_HMAC": "from-env"}):
+            with patch.object(fleet_infisical, "fetch_scoped", read):
                 self.assertEqual(
-                    NamedSecrets(["CODEX"], []).caller_key("CODEX"), "from-cli"
+                    NamedSecrets(["CODEX"], []).caller_key("CODEX"), "from-the-store"
                 )
 
-    def test_lookup_failures_name_variable_not_value(self):
-        with patch(
-            "simple_tools.operator_github_secrets.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(["fleet-secrets"], 10),
-        ):
-            with self.assertRaises(RoutingError) as c:
-                fleet_secrets_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
-        self.assertIn("OPERATOR_GITHUB_CALLER_CODEX_HMAC", str(c.exception))
-        self.assertIn("timed out", str(c.exception))
+    def test_a_refused_read_names_the_variable_not_the_value(self):
+        for status in ("no-token", "keychain-locked", "token-unreadable", "forbidden", "failed"):
+            with patch.object(fleet_infisical, "fetch_scoped", fake_read("", status)):
+                with self.assertRaises(RoutingError) as caught:
+                    scoped_secret_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
+            self.assertIn("OPERATOR_GITHUB_CALLER_CODEX_HMAC", str(caught.exception))
+            self.assertIn(status, str(caught.exception))
 
-        with patch(
-            "simple_tools.operator_github_secrets.subprocess.run",
-            side_effect=FileNotFoundError("fleet-secrets"),
-        ):
-            with self.assertRaises(RoutingError) as c:
-                fleet_secrets_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
-        self.assertIn("not found", str(c.exception))
+    def test_a_folder_without_a_token_is_refused(self):
+        with self.assertRaises(RoutingError) as caught:
+            scoped_secret_get("/nowhere", "SOME_NAME")
+        self.assertIn("SOME_NAME", str(caught.exception))
+
+
+class TimeoutOutcomeTests(unittest.TestCase):
+    """A hung lookup is retryable;  a refused credential is not."""
+
+    def test_a_timeout_is_retryable_and_not_refused(self) -> None:
+        def timeout(name, folder, account, env=None):
+            raise TimeoutError("timed out")
+
+        with patch.object(fleet_infisical, "fetch_scoped", timeout):
+            with self.assertRaises(RoutingError) as caught:
+                scoped_secret_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
+        self.assertEqual(caught.exception.outcome, "retryable")
+        self.assertIn("OPERATOR_GITHUB_CALLER_CODEX_HMAC", str(caught.exception))
 
 
 class LocalFailureOutcomeTests(unittest.TestCase):
     def test_local_lookup_failures_are_refused_so_the_nonce_is_released(self):
-        with patch(
-            "simple_tools.operator_github_secrets.fleet_secrets_bin",
-            return_value="fleet-secrets",
-        ):
-            for effect, outcome in (
-                (subprocess.TimeoutExpired(["fleet-secrets"], 10), "retryable"),
-                (FileNotFoundError("fleet-secrets"), "refused"),
-                (PermissionError("fleet-secrets"), "refused"),
-            ):
-                with patch(
-                    "simple_tools.operator_github_secrets.subprocess.run", side_effect=effect
-                ):
-                    with self.assertRaises(RoutingError) as c:
-                        fleet_secrets_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
-                self.assertEqual(c.exception.outcome, outcome)
+        for status in ("no-token", "keychain-locked", "token-unreadable", "forbidden", "failed"):
+            with patch.object(fleet_infisical, "fetch_scoped", fake_read("", status)):
+                with self.assertRaises(RoutingError) as caught:
+                    scoped_secret_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
+            self.assertEqual(caught.exception.outcome, "refused")
 
 
-class HomeFailureKeepsExplicitBinary(unittest.TestCase):
-    def test_pinned_binary_survives_a_failing_home_lookup(self):
-        from unittest import mock
-        from pathlib import Path
-        with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": "/opt/pinned/fleet-secrets"}), \
-                mock.patch.object(Path, "home", side_effect=RuntimeError("no home")), \
-                mock.patch("simple_tools.operator_github_secrets.subprocess.run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout=b"v")
-            fleet_secrets_get("/p", "N")
-        self.assertEqual(run.call_args[0][0][0], "/opt/pinned/fleet-secrets")
+if __name__ == "__main__":
+    unittest.main()

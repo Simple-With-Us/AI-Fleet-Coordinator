@@ -8,7 +8,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from fleet_secrets import core
+import fleet_infisical as core
 
 PROJECT = str(uuid.uuid4())
 TOKEN = ".".join(["st", "fixture", "fixture", "fixture"])
@@ -120,7 +120,10 @@ class NamedReadBudgetTests(unittest.TestCase):
             return 200, {"secret": record(name_of(path))}
 
         names = {f"KNOB_{i:02d}" for i in range(60)}
-        with mock.patch.object(core, "_api_json", slow), mock.patch.object(core, "as_completed", interrupted):
+        with (
+            mock.patch.object(core, "_api_json", slow),
+            mock.patch.object(core, "as_completed", interrupted),
+        ):
             with self.assertRaises(KeyboardInterrupt):
                 core.fetch_project(PROJECT, "/", {}, token=TOKEN, names=names, timeout=8.0)
         self.assertLessEqual(len(calls), 2 * core.MAX_NAMED_READS)

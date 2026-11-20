@@ -9,7 +9,7 @@ from unittest import mock
 import fleet_infisical as core
 import fleet_infisical_cli as cli
 
-import fleet_secrets.tests.test_run_named_reads as transport_fixture
+import fleet_infisical_cli_tests.test_run_named_reads as transport_fixture
 
 
 class DoctorDiagnosticsTests(unittest.TestCase):
