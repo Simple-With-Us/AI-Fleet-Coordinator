@@ -221,6 +221,7 @@ class RemoteRecall(unittest.TestCase):
             )
             for env, cmd, expected in cases:
                 with self.subTest(env=env, cmd=cmd), \
+                        mock.patch.object(recall, "_ARGV", []), \
                         mock.patch.dict(os.environ, {**env, "HOME": td}, clear=True):
                     self.assertEqual(recall.hosted_default(cmd), expected)
 
