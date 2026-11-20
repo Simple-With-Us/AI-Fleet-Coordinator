@@ -126,7 +126,7 @@ The comment is bounded, and every cut is said in the comment itself:
   cut and says `_N characters of this message are not shown._`
 - The whole comment is at most 50,000 characters (`COMMENT_CHARS`), well inside what Linear
   takes.  The messages that do not fit are the oldest ones, and the comment says
-  `_N characters of this topic are not shown._`  A topic whose posts are longer than that
+  `_N characters of this topic are not shown._`  A topic whose posts are longer than that
   leaves the oldest of them out of the comment, and the count of the messages that are not
   listed says so.  A second comment for the overflow would break the one-comment-per-topic
   contract, which is the owner's ruling, so it is not done here.
@@ -156,6 +156,11 @@ so the walk is bounded in time and not only in pages.  A message the read passe
 hold is no longer in Zulip:  no read can bring it back, so it stops waiting, and the comment says
 that it is gone and keeps its earlier text.  A message the entry holds that is newer than the end
 of the topic the read reached is gone as well.
+
+A repair that fails is logged with the type of the failure and never with its text, so no
+message or topic content reaches the log.  The entry then waits REFRESH_RETRY seconds before it
+is tried again, like an entry whose topic could not be read, so a topic that keeps failing does
+not take the cycle's one repair every cycle and the other stale comments are repaired too.
 
 ## Environment
 
