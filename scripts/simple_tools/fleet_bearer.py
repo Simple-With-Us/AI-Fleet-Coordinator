@@ -65,7 +65,12 @@ def private_bearer(path):
                 ):
                     raise ValueError
             fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-            with os.fdopen(fd, "rb") as handle:
+            try:
+                handle = os.fdopen(fd, "rb")
+            except OSError:
+                os.close(fd)
+                raise
+            with handle:
                 info = os.fstat(handle.fileno())
                 if (
                     not stat.S_ISREG(info.st_mode)
