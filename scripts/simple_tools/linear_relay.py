@@ -302,7 +302,7 @@ def _mask_bare_shas(text: str) -> str:
     last = 0
     for match in _BARE_GIT_SHA.finditer(text):
         if _sha_is_exposed(text, match.start()):
-            parts.append(text[last:match.start()])
+            parts.append(text[last : match.start()])
             parts.append("!" * 40)
             last = match.end()
     parts.append(text[last:])
