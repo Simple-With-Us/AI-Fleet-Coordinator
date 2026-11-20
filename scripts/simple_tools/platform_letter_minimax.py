@@ -239,7 +239,7 @@ def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     # a child that reads itself as its parent takes a MAIN pair instead of the pair after its parent's:  it
     # takes a pair a main chat is owed, and its own family never learns of the child.  The parent is
     # unknown here, and an unknown parent is no parent:  the chat waits for the next event, which reads the
-    # row once the store has written it.
+    # row once the store has written it.  The repair scan leaves such rows out for the same reason.
     return "" if parent == sid else parent
 
 
@@ -436,7 +436,7 @@ LETTER_GLOB_ONE = "[A-Z]: *"
 LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
 
 
-def _unlettered_children(conn: sqlite3.Connection, now: float) -> tuple[list[str], int]:
+def _unlettered_children(conn: sqlite3.Connection, env: Mapping[str, str], now: float) -> tuple[list[str], int]:
     """The sub-threads of this host that hold no letter on their title, newest first, and how many
     rows of the store could not be named.
 
@@ -446,6 +446,7 @@ def _unlettered_children(conn: sqlite3.Connection, now: float) -> tuple[list[str
         "SELECT session_id FROM local_runtime_sessions"
         " WHERE session_kind = ?"
         " AND parent_session_id IS NOT NULL AND parent_session_id != ''"
+        " AND parent_session_id != session_id"
         " AND (archived IS NULL OR archived = 0)"
         " AND (created_at_ms IS NULL OR (created_at_ms >= ? AND created_at_ms <= ?))"
         " AND title IS NOT NULL AND title != ''"
@@ -469,8 +470,28 @@ def _unlettered_children(conn: sqlite3.Connection, now: float) -> tuple[list[str
         if not isinstance(sid, str) or not sid:
             malformed += 1
             continue
+        if _holds_a_letter(env, sid):
+            # The chat holds a letter already, and the repair pass skips a chat that holds one (a
+            # platform with no title writer cannot change that record), so naming it would spend a
+            # slot of the scan on a chat the pass will not touch, and starve a real candidate.
+            continue
         found.append(sid)
     return found, malformed
+
+
+def _holds_a_letter(env: Mapping[str, str], sid: str) -> bool:
+    """True when the chat's own note holds a letter.
+
+    A note that is gone, or that holds no letter, says nothing:  the chat is a candidate, and the
+    pass asks the assigner for one."""
+    try:
+        with open(PL.note_path(env, SEAT, sid), encoding="utf-8") as fh:
+            note = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(note, dict):
+        return False
+    return bool(str(note.get("label") or ""))
 
 
 def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
@@ -491,7 +512,7 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     try:
         conn = _read_only(path)
         try:
-            children, broken = _unlettered_children(conn, now)
+            children, broken = _unlettered_children(conn, env, now)
             malformed += broken
             for sid in children:
                 if sid not in found:

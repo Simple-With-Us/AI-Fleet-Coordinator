@@ -164,6 +164,9 @@ class MiniMaxRepairRow(Base):
         with open(PL.note_path(self.env(), PM.SEAT, sid), encoding="utf-8") as fh:
             return json.load(fh)
 
+    def write_note(self, sid: str, note: dict) -> None:
+        self.assertTrue(PL._save_json(PL.note_path(self.env(), PM.SEAT, sid), note))
+
     def title_of(self, sid: str) -> str:
         conn = sqlite3.connect(self.store)
         row = conn.execute("SELECT title FROM local_runtime_sessions WHERE session_id = ?", (sid,)).fetchone()
@@ -199,6 +202,21 @@ class MiniMaxRepairRow(Base):
         # The letter is on the chat, so there is nothing for the pass to do for it.
         self.add("m-0105", "AA: Work", kind="task", parent="m-0100")
         self.assertNotIn("m-0105", self.scan())
+
+    def test_a_self_parented_row_is_not_named(self) -> None:
+        # A row that says the chat is its own parent is a row the store has not finished writing.  The
+        # repair would replay it, find no parent (the row never names one) and register it as a MAIN
+        # chat, so it would take a pair a main chat was owed.  The scan leaves it out:  the chat waits
+        # for the next event, which reads the row once the store has written it.
+        self.add("m-0108", "Child work", kind="task", parent="m-0108")
+        self.assertNotIn("m-0108", self.scan())
+
+    def test_a_chat_whose_note_holds_a_letter_is_not_named(self) -> None:
+        # The repair pass skips a chat that holds a letter, so naming one would spend a slot of the
+        # scan on a chat the pass will not touch, and starve a real candidate of the twenty.
+        self.add("m-0109", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0109", self.scan())
 
     def test_an_archived_chat_is_not_named(self) -> None:
         self.add("m-0106", "Child work", kind="task", parent="m-0100", archived=1)
