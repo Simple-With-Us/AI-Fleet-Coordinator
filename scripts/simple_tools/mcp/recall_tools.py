@@ -287,12 +287,14 @@ def search(
         if value:
             scan(field, str(value).strip())
     # The query rides after the end-of-options separator, so a leading `-` in
-    # user-derived text can never parse as a CLI option;  every option comes first.
-    argv = ["search", "--limit", str(args.get("limit") or 5), "--json"]
+    # user-derived text can never parse as a CLI option;  every option comes first,
+    # in single --flag=VALUE tokens so no user-controlled value can be reinterpreted
+    # as a flag of its own.
+    argv = ["search", "--limit=" + str(int(args.get("limit") or 5)), "--json"]
     if args.get("app"):
-        argv += ["--app", str(args["app"])]
+        argv += ["--app=" + str(args["app"])]
     if args.get("category"):
-        argv += ["--category", str(args["category"])]
+        argv += ["--category=" + str(args["category"])]
     if args.get("include_retracted"):
         argv += ["--include-retracted"]
     argv += ["--", query]

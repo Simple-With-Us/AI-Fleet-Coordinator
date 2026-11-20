@@ -80,7 +80,7 @@ removes only ours).  SessionStart adds one line of context (`fleet recall corpu
 before re-deriving, contribute at closeout`) from a cached count in well under a second.  Stop
 scans the transcript once: a session with 25+ tool uses and no recorded contribution is nudged once to
 consider a useful lesson, search for duplicates, and contribute only if appropriate; otherwise finish
-without filler or a public declaration.  A per-session marker under `~/apps/fleet-rag/state/hook-nudged/`
+by saying `no lesson` (the two-word acknowledgment the Stop hook accepts) and add nothing else.  A per-session marker under `~/apps/fleet-rag/state/hook-nudged/`
 prevents repeats and `FLEET_RECALL_HOOKS=0` disables both hooks.
 
 Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same three

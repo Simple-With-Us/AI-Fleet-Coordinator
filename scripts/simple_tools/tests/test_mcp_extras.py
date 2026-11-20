@@ -636,7 +636,7 @@ class RecallToolTests(FakePrograms):
         call = self.calls(self.recall_out)[0]
         self.assertEqual(
             call["argv"],
-            ["search", "--limit", "3", "--json", "--app", "fleet", "--", "pm2 env"],
+            ["search", "--limit=3", "--json", "--app=fleet", "--", "pm2 env"],
         )
         audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
             "recall_search", {"query": "pm2 env", "include_retracted": True}
