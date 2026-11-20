@@ -501,7 +501,9 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     except sqlite3.Error:
         return None  # a store this old cannot say what it holds:  no pass
     if malformed:
-        sys.stderr.write("platform-letter minimax: %d malformed session id(s) skipped\n" % malformed)
+        sys.stderr.write(
+            "platform-letter minimax: %d malformed session id(s) skipped\n" % malformed
+        )
     return found[:UNLETTERED_SCAN]
 
 
