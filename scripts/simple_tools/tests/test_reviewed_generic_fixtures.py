@@ -122,10 +122,12 @@ class ReviewedGenericTests(unittest.TestCase):
         ok = "foo(a: \"x(\", token: snapshot.wind" + "ow.window)\n"
         self.assertIsNone(secretscan.scan_file(repo, path, ok))
 
-    def test_labeled_argument_grouping_paren_inside_a_call(self):
+    def test_labeled_argument_balanced_grouping_paren_before_label(self):
         repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
-        body = "foo((a + b), c, (d, token: snapshot.wind" + "ow.window))\n"
+        body = "foo((a + b), c, token: snapshot.wind" + "ow.window)\n"
         self.assertIsNone(secretscan.scan_file(repo, path, body))
+        body = "foo(a, (see the note, token: snapshot.wind" + "ow.window))\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
     def test_labeled_argument_requires_colon_separator(self):
         repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
