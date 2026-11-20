@@ -2412,8 +2412,8 @@ class RelayWorker:
         characters;  the whole post is only in Zulip, so the topic is read again and the
         comment is edited with the whole text.  One comment is refreshed per cycle, so a
         realm full of old comments is repaired over a few cycles instead of in one
-        burst, and an entry whose topic cannot be read waits REFRESH_RETRY seconds
-        before it is tried again."""
+        burst, and an entry whose topic cannot be read, or whose repair failed, waits
+        REFRESH_RETRY seconds before it is tried again."""
         if self.history is None:
             return  # no reader: the standalone process cannot read a topic back
         now = self.monotonic()
@@ -2442,6 +2442,10 @@ class RelayWorker:
                 # The log names the entry and the type of the failure, never the text of
                 # the exception, which can hold message or topic content (Kody, PR 2340).
                 self.log("the repair of %s failed (%s)" % (self._label(entry), type(exc).__name__))
+                # The entry waits before it is tried again, so a repair that keeps failing
+                # does not take the cycle's one repair every cycle, and the other stale
+                # comments are repaired too (Kody, PR 2340).
+                self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live

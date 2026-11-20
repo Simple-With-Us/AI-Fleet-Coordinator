@@ -2751,10 +2751,26 @@ class ReadablePostTests(WorkerCase):
         # repairs of the other entries (Kody, PR 2340).
         entry = self.old_entry()
         entry["links"][0]["mid"] = "not an id"
+        other = lr.new_entry("AFC-1", 6, "deploys", "AFC-1 other", 2)
+        del other["format"]
+        other["comment_id"] = "c2"
+        other["count"] = 1
+        other["seen"] = [2]
+        other["links"] = [
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the old cut text"}
+        ]
+        self.led.entries[lr.ledger_key("AFC-1", 6, "AFC-1 other")] = other
         self.topic.messages = [past(1, "the whole post")]
+        self.topic.topics["AFC-1 other"] = [past(2, "the whole post")]
         self.w.tick()
         self.assertTrue(any("the repair of" in line for line in self.logs))
         self.assertFalse(any("a repair read was refused" in line for line in self.logs))
+        # The failed entry waits before it is tried again, so the next cycle repairs the
+        # other stale entry instead of failing on the same one (Kody, PR 2340).
+        self.t[0] += 10
+        self.w.tick()
+        self.assertEqual(other["links"][0]["quote"], "the whole post")
+        self.assertEqual(other["format"], lr.RENDER_VERSION)
 
     def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
         # The flag comes out of the ledger, so a number means the same as a boolean
