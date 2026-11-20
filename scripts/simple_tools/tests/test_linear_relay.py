@@ -822,22 +822,32 @@ class RelayTests(unittest.TestCase):
                       "credential rotation plan", "secret santa"):
             self.assertFalse(lr.has_secret(prose), prose)
 
-    def test_a_bare_commit_id_is_not_a_secret(self) -> None:
-        # A commit id stands alone:  in prose, after a word, or in a URL path.  It is not a
-        # credential, and a post that quotes one must reach Linear (AFC-834).
+    def test_a_commit_id_shaped_run_is_masked_and_not_relayed(self) -> None:
+        # The run is masked, so the post reaches Linear and the value does not (AFC-834).
         for run in ("a" * 40, "b" * 64):
             for text in ("the commit is %s" % run, "merged as %s" % run,
                          "https://example.com/commit/%s" % run):
-                self.assertFalse(lr.has_secret(text), text)
+                masked = lr._mask_commit_ids(text)
+                self.assertNotIn(run, masked, text)
+                self.assertIn("masked", masked, text)
+                self.assertFalse(lr.has_secret(masked), text)
 
     def test_a_commit_id_that_is_a_credential_is_still_a_secret(self) -> None:
         run = "c" * 40
-        for text in ("token=%s" % run, '"token": "%s"' % run,
-                     "https://example.com/cb?sig=%s" % run,
-                     "the id is %s" % ("d" * 32),
-                     "the digest is %s" % ("A" * 40),
-                     "the run is %s" % ("e" * 45)):
+        cases = (
+            ("token=%s" % run, run),
+            ('"token": "%s"' % run, run),
+            ("client_secret=%s" % run, run),
+            ("private_key=%s" % run, run),
+            ("https://example.com/cb?sig=%s" % run, run),
+            ("the id is %s" % ("d" * 32), "d" * 32),
+            ("the digest is %s" % ("A" * 40), "A" * 40),
+            ("the run is %s" % ("e" * 45), "e" * 45),
+        )
+        for text, value in cases:
             self.assertTrue(lr.has_secret(text), text)
+            # A credential assignment is not masked either:  the scan sees the value.
+            self.assertIn(value, lr._mask_commit_ids(text), text)
 
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:
@@ -2505,14 +2515,35 @@ class ReadablePostTests(WorkerCase):
         self.assertIn("the commit is here", body)
         self.assertNotIn(sha, body)
 
-    def test_a_bare_commit_id_is_carried_whole(self) -> None:
-        # A 40-character lowercase hex run is a git commit id, and a post that quotes one is a
-        # post the mirror must carry (AFC-834).
+    def test_a_commit_id_is_carried_and_its_run_is_masked(self) -> None:
+        # A 40-character lowercase hex run has the shape of a commit id, and the shape alone
+        # does not prove it is one.  The post is carried, and the run itself is masked, so the
+        # value is neither stored nor relayed (AFC-834).
         sha = "a" * 40
         self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
         body = self.lin.created[0][1]
         self.assertNotIn(lr.WITHHELD, body)
-        self.assertIn(sha, body)
+        self.assertNotIn(sha, body)
+        self.assertIn("(a hex run of 40 characters, masked)", body)
+
+    def test_a_commit_id_in_a_url_path_is_carried_and_masked(self) -> None:
+        # The path of a commit URL holds the run, and the base64 row spans the path, so the
+        # run has to be found inside the path rather than beside it (Kody, PR 2360).
+        sha = "b" * 40
+        html = '<p>the commit is <a href="https://example.com/commit/%s">here</a></p>' % sha
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertNotIn(lr.WITHHELD, body)
+        self.assertNotIn(sha, body)
+        self.assertIn("(a hex run of 40 characters, masked)", body)
+
+    def test_a_compound_credential_name_is_still_withheld_whole(self) -> None:
+        # A compound name is an assignment too (Kody, PR 2360).
+        sha = "c" * 40
+        self.w.handle_event(message(1, "AFC-1 relay", "client_secret=%s" % sha))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(sha, body)
 
     def test_a_commit_id_next_to_a_credential_name_is_still_withheld_whole(self) -> None:
         sha = "b" * 40

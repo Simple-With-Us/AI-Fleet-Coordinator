@@ -288,17 +288,15 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}"),
-)
-# The two opaque-run rows, kept apart from the prefix rows:  a bare git commit id is one of
-# them, and a commit id is not a credential (AFC-834).
-_OPAQUE_RUN_PATTERNS = (
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{40,}={0,2}\b"),
 )
 # The names that turn an assignment into a credential.
 _CREDENTIAL_NAME = (
-    r"api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
-    r"|authorization|credential"
+    r"api[_-]?key|apikey|access[_-]?token|auth[_-]?token|refresh[_-]?token"
+    r"|client[_-]?secret|secret[_-]?key|private[_-]?key|api[_-]?secret|app[_-]?secret"
+    r"|consumer[_-]?secret|session[_-]?key|signing[_-]?key|encryption[_-]?key"
+    r"|token|secret|password|passwd|pwd|authorization|credential"
 )
 # A keyword counts only as an assignment (`password: x`, `token=x`, `"token": "x"`), so prose
 # such as "token refresh" or "password reset" is not withheld; a bare `Bearer` needs a
@@ -318,34 +316,29 @@ _URL_QUERY_VALUE = re.compile(r"[?&][A-Za-z0-9_.\-]{1,40}=[^\s]*$")
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
-def _bare_commit_id(text: str, match: re.Match[str]) -> bool:
-    """True when the matched opaque run is a bare git commit id rather than a credential.
-
-    A commit id is 40 lowercase hex characters (SHA-1) or 64 (SHA-256), and it stands on its
-    own:  it is not the value of a credential name and it is not a URL query value.  A post
-    that quotes a commit id is a post the mirror must carry, so the run is not a secret."""
-    run = match.group(0)
-    if len(run) not in (40, 64) or not re.fullmatch(r"[0-9a-f]+", run):
-        return False
-    before = text[: match.start()]
-    if _ASSIGNED_TO_CREDENTIAL.search(before):
-        return False
-    if _URL_QUERY_VALUE.search(before):
-        return False
-    return True
+# A hexadecimal run of 40 or 64 lowercase characters has the shape of a git commit id.  The
+# shape alone does not prove it is one:  it is also the shape of credential material, so the
+# run is masked rather than exempted, and the value itself never reaches the ledger or the
+# comment (AFC-834).
+_COMMIT_ID_WORD = re.compile(
+    r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])"
+)
 
 
-def _carries_opaque_run(text: str) -> bool:
-    """True when the text carries a long opaque run that is not a bare git commit id.
+def _mask_commit_ids(text: str) -> str:
+    """Mask every commit-id-shaped run in the text.
 
-    A 40- or 64-character lowercase hex run is a commit id when it stands alone, and a post
-    that quotes one is not a post about a credential.  The same run next to a credential name
-    or inside a URL query is still a credential (AFC-834)."""
-    for pattern in _OPAQUE_RUN_PATTERNS:
-        for match in pattern.finditer(text):
-            if not _bare_commit_id(text, match):
-                return True
-    return False
+    A run of 40 or 64 lowercase hex characters is masked, so the post that quotes one is
+    carried and the value itself is neither stored nor relayed.  A run that is the value of a
+    credential assignment, or a URL query value, is not masked:  the scan then withholds the
+    whole field, as it always did, because that run is credential material (AFC-834)."""
+    def replace(match: re.Match[str]) -> str:
+        before = text[: match.start()]
+        if _ASSIGNED_TO_CREDENTIAL.search(before) or _URL_QUERY_VALUE.search(before):
+            return match.group(0)
+        return "(a hex run of %d characters, masked)" % len(match.group(0))
+
+    return _COMMIT_ID_WORD.sub(replace, text)
 
 
 def has_secret(text: str) -> bool:
@@ -356,7 +349,6 @@ def has_secret(text: str) -> bool:
     return (
         secretscan.scan(text) is not None
         or any(p.search(text) for p in _SECRET_PATTERNS)
-        or _carries_opaque_run(text)
         or bool(_KEYED_SECRET.search(text))
     )
 
@@ -493,7 +485,7 @@ def post_text(content: str) -> str:
     attribute can never trip it by itself.  A link's URL stays in the text, so a
     credential inside one is still caught.  A post longer than MESSAGE_CHARS is cut, and
     the cut says how many characters of it are not shown."""
-    converted = zulip_markdown.to_markdown(content)
+    converted = _mask_commit_ids(zulip_markdown.to_markdown(content))
     if has_secret(converted):
         return WITHHELD
     text = defang(converted)
@@ -517,7 +509,7 @@ def _field_is_secret(name: str, value: str) -> bool:
     text, so a credential inside one is still caught.  The other fields are plain text
     and are scanned as they are."""
     if name == "content":
-        value = zulip_markdown.to_markdown(value)
+        value = _mask_commit_ids(zulip_markdown.to_markdown(value))
     return has_secret(value)
 
 

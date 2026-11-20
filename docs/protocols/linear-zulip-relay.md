@@ -89,10 +89,12 @@ never live, and its code spans and fenced blocks keep the sender's own formattin
 Zulip-shaped row also withholds an opaque 32-character id, a cost
 accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A bare
 git commit id is not a credential:  a run of 40 lowercase hex characters (SHA-1) 
-or 64 (SHA-256) that stands on its own, in prose or in a URL path, is carried into the
-comment as it is.  The same run next to a credential name (`token=<id>`,  `"token": "<id>"`) 
-or inside a URL query (`?sig=<id>`) is still withheld whole, and a run of any other length
-is still a secret.  A keyword in
+or 64 (SHA-256) has the shape of a commit id, and the shape alone does not prove it is
+one:  it is also the shape of credential material.  So the run is masked, the post that
+quotes one is carried, and the value itself is neither stored nor relayed.  A run in a
+credential assignment (`token=<id>`,  `"token": "<id>"`,  `client_secret=<id>`) or inside a
+URL query (`?sig=<id>`) is not masked and is withheld whole, as it always was.  A
+hexadecimal run of 32 characters or more is withheld whole unless it is masked this way.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  Neither
 the comment nor the log says which row matched, so a reader cannot tell from Linear why one id was
