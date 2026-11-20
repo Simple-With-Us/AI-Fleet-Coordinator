@@ -289,8 +289,13 @@ def search(
     # The query rides after the end-of-options separator, so a leading `-` in
     # user-derived text can never parse as a CLI option;  every option comes first,
     # in single --flag=VALUE tokens so no user-controlled value can be reinterpreted
-    # as a flag of its own.
-    argv = ["search", "--limit=" + str(int(args.get("limit") or 5)), "--json"]
+    # as a flag of its own.  A non-integer limit is a usage error, answered here
+    # rather than crashing inside int().
+    raw_limit = args.get("limit")
+    if raw_limit is not None and (isinstance(raw_limit, bool) or not isinstance(raw_limit, int)):
+        raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer")
+    limit = raw_limit if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) else 5
+    argv = ["search", "--limit=" + str(limit), "--json"]
     if args.get("app"):
         argv += ["--app=" + str(args["app"])]
     if args.get("category"):
@@ -301,7 +306,6 @@ def search(
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or "hits" not in data:
         raise failure(code, err)
-    limit = int(args.get("limit") or 5)
     hits = [hit_item(h) for h in (data.get("hits") or [])[:limit] if isinstance(h, Mapping)]
     mode = clean(data.get("mode") if isinstance(data.get("mode"), str) else "", 40)[0]
     header = "simple-tools recall_search:  query %s%s%s" % (
