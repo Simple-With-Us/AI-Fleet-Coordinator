@@ -8,7 +8,6 @@ Type=oneshot
 User=jay
 Group=jay
 Environment=HOME=/home/jay
-Environment=AGENT_SEAT=CLAUDE
 Environment=PATH=/home/jay/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Holds one line, INFISICAL_TOKEN=<read-only service token>.  Root-owned, mode 0600.
 EnvironmentFile=/etc/cf-usage-watchdog/infisical.env
