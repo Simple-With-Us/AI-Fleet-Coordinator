@@ -111,8 +111,16 @@ def _read_only(path: str) -> sqlite3.Connection:
 
     A path with a `?` or a `#` in it would otherwise end the file name early or carry
     parameters of its own, so the URI would name another file, or none, and `mode=ro`
-    would not be the only thing in it."""
-    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+    would not be the only thing in it.
+
+    A path that cannot be resolved at all is an unreadable store, which is what the callers
+    answer for, so the path's own failure (an `OSError`, a `ValueError`, a `RuntimeError`)
+    is turned into the store's own error and never out of the reader."""
+    try:
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise sqlite3.OperationalError(str(exc)) from exc
+    return sqlite3.connect(uri, uri=True, timeout=2)
 
 
 def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:

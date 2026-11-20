@@ -106,6 +106,13 @@ class ArchiveFlagTests(StoreBase):
         self.assertEqual(PM.minimax_gone(env, frozenset({"m-0001"})), {"m-0001"})
         self.assertEqual(PM.minimax_title({"session_id": "m-0001"}, env), "The Chat")
 
+    def test_a_path_that_cannot_be_resolved_is_an_unreadable_store(self) -> None:
+        # The path's own failure is the store's failure:  the readers answer for an unreadable
+        # store, so a path that cannot be resolved is no crash.
+        with mock.patch.object(PM.Path, "resolve", side_effect=OSError("no such path")):
+            self.assertEqual(PM.minimax_gone(self.env(), frozenset({"m-0001"})), set())
+            self.assertEqual(PM.minimax_title({"session_id": "m-0001"}, self.env()), "")
+
     def test_the_data_dir_moves_the_store(self) -> None:
         # MINIMAX_DATA_DIR moves ~/.minimax, so the store is read where the runtime wrote it.
         other = os.path.join(self.tmp.name, "elsewhere")
