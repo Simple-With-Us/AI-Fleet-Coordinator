@@ -1060,6 +1060,7 @@ def _quietest_first(rows: list[Any]) -> list[Any]:
     """The rows ordered by the time they were last seen, the oldest first:  a row a host has been away
     from longest is the one a pass ends first, so the rows that are left are the most recent of the
     backlog."""
+
     def key(row: Any) -> datetime:
         seen = OR._parse_instant(row["last_seen_at"])
         return seen if seen is not None else datetime.min.replace(tzinfo=UTC)
