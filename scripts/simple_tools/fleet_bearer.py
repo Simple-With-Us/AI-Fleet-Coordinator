@@ -93,6 +93,59 @@ def private_bearer(path):
         ) from None
 
 
+# The one private place every fleet tool reads this seat's own bearer file (the
+# convention of fleet_rag/seat_auth.py and simple_tools/notes_client.py):  the file
+# name is the seat, lowered;  no environment or other store supplies a bearer when
+# this file is used.
+OWN_BEARER_DIR = (".secrets", "fleet-tools")
+OWN_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+_OWN_SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
+
+
+def own_bearer(env=None, home=None):
+    """This process's own fleet bearer:  SIMPLE_TOOLS_BEARER from the environment when
+    set, otherwise the declared seat's own private file <home>/.secrets/fleet-tools/<seat>
+    (the seat named by AGENT_LAUNCH_SEAT, AGENT_SEAT or AGENT_TAG, canonicalized).
+    Returns "" when neither supplies one, which keeps the caller's existing
+    not_configured path.  Conflicting seat declarations, a file that holds another
+    seat's bearer, and a present-but-unusable file are FleetError.  The value is
+    never logged and never appears in an error."""
+    env = os.environ if env is None else env
+    token = str(env.get(OWN_BEARER_ENV, "")).strip()
+    if token:
+        return token
+    seats = {
+        canonical_hint(env.get(name, ""))
+        for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
+    } - {""}
+    if len(seats) > 1:
+        raise FleetError(
+            "invalid_argument", "conflicting seat declarations; no bearer file was read"
+        )
+    if not seats:
+        return ""
+    seat = next(iter(seats))
+    stem = seat.lower()
+    if not _OWN_SEAT_FILE.fullmatch(stem):
+        return ""
+    path = (Path.home() if home is None else Path(home)).joinpath(*OWN_BEARER_DIR, stem)
+    try:
+        info = path.lstat()
+    except OSError:
+        return ""
+    if not stat.S_ISREG(info.st_mode):
+        raise FleetError(
+            "not_configured", "this seat's own bearer file is not a regular file"
+        )
+    file_seat, value = private_bearer(path)
+    if file_seat != seat:
+        raise FleetError(
+            "invalid_argument",
+            "this seat's own bearer file holds a different seat's bearer; nothing was used",
+        )
+    return value
+
+
 def bounded_json(raw):
     # Refuse deep nesting before the JSON parser can consume recursion or memory.
     depth = 0
