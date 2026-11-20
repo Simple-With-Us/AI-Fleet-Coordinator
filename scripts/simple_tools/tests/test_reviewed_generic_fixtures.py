@@ -65,6 +65,24 @@ class ReviewedGenericTests(unittest.TestCase):
             repo, path,
             "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n"))
 
+    def test_labeled_call_argument_chains_are_not_secrets(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "let s = Reset" + "AlarmCadence.periodSeconds(token: snapshot.wind" + "ow.window, label: snapshot.wind" + "ow.label)\n",
+            "foo(token: config.api" + "Key, label: label)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_form_still_refuses_nonsource_values(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "token: snapshot.window" + ".window\n",
+            "foo(token: \"snapshot.window" + ".window\")\n",
+            "let token = snapshot.window" + ".window\n",
+            "foo(token: " + "a" * 24 + ")\n",
+        ):
+            self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
             self.assertIsNone(secretscan.scan_file(self.repo, self.path, self.body))
