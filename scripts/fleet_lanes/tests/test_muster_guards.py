@@ -869,6 +869,7 @@ class InstallLockAndPrivateDirTests(World):
     def test_an_existing_directory_keeps_its_own_permissions(self) -> None:
         target = self.home / "already"
         target.mkdir(mode=0o750)
+        target.chmod(0o750)
         T._makedirs_private(str(target))
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o750)
 

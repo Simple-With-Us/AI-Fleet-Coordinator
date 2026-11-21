@@ -10,6 +10,13 @@ An OpenCode chat takes an Operator session letter and is titled `XX: Words` (AFC
 letter comes from the plugin inside OpenCode (`scripts/simple_tools/opencode_letter_plugin/`)
 and the Operator's one registry; nothing about it is OpenCode's own.
 
+**The letterer assigns every letter, and nothing else does.**  The letter client's job is to
+ask:  the plugin sends the chat's own events to the hook, the hook registers the chat with the
+Operator's session registry, and the registry's answer carries the label.  The library reads
+that label out of the answer and writes it on the chat;  it never computes one, and neither the
+adapter, the repair pass nor the title writer picks one.  The title writer only writes the
+title the letterer answered with.
+
 The plugin hears a chat's own events.  That is enough for a chat that is in use, and it is not
 enough for a chat that went quiet before the plugin was loaded:  no event comes for it, so it
 keeps the name OpenCode gave it and takes no letter.  That gap is real and it was found on
@@ -21,11 +28,12 @@ The fix is the fleet's own repair pass, not a second mechanism.  The adapter
 from the runtime's own store (`~/.local/share/opencode/opencode.db`, the `session_v2` table),
 and the library's `repair_after_start` sets off the shared `platform-letter repair` after a
 chat's start, at most once an hour, at most five chats a pass.  The repair replays each
-chat's own start, which registers it with the Operator and puts the letter on the chat through
-the runtime's own API (`opencode api session.update`).
+chat's own start, which asks the letterer for a label, and the letterer answers it;  the
+answer's title then goes on the chat through the runtime's own API
+(`opencode api session.update`).
 
-What the repair did on Nov 21, 2026, on the server, with the real registry and the real
-runtime:
+What the letterer assigned after the repair asked, on Nov 21, 2026, on the server, with the
+real registry and the real runtime:
 
 | Chat | Before | After |
 |---|---|---|
@@ -39,17 +47,22 @@ The children took the pairs right after their parent's (`AA` -> `AB`, `AC`, `AD`
 is the rule for a sub-thread, and the older main chat took the next free pair for the seat
 (`CC`).  The probe chat marked `[no-letter]` was left alone, as it takes none by design.
 
+Checked afterwards, one chat at a time, against the letterer's own answer for each:  every
+letter the seat holds matched the label the letterer holds, with the letterer's own registry
+record and an open state.  No chat showed a letter that the letterer did not hold.
+
 A chat marked `[no-letter]` takes no letter:  it is how a headless run says so, and the sweep's
 workers carry the mark (`scripts/pr_sweep/platforms.json`).  A chat the plugin never saw does
-not carry the mark, so the repair letters it.
+not carry the mark, so the repair asks the letterer for one.
 
 **How far back the repair reaches.**  A chat older than fourteen days is left alone, and that
 is a bound and not an oversight.  The fleet has twenty-six main pairs and the whole seat's
 history on this host is larger than that:  thirty-eight chats on Nov 21 were older than the
-bound, and twenty-six of them would have been main chats.  Lettering them all would have
-taken every main pair for chats from weeks ago and left the live ones with none, which is the
-wrong-chat delivery the registry exists to refuse.  The bound keeps the repair on the chats
-the owner is actually looking at, and the oldest of the thirty-eight was seventeen days old.
+bound, and twenty-six of them would have been main chats.  Asking for all of them would have
+had the letterer take every main pair for chats from weeks ago and leave the live ones with
+none, which is the wrong-chat delivery the registry exists to refuse.  The bound keeps the
+repair on the chats the owner is actually looking at, and the oldest of the thirty-eight was
+seventeen days old.
 
 ## The wake half
 
