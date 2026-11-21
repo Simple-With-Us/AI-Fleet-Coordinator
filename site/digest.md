@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-21 02:22 CST · timezone America/Chicago_
+_Generated 2026-11-21 07:57 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,35 +11,70 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-21
 
-*29 PRs merged · 0 issues opened · 0 issues closed*
+*64 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** `Codex` [#2180](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2180): Persist Operator Settings With Verified Autosave Receipts _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2207](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2207): Read Relay Credentials Through The Canonical Bounded Client _(by jaywedgeworth22)_
+- **AFC** [#2276](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2276): chore: com.simplewithus.codecaps.ios 0.1.0 _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2292](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2292): The — row names the chats that hold no letter (AFC-814) _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2297](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2297): The workspace binding is the host's workspace root (AFC-827) _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2365](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2365): Restore gated merge-service automation and rearm sweep _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2385](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2385): Keep Runtime Context Out Of Operator Issue Links _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2387](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2387): Read Registry Export Credentials Through One Isolated Worker _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2388](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2388): Read Five Python Consumers Through The Canonical Client _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2389](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2389): Preserve Mac UI Copy Guidance in Canonical Source _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2390](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2390): Preserve Installed Notes Scoped Reader in Source _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2392](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2392): Remove Secrets-App Prerequisites From Doctor, Config And Weekly Digest _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2393](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2393): Supply Shared Scoped Reader Source for Notes _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2394](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2394): Keep Active Hook Paths During Lane Tools Updates _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2396](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2396): AFC-859: Add guarded code-only Sheets updates _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2397](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2397): Repick Unaddressed Wakes After Ineligible Refusal _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2398](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2398): Use The Shared Reader In Copied Runtime Consumers _(by jaywedgeworth22)_
+- **AFC** `Codex` `Cursor` [#2400](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2400): Use The Shared Reader For Sheet, Health And — Consumers _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2401](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2401): Remove Manual Command Secrets-App Dependencies _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2402](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2402): Stabilize Muster Server Age Fixture _(by jaywedgeworth22)_
+- **AFC** `OpenCode` [#2403](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2403): feat(wake): the OpenCode half of the wake router, and letters for every chat _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2404](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2404): AFC-859: Use Flock For Operator Sheets Drain Lease _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2406](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2406): Read Watchdog Credentials Through Its Scoped Shared Reader _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2409](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2409): Verify Declared Consumer Bindings In The Shared Reader _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2414](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2414): AFC-859: Align Shared Session Pair Allocation _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2415](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2415): Preserve Safe Titles And Retired Hook Routing _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2416](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2416): Finish Shared Reader And Retained Installer Migration _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2417](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2417): Validate Shared Provider URLs Before Bearer Handoff _(by jaywedgeworth22)_
+- **AFC** [#2418](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2418): chore: com.simplewithus.codecaps.ios 0.1.0 _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2419](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2419): Record Clutch’s Verified TestFlight Build _(by jaywedgeworth22)_
 - **BF** `Codex` [#2162](https://github.com/Simple-With-Us/BotFleet/pull/2162): Align GitHub PR Header Scope _(by jaywedgeworth22)_
+- **BF** `Grok Bot` [#2163](https://github.com/Simple-With-Us/BotFleet/pull/2163): fix(auto-merge): drop pull_request and pull_request_review from the secrets-bearing caller _(by jaywedgeworth22)_
 - **C** `Codex` [#278](https://github.com/Simple-With-Us/Clutch/pull/278): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **C** `OpenCode` [#294](https://github.com/Simple-With-Us/Clutch/pull/294): Add ClutchTheme Tokens And Migrate Three Shared Surfaces _(by jaywedgeworth22)_
+- **C** `Codex` `MiniMax` [#295](https://github.com/Simple-With-Us/Clutch/pull/295): Use Direct Infisical Outputs For — And ASC Consumers _(by jaywedgeworth22)_
 - **CT** `Codex` [#3194](https://github.com/Simple-With-Us/Congress.Trade/pull/3194): Align Header Scope With Merged Shared Source _(by jaywedgeworth22)_
 - **CL** `Codex` [#343](https://github.com/Simple-With-Us/ContactLogo/pull/343): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **DD** `Codex` [#598](https://github.com/Simple-With-Us/DealDex/pull/598): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **FL** `Codex` [#215](https://github.com/Simple-With-Us/FleetLink/pull/215): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **FL** `Instinct` [#219](https://github.com/Simple-With-Us/FleetLink/pull/219): Restore gated merge-service automation and rearm sweep _(by jaywedgeworth22)_
+- **FL** `Grok Bot` [#220](https://github.com/Simple-With-Us/FleetLink/pull/220): fix(auto-merge): require the default branch for workflow_dispatch runs _(by jaywedgeworth22)_
 - **HH** `Instinct` [#378](https://github.com/Simple-With-Us/HogHunter/pull/378): HH-230 Server CPU reads live every five seconds, and value digits read in black _(by jaywedgeworth22)_
 - **HH** `Codex` [#380](https://github.com/Simple-With-Us/HogHunter/pull/380): Align GitHub PR Header Scope _(by jaywedgeworth22)_
+- **HH** `Grok Bot` [#381](https://github.com/Simple-With-Us/HogHunter/pull/381): fix(auto-merge): drop pull_request_review from the secrets-bearing caller _(by jaywedgeworth22)_
+- **HH** `Instinct` [#382](https://github.com/Simple-With-Us/HogHunter/pull/382): HH-231 Every number reads in black, severity color stays on bars and badges _(by jaywedgeworth22)_
+- **HH** `Instinct` [#383](https://github.com/Simple-With-Us/HogHunter/pull/383): HH-232 Small yellow caution mark on rows at 100% CPU or more _(by jaywedgeworth22)_
+- **HH** `Instinct` [#384](https://github.com/Simple-With-Us/HogHunter/pull/384): Verify exact external TestFlight readiness without repeating uploads _(by jaywedgeworth22)_
 - **PS** `Codex` [#291](https://github.com/Simple-With-Us/Personal-Site/pull/291): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **PS** `Instinct` [#295](https://github.com/Simple-With-Us/Personal-Site/pull/295): Restore gated merge-service automation and rearm sweep _(by jaywedgeworth22)_
+- **PS** `Grok Bot` [#297](https://github.com/Simple-With-Us/Personal-Site/pull/297): fix(auto-merge): require the default branch for workflow_dispatch runs _(by jaywedgeworth22)_
 - **SWU** `Codex` [#111](https://github.com/Simple-With-Us/Simple-With-Us/pull/111): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **SWU** `Grok Bot` [#115](https://github.com/Simple-With-Us/Simple-With-Us/pull/115): fix(auto-merge): drop pull_request_review from the secrets-bearing caller _(by jaywedgeworth22)_
+- **SWU** `Grok Bot` [#116](https://github.com/Simple-With-Us/Simple-With-Us/pull/116): fix(auto-merge): require the default branch for workflow_dispatch runs _(by jaywedgeworth22)_
+- **ST** `Instinct` [#5428](https://github.com/Simple-With-Us/Socratic-Trade/pull/5428): Fix console day P&L baseline own-run fill omission _(by jaywedgeworth22)_
 - **ST** `Codex` [#5430](https://github.com/Simple-With-Us/Socratic-Trade/pull/5430): Align GitHub PR Header Scope _(by jaywedgeworth22)_
 - **UM** `Codex` [#2070](https://github.com/Simple-With-Us/Usage-Monitor/pull/2070): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **UM** `Z Code` [#2078](https://github.com/Simple-With-Us/Usage-Monitor/pull/2078): docs(observability): server collector recovery audit 2026-11-19 _(by jaywedgeworth22)_
+- **UM** `Codex` `Muse Assist` [#2082](https://github.com/Simple-With-Us/Usage-Monitor/pull/2082): Use — Code’s Existing Scoped Ingest Binding _(by jaywedgeworth22)_
+- **CC** [#529](https://github.com/Simple-With-Us/codecaps/pull/529): CC-219: diagnose App Group container absence in widget home-screen probe _(by jaywedgeworth22)_
+- **CC** [#539](https://github.com/Simple-With-Us/codecaps/pull/539): fix(companion): Mac-first main screen, tighter cards, Third-Party pool row _(by jaywedgeworth22)_
 - **CC** `Codex` [#541](https://github.com/Simple-With-Us/codecaps/pull/541): Match iPhone Quota Rows And Shared-Pool Indicators To Mac _(by jaywedgeworth22)_
 - **CC** [#542](https://github.com/Simple-With-Us/codecaps/pull/542): Get Main Green After #532 (CC-236) _(by jaywedgeworth22)_
 - **CC** `Codex` [#543](https://github.com/Simple-With-Us/codecaps/pull/543): Align GitHub PR Header Scope _(by jaywedgeworth22)_
@@ -558,7 +593,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#1826](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1826): AFC-734: Distinguish gr_ not_configured relay env vs connection auth _(by jaywedgeworth22)_
 - **AFC** [#1828](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1828): AFC-732: recall doctor setup health table _(by jaywedgeworth22)_
 - **AFC** [#1829](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1829): AFC-737: CI red streak report (daily + workflow_dispatch) _(by jaywedgeworth22)_
-- **AFC** `Claude` `MiniMax` [#1838](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1838): One Letter Client For Every Platform: — And — Join The Table, "??: Title", One Request Command (AFC-740) _(by jaywedgeworth22)_
+- **AFC** `Codex` `Claude` `MiniMax` [#1838](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1838): One Letter Client For Every Platform: — And — Join The Table, "??: Title", One Request Command (AFC-740) _(by jaywedgeworth22)_
 - **AFC** `Antigravity` [#1839](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1839): Wake Router Adapter (AFC-665, AFC-694) _(by jaywedgeworth22)_
 - **AFC** [#1840](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1840): AFC-750: FLEET_READ_TOKEN fleet-wide CI red report _(by jaywedgeworth22)_
 - **AFC** `Grok Bot` [#1843](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1843): RAG mirror logging and runbook paths (AFC-741) _(by jaywedgeworth22)_
@@ -1398,35 +1433,12 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-06
 
-*92 PRs merged · 0 issues opened · 0 issues closed*
+*69 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1328](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1328): Keep Refused Muster Control Changes Unavailable, Not Unknown _(by jaywedgeworth22)_
 - **AFC** [#1330](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1330): Alert Ingress: Serialize Standing Status Refreshes _(by jaywedgeworth22)_
-- **AFC** [#1371](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1371): Muster Window Follows The Machine _(by jaywedgeworth22)_
-- **AFC** [#1373](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1373): Deliver Muster Through Sparkle And Show Its Build _(by jaywedgeworth22)_
-- **AFC** [#1375](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1375): Remove Muster's Unreached VM, Kill And Multi-Host Code _(by jaywedgeworth22)_
-- **AFC** [#1376](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1376): Make Muster's README Match The App On Main _(by jaywedgeworth22)_
-- **AFC** `MiniMax` [#1377](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1377): Make The — Panel Say What It Read _(by jaywedgeworth22)_
-- **AFC** [#1378](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1378): Seats Panel Says Where Each Seat Is Held _(by jaywedgeworth22)_
-- **AFC** [#1379](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1379): Plan Sheet Says What Really Happened _(by jaywedgeworth22)_
-- **AFC** [#1380](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1380): Make The Wake Panel Tell The Truth _(by jaywedgeworth22)_
-- **AFC** [#1381](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1381): Make Server Resource Limits Say What Each Limit Does _(by jaywedgeworth22)_
-- **AFC** [#1384](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1384): Controls Tell The Truth _(by jaywedgeworth22)_
-- **AFC** [#1385](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1385): Make Apps And Work Say What It Read And Where _(by jaywedgeworth22)_
-- **AFC** [#1387](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1387): Make PASS Mean One Thing In Muster And The Engine _(by jaywedgeworth22)_
-- **AFC** [#1391](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1391): docs(AFC): folder-tag post intro format (Policy 2026-11-05) _(by jaywedgeworth22)_
 - **AFC** [#1393](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1393): linear-board: fail-closed per-seat identity (drop shared-Fleet fallback) _(by jaywedgeworth22)_
-- **AFC** [#1396](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1396): agent-sync-mcp: opt-in bounded tools/list paging + catalog tool (AFC-641) _(by jaywedgeworth22)_
-- **AFC** [#1399](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1399): git-relay: refresh reviewed-fixture attestations for rename-affected synthetic fixtures _(by jaywedgeworth22)_
-- **AFC** [#1400](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1400): git relay: let tree_create reference existing blobs by sha _(by jaywedgeworth22)_
-- **AFC** [#1402](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1402): Fix simple-git declared response completion _(by jaywedgeworth22)_
-- **AFC** [#1403](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1403): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
-- **AFC** [#1404](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1404): fix(AFC): outbox folder-list + status+claim validation (OPS-1035 follow-up) _(by jaywedgeworth22)_
-- **AFC** [#1406](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1406): Give Every CI Test Step A Time Limit _(by jaywedgeworth22)_
-- **AFC** [#1407](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1407): Give Muster Its Own Sparkle Key _(by jaywedgeworth22)_
-- **AFC** [#1408](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1408): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
 - **AFC** [#1409](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1409): AFC-646: raise Linear GraphQL variables cap to 100000 in fleet Linear clients _(by jaywedgeworth22)_
 - **AFC** [#1411](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1411): OPS-1037: Operator registry Sheets exporter, store fence, and drain runner _(by jaywedgeworth22)_
 - **AFC** [#1412](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1412): OPS-1036: no-wake (👀) posts still deliver to tagged seat inboxes _(by jaywedgeworth22)_
@@ -1497,12 +1509,10 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-05
 
-*37 PRs merged · 0 issues opened · 0 issues closed*
+*35 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1360](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1360): Add Clone, Fetch, Bundle, Archive And File Publishing To simple-git _(by jaywedgeworth22)_
-- **AFC** [#1398](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1398): Store Mac service tokens in the owner's login keychain _(by jaywedgeworth22)_
 - **BF** [#1587](https://github.com/Simple-With-Us/BotFleet/pull/1587): feat(decommission): produce the per-engine replay parity receipt _(by jaywedgeworth22)_
 - **BF** [#1590](https://github.com/Simple-With-Us/BotFleet/pull/1590): Add Visual Harness For Bot Context Menu Hover Fill _(by jaywedgeworth22)_
 - **BF** [#1592](https://github.com/Simple-With-Us/BotFleet/pull/1592): Standardize Quota Window Label Casing _(by jaywedgeworth22)_
