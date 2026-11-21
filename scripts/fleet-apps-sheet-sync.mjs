@@ -34,7 +34,7 @@
  *   • Facts no registry file carries live in scripts/fleet-apps-sheet-facts.json, never in the sheet.
  *
  * Auth: Google service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via
- * fleet-secrets; ASC via ios-fleet/asc-api.mjs (env, else Infisical /asc).
+ * shared isolated Infisical CLI; ASC via ios-fleet/asc-api.mjs (env, else Infisical /asc).
  * Neither prints credentials.
  */
 
@@ -87,17 +87,20 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+const INFISICAL_CLI = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "fleet_infisical_cli.py");
+const PYTHON3 = "/usr/bin/python3";
+
 // AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
-// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
-function loadServiceAccount() {
+// Infisical Fleet-OPS /google-sheets-sa through the shared isolated CLI.  Never written to disk or printed.
+export function loadServiceAccount(run = execFileSync) {
   let raw = process.env.GOOGLE_SHEETS_SA || "";
   if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
     try {
-      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
-      }).replace(/\n$/, "");
+      raw = run(
+        PYTHON3,
+        ["-I", INFISICAL_CLI, "get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa", "--project", "fleet-ops"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).replace(/\n$/, "");
     } catch {
       raw = "";
     }

@@ -1,6 +1,6 @@
 # Exact Public Package Integrity Reviews
 
-The owner explicitly authorized a reviewed integrity exception on November 13, 2026: “Allow a reviewed integrity exception.”  This record covers the two complete CT lockfiles below, within AFC-786.  It grants no publication, credential, destination or deployment authority by itself; the source change must pass normal review, checks and merge before installation.
+The owner explicitly authorized a reviewed integrity exception on November 13, 2026: “Allow a reviewed integrity exception.”  This record covers the two complete CT package-lock files below, within AFC-786.  A second record below (November 19, 2026) adds the reviewed Congress.Trade `app/deno.lock`.  It grants no publication, credential, destination or deployment authority by itself; the source change must pass normal review, checks and merge before installation.
 
 ## Immutable Files
 
@@ -22,6 +22,31 @@ The complete structural difference is three string fields in `packages/node_modu
 | `app/package.json` | `96921a437d3b5e4f85faabe28caa44e42c609820` |
 | `app/deno.json` | `8597b4d3dc33a2555e14136f87b0b9d76e480c88` |
 | `app/deno.lock` | `008f64360b60a1300a45960e01b21d4143b4a4d2` |
+
+## Immutable File: `app/deno.lock` (November 19, 2026)
+
+Repository: `Simple-With-Us/Congress.Trade`.
+
+Path: `app/deno.lock`.
+
+| Version | Provenance | Whole-File SHA-256 |
+| --- | --- | --- |
+| Final | Congress.Trade PR 3192 ("Update non-major dependencies") head, held byte-exact by the CT worker pending scanner admission | `faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084` |
+
+The file is 97,957 UTF-8 bytes and decodes as strict JSON: lockfile version 5 with top-level keys `version`, `specifiers`, `npm`, `redirects`, `remote` and `workspace`.  All 41 resolved URLs use HTTPS on `deno.land` without user information, query or fragment, and no `http://` URL appears.  A complete raw-text scan finds only the `a Zulip-shaped API key` class inside the lockfile's integrity values; no other shared-scanner or relay-provider pattern matches.  The owner directed this admission on November 19, 2026, through the scanner-triage lane (AFC PR 2363).
+
+## Immutable File: `app/package-lock.json`, aws-sdk client-s3 bump (November 20, 2026)
+
+Repository: `Simple-With-Us/Congress.Trade`.
+
+Path: `app/package-lock.json`.
+
+| Version | Provenance | Whole-File SHA-256 |
+| --- | --- | --- |
+| Before | Relay-read `main` | `8bd24db9b88deca349c7dfaddc909e42e924e685775c3455d42d084f4147e13b` |
+| Final | Congress.Trade PR 3192 candidate, held byte-exact by the CT worker (staged copy) | `5ff0b0a6007a6df394d86060251d58a1a7ebd9b3e6330a3c5fc24021793b6932` |
+
+Both files contain 157,881 UTF-8 bytes.  The complete line difference is exactly four lines in the root and `packages/node_modules/@aws-sdk/client-s3` entries: the root dependency constraint, then `version`, `resolved` and `integrity`.  `@aws-sdk/client-s3` moves from 3.1167.0 to 3.1168.0 and nothing else changes.  The Zulip-shaped matches in the final file are the same 13 lockfile integrity values as in the earlier records above, each inside an integrity string.  The client-s3 integrity value of the new version matched npm registry version metadata (`dist.integrity` for `@aws-sdk/client-s3@3.1168.0`), and the SHA-512 of the downloaded tarball from the lock's `resolved` URL matched it.  Integrity strings are not reproduced here.  The admission follows the Admission Boundary below unchanged: exact `(repository, path, whole-file SHA-256)` only, with every other detector still active.  The change was requested by the main agent on the user's standing grant to land and merge reviewed code; this record is that grant's trace, not a new authority.
 
 ## Complete Content And Public Artifact Verification
 
@@ -49,7 +74,7 @@ Each of those 13 artifacts and both Hono versions were independently checked aga
 
 ## Admission Boundary
 
-`scripts/simple_tools/secretscan.py::scan_file` and its byte-identical relay vendor contain a separate immutable public-integrity registry of exactly these two `(repository, path, whole-file SHA-256)` triples.  For an exact match, every nonempty loaded credential is refused first, including a short value and a value supplied through an iterator.  The unchanged strict scanner then runs; only its `a Zulip-shaped API key` result is admitted for these exact reviewed bytes.  Every other provider, dedicated or generic detector remains active.
+`scripts/simple_tools/secretscan.py::scan_file` and its byte-identical relay vendor contain a separate immutable public-integrity registry of exactly these four `(repository, path, whole-file SHA-256)` triples (the three package-lock files above plus the `app/deno.lock` record).  For an exact match, every nonempty loaded credential is refused first, including a short value and a value supplied through an iterator.  The unchanged strict scanner then runs; only its `a Zulip-shaped API key` result is admitted for these exact reviewed bytes.  Every other provider, dedicated or generic detector remains active.
 
 The relay's `unreviewed_file_secret` still checks loaded values and its own provider patterns before reaching this subtype.  These files are not added to the legacy synthetic-fixture early-return registry.  General Python `scan()`, JavaScript `scanSecret()`, message scans, provider patterns and gitleaks settings are unchanged.  The existing generic-assignment fixture registry keeps its separate boundary.
 

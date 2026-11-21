@@ -7,12 +7,12 @@
   model usage (Usage Monitor `/api/agent-model-mix`) and sub-agent tier mix
   (Sentry `agent-sessions` project) to the fleet.
 
-  Calendar-scheduled (Monday 8:00 AM local time), not an always-on poller --
+  Calendar-scheduled (Monday 8:00 AM local time), not an always-on poller;
   system timezone is confirmed America/Chicago, so a plain local-wall-clock
   StartCalendarInterval needs no extra timezone handling.
 
   Points at the tracked repo checkout (~/Code/ai-fleet-coordinator), never a
-  worktree -- worktrees are removed once their PR is open.
+  worktree; worktrees are removed once their PR is open.
 
   Install:
     launchctl bootstrap gui/$(id -u) \

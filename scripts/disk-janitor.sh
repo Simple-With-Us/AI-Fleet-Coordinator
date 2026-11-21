@@ -998,9 +998,29 @@ if [ "${REAP_WORKTREES:-0}" = "1" ]; then
   janitor_heartbeat "wt-retire-done n_reap=${n_reap}"
 fi
 
+# 2026-11-19 (MA): permanent delete for the low-free branch.  `find -delete`
+# unlinks directly, so no Trash-parking layer (the CleanMyMac CLI's
+# move-to-Trash semantics, the mavis-trash harness interception) can turn a
+# delete into a move that frees nothing.
+janitor_purge() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  find "$1" -depth -delete 2>/dev/null
+}
+janitor_purge_contents() {
+  [ -d "$1" ] || return 0
+  find "$1" -mindepth 1 -depth -delete 2>/dev/null
+}
+
 # --- LOW FREE: clear regenerable caches + prod/dev build caches ---
 if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
   janitor_heartbeat "lowfree-start"
+  # 2026-11-19 (MA): snapshot Trash; right after the sweep block
+  # below, this branch permanently deletes whatever the sweeps
+  # parked there (see the trash-purge block after the sweeps).
+  # No predictable-path fallback: if mktemp fails the name stays
+  # empty and the purge below is skipped (fail-closed).
+  trash_snap="$(mktemp -t janitor-trash-snap 2>/dev/null)"
+  ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_snap"
   HOGHUNTER_CLEAN="/Users/jay/Code/HogHunter/scripts/hoghunter-clean"
   if [ -x "$HOGHUNTER_CLEAN" ]; then
     # 2026-09-30 (BF-HOUSEKEEPER): this ran the CleanMyMac CLI's dev/ai/trash
@@ -1061,7 +1081,52 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
       printf '%s  CMM-SKIP cleanmymac not on PATH\n' "$(date '+%Y-%m-%d %H:%M')" >> "$LOG"
     fi
   fi
-  rm -rf "$HOME_DIR/.npm/_cacache" 2>/dev/null
+  # Close the Trash loop while the window is still only the sweep
+  # block: permanently delete what the sweeps above parked in
+  # ~/.Trash.  The parking is why the pre-2026-11-19 branch looped --
+  # swept items sat in Trash, free space never rose, LOW_FREE stayed
+  # crossed, and the branch refired every tick (on 2026-11-17/18 it
+  # parked ~150 copies/day, and the CLI dev sweep was verified live
+  # on 2026-11-19 to move swept items into Trash instead of deleting
+  # them).  Only items that appeared during the sweep block are
+  # deleted; whatever was already in Trash beforehand is untouched,
+  # and every purged name is logged.  The window is deliberately
+  # just the sweep block, not the whole branch, so an unrelated item
+  # trashed during the branch's later, slower cache work is never
+  # caught by this purge.
+  if [ -d "$HOME_DIR/.Trash" ] && [ -n "${trash_snap:-}" ] && [ -f "$trash_snap" ]; then
+    trash_after="$(mktemp -t janitor-trash-after 2>/dev/null)"
+    if [ -n "$trash_after" ]; then
+      ls -A "$HOME_DIR/.Trash" 2>/dev/null | sort > "$trash_after"
+      parked_n=0
+      parked_names=""
+      while IFS= read -r parked_item; do
+        [ -n "$parked_item" ] || continue
+        parked_path="$HOME_DIR/.Trash/$parked_item"
+        # Watchdog-bounded: a big parked tree can take minutes to
+        # unlink, and the watchdog refreshes the lock heartbeat while
+        # it runs, so the self-heal cannot mistake this purge for a
+        # wedged run and kill it mid-delete.
+        janitor_watchdog 900 "trash-purge-item" -- janitor_purge "$parked_path"
+        # Count by absence, not exit status: find -delete reports
+        # failure when any single entry resists, even after deleting
+        # everything else.
+        if [ ! -e "$parked_path" ] && [ ! -L "$parked_path" ]; then
+          parked_n=$((parked_n + 1))
+          parked_names="${parked_names}${parked_item}; "
+        else
+          printf '%s  lowfree trash-purge: could not fully delete parked item: %s\n' "$now" "$parked_item" >> "$LOG"
+        fi
+      done < <(comm -13 "$trash_snap" "$trash_after")
+      if [ "$parked_n" -gt 0 ]; then
+        actions="${actions}trash-purge(${parked_n}) "
+        printf '%s  lowfree trash-purge: permanently deleted %s items parked during the sweep block: %s\n' "$now" "$parked_n" "$parked_names" >> "$LOG"
+      fi
+      janitor_purge "$trash_after"
+    fi
+  fi
+  [ -n "${trash_snap:-}" ] && janitor_purge "$trash_snap"
+  janitor_purge "$HOME_DIR/.npm/_cacache"
   # uv cache: never rm -rf the whole tree. Several MCP servers (Hetzner, alpaca, fmp,
   # sentry, pinecone, uptimerobot, coolify) are launched via `uvx`, which keeps that
   # process's venv under .cache/uv/archive-v0/<hash>/ for as long as it runs. Wiping
@@ -1112,15 +1177,18 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
         uv cache clean >/dev/null 2>&1 && { actions="${actions}uv-clean "; uv_branch="${uv_branch}+clean"; }
       fi
     elif [ "$free" -lt "$CRIT_FREE" ]; then
-      rm -rf "$uv_cache" 2>/dev/null && { actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli; }
+      if ! janitor_purge "$uv_cache"; then
+        printf '%s  uv cache legacy purge partial: some entries busy or undeletable\n' "$now" >> "$LOG"
+      fi
+      actions="${actions}uv-rm-legacy "; uv_branch=rm-legacy-no-cli
     fi
     printf '%s  uv-cache branch=%s free=%sG crit=%sG\n' "$now" "$uv_branch" "$free" "$CRIT_FREE" >> "$LOG"
   fi
-  rm -rf "$HOME_DIR/Library/Caches/ms-playwright/"* 2>/dev/null
-  rm -rf "$HOME_DIR/.cache/chrome-devtools-mcp" 2>/dev/null
-  rm -rf "$HOME_DIR/Library/Developer/CoreSimulator/Caches"/* 2>/dev/null
-  rm -rf /Users/jay/apps/trading-live/.next/cache 2>/dev/null
-  rm -rf /Users/jay/apps/trading-codex/.next/cache 2>/dev/null
+  janitor_purge_contents "$HOME_DIR/Library/Caches/ms-playwright"
+  janitor_purge "$HOME_DIR/.cache/chrome-devtools-mcp"
+  janitor_purge_contents "$HOME_DIR/Library/Developer/CoreSimulator/Caches"
+  janitor_purge /Users/jay/apps/trading-live/.next/cache
+  janitor_purge /Users/jay/apps/trading-codex/.next/cache
   actions="${actions}caches "
   janitor_heartbeat "lowfree-done"
 fi
