@@ -374,7 +374,11 @@ def _archived(value: object) -> bool:
 
 
 def _within(root: str, folder: str) -> bool:
-    """Whether `folder` is `root` or sits under it, both read as real paths."""
+    """Whether `folder` is `root` or sits under it, both read as real paths.
+
+    The prefix is the root with one separator on it, so a root that is already a separator
+    (the filesystem root) keeps its one and does not become a doubled one:  every path under
+    it starts with a single separator, and a doubled one matches nothing."""
     if not root:
         return True
     try:
@@ -382,7 +386,8 @@ def _within(root: str, folder: str) -> bool:
         target = os.path.realpath(folder)
     except OSError:
         return False
-    return target == base or target.startswith(base + os.sep)
+    prefix = base if base.endswith(os.sep) else base + os.sep
+    return target == base or target.startswith(prefix)
 
 
 def exclude_non_interactive(

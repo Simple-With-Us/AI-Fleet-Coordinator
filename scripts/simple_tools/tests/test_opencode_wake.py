@@ -304,6 +304,17 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "bad-workspace-path")
 
+    def test_the_filesystem_root_narrows_nothing(self):
+        # A root that is already a separator keeps its one:  a doubled one would match no
+        # path at all, and every chat would be refused with workspace-mismatch.
+        self.assertTrue(opencode_wake._within("/", str(self.workspace)))
+        self.assertTrue(opencode_wake._within("/", "/"))
+        self.assertFalse(opencode_wake._within("/nowhere", str(self.workspace)))
+
+    def test_a_workspace_root_narrows_the_delivery(self):
+        delivery = self._deliver_local(config={"workspace": "/"})
+        self.assertEqual(delivery.outcome, "sent")
+
     def test_no_workspace_is_the_default_and_delivers(self):
         # OpenCode's chats each have their own project directory, so the deployment may name a
         # root but does not have to:  the session id is exact and the CLI continues that
