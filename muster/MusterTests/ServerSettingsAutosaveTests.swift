@@ -396,6 +396,20 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertThrowsError(try ServerSettingsBuilder.value(mixedCase, for: row).get())
     }
 
+    func test_nontext_seat_entries_remain_visible_and_block_an_implicit_conversion() throws {
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(), editable: true)
+            .flatMap(\.rows)
+        let row = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
+        let mixed = #"["CODEX",42,true,null,{"name":"JET"}]"#
+        let shown = ServerSeatNames.text(from: mixed)
+        XCTAssertEqual(shown, "CODEX, [Invalid Entry], [Invalid Entry], [Invalid Entry], [Invalid Entry]")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(mixed, for: row).get())
+        let edited = ServerSeatNames.draft(from: shown + ", JET")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(edited, for: row).get())
+        XCTAssertEqual(ServerSeatNames.text(from: "[]"), "")
+        XCTAssertEqual(ServerSeatNames.text(from: #"{"name":"CODEX"}"#), "")
+    }
+
     func test_seat_list_controls_are_typed_bounded_and_preserve_read_only_mode() throws {
         let schema = try settingsSchema()
         let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true)

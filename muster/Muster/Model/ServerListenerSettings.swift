@@ -994,11 +994,11 @@ enum ServerSettingsCopy {
 enum ServerSeatNames {
     static func text(from draft: String) -> String {
         guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
-        let names = values.compactMap { value -> String? in
+        let names = values.map { value -> String in
             if case .text(let name) = value { return name }
-            return nil
+            // Keep invalid entries visible and invalid until the operator corrects them.
+            return "[Invalid Entry]"
         }
-        guard names.count == values.count else { return "" }
         return names.joined(separator: ", ")
     }
 
