@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build a public day-by-day activity digest: Markdown, HTML, and all-day ICS.
 
-Sources (verified-public GitHub repositories only):
-  - Merged pull requests
-  - Issues opened / closed / reopened
+Sources (verified-public repositories only):
+  - Merged GitHub pull requests
+  - Linear issues opened / closed (completed, canceled, or duplicate) for mapped public teams
+  - GitHub issues opened / closed (if any)
 
 Outputs (under site/ and calendar/):
   site/index.html          — browsable day outline
@@ -12,6 +13,7 @@ Outputs (under site/ and calendar/):
 
 Env:
   GITHUB_TOKEN / FLEET_GITHUB_TOKEN
+  LINEAR_API_KEY (optional; populated in CI by scripts/infisical-fetch.mjs from prod:/fleet-activity)
   FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
   DIGEST_LOOKBACK_DAYS (default 21)
@@ -29,6 +31,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +47,41 @@ from ics_utils import ics_escape, join_ics
 from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos
 
 DEFAULT_REPOS = PUBLIC_REPOS
+DEFAULT_APPS_PATH = Path(__file__).resolve().parent.parent / "fleet-apps.json"
+LINEAR_GRAPHQL = "https://api.linear.app/graphql"
+DEFAULT_LINEAR_DEADLINE_SECONDS = 300.0
+_LINEAR_REQUEST_ID_HEADERS = ("x-linear-request-id", "x-request-id", "request-id")
+_SAFE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_LINEAR_ISSUES_QUERY = """
+query($cursor: String, $since: DateTimeOrDuration!, $teamKeys: [String!]!) {
+  issues(
+    first: 100
+    after: $cursor
+    orderBy: updatedAt
+    filter: {
+      team: { key: { in: $teamKeys } }
+      updatedAt: { gte: $since }
+    }
+  ) {
+    nodes {
+      identifier
+      number
+      title
+      url
+      createdAt
+      completedAt
+      canceledAt
+      state { name type }
+      team { key }
+      delegate { name }
+      creator { name }
+      labels(first: 20) { nodes { name } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+""".strip()
 
 
 @dataclass
@@ -77,6 +115,130 @@ def token() -> str:
     if not t:
         raise SystemExit("error: set GITHUB_TOKEN or FLEET_GITHUB_TOKEN")
     return t
+
+
+def linear_token() -> str:
+    """Read LINEAR_API_KEY injected by CI's scoped Infisical loader (prod:/fleet-activity)."""
+    return os.environ.get("LINEAR_API_KEY", "").strip()
+
+
+def _linear_headers(tok: str) -> dict[str, str]:
+    auth = f"Bearer {tok}" if tok.startswith("lin_oauth_") else tok
+    return {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+        "User-Agent": "AI-Fleet-Coordinator-daily-digest",
+    }
+
+
+def _safe_linear_request_id(headers: Any) -> str:
+    if not headers or not hasattr(headers, "get"):
+        return ""
+    for name in _LINEAR_REQUEST_ID_HEADERS:
+        raw = headers.get(name)
+        if isinstance(raw, str):
+            val = raw.strip()
+            if _SAFE_REQUEST_ID_RE.match(val):
+                return val
+    return ""
+
+
+def _safe_linear_error_codes(errors: Any) -> list[str]:
+    codes: list[str] = []
+    if not isinstance(errors, list):
+        return codes
+    for err in errors[:5]:
+        if not isinstance(err, dict):
+            continue
+        ext = err.get("extensions")
+        if not isinstance(ext, dict):
+            continue
+        code = ext.get("code")
+        if isinstance(code, str) and _SAFE_ERROR_CODE_RE.match(code) and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def linear_graphql(
+    query: str,
+    variables: dict[str, Any],
+    tok: str,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Execute a Linear GraphQL query with bounded transient retries and shared deadline."""
+    payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+    headers = _linear_headers(tok)
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        timeout = 60.0
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Linear GraphQL deadline exhausted")
+            timeout = min(60.0, remaining)
+        req = urllib.request.Request(LINEAR_GRAPHQL, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            req_id = _safe_linear_request_id(exc.headers)
+            exc.close()
+            suffix = f" (request_id={req_id})" if req_id else ""
+            last_exc = RuntimeError(f"Linear GraphQL HTTP {exc.code}{suffix}")
+            if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
+                delay = float(attempt + 1)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= delay:
+                        raise RuntimeError("Linear GraphQL deadline exhausted") from exc
+                time.sleep(delay)
+                continue
+            raise last_exc from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_exc = RuntimeError(f"Linear GraphQL request failed ({type(exc).__name__})")
+            if attempt < 2:
+                delay = float(attempt + 1)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= delay:
+                        raise RuntimeError("Linear GraphQL deadline exhausted") from exc
+                time.sleep(delay)
+                continue
+            raise last_exc from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Linear GraphQL returned non-object response")
+        if data.get("errors"):
+            codes = _safe_linear_error_codes(data.get("errors"))
+            count = len(data["errors"]) if isinstance(data["errors"], list) else 1
+            detail = f" codes={','.join(codes)}" if codes else ""
+            raise RuntimeError(f"Linear GraphQL returned {count} error(s){detail}")
+        result = data.get("data")
+        if not isinstance(result, dict):
+            raise RuntimeError("Linear GraphQL missing data payload")
+        return result
+    raise last_exc or RuntimeError("Linear GraphQL failed")
+
+
+def load_public_team_map(repos: list[str], apps_path: Path | None = None) -> dict[str, str]:
+    """Map uppercase Linear team keys to verified-public GitHub repo names."""
+    path = apps_path or DEFAULT_APPS_PATH
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    public_by_lower = {r.casefold(): r for r in repos}
+    mapping: dict[str, str] = {}
+    for app in data.get("apps", []):
+        if not isinstance(app, dict):
+            continue
+        repo_name = str(app.get("repo") or "").strip()
+        acronym = str(app.get("acronym") or "").strip().upper()
+        if not repo_name or not acronym:
+            continue
+        canonical = public_by_lower.get(repo_name.casefold())
+        if canonical:
+            mapping[acronym] = canonical
+    return mapping
 
 
 def gh_get(url: str, tok: str) -> Any:
@@ -201,6 +363,169 @@ def fetch_issue_churn(
     return opened, closed
 
 
+def _validate_linear_issue_node(node: Any) -> dict[str, Any]:
+    """Validate required fields and types on a Linear GraphQL issue node."""
+    if not isinstance(node, dict):
+        raise ValueError("invalid Linear issue node shape: node must be a dict")
+    for field_name in ("identifier", "url", "createdAt"):
+        val = node.get(field_name)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"invalid Linear issue node shape: missing {field_name}")
+    if not isinstance(node.get("title"), str):
+        raise ValueError("invalid Linear issue node shape: invalid title")
+    num = node.get("number")
+    if not isinstance(num, int) or isinstance(num, bool):
+        raise ValueError("invalid Linear issue node shape: invalid number")
+    for opt_ts in ("completedAt", "canceledAt"):
+        val = node.get(opt_ts)
+        if val is not None and not isinstance(val, str):
+            raise ValueError(f"invalid Linear issue node shape: invalid {opt_ts}")
+    team = node.get("team")
+    if not isinstance(team, dict) or not isinstance(team.get("key"), str):
+        raise ValueError("invalid Linear issue node shape: invalid team")
+    state = node.get("state")
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("name"), str)
+        or not isinstance(state.get("type"), str)
+    ):
+        raise ValueError("invalid Linear issue node shape: invalid state")
+    for opt_actor in ("delegate", "creator"):
+        actor = node.get(opt_actor)
+        if actor is not None and not isinstance(actor, dict):
+            raise ValueError(f"invalid Linear issue node shape: invalid {opt_actor}")
+    labels = node.get("labels")
+    if labels is not None:
+        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
+            raise ValueError("invalid Linear issue node shape: invalid labels")
+        if any(not isinstance(lbl, dict) for lbl in labels["nodes"]):
+            raise ValueError("invalid Linear issue node shape: invalid label entry")
+    return node
+
+
+def fetch_linear_issue_churn(
+    repos: list[str],
+    since: date,
+    tok: str,
+    tz: ZoneInfo,
+    apps_path: Path | None = None,
+    max_pages: int = 50,
+    timeout_budget: float = DEFAULT_LINEAR_DEADLINE_SECONDS,
+) -> tuple[list[tuple[date, dict[str, Any]]], list[tuple[date, dict[str, Any]]]]:
+    """Fetch Linear issues opened or closed since `since` for verified-public repos."""
+    team_map = load_public_team_map(repos, apps_path)
+    if not team_map:
+        return [], []
+    if max_pages < 1:
+        raise RuntimeError("Linear pagination max_pages must be positive")
+
+    opened: list[tuple[date, dict[str, Any]]] = []
+    closed: list[tuple[date, dict[str, Any]]] = []
+    since_iso = (
+        datetime.combine(since, datetime.min.time(), tzinfo=tz)
+        .astimezone(UTC)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    team_keys = sorted(team_map.keys())
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    deadline = time.monotonic() + timeout_budget
+    completed_pagination = False
+
+    for page_idx in range(max_pages):
+        if deadline - time.monotonic() <= 0:
+            raise RuntimeError("Linear pagination deadline exhausted")
+        data = linear_graphql(
+            _LINEAR_ISSUES_QUERY,
+            {"cursor": cursor, "since": since_iso, "teamKeys": team_keys},
+            tok,
+            deadline=deadline,
+        )
+        issues_conn = data.get("issues")
+        if not isinstance(issues_conn, dict):
+            raise RuntimeError("Linear GraphQL missing issues connection")
+        nodes = issues_conn.get("nodes")
+        if not isinstance(nodes, list):
+            raise RuntimeError("Linear GraphQL missing issues nodes list")
+        for raw_node in nodes:
+            # Establish the public boundary before validating fields we will never publish.
+            raw_team = raw_node.get("team") if isinstance(raw_node, dict) else None
+            raw_key = raw_team.get("key") if isinstance(raw_team, dict) else None
+            team_key = raw_key.strip().upper() if isinstance(raw_key, str) else ""
+            repo = team_map.get(team_key)
+            if not repo:
+                continue
+            # Mapped public nodes still fail closed on every malformed required field.
+            node = _validate_linear_issue_node(raw_node)
+            identifier = node["identifier"].strip()
+            number = node["number"]
+            title = node["title"].strip()
+            url = node["url"].strip()
+            state_obj = node["state"]
+            state_name = state_obj["name"].strip()
+            state_type = state_obj["type"].strip().lower()
+            created = parse_iso(node["createdAt"])
+            completed = parse_iso(node.get("completedAt"))
+            canceled = parse_iso(node.get("canceledAt"))
+            base = {
+                "repo": repo,
+                "number": number,
+                "identifier": identifier,
+                "title": title,
+                "url": url,
+                "state": state_name,
+                "state_type": state_type,
+                "source": "linear",
+            }
+            if created and to_local_day(created, tz) >= since:
+                opened.append(
+                    (
+                        to_local_day(created, tz),
+                        {
+                            **base,
+                            "when": created,
+                            "agents": _linear_issue_agents(node, closed=False),
+                        },
+                    )
+                )
+            closed_candidates = [ts for ts in (completed, canceled) if ts is not None]
+            closed_at = max(closed_candidates) if closed_candidates else None
+            if closed_at and to_local_day(closed_at, tz) >= since:
+                closed.append(
+                    (
+                        to_local_day(closed_at, tz),
+                        {
+                            **base,
+                            "when": closed_at,
+                            "agents": _linear_issue_agents(node, closed=True),
+                        },
+                    )
+                )
+        page_info = issues_conn.get("pageInfo")
+        if not isinstance(page_info, dict):
+            raise RuntimeError("Linear pagination malformed pageInfo")
+        has_next = page_info.get("hasNextPage")
+        if not isinstance(has_next, bool):
+            raise RuntimeError("Linear pagination malformed hasNextPage")
+        if has_next is False:
+            completed_pagination = True
+            break
+        next_cursor = page_info.get("endCursor")
+        if not isinstance(next_cursor, str) or not next_cursor.strip():
+            raise RuntimeError("Linear pagination missing endCursor while hasNextPage is true")
+        if next_cursor in seen_cursors:
+            raise RuntimeError("Linear pagination repeated cursor")
+        if page_idx + 1 >= max_pages:
+            raise RuntimeError(f"Linear pagination exceeded max_pages budget ({max_pages})")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    if not completed_pagination:
+        raise RuntimeError(f"Linear pagination exceeded max_pages budget ({max_pages})")
+
+    return opened, closed
+
+
 def bucket_all(
     prs: list[tuple[date, dict[str, Any]]],
     opened: list[tuple[date, dict[str, Any]]],
@@ -220,10 +545,13 @@ def bucket_all(
     for d, item in closed:
         b(d).issues_closed.append(item)
 
+    def sort_key(x: dict[str, Any]) -> tuple[str, str, int]:
+        return (str(x.get("repo") or ""), str(x.get("source") or ""), int(x.get("number") or 0))
+
     for day in buckets.values():
-        day.merged_prs.sort(key=lambda x: (x["repo"], x.get("number") or 0))
-        day.issues_opened.sort(key=lambda x: (x["repo"], x.get("number") or 0))
-        day.issues_closed.sort(key=lambda x: (x["repo"], x.get("number") or 0))
+        day.merged_prs.sort(key=sort_key)
+        day.issues_opened.sort(key=sort_key)
+        day.issues_closed.sort(key=sort_key)
     return buckets
 
 
@@ -250,6 +578,8 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "HogHunter": ("HH", "repo-hh"),
     "Clutch": ("C", "repo-clutch"),
     "codecaps": ("CC", "repo-cc"),
+    "FleetLink": ("FL", "repo-fl"),
+    "Simple-With-Us": ("SWU", "repo-swu"),
 }
 
 # Latest product app icons (copied into site/agent-logos/ with agent marks)
@@ -266,6 +596,7 @@ REPO_APP_ICON: dict[str, str] = {
     "HogHunter": "agent-logos/app-hh.png",
     "Clutch": "agent-logos/app-clutch.png",
     "codecaps": "agent-logos/app-cc.png",
+    "AI-Fleet-Coordinator": "agent-logos/app-afc.png",
 }
 
 # Aliases used only to strip *redundant leading* labels that duplicate the badge.
@@ -435,12 +766,13 @@ def strip_redundant_repo_label(text: str, repo: str) -> str:
             s = s[m.end() :].lstrip(" :-–—|/")
             changed = True
             continue
-        # bare Repo: or Repo -
-        m = re.match(r"^(" + alias_re.pattern + r")\s*[:\-–—|/]\s*", s, re.IGNORECASE)
-        if m:
-            s = s[m.end() :].lstrip()
-            changed = True
-            continue
+        # bare Repo: or Repo - (preserve issue keys like BF-2559 or ST-4600)
+        if not re.match(r"^(?:" + alias_re.pattern + r")-\d+\b", s, re.IGNORECASE):
+            m = re.match(r"^(" + alias_re.pattern + r")\s*[:\-–—|/]\s*", s, re.IGNORECASE)
+            if m:
+                s = s[m.end() :].lstrip()
+                changed = True
+                continue
         # bare Repo followed by whitespace then non-empty rest (not the whole title)
         m = re.match(r"^(" + alias_re.pattern + r")\s+", s, re.IGNORECASE)
         if m and len(s) > m.end() + 3:
@@ -479,6 +811,18 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
     "ma": ("muse-assist", "Muse Assist"),
     "muse-assist": ("muse-assist", "Muse Assist"),
     "sentry": ("sentry", "Sentry"),
+    "opencode": ("opencode", "OpenCode"),
+    "echo": ("instinct", "Instinct"),
+    "wise": ("instinct", "Instinct"),
+    "instinct": ("instinct", "Instinct"),
+    "zc": ("zcode", "Z Code"),
+    "zcode": ("zcode", "Z Code"),
+    "fx": ("fx", "Fx"),
+    "clutch": ("app-clutch", "Clutch"),
+    "amp": ("amp", "Amp"),
+    "jet": ("chatgpt", "ChatGPT"),
+    "chatgpt": ("chatgpt", "ChatGPT"),
+    "botfleet": ("app-bf", "BotFleet"),
     # Monet / Renoir / Fable seats collapse to Claude logo + label
     "monet": ("claude", "Claude"),
     "renoir": ("claude", "Claude"),
@@ -490,29 +834,43 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
 
 # Core seat names; optional version/wave suffixes: GROK4, GROK3-B7, CODEX-REVIEW
 # OWNER is deliberately omitted — keep "OWNER ACTION" text, no person/Jay chip.
-_AGENT_ALT = (
-    r"GROK\s+BOT|GROK-BOT"
+_AGENT_IMPLICIT_ALT = (
+    r"GB-[A-Za-z][A-Za-z0-9]*|BF-[A-Za-z][A-Za-z0-9]*"
+    r"|GROK\s+BOT|GROK-BOT|GROK-WEB|GROK-BUILD"
     r"|GROK\d*(?:-[A-Za-z0-9]+)?"
     r"|CODEX(?:-[A-Za-z0-9]+)?"
     r"|CLAUDE(?:\s+CODE)?"
     r"|CURSOR"
-    r"|MINIMAX|MM"
+    r"|MINIMAX(?:\s+CODE)?|MM"
     r"|DEEPSEEK|DSH"
-    r"|KIMI|MUSE|MC|MA"
+    r"|KIMI(?:\s+CODE)?|MUSE(?:[ -](?:CODE|ASSIST))?|MC|MA"
     r"|SENTRY"
     r"|AG|ANTIGRAVITY|GEMINI|MONET|RENOIR|FABLE"
+)
+# New product names are attribution only inside explicit tags.  For example,
+# "Fix Clutch connection settings" describes the product, not the author.
+_AGENT_ALT = _AGENT_IMPLICIT_ALT + (
+    r"|OPENCODE|ECHO|WISE|INSTINCT|Z[ -]?CODE|ZC|FX|CLUTCH|AMP|JET(?:-CHAT)?|CHATGPT"
 )
 # One or more slash-separated seat tokens (CURSOR/AG, Codex/Claude/Monet/AG/Cursor)
 _AGENT_CHAIN = rf"(?:{_AGENT_ALT})(?:\s*/\s*(?:{_AGENT_ALT}))*"
 # Match [GROK], [AG], [CURSOR/AG], [CODEX/AG], [Claude Code], etc.
 _AGENT_BRACKET = re.compile(rf"\[({_AGENT_CHAIN})\]", re.IGNORECASE)
+# Accept historical chains as well as single-seat session/folder envelopes.
+_AGENT_ENVELOPE = re.compile(
+    rf"(?:👀)?\[({_AGENT_CHAIN})(?:"
+    rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*📁[^\]\n]*)?"
+    rf"|\s*📁[^\]\n]*"
+    rf")\]",
+    re.IGNORECASE,
+)
 _AGENT_BARE_PREFIX = re.compile(
-    rf"^(?:by\s+)?({_AGENT_ALT})\b[,:\s\-–—]*",
+    rf"^(?:by\s+)?({_AGENT_IMPLICIT_ALT})\b[,:\s\-–—]*",
     re.IGNORECASE,
 )
 # Issue titles: "2026-08-03 — GROK — COMPLETED …"
 _AGENT_EMDASH = re.compile(
-    rf"(?:\s*[\-–—]\s*|\s+)({_AGENT_ALT})(?:\s*[\-–—]\s*|\s+)",
+    rf"(?:\s*[\-–—]\s*|\s+)({_AGENT_IMPLICIT_ALT})(?:\s*[\-–—]\s*|\s+)",
     re.IGNORECASE,
 )
 # Effort trailers: (CODEX/HERSCHEL, L) or (CODEX-REVIEW, S) or truncated (CODEX...
@@ -530,13 +888,21 @@ _AGENT_SLASH_CHAIN = re.compile(
 # Standalone seat words. Allow trailing punctuation (AG... / AG.) but not path
 # continuations (ag/client, .codex/). Lookbehind blocks mid-identifier matches.
 _AGENT_STANDALONE = re.compile(
-    rf"(?<![A-Za-z0-9_./])({_AGENT_ALT})(?![A-Za-z0-9_/])",
+    rf"(?<![A-Za-z0-9_./])({_AGENT_IMPLICIT_ALT})(?![A-Za-z0-9_/])",
     re.IGNORECASE,
 )
 
 
 def _normalize_agent_token(raw: str) -> str:
     t = re.sub(r"\s+", " ", raw.strip().lower())
+    if t.startswith("bf-"):
+        return "botfleet"
+    if t.startswith("gb-"):
+        return "grok-bot"
+    if t in ("jet", "jet-chat"):
+        return "jet"
+    if t in ("z code", "z-code"):
+        return "zcode"
     # strip wave/version suffixes: grok4, grok3-b7, codex-review → base seat
     if t.startswith("grok-bot") or t == "grok bot":
         return "grok-bot"
@@ -565,9 +931,9 @@ def _normalize_agent_token(raw: str) -> str:
         return "deepseek"
     if t.startswith("kimi"):
         return "kimi"
-    if t in ("mc", "muse-code") or t.startswith("muse-code"):
+    if t in ("mc", "muse-code", "muse code") or t.startswith("muse-code"):
         return "mc"
-    if t in ("ma", "muse-assist") or t.startswith("muse-assist"):
+    if t in ("ma", "muse-assist", "muse assist") or t.startswith("muse-assist"):
         return "ma"
     if t.startswith("muse"):
         return "ma"
@@ -580,6 +946,94 @@ def _split_agent_chain(raw: str) -> list[str]:
     """Split 'CURSOR/AG' or 'Codex / Claude' into individual seat tokens."""
     parts = re.split(r"\s*/\s*", (raw or "").strip())
     return [p for p in parts if p]
+
+
+def _normalize_linear_actor(raw: str) -> str:
+    """Resolve a Linear seat label or app display name to an AGENT_LOGO slug (or '')."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    for prefix in ("claimed:", "seat:"):
+        if low.startswith(prefix):
+            s = s[len(prefix) :].strip()
+            low = s.lower()
+            break
+    # Linear app names look like 'Echo (Instinct)', 'Antigravity (AG)', 'Jet (OpenAI dot)'.
+    base = re.sub(r"\s*\([^)]*\)\s*$", "", s).strip()
+    for candidate in (base, s):
+        if not candidate:
+            continue
+        low_cand = candidate.lower()
+        if low_cand.startswith("echo") or low_cand.startswith("wise"):
+            key = "instinct"
+        elif low_cand.startswith("jet"):
+            key = "jet"
+        else:
+            key = _normalize_agent_token(candidate)
+        if key in AGENT_LOGO:
+            return AGENT_LOGO[key][0]
+    return ""
+
+
+def _dedupe_slugs(slugs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for slug in slugs:
+        if slug and slug not in seen:
+            seen.add(slug)
+            out.append(slug)
+    return out
+
+
+def _linear_issue_agents(node: dict[str, Any], *, closed: bool) -> list[str]:
+    """Extract coding-seat slugs from Linear labels, delegate, and creator."""
+    claimed: list[str] = []
+    seat_labels: list[str] = []
+    labels = (node.get("labels") or {}).get("nodes") or []
+    for lbl in labels:
+        if not isinstance(lbl, dict):
+            continue
+        name = str(lbl.get("name") or "").strip()
+        low = name.lower()
+        if low.startswith("claimed:"):
+            slug = _normalize_linear_actor(name)
+            if slug:
+                claimed.append(slug)
+        elif low.startswith("seat:"):
+            slug = _normalize_linear_actor(name)
+            if slug:
+                seat_labels.append(slug)
+
+    delegate_slug = _normalize_linear_actor(str((node.get("delegate") or {}).get("name") or ""))
+    creator_slug = _normalize_linear_actor(str((node.get("creator") or {}).get("name") or ""))
+
+    if not closed:
+        return [creator_slug] if creator_slug else []
+    primary = _dedupe_slugs(claimed + ([delegate_slug] if delegate_slug else []))
+    if primary:
+        return primary
+    return _dedupe_slugs(seat_labels + ([creator_slug] if creator_slug else []))
+
+
+def _extract_item_agents_and_clean(item: dict[str, Any]) -> tuple[list[str], str]:
+    title_agents, clean = extract_agents_and_clean(
+        str(item.get("title") or ""), str(item.get("repo") or "")
+    )
+    extra = [str(s) for s in (item.get("agents") or []) if s]
+    return _dedupe_slugs(title_agents + extra), clean
+
+
+def _issue_state_note(item: dict[str, Any]) -> str:
+    if item.get("state_type") in ("canceled", "duplicate") and item.get("state"):
+        return str(item["state"])
+    if (
+        item.get("source") == "linear"
+        and item.get("state_type") not in ("completed", "canceled", "duplicate")
+        and item.get("state")
+    ):
+        return "closed that day; now " + str(item["state"])
+    return ""
 
 
 def extract_agents_and_clean(text: str, repo: str = "") -> tuple[list[str], str]:
@@ -612,6 +1066,10 @@ def extract_agents_and_clean(text: str, repo: str = "") -> tuple[list[str], str]
     def add_chain(raw: str) -> None:
         for part in _split_agent_chain(raw):
             add_agent(part)
+
+    for m in _AGENT_ENVELOPE.finditer(s):
+        add_chain(m.group(1))
+    s = _AGENT_ENVELOPE.sub(" ", s)
 
     # Collect all bracketed agents (incl. multi-seat), then remove them
     for m in _AGENT_BRACKET.finditer(s):
@@ -678,13 +1136,13 @@ def logo_file(slug: str) -> str:
     """<slug>.svg if present, else <slug>.png.
 
     Most seat marks are SVG, but Cursor and Grok Bot are supplied as PNGs, so
-    the filename cannot be assumed.  Falls back to .svg so a missing asset
-    still produces a stable (if broken) path rather than an exception.
+    the filename cannot be assumed.  An empty result uses a readable text
+    badge when an authentic platform mark is not available.
     """
     for ext in ("svg", "png"):
         if (LOGO_DIR / f"{slug}.{ext}").is_file():
             return f"{slug}.{ext}"
-    return f"{slug}.svg"
+    return ""
 
 
 def agent_icons_html(agents: list[str]) -> str:
@@ -696,8 +1154,12 @@ def agent_icons_html(agents: list[str]) -> str:
     for slug in agents:
         label = _agent_label(slug)
         labels.append(label)
-        src = html.escape(f"agent-logos/{logo_file(slug)}")
         lab = html.escape(label)
+        filename = logo_file(slug)
+        if not filename:
+            parts.append(f'<span class="agent agent-text" title="{lab}">{lab}</span>')
+            continue
+        src = html.escape(f"agent-logos/{filename}")
         parts.append(
             f'<span class="agent" title="{lab}">'
             f'<img src="{src}" alt="{lab}" width="14" height="14" loading="lazy" decoding="async" />'
@@ -705,6 +1167,50 @@ def agent_icons_html(agents: list[str]) -> str:
         )
     aria = html.escape(", ".join(labels))
     return f'<span class="agents" aria-label="Agents: {aria}">' + "".join(parts) + "</span>"
+
+
+def agent_legend_html() -> str:
+    """Use the activity-row platform table for the legend too."""
+    items = []
+    for slug in dict.fromkeys(slug for slug, _label in AGENT_LOGO.values()):
+        label = html.escape(_agent_label(slug))
+        chip = agent_icons_html([slug])
+        # A text badge already carries its full label.
+        suffix = f'<span class="legend-label">{label}</span>' if logo_file(slug) else ""
+        items.append(f'<span class="legend-item">{chip}{suffix}</span>')
+    return "".join(items)
+
+
+def repo_legend_html() -> str:
+    """Describe each allowlisted public surface from the shared repository list."""
+    display = {
+        "Socratic-Trade": "Socratic.Trade",
+        "Usage-Monitor": "Usage Monitor",
+        "DealDex": "DealDex.net",
+        "Autorotate": "Autorotate.Codes",
+        "Personal-Site": "Personal Site",
+        "AI-Fleet-Coordinator": "Muster / AI Fleet Coordinator",
+        "BotFleet": "BotFleet.app",
+        "HogHunter": "Hog Hunter",
+        "codecaps": "CodeCaps",
+        "Simple-With-Us": "Simple With Us",
+    }
+    items = []
+    for repo in PUBLIC_REPOS:
+        label = html.escape(display.get(repo, repo))
+        short, css = repo_badge(repo)
+        icon = REPO_APP_ICON.get(repo)
+        if icon:
+            badge = (
+                f'<span class="repo repo-with-icon repo-icon-only {css}" title="{label}">'
+                f'<img class="repo-app-icon" src="{icon}" alt="{label}" width="14" height="14" /></span>'
+            )
+        else:
+            badge = f'<span class="repo {css}">{html.escape(short)}</span>'
+        items.append(
+            f'<span class="legend-item">{badge}<span class="legend-label">{label}</span></span>'
+        )
+    return "".join(items)
 
 
 def agent_icons_md(agents: list[str]) -> str:
@@ -730,18 +1236,24 @@ def day_description(day: DayBucket) -> str:
     if day.issues_closed:
         lines.append("Issues closed:")
         for p in day.issues_closed[:30]:
-            _a, title = extract_agents_and_clean(
-                str(p.get("title") or ""), str(p.get("repo") or "")
-            )
-            lines.append(f"- [{p['repo']}#{p['number']}] {title}")
+            agents, title = _extract_item_agents_and_clean(p)
+            agent_bit = f" ({', '.join(agents)})" if agents else ""
+            ref = str(p.get("identifier") or f"{p['repo']}#{p['number']}")
+            state_note = _issue_state_note(p)
+            state_bit = f" ({state_note})" if state_note else ""
+            lines.append(f"- [{ref}]{agent_bit} {title}{state_bit}")
+        if len(day.issues_closed) > 30:
+            lines.append(f"  … +{len(day.issues_closed) - 30} more")
         lines.append("")
     if day.issues_opened:
         lines.append("Issues opened:")
         for p in day.issues_opened[:30]:
-            _a, title = extract_agents_and_clean(
-                str(p.get("title") or ""), str(p.get("repo") or "")
-            )
-            lines.append(f"- [{p['repo']}#{p['number']}] {title}")
+            agents, title = _extract_item_agents_and_clean(p)
+            agent_bit = f" ({', '.join(agents)})" if agents else ""
+            ref = str(p.get("identifier") or f"{p['repo']}#{p['number']}")
+            lines.append(f"- [{ref}]{agent_bit} {title}")
+        if len(day.issues_opened) > 30:
+            lines.append(f"  … +{len(day.issues_opened) - 30} more")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -752,7 +1264,7 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
         "",
         f"_Generated {generated.astimezone(tz).strftime('%Y-%m-%d %H:%M %Z')} · timezone {tz.key}_",
         "",
-        "Sources: merged PRs and issues opened/closed in verified public repositories.",
+        "Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.",
         "Agent names are stripped from titles; HTML site shows logos instead.",
         "",
     ]
@@ -789,18 +1301,26 @@ def build_markdown(days: list[DayBucket], generated: datetime, tz: ZoneInfo, bas
             lines.append("")
             for p in day.issues_closed:
                 repo = str(p.get("repo") or "")
-                _a, title = extract_agents_and_clean(str(p.get("title") or ""), repo)
+                agents, title = _extract_item_agents_and_clean(p)
+                agent_md = agent_icons_md(agents)
+                prefix = f"{agent_md} " if agent_md else ""
                 short, _cls = repo_badge(repo)
-                lines.append(f"- **{short}** [#{p['number']}]({p['url']}): {title}")
+                ref = str(p.get("identifier") or f"#{p['number']}")
+                state_note = _issue_state_note(p)
+                state_suffix = f" _({state_note})_" if state_note else ""
+                lines.append(f"- **{short}** {prefix}[{ref}]({p['url']}): {title}{state_suffix}")
             lines.append("")
         if day.issues_opened:
             lines.append("### Issues opened")
             lines.append("")
             for p in day.issues_opened:
                 repo = str(p.get("repo") or "")
-                _a, title = extract_agents_and_clean(str(p.get("title") or ""), repo)
+                agents, title = _extract_item_agents_and_clean(p)
+                agent_md = agent_icons_md(agents)
+                prefix = f"{agent_md} " if agent_md else ""
                 short, _cls = repo_badge(repo)
-                lines.append(f"- **{short}** [#{p['number']}]({p['url']}): {title}")
+                ref = str(p.get("identifier") or f"#{p['number']}")
+                lines.append(f"- **{short}** {prefix}[{ref}]({p['url']}): {title}")
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -841,9 +1361,13 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         title_raw: str,
         *,
         number: Any = None,
+        identifier: str = "",
         url: str = "",
+        extra_agents: list[str] | None = None,
+        state_note: str = "",
     ) -> str:
-        agents, clean = extract_agents_and_clean(title_raw, repo)
+        title_agents, clean = extract_agents_and_clean(title_raw, repo)
+        agents = _dedupe_slugs(title_agents + [str(s) for s in (extra_agents or []) if s])
         short, css = repo_badge(repo)
         icons = agent_icons_html(agents)
         title_t = esc(clean)
@@ -857,14 +1381,16 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
             )
         else:
             repo_html = f'<span class="repo {esc(css)}" title="{esc(repo)}">{esc(short)}</span>'
-        if number is not None and url:
-            link = f'<a href="{esc(url)}">#{esc(str(number))}</a>'
+        ref = identifier or (f"#{number}" if number is not None else "")
+        if ref and url:
+            link = f'<a href="{esc(url)}">{esc(ref)}</a>'
             mid = f"{link}: " if clean else f"{link}"
         else:
             mid = ""
+        state_html = f' <span class="issue-state">({esc(state_note)})</span>' if state_note else ""
         # lead stacks repo above agent logos so the body keeps more horizontal width
         lead = f'<span class="item-lead">{repo_html}{icons}</span>'
-        body = f'<span class="item-body">{mid}{title_t}</span>'
+        body = f'<span class="item-body">{mid}{title_t}{state_html}</span>'
         return f"<li>{lead}{body}</li>"
 
     sections: list[str] = []
@@ -882,7 +1408,10 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
                     str(p.get("repo") or ""),
                     str(p.get("title") or ""),
                     number=p.get("number"),
+                    identifier=str(p.get("identifier") or ""),
                     url=str(p.get("url") or ""),
+                    extra_agents=p.get("agents"),
+                    state_note=_issue_state_note(p) if kind == "closed" else "",
                 )
                 for p in items
             ]
@@ -919,6 +1448,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Jay's Daily Log</title>
+  <link rel="icon" type="image/png" href="agent-logos/app-afc.png" />
+  <link rel="icon" type="image/webp" href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)" />
   <style>
     :root {{
       --bg: #f4f6f9;
@@ -941,6 +1472,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       --hh: #92400e;
       --clutch: #0e7490;
       --cc: #0f766e;
+      --fl: #155e75;
+      --swu: #4b5563;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -973,6 +1506,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     details.day > summary {{ cursor: pointer; }}
     .meta {{ color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }}
+    .issue-state {{ color: var(--muted); font-size: 0.85em; }}
     ul {{ margin: 0.25rem 0 0; padding-left: 0; list-style: none; }}
     li {{
       margin: 0.35rem 0;
@@ -992,6 +1526,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       gap: 0.2rem;
       flex-shrink: 0;
       min-width: 1.5rem;
+      max-width: 100%;
     }}
     .item-body {{
       flex: 1 1 14rem;
@@ -1023,6 +1558,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     .repo-hh {{ background: var(--hh); }}
     .repo-clutch {{ background: var(--clutch); }}
     .repo-cc {{ background: var(--cc); }}
+    .repo-fl {{ background: var(--fl); }}
+    .repo-swu {{ background: var(--swu); }}
     .repo.repo-with-icon {{
       gap: 0;
       padding: 0.1rem;
@@ -1046,6 +1583,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     .agents {{
       display: inline-flex;
+      flex-wrap: wrap;
+      max-width: 100%;
       align-items: center;
       justify-content: center;
       gap: 0.2rem;
@@ -1108,6 +1647,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     .legend-item .legend-label {{ color: var(--muted); }}
     .legend .agent {{ width: 1.15rem; height: 1.15rem; }}
+    .agent.agent-text {{ width: auto; min-width: 1.15rem; padding: 0 0.3rem; font-size: 0.65rem; color: var(--text); }}
     @media (prefers-color-scheme: dark) {{
       :root {{
         --bg: #0f172a;
@@ -1134,37 +1674,13 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     <div class="legend-section" aria-label="Repositories">
       <span class="legend-heading">Repos</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic.Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic.Trade" width="14" height="14" /></span><span class="legend-label">Socratic.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ct" title="Congress.Trade"><img class="repo-app-icon" src="agent-logos/app-ct.png" alt="Congress.Trade" width="14" height="14" /></span><span class="legend-label">Congress.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-um" title="Usage Monitor"><img class="repo-app-icon" src="agent-logos/app-um.png" alt="Usage Monitor" width="14" height="14" /></span><span class="legend-label">Usage Monitor</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-dd" title="DealDex.net"><img class="repo-app-icon" src="agent-logos/app-dd.png" alt="DealDex.net" width="14" height="14" /></span><span class="legend-label">DealDex.net</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ar" title="Autorotate.Codes"><img class="repo-app-icon" src="agent-logos/app-ar.png" alt="Autorotate.Codes" width="14" height="14" /></span><span class="legend-label">Autorotate.Codes</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cl" title="ContactLogo"><img class="repo-app-icon" src="agent-logos/app-cl.png" alt="ContactLogo" width="14" height="14" /></span><span class="legend-label">ContactLogo</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ps" title="Personal Site"><img class="repo-app-icon" src="agent-logos/app-ps.png" alt="Personal Site" width="14" height="14" /></span><span class="legend-label">Personal Site</span></span>
-        <span class="legend-item"><span class="repo repo-shared">CTS</span><span class="legend-label">congress-trading-shared</span></span>
-        <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
+        {repo_legend_html()}
       </div>
     </div>
     <div class="legend-section" aria-label="Agents">
       <span class="legend-heading">Agents</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="agent" title="Grok"><img src="agent-logos/grok.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok</span></span>
-        <span class="legend-item"><span class="agent" title="Grok Bot"><img src="agent-logos/grok-bot.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok Bot</span></span>
-        <span class="legend-item"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="" width="12" height="12" /></span><span class="legend-label">Codex</span></span>
-        <span class="legend-item"><span class="agent" title="Claude"><img src="agent-logos/claude.svg" alt="" width="12" height="12" /></span><span class="legend-label">Claude</span></span>
-        <span class="legend-item"><span class="agent" title="Cursor"><img src="agent-logos/cursor.png" alt="" width="12" height="12" /></span><span class="legend-label">Cursor</span></span>
-        <span class="legend-item"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="" width="12" height="12" /></span><span class="legend-label">Antigravity</span></span>
-        <span class="legend-item"><span class="agent" title="Gemini"><img src="agent-logos/gemini.svg" alt="" width="12" height="12" /></span><span class="legend-label">Gemini</span></span>
-        <span class="legend-item"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="" width="12" height="12" /></span><span class="legend-label">Kimi</span></span>
-        <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
-        <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Assist"><img src="agent-logos/muse-assist.png" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assist</span></span>
-        <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
+        {agent_legend_html()}
       </div>
     </div>
   </div>
@@ -1177,7 +1693,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
   <footer>
     Built by <code>scripts/build-fleet-daily-digest.py</code> in
     <code>AI-Fleet-Coordinator</code>. Agent seat names (Grok/Codex/Claude/…) are
-    shown as logos only. Owner/Jay is not badged (not a coding seat). Subscribe
+    shown with platform marks or text badges. Owner/Jay is not badged (not a coding seat). Subscribe
     to the daily ICS in Apple Calendar (Add Subscription Calendar) or Google
     Calendar (From URL).
 
@@ -1195,7 +1711,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         "X-WR-CALNAME:Jay's Daily Coding-Related Activities",
-        "X-WR-CALDESC:One all-day entry per day: merged PRs and issues opened/closed in public repositories. Hosted by AI-Fleet-Coordinator.",
+        "X-WR-CALDESC:One all-day entry per day: merged PRs and Linear/GitHub issues opened/closed for public repositories. Hosted by AI-Fleet-Coordinator.",
         "X-WR-TIMEZONE:America/Chicago",
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
         "X-PUBLISHED-TTL:PT6H",
@@ -1256,9 +1772,19 @@ def main() -> int:
     print("fetching merged PRs…")
     prs = fetch_merged_prs(owner, repos, since, tok, tz)
     print(f"  {len(prs)} merged PRs")
-    print("fetching issue churn…")
-    opened, closed = fetch_issue_churn(owner, repos, since, tok, tz)
-    print(f"  {len(opened)} opened, {len(closed)} closed")
+    print("fetching GitHub issue churn…")
+    gh_opened, gh_closed = fetch_issue_churn(owner, repos, since, tok, tz)
+    print(f"  {len(gh_opened)} GitHub opened, {len(gh_closed)} GitHub closed")
+    ltok = linear_token()
+    if ltok:
+        print("fetching Linear issue churn…")
+        lin_opened, lin_closed = fetch_linear_issue_churn(repos, since, ltok, tz)
+        print(f"  {len(lin_opened)} Linear opened, {len(lin_closed)} Linear closed")
+    else:
+        print("warn: LINEAR_API_KEY not set; skipping Linear issues", file=sys.stderr)
+        lin_opened, lin_closed = [], []
+    opened = gh_opened + lin_opened
+    closed = gh_closed + lin_closed
     buckets = bucket_all(prs, opened, closed)
     days = sorted(buckets.values(), key=lambda d: d.day, reverse=True)
 

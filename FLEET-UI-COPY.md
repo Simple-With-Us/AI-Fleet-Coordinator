@@ -8,37 +8,15 @@ settings, marketing HTML, App Store fields.
 
 
 
-## Theme default = system (owner ruling 2026-09-19 — supersedes 2026-08-10 — ALL apps, ALL agents)
+## Theme Default = Light (Current Owner Rule — All Apps, All Agents)
 
-Owner: default UI theme is **system** — the app follows the OS appearance.
-A Mac in light boots light; a Mac in dark boots dark; an iPhone in dark
-boots dark.  This supersedes the 2026-08-10 ruling that pinned the default
-to light and warned against system/dark-first defaults.  That ruling
-existed because most fleet agents develop on a Mac that is dark, and a
-system-default would land them on dark every time.  The owner has decided
-that is no longer the trade-off they want — the OS preference is the
-right default for first-time visitors, and it eliminates the dev-Mac
-optical illusion in both directions.
+Owner: the default UI theme is **light**.  For a first visit with no stored preference, use light.
 
-- **Default for first visit / no stored preference:** **system** (follow the OS).
-- **Stored preferences are never rewritten** by this rule.  A returning user
-  who chose Light or Dark stays on it; only first paint with no record
-  defaults to system.
-- Light, Dark, and System remain available choices everywhere a picker
-  ships; System is just the new default.
-- **Screenshots / ASC / marketing / design previews:** capture on a
-  **light** Mac unless the owner explicitly asks for dark.  The product
-  default is system, the capture default is still light, because marketing
-  assets need a deterministic palette regardless of who happens to be
-  developing them.  Existing ASC packs that are already light do not need
-  a redo for this rule alone.
-- Applies to every fleet app (web + iOS + Android + BotFleet chrome +
-  CodeCaps).  Each seat lands the default flip in their own app; the
-  FLEET-UI-COPY change here is the canonical signal, not the per-app
-  code change.
-- The dev-Mac-dark-footgun still applies to any *picked* dark theme — a
-  light capture is still the right answer for marketing.  The reversal is
-  only about the *default*, not about choice.
+- **Stored preferences are never rewritten** by this rule.  A returning user who chose Light or Dark stays on it.
+- Light, Dark, and System remain available choices wherever a picker ships; Light is the default.
+- **Screenshots / ASC / marketing / design previews:** capture on a **light** Mac unless the owner explicitly asks for dark.  Existing ASC packs that are already light do not need a redo for this rule alone.
+- Applies to every fleet app (web + iOS + Android + BotFleet chrome + CodeCaps).  Each seat handles the default in its own app; this file is the canonical signal.
+- The dev-Mac-dark-footgun still applies to any *picked* dark theme; a light capture remains the right answer for marketing.
 
 ## Proper nouns
 
@@ -94,13 +72,13 @@ when the string is not a full sentence — not Title Case:
 - Label a zone in product UI only when the time is not the viewer's clock
   (`9:30 AM ET` for a market bell).  Relative times (`3m ago`) need no label.
 - Owner-facing agent writing (chat, boards, rollouts, Zulip, Notes, release notes,
-  bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
-  and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
-  not `3:15am CDT` and not `08:15Z`.  When the day matters, write
-  `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
-  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
-  calendar day during daylight saving, and 6:00pm the previous calendar day after
-  the fall-back.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
+  bot-to-bot) is the owner's clock: **12-hour, with a space before uppercase AM or PM**, on every agent, bot,
+  and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15 AM`,
+  not `3:15 AM CDT` and not `08:15Z`.  When the day matters, write
+  `Mon, Oct 5, 2026 at 3:15 AM`.  Give only the Central time: convert UTC and every
+  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00 PM the previous
+  calendar day during daylight saving, and 6:00 PM the previous calendar day after
+  the fall-back.  This current owner ruling supersedes older lowercase or unspaced examples in installed or generated protocol mirrors.  The canonical Fleet-OPS handbook correction and regenerated protocol are tracked in [Fleet-OPS #313](https://github.com/Simple-With-Us/Fleet-OPS/pull/313); never hand-edit the generated mirror.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time after that delivery completes.
 
 ## Money
 - Compact suffixes **lowercase**: `$99.8k`, `$1.2m`, `$3.4b`.
@@ -187,10 +165,10 @@ sight.
 - Code identifiers, API enums, log lines, internal “live stream” engineering labels
   (SSE, live snapshot) unless user-facing product chrome.
 
-## Two spaces between sentences, made with a U+00A0 (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, 2026-08-19 and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22, then replaced 2026-10-23 by one mechanism and its two-chat-pane exception — ALL agents, ALL contexts)
+## Sentence Gaps: U+00A0 Plus a Normal Space (Current Owner Rule — All Agents, All Contexts)
 
 Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included, except the three chat panes named below, which take the `&nbsp;` entity plus a space), including App Store
-submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
+submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 **Every single agent, every app, every surface, forever.**
 
 **Strengthened again 2026-08-19 (owner, in-conversation, with the two spaces made as "HOW to emit it" below says, never as two plain ASCII spaces):** "For any and all paragraphs in
@@ -204,6 +182,10 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Mark
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
+**No gap is required at a line break, paragraph end or end of text (owner ruling 2026-11-01).**  The visible gap belongs between sentences that continue in the same paragraph.  Code and code comments remain exempt, as the canonical sentence-gap skill specifies.
+
+**Shared converter:** use the code-aware `scripts/sentence_gap_convert.pl` in AI-Fleet-Coordinator, documented in `docs/fleet-skills/sentence-gap/SKILL.md`, for tool-written bodies that carry code.  Preserve code regions byte for byte, run the converter again and compare the outputs to prove idempotence, and inspect both the gap count and remaining ungapped prose.  The one-line example below documents the canonical pattern for prose-only bodies; it is not a second implementation for a host or seat.
+
 **HOW to emit it (owner ruling 2026-10-23, the same on every surface but three chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
 - **Claude Code Code tab, MiniMax Code and Z Code chat panes (the one exception, owner ruling 2026-10-23):**
@@ -215,9 +197,7 @@ the gap BETWEEN sentences.)
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
   (anything a tool writes that a Markdown or HTML renderer then shows):  a real U+00A0 plus a
   space.  Never the entity there, because GitHub can copy a PR body
-  into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
-  space — intermittently, not deterministically, so never diagnose it and always verify.  So
+  into a plain-text squash commit, where it would show literally.  Some chat panes normalize typed U+00A0, and a double space emitted into a tool call can arrive collapsed to a single space.  Verify the stored bytes and rendered result rather than assuming the transport preserved the gap.  So
   generate the gap in the shell, matching one *or more* spaces so it works in both states:
   ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
   sentence end *inside* markup or inside a quoted span, where the space comes after the closing
@@ -232,7 +212,7 @@ the gap BETWEEN sentences.)
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt
   ```
   `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
-  so `chmod 600` it first.  Code, code comments, identifiers and config never get a U+00A0,
+  so `chmod 600` it first.  Executable code, identifiers and machine-readable config never get a U+00A0,
   which is a real defect there rather than a fix.
 - **Repo docs and Markdown, skills, agent instructions and commit messages** (owner ruling
   2026-10-23):  the same U+00A0 plus a space.  Rewrite only text you are already editing;  do
@@ -242,6 +222,8 @@ the gap BETWEEN sentences.)
   Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to one.  Never
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
+
+**MiniMax provenance retained from the prior Mac copy (2026-10-18, reaffirmed 2026-10-20):** the owner had already confirmed that this pane needs the entity plus a normal space.  A 2026-10-20 note briefly substituted raw U+00A0 on an inference; the owner reversed it.  Never override an owner-verified mechanism on an inference.  Treat a collapsed reply as a defect in the emitting step and diagnose the rendering/transport layer.  The current three-pane exception above governs; this history does not extend that exception to any other pane.
 
 **Rendering trap — history (chat advice reversed twice; the 2026-10-23 ruling above supersedes all of it except in the chat panes it names as its exception):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
@@ -255,10 +237,10 @@ files read as source two ASCII spaces);  the 2026-10-23 ruling above replaced t
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
 two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax Code
 pane:  the working mechanism there is the `&nbsp;` entity plus a normal space, the same
-form as the Code tab, NOT a raw U+00A0.  The owner confirmed those two panes on 2026-10-24
-(Zulip #Policy):  the Claude Code and MiniMax Code chat panes require the
-`&nbsp;` entity plus a normal space,
-while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also not
+form as the Code tab, NOT a raw U+00A0.  The Claude Code Code tab and MiniMax Code pane
+use the `&nbsp;` entity plus a normal space (owner-confirmed 2026-10-24); the Z Code pane
+uses the same exception under the November 11 ruling.  GitHub, Zulip, docs and UI text take
+a real U+00A0 plus a space.  Also not
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks

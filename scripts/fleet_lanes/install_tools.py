@@ -219,6 +219,7 @@ import argparse
 import ast
 import contextlib
 import copy
+import ctypes
 import difflib
 import fcntl
 import functools
@@ -263,6 +264,7 @@ __all__ = [
     "Source",
     "apply_platform",
     "apply_tools",
+    "apply_zcode_seat_default",
     "build_files",
     "check_deny_output",
     "guard_switch",
@@ -272,13 +274,17 @@ __all__ = [
     "make_paths",
     "plan_platform",
     "plan_tools",
+    "plan_zcode_seat_default",
     "probe_payload",
     "render_hook_shim",
     "render_lane_shim",
+    "render_zcode_bashrc_block",
+    "render_zcode_seat_shim",
     "resolve_source",
     "self_test",
     "verify_platform",
     "verify_tools",
+    "verify_zcode_seat_default",
 ]
 
 EXIT_OK = 0
@@ -295,6 +301,10 @@ MINIMAX_HOOK_NAME = "minimax-guard-hook"
 CLAUDE_FILE_HOOK_NAME = "claude-file-guard-hook"
 CLAUDE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit"
 CLAUDE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+# Z Code's file-guard tools and matcher.  ApplyPatch is the tool name Z Code delivers for a Write or an
+# Edit (the runtime aliases Write and Edit to ApplyPatch), so its matcher names it.
+ZCODE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "ApplyPatch")
+ZCODE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit|ApplyPatch"
 CLAUDE_FILE_HOOK_TIMEOUT_S = 10  # seconds.  A timeout fails open, and this hook starts Python on every file call
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
@@ -381,6 +391,25 @@ MUSE_WRAPPER = MUSE_PLUGIN_DIR + "/hooks/lane-guard.sh"
 MUSE_SEAT_TAG = "MC"  # AGENT_SEAT and AGENT_TAG for Muse Code
 _MUSE_FILES = (MUSE_SEAT_NAME, MUSE_MANIFEST, MUSE_WRAPPER)
 MUSE_EXPERIMENTAL_ENV = "MUSE_EXPERIMENTAL_PLUGINS"
+
+# The Z Code Bash-tool seat default.  The Z Code CLI bakes a shell snapshot once per session start that
+# captures PATH and shell functions from ~/.bashrc but no plain env exports, so a Z Code Bash-tool shell
+# never sees a seat declared with `export AGENT_SEAT=ZC` in the profile.  The declaration travels two
+# ways instead:  a directory of shims that sits at the FRONT of PATH (each shim sets AGENT_SEAT=ZC for
+# a Z Code shell that has no seat yet, then execs the real tool), and a guarded export block in
+# ~/.bashrc for the interactive shells where the snapshot PATH does not apply.  Both are defaults,
+# never overrides:  a launcher assignment (AGENT_LAUNCH_SEAT), an existing AGENT_SEAT or a chat tag
+# (AGENT_TAG) always wins, and a process outside a Z Code session passes through with no seat.  The
+# shims are all-or-nothing:  when one of the tools is not on PATH at apply time, none of them is
+# written, because a PATH-fronted directory with a hole in it would be worse than none.
+ZCODE_SEAT_BIN_DIRNAME = ".fleet-zcode-seat-bin"
+ZCODE_SEAT_TOOLS = ("simple-chat", "simple-board", "recall", "simple-git")
+ZCODE_SEAT_TAG = "ZC"  # AGENT_SEAT for Z Code; the same seat the hook commands carry
+ZCODE_SEAT_BLOCK_NAME = "fleet: Z Code Bash-tool seat default"
+# The hand-written predecessor of the marked block on a host that already had the fix (it carries no
+# GENERATED_MARK, so a re-apply replaces the whole region instead of stacking a second copy).
+ZCODE_SEAT_HAND_BEGIN = "# --- fleet: Z Code session seat declaration"
+ZCODE_SEAT_HAND_END = "# --- end fleet: Z Code session seat declaration"
 
 HOOK_TIMEOUT_S = 5  # timeout written into each platform config (seconds)
 MUSE_HOOK_TIMEOUT_MS = 15000  # Muse runs the wrapper on EVERY tool call; three times the others, because a timeout's outcome is unknown
@@ -569,6 +598,14 @@ class Paths:
     @property
     def muse_wrapper(self) -> str:
         return os.path.join(self.stable, *MUSE_WRAPPER.split("/"))
+
+    @property
+    def zcode_seat_bin(self) -> str:
+        return os.path.join(self.home, ZCODE_SEAT_BIN_DIRNAME)
+
+    @property
+    def zcode_bashrc(self) -> str:
+        return os.path.join(self.home, ".bashrc")
 
 
 def _apps_root(home: str, env: dict[str, str] | None = None) -> str:
@@ -1490,6 +1527,82 @@ def render_muse_seat() -> str:
     )
 
 
+def render_zcode_seat_shim(tool: str, target: str) -> str:
+    """One shim of ~/.fleet-zcode-seat-bin.  The seat is a default, never an override:  it is set only
+    when every seat variable is unset (AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG) and the process is a
+    Z Code session shell (ZCODE_SESSION_ID or ZCODE_RUNTIME_ENV is non-empty), which is how a launcher
+    assignment, an existing seat and every non-Z-Code process keep the seat they already have.  The
+    exec target is the ABSOLUTE path the apply resolved for the real tool, never a name for PATH to
+    find again:  a shim that re-entered PATH lookup could find itself (the shim dir is PATH-fronted)
+    and recurse.  `target` is quoted, so a tool installed under a path with spaces in it still runs.
+    AGENT_LAUNCH_SEAT and AGENT_LAUNCHER are never written here or anywhere else in this feature."""
+    return (
+        "#!/bin/sh\n"
+        f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply zcode`.\n"
+        f"# Fleet seat shim for {tool}, one of {len(ZCODE_SEAT_TOOLS)} in a directory that sits at the front of PATH\n"
+        "# through the marked block install_tools writes into ~/.bashrc.  A default, never an override:  it sets\n"
+        f"# AGENT_SEAT={ZCODE_SEAT_TAG} only when every seat variable is unset (AGENT_SEAT, AGENT_LAUNCH_SEAT, AGENT_TAG)\n"
+        "# and the process is a Z Code session shell (ZCODE_SESSION_ID or ZCODE_RUNTIME_ENV is non-empty);  a\n"
+        "# launcher assignment, an existing seat and a process outside Z Code pass through with no seat touched,\n"
+        "# and this file never writes AGENT_LAUNCH_SEAT or AGENT_LAUNCHER.  Then it execs the real tool.\n"
+        'if [ -z "${AGENT_SEAT:-}" ] && [ -z "${AGENT_LAUNCH_SEAT:-}" ] && [ -z "${AGENT_TAG:-}" ] \\\n'
+        '   && [ -n "${ZCODE_SESSION_ID:-}${ZCODE_RUNTIME_ENV:-}" ]; then\n'
+        f"  AGENT_SEAT={ZCODE_SEAT_TAG}\n"
+        "  export AGENT_SEAT\n"
+        "fi\n"
+        f"exec {shlex.quote(target)} \"$@\"\n"
+    )
+
+
+def render_zcode_bashrc_block() -> str:
+    """The marked block `apply zcode` keeps in ~/.bashrc:  the shim dir at the front of PATH, then the
+    same guarded seat default the shims carry, for the interactive shells the CLI's snapshot PATH does
+    not reach.  The PATH handling is dedupe-then-force-prepend in pure POSIX sh:  every occurrence of
+    the shim dir already in PATH is removed and the dir is put at the front unconditionally, so a
+    snapshot bake (or an earlier source of this file followed by a later dotfile prepend) that left the
+    dir behind another entry holding a fleet tool cannot shadow the shims, and re-sourcing the file
+    never grows PATH or stacks a second copy.  The block carries GENERATED_MARK in both markers so a
+    re-apply replaces it in place instead of stacking a second copy.  The prepend exports PATH and
+    nothing else, and the only other export in the block is the guarded AGENT_SEAT default."""
+    return (
+        f"# --- begin {ZCODE_SEAT_BLOCK_NAME} --- {GENERATED_MARK}.  Do not edit; run "
+        "`python3 -m fleet_lanes.install_tools apply zcode`.\n"
+        "# Z Code Bash-tool shells take PATH and shell functions from the CLI's snapshot of this file but no\n"
+        "# plain env exports, so the Z Code seat declaration travels two ways:  the shim directory at the front\n"
+        f"# of PATH (each shim sets AGENT_SEAT={ZCODE_SEAT_TAG} for a Z Code shell that has no seat) and the guarded\n"
+        "# export below for interactive shells.  A launcher assignment (AGENT_LAUNCH_SEAT), an existing\n"
+        "# AGENT_SEAT or a chat tag (AGENT_TAG) always wins;  this block never writes AGENT_LAUNCH_SEAT or\n"
+        "# AGENT_LAUNCHER.\n"
+        '_zc_seat_bin="$HOME/' + ZCODE_SEAT_BIN_DIRNAME + '"\n'
+        "# Drop every occurrence of the shim dir already in PATH, then put it at the front\n"
+        "# unconditionally:  a prepend that runs later in the dotfiles must not leave the dir\n"
+        "# behind another entry that also holds a fleet tool, and re-sourcing must never stack\n"
+        "# a second copy.  Empty elements are dropped too:  a trailing or doubled colon leaves an\n"
+        "# empty PATH element, and an empty element means the current directory, which turns a\n"
+        "# shell's executable lookup into a search of wherever the shell happens to be.  The other\n"
+        "# entries keep their order, duplicates included.\n"
+        '_zc_old="${PATH:-}:"\n'
+        '_zc_kept=""\n'
+        '_zc_sep=""\n'
+        'while [ -n "$_zc_old" ]; do\n'
+        '  _zc_one="${_zc_old%%:*}"\n'
+        '  _zc_old="${_zc_old#*:}"\n'
+        '  if [ -n "$_zc_one" ] && [ "$_zc_one" != "$_zc_seat_bin" ]; then\n'
+        '    _zc_kept="$_zc_kept$_zc_sep$_zc_one"\n'
+        '    _zc_sep=":"\n'
+        "  fi\n"
+        "done\n"
+        'export PATH="$_zc_seat_bin${_zc_kept:+:$_zc_kept}"\n'
+        'unset _zc_seat_bin _zc_old _zc_kept _zc_sep _zc_one\n'
+        'if [ -n "${ZCODE_SESSION_ID:-}" ] || [ -n "${ZCODE_RUNTIME_ENV:-}" ]; then\n'
+        '  if [ -z "${AGENT_SEAT:-}" ] && [ -z "${AGENT_LAUNCH_SEAT:-}" ] && [ -z "${AGENT_TAG:-}" ]; then\n'
+        f"    export AGENT_SEAT={ZCODE_SEAT_TAG}\n"
+        "  fi\n"
+        "fi\n"
+        f"# --- end {ZCODE_SEAT_BLOCK_NAME} --- {GENERATED_MARK}.\n"
+    )
+
+
 def render_opencode_plugin() -> str:
     """opencode-plugin/index.ts in the stable dir, loaded as a directory by OpenCode V2.  V2 has no config
     hooks key and its plugin entries must name a DIRECTORY; the directory's index.ts is the module.  The plugin
@@ -1791,9 +1904,27 @@ def muse_owner_actions(paths: Paths) -> list:
     ]
 
 
-def hook_command(paths: Paths, fmt: str) -> str:
+def seat_prefix(seat: str) -> str:
+    """The `env` prefix that gives a hook process a seat.
+
+    A platform whose runtime has no settings env block cannot hand the seat to the hook process the way
+    Claude Code does,  so the seat travels in the hook command itself (Z Code).  The command is a shell
+    string there,  so the shell that runs it reads the prefix.
+
+    The seat the session already declares wins:  a launcher's assignment,  then an ambient AGENT_SEAT,  then
+    the chat tag,  and only a session that declares none of them gets the platform default.  The prefix
+    never overrides a session's own seat,  so a Z Code session that runs for another seat stays that seat.
+    The guard reads AGENT_LAUNCH_SEAT before AGENT_SEAT,  so a launched session keeps its seat either way.
+    """
+    return (
+        'env AGENT_SEAT="${AGENT_LAUNCH_SEAT:-${AGENT_SEAT:-${AGENT_TAG:-' + seat + '}}}"'
+    )
+
+
+def hook_command(paths: Paths, fmt: str, seat: str = "") -> str:
     """The exact string written into a platform config."""
-    return f"{shlex.quote(paths.hook_shim)} --format {fmt}"
+    command = f"{shlex.quote(paths.hook_shim)} --format {fmt}"
+    return f"{seat_prefix(seat)} {command}" if seat else command
 
 
 def render_minimax_hook_shim(*, volume: str | None = None) -> str:
@@ -2554,6 +2685,10 @@ class Platform:
     platform_dir: str  # must exist, relative to home
     config_rel: str  # config file, relative to home
     supported: bool = True  # a hook entry in a config file that this tool writes
+    # The seat an ordinary session of this platform runs as,  for a platform whose runtime has no
+    # settings env block to declare it in (Claude Code has one,  Z Code does not).  The seat is written
+    # into the hook command,  so the guard process knows who is writing.
+    seat: str = ""
     kind: str = (
         "config"  # "plugin": no config file is edited (Muse Code takes hooks from a plugin);
     )
@@ -2942,12 +3077,35 @@ PLATFORMS: dict[str, Platform] = {
             in_all=True,
             new_mode=0o644,
             hook_extra=(("timeout", HOOK_TIMEOUT_S),),
+            seat="ZC",
             notes=(
                 "New last group under hooks.events.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
                 "Deny output is Claude-style JSON payload.",
+                "The hook command carries the seat: 'env AGENT_SEAT=ZC <shim> --format claude'.  Z Code has no"
+                " settings env block,  so this is how the guard process learns who is writing.",
+                "A second group, matcher ZCODE_FILE_MATCHER, runs claude-file-guard-hook with the same seat:  the"
+                " file guard is what refuses a write into another seat's lane.",
+                "The Bash-tool seat default:  the Z Code CLI bakes a shell snapshot once per session start that"
+                " captures PATH and shell functions from ~/.bashrc but NO plain env exports, so an `export"
+                " AGENT_SEAT=ZC` in the profile never reaches a Bash-tool shell.  `apply zcode` therefore also"
+                f" writes ~/.{ZCODE_SEAT_BIN_DIRNAME.lstrip('.')} (four shims for "
+                + ", ".join(ZCODE_SEAT_TOOLS)
+                + ", each setting AGENT_SEAT=ZC only when no seat variable is set and the process is a Z Code"
+                " session shell, then execing the real tool resolved at apply time) and a marked, idempotent"
+                " block at the top of ~/.bashrc (the shim dir at the front of PATH plus the same guarded"
+                " export for interactive shells).  A launcher assignment (AGENT_LAUNCH_SEAT), an existing"
+                " AGENT_SEAT and a non-Z-Code process are never touched, and nothing in this feature ever"
+                " writes AGENT_LAUNCH_SEAT or AGENT_LAUNCHER.  The shims are all-or-nothing:  a fleet tool"
+                " missing from PATH at apply time writes no shim and no block, and says so.",
             ),
             unverified=(
                 "That Z Code fires the PreToolUse hook on shell executions without a full restart.",
+                "macOS behavior:  Z Code on macOS may use a different default shell and a different snapshot"
+                " source than the Linux bash path, which is what this host live-verifies;  the macOS path needs"
+                " a live check before the seat default is trusted there.",
+                "That a RESUMED Z Code session keeps the snapshot it was started with:  the snapshot is baked"
+                " once per session, so a changed shim set or profile block lands at the next cold start, not in"
+                " a session that was only resumed.",
             ),
         ),
     )
@@ -2969,7 +3127,10 @@ NEXT_STEPS: dict[str, str] = {
     "cannot load the plugin itself",
     "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
     "from `plan fx` into ~/.fx/settings.json by hand, or approves an exception",
-    "zcode": "start a new Z Code session, ask it to run `ps`, and expect a refusal",
+    "zcode": "start a new Z Code session, ask it to run `ps`, and expect a refusal.  The Bash-tool seat default "
+    "(the ~/.fleet-zcode-seat-bin shims and the marked ~/.bashrc block) takes effect at the next COLD session "
+    "start (a resumed session keeps the snapshot it started with);  when a fleet tool is missing from PATH, "
+    "apply writes no seat default and says so in its output",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
@@ -3775,7 +3936,7 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     """Read-only: what `apply PLATFORM` would do, with a unified diff of the hooks this tool edits.  The diff
     shows only our own entry; other hooks are counted and elided."""
     path = config_path(paths, plat)
-    cmd = hook_command(paths, plat.fmt)
+    cmd = hook_command(paths, plat.fmt, plat.seat)
     if plat.kind == "plugin":
         if plat.key == "opencode":
             op = plan_opencode(paths, follow_symlinks=follow_symlinks)
@@ -3839,6 +4000,13 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         if plat.key == "claude":
             # The file guard is its own group in the same file, so one plan writes both, once.
             new_doc, file_action, file_notes = merge_claude_files(new_doc, claude_file_hook_command(paths))
+            action = _combine_actions(action, file_action)
+            notes.extend(file_notes)
+        elif plat.key == "zcode":
+            # Z Code keeps the file guard in the same file,  in a group of its own,  so one plan writes both.
+            new_doc, file_action, file_notes = merge_zcode_files(
+                new_doc, zcode_file_hook_command(paths, plat.seat)
+            )
             action = _combine_actions(action, file_action)
             notes.extend(file_notes)
     except Refused as exc:
@@ -3951,24 +4119,251 @@ class Result:
         return f"{self.status.upper():<10} {self.target:<12} {self.detail}".rstrip()
 
 
-def _swap_dir(stage: str, final: str) -> None:
-    old: str | None = None
-    if os.path.lexists(final):
-        old = f"{final}.old-{os.getpid()}"
-        if os.path.lexists(old):
-            shutil.rmtree(old, ignore_errors=True)
-        os.rename(final, old)
+@dataclass(frozen=True)
+class SwapOutcome:
+    installed: bool
+    backup: str | None = None
+    problem: str = ""
+    cleanup_stage: bool = False
+
+
+def _path_inode(path: str) -> tuple[int, int] | None:
+    """Return a name's inode without following links; unknown errors fail closed."""
     try:
-        os.rename(stage, final)
-    except BaseException:
-        if old is not None:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return (-1, -1)
+    return (info.st_dev, info.st_ino)
+
+
+def _failed_swap_state(
+    stage: str,
+    final: str,
+    staged_inode: tuple[int, int],
+    old_inode: tuple[int, int] | None,
+) -> tuple[str, bool, str | None]:
+    """Classify an exception by actual names, retaining any possible old backup."""
+    live, staged = _path_inode(final), _path_inode(stage)
+    if old_inode is not None and live == staged_inode and staged == old_inode:
+        return "live=new; stage=old backup", False, stage
+    if old_inode is None and live == staged_inode and staged is None:
+        return "live=new; no old backup", False, None
+    if old_inode is not None and live == old_inode and staged == staged_inode:
+        return "live=old; stage=new staged tree", True, None
+    if old_inode is None and live is None and staged == staged_inode:
+        return "live=missing; stage=new staged tree", True, None
+    return "live=unknown; stage=retained for inspection", False, None
+
+
+def _directory_fingerprint(root: str) -> str:
+    """Bind managed bytes, paths, modes and ownership before and after an exchange.
+
+    Python may create package bytecode while either tree is live.  Like
+    scan_stable, treat only the real fleet_lanes/__pycache__ directory as
+    generated data; a symlink at that name remains part of the fingerprint.
+    """
+    digest = hashlib.sha256()
+    for base, dirs, files in os.walk(root, followlinks=False):
+        if os.path.relpath(base, root) == PACKAGE:
+            dirs[:] = [
+                name for name in dirs
+                if name != "__pycache__" or os.path.islink(os.path.join(base, name))
+            ]
+        dirs.sort()
+        files.sort()
+        for name in [".", *dirs, *files]:
+            path = base if name == "." else os.path.join(base, name)
+            relative = os.path.relpath(path, root).encode("utf-8")
+            info = os.lstat(path)
+            digest.update(relative + b"\0")
+            digest.update(
+                f"{info.st_mode:o}:{info.st_uid}:{info.st_gid}\n".encode("ascii")
+            )
+            if stat.S_ISLNK(info.st_mode):
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(info.st_mode):
+                with open(path, "rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_tree(root: str) -> None:
+    """Make both trees' contents durable before the name exchange."""
+    directories: list[str] = []
+    for base, dirs, files in os.walk(root, followlinks=False):
+        directories.append(base)
+        for name in files:
+            path = os.path.join(base, name)
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                # Existing generated directories may hold foreign entries when
+                # --replace-extra is explicit. Their parent directory fsync
+                # covers each name, and no link is followed.
+                continue
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
-                os.rename(old, final)
-            except OSError:
-                pass
-        raise
-    if old is not None:
-        shutil.rmtree(old, ignore_errors=True)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
+def _native_exchange(left: str, right: str) -> None:
+    """One shared atomic-exchange primitive; unsupported hosts never use two renames."""
+    functions = {
+        "linux": ("renameat2", 2),
+        "darwin": ("renamex_np", 2),
+    }
+    entry = functions.get(sys.platform)
+    if entry is None:
+        raise Refused("atomic directory exchange is unavailable on this platform")
+    library = ctypes.CDLL(None, use_errno=True)
+    native = getattr(library, entry[0], None)
+    if native is None:
+        raise Refused(f"atomic directory exchange API {entry[0]} is unavailable")
+    if sys.platform == "linux":
+        native.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
+        )
+        args = (-100, os.fsencode(left), -100, os.fsencode(right), entry[1])
+    else:
+        native.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        args = (os.fsencode(left), os.fsencode(right), entry[1])
+    native.restype = ctypes.c_int
+    if native(*args) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), left, right)
+
+
+def _probe_exchange(stage_parent: str, final_parent: str) -> None:
+    """Prove swap behavior on this filesystem before touching an active hook path."""
+    if os.stat(stage_parent).st_dev != os.stat(final_parent).st_dev:
+        raise Refused("atomic directory exchange requires one filesystem")
+    with tempfile.TemporaryDirectory(prefix=".exchange-probe-", dir=stage_parent) as first:
+        with tempfile.TemporaryDirectory(prefix=".exchange-probe-", dir=final_parent) as second:
+            with open(os.path.join(first, "first"), "wb") as target:
+                target.write(b"first")
+            with open(os.path.join(second, "second"), "wb") as target:
+                target.write(b"second")
+            try:
+                _native_exchange(first, second)
+            except (OSError, Refused) as exc:
+                raise Refused(f"atomic directory exchange is unsupported: {exc}") from exc
+            if not (
+                os.path.isfile(os.path.join(first, "second"))
+                and os.path.isfile(os.path.join(second, "first"))
+            ):
+                raise Refused("atomic directory exchange did not preserve both directories")
+
+
+def _backup_container(path: str) -> str:
+    """A real, owner-only container for the stage that becomes the old-tree backup."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise Refused(f"cannot create owner-only backup directory {path}: {exc}") from exc
+    else:
+        # A setgid shared-volume parent can add mode bits despite mkdir's requested mode.
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            raise Refused(f"cannot tighten backup directory {path}: {exc}") from exc
+    if os.path.islink(path) or not os.path.isdir(path):
+        raise Refused(f"{path} is not a real backup directory")
+    info = os.lstat(path)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise Refused(f"{path} is not an owner-only backup directory")
+    return path
+
+
+def _swap_dir(stage: str, final: str) -> SwapOutcome:
+    """Keep the active name present, and turn the staged name into a durable old-tree backup."""
+    stage_parent, final_parent = os.path.dirname(stage), os.path.dirname(final)
+    staged = os.stat(stage)
+    if not os.path.lexists(final):
+        try:
+            _fsync_tree(stage)
+            _fsync_directory(stage_parent)
+        except OSError as exc:
+            raise Refused(f"first-install preflight fsync failed: {exc}") from exc
+        try:
+            os.rename(stage, final)  # one atomic rename for a first install
+        except OSError as exc:
+            return SwapOutcome(False, problem=f"first-install rename failed: {exc}", cleanup_stage=True)
+        try:
+            _fsync_directory(final_parent)
+        except OSError as exc:
+            return SwapOutcome(True, problem=f"live=new; parent fsync failed: {exc}")
+        return SwapOutcome(True)
+    if os.path.islink(final) or not os.path.isdir(final):
+        raise Refused("active package is not a real directory")
+    old = os.stat(final)
+    if old.st_dev != staged.st_dev:
+        raise Refused("active package and stage are on different filesystems")
+    # A stage starts 0700. Preserve the active directory's access and ownership at its stable name.
+    try:
+        if (staged.st_uid, staged.st_gid) != (old.st_uid, old.st_gid):
+            os.chown(stage, old.st_uid, old.st_gid)
+        os.chmod(stage, stat.S_IMODE(old.st_mode))
+    except OSError as exc:
+        raise Refused(f"cannot preserve active directory ownership or mode: {exc}") from exc
+    before_old = _directory_fingerprint(final)
+    before_new = _directory_fingerprint(stage)
+    _probe_exchange(stage_parent, final_parent)
+    try:
+        _fsync_tree(stage)
+        _fsync_tree(final)
+        _fsync_directory(stage_parent)
+        _fsync_directory(final_parent)
+    except OSError as exc:
+        raise Refused(f"directory exchange preflight fsync failed: {exc}") from exc
+    if (
+        (os.stat(final).st_dev, os.stat(final).st_ino) != (old.st_dev, old.st_ino)
+        or _directory_fingerprint(final) != before_old
+    ):
+        raise Refused("active package changed before atomic exchange")
+    try:
+        _native_exchange(stage, final)
+    except (OSError, Refused) as exc:
+        live = os.stat(final)
+        if (live.st_dev, live.st_ino) == (old.st_dev, old.st_ino):
+            return SwapOutcome(False, problem=f"live=old; exchange failed: {exc}", cleanup_stage=True)
+        if (live.st_dev, live.st_ino) == (staged.st_dev, staged.st_ino):
+            return SwapOutcome(True, backup=stage, problem=f"live=new; exchange reported failure: {exc}")
+        return SwapOutcome(False, backup=stage, problem=f"live=unknown; exchange reported failure: {exc}")
+    problems = []
+    try:
+        live = os.stat(final)
+        backup = os.stat(stage)
+        if (live.st_dev, live.st_ino) != (staged.st_dev, staged.st_ino):
+            problems.append("live package inode is not the staged inode")
+        if (backup.st_dev, backup.st_ino) != (old.st_dev, old.st_ino):
+            problems.append("backup inode is not the old package inode")
+        if _directory_fingerprint(final) != before_new:
+            problems.append("live package bytes, modes or ownership changed")
+        if _directory_fingerprint(stage) != before_old:
+            problems.append("old backup bytes, modes or ownership changed")
+    except (OSError, Refused) as exc:
+        problems.append(f"post-exchange fingerprint failed: {exc}")
+    for parent in dict.fromkeys((stage_parent, final_parent)):
+        try:
+            _fsync_directory(parent)
+        except OSError as exc:
+            problems.append(f"parent fsync failed: {exc}")
+    return SwapOutcome(True, backup=stage, problem=("live=new; " + "; ".join(problems)) if problems else "")
 
 
 def probe_formats() -> list[tuple[str, str]]:
@@ -4003,10 +4398,11 @@ def apply_tools(
     emit: Callable[[str], None] = lambda s: None,
     replace_extra: bool = False,
 ) -> Result:
-    """Copy or refresh the stable dir atomically.  The new copy is staged beside the final dir and
-    probed first (every supported platform's format); it is swapped in only if the probes pass.
-    Between the two renames of the swap the dir is briefly absent, and a hook call that lands there
-    fails open.  A non-empty dir that this tool did not write is refused (see `plan_tools`)."""
+    """Stage and probe first; exchange an existing package without removing its active path.
+
+    The stage becomes an owner-only, retained backup of the old tree. An unsupported exchange
+    refuses before changing an active hook path. A first install needs only one rename.
+    """
     try:
         if os.path.realpath(src.scripts_dir) == os.path.realpath(paths.stable):
             raise Refused(
@@ -4038,7 +4434,22 @@ def apply_tools(
         return Result("tools", "unchanged", f"{paths.stable} is current (sha {plan.sha[:12]})")
     os.makedirs(paths.apps_dir, exist_ok=True)
     os.makedirs(os.path.dirname(paths.stable), exist_ok=True)
-    stage = tempfile.mkdtemp(prefix=".lane-tools-stage-", dir=os.path.dirname(paths.stable))
+    backup_root: str | None = None
+    created_backup_root = False
+    if os.path.isdir(paths.stable):
+        backup_root = os.path.join(
+            os.path.dirname(paths.stable), f".{os.path.basename(paths.stable)}-backups"
+        )
+        created_backup_root = not os.path.lexists(backup_root)
+        try:
+            _backup_container(backup_root)
+        except Refused as exc:
+            return Result("tools", "refused", str(exc))
+    stage = tempfile.mkdtemp(
+        prefix="backup-" if backup_root else ".lane-tools-stage-",
+        dir=backup_root or os.path.dirname(paths.stable),
+    )
+    swap_prepared = False
     try:
         _write_tree(stage, files)
         if probes:
@@ -4125,15 +4536,55 @@ def apply_tools(
         shutil.rmtree(
             os.path.join(stage, PACKAGE, "__pycache__"), ignore_errors=True
         )  # probes wrote it with the stage path
-        _swap_dir(stage, paths.stable)
+        staged_inode = _path_inode(stage)
+        old_inode = _path_inode(paths.stable)
+        if staged_inode is None or staged_inode == (-1, -1) or old_inode == (-1, -1):
+            raise Refused("cannot identify stage and active directory before swap")
+        swap_prepared = True
+        outcome = _swap_dir(stage, paths.stable)
+        if not outcome.installed:
+            if outcome.cleanup_stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+            return Result("tools", "failed", outcome.problem, outcome.backup)
+        if outcome.problem:
+            return Result(
+                "tools",
+                "failed",
+                outcome.problem + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
+            )
     except Refused as exc:
         shutil.rmtree(stage, ignore_errors=True)
+        if created_backup_root and backup_root:
+            try:
+                os.rmdir(backup_root)
+            except OSError:
+                pass
         return Result("tools", "refused", str(exc))
     except BaseException as exc:
-        shutil.rmtree(stage, ignore_errors=True)
+        state, cleanup_stage, backup = (
+            _failed_swap_state(stage, paths.stable, staged_inode, old_inode)
+            if swap_prepared else ("swap not attempted", True, None)
+        )
+        if cleanup_stage:
+            shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        return Result("tools", "failed", f"{type(exc).__name__}: {exc}")
+        return Result(
+            "tools", "failed",
+            f"unexpected swap error; {state}; stage path {stage}: {type(exc).__name__}: {exc}",
+            backup,
+        )
     extra = ""
     try:
         if plan.lane_shim_state == "foreign":
@@ -4147,11 +4598,18 @@ def apply_tools(
         else:
             extra = f"; no lane shim (the package has no {LANE_MODULE} yet)"
     except OSError as exc:
-        return Result("tools", "failed", f"stable dir installed, but the lane shim failed: {exc}")
+        return Result(
+            "tools", "failed",
+            f"live=new; stable dir installed, but the lane shim failed: {exc}"
+            + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+            outcome.backup,
+        )
     for w in plan.warnings:
         extra += f"; WARNING {w}"
     return Result(
         "tools", "installed", f"{paths.stable} sha {plan.sha[:12]}, {len(files)} files{extra}"
+        + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+        outcome.backup,
     )
 
 
@@ -4264,6 +4722,25 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
     raise OSError("could not find a free backup name")
 
 
+def _zcode_seat_note(plat_key: str, paths: Paths) -> str:
+    """Apply the Bash-tool seat default and shape its Result-detail note.  Called only AFTER the hooks
+    config has landed (see apply_platform):  a refusal or failure at this point must not roll the hooks
+    write back, so the Result keeps the hooks status and the note names what is present and what is
+    still pending, which is the file's convention for post-write report-only failures."""
+    if plat_key != "zcode":
+        return ""
+    seat = apply_zcode_seat_default(paths)
+    if not seat.ok:
+        # "failed" is not "not written":  the shims land before the profile, so a failed step can
+        # leave a live partial set, and the note must not tell the operator the disk is clean.
+        if seat.status == "failed":
+            return f"; seat default partly written: {seat.detail}"
+        return f"; seat default not written: {seat.detail}"
+    if seat.status == "installed":
+        return f"; seat default installed: {seat.detail}"
+    return ""
+
+
 def apply_platform(
     plat: Platform,
     paths: Paths,
@@ -4359,22 +4836,28 @@ def apply_platform(
                 "the installed hook shim fails its probes, so it will not be wired in: "
                 + bad[0].detail,
             )
-        if plat.key == "claude":
+        if plat.key in ("claude", "zcode"):
             if not (os.path.isfile(paths.claude_file_shim) and os.access(paths.claude_file_shim, os.X_OK)):
                 return Result(
                     plat.key,
                     "refused",
                     f"the file-guard shim {paths.claude_file_shim} is missing or not executable; run `apply tools` first",
                 )
+            file_command = (
+                claude_file_hook_command(paths)
+                if plat.key == "claude"
+                else zcode_file_hook_command(paths, plat.seat)
+            )
             bad = [
                 c
                 for c in probe_claude_files(
-                    claude_file_hook_command(paths),
+                    file_command,
                     paths.home,
                     paths.registry,
                     timeout,
                     minimal_path,
                     volume=_baked_volume(paths.claude_file_shim),
+                    target=plat.key,
                 )
                 if c.status == "FAIL"
             ]
@@ -4386,8 +4869,10 @@ def apply_platform(
                     + bad[0].detail,
                 )
     if plan.action == "unchanged":
+        # The hooks config is already on disk, so the seat default may follow it (same contract as the
+        # written path below:  the seat default is applied only once the hooks config is present).
         note = "".join("; " + n for n in plan.notes)
-        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}")
+        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}{_zcode_seat_note(plat.key, paths)}")
     cfg = plan.cfg
     assert cfg is not None and plan.new_text is not None
     # Self-checks on the document we are about to write.
@@ -4461,6 +4946,11 @@ def apply_platform(
     detail = f"{plan.path}" + (f" (backup {backup})" if backup else " (new file)")
     if plan.notes:
         detail += "; " + "; ".join(plan.notes)
+    # The seat default travels with the zcode platform, but only from here:  every gate and the write
+    # itself can still refuse or fail the hooks config, and a refusal before this point must leave
+    # nothing of the seat default on disk, while a seat-default refusal or failure after it is
+    # reported in the detail without rolling the hooks write back.
+    detail += _zcode_seat_note(plat.key, paths)
     return Result(plat.key, "added" if plan.action == "add" else "updated", detail, backup)
 
 
@@ -4914,6 +5404,9 @@ def verify_platform(
             )
     if plat.key == "claude":
         out.extend(verify_claude_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
+    elif plat.key == "zcode":
+        out.extend(verify_zcode_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
+        out.extend(verify_zcode_seat_default(paths))
     for problem in _switch_warnings(cfg.doc):
         out.append(
             Check(
@@ -4953,6 +5446,7 @@ def probe_claude_files(
     minimal_path: bool = True,
     source_registry: str | None = None,
     volume: str = "",
+    target: str = "claude",
 ) -> list[Check]:
     """Run Claude Code's file payloads through `command` (the file-guard shim) and check each answer.
 
@@ -4970,7 +5464,7 @@ def probe_claude_files(
         detail = str(exc)
         if source_registry and source_registry != registry:
             detail = f"{detail}; source registry: {source_registry}"
-        return [Check("claude", "registry-tree", "FAIL", detail)]
+        return [Check(target, "registry-tree", "FAIL", detail)]
     out: list[Check] = []
     for vname, vpath in _variants(minimal_path):
         env = probe_env(home, vpath)
@@ -4985,6 +5479,7 @@ def probe_claude_files(
             ("Read", "file_path", os.path.join(home, ".env"), True),
             ("Write", "file_path", integration, True),
             ("Edit", "file_path", secret, True),
+            ("ApplyPatch", "file_path", secret, True),
             ("MultiEdit", "file_path", secret, True),
             ("NotebookEdit", "notebook_path", secret + ".ipynb", True),
             ("Read", "file_path", integration, False),
@@ -5014,12 +5509,234 @@ def probe_claude_files(
             where = "integration" if path == integration else os.path.basename(path)
             out.append(
                 Check(
-                    "claude",
+                    target,
                     f"{tool}/{where}/{'deny' if deny else 'allow'}/{vname}",
                     "FAIL" if problem else "PASS",
                     (f"{problem}; " if problem else "") + f"exit={res.returncode} stdout={_brief(res.stdout)}",
                 )
             )
+    return out
+
+
+def zcode_file_hook_command(paths: Paths, seat: str = "") -> str:
+    """The exact string written into the Z Code file-guard group.
+
+    It takes no --format:  the deny is Claude's,  which is the shape Z Code delivers.  The seat is in the
+    command,  because the Z Code runtime has no settings env block to put it in,  and it is a default the
+    session's own seat beats (see seat_prefix).
+    """
+    command = shlex.quote(paths.claude_file_shim)
+    return f"{seat_prefix(seat)} {command}" if seat else command
+
+
+def locate_zcode_files(doc: dict) -> list[Entry]:
+    """The Z Code file-guard entries under hooks.events.PreToolUse,  with the problems that stop Z Code from
+    sending every file tool to them (a matcher that misses one,  a hook type that is not `command`)."""
+    plat = PLATFORMS["zcode"]
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.get("events")
+    if events is None:
+        return []
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.events.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        inner = group.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
+                continue
+            problems: list[str] = []
+            missed = [t for t in ZCODE_FILE_TOOLS if not _matcher_gates(group.get("matcher"), t)]
+            if missed:
+                problems.append(f"matcher {group.get('matcher')!r} never matches {', '.join(missed)}")
+            if hook.get("type", "command") != "command":
+                problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+            out.append(
+                Entry(
+                    hook["command"],
+                    f"hooks.events.{plat.event}[{gi}].hooks[{hi}]",
+                    problems,
+                    hook,
+                    group,
+                    gi,
+                    hi,
+                )
+            )
+    return out
+
+
+def zcode_unreadable_groups(doc: dict) -> list[str]:
+    """The paths of the Z Code hook groups the parser could not read.
+
+    A group that is not an object,  or one whose 'hooks' is not a list,  cannot show an entry,  so it is
+    skipped rather than refused:  a third-party group the fleet does not own must not block the fleet's
+    own hook update.  The paths are reported,  because a file guard hidden in such a group would be
+    invisible to the installer.
+    """
+    plat = PLATFORMS["zcode"]
+    hooks = doc.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    events = hooks.get("events")
+    if not isinstance(events, dict):
+        return []
+    groups = events.get(plat.event)
+    if not isinstance(groups, list):
+        return []
+    out: list[str] = []
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            out.append(f"hooks.events.{plat.event}[{gi}]")
+        elif not isinstance(group.get("hooks"), list):
+            out.append(f"hooks.events.{plat.event}[{gi}].hooks")
+    return out
+
+
+def merge_zcode_files(doc: dict, command: str) -> tuple[dict, str, list[str]]:
+    """(new document, action, notes) for the Z Code file-guard group.  action is added, updated or unchanged.  It
+    appends its own group (ZCODE_FILE_MATCHER) or corrects its own entry,  and never touches another hook."""
+    new = copy.deepcopy(doc)
+    entries = locate_zcode_files(new)
+    notes: list[str] = []
+    unreadable = zcode_unreadable_groups(new)
+    if unreadable:
+        notes.append(
+            f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+            f"({', '.join(unreadable)}), so a file guard in one of them would be invisible here"
+        )
+    if entries:
+        first = entries[0]
+        changed = False
+        if first.holder.get("command") != command:
+            first.holder["command"] = command
+            notes.append("file-guard hook command updated to the current path and seat")
+            changed = True
+        if first.group is not None and first.group.get("matcher") != ZCODE_FILE_MATCHER:
+            if len(first.group.get("hooks") or ()) == 1:
+                first.group["matcher"] = ZCODE_FILE_MATCHER
+                notes.append(f"file-guard group matcher set to {ZCODE_FILE_MATCHER}")
+                changed = True
+            elif first.problems:
+                notes.append(
+                    f"file-guard group matcher left at {first.group.get('matcher')!r}, because the group is shared:  "
+                    "fix it by hand"
+                )
+        if len(entries) > 1:
+            notes.append(
+                f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place"
+            )
+        return new, ("updated" if changed else "unchanged"), notes
+    hooks = new.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.setdefault("events", {})
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.setdefault(PLATFORMS["zcode"].event, [])
+    groups.append(
+        {
+            "matcher": ZCODE_FILE_MATCHER,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": CLAUDE_FILE_HOOK_TIMEOUT_S,
+                }
+            ],
+        }
+    )
+    return new, "added", notes
+
+
+def verify_zcode_files(
+    doc: dict, paths: Paths, path: str, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The file-guard group of ~/.zcode/cli/config.json:  present, a matcher that sends every file tool, the
+    current command with the seat in it,  and a command that denies and allows what it must."""
+    t = "zcode"
+    try:
+        entries = locate_zcode_files(doc)
+    except Refused as exc:
+        return [Check(t, "file-guard", "FAIL", str(exc))]
+    unreadable = zcode_unreadable_groups(doc)
+    if unreadable:
+        out_unreadable = [
+            Check(
+                t,
+                "unreadable groups",
+                "WARN",
+                f"{len(unreadable)} group(s) under hooks.events.PreToolUse could not be read "
+                f"({', '.join(unreadable)}), so a file guard in one of them would be invisible to this check",
+            )
+        ]
+    else:
+        out_unreadable = []
+    if not entries:
+        return out_unreadable + [
+            Check(
+                t,
+                "file-guard",
+                "FAIL",
+                f"no {CLAUDE_FILE_HOOK_NAME} hook under hooks.events.PreToolUse in {path}, so Read, Write, Edit, "
+                "MultiEdit, NotebookEdit and ApplyPatch are not guarded; run `apply zcode`",
+            )
+        ]
+    out: list[Check] = list(out_unreadable)
+    want = zcode_file_hook_command(paths, PLATFORMS["zcode"].seat)
+    for idx, entry in enumerate(entries):
+        label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"
+        if entry.problems:
+            out.append(Check(t, label, "FAIL", f"{entry.where}: " + "; ".join(entry.problems)))
+            continue
+        matcher = entry.group.get("matcher") if entry.group else None
+        if entry.command != want:
+            out.append(
+                Check(
+                    t,
+                    label,
+                    "FAIL" if len(entries) > 1 else "WARN",
+                    f"{entry.where} runs {entry.command}, not this install's {want}; re-run `apply zcode`"
+                    + ("" if len(entries) == 1 else " and remove the stale entry by hand"),
+                )
+            )
+        else:
+            out.append(Check(t, label, "PASS", f"{entry.where} matcher={matcher!r}"))
+    if len(entries) > 1 and all(e.command == want and not e.problems for e in entries):
+        out.append(
+            Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
+        )
+    commands = list(dict.fromkeys(e.command for e in entries if not e.problems))
+    if len(commands) > 2:
+        stale = [c for c in commands if c != want]
+        commands = ([want] if want in commands else []) + stale[: 2 - (want in commands)]
+    for command in commands:
+        try:
+            out.extend(
+                probe_claude_files(
+                    command,
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                    target=t,
+                )
+            )
+        except Refused as exc:
+            out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
     return out
 
 
@@ -5086,6 +5803,7 @@ def verify_claude_files(
                     timeout,
                     minimal_path,
                     volume=_baked_volume(paths.claude_file_shim),
+                    target=t,
                 )
             )
         except Refused as exc:
@@ -6502,31 +7220,6 @@ def _minimax_foreign(bundle: str) -> str | None:
     return None
 
 
-def _sweep_stale_minimax_leftovers(plugins_real: str, stage_parent: str, bundle: str) -> None:
-    """Remove `<bundle>.old-<pid>` and `.fleet-guard-stage-*` directories a killed run left behind.  Only ones older
-    than a minute, so a run that is still going is never touched."""
-    cutoff = time.time() - 60
-    candidates: list[str] = []
-    try:
-        base = os.path.basename(bundle) + ".old-"
-        candidates += [
-            os.path.join(plugins_real, n) for n in os.listdir(plugins_real) if n.startswith(base)
-        ]
-        candidates += [
-            os.path.join(stage_parent, n)
-            for n in os.listdir(stage_parent)
-            if n.startswith(".fleet-guard-stage-")
-        ]
-    except OSError:
-        return
-    for c in candidates:
-        try:
-            if os.path.isdir(c) and not os.path.islink(c) and os.lstat(c).st_mtime < cutoff:
-                shutil.rmtree(c, ignore_errors=True)
-        except OSError:
-            pass
-
-
 def plan_minimax(paths: Paths, *, follow_symlinks: bool = False) -> MinimaxPlan:
     """Read-only: what `apply minimax` writes into ~/.minimax/plugins/fleet-guard, compared with what is there."""
     bundle = paths.minimax_bundle
@@ -6583,9 +7276,11 @@ def apply_minimax(
     shim_proven: bool = False,
     follow_symlinks: bool = False,
 ) -> Result:
-    """Write the plugin directory.  It is built in a stage directory beside `plugins/` (so MiniMax never scans a half-written
-    plugin) and renamed into place; an existing directory is replaced only when this tool wrote it.  Like every platform,
-    it is wired in only if the installed fleet hook passes its own probes right now."""
+    """Write the plugin directory through the shared atomic install path.
+
+    A first install uses one rename. An update exchanges a probed stage with the live
+    plugin, retaining the old tree in an owner-only backup container outside plugins/.
+    """
     mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
     if mp.state == "skip":
         return Result("minimax", "skipped", mp.reason)
@@ -6643,21 +7338,74 @@ def apply_minimax(
         return Result("minimax", "unchanged", f"{mp.bundle} already holds the plugin")
     want = minimax_expected(paths)
     stage: str | None = None
+    backup_root: str | None = None
+    created_backup_root = False
+    swap_prepared = False
     try:
         os.makedirs(os.path.dirname(mp.bundle), exist_ok=True)
         # Stage beside the REAL plugins/ directory: when plugins/ is a symlink to another filesystem, a stage under
         # ~/.minimax would make the final rename fail with EXDEV.
         plugins_real = os.path.realpath(os.path.dirname(mp.bundle))
         stage_parent = os.path.dirname(plugins_real)
-        _sweep_stale_minimax_leftovers(plugins_real, stage_parent, mp.bundle)
-        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=stage_parent)
+        if mp.state == "stale":
+            backup_root = os.path.join(stage_parent, ".fleet-guard-backups")
+            created_backup_root = not os.path.lexists(backup_root)
+            _backup_container(backup_root)
+        stage = tempfile.mkdtemp(
+            prefix="backup-" if backup_root else ".fleet-guard-stage-",
+            dir=backup_root or stage_parent,
+        )
         _write_tree(stage, {rel: text.encode("utf-8") for rel, text in want.items()})
-        _swap_dir(stage, mp.bundle)
+        staged_inode = _path_inode(stage)
+        old_inode = _path_inode(mp.bundle)
+        if staged_inode is None or staged_inode == (-1, -1) or old_inode == (-1, -1):
+            raise Refused("cannot identify stage and active plugin before swap")
+        swap_prepared = True
+        outcome = _swap_dir(stage, mp.bundle)
+        if not outcome.installed:
+            if outcome.cleanup_stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+            return Result("minimax", "failed", outcome.problem, outcome.backup)
+        if outcome.problem:
+            return Result(
+                "minimax", "failed",
+                outcome.problem + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
+            )
         stage = None
-    except OSError as exc:
+    except Refused as exc:
         if stage:
             shutil.rmtree(stage, ignore_errors=True)
-        return Result("minimax", "failed", f"{mp.bundle} not written: {type(exc).__name__}: {exc}")
+        if created_backup_root and backup_root:
+            try:
+                os.rmdir(backup_root)
+            except OSError:
+                pass
+        return Result("minimax", "refused", str(exc))
+    except BaseException as exc:
+        state, cleanup_stage, backup = (
+            _failed_swap_state(stage, mp.bundle, staged_inode, old_inode)
+            if stage and swap_prepared else ("swap not attempted", True, None)
+        )
+        if stage and cleanup_stage:
+            shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        return Result(
+            "minimax", "failed",
+            f"{mp.bundle} swap error; {state}; stage path {stage}: {type(exc).__name__}: {exc}",
+            backup,
+        )
     for rel, text in want.items():
         if _read_regular(os.path.join(mp.bundle, *rel.split("/"))) != text.encode(
             "utf-8"
@@ -6665,12 +7413,17 @@ def apply_minimax(
             return Result(
                 "minimax",
                 "failed",
-                f"{mp.bundle}/{rel} is not what was written; check it and re-run `apply minimax`",
+                f"live=new; {mp.bundle}/{rel} is not what was written; "
+                "check it and re-run `apply minimax`"
+                + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
             )
     return Result(
         "minimax",
         "added" if mp.state == "new" else "updated",
-        f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})",
+        f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})"
+        + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+        outcome.backup,
     )
 
 
@@ -7631,6 +8384,604 @@ def verify_opencode(
     return out
 
 
+# --------------------------------------------------------------------------- zcode: the Bash-tool seat default
+
+
+def _resolve_zcode_tool(tool: str, paths: Paths) -> str | None:
+    """The absolute path of the real tool, from the apply-time PATH with the shim dir itself removed, or
+    None.  The dir is removed from the search so a re-apply on a host whose shell already has the dir at
+    the front of PATH resolves the REAL tool and never the shim (a shim whose exec target is itself would
+    recurse forever the first time it ran)."""
+    entries = [
+        p
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+        if p and os.path.abspath(p) != os.path.abspath(paths.zcode_seat_bin)
+    ]
+    found = shutil.which(tool, path=os.pathsep.join(entries))
+    if not found:
+        return None
+    found = os.path.abspath(found)
+    if os.path.realpath(found) == os.path.realpath(os.path.join(paths.zcode_seat_bin, tool)):
+        return None
+    return found
+
+
+@dataclass
+class ZcodeSeatPlan:
+    shim_dir: str
+    bashrc: str
+    state: str  # blocked (a tool is off PATH), current, new (nothing written yet), stale (something differs)
+    missing: list[str]  # the tools apply would refuse on
+    resolved: dict[str, str]  # tool -> the exec target apply would bake in
+    shims: list[FileStatus]  # per tool, versus what apply would write (status pending while blocked)
+    dir_state: str  # absent, ok, wrong-mode, foreign (a file or a symlink, or a dir holding junk is a warning)
+    bashrc_action: str  # create, prepend, replace, hand, none, refused
+    bashrc_reason: str  # the refusal reason when bashrc_action is refused
+    hand_line: int | None  # first line of the earlier hand-written seat block, when there is one
+    stray: list[str]  # seat lines outside any block we manage, left alone
+    warnings: list[str]
+
+
+def _zcode_bashrc_read(bashrc: str) -> tuple[str, bytes | None, str]:
+    """(kind, raw, reason) for ~/.bashrc as the seat default sees it, read-only.  kind is "absent"
+    (nothing there), "regular" (raw holds the file's bytes) or "unmanageable" (reason names why apply
+    will not touch the file:  a symlink, a directory, a FIFO or another non-regular file, one this
+    process cannot read, or one it cannot even examine).  One verdict shared by plan, apply and verify,
+    so the three can never disagree about whether the profile is a file install_tools may manage, and
+    an unmanageable profile can never reach a write."""
+    if os.path.islink(bashrc):
+        return ("unmanageable", None, f"{bashrc} is a symlink; refusing to manage it")
+    try:
+        st = os.lstat(bashrc)
+    except FileNotFoundError:
+        return ("absent", None, "")
+    except OSError:
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} cannot be examined by this process; refusing to manage it",
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} exists and is not a regular file; refusing to manage it",
+        )
+    try:
+        with open(bashrc, "rb") as fh:
+            return ("regular", fh.read(), "")
+    except OSError:
+        return (
+            "unmanageable",
+            None,
+            f"{bashrc} cannot be read by this process; refusing to manage it",
+        )
+
+
+def _zcode_bashrc_classify(text: str) -> tuple[str, int | None, list[str]]:
+    """(action, hand_line, stray) for ~/.bashrc's current content, read-only.  The action is what apply
+    would do:  replace (our marked block differs from what this version writes; the span is replaced in
+    place), hand (the earlier hand-written seat block from before the installer managed the file; apply
+    removes it and prepends the marked block), prepend (no block of ours; the block goes at the TOP of
+    the file, so it runs before any early interactivity guard or PATH loop the file may hold), or none.
+    The hand line is the first line of the hand block when there is one.  Stray lists the seat lines
+    OUTSIDE any region we manage (a hand-set AGENT_SEAT export or a PATH reference to the shim dir);
+    apply leaves every one of them alone and reports them, because they are the owner's content and the
+    shim guard makes a second declaration harmless.  Raises Refused for markers that cannot be trusted:
+    one marker of a pair, or more than one pair, means the file was edited mid-surgery and guessing
+    would corrupt it.  It also refuses layouts it cannot splice safely:  an end marker ahead of its
+    begin marker (splicing at crossed indexes duplicates unrelated lines) and a hand-written block that
+    shares any line range with the managed one (a replace would rewrite or orphan the other block's
+    lines).  The stray report names the line number and what matched, never the raw line:  a profile
+    can carry a credential on the same line as a seat word."""
+    lines = text.split("\n")
+    begin = f"# --- begin {ZCODE_SEAT_BLOCK_NAME}"
+    end = f"# --- end {ZCODE_SEAT_BLOCK_NAME}"
+    ours_b = [i for i, ln in enumerate(lines) if ln.startswith(begin)]
+    ours_e = [i for i, ln in enumerate(lines) if ln.startswith(end)]
+    if len(ours_b) > 1 or len(ours_e) > 1:
+        raise Refused(
+            f"{len(ours_b)} begin and {len(ours_e)} end markers of the marked {ZCODE_SEAT_BLOCK_NAME} block; "
+            "expected one pair; remove the extra blocks by hand, then re-run"
+        )
+    if bool(ours_b) != bool(ours_e):
+        raise Refused(
+            f"one marker of the {ZCODE_SEAT_BLOCK_NAME} pair is missing ("
+            + (f"begin at line {ours_b[0] + 1}" if ours_b else f"end at line {ours_e[0] + 1}")
+            + "); restore or remove the partial block by hand, then re-run"
+        )
+    if ours_b and ours_e[0] < ours_b[0]:
+        raise Refused(
+            f"the end marker of the {ZCODE_SEAT_BLOCK_NAME} pair (line {ours_e[0] + 1}) appears before its "
+            f"begin marker (line {ours_b[0] + 1}); restore the order or remove the block by hand, then re-run"
+        )
+    hand_line: int | None = None
+    hand_b = [i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_BEGIN)]
+    hand_e = [i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_END)]
+    if len(hand_b) > 1 or len(hand_e) > 1 or bool(hand_b) != bool(hand_e):
+        raise Refused(
+            "the earlier hand-written seat block markers cannot be trusted ("
+            + f"{len(hand_b)} begin, {len(hand_e)} end); fix them by hand, then re-run"
+        )
+    if hand_b and hand_e[0] < hand_b[0]:
+        raise Refused(
+            f"the end marker of the hand-written seat block (line {hand_e[0] + 1}) appears before its begin "
+            f"marker (line {hand_b[0] + 1}); restore the order or remove the block by hand, then re-run"
+        )
+    # The reversed checks above have already sorted each pair, so the [0] indexes are the mins and the
+    # [1]-free form below is a plain interval overlap, containment included.
+    if ours_b and hand_b and ours_b[0] <= hand_e[0] and hand_b[0] <= ours_e[0]:
+        raise Refused(
+            f"the hand-written seat block (lines {hand_b[0] + 1}-{hand_e[0] + 1}) and the marked "
+            f"{ZCODE_SEAT_BLOCK_NAME} block (lines {ours_b[0] + 1}-{ours_e[0] + 1}) overlap; the two spans "
+            "cannot be rewritten independently; separate or remove one of them by hand, then re-run"
+        )
+    if hand_b:
+        hand_line = hand_b[0] + 1
+    managed: set[int] = set()
+    if ours_b:
+        managed.update(range(ours_b[0], ours_e[0] + 1))
+    if hand_b:
+        managed.update(range(hand_b[0], hand_e[0] + 1))
+    stray = []
+    for i, ln in enumerate(lines):
+        if i in managed or not ln.strip():
+            continue
+        matched = [w for w in ("AGENT_SEAT", ZCODE_SEAT_BIN_DIRNAME) if w in ln]
+        if matched:
+            stray.append(f"line {i + 1}: mentions {' and '.join(matched)} outside any managed block")
+    if ours_b:
+        block = render_zcode_bashrc_block()
+        have = "\n".join(lines[ours_b[0] : ours_e[0] + 1]) + "\n"
+        return ("replace" if have != block else "none", hand_line, stray)
+    if hand_b:
+        return ("hand", hand_line, stray)
+    return ("prepend", None, stray)
+
+
+def _zcode_bashrc_desired(text: str | None) -> tuple[str, str, str]:
+    """(new_text, action, note) for ~/.bashrc, without writing.  `text` is the file's content or None
+    when it does not exist.  An existing file keeps its bytes outside the changed region (its mode is
+    the caller's to preserve); a file that does not exist is born with a one-line header plus the block.
+    The block goes at the TOP of the file, before any early interactivity guard or PATH loop, because
+    the CLI's snapshot bake and an interactive shell both must see the shim dir before anything else
+    rearranges PATH."""
+    block = render_zcode_bashrc_block()
+    if text is None:
+        header = (
+            "# ~/.bashrc: created by fleet_lanes.install_tools so the Z Code Bash-tool seat default has a\n"
+            "# home on this host;  the marked block below is all of it.\n"
+        )
+        return header + block, "create", "created with a minimal header plus the marked block"
+    action, hand_line, _stray = _zcode_bashrc_classify(text)
+    if action == "none":
+        return text, "none", "the marked block is already current"
+    lines = text.split("\n")
+    if action == "replace":
+        begin = f"# --- begin {ZCODE_SEAT_BLOCK_NAME}"
+        b = next(i for i, ln in enumerate(lines) if ln.startswith(begin))
+        e = next(i for i, ln in enumerate(lines) if ln.startswith(f"# --- end {ZCODE_SEAT_BLOCK_NAME}"))
+        new_lines = lines[:b] + block.rstrip("\n").split("\n") + lines[e + 1 :]
+        return "\n".join(new_lines), "replace", f"replaced the marked block in place at line {b + 1}"
+    if action == "hand":
+        b = next(i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_BEGIN))
+        e = next(i for i, ln in enumerate(lines) if ln.startswith(ZCODE_SEAT_HAND_END))
+        base = "\n".join(lines[:b] + lines[e + 1 :])
+        return (
+            (block + "\n" + base) if base else block,
+            "hand",
+            f"replaced the hand-written seat block (line {hand_line}) with the marked installer block at the top",
+        )
+    base = text if text.endswith("\n") else text + "\n"
+    return block + "\n" + base, "prepend", "inserted the marked block at the top"
+
+
+def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
+    """Read-only: what `apply zcode` writes for the Bash-tool seat default, beside the hooks config plan.
+    Missing tools BLOCK the whole artifact set (all-or-nothing), which is a pending state, not a refusal:
+    the hooks config is independent of it."""
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for tool in ZCODE_SEAT_TOOLS:
+        got = _resolve_zcode_tool(tool, paths)
+        if got:
+            resolved[tool] = got
+        else:
+            missing.append(tool)
+    d = paths.zcode_seat_bin
+    if os.path.islink(d) or (os.path.exists(d) and not os.path.isdir(d)):
+        dir_state = "foreign"
+    elif not os.path.isdir(d):
+        dir_state = "absent"
+    elif stat.S_IMODE(os.stat(d).st_mode) != 0o700:
+        dir_state = "wrong-mode"
+    else:
+        dir_state = "ok"
+    shims: list[FileStatus] = []
+    warnings: list[str] = []
+    for tool in ZCODE_SEAT_TOOLS:
+        want = (
+            render_zcode_seat_shim(tool, resolved[tool]).encode("utf-8")
+            if tool in resolved
+            else None
+        )
+        have = _read_regular(os.path.join(d, tool))
+        if want is None:
+            status = "pending"
+        elif have is None:
+            status = "new"
+        else:
+            # Bytes alone do not make a shim current:  verify demands executability (any exec bit), so
+            # a byte-identical shim that lost every exec bit is drift a re-apply repairs, never
+            # "same".  A tightened but executable mode (say 0750) verifies PASS, so it stays "same"
+            # and apply leaves it alone rather than widening it.
+            try:
+                mode_ok = bool(os.stat(os.path.join(d, tool)).st_mode & 0o111)
+            except OSError:
+                mode_ok = False
+            status = "same" if have == want and mode_ok else "changed"
+        shims.append(FileStatus(tool, status))
+    blocked = bool(missing)
+    if dir_state == "foreign":
+        warnings.append(
+            f"{d} exists and is a file or a symlink; apply refuses to manage it until it is removed by hand"
+        )
+    extra = (
+        sorted(set(os.listdir(d)) - set(ZCODE_SEAT_TOOLS))
+        if os.path.isdir(d) and not os.path.islink(d)
+        else []
+    )
+    if extra:
+        warnings.append(
+            f"{d} holds entries install_tools does not write (left alone): " + ", ".join(extra)
+        )
+    bashrc = paths.zcode_bashrc
+    kind, raw, bashrc_reason = _zcode_bashrc_read(bashrc)
+    bashrc_action, hand_line, stray = "refused", None, []
+    if kind == "absent":
+        bashrc_action, bashrc_reason = "create", ""
+    elif kind == "regular":
+        try:
+            text = (raw or b"").decode("utf-8")
+        except UnicodeDecodeError:
+            bashrc_reason = f"{bashrc} is not UTF-8 text; fix or convert it first"
+        else:
+            try:
+                bashrc_action, hand_line, stray = _zcode_bashrc_classify(text)
+            except Refused as exc:
+                bashrc_reason = str(exc)
+            else:
+                # The writability check mirrors apply's refusal exactly, but only when a write is
+                # actually owed:  a read-only profile whose marked block is already current needs
+                # nothing from apply, and calling that refused while the doctor passes it would
+                # make plan and the doctor disagree about a healthy host.  A read-only profile
+                # that still needs the block is one apply will refuse, so plan reports refused
+                # here and never promises a write that cannot happen.
+                if bashrc_action != "none" and not stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200:
+                    bashrc_action = "refused"
+                    bashrc_reason = (
+                        f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
+                        "apply does not override the owner's write protection"
+                    )
+    current = (
+        not blocked
+        and dir_state == "ok"
+        and all(s.status == "same" for s in shims)
+        and bashrc_action == "none"
+    )
+    if blocked:
+        state = "blocked"
+    elif current:
+        state = "current"
+    elif (
+        # "new" must mean apply CAN write the whole set from here:  a refused profile or a foreign
+        # shim dir is refused by apply, so calling it pending-new would promise a write that never
+        # happens;  the REFUSED line and the warnings name those states instead.
+        dir_state != "foreign"
+        and all(s.status in ("new", "pending") for s in shims)
+        and bashrc_action in ("create", "prepend", "hand", "replace")
+    ):
+        state = "new"
+    else:
+        state = "stale"
+    return ZcodeSeatPlan(
+        shim_dir=d,
+        bashrc=bashrc,
+        state=state,
+        missing=missing,
+        resolved=resolved,
+        shims=shims,
+        dir_state=dir_state,
+        bashrc_action=bashrc_action,
+        bashrc_reason=bashrc_reason,
+        hand_line=hand_line,
+        stray=stray,
+        warnings=warnings,
+    )
+
+
+def _emit_zcode_seat_plan(sp: ZcodeSeatPlan, emit: Callable[[str], None]) -> None:
+    """The seat-default section of `plan zcode`, under the hooks-config plan of the same platform."""
+    if sp.state == "stale":
+        # "a re-apply replaces what differs" is only true when apply may write at all;  name the line
+        # that identifies the blocker by its emit label, with no direction word, since both the
+        # REFUSED line and the WARNING lines print below this one.
+        if sp.bashrc_action == "refused":
+            state = "stale (apply refuses to write here; see the REFUSED line)"
+        elif sp.dir_state == "foreign":
+            state = "stale (apply refuses to write here; see the WARNING line)"
+        else:
+            state = "stale (a re-apply replaces what differs)"
+    else:
+        state = sp.state
+    emit(f"   seat default (Bash-tool shells): {sp.shim_dir} [{state}]")
+    if sp.state == "blocked":
+        emit(
+            "   seat default BLOCKED, all-or-nothing: "
+            + ", ".join(sp.missing)
+            + " is not on PATH, so apply writes no shim and no profile block (the hooks config above is independent)"
+        )
+    for fs in sp.shims:
+        target = sp.resolved.get(fs.rel)
+        emit(
+            f"   seat default {fs.status:<8} {sp.shim_dir}/{fs.rel}"
+            + (f"  (exec {target})" if target else "")
+        )
+    emit(f"   seat default bashrc {sp.bashrc} [{sp.bashrc_action}]")
+    if sp.bashrc_action == "refused":
+        emit(f"   seat default REFUSED: {sp.bashrc_reason}")
+    if sp.hand_line is not None:
+        emit(
+            f"   seat default: the hand-written seat block at line {sp.hand_line} has no installer mark; "
+            "apply replaces it with the marked block (the hand PATH entry inside the existing loop is "
+            "left alone and made redundant by the block's front prepend)"
+        )
+    for ln in sp.stray:
+        emit(f"   seat default: outside the managed block, LEFT ALONE: {ln}")
+    for w in sp.warnings:
+        emit(f"   seat default WARNING: {w}")
+
+
+def apply_zcode_seat_default(paths: Paths) -> Result:
+    """Write the Bash-tool seat default:  the shim dir (all four shims or none) and the marked ~/.bashrc
+    block.  The two are one artifact set:  a tool off PATH skips the whole set (a PATH-fronted dir with
+    a hole in it would be worse than none), and a profile the tool cannot manage safely skips it too.
+    Every refusable condition is decided BEFORE the first byte is written, so a skipped result means
+    nothing was written.  A shim is rewritten when its bytes drift or it has no exec bit left (verify
+    demands executability, so a byte-identical shim with no exec bit is drift);  the rewrite lands
+    0755, and a tightened but executable mode is left alone rather than widened.  Idempotent:  a
+    second apply finds the shims byte-identical and executable and the block current and writes
+    nothing."""
+    t = "zcode"
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for tool in ZCODE_SEAT_TOOLS:
+        got = _resolve_zcode_tool(tool, paths)
+        if got:
+            resolved[tool] = got
+        else:
+            missing.append(tool)
+    if missing:
+        return Result(
+            t,
+            "skipped",
+            "the seat default needs every fleet tool on PATH (missing: "
+            + ", ".join(missing)
+            + "); no shim and no profile block was written",
+        )
+    d = paths.zcode_seat_bin
+    if os.path.islink(d):
+        return Result(t, "refused", f"{d} is a symlink; nothing written")
+    if os.path.exists(d) and not os.path.isdir(d):
+        return Result(t, "refused", f"{d} exists and is not a directory; nothing written")
+    bashrc = paths.zcode_bashrc
+    # The one shared verdict on the profile:  a symlink, a non-regular file, or anything this process
+    # cannot read is refused before a single byte is written, replacing an owner file that is not a
+    # regular text file is never attempted, and nothing here can disagree with what plan and verify
+    # said about the same path.
+    kind, raw, reason = _zcode_bashrc_read(bashrc)
+    if kind == "unmanageable":
+        return Result(t, "refused", f"{reason}; nothing written")
+    text: str | None
+    try:
+        text = None if kind == "absent" else (raw or b"").decode("utf-8")
+    except UnicodeDecodeError:
+        return Result(t, "refused", f"{bashrc} is not UTF-8 text; nothing written")
+    if text is not None:
+        mode = stat.S_IMODE(os.stat(bashrc).st_mode)
+        if not mode & 0o200:
+            return Result(
+                t, "refused", f"{bashrc} is read-only (mode {mode:04o}); not overriding the owner's choice"
+            )
+    try:
+        new_text, action, note = _zcode_bashrc_desired(text)
+    except Refused as exc:
+        return Result(t, "refused", f"{exc}; nothing written")
+    try:
+        os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o700)
+        shim_written: list[str] = []
+        for tool in ZCODE_SEAT_TOOLS:
+            want = render_zcode_seat_shim(tool, resolved[tool]).encode("utf-8")
+            path = os.path.join(d, tool)
+            have = _read_regular(path)
+            mode_ok = False
+            if have is not None:
+                try:
+                    mode_ok = bool(os.stat(path).st_mode & 0o111)
+                except OSError:
+                    mode_ok = False
+            # Bytes alone are not the contract:  a shim with no exec bit left verifies FAIL, so the
+            # rewrite restores executability (0755) and keeps apply and verify honest with each
+            # other;  a tightened but executable mode verifies PASS and is left unwidened.
+            if have != want or not mode_ok:
+                atomic_write(path, want, 0o755)
+                shim_written.append(tool)
+        bashrc_written = action != "none"
+        if bashrc_written:
+            mode = 0o644 if text is None else stat.S_IMODE(os.stat(bashrc).st_mode)
+            atomic_write(bashrc, new_text.encode("utf-8"), mode)
+    except OSError as exc:
+        return Result(t, "failed", f"the seat default is only partly written: {type(exc).__name__}: {exc}")
+    if not shim_written and not bashrc_written:
+        return Result(t, "unchanged", "the seat default is already current")
+    parts: list[str] = []
+    if shim_written:
+        parts.append(f"wrote {len(shim_written)} shim(s) in {d} ({', '.join(shim_written)})")
+    if bashrc_written:
+        parts.append(f"bashrc: {note}")
+    return Result(t, "installed", "; ".join(parts))
+
+
+def _check_zcode_seat_text(target: str, name: str, path: str, expected: str) -> Check:
+    """_check_text for a seat shim, with the repair command this artifact actually takes:  `apply zcode`
+    writes the shims, not `apply tools` (whose stable-dir message the shared helper names)."""
+    check = _check_text(target, name, path, expected, True)
+    if check.status == "FAIL" and "re-run `apply tools`" in check.detail:
+        check.detail = check.detail.replace("re-run `apply tools`", "re-run `apply zcode`")
+    return check
+
+
+def verify_zcode_seat_default(paths: Paths) -> list[Check]:
+    """The doctor's half of the seat default:  the dir and its four shims byte-exactly (against what a
+    re-apply would write NOW, so a tool that moved since apply reads as the drift it is) with their
+    modes, and exactly one current marked block in ~/.bashrc.  When a tool is off PATH the artifact set
+    is not managed on this host:  that is a WARN, not a FAIL, so a host without the fleet tools reads
+    healthy with the gap named, and never as broken.  A profile apply cannot manage (a symlink, a
+    non-regular file, one this process cannot read) is the same kind of honest WARN with the remediation
+    named, never a FAIL:  the state is undecidable from the tool's side, and red-forever proves nothing."""
+    t = "zcode"
+    missing = [tool for tool in ZCODE_SEAT_TOOLS if not _resolve_zcode_tool(tool, paths)]
+    if missing:
+        return [
+            Check(
+                t,
+                "seat default",
+                "WARN",
+                "not managed on this host: "
+                + ", ".join(missing)
+                + " is not on PATH, so `apply zcode` writes no seat shims or profile block",
+            )
+        ]
+    out: list[Check] = []
+    d = paths.zcode_seat_bin
+    if os.path.islink(d):
+        # A symlinked seat dir is a state apply deliberately refuses to manage, so the doctor names
+        # the by-hand remediation as a WARN rather than a FAIL:  red-forever on a state the tool will
+        # never change proves nothing (the same honesty as the unmanageable-profile case below).
+        out.append(
+            Check(
+                t,
+                "seat shim dir",
+                "WARN",
+                f"{d} is a symlink; apply refuses to manage a symlinked seat dir — remove it by hand and re-run `apply zcode`",
+            )
+        )
+    elif not os.path.isdir(d):
+        if os.path.exists(d):
+            out.append(
+                Check(
+                    t,
+                    "seat shim dir",
+                    "WARN",
+                    f"{d} exists and is not a directory; apply refuses to manage it — remove it by hand and re-run `apply zcode`",
+                )
+            )
+        else:
+            out.append(Check(t, "seat shim dir", "FAIL", f"{d} is missing; run `apply zcode`"))
+    else:
+        mode = stat.S_IMODE(os.stat(d).st_mode)
+        if mode != 0o700:
+            out.append(Check(t, "seat shim dir", "FAIL", f"{d} has mode {mode:04o}, expected 0700"))
+        else:
+            out.append(Check(t, "seat shim dir", "PASS", f"{d} present, mode 0700"))
+        extra = sorted(set(os.listdir(d)) - set(ZCODE_SEAT_TOOLS))
+        if extra:
+            out.append(
+                Check(
+                    t,
+                    "seat shim dir",
+                    "WARN",
+                    f"{d} holds entries install_tools does not write (left alone): " + ", ".join(extra),
+                )
+            )
+    for tool in ZCODE_SEAT_TOOLS:
+        target = _resolve_zcode_tool(tool, paths)
+        assert target is not None  # the missing check above guarantees it
+        out.append(
+            _check_zcode_seat_text(t, f"shim {tool}", os.path.join(d, tool), render_zcode_seat_shim(tool, target))
+        )
+    bashrc = paths.zcode_bashrc
+    kind, raw, reason = _zcode_bashrc_read(bashrc)
+    if kind == "unmanageable":
+        # An unmanageable profile is an unmanaged artifact, not a broken install (the same honest WARN
+        # the unmanaged-tools case carries):  a symlinked ~/.bashrc is a legitimate setup that apply
+        # rightly refuses, and a FAIL here would read as permanently broken on a host nothing can
+        # repair from the tool's side.
+        out.append(
+            Check(
+                t,
+                "bashrc block",
+                "WARN",
+                reason
+                + "; manage the marked block by hand or make the path a regular file, then re-run `apply zcode`",
+            )
+        )
+    elif kind == "absent":
+        out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} does not exist; run `apply zcode`"))
+    else:
+        try:
+            action, hand_line, stray = _zcode_bashrc_classify((raw or b"").decode("utf-8"))
+        except UnicodeDecodeError:
+            out.append(Check(t, "bashrc block", "FAIL", f"{bashrc} is not UTF-8 text"))
+        except Refused as exc:
+            out.append(Check(t, "bashrc block", "FAIL", str(exc)))
+        else:
+            # A read-only profile is apply's refused state, not a broken install:  apply will not
+            # override the owner's write protection, so a missing or drifted block there is a WARN
+            # with the owner's two choices named, never a FAIL whose `apply zcode` remediation apply
+            # would then refuse to run.
+            writable = bool(stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200)
+            readonly_note = (
+                f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
+                "apply does not override the owner's write protection — "
+                "chmod u+w and re-run `apply zcode`, or manage the marked block by hand"
+            )
+            if action == "none":
+                out.append(Check(t, "bashrc block", "PASS", f"one current marked block in {bashrc}"))
+            elif not writable:
+                out.append(Check(t, "bashrc block", "WARN", readonly_note))
+            elif action == "replace":
+                out.append(
+                    Check(
+                        t,
+                        "bashrc block",
+                        "FAIL",
+                        f"the marked block in {bashrc} differs from what this install_tools writes; re-run `apply zcode`",
+                    )
+                )
+            else:  # prepend or hand
+                why = (
+                    f"the hand-written seat block at line {hand_line} would be replaced"
+                    if action == "hand"
+                    else "no marked block at the top"
+                )
+                out.append(
+                    Check(t, "bashrc block", "FAIL", f"no current marked block in {bashrc} ({why}); run `apply zcode`")
+                )
+            if stray:
+                out.append(
+                    Check(
+                        t,
+                        "stray seat lines",
+                        "WARN",
+                        f"{bashrc} sets a seat outside the managed block (left alone; the shim guard makes a "
+                        "second declaration harmless): " + "; ".join(stray),
+                    )
+                )
+    return out
+
+
 # --------------------------------------------------------------------------- fx: no hook surface (UNSUPPORTED, with a prepared control)
 
 
@@ -7940,8 +9291,9 @@ def _emit_minimax_plan(
         return mp.state == "refuse" or (explicit and mp.state == "skip")
     emit(
         "   MiniMax Code takes hooks from a local plugin: a REAL directory under ~/.minimax/plugins (a symlink is skipped), "
-        "enabled by default.  `apply minimax` runs `apply tools` first (the fleet hook lives in the stable dir), then "
-        "builds the directory in a stage beside plugins/ and renames it into place.  Nothing else under ~/.minimax is touched."
+        "enabled by default; `apply minimax` runs `apply tools` first (the fleet hook lives in the stable dir), then "
+        "installs a probed stage with one rename or an atomic exchange; updates retain the old plugin in an owner-only "
+        "backup directory outside plugins/."
     )
     emit(f"   command: {mp.command}")
     for fs in mp.files:
@@ -8201,6 +9553,8 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             emit(f"   note: {n}")
         for u in plat.unverified:
             emit(f"   UNVERIFIED: {u}")
+        if plat.key == "zcode":
+            _emit_zcode_seat_plan(plan_zcode_seat_default(paths), emit)
         if pp.action == "refuse" or (tgt in explicit and pp.action in ("unsupported", "skip")):
             rc = EXIT_FAIL
     return rc

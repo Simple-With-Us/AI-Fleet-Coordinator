@@ -97,8 +97,18 @@ class DefaultChannelTests(unittest.TestCase):
         # coordination channel as a literal.  This test is the drift guard:  when the realm renames
         # the channel again, that literal has to move with it, or the listener stops recognising
         # presence messages in the channel it actually lives in.
-        presence_channels = {c for c, _ in L.DEFAULT_PRESENCE}
-        self.assertIn(Z.DEFAULT_CHANNEL, presence_channels)
+        presence_channels = {c.casefold() for c, _ in L.DEFAULT_PRESENCE}
+        self.assertIn(Z.DEFAULT_CHANNEL.casefold(), presence_channels)
+
+    def test_presence_defaults_show_canonical_channels_and_match_either_case(self) -> None:
+        self.assertEqual(L.DEFAULT_PRESENCE, [
+            ["Work-In-Progress", "roll call"], ["Work-In-Progress", "fleet"],
+            ["Builds", "gates"], ["Alerts", "*"],
+        ])
+        presence = L.presence_topics({})
+        for channel, topic in L.DEFAULT_PRESENCE:
+            for spelling in (channel, channel.lower(), channel.upper()):
+                self.assertTrue(L.is_presence(spelling, "any topic" if topic == "*" else topic, presence))
 
     def test_the_shipped_listener_configs_carry_the_same_presence_topics(self) -> None:
         # The server config and its test fixture are what the listener actually reads, so a
@@ -112,8 +122,8 @@ class DefaultChannelTests(unittest.TestCase):
             text = path.read_text()
             self.assertIn('"roll call"', text, "%s lost the roll call topic" % path)
             self.assertIn(
-                Z.DEFAULT_CHANNEL,
-                text,
+                Z.DEFAULT_CHANNEL.casefold(),
+                text.casefold(),
                 "%s does not name the default channel for presence" % path,
             )
 

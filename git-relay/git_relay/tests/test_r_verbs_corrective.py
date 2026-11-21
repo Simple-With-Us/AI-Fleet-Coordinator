@@ -19,7 +19,7 @@ from git_relay.workflow_verbs import ACTIONS, SPECS, Refused
 try:
     from test_workflow_verbs import REPO, SHA, Client, Multi, Policy, svc
 except ImportError:
-    from .test_workflow_verbs import REPO, SHA, Client, Multi, svc
+    from .test_workflow_verbs import REPO, SHA, Client, Multi, Policy, svc
 
 SECRET_TITLE = "ghp_" + "x" * 24
 BRANCH_OK = {"name": "wise/x", "commit": {"sha": SHA}}
@@ -112,38 +112,39 @@ class PrCreateTests(unittest.TestCase):
         "expected_head_sha": SHA,
     }
 
-    def test_happy_path_receipt_verified(self):
-        s, c = svc(BRANCH_OK, pr())
-        out = s.run("wf_pr_create", dict(self.ARGS))
-        self.assertEqual(out["pull"]["number"], 7)
-        self.assertEqual(out["pull"]["head_sha"], SHA)
-        self.assertEqual(c.calls[0][0], "GET")  # branch preflight first
-        method, path, payload, _ = c.calls[1]
-        self.assertEqual(method, "POST")
-        self.assertEqual(payload, {"title": "t", "body": "b", "base": "main", "head": "wise/x"})
+    def test_legacy_direct_handles_refuse_before_any_network(self):
+        for args in (self.ARGS, {**self.ARGS, "title": SECRET_TITLE}, {}):
+            s, c = svc()
+            with self.assertRaisesRegex(Refused, "owner-only open_pr"):
+                # Exercise even a stale already-bound handle directly.
+                from git_relay.workflow_verbs import WorkflowVerbs
 
-    def test_tampered_receipt_is_502(self):
-        s, _ = svc(BRANCH_OK, pr(title="DIFFERENT"))
-        with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_create", dict(self.ARGS))
+                handle = WorkflowVerbs(
+                    c, Policy(), "swu-wise", "opaque", "swu-wise", "wf_pr_create", REPO
+                )
+                handle.wf_pr_create(REPO, args)
+            self.assertEqual(c.calls, [])
 
-    def test_secret_shaped_title_refused_before_any_call(self):
-        s, c = svc()
-        with self.assertRaises(Refused):
-            s.run("wf_pr_create", {**self.ARGS, "title": SECRET_TITLE})
-        self.assertEqual(c.calls, [])
-
-    def test_branch_preflight_unavailable_blocks_write(self):
-        s, c = failing_svc(500)
-        with self.assertRaises(PreReadUnavailable):
-            s.run("wf_pr_create", dict(self.ARGS))
-        self.assertEqual(len(c.calls), 1)  # only the GET, no POST
-
-    def test_branch_not_at_expected_sha_refused_with_zero_writes(self):
-        s, c = svc({"name": "wise/x", "commit": {"sha": "b" * 40}})
-        with self.assertRaises(Refused):
-            s.run("wf_pr_create", dict(self.ARGS))
-        self.assertEqual(len(c.calls), 1)  # only the GET, no POST
+    def test_factory_refuses_even_preauthorized_before_mint(self):
+        try:
+            from test_workflow_verbs import Minter, WorkflowVerbs
+        except ImportError:
+            from .test_workflow_verbs import Minter, WorkflowVerbs
+        for preauthorized in (False, True):
+            client, minter = Client(), Minter()
+            with self.assertRaisesRegex(Refused, "owner-only open_pr"):
+                WorkflowVerbs.for_action(
+                    client,
+                    Policy(),
+                    minter,
+                    "swu-wise",
+                    "wf_pr_create",
+                    REPO,
+                    preauthorized=preauthorized,
+                    args=self.ARGS,
+                )
+            self.assertEqual(minter.calls, [])
+            self.assertEqual(client.calls, [])
 
 
 class PrEditTests(unittest.TestCase):
@@ -1080,10 +1081,10 @@ class PrRaceFixtureTests(unittest.TestCase):
     """Reviewer-reproduced races: the receipt must catch a foreign move that
     lands BETWEEN the pre-read pin and the write, or the pin is decorative."""
 
-    def test_create_receipt_foreign_head_move_is_502(self):
+    def test_retired_create_cannot_reach_a_racing_write(self):
         # Branch pre-read at expected sha, but the created PR's head moved.
         s, c = svc(BRANCH_OK, pr(head_sha="c" * 40))
-        with self.assertRaises(RelayGitHubError):
+        with self.assertRaisesRegex(Refused, "owner-only open_pr"):
             s.run(
                 "wf_pr_create",
                 {

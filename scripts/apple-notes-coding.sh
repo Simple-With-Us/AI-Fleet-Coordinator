@@ -5,7 +5,7 @@
 #
 #   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
 #           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
-#   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
+#   Row 2:  "Sun, Aug 9, 3:52 PM"        America/Chicago create/update stamp (auto-injected)
 #
 # Usage:
 #   apple-notes-coding.sh "Title" "Plain body text or Markdown"
@@ -2337,7 +2337,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
@@ -2346,20 +2346,36 @@ if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
 fi
 
-# One secret on stdout:  the environment value, else `fleet-secrets get NAME`, else nothing.
+# The installed Mac helper uses the shared scoped reader with this consumer's
+# own service token and grant. It receives one value on stdout and never reads
+# through the retired fleet-secrets CLI or a flat credential file.
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+if [[ -z "$INFISICAL_SCOPED_READER" && -n "${HOME:-}" ]]; then
+  INFISICAL_SCOPED_READER="${HOME}/apps/infisical-scoped/infisical-scoped.py"
+fi
+
+_scoped_secret() {
+  local name="$1" folder="$2" account="$3"
+  [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
+    echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
+    return 4
+  }
+  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+    --folder "$folder" --project fleet-ops --account "$account"
+}
+
+# Preserve the host's bound value contract; when empty, use only the scoped reader.
 _pushover_secret() {
-  local name="$1" value="${!1:-}" bin
+  local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    bin="$(command -v fleet-secrets 2>/dev/null || true)"
-    [[ -z "$bin" && -x "${HOME}/.local/bin/fleet-secrets" ]] && bin="${HOME}/.local/bin/fleet-secrets"
-    [[ -n "$bin" ]] && value="$("$bin" get "$name" 2>/dev/null || true)"
+    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" || true)"
   fi
   printf '%s' "$value"
 }
 
 _send_pushover_notification() {
   local user_key token
-  # Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+  # Environment value first, then this consumer's scoped reader (OPS-818; AFC-359).
   user_key=$(_pushover_secret PUSHOVER_USER_KEY)
   token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
   [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)
@@ -2391,14 +2407,16 @@ _LOG_CHANGES_FILE=$(mktemp /tmp/apple-notes-changes.XXXXXX 2>/dev/null) || _LOG_
 BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" NOTES_CHANGES_FILE="$_LOG_CHANGES_FILE" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+_CENTRAL = ZoneInfo('America/Chicago')
 body = sys.stdin.read()
 title = os.environ.get('NOTE_TITLE', '').strip()
 needs_owner = os.environ.get('NEEDS_OWNER') == '1'
 summary_text = os.environ.get('SUMMARY_TEXT', '').strip()
 pr_numbers = os.environ.get('PR_NUMBERS', '').strip()
 note_session = os.environ.get('NOTE_SESSION', '').strip()
-now = datetime.now()
-# Sun, Aug 9, 3:52pm — no leading zero on day/hour (portable; avoid %-I)
+now = datetime.now(_CENTRAL)
+# Sun, Aug 9, 3:52 PM — no leading zero on day/hour (portable; avoid %-I)
 _h = now.hour % 12 or 12
 stamp = (
     now.strftime('%a, %b ')
@@ -2407,7 +2425,8 @@ stamp = (
     + str(_h)
     + ':'
     + now.strftime('%M')
-    + now.strftime('%p').lower()
+    + ' '
+    + now.strftime('%p')
 )
 
 def strip_outer_div(s):
@@ -2429,7 +2448,7 @@ m = re.match(
     r'^(?:<p>)?\s*'
     r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), '
     r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) '
-    r'\d{1,2}, \d{1,2}:\d{2}[ap]m'
+    r'\d{1,2}, \d{1,2}:\d{2}[ ]?[ap]m'
     r'(?:\s*[·|—|-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?'
     r'\s*(?:</p>)?\s*',
     inner,
@@ -2467,7 +2486,7 @@ _SESSION_ROW = (
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
     # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
     # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
-    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ ]?[ap]m)?)?'
     r'\s*(?:</span>\s*)?</p>'
 )
 _SPACER = r'(?:<div><br\s*/?></div>\s*)*'
@@ -2480,10 +2499,8 @@ stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 # Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
-# form, Mon, Oct 19 (or Mon, Oct 19, 9:03pm), in Central, with the year only when it is not this year.  Code, link
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
 # targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
-from zoneinfo import ZoneInfo
-_CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
     #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
     #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
@@ -2503,7 +2520,7 @@ def _fleet_day(d):
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
 def _fleet_clock(when):
-    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + ' ' + when.strftime('%p')
 
 _changes = {'dates': [], 'gaps': 0}
 

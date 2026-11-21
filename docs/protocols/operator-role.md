@@ -54,7 +54,7 @@ These are the owner's rulings.  Where the code does not do one yet, [the listen
 | --- | --- | --- |
 | The Operator as a service seat | `scripts/simple_tools/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
 | The Operator's identity, read from the environment | `scripts/simple_tools/service_identity.py`, `scripts/simple_tools/dm_policy.py`: `operator_user_id(env, pinned)` | built |
-| No Operator direct messages | `scripts/simple_tools/dm_policy.py` still lets the Operator open a direct message (`check_new_dm()`, and `ZulipClient.operator_status_dm` for its status message), and `scripts/simple_tools/daemon.py` still DMs the owner (`dm_owner`, `_run_broadcast_audit`) | not built:  these move to Side-Chats |
+| No Operator direct messages | `scripts/simple_tools/dm_policy.py` still lets the Operator open a direct message (`check_new_dm()`, and `ZulipClient.operator_status_dm` for its status message), and `scripts/simple_tools/daemon.py` still DMs the owner (`_run_broadcast_audit`;  `dm_owner` stays as code, though no wake raises an escalation note since the listener stopped starting models) | not built:  these move to Side-Chats |
 | Session letters | `scripts/simple_tools/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
 | The registry on the Fleet Reference sheet | `scripts/simple_tools/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
 | The Zulip to Linear mirror | `scripts/simple_tools/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
@@ -159,9 +159,10 @@ and defined outputs.
 
 2.  **It posts no wake reply and wears no seat's wake tag.**  The owner ruled that "The operator
     should never be answering on behalf of a platform", so the Operator posts no wake reply, no
-    owner ack, no route page and no quota notice, for any seat.  `Daemon.post` is a refusal that
-    records `operator_never_answers` on the wake's ledger row.  Its own notes are tagged
-    `[OPERATOR·note]`.
+    owner ack, no route page and no quota notice, for any seat.  The listener starts no model
+    (owner ruling, Nov 10, 2026), so no code is left that takes a model's answer (`Daemon.post` and `act`
+    are gone;  ledger rows from before may still carry `operator_never_answers`).  Its own notes
+    are tagged `[OPERATOR·note]`.
 
 3.  **It never DMs and never asks.**  The Operator asks nobody a clarifying question, and anything
     that would be a direct message goes in Side-Chats.  The candidate list and the registration
@@ -230,6 +231,11 @@ A duplicate needs destination repair before draining resumes; skipping it or add
 a failure/quarantine state would require a separate ordering and schema design.
 Repeated full-grid scans are an explicit safety/performance tradeoff; a reusable
 index needs a separately qualified runner lease and destination-mutation contract.
+The shared drain paces every Sheets GET at its fetch boundary, including the multiple
+requests inside metadata and header checks, and shares that gate across the thread
+registry and Sessions/Events phases of one timer run.  The existing signal and run
+deadline stop new reads before reconciliation can reach any writes; pending rows
+remain for a fresh complete scan on the next run.
 
 **The citations for the pieces this discussion rests on.**
 
@@ -290,6 +296,16 @@ whole list through the registry side's `issues` op only when the set of ids chan
 this path can block or break a prompt: a failure is silent, a registry that refuses the call (one
 too old to know the op) is asked again after ten minutes, and a transcript outside the platform's
 own folder is never read.
+
+### 3.3b: Letters:  What A Host May Do (AFC-694, AFC-701)
+
+Decided Wed, Nov 18, 2026 (CLAUDE, under the one-Operator rule at the top of this page).  The question was where the letter client's `repair` and `gone` carriers run, since nothing tracked scheduled them.  The answer keeps one sweeper and gives no host a timer.
+
+- **One sweeper.**  The stale sweep that frees idle letters is the Eavesdropper's own (`listener_registry.Sweeper`), on its own timer, for every platform and host, with one stale window.  No host sweeps, closes a row it did not see end, or runs a timer, LaunchAgent, cron row or unit for letters.  A pass ends at most a share of a (platform, host)'s open rows, the quietest first, and the rest wait for a later pass (AFC-855):  a backlog above that share used to end none of them, so it could never drain.
+- **A host reports.**  A chat's start sends the gone report (`report-gone`) for its platform:  the chats the adapter knows are archived (`gone_sessions`, and `gone_elsewhere` for the chats its app runs at another location), at most once an hour per platform and location.  The assigner closes only the rows named and refuses a report that would close more than its share of a location's live rows.  `platform-letter gone --apply` sends the same report by hand.
+- **A host requests.**  A chat's start, prompt and turn ask again for a missing letter, at most every ten minutes.  `platform-letter request` asks at once, and a chat with no note yet asks too:  its platform's own session id names it, and its start runs now.  A chat's start also sets off the unlettered repair:  one detached `platform-letter repair --platform P --location L` run, at most once an hour per platform and location, which replays the start of the chats this host's row names.  That hook-triggered run is the repair's only carrier.  It requests letters and never sweeps, and the chat's own start never waits for it.
+- **Which chats a row can repair is data in its row.**  A row either lists the chats the pass may replay from the platform's own store (`unlettered_sessions`:  Antigravity, the Claude desktop app, Codex, MiniMax and ZCode) or says why it cannot (`unlettered_feed`:  Clutch, Cursor, fx, Grok, Muse and OpenCode are hook-only, or set no title, or have no hook at all).  What a row lists is its own business, and the kinds are not the same:  Codex names the chats still titled `??: `, while MiniMax names the sub-threads its hook never lettered, which it refused at their start because the session store did not hold their row yet (AFC-857).  A chat still on the `??: ` mark holds no letter, which is the state the owner defined for it, and on a host those chats are mostly the app's own runs, so a row that lettered them would take the seat's pairs from the chats the fleet addresses.
+- **Retired:  the Mac's own letter sweep** (`com.jay.operator-letter-sweep`, `~/.local/bin/operator-letter-sweep.sh`).  It ran the registry's stale sweep from the Mac every 15 minutes, a second sweeper beside the Eavesdropper's, so it is retired (AFC-701).  The host steps are in the job's row of [MAC-LOCAL-PROCESSES.md](../MAC-LOCAL-PROCESSES.md).
 
 ### 3.4: The Linear mirror, one message at a time
 

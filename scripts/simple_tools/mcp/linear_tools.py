@@ -80,8 +80,7 @@ PASS_PREFIXES = ("LINEAR_",)
 
 # board verifies the bearer at SIMPLE_BOARD_BEARER_FILE with the Fleet-OPS /tools key, read
 # through its own scoped token (tools_verify_key in scripts/linear-board/board).  These names
-# match no PASS_PREFIXES entry, so a bearer-file child gets them explicitly.  Keep in sync with
-# BOARD_VERIFY_ENV in scripts/simple_tools/daemon.py.
+# match no PASS_PREFIXES entry, so a bearer-file child gets them explicitly.
 BOARD_VERIFY_ENV = (
     "SIMPLE_BOARD_TOOLS_TOKEN_FILE",
     "SIMPLE_BOARD_TOOLS_TOKEN",
@@ -288,6 +287,11 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str, uid: str | None
             argv.append(
                 "--comment=" + str(comment)
             )  # one token, so text such as "--help" is never re-parsed as a flag
+        if args.get("steal") is True:
+            argv.append("--steal")
+            # The board refuses --steal without --reason, so the reason always rides
+            # along as one token, like --comment.
+            argv.append("--reason=" + str(args.get("reason") or "").strip())
         _flag(argv, "--session", session)
         return Plan(argv, b"", extra)
     if name == "linear_comment":

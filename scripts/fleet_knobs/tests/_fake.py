@@ -75,6 +75,8 @@ class ScopedReadAPI:
         self.allow_bulk = allow_bulk
         self.token = fixture_service_token()
         self.metadata_override = {}
+        self.record_override = {}
+        self.record_omissions = ()
         self.requests = []
         self.status = 200
         fake = self
@@ -96,7 +98,7 @@ class ScopedReadAPI:
                         "workspace": fake.project,
                         "scopes": [{"environment": "prod", "secretPath": fake.path}],
                         "permissions": ["read"],
-                        "expiresAt": None,
+                        "expiresAt": "2099-01-01T00:00:00Z",
                     }
                     payload.update(fake.metadata_override)
                 elif parsed.path.startswith("/api/v3/secrets/raw/") and query == {
@@ -115,12 +117,16 @@ class ScopedReadAPI:
                             "secret": {
                                 "secretKey": name,
                                 "secretValue": fake.values[name],
+                                "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
                                 "secretPath": fake.path,
                                 "type": "shared",
                             }
                         }
+                        payload["secret"].update(fake.record_override)
+                        for field in fake.record_omissions:
+                            payload["secret"].pop(field, None)
                 elif (
                     fake.allow_bulk
                     and parsed.path == "/api/v3/secrets/raw"
@@ -141,6 +147,7 @@ class ScopedReadAPI:
                             {
                                 "secretKey": name,
                                 "secretValue": value,
+                                "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
                                 "secretPath": fake.path,

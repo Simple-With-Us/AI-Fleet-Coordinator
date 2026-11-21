@@ -10,7 +10,7 @@
 # loaded from Infisical by the entrypoint when Coolify binds the scoped INFISICAL_TOKEN
 # service token (server/infisical_env.py).  ZULIP_SITE is a Coolify
 # variable either way.  State, the config and the logs live on the /data volume.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -34,7 +34,10 @@ RUN groupadd --system --gid 10001 simpletools \
 WORKDIR /app
 # The entry script and the package must be siblings:  the script puts its own directory on sys.path.
 COPY scripts/simple-chat /app/scripts/simple-chat
+COPY scripts/fleet_infisical_bootstrap.py /app/scripts/
 COPY scripts/simple_tools /app/scripts/simple_tools
+COPY scripts/fleet-ops-eavesdropper-settings.json /app/scripts/
+COPY scripts/fleet_infisical.py /app/scripts/
 # The Operator's Linear project webhook (AFC-565) runs these two with the listener.
 COPY scripts/linear_project_linkifiers.py scripts/zulip_linkifiers.py /app/scripts/
 # The seat partition, read by the daemon at start (it refuses a seat of the Mac instance).

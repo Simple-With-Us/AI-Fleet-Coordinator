@@ -799,6 +799,10 @@ final class OpsWireContractTests: XCTestCase {
                 set: ["seat.CLAUDE.enabled": .bool(false)],
                 expectPlanSHA256: String(repeating: "b", count: 64)
             ))
+        case "testWake": return OperatorWakeTarget(word: target).map { .testWake($0) }
+        case "eavesdropperPause":
+            guard let kind = entry["verb"].flatMap(OperatorPauseRequest.Kind.init(rawValue:)) else { return nil }
+            return .eavesdropperPause(OperatorPauseRequest(kind: kind, seat: target == "server" ? nil : target))
         default: return nil
         }
     }
@@ -1143,6 +1147,22 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let mode = (attributes[.posixPermissions] as? NSNumber)?.int16Value ?? 0
         XCTAssertEqual(mode & 0o777, 0o600)
+    }
+
+    func test_audit_reading_tracks_total_parsed_more_count_and_filters_rows() throws {
+        let reading = OpsAuditLog.parse(try fixture("ops_audit_rows", "txt"), limit: 2)
+        XCTAssertEqual(reading.entries.count, 2)
+        XCTAssertEqual(reading.totalParsed, 3)
+        XCTAssertEqual(reading.moreCount, 1)
+
+        let full = OpsAuditLog.parse(try fixture("ops_audit_rows", "txt"))
+        XCTAssertEqual(full.totalParsed, 3)
+        XCTAssertEqual(full.moreCount, 0)
+        XCTAssertEqual(full.filteredEntries(host: .mac).count, 1)
+        XCTAssertEqual(full.filteredEntries(host: .server).count, 2)
+        XCTAssertEqual(full.filteredEntries(result: .succeeded).count, 1)
+        XCTAssertEqual(full.filteredEntries(result: .problems).count, 2)
+        XCTAssertEqual(full.filteredEntries(search: "timer").map { $0.target ?? "" }, ["fleet-server-status.timer"])
     }
 }
 

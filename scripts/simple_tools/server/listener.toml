@@ -63,7 +63,7 @@ peer_broadcast_reminder_minutes = 10   # the peer-broadcast reminder (owner, Oct
                                        # outage of about twenty minutes);  a bot that uses it without approval DMs
                                        # Jay why.  0 is off.  The reminder is the Operator's DM, never a
                                        # post in a channel, and it never carries the message content.
-presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+presence_topics = [["Work-In-Progress", "roll call"], ["Work-In-Progress", "fleet"], ["Builds", "gates"], ["Alerts", "*"]]
 
 # Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its
 # wake is "http" (see its block).  Each holds a queue,
@@ -172,33 +172,48 @@ wake = "inbox"
 # needed, is a signal from this listener to a process on the Mac (owner:  "the server's listener and router can
 # send a signal to a Mac based wake process if necessary for wake delivery").  Each reads ZULIP_<CODE>_EMAIL and
 # ZULIP_<CODE>_API_KEY.
+# The seats the one wake router serves:  their wake goes to the router's front,  and the one
+# bearer the router checks is WAKE_ROUTER_KEY (one name, one home),  not a seat's own key. 
 [seat.CLAUDE]
 instance = "server"
 creds = "env"                     # ZULIP_CLAUDE_EMAIL, ZULIP_CLAUDE_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
+# CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router serves it
+# like every other seat with a module:  the router owns the capture, the target selection, the
+# durable queue and the receipt, and the seat's own path answers the wake.  The seat moved to
+# the router only after the router replacement had been explicitly reviewed, was live, and had
+# answered a real wake end to end, and the legacy binding stays active until every one of those
+# gates has passed.  The legacy binding had delivered nothing, so nothing that worked was
+# removed:  the server's wake ledger holds no wake for this seat at all (the command that proves
+# it and its recorded result are in docs/protocols/codex-shared-router.md).  The cutover is in
+# docs/protocols/codex-shared-router.md.
 [seat.CODEX]
 instance = "server"
 creds = "env"                     # ZULIP_CODEX_EMAIL, ZULIP_CODEX_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.AG]
 instance = "server"
 creds = "env"                     # ZULIP_AG_EMAIL, ZULIP_AG_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "AG_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.CURSOR]
 instance = "server"
 creds = "env"                     # ZULIP_CURSOR_EMAIL, ZULIP_CURSOR_API_KEY
 wake = "inbox"
 
-# GROK is off:  its Infisical pair is stored under the stem ZULIP_GROK_BUILD_* (the seat's older code), which the
-# GROK section's default names (ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY) do not load.
+# GROK expects canonical names; verify them before enabling the deployed seat.
+# The retired GROK-BUILD credential stem is never loaded.
 [seat.GROK]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "GROK_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.CLUTCH]
 instance = "server"
@@ -213,28 +228,36 @@ wake = "inbox"
 [seat.MM]
 instance = "server"
 creds = "env"                     # ZULIP_MM_EMAIL, ZULIP_MM_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "MM_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.MC]
 instance = "server"
 creds = "env"                     # ZULIP_MC_EMAIL, ZULIP_MC_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "MC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.OPENCODE]
 instance = "server"
 creds = "env"                     # ZULIP_OPENCODE_EMAIL, ZULIP_OPENCODE_API_KEY
 wake = "inbox"
 
-# ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md):  POST simple-tools-wake/1 with
-# Authorization: Bearer <ZC_ROUTINE_KEY> to ZC_ROUTINE_URL, the bridge's tailnet URL on this host.  The key is the
-# one in Fleet-OPS /zulip, read through the listener's secondary project read (infisical_env.py
-# LISTENER_READ_CODES);  the URL is in AFC prod /zulip.  Until both are set the wake is logged routine-unready and
-# dropped, and capture is unchanged.
+# ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like
+# every other seat with a module:  the router owns the capture, the target selection, the durable
+# queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
+# only after the router replacement had been explicitly reviewed, was live, and had
+# answered a real wake end to end, and the legacy bridge stays active until every one of those
+# gates has passed.  The bridge had delivered nothing, so nothing that worked was removed:  its
+# own ledger holds 52 wakes and not one of them was delivered (the command that produced that
+# count and its recorded result are in docs/protocols/zcode-wakes.md).  The bridge's own URL is
+# governed in AFC prod /zulip under ZC_BRIDGE_ROUTINE_URL, and its own key is already in the
+# loader's secondary read, so a rollback has a value to point at.  The cutover is in
+# docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
 wake = "http"
-routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.KIMI]
 instance = "server"

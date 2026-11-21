@@ -10,9 +10,10 @@
     "pushover_user_key": "PUSHOVER_USER_KEY"
   },
   "zulip": {
-    "seat": "CLAUDE",
+    "email_key": "CF_USAGE_WATCHDOG_ZULIP_EMAIL",
+    "api_key_key": "CF_USAGE_WATCHDOG_ZULIP_API_KEY",
     "channel": "Work-In-Progress",
-    "topic": "AFC-617 cf usage watchdog"
+    "topic": "Cloudflare Usage"
   },
   "limits": {
     "lag_minutes": 2,

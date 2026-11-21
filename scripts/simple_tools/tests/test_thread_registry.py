@@ -10,12 +10,16 @@ and a failed write that stops the sync and reports itself partial.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -311,6 +315,104 @@ class LinearIssuesTest(unittest.TestCase):
         self.store.observe(message(1, topic="release notes", content=text))
         row = self.store.rows(now=T0 + 60)[0]
         self.assertEqual(row[11], "")
+
+
+class ExportRowsCliTest(unittest.TestCase):
+    """The read the Operator Sheets drain makes on every run (AFC-823):  `docker exec ...
+    python3 -m simple_tools.thread_registry export-rows` with no --out prints one JSON object
+    on stdout, which the drain parses and checks against thread_registry_export.mjs.  These
+    pin that contract and that the read never changes the store."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        # The store path the CLI resolves:  <root>/operator/thread-registry.json, with no
+        # override in the environment (the listener image sets none).
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(TR.ENV_STORE_PATH, None)
+        self.path = TR.thread_store_path(self.root, {})
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = TR._main([*argv, "--state-root", self.root])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_export_rows_prints_the_payload_the_drain_reads_and_leaves_the_store(self):
+        store = TR.ThreadRegistryStore(self.path)
+        store.observe(message(1, content="AFC-823 work"))
+        store.observe(message(2, topic="release notes", ts=T0 + 10))
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        payload = self.run_cli("export-rows")
+        self.assertEqual(sorted(payload), ["headers", "rows", "spreadsheetId", "tab"])
+        self.assertEqual(payload["spreadsheetId"], TR.SPREADSHEET_ID)
+        self.assertEqual(payload["tab"], TR.SHEET_TAB)
+        self.assertEqual(payload["headers"], TR.HEADERS)
+        self.assertEqual(len(payload["rows"]), 2)
+        for row in payload["rows"]:
+            self.assertEqual(len(row), len(TR.HEADERS))
+            self.assertTrue(all(isinstance(cell, str) for cell in row))
+            self.assertTrue(row[TR.COL_KEY])
+        self.assertEqual([r[0] for r in payload["rows"]], sorted(r[0] for r in payload["rows"]))
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before)  # a read only:  the store is unchanged
+
+    def test_export_rows_on_a_missing_store_refuses_instead_of_empty(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = TR._main(["export-rows", "--state-root", self.root])
+        self.assertNotEqual(code, 0)
+        self.assertIn("refusing an empty export", err.getvalue())
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_stats_counts_threads_and_messages(self):
+        store = TR.ThreadRegistryStore(self.path)
+        store.observe(message(1))
+        store.observe(message(2))
+        store.observe(message(3, topic="release notes"))
+        self.assertEqual(
+            self.run_cli("stats"), {"threads": 2, "messages": 3, "store": self.path}
+        )
+
+
+class JsConstantsParityTest(unittest.TestCase):
+    """The Operator Sheets drain refuses an export-rows payload whose workbook, tab or
+    headers differ from thread_registry_export.mjs's constants (AFC-823), so a change to
+    one copy alone would leave the server writing no thread rows, every run.  These keep
+    the Python and JS copies equal in CI."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(TR.__file__), "thread_registry_export.mjs")
+        with open(path, encoding="utf-8") as fh:
+            cls.source = fh.read()
+
+    def constant(self, pattern):
+        match = re.search(pattern, self.source, re.DOTALL)
+        self.assertIsNotNone(match, pattern)
+        return match.group(1)
+
+    def test_workbook_and_tab_are_equal(self):
+        self.assertEqual(
+            self.constant(r'export const SPREADSHEET_ID = "([^"]+)";'), TR.SPREADSHEET_ID
+        )
+        self.assertEqual(self.constant(r'export const SHEET_TAB = "([^"]+)";'), TR.SHEET_TAB)
+
+    def test_headers_are_equal_in_order(self):
+        block = self.constant(r"export const THREAD_HEADERS = \[(.*?)\];")
+        self.assertEqual(re.findall(r'"([^"]*)"', block), TR.HEADERS)
+
+    def test_column_indexes_are_equal(self):
+        for name in ("COL_KEY", "COL_PURPOSE", "COL_UPDATED"):
+            self.assertEqual(
+                int(self.constant(r"const %s = (\d+);" % name)), getattr(TR, name), name
+            )
 
 
 if __name__ == "__main__":

@@ -13,9 +13,13 @@ on:
   push:
     branches: [main]
     paths:
+      - "fleet-apps.json"
       - "scripts/build-fleet-daily-digest.py"
       - "scripts/build-agent-calendar.py"
       - "scripts/ics_utils.py"
+      - "scripts/infisical-fetch.mjs"
+      - "scripts/public_activity_repos.py"
+      - "agent-logos/**"
       - ".github/workflows/fleet-activity-site.yml"
       - ".github/workflows/agent-calendar.yml"
 
@@ -42,17 +46,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FLEET_OWNER: Simple-With-Us
-          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           CALENDAR_LOOKBACK_DAYS: "21"
           CALENDAR_PER_REPO: "50"
           CALENDAR_OUT: calendar/agent-activity.ics
         run: python3 scripts/build-agent-calendar.py
 
+      - name: Load Linear API key (scoped Infisical token)
+        env:
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_AFC_PROJECT_ID || vars.WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID }}
+          INFISICAL_ENVIRONMENT: prod
+          INFISICAL_SECRET_PATH: /fleet-activity
+          INFISICAL_NAMES: LINEAR_API_KEY
+          INFISICAL_TOKEN: ${{ secrets.INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN }}
+        run: |
+          if [ -n "${INFISICAL_TOKEN:-}" ]; then
+            node scripts/infisical-fetch.mjs
+          else
+            echo "::warning::INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN is not set; Linear issues will be omitted until provisioned."
+          fi
+
       - name: Build daily digest (MD + HTML + ICS)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ env.LINEAR_API_KEY }}
           FLEET_OWNER: Simple-With-Us
-          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           DIGEST_LOOKBACK_DAYS: "21"
           DIGEST_TZ: America/Chicago
           SITE_OUT: site

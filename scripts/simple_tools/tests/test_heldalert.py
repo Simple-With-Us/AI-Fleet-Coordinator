@@ -605,7 +605,7 @@ class HeldAlertMultiSeatTests(HeldMixin, CloudSeatHarness):
         self.assertEqual(cfg["daemon"]["held_alert_minutes"], 60)
         self.assertEqual(cfg["daemon"]["held_alert_seat"], "MA")
         self.assertEqual(HELDALERT.CHANNEL, "alerts", "the channel the owner chose, created by nothing here")
-        self.assertIn(["alerts", "*"], cfg["daemon"]["presence_topics"],
+        self.assertIn(["Alerts", "*"], cfg["daemon"]["presence_topics"],
                       "the post lands in a presence topic, so it never wakes a seat")
 
 

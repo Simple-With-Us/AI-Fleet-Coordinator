@@ -26,10 +26,14 @@ names like `[GROK]` / `[CODEX]` / `[CLAUDE]`.
 | `app-hh.png` | Hog Hunter — the Mac app icon from `HogHunter/Assets.xcassets/AppIcon.appiconset` |
 | `app-clutch.png` | Clutch — placeholder C-monogram icon from `Clutch/assets/clutch-icon-1024.png` (formerly `app-harness.png`) |
 | `app-cc.png` | CodeCaps — teal "C-with-cap" mark from `codecaps/assets/icon-1024.png` |
+| `app-afc.png` | Muster / AI Fleet Coordinator — transparent-background M mark cropped from the owner light artwork (`muster/icon-source/light.webp`), 256 px; also the public feed favicon. |
+| `app-afc-dark.webp` | Muster — transparent-background M mark cropped from the owner dark artwork (`muster/icon-source/dark.webp`), 256 px; the public feed's dark appearance favicon. |
 | `app-mm.png` | Retired 2026-09-30: MiniMax Remote app icon (app superseded by the Harness iOS app); historical only |
 
 Most vendor marks came from `Socratic.Trade/public/model-logos/`; Grok, Grok Bot,
 and Cursor are owner-supplied from `~/Code/Icons - Logos/`.
+
+The current platform legend and activity attribution share the generator's table.  Platforms without an authentic local mark use readable text badges.  Instinct's Echo and Wise seats share one platform badge; BotFleet and Grok bot role tags use their existing app marks.
 
 **Mixed extensions are expected.** Grok Bot and Cursor ship as PNG, the rest are
 SVG, so never assume `<slug>.svg` — resolve the extension (see `logo_file()` in

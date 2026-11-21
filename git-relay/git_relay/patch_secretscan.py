@@ -23,8 +23,8 @@ kind to both in one change.
 somewhere durable (the signed facts published to the private fleet-loops-data repo, a ledger):  it
 replaces each secret-shaped string field with `[withheld: secret-shaped]` and says where.
 
-Standard library only (`re` and `base64`;  `json` is imported inside `_key_path`, the one place that needs
-it) and no imports from this package:  it is safe on the hook fast path, and
+Standard library only; structured-output and command imports stay inside their helpers.
+There are no imports from this package, so it is safe on the hook fast path, and
 `scripts/check-routine-prompts.py` loads it by file path.
 """
 
@@ -35,7 +35,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-__all__ = ["WITHHELD", "basic_forms", "redact_fields", "scan"]
+__all__ = ["WITHHELD", "basic_forms", "main", "redact_fields", "scan"]
 
 WITHHELD = "[withheld: secret-shaped]"
 
@@ -113,22 +113,75 @@ _SOURCE_RHS = re.compile(
 )
 
 
+# A complete, unquoted dotted identifier chain (a property access or a call
+# target) is a source expression, not a stored literal.  Bare runs, quoted
+# values, env-prefixed forms and lowercase-only chains remain candidates.
+_DOTTED_RHS = re.compile(r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)")
+
+
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
     start = match.start("value")
     # An optional quote consumed by the detector means this is a literal, always.
     if start and text[start - 1] in "\"'":
         return False
     line = text[text.rfind("\n", 0, start) + 1 : start]
-    # A source line containing quotes or template delimiters is conservatively scanned.
-    if any(c in line for c in "\"'`"):
-        return False
     # Existing `if (...) cfg.key =` lines use the assignment's exact suffix.
     assignment = re.search(
         r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line
     )
-    if assignment is None:
+    labeled_arg = False
+    if assignment is not None:
+        # A source line containing quotes or template delimiters is conservatively scanned.
+        if any(c in line for c in "\"'`"):
+            return False
+    else:
+        # A labeled call argument (Swift/Kotlin) puts the keyword label right
+        # after `(` or `,` while an earlier `(` is still unclosed, possibly
+        # across lines.  Comma prose has no call paren, and quoted or
+        # line-start colon pairs (JSON/YAML) never reach this path.  Paren
+        # depth is tracked across the whole window so a closure inside the
+        # call keeps the paren open and an earlier string argument is fine.
+        # The separator must be the labeled-argument colon:  a `=` keyword
+        # argument inside parens keeps the `=` path's stricter treatment.
+        # Clearing is limited to call syntax; prose and quoted pairs still refuse.
+        if ":" not in text[match.start() : start]:
+            return False
+        before = text[max(0, match.start() - 300) : match.start()]
+        tail = re.search(r"[(,]\s*$", before)
+        if tail is None:
+            return False
+        # The innermost open paren must be a call paren (right after an
+        # identifier char). Balanced grouping pairs are popped when they
+        # close, so they do not hide the call; parens inside string literals
+        # are skipped, so prose or a quoted paren cannot open a call.
+        stack = []
+        quote = ""
+        for i, ch in enumerate(before):
+            if quote:
+                if ch == quote and before[i - 1] != "\\":
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
+                stack.append(i > 0 and (before[i - 1].isalnum() or before[i - 1] in "_$"))
+            elif ch == ")" and stack:
+                stack.pop()
+        labeled_arg = bool(stack) and stack[-1] and not quote
+        if not labeled_arg:
+            return False
+    if _SOURCE_RHS.match(text, start) is not None:
+        return True
+    chain = _DOTTED_RHS.match(text, start)
+    if chain is None:
         return False
-    return _SOURCE_RHS.match(text, start) is not None
+    value = chain.group(0)
+    if value.startswith(("process.env.", "import.meta.env.")):
+        return False
+    if re.search(r"[a-z][A-Z]", value) is not None:
+        return True
+    # Lowercase-only chains stay candidates after `=`, but in a labeled call
+    # argument a property chain is idiomatically lowercase (Swift/Kotlin).
+    return labeled_arg
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
@@ -160,6 +213,11 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
         ),
         (
+            "Simple-With-Us/CodeCaps",
+            "ios/CodeCapsCompanion/App/Models/CompanionQuotaModel.swift",
+            "1e44f5721cf37b067a3a1a2091fc316d2a9f95546effc22d756126eca687894b",
+        ),
+        (
             "Simple-With-Us/Usage-Monitor",
             "scripts/lib/run-session-token-collector.mjs",
             "e96f73542ff0a5923af4d53981f96693bb67f80444e54cf94a520737ac5418f4",
@@ -169,8 +227,41 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "scripts/linear-board/test_board.py",
             "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
         ),
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "git-relay/git_relay/server.py",
+            "82b53da38ce0a110a3f25b947fbcabcfcef031a8295795d72f46f48d55d79305",
+        ),
     }
 )
+# Exact reviewed match spans, in decoded Unicode character offsets, not bytes.
+# Full-file digest remains mandatory. Values are never stored in this registry.
+# CT offsets come from the source owner's whole-file location-only review.
+_REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, int, int, int]]] = {
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "docs/security/reviewed-generic-fixtures.md",
+        "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",
+    ): frozenset(
+        [
+            ("assigned credential", 5876, 5917, 5893, 5917),
+            ("assigned credential", 5935, 5972, 5952, 5972),
+            ("assigned secret", 6085, 6115, 6093, 6115),
+            ("assigned secret", 6278, 6312, 6286, 6312),
+        ]
+    ),
+    (
+        "Simple-With-Us/Congress.Trade",
+        "app/src/security/__tests__/originLock.test.ts",
+        "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
+    ): frozenset({("assigned secret", 547, 580, 557, 580)}),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "upgrade-reviewed-hub.py",
+        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
+}
+
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
 
 # Immutable public package-integrity reviews, not a general SRI exemption.
@@ -188,6 +279,16 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
             "app/package-lock.json",
             "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
         ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/deno.lock",
+            "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "5ff0b0a6007a6df394d86060251d58a1a7ebd9b3e6330a3c5fc24021793b6932",
+        ),
     }
 )
 
@@ -195,6 +296,7 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
     """Normal scan, except the separately reviewed exact full-file subtypes.
 
+    Match-pinned fixtures require the exact nonempty effective match census.
     Generic fixtures waive generic assignments only.  Public-integrity reviews
     waive only the Zulip-shape result for their two immutable files; all other
     patterns and every loaded value remain absolute, even if short.
@@ -210,14 +312,29 @@ def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str
                 return "a loaded credential"
         kind = scan(text, known)
         return None if kind == "a Zulip-shaped API key" else kind
-    if key not in _REVIEWED_GENERIC_FIXTURES:
+    reviewed_matches = _REVIEWED_GENERIC_MATCHES.get(key)
+    if key not in _REVIEWED_GENERIC_FIXTURES and reviewed_matches is None:
         return scan(text, known)
     for value in known:
         if value and value in text:
             return "a loaded credential"
+    observed = set()
     for label, pattern in _PATTERNS:
-        if label not in _GENERIC_ASSIGNMENTS and pattern.search(text):
-            return label
+        if label not in _GENERIC_ASSIGNMENTS:
+            if pattern.search(text):
+                return label
+            continue
+        if reviewed_matches is None:
+            continue  # Legacy exact-file entry, unchanged by the match-pinned route.
+        for match in pattern.finditer(text):
+            if _source_assignment(text, match):
+                continue
+            identity = (label, *match.span(), *match.span("value"))
+            if identity not in reviewed_matches:
+                return label  # A digest update alone cannot admit another match.
+            observed.add(identity)
+    if reviewed_matches is not None and (not reviewed_matches or observed != set(reviewed_matches)):
+        return "assigned secret"  # Missing/stale metadata is unverifiable, so refuse.
     if any(_zulip_shaped(match.group()) for match in _ZULIP_SHAPED.finditer(text)):
         return "a Zulip-shaped API key"
     return None
@@ -295,3 +412,86 @@ def redact_fields(obj: Any, known: Iterable[str] = ()) -> tuple[Any, list[str]]:
 
     clean = walk(obj, "$", 0)
     return clean, list(dict.fromkeys(paths))
+
+
+def main(argv=None, *, stdin=None, stdout=None) -> int:
+    """Scan standard input and report only a field name and safe reason.
+
+    The module is shipped with the shared fleet CLI release.  Call its absolute
+    path with Python isolated mode; credential text belongs on stdin, never argv.
+    """
+    import argparse
+    import json
+    import sys
+
+    class ScanParser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError("invalid_arguments")
+
+    parser = ScanParser(
+        prog="python3 -I secretscan.py", description="Scan stdin without echoing its text"
+    )
+    parser.add_argument(
+        "--field", default="text", help="allow-listed field identifier for the result"
+    )
+    output = sys.stdout if stdout is None else stdout
+    try:
+        args = parser.parse_args(argv)
+    except ValueError:
+        output.write(json.dumps({"ok": False, "code": "invalid_arguments"}) + "\n")
+        return 2
+    fields = {
+        "text",
+        "request",
+        "request_source",
+        "action_taken",
+        "result",
+        "body",
+        "topic",
+        "title",
+        "description",
+        "status_text",
+        "filename",
+        "url",
+        "channel",
+    }
+    if args.field not in fields:
+        output.write(json.dumps({"ok": False, "code": "invalid_field"}) + "\n")
+        return 2
+    try:
+        stream = getattr(sys.stdin, "buffer", sys.stdin) if stdin is None else stdin
+        raw = stream.read(256 * 1024 + 1)
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        if not isinstance(raw, bytes):
+            raise TypeError("invalid_input")
+    except (OSError, UnicodeError, ValueError, AttributeError, TypeError):
+        output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
+        return 2
+    reason = None
+    if not raw:
+        output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
+        return 2
+    if len(raw) > 256 * 1024:
+        reason = "input_too_large"
+    else:
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeError:
+            reason = "invalid_utf8"
+    if reason:
+        output.write(json.dumps({"ok": False, "field": args.field, "code": reason}) + "\n")
+        return 2
+    kind = scan(text)
+    result = {
+        "ok": kind is None,
+        "field": args.field,
+        "code": "refused_secret" if kind else "safe",
+        "kind": kind,
+    }
+    output.write(json.dumps(result) + "\n")
+    return 1 if kind else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

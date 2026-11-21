@@ -62,12 +62,15 @@ caller is `.github/workflows/kody-first-review.yml`.
 
 ## Manual requests
 
-When a person or agent requests a review by hand, prefer command-first: put
-`@kody start-review` as the literal first line of the comment, ahead of any seat
-header or other text. The established contract is still own-line anywhere
-(`lib.mjs`, `AUTO-MERGE.md`); command-first is a precaution, not a proven
-requirement. In the 2026-11-11 traces (AFC #1766 and #1781), header-first
-requests (a seat header line before the command) produced no Kody check or
-review receipts, while the one command-first request produced the completed
-review. Causation is unverified until webhook delivery evidence confirms it, so
-do not treat an own-line request that is not first-line as invalid.
+The current owner format puts the literal `@kody start-review` on line 1,
+the actual writing session's compact PR header on line 2, for example
+`[CODEX:   EE.1.S]`, and the full reviewed head SHA and context afterward.  The PR
+header has no folder symbol or repository list.  Legacy readers still
+recognize own-line requests elsewhere for compatibility; this does not authorize
+new outgoing requests in that older format.
+
+Inspect the existing request and all review surfaces before posting a new one.
+An unacknowledged request or a skip that predates it does not establish a failed
+attempt or permit a duplicate.  The historical November 11 traces showed absent
+receipts after header-first requests and a completed command-first review; those
+timestamps alone do not establish webhook causation or cancellation.

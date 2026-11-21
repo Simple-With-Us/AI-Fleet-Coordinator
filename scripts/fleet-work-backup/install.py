@@ -8,8 +8,8 @@
   python3 scripts/fleet-work-backup/install.py --interpreter /opt/homebrew/bin/python3   # not Apple's python3
 
 What it does, from a checkout of AI-Fleet-Coordinator:
-  1. copies fleet_work_backup.py to ~/apps/fleet-work-backup/ (a replaced copy is kept as
-     <file>.bak-fwb-<stamp>);
+  1. copies fleet_work_backup.py to ~/apps/fleet-work-backup/ and its canonical reader to
+     ~/apps/fleet_infisical.py (a replaced copy is kept as <file>.bak-fwb-<stamp>);
   2. checks the prerequisites and prints what is missing:  restic, the four credential NAMES in
      fleet-secrets or the environment (names only, never values), the interpreter, gitleaks (optional), and,
      with read-only B2 calls, that the key is limited to the bucket and the fleet-work-backup/ prefix,
@@ -53,6 +53,8 @@ LABEL = "com.jay.fleet-work-backup"
 DEFAULT_INTERPRETER = "/usr/bin/python3"
 SCRIPT_SRC = os.path.join(HERE, "fleet_work_backup.py")
 SCRIPT_DST = os.path.join(HOME, "apps", "fleet-work-backup", "fleet_work_backup.py")
+READER_SRC = os.path.join(os.path.dirname(HERE), "fleet_infisical.py")
+READER_DST = os.path.join(os.path.dirname(os.path.dirname(SCRIPT_DST)), "fleet_infisical.py")
 PLIST_SRC = os.path.join(os.path.dirname(HERE), "launchd", f"{LABEL}.plist")
 PLIST_DST = os.path.join(HOME, "Library", "LaunchAgents", f"{LABEL}.plist")
 
@@ -254,6 +256,7 @@ def main() -> int:
         say("macOS only")
         return 1
     fwb = load_module()
+    copy(READER_SRC, READER_DST, 0o644, a.dry_run)
     copy(SCRIPT_SRC, SCRIPT_DST, 0o755, a.dry_run)
     hard: list[str] = []
     missing = prerequisites(fwb, a.interpreter, a.install_restic, a.dry_run, hard)

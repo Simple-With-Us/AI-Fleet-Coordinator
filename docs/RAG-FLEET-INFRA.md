@@ -65,6 +65,12 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 ## Sources (what gets ingested)
 
+AFC-793 source contract: discover approved fleet GitHub repositories and read tracked committed blobs, independent of dirty workspace files.  Generated Docs aliases suppress ingestion only when raw SHA256 matches authoritative Git content; unique historical and legacy bodies remain, with exact library duplicates sharing provenance.  Standalone legacy Docs support Markdown, text, HTML and bounded local PDF extraction.  JSON, logs, source code, archives, assets and transcripts are excluded; image asset PDFs receive no OCR.  Library deletion is held, and source/state counts do not prove receiver coverage.
+
+The updated Notes path queues canonical IDs only, never note bodies.  The existing Notes runner reads current iCloud Coding content before delivery, scrubs and gitleaks-gates it, verifies receiver canonical ID/chunk hashes and rereads the provider revision before acknowledgement.  Newer queued writes survive older acknowledgements.  Changed-note metadata reconciliation uses that existing runner; its first scan establishes a baseline and does not backfill historical content.  A separately approved one-time Coding ID backfill is required.  Nonempty short bodies are supported; empty bodies use title-only text marked `text_kind`, without attachment OCR.  Apple Notes remain excluded from nightly bulk ingestion and pruning.
+
+Freshness: existing nightly ingest covers live Linear, repository/legacy documents, recursive skills and Markdown memory.  The existing Mac mirror carries eligible legacy Docs plus skills/memory before ingest.  Shared skill roots include Claude, Cursor, Grok, Codex, Agents and Gemini, including nested SKILL.md files; memory excludes sessions/transcripts and JSONL.  Contributions are immediate.  Archived board and effort-log data are frozen historical classes, not live producers; chat-policy scans remain rare and explicit, so zero chat chunks is not a coverage failure.  Five-minute Code/Docs synchronization does not schedule five-minute whole-corpus RAG ingestion.  These source changes alone do not establish rollout or complete receiver coverage; the older source descriptions below are historical where superseded by this contract.
+
 | Source | Where it comes from | Notes |
 |---|---|---|
 | `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`, frozen at the retirement) | category `lesson` when resolved, else `finding`; url is the Linear issue from the migration map |
@@ -602,7 +608,7 @@ Orphaned chunks are points whose `doc_id` is absent from the latest ingest state
 
 Growth is the difference in points and documents, overall and per source, against the previous `latest.json`.  The first run records growth as unavailable.  Orphan growth is included when both reports had a manifest.
 
-The job reads Qdrant with the read-only key when that key is present, through the same recall service token the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN_FILE`).  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
+The job reads Qdrant with the read-only key when that key is present, through the same explicit own recall binding the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN`, or its authorized current-store selector `FLEET_RECALL_INFISICAL_TOKEN_FILE`).  There is no retired flat-file default or ambient project-token fallback.  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
 
 Install it on the host the same way as the nightly job.  This repository does not run these commands.
 

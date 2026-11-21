@@ -5,11 +5,16 @@ The REST helper verifies grant metadata and exact project, prod environment, and
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import re
 import shutil
+import stat
+import sys
+import threading
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from types import ModuleType
 
 PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
@@ -35,9 +40,11 @@ ENV_KNOBS_TOKEN = "FLEET_KNOBS_INFISICAL_TOKEN"
 # Legacy identity names are stripped from helper environments and never authenticate a request.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
 ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
-ENV_HELPER_HOME = "FLEET_SECRETS_HOME"
-HELPER_HOME = "~/.local/share/fleet-secrets"
-HELPER_MODULE = "_fleet_knobs_fleet_secrets_core"
+
+_HELPER_LOCK = threading.RLock()
+_HELPER_CACHE: tuple[tuple, ModuleType] | None = None
+_HELPER_NAME = "_fleet_knobs_fleet_infisical"
+_MAX_HELPER_BYTES = 2 * 1024 * 1024
 
 
 class FetchFailed(Exception):
@@ -152,46 +159,64 @@ def _scoped_fetch(
         )
     except TimeoutError:
         raise FetchFailed("timeout") from None
-    except Exception:
+    except Exception as exc:
+        if getattr(exc, "reason", None) == "token-expired-or-invalid":
+            raise FetchFailed("token-expired-or-invalid") from None
         raise FetchFailed("scoped-read-failed") from None
     return _pick(result, wanted)
 
 
-def _helper_candidates() -> list:
-    """Where fleet-secrets' ``core.py`` may be, in order.  Paths only;  nothing is imported."""
-    out = []
-    home = (os.environ.get(ENV_HELPER_HOME) or "").strip()
-    if home:
-        out.append(os.path.join(os.path.expanduser(home), "fleet_secrets", "core.py"))
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    out.append(os.path.join(here, "fleet_secrets", "core.py"))
-    out.append(os.path.join(os.path.expanduser(HELPER_HOME), "fleet_secrets", "core.py"))
-    return out
-
-
 def _load_helper() -> ModuleType | None:
-    """fleet-secrets' core module, loaded from a file under a private name, or None."""
-    cached = _HELPER_CACHE.get("core")
-    if cached is not None:
-        return cached
-    for candidate in _helper_candidates():
-        if not os.path.isfile(candidate):
-            continue
+    """Reuse only our pinned source identity, never a sys.path/sys.modules candidate or stale pyc."""
+    global _HELPER_CACHE
+    with _HELPER_LOCK:
+        cached = _HELPER_CACHE
+        helper = None
         try:
-            spec = importlib.util.spec_from_file_location(HELPER_MODULE, candidate)
+            expected = (Path(__file__).resolve().parents[1] / "fleet_infisical.py").resolve()
+            flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+            fd = os.open(expected, flags)
+            with os.fdopen(fd, "rb") as source:
+                before = os.fstat(source.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_HELPER_BYTES:
+                    raise ValueError()
+                raw = source.read(_MAX_HELPER_BYTES + 1)
+                after = os.fstat(source.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, field) for field in fields)
+                for info in (before, after, expected.stat())
+            ]
+            if (
+                len(raw) > _MAX_HELPER_BYTES
+                or identities[0] != identities[1]
+                or identities[0] != identities[2]
+            ):
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if cached is not None and cached[0] == identity:
+                # Repair a poisoned private module entry without trusting or executing it.
+                sys.modules[_HELPER_NAME] = cached[1]
+                return cached[1]
+            spec = importlib.util.spec_from_file_location(_HELPER_NAME, expected)
             if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception:  # noqa: BLE001 - optional helper
-            continue
-        if all(hasattr(module, n) for n in ("fetch_project", "SecretsError")):
-            _HELPER_CACHE["core"] = module
-            return module
-    return None
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = helper
+            # The hash above covers these exact executed bytes; timestamp-valid pyc is ignored.
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            _HELPER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            _HELPER_CACHE = None
+            for owned in (helper, None if cached is None else cached[1]):
+                if owned is not None and sys.modules.get(_HELPER_NAME) is owned:
+                    del sys.modules[_HELPER_NAME]
+            if isinstance(exc, Exception):
+                return None
+            raise
 
 
-_HELPER_CACHE: dict = {}
 # Tests replace this with a callable that returns a fake helper, or None for "no helper".
 HELPER_LOADER: Callable[[], ModuleType | None] = _load_helper
 

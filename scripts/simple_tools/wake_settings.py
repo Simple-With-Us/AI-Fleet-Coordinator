@@ -32,9 +32,10 @@ as before at start.  It is applied to the held values on every refresh before th
 works as a brake during an outage too, and taking it away restores them.  A file that cannot be
 read at a refresh keeps the last narrowing that worked in force (none, if there never was one) and
 is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
-widens anything and never freezes the settings.  `local_host` and `claude_bin` are
-not settings but facts about one host, which one Infisical value cannot hold, so they are still
-read from the file, by the seats that have them.
+widens anything and never freezes the settings.  `local_host` and `claude_bin`, and a
+platform's own `workspace`, `mcode_bin` and `mcode_model`, are not settings but facts about one
+host or one platform, which one Infisical value cannot hold, so they are still read from the file,
+by the seats that have them.
 
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
@@ -114,10 +115,40 @@ INT_KNOBS = {
     "shutdown_wait_seconds": "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
     "resume_timeout_seconds": "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
     "confirm_seconds": "WAKE_ROUTER_CONFIRM_SECONDS",
+    # AFC-831:  most wakes one idle turn may carry for one chat;  1 is off (wake_router, Turns).
+    "turn_max_wakes": "WAKE_ROUTER_TURN_MAX_WAKES",
 }
 NARROWABLE = {"delivery_enabled": DELIVERY_ENABLED, **INT_KNOBS}
 NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
-HOST_FACTS = ("local_host", "claude_bin")
+#: The names the local file carries that are not settings:  facts about one host, or about one
+#: platform, which one Infisical value cannot hold.  A seat that does not have one of them
+#: ignores it.
+HOST_FACTS = (
+    "local_host",
+    "claude_bin",
+    "workspace",
+    "mcode_bin",
+    "mcode_model",
+    "muse_bin",
+    "opencode_bin",
+    "zcode_bin",
+    "pinned_profile",
+    "pinned_owner_account",
+)
+#: The names every platform's own settings add to the router's names.  The shared local file is
+#: one file, and a platform's module may not be installed on this host:  its keys are still in
+#: the file, so the names it owns are known here for every platform, and one seat's file is
+#: never refused for a platform this host does not serve.  A platform that owns a name of its
+#: own adds it here, beside the router's names.  A governed setting takes its default from the
+#: knob registry, which is the one source of truth for it, so there is no second value here:
+#: a knob that is not registered stops this module from loading at all.
+PLATFORM_DEFAULTS: dict[str, Any] = {
+    **WR.ROUTER_DEFAULTS,
+    "local_host": "",
+    "mac_ssh": BY_NAME[MAC_SSH].default,
+    "resume_timeout_seconds": BY_NAME[INT_KNOBS["resume_timeout_seconds"]].default,
+    "confirm_seconds": BY_NAME[INT_KNOBS["confirm_seconds"]].default,
+}
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
@@ -227,6 +258,17 @@ def from_knobs(seat: str, defaults: Mapping[str, Any]) -> dict[str, Any]:
     if "mac_ssh" in defaults:
         values["mac_ssh"] = knobs.resolve(MAC_SSH).value or ""
     return values
+
+
+def state_root(env: Mapping[str, str]) -> Path:
+    """The one folder the service's own state lives in."""
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return Path(home) / ".local" / "state" / "wake-router"
+
+
+def local_config_path(env: Mapping[str, str]) -> Path:
+    """The one local file the service reads:  `<state root>/config.json`."""
+    return state_root(env) / "config.json"
 
 
 def narrowed(

@@ -23,7 +23,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest rolled to 26.04 (2026-11-14), whose setup-python manifest has
+    # no 3.9 build, and the AFC-616 fleet_view leg below needs a real 3.9.  24.04 still
+    # carries it (3.9.25 verified in actions/python-versions).
+    runs-on: ubuntu-24.04
     # A stalled step once held this job open for over 15 minutes, and a rerun passed.  Each test
     # step has its own limit, about twice its normal run (a stall now fails in minutes and names
     # the step), and the whole job stops at 60 minutes;  a normal run takes 21 to 32 minutes.
@@ -464,6 +467,21 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_worker_health -v
+    # AFC-398:  the ST and CT health collector (`scripts/fleet-api-health.py`):  the pinned
+    # mapping contract, fail-closed fetches, and the 0600 store Muster reads.
+    - name: API health collector tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_fleet_api_health -v
+    # The same tests on the real Python 3.9 set up for fleet_view above:  the LaunchAgent runs
+    # this collector under the Mac's /usr/bin/python3, so a 3.11-only spelling must fail here.
+    - name: API health collector tests on Python 3.9
+      timeout-minutes: 10
+      env:
+        PY39: ${{ steps.fleet-view-py39.outputs.python-path }}
+      run: |
+        "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
+        cd scripts && "$PY39" -m unittest test_fleet_api_health -v
     # The MiniMax model id the autofix bots dispatch: the trusted policy, every
     # reusable workflow default, and the reference doc all name one id, and a
     # retired spelling may appear in a comment but never as a value.
@@ -643,6 +661,11 @@ jobs:
     - name: Board CLI Simple-Tools parity
       timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_parity.py
+    # The board's remote transport (the hosted MCP):  the path a seat's own shell uses.  Its tests
+    # were not in CI, so a change to it was only exercised by hand.
+    - name: Board CLI remote transport
+      timeout-minutes: 10
+      run: python3 scripts/linear-board/test_board_remote.py
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
@@ -708,6 +731,11 @@ jobs:
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
       run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
+    # thread-registry-export drain (Operator thread registry): thrown errors are bounded at
+    # 500 chars and redact credential material; failure-path tests, no network.
+    - name: thread-registry-export tests
+      timeout-minutes: 5
+      run: node --test scripts/simple_tools/thread_registry_export.test.mjs
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
@@ -738,7 +766,9 @@ jobs:
     # arguments and answers what the test tells it to.
     - name: Auto-merge reusable workflow contract
       timeout-minutes: 10
-      run: python3 scripts/test_auto_merge_reusable.py
+      run: |
+        python3 scripts/test_auto_merge_reusable.py
+        python3 scripts/test_protected_merge_boundary.py
     # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
     # transport is injected, and the workflow job is checked by reading the file.
     - name: Fleet hold label provisioning
@@ -751,11 +781,15 @@ jobs:
       run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
     # The Operator registry -> Sheets drain (OPS-1037):  the exporter, the Google Sheets
     # transport and the drain runner (pass loop, run deadline, stop signal, write pacing
-    # and HTTP 429 back-off).  No network:  fetch, the registry bridge and the clock are
-    # injected, and nothing sleeps for real.
+    # and HTTP 429 back-off), and the Zulip Threads sync the same run does (AFC-823)
+    # with its module, thread_registry_export.mjs.  No network:  fetch, the registry
+    # bridge and the clock are injected, and nothing sleeps for real.
     - name: Operator Sheets drain tests
       timeout-minutes: 10
-      run: node --test scripts/test_operator_sheets_export.mjs scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
+      run: >-
+        node --test scripts/test_operator_sheets_export.mjs
+        scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
+        scripts/test_thread_registry_export.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests

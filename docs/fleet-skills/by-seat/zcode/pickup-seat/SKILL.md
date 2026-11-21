@@ -6,14 +6,14 @@ description: >-
 
 # Pick up a seat (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Owner-directed only.  Do not initiate a raid on a live peer.
 
-You are **ZC**.  Keep `zcode/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
+You are **ZC**.  Keep `zc/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
 
 ## INVENTORY
 
@@ -49,7 +49,7 @@ zulip_post   channel=<channel>   topic="<ID> <subject>"   to="<Peer Display Name
 
 `to` adds the `@**Name**` that wakes the peer; the bracket label alone wakes nobody.
 
-Put the same claim on the Linear issue.  The MCP tool `linear_claim` takes the claim over once the peer has released it; while the peer still holds it the hosted claim is refused (the `simple-board` CLI fallback still takes `--steal --reason "picking up <SEAT> cap"`), so use `linear_comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
+Put the same claim on the Linear issue.  The MCP tool `linear_claim` takes the claim over once the peer has released it; while the peer still holds it the claim is refused unless `steal` is set with a reason (every route takes it:  the hosted tool's `steal` + `reason`, or the CLI's `--steal --reason "picking up <SEAT> cap"`), so use `linear_comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
 
 Never take over a stale claim silently.  Post your own `CLAIMED` in the same topic so the history shows the handoff.
 

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import os
 import re
 import signal
@@ -108,10 +109,35 @@ BUILDERS: dict[str, Builder] = {
     "CLAUDE": Builder("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"),
     "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
+    "MM": Builder("minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"),
+    # An OpenCode session id:  "ses_" and 26 letters and digits, the shape the runtime's own
+    # store holds.
+    "OPENCODE": Builder(
+        "opencode", "simple_tools.opencode_wake", session_re=r"^ses_[0-9A-Za-z]{26}$"
+    ),
     "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
     "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
 }
+
+
+def installed_seats(builders: Mapping[str, Builder] | None = None) -> set[str]:
+    """The seats whose platform module is on this host, so the one router can serve them.
+
+    A module that is there but broken still counts:  the file is present, so the seat is served
+    and the router reports the error for it.  Only a module that is not there leaves the seat
+    unserved, and an unserved seat's wake is queued at its inbox instead of lost at the router.
+    The rule is here, beside the one platform table, so the sample routing and the router never
+    disagree about which seats the router serves."""
+    table = BUILDERS if builders is None else builders
+    served: set[str] = set()
+    for seat, builder in table.items():
+        try:
+            if importlib.util.find_spec(builder.module) is not None:
+                served.add(seat)
+        except (ImportError, ValueError):
+            continue
+    return served
 
 
 def by_platform(name: object) -> Builder | None:
@@ -158,8 +184,37 @@ def _log(text: str) -> None:
 
 
 def state_root(env: Mapping[str, str]) -> Path:
-    home = str(env.get("HOME") or os.path.expanduser("~"))
-    return Path(home) / ".local" / "state" / "wake-router"
+    """The one folder the service's own state lives in (the settings module owns the path)."""
+    return WS.state_root(env)
+
+
+def file_defaults() -> dict[str, Any]:
+    """Every name the shared local file may carry:  the union of the platform table's defaults.
+
+    The file is shared by every seat, so a seat's own facts are in it too:  the union is what
+    the reader is checked against, so one seat's key never refuses the file for the others.
+    A platform this host does not serve is still a platform whose names the file may carry, so
+    the union is wider than the seats that are ready here:  the names every platform owns are
+    here even when the module that owns them cannot be imported, so a platform's key never
+    refuses the file for the seats that are."""
+    values: dict[str, Any] = dict(WS.PLATFORM_DEFAULTS)
+    for seat, entry in sorted(BUILDERS.items()):
+        try:
+            module = importlib.import_module(entry.module)
+        except Exception:
+            # A module that is not there, or that fails to import for any reason, still owns
+            # names the shared file may carry:  the shared names above and the host facts below
+            # are here for it, so its keys are never refused for the seats that are ready, and
+            # the union is whole without it.
+            continue
+        defaults = getattr(module, "DEFAULTS", None)
+        if isinstance(defaults, Mapping):
+            values.update(defaults)
+    # A host fact whose platform is not on this host is still a name the shared file may
+    # carry, so it is known here:  one seat's key must never refuse the file for the others.
+    for name in WS.HOST_FACTS:
+        values.setdefault(name, "")
+    return values
 
 
 def default_state(env: Mapping[str, str], seat: str) -> Path:
@@ -279,15 +334,18 @@ def build(
             else:
                 absent.append(seat)
             _log("seat %s not served (%s)" % (seat, exc.reason))
-    file_defaults: dict[str, Any] = {}
+    # The union of every seat's names, not only the ones this host serves:  the shared file is
+    # one file, and a key that belongs to a platform that is not installed here still belongs
+    # to it.
+    shared_defaults: dict[str, Any] = file_defaults()
     for seat_ready in ready:
-        file_defaults.update(seat_ready.defaults)
+        shared_defaults.update(seat_ready.defaults)
     local_path = state_root(env) / "config.json"
     routers: list[WR.Router] = []
     members: list[WS.WakeSettings] = []
     for seat_ready in ready:
         try:
-            router, settings = build_seat(seat_ready, env, local_path, file_defaults)
+            router, settings = build_seat(seat_ready, env, local_path, shared_defaults)
         except SeatDown as exc:
             down[seat_ready.seat] = exc.reason
             _log("seat %s not served (%s)" % (seat_ready.seat, exc.reason))

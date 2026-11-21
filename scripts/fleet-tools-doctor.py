@@ -143,14 +143,20 @@ SHIPPED = (
     "scripts/ag-wake-bridge",
     "scripts/linear-board/",
     "fleet-apps.json",
+    "scripts/service_zulip.py",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
+    "scripts/fleet-ops-eavesdropper-settings.json",
+    "scripts/fleet_infisical_bootstrap.py",
+    "scripts/fleet_infisical_cli.py",
+    "scripts/infisical-scoped.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
     "scripts/fleet_knobs/",
     "scripts/fleet_secrets/__init__.py",
     "scripts/fleet_secrets/core.py",
+    "scripts/fleet_infisical.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
@@ -162,6 +168,10 @@ SHIPPED = (
 # copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
 SHIPPED_EXACT = frozenset(
     {
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
@@ -173,6 +183,10 @@ SHIPPED_EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet_infisical_bootstrap.py",
+        "scripts/service_zulip.py",
+        "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -190,16 +204,17 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-412 PR2:  mirrors the release EXACT entry for the Operator chat-thread registry drain.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
         # OPS-1048:  mirror the release EXACT entries for the wake bridges (the receivers the seats' http
         # routines POST to).
         "scripts/zc-wake-bridge",
         "scripts/ag-wake-bridge",
-        # The scoped verifier library the new knobs and recall bundles depend on.  The generic
-        # secrets CLI does not ship, so only these two modules are listed.
+        # The shared scoped client and the compatibility imports its existing consumers use.
         "scripts/fleet_secrets/__init__.py",
         "scripts/fleet_secrets/core.py",
+        "scripts/fleet_infisical.py",
         "docs/protocols/simple-tools-guide.md",
         "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
@@ -210,6 +225,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
+        "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",
         "scripts/fleet_rag/infisical_settings.py",
         "scripts/fleet_rag/public_fallback.py",
@@ -536,6 +552,10 @@ SHIPPED_REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter node test: mirrors the release REPO_ONLY
+        # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
+        "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 
@@ -1512,25 +1532,24 @@ _UNSET = object()
 def infisical_names(
     folder: str, env: dict[str, str], project: str = "fleet-ops"
 ) -> frozenset[str] | None:
-    """Key NAMES in one Infisical folder (`fleet-secrets names`:  no value reaches this process), or None when
-    fleet-secrets is missing or fails.  Fleet-OPS unless `project` says otherwise.  Once per folder per run."""
+    """Key names through the canonical isolated command; no installed secrets tool or values.
+
+    Fleet-OPS unless `project` says otherwise.  Once per project and folder per run.
+    """
     cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
     if cache_key in _names_cache:
         return _names_cache[cache_key]
-    binary = (
-        env.get("FLEET_SECRETS_BIN")
-        or shutil.which("fleet-secrets")
-        or str(HOME / ".local/bin/fleet-secrets")
-    )
+    command = Path(__file__).resolve().with_name("fleet_infisical_cli.py")
     names: frozenset[str] | None = None
     try:
         proc = subprocess.run(
-            [binary, "names", "--path", folder, "--project", project],
+            [sys.executable, "-I", str(command), "names", "--path", folder, "--project", project],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
+            env=env,
         )
         if proc.returncode == 0:
             names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
@@ -1573,7 +1592,9 @@ def check_seat(
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
-        report.add(f"seat:{seat}", "WARN", "fleet-secrets could not list Infisical Fleet-OPS names")
+        report.add(
+            f"seat:{seat}", "WARN", "The canonical reader could not list Infisical Fleet-OPS names"
+        )
         return
     prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)
     zulip = all(f"{prefix}_ZULIP_{part}" in zulip_names for part in ("EMAIL", "KEY", "SITE"))
@@ -1597,7 +1618,7 @@ def check_seat(
     ]
     notes = ["missing " + ", ".join(missing)] if missing else []
     if unreadable:
-        notes.append("fleet-secrets could not list Infisical fleetlink token names")
+        notes.append("The canonical reader could not list Infisical fleetlink token names")
     if missing:
         status = "FAIL"
     elif unreadable:
@@ -2208,8 +2229,8 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
     # The `board` wrapper is retired (2026-10-28):  `simple-board` is the entry point and is already
     # checked through FLEET_TOOLS and MAC_SIMPLE_TOOLS, so no `board` row is emitted.  A row for a
     # deliberately retired wrapper would be a permanent false failure in the published report.
-    for name in ("recall", "fleet-mode", "fleet-secrets"):
-        add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
+    # The installed copies are not checked here:  check_mac_copies judges them on every Mac,
+    # whichever runtime layout this one has.
     check_lane_tools(report, rt, runner)
     share = command_path("fleetlink")
     why = "presence only:  FleetLink has no managed runtime on the Mac, so currency is not checked"
@@ -2225,6 +2246,42 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
             tool="fleetlink",
         ),
     )
+
+
+def mac_copy_revision(runner: Callable = subprocess.run, tip: str | None = None) -> dict:
+    """The revision the Mac's installed copies are judged against.
+
+    `tip` is the tip of refs/heads/main as it was read from GitHub in this run,  and None when it
+    was not read.  `head` is the managed runtime's own HEAD,  because that is the checkout the
+    copies are compared against:  the layout's runtime dict names a different checkout (the
+    fleet-cli release) on a Mac judged server-style,  and a foreign revision either judges the
+    copies against the wrong commit or leaves the row a permanent WARN/unknown.
+
+    A local origin/main ref is never a tip (the policy at the top of this file):  when the tip was
+    not read,  or the runtime does not hold it,  copy_reference falls back to the runtime HEAD and
+    the row answers WARN/unknown,  never current.
+    """
+    head = git_try(MAC_RUNTIME, "rev-parse", "HEAD", runner=runner)
+    return {"tip": tip or None, "head": head or None}
+
+
+def check_mac_copies(
+    report: Report, runner: Callable = subprocess.run, tip: str | None = None
+) -> None:
+    """The Mac's installed copies (the fleet-rag install, fleet-mode, fleet-secrets) against the tip of main.
+
+    These rows are about a copy on disk, not about where the Mac's commands run, so they hold for
+    every Mac, whichever runtime layout this one has.  They rode check_mac_tools until AFC-1052:
+    that function only runs when the Mac is judged mac-style, and a Mac that also carries a
+    fleet-cli release checkout (the Mac publishes the server's bundle from it) was judged
+    server-style, so every one of these rows was lost.  A stale ~/apps/fleet-rag then went
+    unnoticed for days, and `recall contribute` failed with identity_required for every seat on
+    the Mac.  The revision comes from the managed runtime itself (mac_copy_revision),  never from
+    the layout's runtime dict.
+    """
+    rt = mac_copy_revision(runner, tip)
+    for name in ("recall", "fleet-mode", "fleet-secrets"):
+        add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
 
 
 def check_server_tools(
@@ -3545,7 +3602,19 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         STATE.write_text(json.dumps(doc))
 
     if failing and message_id is not None and previous_checks == checks:
-        outcome = edit_outcome(["simple-chat", "edit", "--id", str(message_id), body], runner)
+        outcome = edit_outcome(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("service_zulip.py")),
+                "--service",
+                "doctor",
+                "edit",
+                "--id",
+                str(message_id),
+                body,
+            ],
+            runner,
+        )
         if outcome == "edited":
             remember(message_id)
             return True
@@ -3557,13 +3626,11 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
         # missing:  post a new message instead and keep its id.
     argv = [
-        "simple-chat",
+        sys.executable,
+        str(Path(__file__).with_name("service_zulip.py")),
+        "--service",
+        "doctor",
         "post",
-        "--channel",
-        "Work-In-Progress",
-        "--topic",
-        "fleet tools doctor",
-        "--json",
         body,
     ]
     try:
@@ -3655,7 +3722,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor';  when only a failing line's text changes, edit that post instead (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
+        help="when the set of failing checks changes, post with the bound dedicated service identity to #Work-In-Progress, topic 'fleet tools doctor'; edit only that identity's own post when a failing line changes",
     )
     parser.add_argument(
         "--no-registry",
@@ -3702,6 +3769,10 @@ def run(
     check_catalogs(report, host)
     check_tool_files(report)
     check_fleet_mode_doc(report, rt)
+    if host == "mac":
+        # The installed copies are the Mac's own state and are checked on every Mac, whichever
+        # runtime layout it has:  they are not part of the layout choice.
+        check_mac_copies(report, runner=runner, tip=(expected or {}).get("rev"))
     if on_mac_runtime:
         check_mac_tools(report, rt, runner)
         check_placement_watch(report)

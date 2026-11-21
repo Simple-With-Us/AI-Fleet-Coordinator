@@ -9,6 +9,7 @@
 #     needs_owner/              the package, without its tests
 #     simple_tools/               only identity.py, secretscan.py and textsafe.py (the F3 helpers it loads by path)
 #     fleet_knobs/              the K1 knob reader the fallback notifier (`notify`) uses, without its tests
+#     fleet_infisical.py        the shared direct scoped REST client
 #     fleet_secrets/            only the low-level scoped verifier library; no CLI entrypoint
 #     state/                    untouched here (the fallback notifier keeps its files there)
 # and ~/.local/bin/needs-owner is a symbolic link to ~/apps/needs-owner/needs-owner.
@@ -47,6 +48,7 @@ for f in $f3_files; do
   [ -f "$scripts/simple_tools/$f" ] || { echo "install.sh: $scripts/simple_tools/$f is missing" >&2; exit 1; }
 done
 [ -f "$scripts/fleet_knobs/knobs.py" ] || { echo "install.sh: $scripts/fleet_knobs/knobs.py is missing" >&2; exit 1; }
+[ -f "$scripts/fleet_infisical.py" ] || { echo "install.sh: $scripts/fleet_infisical.py is missing" >&2; exit 1; }
 for f in __init__.py core.py; do
   [ -f "$scripts/fleet_secrets/$f" ] || { echo "install.sh: $scripts/fleet_secrets/$f is missing" >&2; exit 1; }
 done
@@ -56,6 +58,7 @@ say() { if [ "$apply" -eq 1 ]; then echo "$*"; else echo "would: $*"; fi; }
 # The list of (source, relative destination) pairs, one per line.
 manifest() {
   echo "$scripts/needs-owner|needs-owner"
+  echo "$scripts/fleet_infisical.py|fleet_infisical.py"
   for f in "$here"/*.py; do echo "$f|needs_owner/$(basename "$f")"; done
   for f in $f3_files; do echo "$scripts/simple_tools/$f|simple_tools/$f"; done
   for f in "$scripts"/fleet_knobs/*.py; do echo "$f|fleet_knobs/$(basename "$f")"; done
@@ -113,6 +116,7 @@ if [ "$changed" -eq 1 ]; then
     if [ "$rel" = "needs-owner" ]; then chmod 755 "$stage/$rel"; else chmod 644 "$stage/$rel"; fi
   done < <(manifest)
   mkdir -p "$dest"
+  mv -f "$stage/fleet_infisical.py" "$dest/fleet_infisical.py"
   for name in needs_owner simple_tools fleet_knobs fleet_secrets; do
     rm -rf "$dest/$name.old"
     [ -e "$dest/$name" ] && mv "$dest/$name" "$dest/$name.old"

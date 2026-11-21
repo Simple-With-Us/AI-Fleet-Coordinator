@@ -9,11 +9,11 @@ Labels are per-platform pairs (AA-ZZ) with one namespace across all hosts.  No s
 registers, reopens or is relabelled.  A pair's generation counts its own issues for the seat.
 A main chat's pair follows one rule for every seat (owner, Nov 11 2026):  only the doubled pairs
 AA, BB ... ZZ, the free one issued the fewest times first, counting every past issue including legacy rows ("count the
-history"), then the lap order, so the seat keeps advancing and starts AA.2 only after ZZ.1;  all 26 live refuses the
+history"), then alphabetically on a tie;  all 26 live refuses the
 letter;  a caller's pick does not change it (see PRIMARY_ORDER and SessionRegistry._allocate).  A session
 another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
 the same row, wrapping past Z (parent CC, child CD;  parent XX, children XY, XZ, XA, XB);  when that row is full it
-takes a random free pair of two different letters, never a doubled one, and all 650 live refuses the letter.  Cross-seat references to a
+is refused a letter.  Cross-seat references to a
 generation > 1 letter must carry the generation:  "MM A (gen 2)".
 
 Seat is checked separately from identity:  a resolve under an unexpected seat returns the
@@ -33,16 +33,15 @@ Standard library only, Python 3.11+.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
-import random
 import re
 import secrets
 import sqlite3
-import sys
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -134,11 +133,6 @@ LETTER_PICKS = ("lowest", "oldest", "primary")
 # CC").  There is no per-platform table:  a single letter is never issued again.  A single letter a chat already holds
 # from before the rule stays readable (letter_space_of), and a relabel or a reopen moves that chat onto a pair.
 DEFAULT_SPACE = "double"
-# The random source for a subthread whose parent's row is full (owner, Nov 11 2026:  "issue random non-pair of letters
-# like random 2 letters not identical ones to preserve those for main chats").  The operating system's generator, so
-# the pick is not predictable from earlier picks;  a test injects its own chooser through SessionRegistry(choose=...)
-# rather than weakening this one.
-_OVERFLOW_RANDOM = random.SystemRandom()
 
 
 def _clean_parent(value: object) -> str:
@@ -264,6 +258,16 @@ class LabelExhausted(RuntimeError):
 
 class UnknownRecord(KeyError):
     """No session with this record_id."""
+
+
+class InvalidSessionSnapshotDigest(ValueError):
+    """The caller did not provide the digest format emitted by the plan command."""
+
+
+class StaleSessionSnapshot(ValueError):
+    def __init__(self, current_sha256: str):
+        super().__init__("the session snapshot changed after planning")
+        self.current_sha256 = current_sha256
 
 
 SEAT_PLATFORM_MISMATCH = "seat_platform_mismatch"
@@ -450,6 +454,12 @@ def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
     ]
 
 
+def _session_snapshot_digest(cells: Sequence[str]) -> str:
+    """Bind a local snapshot plan to the exact canonical session-upsert cells."""
+    payload = json.dumps({"cells": list(cells)})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class SessionRegistry:
     """The one writer of the registry database."""
 
@@ -458,24 +468,21 @@ class SessionRegistry:
         db_path: str,
         *,
         read_only: bool = False,
-        choose: Callable[[Sequence[str]], str] | None = None,
+        initialize: bool = True,
     ):
         self.db_path = str(db_path)
-        # How a subthread whose parent's row is full picks its random pair.  None is the system's random source
-        # (_OVERFLOW_RANDOM), read at each call;  a test hands in a seeded chooser so its answer is fixed.
-        self._choose = choose
         self.read_only = bool(read_only)
         parent = os.path.dirname(self.db_path)
-        if parent and not self.read_only:
+        if parent and not self.read_only and initialize:
             os.makedirs(parent, exist_ok=True)
-        if self.read_only:
-            # Read-only by behaviour, not by mode.  A mode=ro handle cannot roll back a
-            # hot journal left by a crashed writer, and SQLite then refuses every read
-            # with SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
-            # A read-write handle can recover that journal, and it takes no write lock
-            # for a plain SELECT, so the wake path never contends with the Operator's
-            # registration writes.  This handle runs no DDL and inserts no migration row:
-            # it never writes.
+        if self.read_only or not initialize:
+            # Open the existing file without schema initialization.  A mode=ro handle
+            # cannot roll back a hot journal left by a crashed writer, and SQLite then
+            # refuses every read with SQLITE_READONLY_ROLLBACK.  The read_only path uses
+            # this read-write connection only for selects; plain SELECT takes no write
+            # lock, so the wake path does not contend with Operator registration writes.
+            # initialize=False uses the same no-DDL connection for outbox operations
+            # that must not migrate.
             #
             # mode=rw and not a plain connect:  the handle is read-write, and it still
             # never creates the file, so a lookup can never bring a registry into being.
@@ -492,6 +499,8 @@ class SessionRegistry:
                 uri=True,
             )
             self._conn.row_factory = sqlite3.Row
+            if not self.read_only:
+                self._conn.execute("PRAGMA foreign_keys = ON")
             return
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
@@ -744,20 +753,14 @@ class SessionRegistry:
 
         A main chat (no `after`) takes only a doubled pair (AA, BB ... ZZ):  the free one issued the fewest times,
         counting every row the seat's namespace holds for it, including rows written before this rule ("count the
-        history"), so a pair issued five times waits behind one issued three times;  among those, the first one after
-        where the lap is (the last doubled pair issued in the newest generation), wrapping past ZZ (on a fresh lap that
-        is the alphabet).  That keeps advancing:  AA.1 ... ZZ.1 in order, a released AA not reused while later pairs
-        are un-issued, then AA.2 onward after ZZ;  a pair still live when its turn comes is skipped, issued once it is
-        freed (it has the fewest issues then), and the lap then goes on from where it was rather than handing that pair
-        out again;  a pair live through a whole lap misses that lap's generation.  When all 26 are live the letter is
+        history"), so a pair issued five times waits behind one issued three times;  among those, the alphabetically earliest pair is chosen.
+        A released pair remains behind any free pair with fewer past issues.  When all 26 are live the letter is
         refused ("ok just refuse actually is fine") and the chat carries on unlettered.
 
         `after` is the pair its parent chat holds, for a subthread:  the first pair after the parent's (pairs_after,
         the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
-        live is taken.  When the parent's row is full, the subthread takes a random pair of two different letters that
-        is not live, with any first letter (owner, Nov 11 2026:  "issue random non-pair of letters like random 2
-        letters not identical ones to preserve those for main chats"), never a doubled pair, whether or not one is
-        free.  When none of the 650 is free the letter is refused and the chat carries on unlettered."""
+        live is taken.  When the parent's row is full, the subthread is refused a letter; it never moves to another row.
+        A child never takes the doubled pair reserved for main chats."""
         members = frozenset(LETTER_SPACES["double"])
         live = {
             r["letter"]
@@ -791,38 +794,18 @@ class SessionRegistry:
             follow = [p for p in pairs_after(after) if p in members and p not in live]
             if follow:
                 return issue(follow[0])
-            # The parent's row is full.  A random pair of two different letters, any row, never a doubled one:  the
-            # doubled pairs stay the main chats'.  Sorted first, so a seeded chooser gives the same answer every run.
-            spare = sorted(p for p in members if p[0] != p[1] and p not in live)
-            if spare:
-                return issue((self._choose or _OVERFLOW_RANDOM.choice)(spare))
-            limit = sum(1 for p in members if p[0] != p[1])
+            # Children stay in the parent's row; once its available non-doubled pairs are live, refuse the letter.
+            limit = sum(1 for p in members if p[0] == after[0] and p[0] != p[1])
             exhausted = LabelExhausted(
-                f"all {limit} non-doubled pairs are active on platform {platform!r}:  the parent's row ({after[0]}) is"
-                " full and a subthread never takes a doubled pair (they are the main chats'), so this one is refused a"
-                " letter"
+                f"no free child pairs remain in row {after[0]!r} (capacity {limit}) on platform {platform!r}:"
+                " a subthread stays in its parent's row and is refused a letter when that row is full"
             )
             exhausted.space = "double"
             exhausted.limit = limit
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        # Where the lap is:  the last doubled pair issued in the newest generation.  A pair issued late, to catch up
-        # on a generation it missed while live, is an older generation, so it does not move the lap.
-        doubled_sql = (
-            "platform = ? AND length(letter) = 2 AND substr(letter, 1, 1) = substr(letter, 2, 1)"
-        )
-        last = conn.execute(
-            f"SELECT letter FROM alias_assignments WHERE {doubled_sql} AND generation ="
-            f" (SELECT MAX(generation) FROM alias_assignments WHERE {doubled_sql})"
-            " ORDER BY assigned_at DESC, rowid DESC LIMIT 1",
-            (platform, platform),
-        ).fetchone()
-        start = doubled.index(last["letter"]) + 1 if last and last["letter"] in doubled else 0
-        position = {p: (i - start) % len(doubled) for i, p in enumerate(doubled)} if doubled else {}
-        main = sorted(
-            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), position[p])
-        )
+        main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
         if main:
             return issue(main[0])
         # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
@@ -866,6 +849,36 @@ class SessionRegistry:
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
             (_ulid(), "session_upsert", json.dumps({"cells": _session_cells(row, letter)}), now),
         )
+
+    def enqueue_session_snapshot(self, record_id: str, expected_sha256: str) -> dict[str, Any]:
+        """Queue the current snapshot without changing session, alias, event, or issue state.
+
+        The caller first obtains a read-only plan.  BEGIN IMMEDIATE then binds the
+        write to the same current row and alias, and an identical pending snapshot
+        makes retries idempotent.
+        """
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
+            raise InvalidSessionSnapshotDigest("invalid snapshot digest")
+        with self._write_txn() as conn:
+            row = self._get(record_id)
+            label, _ = self._active_alias(conn, record_id)
+            cells = _session_cells(row, label)
+            digest = _session_snapshot_digest(cells)
+            if not secrets.compare_digest(digest, expected_sha256):
+                raise StaleSessionSnapshot(digest)
+            pending = _pending_identical_session_snapshots(conn, cells)
+            if pending:
+                return {
+                    "snapshot_sha256": digest,
+                    "outcome": "already_pending",
+                    "pending_identical": pending,
+                }
+            self._enqueue_session_upsert(conn, record_id, _utcnow())
+            return {
+                "snapshot_sha256": digest,
+                "outcome": "queued",
+                "pending_identical": 1,
+            }
 
     def _reseat(
         self,
@@ -1120,8 +1133,7 @@ class SessionRegistry:
             letter, generation = self._allocate(
                 conn, identity["platform"], record_id, now, after=parent_pair
             )
-            # The parent's pair when this chat really took a pair after it, else "" (no parent, or its row was full and
-            # it took a random pair of two different letters).
+            # The parent's pair when this chat really took a pair after it, else "" (no parent).
             placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             self._insert_event(
                 conn,
@@ -1312,8 +1324,8 @@ class SessionRegistry:
         A session that already holds a pair keeps it, so the call is idempotent and a rerun changes nothing.  `space`
         and `pick` are checked and ignored:  a single letter is never issued.  Force places a pair holder again only
         when it names a live parent, which is what a migration needs (a child that already holds a pair may still have
-        to move into its parent's row);  without a parent it changes nothing, so a forced rerun never burns a pair of
-        the seat's lap.
+        to move into its parent's row);  without a parent it changes nothing, so a forced rerun never retires a pair
+        assignment or changes its issue count.
         """
         if space not in LETTER_SPACES:
             raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
@@ -1332,8 +1344,7 @@ class SessionRegistry:
             )
             # Every chat holds a pair now, so a single letter is the only one that moves on its own, and the space a
             # caller names does not change that.  Force only places a pair holder again when it names a live parent
-            # whose row it belongs in:  a forced relabel with no parent would burn a pair of the seat's lap for
-            # nothing, so it changes nothing.
+            # whose row it belongs in:  a forced relabel with no parent would retire an assignment for nothing.
             if current and letter_space_of(current) == "double" and not (force and parent_pair):
                 return {
                     "record_id": record_id,
@@ -1511,7 +1522,7 @@ def register_session(
 
     A seat never chooses its own letter, and no caller changes the order (owner, Nov 11 2026).  Every seat's main
     chat takes a doubled pair by the one rule in SessionRegistry._allocate:  the free one issued the fewest times
-    for the seat, the next after the last one issued on a tie, with its own issue count plus one as the generation;
+    for the seat, alphabetically earliest on a tie, with its own issue count plus one as the generation;
     all 26 live refuses the letter (LabelExhausted).  letter_space and letter_pick are checked and ignored.  The
     title comes back in the display form the platform expects:  "HH: Title".
 
@@ -1519,9 +1530,8 @@ def register_session(
     this platform, on any host) or, for a platform that knows only the letter, parent_letter (the parent's pair,
     which a live session on the platform must hold;  the session id wins when both are given):  when the parent is
     live and holds a pair, the child takes the first free pair after it in the same row, wrapping past Z (parent
-    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB).  When none is free, it takes a random free pair of two
-    different letters from any row, never a doubled pair (owner, Nov 11 2026), and is refused when none of those is
-    free.  When the parent is unknown, closed or holds a single letter, it is picked as a main chat is.  A live chat
+    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB).  When the parent's row has no free pair, the child is
+    refused a letter.  When the parent is unknown, closed or holds a single letter, it is picked as a main chat is.  A live chat
     that still holds a single letter from before the pair rule is moved onto a pair here, on its next registration:
     the answer is its new pair, with `previous` naming the single letter it gave up.  The answer's `placed_after` is the
     parent's pair when the session really took a pair after it, else "".
@@ -2714,6 +2724,61 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _pending_identical_session_snapshots(conn: sqlite3.Connection, cells: Sequence[str]) -> int:
+    if not cells:
+        return 0
+    count = 0
+    candidates = conn.execute(
+        "SELECT payload FROM export_outbox"
+        " WHERE kind = 'session_upsert' AND exported_at IS NULL"
+        " AND CASE WHEN json_valid(payload) THEN"
+        "   CASE WHEN json_type(payload, '$.cells') = 'array'"
+        "     THEN json_extract(payload, '$.cells[0]')"
+        "   END"
+        " END = ?",
+        (cells[0],),
+    )
+    for row in candidates:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("cells") == list(cells):
+            count += 1
+    return count
+
+
+def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
+    """Read-only plan for an Operator-local canonical session snapshot enqueue."""
+    registry = SessionRegistry(db_path, read_only=True)
+    try:
+        registry._conn.execute("BEGIN")
+        try:
+            row = registry._get(record_id)
+            label, _ = registry._active_alias(registry._conn, record_id)
+            cells = _session_cells(row, label)
+            digest = _session_snapshot_digest(cells)
+            pending = _pending_identical_session_snapshots(registry._conn, cells)
+            return {
+                "snapshot_sha256": digest,
+                "pending_identical": pending,
+                "action": "already_pending" if pending else "enqueue",
+            }
+        finally:
+            registry._conn.rollback()
+    finally:
+        registry.close_db()
+
+
+def enqueue_session_snapshot(db_path: str, record_id: str, expected_sha256: str) -> dict[str, Any]:
+    """Enqueue through the registry's existing local writer and transaction."""
+    registry = SessionRegistry(db_path, initialize=False)
+    try:
+        return registry.enqueue_session_snapshot(record_id, expected_sha256)
+    finally:
+        registry.close_db()
+
+
 def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None = None) -> int:
     """Mark outbox rows exported only after the Sheets write is confirmed.  Re-running after a
     crash simply re-exports unmarked rows;  the exporter reconciles by id so that is safe."""
@@ -2947,6 +3012,21 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     p = sub.add_parser("pending-outbox")
     p.add_argument("--db", default="", help="the registry file (default: the shared path)")
     p.add_argument("--limit", type=int, default=50)
+    plan = sub.add_parser(
+        "plan-session-snapshot",
+        help="plan a local canonical session snapshot enqueue without changing the registry",
+    )
+    plan.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    plan.add_argument("--record-id", required=True, help="the stable Operator record id")
+    enqueue = sub.add_parser(
+        "enqueue-session-snapshot",
+        help="enqueue a canonical session snapshot if its planned digest is still current",
+    )
+    enqueue.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    enqueue.add_argument("--record-id", required=True, help="the stable Operator record id")
+    enqueue.add_argument(
+        "--expected-sha256", required=True, help="digest from plan-session-snapshot"
+    )
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
@@ -3143,17 +3223,71 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     args = parser.parse_args(argv)
     from . import registry_api
 
-    if args.command in ("record-export-attempt", "record-export-attempts", "export-attempts"):
+    if args.command in (
+        "record-export-attempt",
+        "record-export-attempts",
+        "export-attempts",
+        "plan-session-snapshot",
+        "enqueue-session-snapshot",
+    ):
         # The export fence is the store's own bookkeeping (OPS-1037):  it is handled
         # locally, before the registry-API cutover below, because the API carries no
         # fence ops and the fence's only caller (the Sheets drain) runs on the store's
-        # host against the store file.  Routing these through the API would reject
-        # them as unknown ops and wedge the drain.  The no-registry guard still
+        # host against the store file.  Snapshot planning and enqueue are also local:
+        # enqueue changes only the export outbox under the store writer transaction,
+        # and the existing drain handles its fence and acknowledgement.  No session
+        # state operation or registry RPC is added.  The no-registry guard still
         # applies, so a stray local file is never brought into being for them either.
         db = getattr(args, "db", "") or default_db(env)
         if not os.path.isfile(db):
             print(json.dumps({"error": "no Operator registry on this host"}))
             return 3
+        if args.command == "plan-session-snapshot":
+            try:
+                answer = plan_session_snapshot(db, args.record_id)
+            except UnknownRecord:
+                print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
+                return 2
+            except sqlite3.Error:
+                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                return 3
+            except ValueError:
+                print(json.dumps({"error": "registry_error", "code": "registry_error"}))
+                return 2
+            print(json.dumps(answer))
+            return 0
+        if args.command == "enqueue-session-snapshot":
+            try:
+                answer = enqueue_session_snapshot(db, args.record_id, args.expected_sha256)
+            except UnknownRecord:
+                print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
+                return 2
+            except StaleSessionSnapshot as exc:
+                print(
+                    json.dumps(
+                        {
+                            "error": "stale_snapshot",
+                            "code": "stale_snapshot",
+                            "snapshot_sha256": exc.current_sha256,
+                        }
+                    )
+                )
+                return 2
+            except InvalidSessionSnapshotDigest:
+                print(
+                    json.dumps(
+                        {"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}
+                    )
+                )
+                return 2
+            except sqlite3.Error:
+                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                return 3
+            except ValueError:
+                print(json.dumps({"error": "registry_error", "code": "registry_error"}))
+                return 2
+            print(json.dumps(answer))
+            return 0
         if args.command == "record-export-attempt":
             attempt_id = record_export_attempt(
                 db,
@@ -3191,6 +3325,29 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         # is guarded as well as the passthrough that runs it through simple-chat.
         print(json.dumps({"error": "no Operator registry on this host"}))
         return 3
+    if args.command in (
+        "register",
+        "relabel",
+        "update",
+        "close",
+        "touch",
+        "sweep",
+        "reopen",
+    ):
+        # AFC-723: session writes go only through the Operator's registry API, never
+        # against a caller-chosen local --db file (which would act as a second assigner).
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "operator-registry session writes require the registry API "
+                        "(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL)"
+                    ),
+                    "code": "not_configured",
+                }
+            )
+        )
+        return 2
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
         return 0
@@ -3206,190 +3363,6 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             print(json.dumps({"error": str(exc), "found": False}))
             return 2
         print(json.dumps(found if found else {"label": args.letter, "found": False}))
-        return 0
-    if args.command == "register":
-        try:
-            out = register_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                seat=args.seat,
-                source=args.source,
-                title=args.title,
-                project=args.project,
-                thread_link=args.thread_link,
-                apple_note_link=args.apple_note_link,
-                wake_capability=args.wake_capability,
-                issuer=ISSUER_OPERATOR,
-                letter_space=args.letter_space,
-                letter_pick=args.letter_pick,
-                parent_session_id=args.parent_session_id,
-                parent_letter=args.parent_letter,
-            )
-        except LabelExhausted as exc:
-            # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.
-            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
-            return 2
-        except SeatPlatformMismatch as exc:
-            print(json.dumps(exc.answer()))
-            return 2
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "relabel":
-        try:
-            out = relabel_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                seat=args.seat,
-                source=args.source,
-                letter_space=args.letter_space,
-                letter_pick=args.letter_pick,
-                parent_session_id=args.parent_session_id,
-                parent_letter=args.parent_letter,
-                issuer=ISSUER_OPERATOR,
-                force=args.force,
-            )
-        except LabelExhausted as exc:
-            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
-            return 2
-        except SessionClosed as exc:
-            print(json.dumps({"error": str(exc), "code": "closed_session"}))
-            return 2
-        except SessionUnknown as exc:
-            print(json.dumps({"error": str(exc), "code": "not_registered"}))
-            return 2
-        except SeatPlatformMismatch as exc:
-            print(json.dumps(exc.answer()))
-            return 2
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "update":
-        try:
-            out = update_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                title=args.title,
-                project=args.project,
-                thread_link=args.thread_link,
-                apple_note_link=args.apple_note_link,
-                wake_capability=args.wake_capability,
-                issues=None if args.issues is None else _issues_arg(args.issues),
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "close":
-        try:
-            out = close_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                reason=args.reason,
-                actor=args.actor,
-                source=args.source,
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "touch":
-        try:
-            out = touch_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "sweep":
-        ended = sweep_stale(
-            db,
-            platform=args.platform,
-            seat=args.seat,
-            stale_after_minutes=args.stale_after_minutes,
-        )
-        print(json.dumps({"ended": ended, "count": len(ended)}))
-        return 0
-    if args.command == "reopen":
-        # The reopen shares the platform's own rule, the one every hook uses, so the
-        # pair space is kept the same way here as it is in the hook.  It lives behind
-        # this verb because a host that keeps no registry asks the host that holds one.
-        from . import platform_letter
-
-        reg = None
-        try:
-            reg = SessionRegistry(db)
-            letter, generation, previous = platform_letter.operator_reopen(
-                sys.modules[__name__],
-                db,
-                reg,
-                args.record_id,
-                actor=args.actor,
-                source=args.source,
-                pick=args.letter_pick,
-                parent=args.parent_session_id,
-            )
-        except platform_letter.SpaceLost as exc:
-            # A chat that held a pair would come back with a single letter.  That is
-            # refused before anything is written.
-            print(
-                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
-            )
-            return 2
-        except LabelExhausted as exc:
-            print(
-                json.dumps(
-                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
-                )
-            )
-            return 2
-        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
-            # A database that faults is a refusal, not a traceback:  the far host has
-            # to answer with something the caller can read.
-            print(
-                json.dumps(
-                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
-                )
-            )
-            return 2
-        finally:
-            if reg is not None:
-                reg.close_db()
-        print(
-            json.dumps(
-                {
-                    "record_id": args.record_id,
-                    "label": letter,
-                    "generation": generation,
-                    "previous": previous,
-                    "outcome": "reopened",
-                }
-            )
-        )
         return 0
     if args.command == "history":
         try:

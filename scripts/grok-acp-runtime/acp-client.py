@@ -34,18 +34,26 @@ HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
-FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
+FLEET_INFISICAL_CLI = Path(__file__).resolve().parent.parent / "fleet_infisical_cli.py"
 
 
 def load_secret() -> str:
-    """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp (`fleet-secrets get`)."""
+    """Use existing Infisical-synced transport, else read Fleet-OPS /grok-acp."""
     secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
     if not secret:
         try:
             proc = subprocess.run(
-                [FLEET_SECRETS, "get", "GROK_AGENT_SECRET", "--path", "/grok-acp"],
+                [
+                    sys.executable,
+                    "-I",
+                    str(FLEET_INFISICAL_CLI),
+                    "get",
+                    "GROK_AGENT_SECRET",
+                    "--project",
+                    "fleet-ops",
+                    "--path",
+                    "/grok-acp",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,

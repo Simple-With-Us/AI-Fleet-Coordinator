@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import secrets
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -18,7 +19,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
 PROJECT = str(UUID(int=42))
-TOKEN = "st.service-token-fixture-value"
+TOKEN = "st." + secrets.token_urlsafe(32)
 
 
 def metadata(project=PROJECT, paths=("/zulip", "/operator"), permissions=("read",), expiry="2099-01-01T00:00:00Z"):
@@ -169,19 +170,23 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
 
     def test_child_environment_drops_present_bootstrap_credentials(self):
         credentials = {
-            "INFISICAL_LISTENER_READ_TOKEN": "st.synthetic-secondary-token",
-            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st.synthetic-other-reader",
-            "INFISICAL_WRITE_TOKEN": "st.synthetic-writer-token",
-            "INFISICAL_CLIENT_ID": "legacy-id-sentinel",
-            "INFISICAL_CLIENT_SECRET": "legacy-secret-sentinel",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "universal-id-sentinel",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "universal-secret-sentinel",
-            "INFISICAL_AUTOMATION_CLIENT_ID": "automation-id-sentinel",
-            "INFISICAL_AUTOMATION_CLIENT_SECRET": "automation-secret-sentinel",
-            "INFISICAL_SHARED_CLIENT_ID": "shared-id-sentinel",
-            "INFISICAL_SHARED_CLIENT_SECRET": "shared-secret-sentinel",
+            name: "st." + secrets.token_urlsafe(32)
+            for name in (
+                "INFISICAL_LISTENER_READ_TOKEN",
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+                "INFISICAL_WRITE_TOKEN",
+                "INFISICAL_CLIENT_ID",
+                "INFISICAL_CLIENT_SECRET",
+                "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+                "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+                "INFISICAL_AUTOMATION_CLIENT_ID",
+                "INFISICAL_AUTOMATION_CLIENT_SECRET",
+                "INFISICAL_SHARED_CLIENT_ID",
+                "INFISICAL_SHARED_CLIENT_SECRET",
+                MODULE.WAKE_ROUTER_TOKEN,
+                "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
+            )
         }
-        credentials[MODULE.WAKE_ROUTER_TOKEN] = "st.synthetic-wake-router-token"
         env = dict(self.env(), **credentials, KEEP_CONFIG="retained")
 
         def fetch(source, **kwargs):
@@ -229,6 +234,16 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         for i, a in enumerate(groups):
             for b in groups[i + 1:]:
                 self.assertTrue(a.isdisjoint(b), sorted(a & b))
+
+    def test_every_server_seat_may_hold_the_url_of_its_own_legacy_bridge(self):
+        # A seat that still has a legacy bridge needs a name for that bridge's URL, and it is
+        # never the seat's own routine name:  the router's front and the bridge are two names,
+        # so a rollback has a URL to point at.
+        names = MODULE.allowed_names(MODULE.server_codes(MODULE.PARTITION_DEFAULT))
+        self.assertIn("ZC_ROUTINE_URL", names)
+        self.assertIn("ZC_BRIDGE_ROUTINE_URL", names)
+        # The bridge's name is a seat name, so a copy of it in the container is dropped.
+        self.assertTrue(MODULE.is_seat_name("ZC_BRIDGE_ROUTINE_URL"))
 
     def test_the_registry_key_pattern_is_the_knob_registry_pattern(self):
         from fleet_knobs import registry
@@ -285,7 +300,11 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         self.assertEqual(
             MODULE.AUTH_ENV_VARS,
             core.AUTH_ENV_VARS
-            | {MODULE.LISTENER_READ_TOKEN, MODULE.OPERATOR_VOICE_TOKEN, MODULE.WAKE_ROUTER_TOKEN},
+            | {
+                MODULE.LISTENER_READ_TOKEN, MODULE.OPERATOR_VOICE_TOKEN, MODULE.WAKE_ROUTER_TOKEN,
+                # This editor-only writer is stripped by the standalone listener loader.
+                "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
+            },
         )
 
 

@@ -19,7 +19,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  See `secret-handoff`.
+Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
@@ -131,7 +131,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 
 **Rules that matter** (FLEET-PROTOCOL.md § Releases, Versioning, and Brand Assets):
 
-- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
+- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with a normal space before uppercase AM or PM and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The build number is the time the build itself runs in `YYYYMMDDHHmm` Central Time (owner ruling updated November 15, 2026: every build, including rebuilds, takes its own run time), strictly increasing per app, so no build number is ever reused.  The marketing version follows the app's standing version rule (default `0.1.0`, CT `1.1.2`, or the app's current App Store rule), not the commit count.  Commit-count and UTC build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 

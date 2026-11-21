@@ -155,7 +155,7 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { GAP, fixOutbound } from "./textfmt.js";
-import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, compactGitHubArgs, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -1715,10 +1715,10 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
@@ -1746,6 +1746,13 @@ export class HostedTools {
     const recall = this.requireRecall();
     const query = args.query.trim();
     if (!query) throw new ToolError("invalid_argument", "argument 'query' must not be blank");
+    // The same pre-upstream gate the recall writes run:  a query, app or category that
+    // looks like it holds a secret is refused here, before anything is sent anywhere,
+    // and the refusal names the field and kind, never the value.
+    for (const [field, value] of Object.entries({ query, app: args.app?.trim() ?? "", category: args.category?.trim() ?? "" })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to search:  the ${field} looks like it contains ${kind}`);
+    }
     await this.reserve("read");
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;
@@ -2359,16 +2366,31 @@ export class HostedTools {
     const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
-    if (held && held !== claimName) {
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
+    const stealing = args.steal === true;
+    const steal_reason = String(args.reason ?? "").trim();
+    if (stealing && !steal_reason) {
+      throw new ToolError("invalid_argument", "steal requires reason:  one sentence naming why the claim is being taken.");
+    }
+    // The steal reason reaches Linear in the CLAIMED comment, so it runs the same
+    // scan as the optional note:  a credential-shaped value is refused having sent
+    // nothing, and the refusal names the field, never the value.
+    if (steal_reason) {
+      this.scanLinearText(steal_reason, args.session, { field: "reason" });
+    }
+    // Any foreign claim label is a hold, not just the first `claimed:` label on the
+    // issue:  an issue carrying the caller's own label first and another seat's
+    // behind it (the same-second double-claim shape) is still another seat's claim.
+    const foreignClaimKey = keys.find((n) => n.startsWith(CLAIM_PREFIX) && n !== claimName);
+    if (foreignClaimKey && !stealing) {
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${foreignClaimKey.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: foreignClaimKey.slice(CLAIM_PREFIX.length) } });
     }
     const delegate = issue?.delegate ?? null;
     // Only an app delegate is a fleet claim marker, exactly as on the release
     // path:  a human delegation (Jay's triage, a colleague's) never holds a
     // claim, and claiming the issue delegates it to this seat's app user.
-    if (delegate?.id && delegate.app === true && delegate.id !== viewerId) {
+    if (delegate?.id && delegate.app === true && delegate.id !== viewerId && !stealing) {
       const heldBy = delegate.name || "another seat";
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: heldBy } });
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: heldBy } });
     }
     const workspace = await this.linearWorkspace();
     // A claim is In Progress plus the claimed:<seat> and seat:<seat> labels
@@ -2394,9 +2416,32 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
-    const body = this.linearBody(`CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session);
+    // The takeover attribution names only a holder this steal actually displaced:
+    //  the foreign claim label found above, or the app delegate of another seat —
+    //  never the caller's own claim (a re-assert takes nothing) and never a human
+    //  delegate, who holds no fleet claim.
+    const foreignLabel = foreignClaimKey ? foreignClaimKey.slice(CLAIM_PREFIX.length) : "";
+    const foreignDelegate = delegate?.id && delegate.app === true && delegate.id !== viewerId ? delegate.name || "another seat" : "";
+    const stolen_from = stealing ? foreignLabel || foreignDelegate : "";
+    // A steal always records why, even when nobody was displaced (a re-assert or a
+    // reclaim of an abandoned issue):  the takeover text names the displaced holder
+    // when there was one and carries the reason in every case.  The idempotency key
+    // comes from the stable part of the body — so a retry after a successful steal,
+    // which no longer sees the displaced holder on the issue, still derives the same
+    // key and answers duplicate — with the steal marker and reason riding alongside,
+    // so a takeover never answers as a duplicate of the same seat's plain claim in
+    // the idempotency window.  The fixed comment id is derived from the full
+    // attributed body instead, so a later steal with a different reason lands as its
+    // own comment and never overwrites the earlier takeover record.
+    const stable = this.linearBody(
+      `CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`,
+      args.session,
+    );
+    const body = stealing
+      ? this.linearBody(`CLAIMED${stolen_from ? ` — taken from ${stolen_from}` : ""}: ${steal_reason}${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session)
+      : stable;
     audit.body_len = [...body].length;
-    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
+    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, stable, stealing, steal_reason]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
     const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
@@ -2529,19 +2574,21 @@ for (const action of TYPED_V1_ACTIONS) {
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {
   HostedTools.prototype[`tool_gr_${action}`] = async function (args) {
+    if (action === "wf_pr_create") throw new ToolError("forbidden", "PR creation requires gr_open_pr. No request was sent.");
     if (this.config?.grWorkflowEnabled !== true) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
     // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
     // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
     // result says so.
-    const gapped = gapGitHubArgs(action, args);
+    const compacted = compactGitHubArgs(action, args, { seat: seatTagForSeat(this.seat) });
+    const gapped = gapGitHubArgs(action, compacted, { seat: seatTagForSeat(this.seat) });
     let parsedArgs = parseWfV1Args(action, gapped);
-    if (parsedArgs === null && gapped !== args) {
-      parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null && gapped !== compacted) {
+      parsedArgs = parseWfV1Args(action, compacted);
       if (parsedArgs !== null) {
         for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
-          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+          if (gapped[field] !== compacted[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
         }
       }
     }

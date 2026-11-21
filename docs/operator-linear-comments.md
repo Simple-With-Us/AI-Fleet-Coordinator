@@ -49,12 +49,31 @@ Eavesdropper, and it hosts the mirror.
   fold-in was directed.  The retirement sequence below keeps that proof as a gate.
 - **Comment format:** first line `<!-- zulip-relay -->` plus a per-conversation key (the
   issue and the id of the first message recorded for the topic, so a topic rename keeps
-  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then a
-  bullet per recorded message — timestamp link (a `near/<message id>` permalink built
-  from the id alone, never from topic text), sender, and a neutralised quote (280 chars,
-  credential-shaped fields withheld whole, markdown defanged);  at most 20 bullets, with
+  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then one
+  block per recorded message — a bold line with the timestamp link (a `near/<message id>`
+  permalink built from the id alone, never from topic text) and the sender, then the whole
+  post as readable Markdown (the line structure kept, credential-shaped fields withheld
+  whole, links shown but never live);  at most 20 blocks, with
   an "_N earlier message(s) not listed._" line when the thread is longer;  footer
   "_Mirrored one way from Zulip by the relay.  Edit in Zulip, not here._"
+- **The whole post (AFC-847).**  A post is shown as the sender wrote it:  the message
+  content is converted to Markdown (`scripts/simple_tools/zulip_markdown.py`, standard
+  library only — Zulip's rendered HTML and its Markdown source both become Markdown) and
+  shown with its line structure kept, up to 10,000 characters a message (`MESSAGE_CHARS`,
+  Zulip's own limit, so no post Zulip sends is cut) and 50,000 characters a comment
+  (`COMMENT_CHARS`);  a cut always says what it left out
+  ("_N characters of this message are not shown._", "_N characters of this topic are not
+  shown._").  The credential scan runs over the converted text and not over the markup, so
+  a Zulip attribute cannot trip a row by itself, while a link's URL stays in the text, so a
+  credential inside one is still caught.  A link is shown, not live.  The comments written
+  before this change hold posts that were cut at 280 characters:  an entry records the
+  format its quotes were rendered in, an entry without one is read from Zulip again and
+  rendered again, and the comment is edited with the whole posts and says that it was
+  re-rendered.  The topic's next message repairs its comment, and a topic that stays
+  silent is repaired by the cycle, one comment per cycle.  A topic whose posts are longer
+  than the comment's bound leaves the oldest of them out, and the comment says how many
+  characters of the topic are not shown;  a second comment for the overflow would break
+  the one-comment-per-topic contract, which is the owner's ruling, so it is not done here.
 - **Dedup state:** a JSON ledger, `~/.agent-sync/linear-relay.json` on the host that runs
   it (override `LINEAR_RELAY_STATE`), keyed `ISSUE|stream_id|sha256(topic)[:32]`, holding
   the comment id, the recorded links, seen message ids, counts, edit timing and retry
@@ -62,14 +81,20 @@ Eavesdropper, and it hosts the mirror.
   and reconciled by marker scan before any re-create, so the design is at-least-once-safe
   against crashes but — as the module itself states — NOT exactly-once:  a lost ledger,
   a second relay process, or a create that landed while its answer was lost can each
-  produce a second comment, narrowed by the marker reconciliation.
+  produce a second comment, narrowed by the marker reconciliation.  Since AFC-821 the
+  ledger keeps an `archive` table:  a pruned entry that has a comment leaves its first
+  message id and comment id there (no text), and the topic's next message restores it
+  and edits the same comment, so pruning no longer starts a second one.  An archived
+  record dropped at the archive's bound (20,000 records, or the file's 16 MB) can, and
+  so can a rename or move made while the worker was not running.
 
 ## The fold-in (this lane)
 
 - `scripts/simple_tools/operator_linear.py` (new):  `OperatorLinearComments` hosts the
   relay's own `RelayWorker` inside the listener daemon.  The daemon feeds it the stream
   messages it already routes (`route_message`) and the `update_message` events it
-  already handles (`handle_events`), and ticks it every 30 seconds;  observation is
+  already handles (`handle_events`), tells it when a seat's event queue registers again
+  (`route_backfill`, AFC-821), and ticks it every 30 seconds;  observation is
   best-effort and can never break routing, and the worker deduplicates by message id, so
   a message routed for several seats counts once.  The public-stream set is loaded with
   a routing seat's existing daemon client (a read);  the only writes anywhere are the
@@ -85,6 +110,37 @@ Eavesdropper, and it hosts the mirror.
   reflects the whole current thread.  Both halves are in `linear_relay.py`, additive and
   covered by tests;  the standalone process passes no history reader and its ingest is
   otherwise unchanged.
+- **The gaps, and the archive (AFC-821).**  The worker also takes a catch-up reader
+  (`history_since`:  the same messages API, paged on after a message id).  The first
+  message that reaches a standing entry after a restart, after a seat's queue registers
+  again, or after a message of its topic was dropped while the stream set was unloaded
+  reads what the topic got in between and records it before the live message;  only a
+  read that reaches the live message settles the topic.  A read cut short of it (at its
+  1000-message cap, or by a page Zulip repeated), or one showing the live message was a
+  replayed older one, is continued by the topic's next message;  three reads in a row
+  that bring nothing new settle it, in the log;  a failed read is retried a
+  minute or more later.  A pruned entry leaves its comment in the ledger's archive
+  (above), and the topic's next message restores it through half (a), reading the
+  whole topic first;  when that read fails, the record waits and the comment is left
+  as it is.
+  Each history read has one 30-second deadline for all its pages, because it runs on
+  the routing thread.  A caller that walks a topic page by page may hand the read a
+  deadline of its own, and the earlier of the two holds, so a walk never gets more time
+  out of a read than a read on its own gets.  A reader that cannot take a deadline is
+  refused before it reads, because a walk it cannot bound is not a bounded walk.
+  Every message a read answers is checked against the shape Zulip's messages API gives
+  it before anything reads it:  a malformed one is skipped and counted in the log (the
+  count alone, never its text), so one bad message never holds a catch-up or a restore
+  open.  So is one with a text field over 64 KiB (Zulip itself refuses a message
+  over 10,000 characters), and a read is taken at 1000 messages at most.  A
+  credential-shaped field of a message a read records is withheld whole, and logged by
+  field name, as on the live path.  An item with no integer id has no place in the topic
+  and is left out where the read pages (`fetch_topic_history`), where it does not count
+  toward the 1000-message cap either.  A read fails, and is tried again
+  later, when its answer is not a list of messages (None and an empty mapping or string
+  included) or when a full page carries no
+  message id to page on from.  A catch-up whose first read failed starts at the topic's
+  oldest message.
 - **State:** the hosted ledger is the same format at
   `<state root>/operator/linear-comments.json` (server:  `/data/operator/linear-comments.json`),
   beside the session registry.  The marker line is deliberately unchanged
@@ -157,7 +213,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (40 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (63 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -166,8 +222,15 @@ second create;  no keys → no comment and no entry;  key-shaped false positives
 writer's own posts, orders links oldest first, shares one fetch across the issues one
 message names, and never blocks a create when the history read fails;  a topic-title
 mention backfills from the first routed message;  tracked topics take every later
-message, untracked topics take none;  history paging and narrow shape;  the engine
-end-to-end and across a restart;  silence until the public-stream set loads;  private
+message, untracked topics take none;  history paging and narrow shape, after a message
+id too (below 1 from the topic's oldest message, and on from the place of one no longer
+in the topic), with one deadline per read;  a page item that is not a message left out
+and paged past, never counted toward the cap, and a full page of them failing the read;
+a reader with no client fails rather than answering empty;  the engine end-to-end,
+across a restart, catching up after a restart, after a first read that failed, and after
+a seat's queue registers again, and catching up or restoring an archived comment past a
+page item that is not a message;  the daemon's backfill telling the engine a queue
+registered;  silence until the public-stream set loads;  private
 streams never commented;  dry run writes nothing;  the ledger path;  the
 `[linear_comments]` config parsing (including `infisical_token_file`);  the credential
 load with the HTTP fetch faked — the service token's sources (bound variable wins,
@@ -177,8 +240,12 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 78 tests) stays green unchanged in behaviour except the
-whole-topic continuation above.
+(`test_linear_relay.py`, 181 tests) covers the worker, the whole-topic continuation
+above, and the AFC-821 archive and catch-up, malformed history messages and reads that
+answer no list at all included, and the whole post (the conversion, the bounds and the
+notes, the credential scan over the converted text, and the repair of the comments an
+older build wrote).  The conversion itself has its own suite
+(`test_zulip_markdown.py`, 82 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 

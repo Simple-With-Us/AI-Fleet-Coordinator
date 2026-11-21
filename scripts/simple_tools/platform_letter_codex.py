@@ -171,6 +171,7 @@ class Thread:
     source: str = ""
     originator: str = ""
     thread_source: str = ""
+    creator_user_id: str = ""
     title: str = ""
     name: str = ""
     first_message: str = ""
@@ -181,6 +182,19 @@ class Thread:
 
 def _s(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _as_text(value: object) -> str:
+    """A value as text, whatever the store's column type is.
+
+    The account id of a thread is a string in a current store and a number in an older one, so
+    it is read as text either way:  a numeric id that was dropped would refuse every delivery
+    of a chat it owns."""
+    if isinstance(value, str):
+        return value.strip()
+    if value is None or isinstance(value, bool):
+        return ""
+    return str(value).strip()
 
 
 def _spawned_by(source: str) -> str:
@@ -208,8 +222,8 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
     try:
         try:
             row = conn.execute(
-                "SELECT source, originator, thread_source, title, name, first_user_message, agent_nickname,"
-                " agent_path FROM threads WHERE id = ?",
+                "SELECT source, originator, thread_source, creator_user_id, title, name,"
+                " first_user_message, agent_nickname, agent_path FROM threads WHERE id = ?",
                 (sid,),
             ).fetchone()
         except sqlite3.OperationalError as exc:
@@ -237,6 +251,7 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
         source=source,
         originator=_s(data.get("originator")),
         thread_source=_s(data.get("thread_source")),
+        creator_user_id=_as_text(data.get("creator_user_id")),
         title=_s(data.get("title")),
         name=PL.one_line(data.get("name")),
         first_message=_s(data.get("first_user_message")),
@@ -608,6 +623,68 @@ def rename_thread(
     return False
 
 
+# The repair pass (`repair_unlettered`) scans for threads still showing the "??: " placeholder:  at most this
+# many, only chats old enough that their own start hook has finished (a brand-new chat's "??" can be its start in
+# flight), never an archived one (an archived chat is put away, not lost), and none older than a week (an ancient
+# "??" chat is history, not a repair).
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's chats that still show the "??: " placeholder, newest first, for the scheduled repair pass
+    (`repair_unlettered`).  Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store
+    version without `created_at`) answers None:  no pass this time.  A chat's title is read again in its own
+    replayed start before anything changes."""
+    path = store_file(env)
+    if not path:
+        return None
+    try:
+        conn = sqlite3.connect(
+            Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    now = time.time()
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT id FROM threads WHERE name LIKE '??: %' AND archived = 0"
+                " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+                (
+                    now - UNLETTERED_MAX_AGE_SECONDS,
+                    now - UNLETTERED_MIN_AGE_SECONDS,
+                    UNLETTERED_SCAN,
+                ),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such column" not in str(exc):
+                raise
+            if "archived" not in str(exc):
+                return None  # a store version this old cannot say how old a chat is:  no pass
+            # A store from before `archived`:  no chat in it can be archived (the column did not exist to
+            # set), so the unfiltered scan loses nothing;  the age window, the cap and the pass's own scope
+            # gate still bind.
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM threads WHERE name LIKE '??: %'"
+                    " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+                    (
+                        now - UNLETTERED_MAX_AGE_SECONDS,
+                        now - UNLETTERED_MIN_AGE_SECONDS,
+                        UNLETTERED_SCAN,
+                    ),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [str(row[0]) for row in rows]
+
+
 def codex_rename(req: PL.TitleRequest) -> bool:
     """The spec's title writer: put "XX: Words" on the thread (a sub-thread's own id, not its parent's)."""
     return rename_thread(req.session_id, req.title, req.env)
@@ -644,6 +721,7 @@ SPEC = PL.PlatformSpec(
     },
     quiet_events=("SubagentStop",),
     chat_payload=codex_chat_payload,
+    unlettered_sessions=codex_unlettered_sessions,
     title_writer=codex_rename,
 )
 

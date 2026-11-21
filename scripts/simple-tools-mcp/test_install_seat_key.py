@@ -2,6 +2,7 @@ import importlib.util
 import os
 import pathlib
 import unittest
+import uuid
 from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
@@ -24,7 +25,7 @@ class ScopedSeatKeyTests(unittest.TestCase):
                     "projectId": seat_key.INFISICAL_PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-                    "expiresAt": None,
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
             value = {"EMAIL": "seat@example.test", "KEY": "synthetic-zulip-key"}[name]
@@ -63,7 +64,7 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 "projectId": "00000000-0000-4000-8000-000000000001",
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-                "expiresAt": None,
+                "expiresAt": "2099-01-01T00:00:00Z",
             }
 
         token_name = seat_key.AFC_TOKEN_ENV
@@ -72,6 +73,59 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     seat_key.infisical_pair("EMAIL", "KEY")
         self.assertEqual(calls, ["/v2/service-token"])
+
+
+class GenericHandoffReaderTests(unittest.TestCase):
+    def test_generic_root_names_cross_the_real_worker_without_borrowing_bot_grants(self):
+        from fleet_knobs.tests._fake import ScopedReadAPI
+
+        names = ("CLOUDFLARE_JAY_ACCOUNT_EMAIL", "CLOUDFLARE_JAY_API_KEY", "ZULIP_OWNER_USER_ID")
+        values = dict(zip(names, ("owner@example.test", "public fixture", "123")))
+        client = seat_key._infisical_reader()
+        original = client.bounded_fetch_project
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+
+            def read(project, folder, env, **options):
+                return original(
+                    project,
+                    folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]},
+                    **options,
+                )
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project, "INFISICAL_TOKEN": api.token},
+                    clear=True,
+                ),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual([seat_key.handoff(n) for n in names], list(values.values()))
+                api.metadata_override = {"expiresAt": None}
+                self.assertEqual(seat_key.handoff(names[0]), values[names[0]])
+                api.metadata_override = {
+                    "scopes": [{"environment": "prod", "secretPath": "/zulip"}]
+                }
+                api.requests.clear()
+                with self.assertRaises(SystemExit):
+                    seat_key.handoff(names[1])
+                self.assertEqual(api.requests, ["/api/v2/service-token"])
+                os.environ.pop("INFISICAL_TOKEN")
+                os.environ[seat_key.FLEET_OPS_TOKEN_ENV] = api.token
+                api.requests.clear()
+                with self.assertRaises(SystemExit):
+                    seat_key.handoff(names[1])
+                self.assertEqual(api.requests, [])
+
+    def test_existing_value_needs_no_new_reader_and_unknown_names_cannot_expand_scope(self):
+        with (
+            mock.patch.dict(os.environ, {"CLOUDFLARE_JAY_API_KEY": "synced"}, clear=True),
+            mock.patch.object(seat_key, "_infisical_reader", side_effect=AssertionError("reader")),
+        ):
+            self.assertEqual(seat_key.handoff("CLOUDFLARE_JAY_API_KEY"), "synced")
+            with self.assertRaises(SystemExit):
+                seat_key.handoff("OTHER")
 
 
 if __name__ == "__main__":

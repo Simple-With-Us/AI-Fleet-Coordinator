@@ -5,19 +5,21 @@
 #     INFISICAL_FLEET_OPS_PROJECT_ID=<uuid> \
 #     bash scripts/simple_tools/server/install-operator-sheets-drain.sh --dry-run   # show the plan
 #   (the same without --dry-run)                                                 # install or update
+#   bash scripts/simple_tools/server/install-operator-sheets-drain.sh --code-only # reviewed code bundle only
 #
 # Run it as root from a clean AI-Fleet-Coordinator checkout at origin/main; it refuses any other
 # checkout.  Safe to run again: an unchanged file is left alone.  In order, it:
 #   1. stops the timer while it works, if the timer is running, and installs
-#      operator_sheets_export.mjs, operator_sheets_google.mjs and operator_sheets_drain.mjs into
+#      the five JavaScript modules and private-bundle fleet_infisical.py worker into
 #      /usr/local/lib/operator-sheets-drain (0644, root);
-#   2. reads OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry
+#   2. reads GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
 #      with the caller's scoped READ-only service token and writes /etc/operator-sheets/sa.json
 #      (0600, root);
 #   3. writes /etc/operator-sheets/drain.env (0600, root): the workbook id, sheet ids and the
 #      optional knobs, and prints the names of the settings that changed;
 #   4. preflight: the registry's pending-outbox and export-attempts reads, inside the container,
-#      return JSON (the second fails on an image without the fence or a store before schema v2);
+#      return JSON (the second fails on an image without the fence or a store before schema v2),
+#      and thread_registry export-rows returns the thread rows (only a warning when it does not);
 #   5. installs operator-sheets-drain.service and .timer into /etc/systemd/system and reloads
 #      systemd.  It never enables the timer; it starts it again only if step 1 stopped it.
 #
@@ -25,7 +27,7 @@
 #   OPERATOR_SHEETS_WORKBOOK_ID      the SWU Operator workbook id (required; it is not in this repo)
 #   OPERATOR_SHEETS_TOKEN_FILE       a root-owned file, mode 0600 or 0400, holding the scoped
 #                                    read-only Infisical service token for Fleet-OPS prod
-#                                    /operator-thread-registry (required).  The script never mints,
+#                                    /google-sheets-sa (required).  The script never mints,
 #                                    prints or echoes the token and never puts it on a command line.
 #   INFISICAL_FLEET_OPS_PROJECT_ID   the Fleet-OPS project id (or root's ~/.simple-tools/fleet-ops-project-id)
 #   OPERATOR_SHEETS_SESSIONS_SHEET_ID  default 20964676
@@ -45,30 +47,37 @@ SCRIPTS="$(cd -P -- "$SIMPLE_TOOLS/.." && pwd)"
 REPO="$(cd -P -- "$SCRIPTS/.." && pwd)"
 SERVICE=operator-sheets-drain.service
 TIMER=operator-sheets-drain.timer
-MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs)
+MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs
+  thread_registry_export.mjs registry_export_reader.mjs fleet_infisical.py)
 PREFLIGHT_TIMEOUT=120
 
 DRY=0
+CODE_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
+    --code-only) CODE_ONLY=1 ;;
+    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) echo "install-operator-sheets-drain: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+[[ "$CODE_ONLY" -eq 0 || "$DRY" -eq 0 ]] || {
+  echo "install-operator-sheets-drain: --code-only cannot be combined with --dry-run" >&2
+  exit 2
+}
 
 say() { printf 'install-operator-sheets-drain: %s\n' "$*"; }
 die() { say "$1" >&2; exit "${2:-1}"; }
+module_source() {
+  if [[ "$1" == fleet_infisical.py ]]; then
+    printf '%s\n' "$SCRIPTS/fleet_infisical.py"
+  else
+    printf '%s\n' "$SIMPLE_TOOLS/$1"
+  fi
+}
 
-WORKBOOK_ID="${OPERATOR_SHEETS_WORKBOOK_ID:-}"
-TOKEN_FILE="${OPERATOR_SHEETS_TOKEN_FILE:-}"
-SESSIONS_SHEET_ID="${OPERATOR_SHEETS_SESSIONS_SHEET_ID:-20964676}"
-EVENTS_SHEET_ID="${OPERATOR_SHEETS_EVENTS_SHEET_ID:-1449318075}"
-CONTAINER="${OPERATOR_REGISTRY_CONTAINER:-eavesdropper}"
-REGISTRY_DB="${OPERATOR_REGISTRY_DB:-/data/operator/registry.sqlite3}"
-PAGE_LIMIT="${OPERATOR_SHEETS_PAGE_LIMIT:-}"
-LOCK_PATH="${OPERATOR_SHEETS_LOCK:-}"
 TEST_ROOT="${OPERATOR_SHEETS_INSTALL_TEST_ROOT:-}"
+HOST_PYTHON=/usr/bin/python3
 
 # --- where things go: the real host, or a stubbed test root ---------------------------------
 
@@ -84,8 +93,12 @@ if [[ -n "$TEST_ROOT" ]]; then
   PREFIX="$TEST_ROOT"
   OWNER_UID="$(id -u)"
   OWNER_GID="$(id -g)"
-  NODE=""
+  NODE="$(command -v node || true)"
   PYTHON="$(command -v python3 || true)"
+  if [[ -n "$TEST_ROOT" ]]; then
+    OPERATOR_SHEETS_TEST_INSTALLER_PID="$$"
+    export OPERATOR_SHEETS_TEST_INSTALLER_PID
+  fi
 else
   PREFIX=""
   OWNER_UID=0
@@ -93,9 +106,241 @@ else
   NODE=/usr/bin/node
   PYTHON=/usr/bin/python3
 fi
+
+# A live install writes root-owned state, so reject non-root callers before they can create the
+# root-owned installer lock.  Dry runs and the isolated test root remain usable without root.
+if [[ "$DRY" -eq 0 && -z "$TEST_ROOT" && "$EUID" -ne 0 ]]; then
+  die "live installs require root"
+fi
+
 LIB_DIR="$PREFIX/usr/local/lib/operator-sheets-drain"
 ETC_DIR="$PREFIX/etc/operator-sheets"
 UNIT_DIR="$PREFIX/etc/systemd/system"
+
+# Serialize both live installer modes. Dry-run remains read-only.
+if [[ "$DRY" -eq 0 ]]; then
+  if [[ -n "$TEST_ROOT" ]]; then
+    mkdir -p -- "$PREFIX/run/lock" || die "could not create the test lock directory"
+    chmod 0755 -- "$PREFIX/run/lock" || die "could not set the test lock directory mode"
+  else
+    [[ -d /run/lock && ! -L /run/lock ]] || die "/run/lock must be an existing plain directory"
+  fi
+  LOCK_FILE="$PREFIX/run/lock/operator-sheets-drain-installer.lock"
+  [[ -n "$HOST_PYTHON" && -x "$HOST_PYTHON" ]] || die "python3 is missing for the installer lock"
+  "$HOST_PYTHON" -I - "$LOCK_FILE" "$OWNER_UID" "$OWNER_GID" \
+    "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" "$0" "$@" <<'PYLOCK'
+import fcntl
+import os
+import stat
+import sys
+
+lock_path, expected_uid, expected_gid, lock_held, script, *script_args = sys.argv[1:]
+expected_uid, expected_gid = int(expected_uid), int(expected_gid)
+
+def verify_fd(fd):
+    info = os.fstat(fd)
+    path_info = os.lstat(lock_path)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(path_info.st_mode)
+        or not stat.S_ISREG(path_info.st_mode)
+        or (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)
+        or info.st_uid != expected_uid
+        or info.st_gid != expected_gid
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_nlink != 1
+    ):
+        raise OSError("installer lock descriptor does not match the private lock file")
+
+try:
+    if lock_held == "1":
+        fd = 9
+        verify_fd(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        verify_fd(fd)
+        raise SystemExit(0)
+
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    verify_fd(fd)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    verify_fd(fd)
+    os.dup2(fd, 9, inheritable=True)
+    env = os.environ.copy()
+    env["OPERATOR_SHEETS_INSTALL_LOCK_HELD"] = "1"
+    os.execvpe("bash", ["bash", "--", script, *script_args], env)
+except BlockingIOError:
+    print("install-operator-sheets-drain: installer lock is already held", file=sys.stderr)
+    raise SystemExit(75)
+except OSError:
+    print("install-operator-sheets-drain: could not securely open the installer lock", file=sys.stderr)
+    raise SystemExit(1)
+PYLOCK
+  # The first invocation delegates the complete install to a Bash process that inherits fd 9;
+  # once it returns, propagate its status instead of running the install a second time unlocked.
+  if [[ "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" != "1" ]]; then
+    exit "$?"
+  fi
+fi
+
+if [[ "$CODE_ONLY" -eq 1 ]]; then
+  BACKUP_ROOT="$PREFIX/var/backups/operator-sheets-drain-code-only"
+  [[ -f "$HERE/$SERVICE" && ! -L "$HERE/$SERVICE" && -f "$HERE/$TIMER" && ! -L "$HERE/$TIMER" ]] ||
+    die "service and timer source files must exist as plain files"
+  [[ -n "$PYTHON" && -x "$PYTHON" ]] || die "python3 is missing"
+  [[ -n "$NODE" && -x "$NODE" ]] || die "node is missing"
+  command -v systemctl >/dev/null || die "systemctl is missing"
+  command -v timeout >/dev/null || die "timeout (coreutils) is missing"
+  [[ "$DRY" -eq 0 && -z "$TEST_ROOT" && "$(id -u)" -eq 0 ]] ||
+    [[ -n "$TEST_ROOT" && "$DRY" -eq 0 ]] || die "--code-only requires root (or the isolated test root)"
+
+  repo_git() { git -c safe.directory="$REPO" -C "$REPO" "$@"; }
+  repo_git rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
+  [[ -z "$(repo_git status --porcelain --untracked-files=all 2>/dev/null)" ]] ||
+    die "the checkout $REPO has uncommitted or untracked changes; install only reviewed code"
+  head="$(repo_git rev-parse HEAD)"
+  main="$(repo_git rev-parse --verify -q refs/remotes/origin/main || true)"
+  [[ -n "$main" && "$head" == "$main" ]] || die "the checkout must be exactly at origin/main"
+
+  backup_parent="$PREFIX/var/backups"
+  [[ -d "$backup_parent" && ! -L "$backup_parent" ]] || die "$backup_parent must be an existing plain directory"
+  if [[ -e "$BACKUP_ROOT" || -L "$BACKUP_ROOT" ]]; then
+    [[ -d "$BACKUP_ROOT" && ! -L "$BACKUP_ROOT" &&
+       "$(stat -c '%a %u %g' -- "$BACKUP_ROOT")" == "700 $OWNER_UID $OWNER_GID" ]] ||
+      die "$BACKUP_ROOT must be a root-private plain directory"
+  else
+    install -d -m 0700 -o "$OWNER_UID" -g "$OWNER_GID" -- "$BACKUP_ROOT" ||
+      die "could not create $BACKUP_ROOT"
+  fi
+  command -v mktemp >/dev/null || die "mktemp is missing"
+  SOURCE_STAGE=""
+  CODE_HELPER_STAGE=""
+  STAGE_DIR=""
+  timer_stopped=0
+  timer_restored=0
+  # Called through EXIT trap; ShellCheck cannot follow that handler
+  # shellcheck disable=SC2317
+  cleanup_code_only() {
+    local status=$?
+    trap - EXIT INT TERM
+    if [[ "$timer_stopped" -eq 1 && "$timer_restored" -eq 0 ]]; then
+      if [[ ! -x "$PYTHON" ]] || ! "$PYTHON" -I "$CODE_HELPER_STAGE" \
+        --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+        --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null; then
+        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
+        [[ "$status" -ne 0 ]] || status=1
+      elif ! systemctl start "$TIMER"; then
+        say "the installed module set is coherent, but could not restore the previously active $TIMER; it remains stopped; inspect the backup before restarting it" >&2
+        [[ "$status" -ne 0 ]] || status=1
+      else
+        timer_restored=1
+        say "restored the previously active $TIMER"
+      fi
+    fi
+    if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]]; then
+      rm -rf -- "$STAGE_DIR"
+    fi
+    if [[ -n "$SOURCE_STAGE" && -d "$SOURCE_STAGE" && ! -L "$SOURCE_STAGE" ]]; then
+      rm -rf -- "$SOURCE_STAGE"
+    fi
+    exit "$status"
+  }
+  trap cleanup_code_only EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  umask 077
+  SOURCE_STAGE="$(mktemp -d "$BACKUP_ROOT/source-XXXXXXXX")" || die "could not create a private source stage"
+  CODE_HELPER_STAGE="$SOURCE_STAGE/operator_sheets_code_only.py"
+  for name in "${MODULES[@]}" operator_sheets_code_only.py; do
+    repo_path="scripts/simple_tools/$name"
+    [[ "$name" != fleet_infisical.py ]] || repo_path=scripts/fleet_infisical.py
+    repo_git show "$head:$repo_path" > "$SOURCE_STAGE/$name" || die "could not stage reviewed source $name"
+    chmod 0600 "$SOURCE_STAGE/$name"
+  done
+  STAGE_DIR="$("$PYTHON" -I "$CODE_HELPER_STAGE" \
+    --source-dir "$SOURCE_STAGE" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+    --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+    --uid "$OWNER_UID" --gid "$OWNER_GID" --stage-only)" || die "existing install or source bundle staging failed"
+  [[ -n "$STAGE_DIR" && "$STAGE_DIR" == "$BACKUP_ROOT"/staged-* && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]] ||
+    die "the immutable source stage is unavailable"
+
+  unit_busy() {
+    local unit="$1" kind="$2" output key value active_state="" sub_state="" job="" main_pid="" no_job=0
+    output="$(systemctl show --property=ActiveState --property=SubState --property=Job \
+      --property=MainPID "$unit" 2>/dev/null)" || die "could not inspect systemd state for $unit"
+    while IFS='=' read -r key value; do
+      case "$key" in
+        ActiveState) active_state="$value" ;;
+        SubState) sub_state="$value" ;;
+        Job) job="$value" ;;
+        MainPID) main_pid="$value" ;;
+      esac
+    done <<< "$output"
+    [[ -n "$active_state" && -n "$sub_state" ]] ||
+      die "systemd returned incomplete state for $unit"
+    if [[ "$kind" == service ]]; then
+      [[ "$main_pid" =~ ^[0-9]+$ ]] || die "systemd returned incomplete state for $unit"
+    elif [[ "$kind" != timer ]]; then
+      die "unsupported systemd unit type for $unit"
+    fi
+    if [[ -z "$job" || "$job" == 0 || "$job" == / ]]; then no_job=1; fi
+    if [[ "$active_state" == active || "$active_state" == activating ||
+          "$active_state" == deactivating || "$active_state" == reloading ]]; then
+      return 0
+    fi
+    if [[ "$active_state" == inactive && "$sub_state" == dead && "$no_job" -eq 1 &&
+          ( "$kind" == timer || "$main_pid" == 0 ) ]]; then
+      return 1
+    fi
+    if [[ "$active_state" == failed && "$no_job" -eq 1 &&
+          ( "$kind" == timer || "$main_pid" == 0 ) ]]; then
+      return 1
+    fi
+    die "systemd state for $unit is not safely inactive (ActiveState=$active_state, SubState=$sub_state)"
+  }
+  if unit_busy "$TIMER" timer; then
+    timer_stopped=1
+    systemctl stop "$TIMER" || die "could not stop $TIMER before code-only update"
+    say "stopped $TIMER to prevent a new run during code-only update"
+  fi
+
+  wait_seconds=1560
+  if [[ -n "$TEST_ROOT" ]]; then
+    wait_seconds="${OPERATOR_SHEETS_TEST_CODE_ONLY_WAIT_SECONDS:-1560}"
+  fi
+  [[ "$wait_seconds" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid code-only bounded wait setting"
+  elapsed=0
+  while unit_busy "$SERVICE" service; do
+    if (( elapsed >= wait_seconds )); then
+      die "$SERVICE is still active after the bounded wait; no module files were changed"
+    fi
+    sleep 1
+    ((elapsed += 1))
+  done
+  say "$SERVICE is inactive; installing the immutable reviewed code closure"
+  set +e
+  "$PYTHON" -I "$CODE_HELPER_STAGE" \
+    --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+    --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+    --uid "$OWNER_UID" --gid "$OWNER_GID"
+  helper_status=$?
+  set -e
+  if [[ "$helper_status" -ne 0 ]]; then
+    die "code-only module update failed (helper status $helper_status)"
+  fi
+  say "code-only update complete; consumer credentials, settings and systemd units were not read or changed"
+  exit 0
+fi
+
+WORKBOOK_ID="${OPERATOR_SHEETS_WORKBOOK_ID:-}"
+TOKEN_FILE="${OPERATOR_SHEETS_TOKEN_FILE:-}"
+SESSIONS_SHEET_ID="${OPERATOR_SHEETS_SESSIONS_SHEET_ID:-20964676}"
+EVENTS_SHEET_ID="${OPERATOR_SHEETS_EVENTS_SHEET_ID:-1449318075}"
+CONTAINER="${OPERATOR_REGISTRY_CONTAINER:-eavesdropper}"
+REGISTRY_DB="${OPERATOR_REGISTRY_DB:-/data/operator/registry.sqlite3}"
+PAGE_LIMIT="${OPERATOR_SHEETS_PAGE_LIMIT:-}"
+LOCK_PATH="${OPERATOR_SHEETS_LOCK:-}"
 
 # --- inputs: checked before anything is read or changed ------------------------------------
 
@@ -122,12 +367,13 @@ read -r token_mode token_uid < <(stat -c '%a %u' -- "$TOKEN_FILE")
   die "OPERATOR_SHEETS_TOKEN_FILE must be mode 0600 or 0400 (it is $token_mode)" 2
 
 for name in "${MODULES[@]}"; do
-  [[ -f "$SIMPLE_TOOLS/$name" ]] || die "missing source $SIMPLE_TOOLS/$name"
+  source="$(module_source "$name")"
+  [[ -f "$source" ]] || die "missing source $source"
 done
 for name in "$SERVICE" "$TIMER"; do
   [[ -f "$HERE/$name" ]] || die "missing source $HERE/$name"
 done
-[[ -f "$SCRIPTS/fleet_secrets/core.py" ]] || die "missing source $SCRIPTS/fleet_secrets/core.py"
+[[ -f "$SCRIPTS/fleet_infisical.py" ]] || die "missing source $SCRIPTS/fleet_infisical.py"
 
 [[ "$DRY" -eq 1 ]] && say "dry run: nothing will be changed"
 
@@ -263,13 +509,13 @@ else
   install -d -m 0755 -o "$OWNER_UID" -g "$OWNER_GID" -- "$LIB_DIR" || die "could not create $LIB_DIR"
 fi
 for name in "${MODULES[@]}"; do
-  install_one "$SIMPLE_TOOLS/$name" "$LIB_DIR/$name" || true
+  install_one "$(module_source "$name")" "$LIB_DIR/$name" || true
 done
 
 # --- 2 and 3. sa.json from Infisical, and drain.env ----------------------------------------
 
 if [[ "$DRY" -eq 1 ]]; then
-  say "would read OPERATOR_GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /operator-thread-registry"
+  say "would read GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa"
   say "  with the read-only service token in $TOKEN_FILE (the token is not read in a dry run)"
   say "would write $ETC_DIR/sa.json (0600, root) if its content changed"
   say "would write $ETC_DIR/drain.env (0600, root) if its content changed, with:"
@@ -297,8 +543,8 @@ import stat
 import sys
 
 ROOT_UID = 0
-SECRET_PATH = "/operator-thread-registry"
-SECRET_NAME = "OPERATOR_GOOGLE_SHEETS_SA"
+SECRET_PATH = "/google-sheets-sa"
+SECRET_NAME = "GOOGLE_SHEETS_SA"
 MAX_TOKEN_BYTES = 8192
 MAX_ENV_BYTES = 64 * 1024
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -511,7 +757,10 @@ def main(argv):
     (scripts, etc_dir, token_file, workbook_id, sessions_id, events_id, container, registry_db,
      page_limit, lock_path) = argv
     sys.path.insert(0, scripts)
-    from fleet_secrets import core  # noqa: E402 - the checkout's own reviewed helper
+    try:
+        import fleet_infisical as core  # noqa: E402 - the checkout's own reviewed client
+    except ImportError as exc:
+        raise InstallError("fleet_infisical.py is required but could not be imported") from exc
 
     env = {key: os.environ[key] for key in ("HOME", core.ENV_PROJECT) if os.environ.get(key)}
     token = read_token(token_file)
@@ -576,9 +825,28 @@ if not isinstance(rows, list):
 print(len(rows))'
 }
 
+# The Zulip Threads sync's read (AFC-823):  prints the number of thread rows when export-rows
+# returns its payload object in time; prints nothing and fails otherwise.  The rows carry topic
+# names and are never printed.
+thread_rows() {
+  local out
+  out="$(timeout "$PREFLIGHT_TIMEOUT" docker exec -w /app/scripts "$CONTAINER" \
+    python3 -m simple_tools.thread_registry export-rows 2>/dev/null)" || return 1
+  printf '%s' "$out" | "$PYTHON" -I -c 'import json, sys
+try:
+    payload = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+    raise SystemExit(1)
+print(len(payload["rows"]))'
+}
+
 if [[ "$DRY" -eq 1 ]]; then
   say "would check that 'docker exec $CONTAINER ... operator_registry pending-outbox --db $REGISTRY_DB --limit 1' returns JSON within ${PREFLIGHT_TIMEOUT} s"
   say "would check that '... operator_registry export-attempts --db $REGISTRY_DB --limit 1' returns JSON (the export fence, schema v2)"
+  say "would check that '... thread_registry export-rows' returns the thread rows" \
+    "(only a warning when it does not: the Zulip Threads sync, AFC-823)"
 else
   rows="$(registry_list pending-outbox --db "$REGISTRY_DB" --limit 1)" ||
     die "preflight failed: pending-outbox in $CONTAINER did not return a JSON list within ${PREFLIGHT_TIMEOUT} s; the units were not installed"
@@ -586,6 +854,15 @@ else
   attempts="$(registry_list export-attempts --db "$REGISTRY_DB" --limit 1)" ||
     die "preflight failed: export-attempts in $CONTAINER did not return a JSON list: the image lacks the export fence CLI or the store is not yet at schema v2 (redeploy the Eavesdropper app and let it write once); the units were not installed"
   say "preflight ok: export-attempts returned JSON ($attempts row(s) at --limit 1)"
+  # A thread read problem never stops the install:  the Sessions and Events drain does not
+  # depend on it, and the thread sync logs its own failure code each run until it is fixed.
+  if threads="$(thread_rows)"; then
+    say "preflight ok: thread_registry export-rows returned $threads thread row(s)"
+  else
+    say "warning: thread_registry export-rows in $CONTAINER did not return the thread rows" \
+      "within ${PREFLIGHT_TIMEOUT} s; the Zulip Threads sync will log a failure each run" \
+      "until it does (the Sessions and Events drain is not affected)" >&2
+  fi
 fi
 
 # --- 5. systemd units; the timer is never enabled here ------------------------------------

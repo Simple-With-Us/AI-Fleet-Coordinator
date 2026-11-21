@@ -147,7 +147,7 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
     "import install_seat_key as m",
     "import os",
     "good = {name: {'secretKey': name, 'secretValue': name.lower(), 'type': 'shared'} for name in ('E', 'K')}",
-    "metadata = {'workspace': m.INFISICAL_PROJECT, 'permissions': ['read'], 'scopes': [{'environment': 'prod', 'secretPath': '/zulip'}], 'expiresAt': None}",
+    "metadata = {'workspace': m.INFISICAL_PROJECT, 'permissions': ['read'], 'scopes': [{'environment': 'prod', 'secretPath': '/zulip'}], 'expiresAt': '2099-01-01T00:00:00Z'}",
     "grant = metadata",
     "calls = []",
     "def api(method, path, token, body, env, **kwargs):",
