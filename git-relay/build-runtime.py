@@ -43,6 +43,7 @@ MODULES = (
     "patch_secretscan",
     "policy",
     "policy_input",
+    "pr_owners",
     "provenance_patch",
     "provider_scan",
     "reviewed_fixtures",
