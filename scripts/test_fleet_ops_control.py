@@ -183,7 +183,7 @@ class Base(unittest.TestCase):
             value = getattr(_ctx.runner, "secret", TOKEN)
             if not value:
                 raise foc.Failed(
-                    "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+                    "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
                 )
             return value
 
@@ -2927,7 +2927,7 @@ class CredentialTests(Base):
             (
                 1,
                 "failed",
-                "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN",
+                "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env",
             ),
         )
         self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
@@ -2966,12 +2966,12 @@ class CredentialTests(Base):
                 self.api.metadata_override = metadata
                 self.api.requests.clear()
                 code, ans = self.redeploy()
-                self.assertEqual(
-                    (code, ans["detail"]),
-                    (
-                        1,
-                        "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN",
-                    ),
+                self.assertEqual(code, 1)
+                self.assertTrue(
+                    ans["detail"].startswith("the Infisical reader refused the token")
+                    or ans["detail"].startswith("the Infisical read of the Coolify token failed")
+                    or ans["detail"].startswith("the Infisical read returned no usable Coolify token"),
+                    ans["detail"],
                 )
                 self.assertEqual(self.api.requests, ["/api/v2/service-token"])
                 self.assertEqual(self.http_calls, [])
@@ -2998,12 +2998,12 @@ class CredentialTests(Base):
                 self.http_calls.clear()
                 self.assertEqual((self.api.requests, self.http_calls), ([], []))
                 code, ans = self.redeploy()
-                self.assertEqual(
-                    (code, ans["detail"]),
-                    (
-                        1,
-                        "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN",
-                    ),
+                self.assertEqual(code, 1)
+                self.assertTrue(
+                    ans["detail"].startswith("the Infisical reader refused the token")
+                    or ans["detail"].startswith("the Infisical read of the Coolify token failed")
+                    or ans["detail"].startswith("the Infisical read returned no usable Coolify token"),
+                    ans["detail"],
                 )
                 self.assertEqual(len(self.api.requests), 2)
                 self.assertEqual(self.http_calls, [])
@@ -3110,7 +3110,7 @@ class CredentialTests(Base):
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual(
             (code, ans["detail"]),
-            (1, "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"),
+            (1, "the Infisical read returned no usable Coolify token; check the /coolify-deploy-only-token folder grant"),
         )
         self.assertEqual(self.http_calls, [])
         self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
