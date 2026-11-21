@@ -490,7 +490,6 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertEqual(row["state"], "warn")
         self.assertTrue(row["ingestionAlive"])
 
-
     def test_st_observation_age_rounds_once_before_freshness_gate(self):
         # 120.9s must be stored and compared as 121, not truncated to 120
         # and then still treated as stale against a 120s cap.
@@ -498,7 +497,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
         payload = st_payload(
             mango={
                 "reachable": True,
-                "checkedAt": datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z"),
+                "checkedAt": datetime.fromtimestamp(stamp, timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
             }
         )
         row = api_health.map_st_live(payload, 200, NOW)
@@ -527,7 +528,6 @@ class ActualPipelineMappingTests(unittest.TestCase):
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertEqual(row["state"], "fail")
         self.assertEqual(row["reason"], "upstream_aggregate_not_ok")
-
 
 
 if __name__ == "__main__":

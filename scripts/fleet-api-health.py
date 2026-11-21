@@ -340,9 +340,7 @@ def _ct_pipeline_components(payload):
         return {}
     checks = pipeline.get("checks")
     if not isinstance(checks, list):
-        raise ValueError(
-            "CT pipeline checks must be a list, got %s" % type(checks).__name__
-        )
+        raise ValueError("CT pipeline checks must be a list, got %s" % type(checks).__name__)
     by_id = {}
     for entry in checks:
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
