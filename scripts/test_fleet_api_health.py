@@ -491,8 +491,8 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertTrue(row["ingestionAlive"])
 
     def test_st_observation_age_rounds_once_before_freshness_gate(self):
-        # 120.9s must be stored and compared as 121, not truncated to 120
-        # and then still treated as stale against a 120s cap.
+        # 120.9s must be stored and compared as 121 (ceil), not truncated
+        # to 120 and then still treated as stale against a 120s cap.
         stamp = NOW - 120.9
         payload = st_payload(
             mango={

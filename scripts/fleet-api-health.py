@@ -64,6 +64,7 @@ standard library only.
 
 import argparse
 import json
+import math
 import os
 import socket
 import sys
@@ -250,19 +251,24 @@ def map_st_live(payload, http_status, now):
         return row
     row["mangoReachable"] = mango["reachable"]
     age = _observation_age(payload, now)
-    if age is not None:
-        age = round(age)
-    row["observationAgeSeconds"] = age
     if mango["reachable"] is not True:
+        row["observationAgeSeconds"] = None if age is None else int(age)
         row["state"] = "fail"
         row["reason"] = "mango_unreachable"
         return row
     if age is None:
+        row["observationAgeSeconds"] = None
         row["reason"] = "observation_unreported"
         return row
     if age < 0:
+        row["observationAgeSeconds"] = int(age)
         row["reason"] = "observation_in_future"
         return row
+    # Ceil once so the stored seconds and the freshness gate agree, and so
+    # any fraction past the cap (120.001, 120.9) stays stale the way the
+    # unrounded comparison did.  round() would snap 120.001 back to 120.
+    age = math.ceil(age)
+    row["observationAgeSeconds"] = age
     if age > ST_OBSERVATION_MAX_AGE_SECONDS:
         # A stale observation proves the loop once ran, not that it runs.
         row["reason"] = "observation_stale"
