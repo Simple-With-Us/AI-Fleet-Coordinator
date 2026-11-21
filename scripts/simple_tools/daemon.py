@@ -3437,8 +3437,17 @@ class Daemon:
 
         The sender's email is enough too, and the seat it maps to is not required:  a bot whose
         email maps to no seat of the fleet still used `@all`, and the audit has a "could not
-        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped.
+
+        The Operator's own reminder is never audited:  its text quotes the `@all` it is reminding
+        about, so without this exclusion every reminder would schedule an audit of itself (Kody,
+        #2411)."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if (
+            self.config.operator_user_id > 0
+            and message.get("sender_id") == self.config.operator_user_id
+        ):
             return False
         if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
             return False
@@ -4532,7 +4541,17 @@ class Daemon:
             #  A reminder used to be a direct message;  the owner ruling of Nov 18, 2026 sends
             #  anything DM-shaped to Side-Chats instead, mentioning the owner so it still lands.
             #  Any live runner's realm-users map carries the owner's display name.
-            users = next((r.users for r in self.seats.values() if getattr(r, "users", None)), None)
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
             result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
         except Exception as exc:  # noqa: BLE001 - a failed reminder is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit driving so the

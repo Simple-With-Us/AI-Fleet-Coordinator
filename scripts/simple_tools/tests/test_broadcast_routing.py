@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -676,6 +677,37 @@ class PeerBroadcastDaemonTests(DaemonHarness):
             detail.get("due_at"),
             self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
             "the retry carries its new due time",
+        )
+
+    def test_the_operators_own_reminder_is_never_audited(self) -> None:
+        """The Operator's Side-Chats reminder quotes the `@all` it is reminding about;  without
+        the sender exclusion every reminder would schedule an audit of itself (Kody, #2411)."""
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        op_id = daemon.config.operator_user_id = OPERATOR_USER_ID
+        self.assertGreater(op_id, 0)
+        gate_message = {"id": 500, "sender_id": op_id, "sender_email": "operator-bot@zulip.test"}
+        gate = lambda: daemon._peer_broadcast_audit(
+            gate_message,
+            types.SimpleNamespace(
+                no_wake=False, dm=False, stale=False, owner=False, owner_topic=False,
+                broadcast_all=True,
+            ),
+            runner,
+        )
+        self.assertFalse(gate(), "the Operator's own reminder is never audited")
+        peer_message = dict(gate_message, sender_id=12345)
+        runner.users[12345] = {"user_id": 12345, "is_bot": True}
+        self.assertTrue(
+            daemon._peer_broadcast_audit(
+                peer_message,
+                types.SimpleNamespace(
+                    no_wake=False, dm=False, stale=False, owner=False, owner_topic=False,
+                    broadcast_all=True,
+                ),
+                runner,
+            ),
+            "a peer bot's shaped post still schedules the audit",
         )
 
     def test_the_audit_reminds_the_owner_when_nothing_explained_the_broadcast(self) -> None:
