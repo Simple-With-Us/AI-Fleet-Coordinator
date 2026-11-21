@@ -323,11 +323,7 @@ class ShellTests(unittest.TestCase):
         calls = lock_dir / "external-calls.log"
         for tool in ("docker", "systemctl"):
             stub = bindir / tool
-            stub.write_text(
-                "#!/bin/sh\n"
-                f'echo "{tool} $*" >> "{calls}"\n'
-                "exit 97\n"
-            )
+            stub.write_text(f'#!/bin/sh\necho "{tool} $*" >> "{calls}"\nexit 97\n')
             stub.chmod(0o755)
         env = {
             "PATH": f"{bindir}:/usr/bin:/bin",
@@ -338,6 +334,7 @@ class ShellTests(unittest.TestCase):
         }
         demote_to_unprivileged = None
         if os.geteuid() == 0:
+
             def demote_to_unprivileged():
                 os.setgid(65534)
                 os.setuid(65534)
@@ -740,9 +737,7 @@ if (typeof thread.drainThreadRows !== 'function' ||
 
     def test_code_only_accepts_active_timer_without_mainpid(self):
         self.seed_existing_install()
-        result = self.run_install(
-            "--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_OMIT_MAINPID="1"
-        )
+        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_OMIT_MAINPID="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertIn(
@@ -759,7 +754,9 @@ if (typeof thread.drainThreadRows !== 'function' ||
             "--code-only", STUB_TIMER_ACTIVE="1", STUB_SERVICE_OMIT_MAINPID="1"
         )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("systemd returned incomplete state for operator-sheets-drain.service", result.stderr)
+        self.assertIn(
+            "systemd returned incomplete state for operator-sheets-drain.service", result.stderr
+        )
         self.assertIn("systemctl stop operator-sheets-drain.timer", self.calls())
         self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
         self.assertEqual({name: (self.lib / name).read_bytes() for name in MODULES[:3]}, prior)
