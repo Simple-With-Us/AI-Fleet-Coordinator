@@ -851,6 +851,10 @@ class RelayTests(unittest.TestCase):
         self.assertTrue(lr.has_secret('"' + sha + '"'))
         self.assertTrue(lr.has_secret('("%s")' % sha))
         self.assertTrue(lr.has_secret('merged "%s" into main' % sha))
+        # A tight quote after an identifier is not a prose boundary.
+        self.assertTrue(lr.has_secret('token"%s"' % sha))
+        # A SHA after a newline is prose, same as after a space in safe_text.
+        self.assertFalse(lr.has_secret("merged\n%s" % sha))
 
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:

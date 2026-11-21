@@ -280,19 +280,15 @@ def _sha_is_exposed(text: str, start: int) -> bool:
     if before == "":
         return True
     last = before[-1]
-    if last in " \t([{":
+    # All whitespace (including newlines) is a prose boundary, so has_secret
+    # agrees whether it sees raw multiline text or safe_text's collapsed line.
+    if last.isspace() or last in "([{":
         return True
-    if last == '"':
-        # A quote that closes a JSON key/value (`": "`) is a keyed context;  a quote after
-        # prose words (`merged "…`) is prose;  a quote with nothing or only punctuation
-        # before it is ambiguous and keeps withholding, the safer side.
-        stem = before[:-1]
-        if not stem:
-            return False
-        if stem.endswith(":"):
-            return False
-        return stem[-1].isalnum()
+    # Quoted runs are never exempt.  A tight quote after an identifier
+    # (`token"…"`) can hide a credential, and even a prose quote is withheld
+    # (tests pin `"sha"`, `("sha")`, and `merged "sha"`).
     return False
+
 
 
 def _mask_bare_shas(text: str) -> str:
