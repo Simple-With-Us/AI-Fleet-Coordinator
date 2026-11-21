@@ -2,11 +2,9 @@
 
 Seats never see an App id, private key, or the 1-hour installation-token
 expiry:  the relay reads each seat App's credentials (GH_APP_<SLUG>_ID and
-GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the SHARED Infisical
-client and the relay's own scoped service token - owner decision 2026-10-21:
-no process-environment secrets, and the one client the fleet reads secrets
-with rather than a reader of the relay's own - signs a JWT with the local
-openssl binary (stdlib has no RSA), and caches installation tokens in memory,
+GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the canonical bounded
+Infisical reader and each source's own protected token file, then signs a JWT with the local openssl
+binary (stdlib has no RSA), and caches installation tokens in memory,
 refreshing 5 minutes early.  The private key reaches openssl through an inherited pipe fd,
 so nothing is written to disk and no secret is ever logged or returned beyond
 the minted token a seat is allowed to use.
@@ -15,10 +13,12 @@ the minted token a seat is allowed to use.
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -87,6 +87,12 @@ class InstallationReadError(Exception):
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
 
+    def __init__(self, message, *, reason=None, failure_kind=None):
+        self.reason = reason if reason == "token-expired-or-invalid" else None
+        self.failure_kind = failure_kind if failure_kind in ("refused", "unavailable") else None
+        detail = [item for item in (self.reason, self.failure_kind) if item is not None]
+        super().__init__(message + (": " + " / ".join(detail) if detail else ""))
+
 
 # Messages that mean this seat's App material is missing or unusable, not a
 # transient lookup or an upstream mint glitch.  Matched on the fixed prefixes
@@ -108,9 +114,15 @@ def missing_app_credential(exc: BaseException) -> bool:
     text = str(exc)
     if text in _NO_APP_CREDENTIAL_EXACT:
         return True
-    if text.startswith("there is no value for "):
+    # The reader's own wording for an absent name and for an empty one, in the
+    # two shapes the store answers with:  the canonical reader names Infisical,
+    # the store-scoped reader names the store.  Both are the same condition,  so
+    # both are a missing App credential and not a transient failure.
+    if text.startswith(("Infisical has no value for ", "there is no value for ")):
         return True
-    if text.startswith("the store returned an empty value for "):
+    if text.startswith(
+        ("Infisical returned an empty value for ", "the store returned an empty value for ")
+    ):
         return True
     if text.startswith("app id for ") and text.endswith(" is not an integer"):
         return True
@@ -158,271 +170,218 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
         os.close(read_fd)
 
 
-# The shared client's own folder-path rules (scripts/fleet_infisical.py
-# check_path):  anything weaker here would pass a bad path down and surface as a
-# misleading missing-key error.
+# Keep the established folder syntax while the shared reader proves its exact grant and rows.
 _PATH_RE = re.compile(r"/[A-Za-z0-9._/-]*")
-
-# Where the shared fleet Infisical client lives on this host.  The relay runs
-# from /opt/git-relay/git-relay, and the client is installed beside it in
-# /opt/git-relay/scripts.  GIT_RELAY_INFISICAL_CLIENT names one file outright;
-# GIT_RELAY_INFISICAL_CLIENT_DIRS names a comma-separated list of directories.
-_CLIENT_ENV = "GIT_RELAY_INFISICAL_CLIENT"
-_CLIENT_DIRS_ENV = "GIT_RELAY_INFISICAL_CLIENT_DIRS"
-_DEFAULT_CLIENT_DIRS = ("/opt/git-relay/scripts",)
-
-# The loaded client module, cached so one process loads it once.
-_CLIENT = None
+_NAME_RE = re.compile(r"[A-Za-z0-9_]+")
+_CLIENT_LOCK = threading.RLock()
+_CLIENT_CACHE = None
+_CLIENT_NAME = "_git_relay_fleet_infisical"
+_MAX_CLIENT_BYTES = 2 * 1024 * 1024
+_MAX_TOKEN_BYTES = 8194
+_MAX_BATCH_BYTES = 1024 * 1024
 
 
-def _client_candidates():
-    """The shared client file paths this host may carry, in order."""
-    explicit = (os.environ.get(_CLIENT_ENV) or "").strip()
-    if explicit:
-        yield Path(explicit)
-        return
-    raw = (os.environ.get(_CLIENT_DIRS_ENV) or "").strip()
-    if raw:
-        directories = [item.strip() for item in raw.split(",") if item.strip()]
-    else:
-        directories = list(_DEFAULT_CLIENT_DIRS)
-    # A checkout runs the client from the repository's own scripts/ directory.
-    directories.append(str(Path(__file__).resolve().parent.parent.parent / "scripts"))
-    for directory in directories:
-        yield Path(directory) / "fleet_infisical.py"
-
-
-def load_infisical_client():
-    """Import the shared fleet Infisical client, or fail closed.
-
-    The relay holds no second reader of its own:  the shared client is the one
-    implementation the whole fleet reads secrets with, and this host installs a
-    copy of it.  A missing copy is a startup error, never a silent fallback to
-    an ambient token.
-    """
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
-    for path in _client_candidates():
+def _shared_client():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _CLIENT_CACHE
+    expected = Path(__file__).resolve().parents[2] / "scripts/fleet_infisical.py"
+    with _CLIENT_LOCK:
+        helper = None
         try:
-            if not path.is_file():
-                continue
-            spec = importlib.util.spec_from_file_location("fleet_infisical", path)
-        except OSError:
-            continue
-        if spec is None or spec.loader is None:
-            continue
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["fleet_infisical"] = module
-        try:
-            spec.loader.exec_module(module)
-        except Exception:  # noqa: BLE001 - a client that will not import is one refusal, named by the name only
-            sys.modules.pop("fleet_infisical", None)
-            raise AppTokenError("the shared Infisical client could not be loaded") from None
-        _CLIENT = module
-        return module
-    raise AppTokenError("the shared Infisical client is not installed on this host")
-
-
-# The relay's own scoped service tokens:  one grant per Infisical folder,  each
-# named for the folder it covers and held in the relay's own store (a private
-# file on a server).  The account is the token's registry name.
-TOKEN_ACCOUNTS = {
-    "/github-apps": "operator-github-apps-ro",
-    "/operator-github/callers": "operator-github-callers-ro",
-}
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_CLIENT_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_CLIENT_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_CLIENT_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _CLIENT_CACHE is not None and _CLIENT_CACHE[0] == identity:
+                sys.modules[_CLIENT_NAME] = _CLIENT_CACHE[1]
+                return _CLIENT_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_CLIENT_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_CLIENT_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _CLIENT_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _CLIENT_CACHE is None else _CLIENT_CACHE[1]
+            _CLIENT_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_CLIENT_NAME) is owned:
+                    del sys.modules[_CLIENT_NAME]
+            if isinstance(exc, Exception):
+                raise AppTokenError("canonical Infisical reader unavailable") from None
+            raise
 
 
 class InfisicalSource:
-    """Reads named secrets through the shared Infisical client.
+    """The existing source protocol, backed by one canonical bounded named reader.
 
-    The relay's own scoped service token is the only credential:  it is read
-    from the protected credential file the unit binds (systemd LoadCredential),
-    never from the process environment, and the token's own grant is verified
-    before any value is used, so a token clamped to another folder fails closed
-    instead of answering for the wrong scope.
-
-    `secrets()` reads several names under ONE grant check and ONE folder
-    request:  an App's id and private key must be fetched together, because a
-    per-name call would re-verify the grant for every name.  A name the store
-    does not hold is remembered for the process lifetime, so an incomplete App
-    pair does not drive a folder read per request;  add the secret and restart
-    the relay to pick it up.
-
-    `path` is the Fleet-OPS prod folder the names are read from.  It defaults
-    to /github-apps, where the GH_APP_<SLUG>_ID and GH_APP_<SLUG>_PRIVATE_KEY
-    pairs actually live (verified live 2026-10-23).
-
-    The value never appears in a message or a log:  an error names the key, the
-    folder or the refusal, and nothing else.
+    Every source uses its own explicit protected token file and project declaration.  Only
+    prod and its exact folder are passed to the reader; no ambient token, HOME lookup,
+    external application or other consumer's binding can supply credentials.  Verified
+    values and confirmed missing names retain the existing per-source process cache.
     """
 
-    def __init__(
-        self,
-        path: str = "/github-apps",
-        credential_file: str | None = None,
-        environ=os.environ,
-        client=None,
-        project: str | None = None,
-        account: str | None = None,
-    ):
-        if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
-            raise AppTokenError(f"secret folder path is not a usable folder path: {path!r}")
-        self._path = path
+    def __init__(self, path="/github-apps", credential_file=None, environ=os.environ, reader=None):
+        if not _PATH_RE.fullmatch(path or "") or any(p in (".", "..") for p in path.split("/")):
+            raise AppTokenError("Infisical source folder is invalid")
         self._credential_file = credential_file
         self._environ = environ
-        self._client = client
-        self._project = project
-        self._account = account if account is not None else TOKEN_ACCOUNTS.get(path, "")
+        self._reader = reader  # Explicit dependency injection; production factories do not set it.
+        self._path = path
         self._cache: dict[str, str] = {}
         self._missing: set[str] = set()
-        self._scoped_env: dict | None = None
-        self._token = ""
 
-    def _module(self):
-        if self._client is None:
-            self._client = load_infisical_client()
-        return self._client
+    @staticmethod
+    def _names(names):
+        names = list(names)
+        if any(not isinstance(n, str) or not _NAME_RE.fullmatch(n) for n in names):
+            raise AppTokenError("Infisical secret name is invalid")
+        return list(dict.fromkeys(names))
 
-    def _read_token(self) -> str:
-        """The one scoped service token this source runs under.
-
-        The relay's own store is the authority:  the credential file the unit binds
-        (systemd LoadCredential),  else the registered account's own store.  A token
-        in the process environment is only a copy of that same grant,  and it is used
-        when the store has none;  it never replaces the reviewed,  scope-limited
-        grant the store holds.
-        """
-        if self._credential_file:
-            try:
-                with open(self._credential_file, "r", encoding="utf-8") as handle:
-                    token = handle.read().strip()
-            except OSError:
-                raise AppTokenError(f"credential file unreadable for {self._path}") from None
-            if not token:
-                raise AppTokenError(f"credential file empty for {self._path}")
-            return token
-        if self._account:
-            client = self._module()
-            try:
-                token, _status = client.token_from_store(
-                    self._account, self._environ, client.home_dir(self._environ)
-                )
-            except Exception:  # noqa: BLE001 - a store that cannot be read is a refusal, named by the name only
-                token = ""
-            if token:
-                return token
-        token = (self._environ.get("INFISICAL_TOKEN") or "").strip()
+    def _token(self):
+        if not self._credential_file:
+            raise AppTokenError(f"credential file binding required for {self._path}")
+        try:
+            fd = os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as source:
+                before = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_uid not in (0, os.geteuid())
+                    or stat.S_IMODE(before.st_mode) & 0o077
+                    or before.st_size > _MAX_TOKEN_BYTES
+                ):
+                    raise ValueError()
+                raw = source.read(_MAX_TOKEN_BYTES + 1)
+                after = os.fstat(source.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields)
+                for info in (before, after, os.stat(self._credential_file, follow_symlinks=False))
+            ]
+            if len(raw) > _MAX_TOKEN_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            token = raw.decode("utf-8").strip()
+        except (OSError, ValueError, UnicodeError):
+            raise AppTokenError(f"credential file unreadable for {self._path}") from None
         if not token:
-            raise AppTokenError(f"no scoped service token is bound for {self._path}")
+            raise AppTokenError(f"credential file empty for {self._path}")
         return token
 
-    def _scope(self):
-        """The env the client reads with, declaring exactly this token's grant.
-
-        The declared folder set is the token's own scope, read from the store:
-        the client refuses a read whose declared set is not the grant's set, so
-        declaring the grant is what makes a clamped token fail closed instead
-        of silently serving the wrong folder.
-        """
-        if self._scoped_env is None:
-            client = self._module()
-            env = dict(self._environ)
-            if not (env.get(client.ENV_PROJECT) or "").strip():
-                raise AppTokenError(
-                    f"{client.ENV_PROJECT} is not set:  the relay's Infisical project is not bound"
-                )
-            token = self._read_token()
-            try:
-                paths = client.token_scopes(token, env)
-            except client.SecretsError:
-                raise AppTokenError(f"the bound service token refused {self._path}") from None
-            if self._path not in paths:
-                raise AppTokenError(f"the bound service token does not cover {self._path}")
-            env[client.ENV_READ_PATHS] = ",".join(paths)
-            self._scoped_env = env
-            self._token = token
-        return self._scoped_env
-
-    def _project_id(self) -> str:
-        if self._project:
-            return self._project
-        client = self._module()
-        value = (self._scope().get(client.ENV_PROJECT) or "").strip()
-        if not value:
-            raise AppTokenError(
-                f"{client.ENV_PROJECT} is not set:  the relay's Infisical project is not bound"
+    def _read(self, wanted):
+        # Pin and execute trusted code before opening the binding or passing any token.
+        client = _shared_client()
+        reader = self._reader if self._reader is not None else client.bounded_fetch_project
+        declared = self._environ.get("INFISICAL_FLEET_OPS_PROJECT_ID")
+        project = declared.strip() if isinstance(declared, str) else ""
+        if not project:
+            raise AppTokenError("INFISICAL_FLEET_OPS_PROJECT_ID is required for this source")
+        try:
+            # Nonempty explicit input makes the canonical resolver's project-file fallback unreachable.
+            project = client.infisical_project_id(
+                {"INFISICAL_FLEET_OPS_PROJECT_ID": project}, Path("/")
             )
-        return value
+        except client.SecretsError:
+            raise AppTokenError("INFISICAL_FLEET_OPS_PROJECT_ID must be a UUID") from None
+        token = self._token()
+        try:
+            values = reader(
+                project,
+                self._path,
+                {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": self._path},
+                token=token,
+                names=tuple(wanted),
+                timeout=TIMEOUT_SECONDS,
+                max_output_bytes=_MAX_BATCH_BYTES,
+                strict_records=True,
+            )
+        except TimeoutError:
+            raise AppTokenError(
+                f"Infisical lookup timed out for {wanted[0]}", failure_kind="unavailable"
+            ) from None
+        except client.SecretsError as exc:
+            raise AppTokenError(
+                f"Infisical lookup failed for {wanted[0]}",
+                reason=exc.reason,
+                failure_kind=exc.failure_kind,
+            ) from None
+        except Exception:
+            raise AppTokenError(f"Infisical lookup failed for {wanted[0]}") from None
+        finally:
+            token = None
+        if not isinstance(values, dict) or any(
+            n not in wanted or not isinstance(v, str) for n, v in values.items()
+        ):
+            raise AppTokenError(f"Infisical returned unreadable output for {wanted[0]}")
+        return values
+
+    def _fetch(self, wanted, *, verified=False):
+        values = self._read(wanted)
+        missing = [name for name in wanted if name not in values]
+        if missing:
+            self._missing.update(missing)
+            raise AppTokenError(f"Infisical has no value for {missing[0]}")
+        normalized = {
+            name: values[name].rstrip("\n") if verified else values[name].strip() for name in wanted
+        }
+        for name, value in normalized.items():
+            if not value:
+                raise AppTokenError(f"Infisical returned an empty value for {name}")
+        self._cache.update(normalized)
 
     def secret(self, name: str) -> str:
         return self.secrets([name])[name]
 
     def verified_secret(self, name: str) -> str:
-        """One folder-PROVEN secret.
-
-        Unlike `secret`, the answer's own row must show it came from exactly
-        this folder:  a legacy-scoped token whose grant clamps to another
-        folder fails closed instead of returning the wrong scope's value.
-        """
-        if not name or not re.fullmatch(r"[A-Za-z0-9_]+", name):
-            raise AppTokenError(f"not a usable secret name: {name!r}")
-        if name in self._cache:
-            return self._cache[name]
+        name = self._names([name])[0]
         if name in self._missing:
-            raise AppTokenError(f"there is no value for {name}")
-        client = self._module()
-        env = self._scope()
-        try:
-            value = client.fetch_verified(name, self._path, env, token=self._token)
-        except client.SecretsError as exc:
-            if exc.code == 3:
-                self._missing.add(name)
-                raise AppTokenError(f"there is no value for {name}") from None
-            raise AppTokenError(f"the store lookup failed for {name}") from None
-        if not value:
-            raise AppTokenError(f"the store returned an empty value for {name}")
-        self._cache[name] = value
-        return value
+            raise AppTokenError(f"Infisical has no value for {name}")
+        if name not in self._cache:
+            self._fetch([name], verified=True)
+        return self._cache[name]
 
     def secrets(self, names) -> dict:
-        """Read several names under one grant check and one folder request."""
-        names = list(names)
-        known_missing = [n for n in names if n in self._missing]
-        if known_missing:
-            raise AppTokenError(f"there is no value for {known_missing[0]}")
-        wanted = [n for n in names if n not in self._cache]
+        names = self._names(names)
+        missing = [name for name in names if name in self._missing]
+        if missing:
+            raise AppTokenError(f"Infisical has no value for {missing[0]}")
+        wanted = [name for name in names if name not in self._cache]
         if wanted:
             self._fetch(wanted)
-        return {n: self._cache[n] for n in names}
+        return {name: self._cache[name] for name in names}
 
-    def _fetch(self, wanted) -> None:
-        client = self._module()
-        env = self._scope()
-        project = self._project_id()
-        try:
-            values = client.fetch_project(project, self._path, env, token=self._token, names=wanted)
-        except client.SecretsError:
-            raise AppTokenError(f"the store lookup failed for {wanted[0]}") from None
-        # The shape of an external answer is checked before any of it is read:  a
-        # non-mapping,  or a name that does not carry a string,  is refused rather
-        # than coerced into a credential.
-        if not isinstance(values, dict):
-            raise AppTokenError(f"the store lookup returned no map for {wanted[0]}")
-        # The absence is remembered for the process lifetime,  so an incomplete App
-        # pair cannot drive one folder read per request:  add the secret and restart
-        # the relay to pick it up.  Every name the store did not answer is remembered,
-        # and the first one is the one named.
-        absent = [
-            name
-            for name in wanted
-            if not isinstance(values.get(name), str) or not values.get(name, "").strip()
-        ]
-        if absent:
-            self._missing.update(absent)
-            raise AppTokenError(f"there is no value for {absent[0]}")
-        for name in wanted:
-            self._cache[name] = values[name].strip()
+# The name this source had while the retired shared reader was still in the
+# tree.  It stays as an alias so a caller that still imports it keeps working;
+# the source it names is the same canonical bounded reader.
+FleetSecretsSource = InfisicalSource
 
 
 class AppTokenMinter:
@@ -442,7 +401,7 @@ class AppTokenMinter:
 
     def _app_credentials(self, slug: str) -> tuple[int, str]:
         prefix = "GH_APP_" + slug.upper().replace("-", "_")
-        # One grant check and one folder request per App, not per name.
+        # One bounded named-read operation per App pair, never a whole-folder export.
         pair = self._source.secrets([prefix + "_ID", prefix + "_PRIVATE_KEY"])
         try:
             app_id = int(pair[prefix + "_ID"].strip())
@@ -666,7 +625,7 @@ class AppTokenMinter:
         app_id, pem = self._app_credentials(slug)
         bearer = self._signer(app_id, pem, int(self._clock()))
         del pem
-        token = None
+        installation_token = None
         try:
             app = self._api("GET", "/app", bearer)
             if not isinstance(app, dict) or app.get("id") != app_id:
@@ -702,9 +661,9 @@ class AppTokenMinter:
             minted = data.get("token")
             if not isinstance(minted, str) or not minted:
                 raise AppTokenError("namespace mint failed")
-            token = minted
-            issued = token
-            token = None
+            installation_token = minted
+            issued = installation_token
+            installation_token = None
             return issued
         except AppTokenError:
             raise
@@ -712,8 +671,8 @@ class AppTokenMinter:
             raise AppTokenError("namespace mint failed") from None
         finally:
             del bearer
-            if token:
-                self.revoke_installation_token(token)
+            if installation_token:
+                self.revoke_installation_token(installation_token)
 
     def revoke_installation_token(self, token: str) -> None:
         """Revoke one installation token.  A failure does not change the call result."""

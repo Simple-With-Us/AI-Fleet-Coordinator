@@ -133,9 +133,9 @@ joins the schema then.
 The drain authenticates as a **dedicated service account for the Operator
 registries**, never as an agent's Google identity:
 
-- Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
-- Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
-  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through the consumer's own scoped service token at runtime — the
+- Env:  `GOOGLE_SHEETS_SA` (the service-account JSON), or
+- Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
+  `GOOGLE_SHEETS_SA`, resolved through the shared isolated reader with an explicit own `OPERATOR_SHEETS_TOKEN_FILE` bootstrap at runtime — the
   same seam, the same key, as the thread registry's drain;  one seam serves both
   tabs.  The key is never written to disk or printed.  There is no fallback to any
   other identity.
