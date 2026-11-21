@@ -2349,7 +2349,10 @@ fi
 # The installed Mac helper uses the shared scoped reader with this consumer's
 # own service token and grant. It receives one value on stdout and never reads
 # through the retired fleet-secrets CLI or a flat credential file.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+if [[ -z "$INFISICAL_SCOPED_READER" && -n "${HOME:-}" ]]; then
+  INFISICAL_SCOPED_READER="${HOME}/apps/infisical-scoped/infisical-scoped.py"
+fi
 
 _scoped_secret() {
   local name="$1" folder="$2" account="$3"
