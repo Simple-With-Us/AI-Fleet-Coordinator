@@ -412,7 +412,7 @@ class RegistryService:
         return OR.register_session(self.db_path, issuer=OPERATOR, **fields)
 
     def call_operator(
-        self, op: str, params: Mapping[str, Any], *, timeout: int = 0
+        self, op: str, params: Mapping[str, Any]
     ) -> dict[str, Any]:
         """Run the shared registry API contract in this process as its existing Operator.
 
@@ -946,6 +946,7 @@ class Sweeper:
         max_share: float = DEFAULT_SWEEP_MAX_SHARE,
         log: Callable[..., None] | None = None,
         feed_runner: Callable[[RegistryService, float], Mapping[str, Any]] | None = None,
+        feed_scopes: frozenset[tuple[str, str]] = frozenset(),
     ) -> None:
         self.service = service
         self.interval_s = max(1, int(interval_minutes)) * 60.0
@@ -953,7 +954,8 @@ class Sweeper:
         self.max_share = float(max_share)
         self.log = log or (lambda *_args, **_kwargs: None)
         self.feed_runner = feed_runner
-        self._protected_hosts: set[tuple[str, str]] = set()
+        self.feed_scopes = frozenset(feed_scopes)
+        self._protected_hosts: set[tuple[str, str]] = set(self.feed_scopes)
         self.next_at = 0.0
         self.last: dict[str, Any] | None = None
         self._lock = threading.Lock()
@@ -990,19 +992,48 @@ class Sweeper:
                     or not os.access(db, os.R_OK | os.W_OK)
                 ):
                     feeds = {"ok": False, "error": "registry_unavailable"}
+                    registry_available = False
                 else:
-                    try:
-                        feeds = self.feed_runner(self.service, now)
-                    except Exception as exc:  # noqa: BLE001 - provider data must never stop stale registry cleanup
-                        feeds = {"ok": False, "error": type(exc).__name__}
+                    # Keep every known provider scope safe while network discovery is in flight.  A
+                    # direct platform sweep may run concurrently, but must not treat an unseen row as
+                    # stale until this pass proves that provider discovery is complete.
+                    self._protected_hosts.update(self.feed_scopes)
+                    registry_available = True
+            if registry_available:
+                try:
+                    feeds = self.feed_runner(self.service, now)
+                except Exception as exc:  # noqa: BLE001 - provider data must never stop stale registry cleanup
+                    feeds = {"ok": False, "error": type(exc).__name__}
+                if not isinstance(feeds, Mapping):
+                    feeds = {"ok": False, "error": "invalid_feed_report"}
+            with self._lock:
                 protected_hosts = {
                     (str(value["platform"]), str(value["host"]))
                     for value in feeds.values()
                     if isinstance(value, Mapping)
-                    and value.get("protect_stale_cleanup") is True
+                    and value.get("protect_stale_cleanup") == 1
                     and value.get("platform")
                     and value.get("host")
                 }
+                # A known scope is released only by one matching, explicitly complete and
+                # successful feed result.  Missing, malformed, partial, or failed results stay
+                # protected so provider absence cannot close sessions during an outage.
+                for scope in self.feed_scopes:
+                    matches = [
+                        value
+                        for value in feeds.values()
+                        if isinstance(value, Mapping)
+                        and (value.get("platform"), value.get("host")) == scope
+                    ]
+                    if (
+                        len(matches) == 1
+                        and matches[0].get("ok") is True
+                        and matches[0].get("complete") is True
+                        and matches[0].get("protect_stale_cleanup") != 1
+                    ):
+                        protected_hosts.discard(scope)
+                    else:
+                        protected_hosts.add(scope)
                 self._protected_hosts = protected_hosts
             result["feeds"] = feeds
             failed = feeds.get("ok") is False or any(
@@ -1018,7 +1049,7 @@ class Sweeper:
         else:
             protected_hosts = set()
         try:
-            outcome = self.sweep(excluded_hosts=protected_hosts)
+            outcome = self.sweep()
         except (OR.RegistryUnavailable, OSError, ValueError, sqlite3.Error) as exc:
             result.update(ok=False, error=type(exc).__name__ + ": " + str(exc)[:200])
         else:
