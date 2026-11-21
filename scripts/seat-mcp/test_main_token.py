@@ -31,7 +31,9 @@ class MissingTokenTests(unittest.TestCase):
         self.assertIn("SEAT_MCP_TOKEN missing in Infisical /seat-mcp", lines[0])
         argv = reader.call_args.args[0]
         self.assertEqual(argv[:3], [auth.sys.executable, "-I", str(auth.FLEET_INFISICAL_CLI)])
-        self.assertEqual(argv[3:], ["get", "SEAT_MCP_TOKEN", "--project", "fleet-ops", "--path", "/seat-mcp"])
+        self.assertEqual(
+            argv[3:], ["get", "SEAT_MCP_TOKEN", "--project", "fleet-ops", "--path", "/seat-mcp"]
+        )
 
     def test_token_in_the_environment_starts_the_server(self) -> None:
         with (

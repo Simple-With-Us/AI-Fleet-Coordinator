@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 DISK = REPO / "scripts" / "grok-acp-runtime"
 sys.path.insert(0, str(DISK))
 
-from session_disk import (  # noqa: E402
+from session_disk import (
     DEFAULT_IDLE_UNLOAD_SEC,
     enrich_sessions,
     is_self_session,
@@ -50,7 +50,7 @@ def _any_live_id() -> str:
 
 
 def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 class PrefixTests(unittest.TestCase):
@@ -278,9 +278,12 @@ class AfterInjectTests(unittest.TestCase):
             except StopIteration:
                 return states[-1]
 
-        with patch("session_disk.turn_state", side_effect=fake_state), patch(
-            "session_disk.peek_summary",
-            return_value={"ok": True, "text": "done"},
+        with (
+            patch("session_disk.turn_state", side_effect=fake_state),
+            patch(
+                "session_disk.peek_summary",
+                return_value={"ok": True, "text": "done"},
+            ),
         ):
             out = poll_after_inject("x", before_started=1.0, timeout=2.0, interval=0.0)
         self.assertEqual(out.get("await"), "idle")
@@ -295,9 +298,12 @@ class AfterInjectTests(unittest.TestCase):
             "pendingTool": None,
             "phase": None,
         }
-        with patch("session_disk.turn_state", return_value=idle), patch(
-            "session_disk.peek_summary",
-            return_value={"ok": True, "text": "old"},
+        with (
+            patch("session_disk.turn_state", return_value=idle),
+            patch(
+                "session_disk.peek_summary",
+                return_value={"ok": True, "text": "old"},
+            ),
         ):
             out = poll_after_inject("x", before_started=1.0, timeout=0.05, interval=0.01)
         self.assertEqual(out.get("await"), "timeout")
@@ -311,9 +317,12 @@ class AfterInjectTests(unittest.TestCase):
             "pendingTool": None,
             "phase": None,
         }
-        with patch("session_disk.turn_state", return_value=idle), patch(
-            "session_disk.peek_summary",
-            return_value={"ok": True, "text": "now"},
+        with (
+            patch("session_disk.turn_state", return_value=idle),
+            patch(
+                "session_disk.peek_summary",
+                return_value={"ok": True, "text": "now"},
+            ),
         ):
             out = poll_until_idle("x", timeout=2.0, interval=0.0)
         self.assertEqual(out.get("await"), "idle")
@@ -336,19 +345,22 @@ class PendingToolTests(unittest.TestCase):
                 "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
             )
             (d / "summary.json").write_text(
-                json.dumps({
-                    "info": {"cwd": "/Users/jay/apps"},
-                    "last_turn_summary": "waiting",
-                    "generated_title": "perm",
-                }),
+                json.dumps(
+                    {
+                        "info": {"cwd": "/Users/jay/apps"},
+                        "last_turn_summary": "waiting",
+                        "generated_title": "perm",
+                    }
+                ),
                 encoding="utf-8",
             )
             (root / "active.json").write_text(
                 json.dumps([{"session_id": sid, "cwd": "/Users/jay/apps", "pid": 1}]),
                 encoding="utf-8",
             )
-            with patch("session_disk.SESSIONS_ROOT", root), patch(
-                "session_disk.ACTIVE_SESSIONS", root / "active.json"
+            with (
+                patch("session_disk.SESSIONS_ROOT", root),
+                patch("session_disk.ACTIVE_SESSIONS", root / "active.json"),
             ):
                 st = turn_state(sid)
                 peek = peek_summary(sid)
@@ -381,8 +393,9 @@ class PendingToolTests(unittest.TestCase):
                 json.dumps({"info": {"cwd": "/Users/jay/apps"}}),
                 encoding="utf-8",
             )
-            with patch("session_disk.SESSIONS_ROOT", root), patch(
-                "session_disk.ACTIVE_SESSIONS", root / "none.json"
+            with (
+                patch("session_disk.SESSIONS_ROOT", root),
+                patch("session_disk.ACTIVE_SESSIONS", root / "none.json"),
             ):
                 st = turn_state(sid)
             self.assertIsNone(st.get("pendingTool"))
@@ -426,6 +439,48 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("127.0.0.1:8793", src)
         self.assertNotIn("print(token", src)
 
+    def test_seat_launcher_classifies_child_failures_without_echoing_stderr(self) -> None:
+        source = REPO / "scripts" / "seat-mcp" / "start.sh"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            runtime = root / "seat-mcp"
+            runtime.mkdir()
+            launcher = runtime / "start.sh"
+            shutil.copyfile(source, launcher)
+            child = root / "fleet_infisical_cli.py"
+            child.write_text(
+                "import os, sys\n"
+                "sys.stderr.write('test-only-private-diagnostic')\n"
+                "sys.exit(int(os.environ['CHILD_STATUS']))\n",
+                encoding="utf-8",
+            )
+            for status, reason in (
+                (2, "configuration refused"),
+                (3, "missing"),
+                (4, "fetch or authentication failed"),
+                (5, "unresolved reference"),
+                (7, "reader failed (exit 7)"),
+            ):
+                with self.subTest(status=status):
+                    result = subprocess.run(
+                        ["/bin/bash", str(launcher)],
+                        env={
+                            "HOME": str(root),
+                            "PATH": os.defpath,
+                            "CHILD_STATUS": str(status),
+                        },
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(
+                        result.stderr.strip(),
+                        f"SEAT_MCP_TOKEN {reason} in Infisical /seat-mcp",
+                    )
+                    self.assertNotIn("test-only-private-diagnostic", result.stderr)
+
     def test_installed_runtime_closure_and_loaders_ignore_hostile_python_path(self) -> None:
         repo_scripts = REPO / "scripts"
         with tempfile.TemporaryDirectory() as td:
@@ -456,15 +511,24 @@ class InstallScriptTests(unittest.TestCase):
             for name in ("fleet_infisical.py", "fleet_infisical_cli.py"):
                 self.assertEqual((apps / name).read_bytes(), (repo_scripts / name).read_bytes())
             for source, destination in (
-                (repo_scripts / "grok-acp-runtime" / "acp-client.py", apps / "grok-acp-runtime" / "acp-client.py"),
-                (repo_scripts / "seat-mcp" / "seat_mcp" / "auth.py", apps / "seat-mcp" / "seat_mcp" / "auth.py"),
-                (repo_scripts / "mcp-servers" / "seat-mcp-stdio-proxy.py", apps / "mcp-servers" / "seat-mcp-stdio-proxy.py"),
+                (
+                    repo_scripts / "grok-acp-runtime" / "acp-client.py",
+                    apps / "grok-acp-runtime" / "acp-client.py",
+                ),
+                (
+                    repo_scripts / "seat-mcp" / "seat_mcp" / "auth.py",
+                    apps / "seat-mcp" / "seat_mcp" / "auth.py",
+                ),
+                (
+                    repo_scripts / "mcp-servers" / "seat-mcp-stdio-proxy.py",
+                    apps / "mcp-servers" / "seat-mcp-stdio-proxy.py",
+                ),
             ):
                 self.assertEqual(destination.read_bytes(), source.read_bytes())
             self.assertFalse((apps / "fleet-secrets").exists())
 
             with RuntimeInfisicalFixture() as provider:
-                script = r'''
+                script = r"""
 import importlib.util, runpy, sys, types
 sys.modules["websockets"] = types.SimpleNamespace()
 apps, mode = sys.argv[1:]
@@ -482,7 +546,7 @@ else:
     assert load_token() == "fixture-seat-token"
     assert proxy["load_token"]() == "fixture-seat-token"
 print("copied-loaders-ok")
-'''
+"""
                 for mode, token in (
                     ("grok", "st.test-only-grok-key"),
                     ("seat", "st.test-only-seat-key"),
@@ -544,12 +608,16 @@ print("copied-loaders-ok")
                 shutil.copyfile(repo_scripts / name, apps / name)
             acp_dir = apps / "grok-acp-runtime"
             acp_dir.mkdir()
-            shutil.copyfile(repo_scripts / "grok-acp-runtime" / "acp-client.py", acp_dir / "acp-client.py")
-            shutil.copyfile(repo_scripts / "grok-acp-runtime" / "mcp_catalog.py", acp_dir / "mcp_catalog.py")
+            shutil.copyfile(
+                repo_scripts / "grok-acp-runtime" / "acp-client.py", acp_dir / "acp-client.py"
+            )
+            shutil.copyfile(
+                repo_scripts / "grok-acp-runtime" / "mcp_catalog.py", acp_dir / "mcp_catalog.py"
+            )
             (hostile / "fleet_infisical_cli.py").write_text(
                 "raise AssertionError('hostile CLI executed')\n", encoding="utf-8"
             )
-            code = r'''
+            code = r"""
 import importlib.util, sys, types
 sys.modules["websockets"] = types.SimpleNamespace()
 sys.path.insert(0, str(__import__("pathlib").Path(sys.argv[1]).parent))
@@ -562,7 +630,7 @@ except SystemExit as exc:
     print(str(exc))
 else:
     raise AssertionError("bad grant accepted")
-'''
+"""
             for mode in ("wrong", "empty", "malformed"):
                 with self.subTest(mode=mode), RuntimeInfisicalFixture(mode=mode) as provider:
                     env = {
@@ -617,7 +685,9 @@ class RuntimeInfisicalFixture:
                     metadata = {
                         "workspace": fixture.project,
                         "permissions": ["read"],
-                        "scopes": [{"environment": "prod", "secretPath": folder_for_token[received]}],
+                        "scopes": [
+                            {"environment": "prod", "secretPath": folder_for_token[received]}
+                        ],
                         "expiresAt": "2099-01-01T00:00:00Z",
                     }
                     if fixture.mode == "wrong":
@@ -632,15 +702,19 @@ class RuntimeInfisicalFixture:
                     folder = unquote(query.get("secretPath", [""])[0])
                     name = unquote(urlsplit(self.path).path.rsplit("/", 1)[-1])
                     value = "fixture-grok-secret" if folder == "/grok-acp" else "fixture-seat-token"
-                    body = json.dumps({"secret": {
-                        "workspace": fixture.project,
-                        "environment": "prod",
-                        "secretPath": folder,
-                        "type": "shared",
-                        "secretKey": name,
-                        "secretValue": value,
-                        "secretValueHidden": False,
-                    }}).encode()
+                    body = json.dumps(
+                        {
+                            "secret": {
+                                "workspace": fixture.project,
+                                "environment": "prod",
+                                "secretPath": folder,
+                                "type": "shared",
+                                "secretKey": name,
+                                "secretValue": value,
+                                "secretValueHidden": False,
+                            }
+                        }
+                    ).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -678,8 +752,9 @@ class PromptInjectReceiptTests(unittest.TestCase):
                 self.assertFalse(user_prompt_receipt(sid, "other"))
 
     def test_prompt_inject_receipt_accepts_new_turn(self) -> None:
-        with patch("session_disk.turn_state", return_value={"turnStartedAt": 20.0}), patch(
-            "session_disk.user_prompt_receipt", return_value=False
+        with (
+            patch("session_disk.turn_state", return_value={"turnStartedAt": 20.0}),
+            patch("session_disk.user_prompt_receipt", return_value=False),
         ):
             self.assertTrue(prompt_inject_receipt("s", "x", before_started=10.0))
 

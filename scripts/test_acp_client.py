@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for grok-acp permission auto-approve and ACP terminals.  No live serve."""
+
 from __future__ import annotations
 
 import sys
@@ -8,6 +9,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest import mock
+
 from scripts.test_session_disk import RuntimeInfisicalFixture
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,9 +37,10 @@ MOD = _load()
 
 class PermissionTests(unittest.TestCase):
     def test_secret_from_environment_skips_child_reader(self):
-        with mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}), mock.patch.object(
-            MOD.subprocess, "run"
-        ) as run:
+        with (
+            mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}),
+            mock.patch.object(MOD.subprocess, "run") as run,
+        ):
             self.assertEqual(MOD.load_secret(), "env-secret")
         run.assert_not_called()
 
@@ -104,7 +107,9 @@ class RpcShapeTests(unittest.TestCase):
 class TerminalTests(unittest.TestCase):
     def test_echo_roundtrip(self):
         hub = MOD.TerminalHub()
-        created = hub.create({"command": "printf", "args": ["perm-ok\n"], "cwd": tempfile.gettempdir()})
+        created = hub.create(
+            {"command": "printf", "args": ["perm-ok\n"], "cwd": tempfile.gettempdir()}
+        )
         tid = created["terminalId"]
         self.assertTrue(tid)
         waited = hub.wait_sync({"terminalId": tid})
