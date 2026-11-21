@@ -32,7 +32,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -410,7 +409,9 @@ def sweep(
         if api_only:
             # The shared startup loader supplies the native key.  Pass it explicitly even when absent so the API
             # transport cannot fall through to container variables or a provider-specific secret reader.
-            extra["surfaces"] = KeyedSurfaces(CT._surfaces, str(env.get(CURSOR_KEY_NAME) or "").strip())
+            extra["surfaces"] = KeyedSurfaces(
+                CT._surfaces, str(env.get(CURSOR_KEY_NAME) or "").strip()
+            )
         cloud = CursorCloudTransport(timeout_seconds=API_TIMEOUT, **extra)
         discover = cloud.discover
         if steer is None:
@@ -451,7 +452,11 @@ def sweep(
         if dry_run:
             return
         answer = register(
-            env, agent, now=now, transport=transport, api_only=api_only,
+            env,
+            agent,
+            now=now,
+            transport=transport,
+            api_only=api_only,
             registry_service=registry_service,
         )
         label = str(answer.get("label") or "")

@@ -952,7 +952,10 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _call_api(
-    env: Mapping[str, str], op: str, params: Mapping[str, Any], timeout: int = 0,
+    env: Mapping[str, str],
+    op: str,
+    params: Mapping[str, Any],
+    timeout: int = 0,
     api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from . import registry_api
@@ -996,7 +999,11 @@ def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
 
 
 def _register_api(
-    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0,
+    OR: Any,
+    env: Mapping[str, str],
+    args: Any,
+    sid: str,
+    timeout: int = 0,
     api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
@@ -1065,7 +1072,10 @@ def _register_api(
         }
     if title and out.get("outcome") in ("resumed", "reopened"):
         updated = _call_api(
-            env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout,
+            env,
+            "update",
+            {**_api_identity(args, sid), "title": title},
+            timeout=timeout,
             api_call=api_call,
         )
         error = _api_error(updated)
@@ -1565,8 +1575,12 @@ class Chat:
 
 
 def _registry_side(
-    argv: list[str], env: Mapping[str, str], transport: Transport | None, call_timeout: int = 0,
-    *, api_call: Callable[..., dict[str, Any]] | None = None,
+    argv: list[str],
+    env: Mapping[str, str],
+    transport: Transport | None,
+    call_timeout: int = 0,
+    *,
+    api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The registry side's answer to one command line:  through the test's transport when there is one, else in
     process, where it makes its one API call."""

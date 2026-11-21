@@ -411,7 +411,9 @@ class RegistryService:
         fields = {name: value for name, value in fields.items() if name != "issuer"}
         return OR.register_session(self.db_path, issuer=OPERATOR, **fields)
 
-    def call_operator(self, op: str, params: Mapping[str, Any], *, timeout: int = 0) -> dict[str, Any]:
+    def call_operator(
+        self, op: str, params: Mapping[str, Any], *, timeout: int = 0
+    ) -> dict[str, Any]:
         """Run the shared registry API contract in this process as its existing Operator.
 
         The platform-letter client keeps its normal register/reopen/update orchestration; this
@@ -982,7 +984,11 @@ class Sweeper:
         if self.feed_runner is not None:
             with self._lock:
                 db = self.service.db_path
-                if not os.path.isfile(db) or os.path.islink(db) or not os.access(db, os.R_OK | os.W_OK):
+                if (
+                    not os.path.isfile(db)
+                    or os.path.islink(db)
+                    or not os.access(db, os.R_OK | os.W_OK)
+                ):
                     feeds = {"ok": False, "error": "registry_unavailable"}
                 else:
                     try:
@@ -1000,8 +1006,7 @@ class Sweeper:
                 self._protected_hosts = protected_hosts
             result["feeds"] = feeds
             failed = feeds.get("ok") is False or any(
-                isinstance(value, Mapping) and value.get("ok") is False
-                for value in feeds.values()
+                isinstance(value, Mapping) and value.get("ok") is False for value in feeds.values()
             )
             if failed:
                 result.update(ok=False, error="platform_feed_failed")

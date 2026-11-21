@@ -342,7 +342,10 @@ def verify_service_token(
         ):
             raise LoadError(stage + ": folder scope is invalid")
         actual_paths.append(_safe_folder(scope["secretPath"]))
-    if len(actual_paths) != len(set(actual_paths)) or frozenset(actual_paths) not in normalized_sets:
+    if (
+        len(actual_paths) != len(set(actual_paths))
+        or frozenset(actual_paths) not in normalized_sets
+    ):
         raise LoadError(stage + ": folder scope did not match")
     permissions = metadata.get("permissions")
     if (
