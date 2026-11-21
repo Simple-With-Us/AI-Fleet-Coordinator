@@ -4532,9 +4532,7 @@ class Daemon:
             #  A reminder used to be a direct message;  the owner ruling of Nov 18, 2026 sends
             #  anything DM-shaped to Side-Chats instead, mentioning the owner so it still lands.
             #  Any live runner's realm-users map carries the owner's display name.
-            users = next(
-                (r.users for r in self.seats.values() if getattr(r, "users", None)), None
-            )
+            users = next((r.users for r in self.seats.values() if getattr(r, "users", None)), None)
             result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
         except Exception as exc:  # noqa: BLE001 - a failed reminder is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit driving so the
