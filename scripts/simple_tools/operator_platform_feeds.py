@@ -189,9 +189,7 @@ def register(
             return unconfigured
     api_call = None
     if registry_service is not None:
-        api_call = lambda _env, op, params, timeout=0: registry_service.call_operator(
-            op, params, timeout=timeout
-        )
+        api_call = lambda _env, op, params, timeout=0: registry_service.call_operator(op, params)
     chat = PL.Chat(
         SPEC,
         env,
@@ -603,7 +601,7 @@ def run_platform_feeds(
     visible in the result and never turns absence into a close; `sweep` clears remembered steering rows only after a
     complete discovery.
     """
-    table = (("cursor-cloud", sweep, CURSOR_KEY_NAME, "cursor", LOCATION),)
+    table = platform_feed_table()
     results: dict[str, Any] = {}
     for name, runner, credential, platform, host in table:
         if not str(env.get(credential) or "").strip():
@@ -655,3 +653,16 @@ def run_platform_feeds(
                 "protect_stale_cleanup": not complete or errors > 0 or invalid > 0,
             }
     return results
+
+
+def platform_feed_table() -> tuple[tuple[str, Callable[..., Any], str, str, str], ...]:
+    """The shared provider data table: one entry per feed, never one Operator per platform."""
+    return (("cursor-cloud", sweep, CURSOR_KEY_NAME, "cursor", LOCATION),)
+
+
+def feed_scopes() -> frozenset[tuple[str, str]]:
+    """The provider/host scopes this shared feed table may register."""
+    return frozenset(
+        (platform, host)
+        for _name, _runner, _credential, platform, host in platform_feed_table()
+    )
