@@ -22,7 +22,7 @@ test('reads GET only with scoped in-memory trio, even with unrelated fallback en
 });
 test('missing or invalid injected trio never falls back and never requests', async () => {
   for (const missing of [{}, { ...env, ASC_KEY_P8: '' }, { ...env, ASC_KEY_P8: 'not-a-key' }]) {
-    await assert.rejects(readScopedAsc('/v1/apps', { env: missing, fetchImpl: async () => { throw Error('must-not-request'); } }), /^Error: scoped-asc-read-unavailable$/);
+    await assert.rejects(readScopedAsc('/v1/apps', { env: missing, fetchImpl: async () => { throw Error('must-not-request'); } }), /^Error: scoped-asc-read-unavailable(?: missing (?:ASC_KEY_ID|ASC_ISSUER_ID|ASC_KEY_P8))?$/);
   }
 });
 test('refuses outside host and path escapes before request', async () => {
@@ -68,4 +68,23 @@ test('direct and symlink entrypoints both execute failure path, not silent succe
       assert.equal(r.stderr, 'scoped-asc-read-unavailable\n');
     }
   } finally { rmSync(directory, {recursive:true,force:true}); }
+});
+
+
+test('missing names are actionable while invalid values, paths and attacker diagnostics stay private', async () => {
+  for (const name of ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_KEY_P8']) {
+    let calls = 0, err = '';
+    const code = await main(['/v1/apps'], { env: { ...env, [name]: '' }, fetchImpl: async () => calls++,
+      out: { write() { assert.fail('no stdout'); } }, err: { write(s) { err += s; } } });
+    assert.equal(code, 1); assert.equal(calls, 0);
+    assert.equal(err, `scoped-asc-read-unavailable missing ${name}\n`);
+    assert.equal(ascFailureText({ stderr: err, code: 1 }, '/v1/apps'), `App Store Connect /v1/apps: missing ${name}`);
+  }
+  for (const stderr of ['scoped-asc-read-unavailable missing ASC_KEY_P8=sensitive-value',
+    'scoped-asc-read-unavailable missing ASC_KEY_P8\nprovider-sensitive-body', 'scoped-asc-read-unavailable missing SOME_SECRET']) {
+    assert.equal(ascFailureText({ stderr, code: 1 }, '/v1/apps'), 'App Store Connect /v1/apps: testflight_asc_service.mjs exit 1');
+  }
+  let err = '';
+  await main(['/v1/apps'], { env: { ...env, ASC_KEY_P8: 'sensitive-bad-key' }, err: { write(s) { err += s; } } });
+  assert.equal(err, 'scoped-asc-read-unavailable\n');
 });

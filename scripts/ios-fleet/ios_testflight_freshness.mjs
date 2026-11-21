@@ -292,9 +292,11 @@ export function wasKilled(err) {
   return Boolean(err) && (err.killed === true || Boolean(err.signal));
 }
 
-/** One line for a failed asc-api call.  Never echoes asc-api stderr beyond an HTTP status. */
+/** One line for a failed ASC read. Only numeric HTTP or fixed missing-variable names escape. */
 export function ascFailureText(err, apiPath, { timeoutMs = ASC_TIMEOUT_MS, load = null } = {}) {
   const endpoint = apiPath.split("?")[0];
+  const missing = /^scoped-asc-read-unavailable missing (ASC_KEY_ID|ASC_ISSUER_ID|ASC_KEY_P8)\r?\n?$/.exec(String(err.stderr || ""));
+  if (missing) return `App Store Connect ${endpoint}: missing ${missing[1]}`;
   const http = /HTTP (\d{3})/.exec(String(err.stderr || ""));
   if (http) return `App Store Connect ${endpoint}: HTTP ${http[1]}`;
   if (wasKilled(err)) {
