@@ -602,6 +602,8 @@ class LaunchTests(unittest.TestCase):
             ["python3", "--path", "/jet"],
             ["python3", "--path", "/jet", "--only", "WHATSAPP_API_KEY"],
             ["python3", "--", "--path", "/jet", "--only"],
+            ["python3", "--path", "", "--only", "WHATSAPP_API_KEY", "--", "python3"],
+            ["python3", "--path", "/jet", "--only", "", "--", "python3"],
         ):
             with self.assertRaises(core.SecretsError) as caught:
                 launch.run_with_secrets(command, {})

@@ -125,7 +125,7 @@ def run_with_secrets(command, prepared, optional=()):
         executable = items[split + 1 :]
     except (ValueError, IndexError, AttributeError, TypeError):
         raise SecretsError("invalid command", 2) from None
-    if not executable:
+    if not executable or not folder or not wanted:
         raise SecretsError("invalid command", 2)
     secrets = core.fetch_all(core.check_path(folder), prepared)
     chosen = {}
