@@ -2,9 +2,8 @@
 
 Seats never see an App id, private key, or the 1-hour installation-token
 expiry:  the relay reads each seat App's credentials (GH_APP_<SLUG>_ID and
-GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the `fleet-secrets`
-CLI only - owner decision 2026-10-21:  no process-environment secrets and no
-direct Infisical HTTP in the relay - signs a JWT with the local openssl
+GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the canonical bounded
+Infisical reader and each source's own protected token file, then signs a JWT with the local openssl
 binary (stdlib has no RSA), and caches installation tokens in memory,
 refreshing 5 minutes early.  The private key reaches openssl through an inherited pipe fd,
 so nothing is written to disk and no secret is ever logged or returned beyond
@@ -14,12 +13,17 @@ the minted token a seat is allowed to use.
 from __future__ import annotations
 
 import base64
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 TIMEOUT_SECONDS = 30
@@ -83,6 +87,12 @@ class InstallationReadError(Exception):
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
 
+    def __init__(self, message, *, reason=None, failure_kind=None):
+        self.reason = reason if reason == "token-expired-or-invalid" else None
+        self.failure_kind = failure_kind if failure_kind in ("refused", "unavailable") else None
+        detail = [item for item in (self.reason, self.failure_kind) if item is not None]
+        super().__init__(message + (": " + " / ".join(detail) if detail else ""))
+
 
 # Messages that mean this seat's App material is missing or unusable, not a
 # transient lookup or an upstream mint glitch.  Matched on the fixed prefixes
@@ -104,9 +114,11 @@ def missing_app_credential(exc: BaseException) -> bool:
     text = str(exc)
     if text in _NO_APP_CREDENTIAL_EXACT:
         return True
-    if text.startswith("fleet-secrets has no value for "):
+    if text.startswith(("Infisical has no value for ", "fleet-secrets has no value for ")):
         return True
-    if text.startswith("fleet-secrets returned an empty value for "):
+    if text.startswith(
+        ("Infisical returned an empty value for ", "fleet-secrets returned an empty value for ")
+    ):
         return True
     if text.startswith("app id for ") and text.endswith(" is not an integer"):
         return True
@@ -154,226 +166,213 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
         os.close(read_fd)
 
 
-# The CLI's own folder-path rules (scripts/fleet_secrets/core.py check_path):
-# anything weaker here would pass a bad path down and surface as a misleading
-# missing-key error.
+# Keep the established folder syntax while the shared reader proves its exact grant and rows.
 _PATH_RE = re.compile(r"/[A-Za-z0-9._/-]*")
+_NAME_RE = re.compile(r"[A-Za-z0-9_]+")
+_CLIENT_LOCK = threading.RLock()
+_CLIENT_CACHE = None
+_CLIENT_NAME = "_git_relay_fleet_infisical"
+_MAX_CLIENT_BYTES = 2 * 1024 * 1024
+_MAX_TOKEN_BYTES = 8194
+_MAX_BATCH_BYTES = 1024 * 1024
 
-# The CLI's exit-3 line (scripts/fleet_secrets/cli.py cmd_get):
-#   fleet-secrets: key NAME[, NAME ...] is not in Infisical at PATH
-# Absent names are read from that list as exact tokens, never by substring,
-# so a requested name that is a prefix of an absent one is not blamed too.
-_ABSENT_RE = re.compile(r"\bkey (?P<names>[A-Za-z0-9_, ]+?) is not in Infisical at ")
 
-
-def _absent_names(detail: str, wanted: list) -> list:
-    """The requested names the CLI's exit-3 line lists;  the first name when
-    no line parses (exit 3 always means one is absent:  fail closed).  Every
-    stderr line is searched, so a warning printed before it changes nothing."""
-    match = next(filter(None, map(_ABSENT_RE.search, detail.splitlines())), None)
-    listed = {n.strip() for n in match.group("names").split(",")} if match else set()
-    return [n for n in wanted if n in listed] or wanted[:1]
+def _shared_client():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _CLIENT_CACHE
+    expected = Path(__file__).resolve().parents[2] / "scripts/fleet_infisical.py"
+    with _CLIENT_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_CLIENT_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_CLIENT_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_CLIENT_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _CLIENT_CACHE is not None and _CLIENT_CACHE[0] == identity:
+                sys.modules[_CLIENT_NAME] = _CLIENT_CACHE[1]
+                return _CLIENT_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_CLIENT_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_CLIENT_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _CLIENT_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _CLIENT_CACHE is None else _CLIENT_CACHE[1]
+            _CLIENT_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_CLIENT_NAME) is owned:
+                    del sys.modules[_CLIENT_NAME]
+            if isinstance(exc, Exception):
+                raise AppTokenError("canonical Infisical reader unavailable") from None
+            raise
 
 
 class FleetSecretsSource:
-    """Reads named secrets through the `fleet-secrets` CLI.
+    """The existing source protocol, backed by one canonical bounded named reader.
 
-    The only approved credential path for the relay:  no environment reads,
-    no direct Infisical calls.  The CLI's own identity and backend are its
-    concern;  this class runs it with a timeout, caches values in memory, and
-    never logs or includes what it returns.
-
-    `secrets()` reads several names in ONE CLI invocation:  `fleet-secrets
-    get` exports the whole folder per call, so an App's id and private key
-    must be fetched together - per-name calls would re-export the folder for
-    every name.  A name the CLI reports absent (exit 3) is remembered for the
-    process lifetime, so an incomplete App pair does not drive a full folder
-    export per request;  add the secret and restart the relay to pick it up.
-
-    `path` is the Fleet-OPS prod folder the names are read from.  It
-    defaults to /github-apps, where the GH_APP_<SLUG>_ID and
-    GH_APP_<SLUG>_PRIVATE_KEY pairs actually live (verified live
-    2026-10-23):  without it `fleet-secrets get` reads the project root
-    and every App-key lookup misses.
-
-    `credential_file`, when set, names a protected file (systemd
-    LoadCredential, root 0600) holding the ONE Infisical token for this
-    source's folder scope:  it is read at call time and passed to the CLI
-    child with an allowlist environment (INFISICAL_FLEET_OPS_PROJECT_ID
-    required, INFISICAL_ENVIRONMENT=prod set, no HOME), so no co-located
-    secret in the relay's own environment is ever inherited and the CLI
-    cannot fall through to ~/.simple-tools file resolution.  When unset the
-    child inherits the process environment - the legacy shape the fleet's
-    other local tooling still uses.
+    Every source uses its own explicit protected token file and project declaration.  Only
+    prod and its exact folder are passed to the reader; no ambient token, HOME lookup,
+    external application or other consumer's binding can supply credentials.  Verified
+    values and confirmed missing names retain the existing per-source process cache.
     """
 
-    def __init__(
-        self,
-        executable: str = "fleet-secrets",
-        runner=subprocess.run,
-        path: str = "/github-apps",
-        credential_file: str | None = None,
-        environ=os.environ,
-    ):
-        if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
-            raise AppTokenError(f"fleet-secrets path is not a usable folder path: {path!r}")
+    def __init__(self, path="/github-apps", credential_file=None, environ=os.environ, reader=None):
+        if not _PATH_RE.fullmatch(path or "") or any(p in (".", "..") for p in path.split("/")):
+            raise AppTokenError("Infisical source folder is invalid")
         self._credential_file = credential_file
         self._environ = environ
-        self._exe = executable
-        self._run = runner
+        self._reader = reader  # Explicit dependency injection; production factories do not set it.
         self._path = path
         self._cache: dict[str, str] = {}
         self._missing: set[str] = set()
+
+    @staticmethod
+    def _names(names):
+        names = list(names)
+        if any(not isinstance(n, str) or not _NAME_RE.fullmatch(n) for n in names):
+            raise AppTokenError("Infisical secret name is invalid")
+        return list(dict.fromkeys(names))
+
+    def _token(self):
+        if not self._credential_file:
+            raise AppTokenError(f"credential file binding required for {self._path}")
+        try:
+            fd = os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as source:
+                before = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_uid not in (0, os.geteuid())
+                    or stat.S_IMODE(before.st_mode) & 0o077
+                    or before.st_size > _MAX_TOKEN_BYTES
+                ):
+                    raise ValueError()
+                raw = source.read(_MAX_TOKEN_BYTES + 1)
+                after = os.fstat(source.fileno())
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields)
+                for info in (before, after, os.stat(self._credential_file, follow_symlinks=False))
+            ]
+            if len(raw) > _MAX_TOKEN_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            token = raw.decode("utf-8").strip()
+        except (OSError, ValueError, UnicodeError):
+            raise AppTokenError(f"credential file unreadable for {self._path}") from None
+        if not token:
+            raise AppTokenError(f"credential file empty for {self._path}")
+        return token
+
+    def _read(self, wanted):
+        # Pin and execute trusted code before opening the binding or passing any token.
+        client = _shared_client()
+        reader = self._reader if self._reader is not None else client.bounded_fetch_project
+        declared = self._environ.get("INFISICAL_FLEET_OPS_PROJECT_ID")
+        project = declared.strip() if isinstance(declared, str) else ""
+        if not project:
+            raise AppTokenError("INFISICAL_FLEET_OPS_PROJECT_ID is required for this source")
+        try:
+            # Nonempty explicit input makes the canonical resolver's project-file fallback unreachable.
+            project = client.infisical_project_id(
+                {"INFISICAL_FLEET_OPS_PROJECT_ID": project}, Path("/")
+            )
+        except client.SecretsError:
+            raise AppTokenError("INFISICAL_FLEET_OPS_PROJECT_ID must be a UUID") from None
+        token = self._token()
+        try:
+            values = reader(
+                project,
+                self._path,
+                {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": self._path},
+                token=token,
+                names=tuple(wanted),
+                timeout=TIMEOUT_SECONDS,
+                max_output_bytes=_MAX_BATCH_BYTES,
+                strict_records=True,
+            )
+        except TimeoutError:
+            raise AppTokenError(
+                f"Infisical lookup timed out for {wanted[0]}", failure_kind="unavailable"
+            ) from None
+        except client.SecretsError as exc:
+            raise AppTokenError(
+                f"Infisical lookup failed for {wanted[0]}",
+                reason=exc.reason,
+                failure_kind=exc.failure_kind,
+            ) from None
+        except Exception:
+            raise AppTokenError(f"Infisical lookup failed for {wanted[0]}") from None
+        finally:
+            token = None
+        if not isinstance(values, dict) or any(
+            n not in wanted or not isinstance(v, str) for n, v in values.items()
+        ):
+            raise AppTokenError(f"Infisical returned unreadable output for {wanted[0]}")
+        return values
+
+    def _fetch(self, wanted, *, verified=False):
+        values = self._read(wanted)
+        missing = [name for name in wanted if name not in values]
+        if missing:
+            self._missing.update(missing)
+            raise AppTokenError(f"Infisical has no value for {missing[0]}")
+        normalized = {
+            name: values[name].rstrip("\n") if verified else values[name].strip() for name in wanted
+        }
+        for name, value in normalized.items():
+            if not value:
+                raise AppTokenError(f"Infisical returned an empty value for {name}")
+        self._cache.update(normalized)
 
     def secret(self, name: str) -> str:
         return self.secrets([name])[name]
 
     def verified_secret(self, name: str) -> str:
-        """One folder-PROVEN secret via `fleet-secrets get-verified`.
-
-        Unlike `secret`, the CLI answers only when the REST raw-secret row's
-        own secretPath is exactly this source's folder:  a legacy-scoped
-        token whose --path clamps to another folder fails closed instead of
-        returning the wrong scope's value.  Exit 3 (absent) is remembered for
-        the process lifetime, like `secret`;  every other failure raises.
-        """
-        if not name or not re.fullmatch(r"[A-Za-z0-9_]+", name):
-            raise AppTokenError(f"not a usable secret name: {name!r}")
-        if name in self._cache:
-            return self._cache[name]
+        name = self._names([name])[0]
         if name in self._missing:
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
-        try:
-            result = self._run_scoped([self._exe, "get-verified", name, "--path", self._path])
-        except subprocess.TimeoutExpired:
-            raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
-        except FileNotFoundError:
-            raise AppTokenError("fleet-secrets executable not found") from None
-        except OSError as exc:
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {name}: {type(exc).__name__}"
-            ) from None
-        if result.returncode == 3:
-            self._missing.add(name)
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
-        if result.returncode:
-            raise AppTokenError(
-                f"fleet-secrets get-verified failed for {name}: exit {result.returncode}"
-            )
-        value = result.stdout.decode("utf-8", "replace").rstrip("\n")
-        if not value:
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
-        self._cache[name] = value
-        return value
+            raise AppTokenError(f"Infisical has no value for {name}")
+        if name not in self._cache:
+            self._fetch([name], verified=True)
+        return self._cache[name]
 
     def secrets(self, names) -> dict:
-        """Read several names in one CLI invocation (one folder export)."""
-        names = list(names)
-        known_missing = [n for n in names if n in self._missing]
-        if known_missing:
-            raise AppTokenError(f"fleet-secrets has no value for {known_missing[0]}")
-        wanted = [n for n in names if n not in self._cache]
+        names = self._names(names)
+        missing = [name for name in names if name in self._missing]
+        if missing:
+            raise AppTokenError(f"Infisical has no value for {missing[0]}")
+        wanted = [name for name in names if name not in self._cache]
         if wanted:
             self._fetch(wanted)
-        return {n: self._cache[n] for n in names}
-
-    # Child-environment allowlist for scoped reads:  what the CLI needs to
-    # run, plus the one token from the credential file.  Nothing else in the
-    # relay's environment is the CLI's business.
-    # Matches the supported fleet-secrets core:  ENV_PROJECT /
-    # ENV_NAMES in scripts/fleet_secrets/core.py.  The required
-    # INFISICAL_FLEET_OPS_PROJECT_ID binding is what keeps the CLI off
-    # its ~/.simple-tools project-file fallback (expanduser reaches the
-    # runtime user's home regardless of HOME), and HOME is simply not
-    # forwarded.
-    _CHILD_ENV_KEYS = (
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "INFISICAL_FLEET_OPS_PROJECT_ID",
-    )
-
-    def _child_env(self):
-        if self._credential_file is None:
-            return None  # transitional: inherit (see the class docstring)
-        try:
-            with open(self._credential_file, "r", encoding="utf-8") as fh:
-                token = fh.read().strip()
-        except OSError:
-            raise AppTokenError(f"credential file unreadable for {self._path}") from None
-        if not token:
-            raise AppTokenError(f"credential file empty for {self._path}")
-        if not (self._environ.get("INFISICAL_FLEET_OPS_PROJECT_ID") or "").strip():
-            raise AppTokenError(
-                "INFISICAL_FLEET_OPS_PROJECT_ID is not set:  without it the "
-                "CLI would resolve the Fleet-OPS project from the runtime "
-                "user's ~/.simple-tools file instead of the explicit binding"
-            )
-        env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
-        env["INFISICAL_TOKEN"] = token
-        env["INFISICAL_ENVIRONMENT"] = "prod"  # the CLI contract:  Fleet-OPS prod only
-        return env
-
-    def _run_scoped(self, argv):
-        kwargs = {}
-        env = self._child_env()
-        if env is not None:
-            kwargs["env"] = env
-        return self._run(argv, capture_output=True, timeout=30, **kwargs)
-
-    def _fetch(self, wanted) -> None:
-        try:
-            result = self._run_scoped([self._exe, "get", *wanted, "--path", self._path])
-        except subprocess.TimeoutExpired:
-            raise AppTokenError(f"fleet-secrets lookup timed out for {wanted[0]}") from None
-        except FileNotFoundError:
-            raise AppTokenError("fleet-secrets executable not found") from None
-        except OSError as exc:
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {wanted[0]}: {type(exc).__name__}"
-            ) from None
-        if result.returncode:
-            # Exit 3 is a clean export that lacked the key:  remember the
-            # absence so an incomplete App pair cannot drive one folder
-            # export per request.  Only names the CLI actually lists are
-            # cached.  Exit 2 (usage) names keys and reason tokens, never
-            # values, so its first line is safe to surface - it is what tells
-            # an operator a bad --path apart from a missing key;  the usage
-            # block the CLI prints after it is dropped.  Any other failure can
-            # carry backend detail on stderr:  report only the variable name
-            # and the exit code.
-            detail = result.stderr.decode("utf-8", "replace").strip()
-            if result.returncode == 3:
-                absent = _absent_names(detail, wanted)
-                self._missing.update(absent)
-                raise AppTokenError(f"fleet-secrets has no value for {absent[0]}")
-            if result.returncode == 2 and detail:
-                reason = detail.splitlines()[0]
-                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {reason}")
-            raise AppTokenError(
-                f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
-            )
-        raw = result.stdout.decode("utf-8", "replace").strip()
-        if len(wanted) == 1:
-            values = {wanted[0]: raw}
-        else:
-            # Several names print one JSON object.  Any other stdout (a stray
-            # banner, a format change) is a lookup failure like the rest -
-            # AppTokenError, so the relay answers 503 unavailable, not 400 -
-            # and its message names the variable, never the output.
-            try:
-                values = json.loads(raw)
-            except ValueError:
-                values = None
-            if not isinstance(values, dict):
-                raise AppTokenError(f"fleet-secrets returned unreadable output for {wanted[0]}")
-        for name in wanted:
-            value = str(values.get(name) or "").strip()
-            if not value:
-                raise AppTokenError(f"fleet-secrets returned an empty value for {name}")
-            self._cache[name] = value
+        return {name: self._cache[name] for name in names}
 
 
 class AppTokenMinter:
@@ -393,8 +392,7 @@ class AppTokenMinter:
 
     def _app_credentials(self, slug: str) -> tuple[int, str]:
         prefix = "GH_APP_" + slug.upper().replace("-", "_")
-        # One CLI invocation per App, not per name:  `fleet-secrets get`
-        # exports the whole folder on every call.
+        # One bounded named-read operation per App pair, never a whole-folder export.
         pair = self._source.secrets([prefix + "_ID", prefix + "_PRIVATE_KEY"])
         try:
             app_id = int(pair[prefix + "_ID"].strip())

@@ -135,10 +135,16 @@ class SystemdUnitTemplates(unittest.TestCase):
         self.assertEqual(accounts, ["jay"])
         environments = values(sections, "Service", "Environment")
         self.assertIn("HOME=/home/jay", environments)
-        self.assertIn("AGENT_SEAT=CLAUDE", environments)
+        self.assertFalse(any(item.startswith("AGENT_SEAT=") for item in environments))
+        self.assertEqual(
+            values(sections, "Service", "EnvironmentFile"),
+            ["-/etc/fleet-services/doctor.env"],
+        )
         command = values(sections, "Service", "ExecStart")[0]
+        self.assertNotIn("--seats", command)
         self.assertIn(
-            "/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py", command
+            "/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py",
+            command,
         )
         self.assertIn("--post", command)
         self.assertNotIn("--home", command)

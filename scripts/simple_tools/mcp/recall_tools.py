@@ -269,22 +269,56 @@ def envelope(header: str, summary: str, items: list[Mapping[str, Any]]) -> str:
 
 
 def search(
-    args: Mapping[str, Any], *, env: Mapping[str, str], runner: Runner | None = None
+    args: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    scan: Callable[[str, str], None],
 ) -> tuple[str, dict[str, Any]]:
     query = str(args["query"]).strip()
     if not query:
         raise RecallUnavailable("invalid_argument", "argument 'query' must not be blank")
-    argv = ["search", query, "--limit", str(args.get("limit") or 5), "--json"]
+    # The same pre-upstream gate the recall writes run, and it is mandatory, not
+    # optional:  every caller supplies the route's scanner, and a query, app or
+    # category that looks like it holds a secret is refused here, before anything
+    # is sent anywhere.  The refusal names the field and kind, never the value.
+    for field in ("query", "app", "category"):
+        value = args.get(field)
+        if value:
+            scan(field, str(value).strip())
+    # The query rides after the end-of-options separator, so a leading `-` in
+    # user-derived text can never parse as a CLI option;  every option comes first,
+    # in single --flag=VALUE tokens so no user-controlled value can be reinterpreted
+    # as a flag of its own.  A numeric-string limit coerces like the sibling routes;
+    # bools and true garbage answer invalid_argument instead of crashing.
+    raw_limit = args.get("limit")
+    if isinstance(raw_limit, bool):
+        raise RecallUnavailable("invalid_argument", "argument 'limit' must be an integer")
+    if raw_limit is None or not str(raw_limit).strip():
+        limit = 5
+    else:
+        try:
+            limit = int(str(raw_limit).strip())
+        except ValueError:
+            raise RecallUnavailable(
+                "invalid_argument", "argument 'limit' must be an integer"
+            ) from None
+    # The input schema pins limit to 1..10;  the same bounds hold for the coerced
+    # values, so zero, a negative, or an oversized limit is a usage error here
+    # rather than wrong slicing downstream.
+    if limit < 1 or limit > 10:
+        raise RecallUnavailable("invalid_argument", "argument 'limit' must be between 1 and 10")
+    argv = ["search", "--limit=" + str(limit), "--json"]
     if args.get("app"):
-        argv += ["--app", str(args["app"])]
+        argv += ["--app=" + str(args["app"])]
     if args.get("category"):
-        argv += ["--category", str(args["category"])]
+        argv += ["--category=" + str(args["category"])]
     if args.get("include_retracted"):
         argv += ["--include-retracted"]
+    argv += ["--", query]
     code, data, err = run(argv, stdin=b"", env=env, runner=runner)
     if data is None or "hits" not in data:
         raise failure(code, err)
-    limit = int(args.get("limit") or 5)
     hits = [hit_item(h) for h in (data.get("hits") or [])[:limit] if isinstance(h, Mapping)]
     mode = clean(data.get("mode") if isinstance(data.get("mode"), str) else "", 40)[0]
     header = "simple-tools recall_search:  query %s%s%s" % (

@@ -849,12 +849,18 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_claim",
     title: "Linear Claim",
-    description: "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused.  Writes need the server's write switch on.",
+    description: "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused unless `steal` is set with `reason` naming why the claim is being taken — stealing with those two fields is allowed on every route. Writes need the server's write switch on.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["id"],
-      properties: { id: ISSUE_ID, comment: { type: "string", maxLength: LINEAR_COMMENT_LIMIT, description: "Optional note appended to the CLAIMED comment." }, session: SESSION },
+      properties: {
+        id: ISSUE_ID,
+        comment: { type: "string", maxLength: LINEAR_COMMENT_LIMIT, description: "Optional note appended to the CLAIMED comment." },
+        steal: { type: "boolean", description: "Take the issue even when another seat holds the claim.  `reason` is required with this." },
+        reason: { type: "string", maxLength: 500, description: "Why the claim is being taken from another seat.  Required whenever `steal` is set." },
+        session: SESSION,
+      },
     },
     outputSchema: {
       type: "object",

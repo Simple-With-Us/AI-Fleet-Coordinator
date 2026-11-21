@@ -8158,7 +8158,7 @@ class WorkflowVerbs:
             ):
                 raise ValueError()
             # Only immutable, reviewed source/output fixture pairs can preserve
-            # dedicated source lines. Registry is empty until owner policy approval.
+            # dedicated source lines. Records require owner policy approval.
             preserve = reviewed_base(repo, path, raw)
             # Scan every complete input, even an eligible reviewed fixture. A
             # finding may be retained only after exact output/origin validation.

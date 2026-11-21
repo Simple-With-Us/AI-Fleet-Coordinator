@@ -1,6 +1,7 @@
 """The native wire fixture must name the actual helper, transaction and schema bytes."""
 
 import hashlib
+import importlib.util
 import json
 import pathlib
 import unittest
@@ -17,6 +18,16 @@ SCHEMA = "scripts/fleet-ops-eavesdropper-settings.json"
 
 
 class OperatorSettingsFixtureTests(unittest.TestCase):
+    def test_all_cases_are_actual_offline_helper_receipts(self):
+        generator_path = pathlib.Path(__file__).with_name("make_operator_settings_fixture.py")
+        spec = importlib.util.spec_from_file_location("operator_fixture_generator", generator_path)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        actual = generator.generate()
+        artifact = json.loads(FIXTURE.read_text())
+        self.assertEqual(len(actual["cases"]), 15)
+        self.assertEqual(generator.semantic(actual), generator.semantic(artifact))
+
     def test_generated_fixture_matches_the_actual_producers_and_schema(self):
         artifact = json.loads(FIXTURE.read_text())
         self.assertIs(artifact["synthetic"], True)

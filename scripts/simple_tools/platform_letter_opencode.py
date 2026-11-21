@@ -75,9 +75,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import sqlite3
+import subprocess
 import sys
+import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import quote
 
 from . import platform_letter as PL
 
@@ -89,8 +95,28 @@ PACKAGE_DIRNAME = "simple_tools"
 # A plugin directory to list instead of the checkout's own (a test).
 ENV_PLUGIN_DIR = "OPENCODE_LETTER_PLUGIN_DIR"
 
-# The names OpenCode gives a chat before anything names it.  A chat with one of them is unnamed.
+# The names OpenCode gives a chat before anything names it.  A chat with one of them is unnamed.
 DEFAULT_TITLE = re.compile(r"^(?:New session|Child session)(?: - \d{4}-\d{2}-\d{2}T[\d:.]+Z?)?$")
+
+#: The title a lettered chat carries:  the letter, a colon and a space, then the chat's own
+#: words.  This is the shape the plugin writes, so a chat whose title does not begin with it
+#: holds no letter.  One letter or two, the shape the registry still reads:  a chat that
+#: holds a single letter from before the pairs rule keeps it until it registers on its own,
+#: and the repair does not move it a pair by force.
+LETTERED_TITLE = re.compile(r"^[A-Z]{1,2}: ")
+
+#: How many chats one unlettered pass names, and how old a chat may be to be named by it.  A
+#: chat that is weeks old is not this pass's business:  the owner is looking at today's chats.
+UNLETTERED_SCAN = 50
+UNLETTERED_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
+#: How many parents one pass reads beside its candidates, for the rule that a child of a chat
+#: which takes no letter takes none either.
+UNLETTERED_PARENT_SCAN = 200
+
+#: The store OpenCode keeps its chats in on this host, and the table the live rows are in.
+STORE_REL = os.path.join(".local", "share", "opencode", "opencode.db")
+#: How long a title write to the runtime may take.
+RENAME_TIMEOUT = 20
 
 
 def _text(value: object) -> str:
@@ -120,6 +146,261 @@ def opencode_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = N
     return "" if DEFAULT_TITLE.match(title) else title
 
 
+# --------------------------------------------------------------------------------------------
+# The store, and the chats the plugin did not see
+# --------------------------------------------------------------------------------------------
+
+
+def store_path(env: Mapping[str, str]) -> Path:
+    """The OpenCode runtime store this host keeps its chats in.
+
+    It is the runtime's own file, read only, and it holds every chat of every project on this
+    host:  the plugin inside OpenCode hears a chat's own events and nothing else, so a chat that
+    went quiet before the plugin was loaded keeps its own name and takes no letter until
+    something reaches it.  This store is what names those chats."""
+    explicit = (env.get("OPENCODE_WAKE_STORE") or env.get("OPENCODE_STORE") or "").strip()
+    if explicit:
+        return Path(explicit)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return Path(home) / STORE_REL
+
+
+def _chat_rows(env: Mapping[str, str], since_ms: int, limit: int) -> list[dict[str, Any]] | None:
+    """The chats this host has that a repair pass may name, newest first, read only.
+
+    The bounds are in the query and not in Python:  the store grows with every chat on the
+    host, and a pass that read the whole table would cost the whole history every hour.  The
+    live table is `session_v2`:  `id`, the title the chat shows, the chat that started it, the
+    archive stamp and the time it was created.  A store that is not there, or that cannot say
+    what it holds, answers None:  a pass that cannot say is no pass."""
+    db = store_path(env)
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT id, title, parent_id, time_archived, time_created FROM session_v2 "
+            "WHERE time_created >= ? AND (time_archived IS NULL OR time_archived <= 0) "
+            "ORDER BY time_created DESC LIMIT ?",
+            (int(since_ms), int(limit)),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [
+        {
+            "id": str(row[0] or ""),
+            "title": str(row[1] or ""),
+            "parent_id": str(row[2] or ""),
+            "archived": row[3],
+            "created": row[4],
+        }
+        for row in rows
+        if row and row[0]
+    ]
+
+
+def _chat_row(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
+    """One chat's own row, read only.  None when the store does not hold it.
+
+    A single row, so it costs nothing however many chats the store holds:  the library asks
+    about one chat at a time (a chat's own start, and the parent a sub-thread registers
+    after), and that chat may be older than any pass's age bound."""
+    db = store_path(env)
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        row = conn.execute(
+            "SELECT id, title, parent_id, time_archived, time_created FROM session_v2 WHERE id = ?",
+            (sid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return {
+        "id": str(row[0] or ""),
+        "title": str(row[1] or ""),
+        "parent_id": str(row[2] or ""),
+        "archived": row[3],
+        "created": row[4],
+    }
+
+
+def _parent_titles(env: Mapping[str, str], parent_ids: list[str]) -> dict[str, str]:
+    """The titles of the parents the candidates name, read only.
+
+    A parent may be older than the candidates, or archived, so it is asked for by id rather
+    than taken from the candidate list.  The list is bounded by the number of candidates."""
+    ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+    if not ids:
+        return {}
+    db = store_path(env)
+    if not db.is_file():
+        return {}
+    titles: dict[str, str] = {}
+    try:
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return {}
+    try:
+        for start in range(0, len(ids), UNLETTERED_PARENT_SCAN):
+            chunk = ids[start : start + UNLETTERED_PARENT_SCAN]
+            rows = conn.execute(
+                "SELECT id, title FROM session_v2 WHERE id IN (%s)" % ",".join("?" * len(chunk)),
+                chunk,
+            ).fetchall()
+            for row in rows:
+                if row and row[0]:
+                    titles[str(row[0])] = str(row[1] or "")
+    except sqlite3.Error:
+        return titles
+    finally:
+        conn.close()
+    return titles
+
+
+def _archived(value: object) -> bool:
+    """Whether the archive stamp says this chat is archived.  The stamp is a millisecond time or
+    nothing at all, so anything that is not a positive number reads as not archived."""
+    try:
+        return int(value or 0) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's OpenCode chats that hold no letter on their title, newest first, for the
+    repair a chat's start sets off (`platform_letter.repair_after_start`).
+
+    The plugin hears a chat's own events, so a chat that went quiet before the plugin was
+    loaded keeps the name OpenCode gave it and takes no letter until something reaches it:  the
+    plugin's own events never come for it.  This is the list of those chats, so the fleet's one
+    repair pass can letter them.
+
+    Ids only, bounded by the count and by the age, and any doubt leaves a chat out:  a chat
+    marked for no letter takes none, an archived chat is over, a chat that already carries a
+    letter is lettered, and a chat whose title is the runtime's own default name is not a chat
+    anybody is looking at.  A store that is not there answers None:  no pass this time.
+
+    A chat another chat started is left out when that parent takes no letter.  The plugin
+    silences such a chat ("a sweep worker's sub-agents are not chats of anyone's"), so the
+    repair must not letter it either:  a parent that takes no letter is never registered, so the
+    child would be registered with no parent and would take a doubled main-chat pair, and the
+    pool of those is twenty-six pairs for the whole fleet."""
+    now = time.time()
+    since_ms = int((now - UNLETTERED_MAX_AGE_SECONDS) * 1000)
+    rows = _chat_rows(env, since_ms, UNLETTERED_SCAN)
+    if rows is None:
+        return None
+    titles = {row["id"]: row["title"] for row in rows}
+    titles.update(_parent_titles(env, [row["parent_id"] for row in rows]))
+    found: list[str] = []
+    for row in rows:
+        if len(found) >= UNLETTERED_SCAN:
+            break
+        title = PL.one_line(row["title"])
+        if not title or DEFAULT_TITLE.match(title):
+            continue
+        if no_letter(title):
+            continue  # a chat marked for no letter takes none
+        if LETTERED_TITLE.match(title):
+            continue  # it holds a letter already
+        if _archived(row["archived"]):
+            continue
+        parent = row["parent_id"]
+        if parent:
+            parent_title = titles.get(parent)
+            if parent_title is not None and no_letter(parent_title):
+                continue  # its parent takes no letter, so this chat is silenced with it
+        found.append(row["id"])
+    return found
+
+
+def opencode_chat_payload(sid: str) -> Mapping[str, Any]:
+    """A chat's own start event, as the library's question about a chat the plugin did not fire
+    for:  the chat's id, the chat that started it, and the name OpenCode shows it under.
+
+    The parent is in the payload, so a chat another chat started registers after that parent and
+    takes the pair after the parent's, the way a chat the plugin saw takes it."""
+    row = _chat_row(os.environ, sid)
+    if row is None:
+        return {"event": "start", "session_id": sid, "source": "startup"}
+    payload: dict[str, Any] = {
+        "event": "start",
+        "session_id": sid,
+        "source": "startup",
+        "title": row["title"],
+    }
+    if row["parent_id"]:
+        payload["parent_session_id"] = row["parent_id"]
+    return payload
+
+
+def _opencode_binary(env: Mapping[str, str]) -> str | None:
+    """The `opencode` CLI on this host:  the setting, then PATH, then the runtime's own folder."""
+    for candidate in (env.get("OPENCODE_BIN"), shutil.which("opencode", path=env.get("PATH"))):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    packaged = os.path.join(home, ".opencode", "bin", "opencode")
+    if os.path.isfile(packaged) and os.access(packaged, os.X_OK):
+        return packaged
+    return None
+
+
+def opencode_rename(request: PL.TitleRequest) -> bool:
+    """Put the title on the chat, through the runtime's own API.
+
+    The plugin writes titles itself (`ctx.session.update`), but the library's repair pass runs
+    outside OpenCode, so it needs the runtime's own way in.  `opencode api session.update` is
+    that way:  the CLI finds the running service and holds its own credentials, so nothing here
+    reads a service password and nothing is written to disk.
+
+    A chat with no descriptive name yet is left alone:  OpenCode names a chat itself, from its
+    first message, and a name put on it before the runtime has said anything is one the runtime
+    puts its own over."""
+    words = str(request.words or "").strip()
+    if not request.session_id or not words or words == PL.PLACEHOLDER:
+        return False
+    env = request.env
+    binary = _opencode_binary(env)
+    if not binary:
+        return False
+    body = json.dumps({"title": request.title}, ensure_ascii=False)
+    try:
+        done = subprocess.run(
+            [
+                binary,
+                "api",
+                "session.update",
+                "--param",
+                "sessionID=" + request.session_id,
+                # The body is one attached token, so the child can never read a value that
+                # begins with a dash as a flag of its own.
+                "--data=" + body,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=RENAME_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -133,7 +414,10 @@ SPEC = PL.PlatformSpec(
     close_reasons=("archived", "deleted"),
     output="json",
     title_in_output=True,
+    title_writer=opencode_rename,
     session_env=("OPENCODE_SESSION_ID",),
+    chat_payload=opencode_chat_payload,
+    unlettered_sessions=opencode_unlettered_sessions,
 )
 
 
