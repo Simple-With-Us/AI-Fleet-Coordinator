@@ -961,10 +961,12 @@ class CodeOnlyHelperTests(unittest.TestCase):
     def test_new_snapshot_manifest_must_be_root_private_before_read(self):
         source, manifest = self.source_snapshot()
         manifest.chmod(0o644)
-        with self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"):
-            self.helper._validated_new_snapshot(
-                source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
-            )
+        with mock.patch("subprocess.run") as run:
+            with self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"):
+                self.helper._validated_new_snapshot(
+                    source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
+                )
+        run.assert_not_called()
 
     def test_new_snapshot_manifest_symlink_is_refused_before_read(self):
         source, manifest = self.source_snapshot()
@@ -973,10 +975,12 @@ class CodeOnlyHelperTests(unittest.TestCase):
         target.chmod(0o600)
         manifest.unlink()
         manifest.symlink_to(target)
-        with self.assertRaisesRegex(self.helper.InstallError, "refusing symlink path component"):
-            self.helper._validated_new_snapshot(
-                source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
-            )
+        with mock.patch("subprocess.run") as run:
+            with self.assertRaisesRegex(self.helper.InstallError, "refusing symlink path component"):
+                self.helper._validated_new_snapshot(
+                    source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
+                )
+        run.assert_not_called()
 
     def test_prior_snapshot_manifest_requires_private_plain_file_before_read(self):
         for case in ("mode", "symlink"):

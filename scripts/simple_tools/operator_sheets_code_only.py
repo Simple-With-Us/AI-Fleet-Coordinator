@@ -445,15 +445,15 @@ def _validated_new_snapshot(
     source_dir: Path, *, node: str, uid: int, gid: int
 ) -> dict[str, bytes]:
     _check_path(source_dir, uid=uid, gid=gid, mode=0o700, directory=True)
-    source_bytes = validate_source_bundle(
-        source_dir=source_dir, node=node, uid=uid, gid=gid
-    )
     manifest_path = source_dir / "manifest.json"
     _check_path(manifest_path, uid=uid, gid=gid, mode=0o600, directory=False)
     try:
         manifest = json.loads(manifest_path.read_text())
     except (OSError, ValueError):
         raise InstallError("the new module snapshot manifest is missing or invalid") from None
+    source_bytes = validate_source_bundle(
+        source_dir=source_dir, node=node, uid=uid, gid=gid
+    )
     expected = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
     if manifest != expected:
         raise InstallError("the new module snapshot hash does not match")
