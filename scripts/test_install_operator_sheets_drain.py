@@ -42,6 +42,7 @@ MODULES = (
     "operator_sheets_google.mjs",
     "operator_sheets_drain.mjs",
     "thread_registry_export.mjs",
+    "registry_export_reader.mjs",
 )
 REVIEWED_DRAIN = "export function pacedAdapter() {}\nexport const RUN_DEADLINE_MS = 1;\n"
 REVIEWED_TIMER = "[Timer]\nOnUnitInactiveSec=5min\n"
@@ -327,6 +328,53 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertNotIn("installed /", again.stdout)
         self.assertNotIn("systemctl daemon-reload", self.calls())
+
+    def test_actual_installed_exporter_and_drain_import_the_complete_module_closure(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        agent = self.repo / "scripts" / "simple_tools"
+        for name in MODULES:
+            shutil.copyfile(HERE / "simple_tools" / name, agent / name)
+        git(self.repo, "add", "scripts/simple_tools")
+        git(self.repo, "commit", "-q", "-m", "actual module closure fixture")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        program = """
+const thread = await import(process.argv[1]);
+const drain = await import(process.argv[2]);
+if (typeof thread.drainThreadRows !== 'function' ||
+    typeof drain.drainOnce !== 'function' || typeof drain.pacedAdapter !== 'function') {
+  throw new Error('installed module closure incomplete');
+}
+"""
+
+        def installed_import():
+            return subprocess.run(
+                [
+                    node,
+                    "--input-type=module",
+                    "-e",
+                    program,
+                    (self.lib / "thread_registry_export.mjs").as_uri(),
+                    (self.lib / "operator_sheets_drain.mjs").as_uri(),
+                ],
+                cwd=self.tmp,
+                env={"PATH": os.defpath, "HOME": str(self.tmp)},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+        imported = installed_import()
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        # The real copied exporter must depend on the adapter the installer supplied.
+        (self.lib / "registry_export_reader.mjs").unlink()
+        missing = installed_import()
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("ERR_MODULE_NOT_FOUND", missing.stderr)
+        self.assertIn("registry_export_reader.mjs", missing.stderr)
 
     def test_a_drifted_mode_is_repaired(self):
         self.assertEqual(self.run_install().returncode, 0)

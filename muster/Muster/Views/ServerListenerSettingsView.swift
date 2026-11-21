@@ -210,43 +210,15 @@ struct ServerSeatListEditor: View {
     let maxItems: Int
     let maxLength: Int
 
-    private var seats: [String] {
-        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return [] }
-        return values.compactMap { if case .text(let name) = $0 { return name } else { return nil } }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            ForEach(seats.indices, id: \.self) { index in
-                HStack {
-                    TextField("Seat name", text: field(index))
-                        .accessibilityLabel("Seat Name \(index + 1)")
-                    Button {
-                        var values = seats
-                        guard values.indices.contains(index) else { return }
-                        values.remove(at: index)
-                        update(values)
-                    } label: { Image(systemName: "minus.circle") }
-                    .buttonStyle(.borderless).accessibilityLabel("Remove Seat \(index + 1)")
-                }.textFieldStyle(.roundedBorder)
-            }
-            Button("Add Seat", systemImage: "plus") { update(seats + [""]) }
-                .disabled(seats.count >= maxItems)
-            Text("Uppercase seat names, up to \(maxLength) characters each.")
+            TextField("Seat Names", text: Binding(
+                get: { ServerSeatNames.text(from: draft) },
+                set: { draft = ServerSeatNames.draft(from: $0) }
+            )).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Seat Names")
+            Text("Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
                 .font(.caption).foregroundStyle(.secondary)
         }.font(.system(size: 11)).frame(minWidth: 240)
-    }
-
-    private func field(_ index: Int) -> Binding<String> {
-        Binding(get: { seats.indices.contains(index) ? seats[index] : "" }, set: { value in
-            var values = seats
-            guard values.indices.contains(index) else { return }
-            values[index] = value
-            update(values)
-        })
-    }
-
-    private func update(_ values: [String]) {
-        draft = ServerSettingValue.list(values.map(ServerSettingValue.text)).json ?? "[]"
     }
 }
