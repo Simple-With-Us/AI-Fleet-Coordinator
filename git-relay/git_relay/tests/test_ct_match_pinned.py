@@ -10,6 +10,40 @@ from git_relay import patch_secretscan as relay
 from git_relay.reviewed_fixtures import unreviewed_file_secret
 
 
+def review_record_admission(record):
+    """Return (key, census) from a durable match-pinned review record, or raise ValueError."""
+    if not isinstance(record, dict):
+        raise ValueError("review record must be an object")
+    doc = record.get("reviewed_file")
+    if not isinstance(doc, dict):
+        raise ValueError("reviewed_file must be an object")
+    fields = {}
+    for field in ("repository", "path", "sha256"):
+        value = doc.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"reviewed_file.{field} must be a non-empty string")
+        fields[field] = value
+    rows = doc.get("effective_matches")
+    if not isinstance(rows, list):
+        raise ValueError(
+            "reviewed_file.effective_matches must be a list of label-plus-four-integer rows"
+        )
+    census = []
+    for i, row in enumerate(rows):
+        if not (
+            isinstance(row, (list, tuple))
+            and len(row) == 5
+            and isinstance(row[0], str)
+            and row[0]
+            and all(isinstance(n, int) and not isinstance(n, bool) for n in row[1:])
+        ):
+            raise ValueError(
+                f"reviewed_file.effective_matches[{i}] must be a label plus four integers"
+            )
+        census.append((row[0], *row[1:]))
+    return (fields["repository"], fields["path"], fields["sha256"]), frozenset(census)
+
+
 class MatchPinnedReview(unittest.TestCase):
     repo, path = "fixture-org/fixture-repo", "tests/fixture.ts"
 
@@ -75,8 +109,8 @@ class MatchPinnedReview(unittest.TestCase):
 
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
-        self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 2)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 2)
+        self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 4)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 3)
         key, census = next(
             (key, census)
             for key, census in relay._REVIEWED_GENERIC_MATCHES.items()
@@ -187,3 +221,133 @@ class DurableReviewTests(unittest.TestCase):
             relay._REVIEWED_GENERIC_MATCHES[ct_key],
             frozenset(tuple(row) for row in ct["effective_matches"]),
         )
+
+
+class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
+    """The Usage-Monitor upgrade-reviewed-hub.py v3 candidate: exact digest, exact one-match census.
+
+    The key and census are read from the durable review record so this fixture
+    embeds no repository identifier of its own.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[3]
+        cls.record = json.loads(
+            (
+                root
+                / "docs/security/usage-monitor-upgrade-reviewed-hub-match-pinned-review-20261118.json"
+            ).read_text()
+        )
+        cls.key, cls.census = review_record_admission(cls.record)
+
+    def test_registry_pins_exact_census(self):
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
+        self.assertNotIn(self.key, relay._REVIEWED_GENERIC_FIXTURES)
+
+    def test_durable_record_binds_registry(self):
+        doc = self.record["reviewed_file"]
+        self.assertEqual(doc["bytes"], 36664)
+        self.assertEqual(doc["lines"], 814)
+        self.assertEqual(
+            self.record["provenance_source"]["sha256"],
+            "e98aaf3f5c7141bd2e80ab2b310ebe216c8ec4b43480ac6e5178a61b47407fea",
+        )
+
+    def test_stale_or_incomplete_census_refuses_the_proposed_digest(self):
+        body = "const secret = '" + "a" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        real = MatchPinnedReview().metadata(relay, body)
+        self.assertEqual(len(real), 1)
+        for metadata in (frozenset(), frozenset({("assigned secret", 0, 1, 0, 1)})):
+            with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: metadata}):
+                self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: real}):
+            self.assertIsNone(relay.scan_file(key[0], key[1], body))
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
+
+    def test_loaded_credential_stays_absolute_on_the_admission_path(self):
+        body = "prefix " + "KnownCredentialValue123"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
+            self.assertEqual(
+                relay.scan_file(key[0], key[1], body, known=("KnownCredentialValue123",)),
+                "a loaded credential",
+            )
+
+    def test_dedicated_pattern_stays_absolute_on_the_admission_path(self):
+        body = "token = ghp_" + "A" * 30
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
+            self.assertEqual(relay.scan_file(key[0], key[1], body), "GitHub token")
+
+
+class ReviewRecordShapeTests(unittest.TestCase):
+    def test_valid_record_returns_key_and_census(self):
+        record = {
+            "reviewed_file": {
+                "repository": "org/repo",
+                "path": "file.py",
+                "sha256": "abc",
+                "effective_matches": [["assigned secret", 1, 2, 3, 4]],
+            }
+        }
+        self.assertEqual(
+            review_record_admission(record),
+            (("org/repo", "file.py", "abc"), frozenset({("assigned secret", 1, 2, 3, 4)})),
+        )
+
+    def test_malformed_records_raise_precise_valueerror(self):
+        cases = [
+            (None, "review record must be an object"),
+            ([], "review record must be an object"),
+            ({}, "reviewed_file must be an object"),
+            ({"reviewed_file": "x"}, "reviewed_file must be an object"),
+            (
+                {"reviewed_file": {"path": "p", "sha256": "s"}},
+                "reviewed_file.repository must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "", "path": "p", "sha256": "s"}},
+                "reviewed_file.repository must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "", "sha256": "s"}},
+                "reviewed_file.path must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "p", "sha256": ""}},
+                "reviewed_file.sha256 must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "p", "sha256": "s"}},
+                "reviewed_file.effective_matches must be a list of label-plus-four-integer rows",
+            ),
+            (
+                {
+                    "reviewed_file": {
+                        "repository": "r",
+                        "path": "p",
+                        "sha256": "s",
+                        "effective_matches": [["assigned secret", 1, 2, 3]],
+                    }
+                },
+                "reviewed_file.effective_matches[0] must be a label plus four integers",
+            ),
+            (
+                {
+                    "reviewed_file": {
+                        "repository": "r",
+                        "path": "p",
+                        "sha256": "s",
+                        "effective_matches": [["assigned secret", 1, 2, 3, True]],
+                    }
+                },
+                "reviewed_file.effective_matches[0] must be a label plus four integers",
+            ),
+        ]
+        for record, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(ValueError) as caught:
+                    review_record_admission(record)
+                self.assertEqual(str(caught.exception), message)

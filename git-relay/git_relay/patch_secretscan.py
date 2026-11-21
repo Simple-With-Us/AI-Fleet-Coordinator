@@ -113,22 +113,75 @@ _SOURCE_RHS = re.compile(
 )
 
 
+# A complete, unquoted dotted identifier chain (a property access or a call
+# target) is a source expression, not a stored literal.  Bare runs, quoted
+# values, env-prefixed forms and lowercase-only chains remain candidates.
+_DOTTED_RHS = re.compile(r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)")
+
+
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
     start = match.start("value")
     # An optional quote consumed by the detector means this is a literal, always.
     if start and text[start - 1] in "\"'":
         return False
     line = text[text.rfind("\n", 0, start) + 1 : start]
-    # A source line containing quotes or template delimiters is conservatively scanned.
-    if any(c in line for c in "\"'`"):
-        return False
     # Existing `if (...) cfg.key =` lines use the assignment's exact suffix.
     assignment = re.search(
         r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line
     )
-    if assignment is None:
+    labeled_arg = False
+    if assignment is not None:
+        # A source line containing quotes or template delimiters is conservatively scanned.
+        if any(c in line for c in "\"'`"):
+            return False
+    else:
+        # A labeled call argument (Swift/Kotlin) puts the keyword label right
+        # after `(` or `,` while an earlier `(` is still unclosed, possibly
+        # across lines.  Comma prose has no call paren, and quoted or
+        # line-start colon pairs (JSON/YAML) never reach this path.  Paren
+        # depth is tracked across the whole window so a closure inside the
+        # call keeps the paren open and an earlier string argument is fine.
+        # The separator must be the labeled-argument colon:  a `=` keyword
+        # argument inside parens keeps the `=` path's stricter treatment.
+        # Clearing is limited to call syntax; prose and quoted pairs still refuse.
+        if ":" not in text[match.start() : start]:
+            return False
+        before = text[max(0, match.start() - 300) : match.start()]
+        tail = re.search(r"[(,]\s*$", before)
+        if tail is None:
+            return False
+        # The innermost open paren must be a call paren (right after an
+        # identifier char). Balanced grouping pairs are popped when they
+        # close, so they do not hide the call; parens inside string literals
+        # are skipped, so prose or a quoted paren cannot open a call.
+        stack = []
+        quote = ""
+        for i, ch in enumerate(before):
+            if quote:
+                if ch == quote and before[i - 1] != "\\":
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
+                stack.append(i > 0 and (before[i - 1].isalnum() or before[i - 1] in "_$"))
+            elif ch == ")" and stack:
+                stack.pop()
+        labeled_arg = bool(stack) and stack[-1] and not quote
+        if not labeled_arg:
+            return False
+    if _SOURCE_RHS.match(text, start) is not None:
+        return True
+    chain = _DOTTED_RHS.match(text, start)
+    if chain is None:
         return False
-    return _SOURCE_RHS.match(text, start) is not None
+    value = chain.group(0)
+    if value.startswith(("process.env.", "import.meta.env.")):
+        return False
+    if re.search(r"[a-z][A-Z]", value) is not None:
+        return True
+    # Lowercase-only chains stay candidates after `=`, but in a labeled call
+    # argument a property chain is idiomatically lowercase (Swift/Kotlin).
+    return labeled_arg
 
 
 def scan(text: str, known: Iterable[str] = ()) -> str | None:
@@ -202,6 +255,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "app/src/security/__tests__/originLock.test.ts",
         "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
     ): frozenset({("assigned secret", 547, 580, 557, 580)}),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "upgrade-reviewed-hub.py",
+        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
@@ -220,6 +278,16 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
             "Simple-With-Us/Congress.Trade",
             "app/package-lock.json",
             "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/deno.lock",
+            "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "5ff0b0a6007a6df394d86060251d58a1a7ebd9b3e6330a3c5fc24021793b6932",
         ),
     }
 )

@@ -45,6 +45,8 @@ Seat instance/credential/bot/bearer/administrator pins and daemon owner/eligible
 
 ## Deployment Gates
 
+Canonical saves honor the packaged owner-controlled `applyEnabled` gate before any provider or runtime mutation.  The shipped gate remains false; initialization does not enable it, and a source merge or passing fixture does not authorize changing it.  Successful synthetic fixtures explicitly enable their isolated manifest.  Live autosave acceptance requires the owner's existing gate decision as well as the grant and installation gates below.
+
 1. Merge/review the shared client foundation and this backend source, and prepare/review the matching Muster UI while preserving its draft hold until step 5's backend live acceptance succeeds.  Ship the editor, canonical module, allowlist and `fleet_infisical.py` together; the container build context includes the manifest.
 2. Read the current service-token registry and a names-only inventory of the proposed `prod:/operator-settings` folder.  Verify existing grants before asking for or issuing any new purpose.  No empty-folder or grant-compliance claim is made by this source.
 3. Use this consumer's own finite-expiry read-only and read/write grants only.  The exact bindings are recorded in INFISICAL.md.  Do not borrow Notes, letter, seat, deployment or ambient credentials.  Store/token registration and actual installation are separate rollout work.

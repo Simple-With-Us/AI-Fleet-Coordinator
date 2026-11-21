@@ -202,6 +202,17 @@ PROMPT_SCAN_WORDS = 64
 # The scanner's context rules ("api_key: <value>", "authorization: bearer <value>", "Linear client secret = <value>")
 # span several words, so a prompt word is scanned together with the words kept before it, this many at most.
 SECRET_WINDOW = 12
+# Generated titles never need pasted keys, hashes or armored data.  These guards are local to prompt extraction;
+# they do not change the shared scanner's policy for source code or other fleet text.
+PROMPT_OPAQUE_RUN = re.compile(r"[A-Za-z0-9_+/=.-]{28,}")
+PROMPT_ARMOR = re.compile(
+    r"-----BEGIN (?P<kind>[A-Z0-9 ]+)-----.*?(?:-----END (?P=kind)-----|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+PROMPT_QUOTES = str.maketrans("", "", "\"'`\\*“”‘’")
+PROMPT_CREDENTIAL_WORDS = frozenset(
+    {"api", "key", "password", "token", "secret", "bearer", "authorization"}
+)
 STDIN_LIMIT = 1 << 20
 # What the registry side answers for a chat it has no registration for (the registry was restored from an older copy,
 # or never saw the chat), and what the hook reads as "register again".
@@ -740,15 +751,21 @@ def title_case(words: list[str]) -> str:
 def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
     and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
-    words after a slash command still can)."""
-    text = str(prompt or "")[:PROMPT_SCAN_CHARS]
-    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    words after a slash command still can).  Partial tokens and unterminated blocks are discarded before scanning:
+    a scan-window cut must not turn data the scanner would refuse into an innocuous-looking fragment."""
+    whole = str(prompt or "")
+    text = whole[:PROMPT_SCAN_CHARS]
+    if len(whole) > len(text) and not whole[len(text)].isspace() and not text[-1:].isspace():
+        text = re.sub(r"\S+$", "", text)
+    text = re.sub(r"```.*?(?:```|\Z)", " ", text, flags=re.DOTALL)
+    text = PROMPT_ARMOR.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
         line = re.sub(r"^\s*/\S*", " ", line)
         words: list[str] = []
         kept: list[str] = []  # the line's tokens that are not secrets, in order
+        dropped = False
         # Each whitespace-delimited token is scanned whole, then split into words: a token such as ghp_<key> must
         # not reach the scanner as the two harmless halves an underscore would cut it into.  It is scanned as the
         # last of the tokens kept before it, because the scanner's context rules need the keyword and the value
@@ -756,13 +773,33 @@ def title_from_prompt(prompt: object) -> str:
         for scanned, token in enumerate(line.split()):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
                 break
-            if secretscan.scan(" ".join([*kept[-SECRET_WINDOW:], token])):
+            context = " ".join([*kept[-SECRET_WINDOW:], token])
+            opaque = any(
+                any(ch.isalpha() for ch in match.group())
+                for match in PROMPT_OPAQUE_RUN.finditer(token)
+            )
+            # A quoted JSON/Markdown label must carry the same context as an unquoted assignment.  Scan both
+            # forms before splitting words, while preserving the original spelling of ordinary title words.
+            if (
+                opaque
+                or secretscan.scan(context)
+                or secretscan.scan(context.translate(PROMPT_QUOTES))
+            ):
+                dropped = True
                 continue
             kept.append(token)
             words.extend(m.group() for m in WORD.finditer(token))
         del words[TITLE_WORDS:]
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
             words.pop()  # "... Addressed From" reads cut off; end on a word that carries meaning
+        if (
+            dropped
+            and words
+            and all(
+                word.translate(PROMPT_QUOTES).lower() in PROMPT_CREDENTIAL_WORDS for word in words
+            )
+        ):
+            continue
         if words:
             return clean_title(title_case(words))
     return ""
@@ -1985,6 +2022,8 @@ _POSTED_TOPIC = re.compile("posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)")
 # read can name dozens of issues it never worked on, so only the topic rules read those parts.
 _QUOTED_TYPES = frozenset({"tool_result", "function_call_output", "custom_tool_call_output"})
 _QUOTED_KEYS = frozenset({"toolUseResult", "output", "stdout", "stderr", "result"})
+_RUNTIME_CONTEXT_TYPES = frozenset({"environment_context", "runtime_context", "world_state"})
+_RUNTIME_CONTEXT_ROLES = frozenset({"developer", "system"})
 _issue_finders: dict[bool, Any] = {}
 
 
@@ -2007,6 +2046,56 @@ def issue_ids_in(text: str, *, any_case: bool = False) -> set[str]:
     return {OR.valid_issue_id(m.group(1)) for m in _issue_finder(any_case).finditer(text)} - {""}
 
 
+def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
+    """Return the user text after Codex's injected AGENTS/environment bootstrap, if present."""
+    kind = value.get("type")
+    if value.get("role") == "user":
+        content = value.get("content")
+    elif kind == "user_message":
+        # Codex's event_msg transcript form wraps the same bootstrap in
+        # payload.type=user_message and payload.message, without a role field.
+        content = value.get("message")
+    else:
+        return None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), list):
+        text = "\n".join(
+            part["text"]
+            for part in content["content"]
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), str):
+        text = content["content"]
+    else:
+        return None
+    recognized = (
+        text.lstrip().startswith("# AGENTS.md instructions for ")
+        and "<INSTRUCTIONS>" in text
+        and "</INSTRUCTIONS>" in text
+    )
+    if not recognized:
+        return None
+    instructions_close = text.find("</INSTRUCTIONS>", text.find("<INSTRUCTIONS>"))
+    suffix_start = instructions_close + len("</INSTRUCTIONS>")
+    suffix = text[suffix_start:]
+    environment_prefix = suffix.lstrip()
+    if environment_prefix.startswith("<environment_context>"):
+        closing_tag = "</environment_context>"
+        environment = suffix.find("<environment_context>")
+        closing = suffix.find(closing_tag, environment)
+        if closing < 0:
+            return None
+        return suffix[closing + len(closing_tag) :].strip()
+    return suffix.strip()
+
+
 def _topic_issue_ids(text: str) -> set[str]:
     found: set[str] = set()
     for m in _TOPIC_FLAG.finditer(text):
@@ -2025,12 +2114,24 @@ def _transcript_strings(
         (quoted if inside else own).append(value)
     elif isinstance(value, Mapping):
         kind = value.get("type")
+        role = value.get("role")
+        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
+            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
+        ):
+            return
         hidden = (
             inside
             or (isinstance(kind, str) and kind in _QUOTED_TYPES)
             or value.get("isMeta") is True
         )
+        bootstrap_tail = _agents_environment_bootstrap_tail(value)
+        if bootstrap_tail is not None:
+            if bootstrap_tail:
+                (quoted if hidden else own).append(bootstrap_tail)
+            return
         for key, item in value.items():
+            if key == "world_state":
+                continue
             _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
     elif isinstance(value, list):
         for item in value:
@@ -2054,7 +2155,8 @@ def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
 def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
     """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
     replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
-    output shows.  A line that is not JSON is read as the chat's own words."""
+    output shows.  Known runtime context (developer/system envelopes, Codex world state and a recognizable
+    AGENTS/environment bootstrap) is excluded.  A line that is not JSON is read as the chat's own words."""
     found: set[str] = set()
     for line, entry in parsed_lines(lines) if parsed is None else parsed:
         if entry is _NOT_JSON:
@@ -5203,8 +5305,20 @@ def install_json_hooks(
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
     inherited = next((w for w in already if w), [])
+    spec = load_spec(platform)
     where = opts.location or _flag(inherited, "--location")
     mac = opts.mac_ssh or _flag(inherited, "--mac-ssh")
+    # A retired hook can carry these nonsecret settings in the JSON env block instead of command flags.  The
+    # replacement names its platform explicitly, so retired_argv will no longer translate that environment.
+    # Read only this adapter's declared names, and only when no explicit/current command setting wins.
+    legacy = doc.get("env")
+    if spec is not None and isinstance(legacy, dict):
+        old_where = legacy.get(spec.retired_env.get("--location"))
+        old_mac = legacy.get(spec.retired_env.get("--mac-ssh"))
+        if not where and isinstance(old_where, str) and old_where.strip() in LOCATIONS:
+            where = old_where.strip()
+        if not mac and isinstance(old_mac, str) and MAC_SSH_RE.fullmatch(old_mac.strip()):
+            mac = old_mac.strip()
     command = command_for(home, platform, where, mac)
     have = {
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
@@ -5217,7 +5331,6 @@ def install_json_hooks(
         if ev not in installer.events and isinstance(entries, list)
     }
     stray = {ev: kept for ev, kept in stray.items() if kept != events[ev]}
-    spec = load_spec(platform)
     files = [
         os.path.join(home, name)
         for name in (spec.retired_files if spec is not None else ())

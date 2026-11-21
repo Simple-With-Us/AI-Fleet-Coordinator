@@ -16,8 +16,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
@@ -97,6 +99,190 @@ class SpecTests(unittest.TestCase):
         title = argv[argv.index("--title") + 1]
         self.assertTrue(OC.no_letter(title), title)
         self.assertEqual(OC.SPEC.kind({"session_id": SID, "title": title}, {}), "headless")
+
+
+class UnletteredTests(unittest.TestCase):
+    """The chats the plugin never saw (AFC-865):  the adapter names them from the runtime's own store, so the fleet's
+    one repair pass can letter them."""
+
+    SID_PLAIN = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+    SID_LETTERED = "ses_bbbbbbbbbbbbbbbbbbbbbbbbbb"
+    SID_CHILD = "ses_cccccccccccccccccccccccccc"
+    SID_MARKED = "ses_dddddddddddddddddddddddddd"
+    SID_ARCHIVED = "ses_eeeeeeeeeeeeeeeeeeeeeeeeee"
+    SID_OLD = "ses_ffffffffffffffffffffffffff"
+    SID_MARKED_PARENT = "ses_gggggggggggggggggggggggggg"
+    SID_MARKED_CHILD = "ses_hhhhhhhhhhhhhhhhhhhhhhhhhh"
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name) / "home"
+        self.store = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        now = int(time.time() * 1000)
+        old = now - 40 * 24 * 60 * 60 * 1000
+        con = sqlite3.connect(self.store)
+        con.execute(
+            "CREATE TABLE session_v2 ("
+            "id TEXT, parent_id TEXT, fork_session_id TEXT, directory TEXT, title TEXT, "
+            "time_archived INTEGER, time_created INTEGER, time_updated INTEGER)"
+        )
+        rows = (
+            (self.SID_PLAIN, None, "Mac iOS apps UI UX improvement", None, now),
+            (self.SID_LETTERED, None, "BB: already lettered", None, now),
+            (self.SID_CHILD, self.SID_LETTERED, "Competitive benchmark", None, now),
+            (self.SID_MARKED, None, "[no-letter] a sweep worker", None, now),
+            (self.SID_ARCHIVED, None, "an archived chat", now, now),
+            (self.SID_OLD, None, "a chat from last month", None, old),
+            # A sweep worker and the sub-agent it started:  the plugin silences the child with
+            # its parent, so the repair must leave it alone too.
+            (self.SID_MARKED_PARENT, None, "[no-letter] another sweep worker", None, now),
+            (self.SID_MARKED_CHILD, self.SID_MARKED_PARENT, "a sub-agent of a worker", None, now),
+        )
+        for sid, parent, title, archived, created in rows:
+            con.execute(
+                "INSERT INTO session_v2 VALUES (?, ?, NULL, '/tmp', ?, ?, ?, ?)",
+                (sid, parent, title, archived, created, created),
+            )
+        con.commit()
+        con.close()
+        self.env = {"HOME": str(self.home)}
+
+    def test_a_chat_the_plugin_never_saw_is_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIn(self.SID_PLAIN, found)
+
+    def test_a_chat_with_a_letter_is_not_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_LETTERED, found)
+
+    def test_a_chat_with_one_letter_is_not_named(self) -> None:
+        # One letter or two, the shape the registry still reads:  a chat that holds a single
+        # letter from before the pairs rule keeps it until it registers on its own, and the
+        # repair does not move it a pair by force.
+        con = sqlite3.connect(self.store)
+        con.execute(
+            "UPDATE session_v2 SET title = 'A: an old single letter' WHERE id = ?",
+            (self.SID_PLAIN,),
+        )
+        con.commit()
+        con.close()
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_PLAIN, found)
+
+    def test_a_chat_marked_for_no_letter_is_not_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_MARKED, found)
+
+    def test_a_sub_agent_of_a_marked_parent_is_not_named(self) -> None:
+        # The plugin silences a chat whose parent takes no letter ("a sweep worker's sub-agents
+        # are not chats of anyone's"), so the repair must not letter it either:  its parent is
+        # never registered, so the child would take a doubled main-chat pair, and the pool of
+        # those is twenty-six pairs for the whole fleet.
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_MARKED_CHILD, found)
+
+    def test_a_sub_agent_of_a_lettered_parent_is_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIn(self.SID_CHILD, found)
+
+    def test_an_archived_chat_is_not_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_ARCHIVED, found)
+
+    def test_a_chat_from_long_ago_is_not_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_OLD, found)
+
+    def test_a_child_is_named_so_it_takes_the_pair_after_its_parent(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIn(self.SID_CHILD, found)
+
+    def test_a_host_with_no_store_answers_no_pass(self) -> None:
+        self.env["OPENCODE_WAKE_STORE"] = str(self.home / "gone" / "opencode.db")
+        self.assertIsNone(OC.opencode_unlettered_sessions(self.env))
+
+    def test_the_pass_reads_a_bounded_number_of_chats(self) -> None:
+        # The store grows with every chat on the host, so the bounds are in the query and not
+        # in Python:  a pass that read the whole table would cost the whole history every hour.
+        con = sqlite3.connect(self.store)
+        now = int(time.time() * 1000)
+        for index in range(OC.UNLETTERED_SCAN * 2):
+            con.execute(
+                "INSERT INTO session_v2 VALUES (?, NULL, NULL, '/tmp', ?, NULL, ?, ?)",
+                ("ses_%026d" % index, "chat %d" % index, now, now),
+            )
+        con.commit()
+        con.close()
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIsNotNone(found)
+        self.assertLessEqual(len(found), OC.UNLETTERED_SCAN)
+
+    def test_the_payload_carries_the_chat_and_the_parent_that_started_it(self) -> None:
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            payload = OC.opencode_chat_payload(self.SID_CHILD)
+        self.assertEqual(payload["session_id"], self.SID_CHILD)
+        self.assertEqual(payload["parent_session_id"], self.SID_LETTERED)
+        self.assertEqual(payload["title"], "Competitive benchmark")
+
+    def test_the_payload_of_a_main_chat_names_no_parent(self) -> None:
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            payload = OC.opencode_chat_payload(self.SID_PLAIN)
+        self.assertNotIn("parent_session_id", payload)
+
+    def test_the_rename_writes_the_title_through_the_runtime_own_api(self) -> None:
+        seen: list[list[str]] = []
+        binary = self.home / ".opencode" / "bin" / "opencode"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o755)
+
+        def fake_run(argv, **kwargs):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0)
+
+        request = PL.TitleRequest(
+            platform="opencode",
+            session_id=self.SID_PLAIN,
+            label="CC",
+            title="CC: Mac iOS apps UI UX improvement",
+            words="Mac iOS apps UI UX improvement",
+            current="Mac iOS apps UI UX improvement",
+            reason="start",
+            data={},
+            env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+        )
+        with mock.patch.object(OC.subprocess, "run", side_effect=fake_run):
+            self.assertTrue(OC.opencode_rename(request))
+        self.assertEqual(len(seen), 1)
+        argv = seen[0]
+        self.assertIn("session.update", argv)
+        self.assertIn("sessionID=" + self.SID_PLAIN, argv)
+        # The body is one attached token, so the child can never read it as a flag.
+        self.assertIn("--data=" + json.dumps({"title": "CC: Mac iOS apps UI UX improvement"}), argv)
+        self.assertNotIn("-d", argv)
+
+    def test_a_rename_with_no_words_writes_nothing(self) -> None:
+        request = PL.TitleRequest(
+            platform="opencode",
+            session_id=self.SID_PLAIN,
+            label="CC",
+            title="CC: New Chat",
+            words="",
+            current="",
+            reason="start",
+            data={},
+            env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+        )
+        with mock.patch.object(OC.subprocess, "run") as run:
+            self.assertFalse(OC.opencode_rename(request))
+        run.assert_not_called()
+
+    def test_the_spec_names_the_unlettered_chats_and_the_writer(self) -> None:
+        self.assertIsNotNone(OC.SPEC.unlettered_sessions)
+        self.assertIsNotNone(OC.SPEC.chat_payload)
+        self.assertIsNotNone(OC.SPEC.title_writer)
 
 
 class HookBase(T.Base):

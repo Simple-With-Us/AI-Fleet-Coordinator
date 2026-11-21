@@ -1,0 +1,38 @@
+{
+  "review": "Usage-Monitor upgrade-reviewed-hub.py match-pinned generic-assignment admission proposal (v3 journal-compare correction)",
+  "proposal_status": "installed by this pull request as a match-pinned admission: the change adds the _REVIEWED_GENERIC_MATCHES registry entry and this durable record; the admission waives only the pinned census match for the exact reviewed full-file digest and claims no clearance of any other bytes",
+  "prepared_at": "2026-11-18",
+  "prepared_by": "wise reliability lane, full-content read of the complete candidate file",
+  "reviewed_file": {
+    "repository": "Simple-With-Us/Usage-Monitor",
+    "path": "upgrade-reviewed-hub.py",
+    "sha256": "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    "bytes": 36664,
+    "lines": 814,
+    "effective_matches": [
+      [
+        "assigned secret",
+        8115,
+        8143,
+        8123,
+        8143
+      ]
+    ]
+  },
+  "provenance_source": {
+    "path": "upgrade-reviewed-hub.py",
+    "sha256": "e98aaf3f5c7141bd2e80ab2b310ebe216c8ec4b43480ac6e5178a61b47407fea",
+    "git_blob": "7f66fc69174341b87d8a4820875460da988e991f",
+    "held_commit": "654a648c",
+    "base_verification": "base blob verified against the held commit via supported file_get and independent original-tool inspection (verification performed by the coordinating lane, restated here for the reviewer to re-verify)",
+    "delta": "the candidate differs from the base only by the v3 journal-compare correction (single hunk at line 454: 9 insertions, 2 deletions): the pre-stop journal check now floors journalBase and sentryOffset absolutely, keeps requiring pendingBytes == 0, and drops the journalBytes equality because compaction legitimately shrinks the journal file; scoped trusted-writer semantics. Byte-exact reconstruction base+diff == candidate verified (sha256 matches)."
+  },
+  "findings": {
+    "single_match": "line 217 assigns the decoded, stripped stdout of the ssh fleet-secrets credential route (subprocess result decode) into local variable token inside _coolify_token(); executable token-decode logic, not a stored credential value",
+    "enumeration": "exactly one effective generic assignment; zero dedicated-provider hits, zero bearer-header hits, zero Zulip-shaped key hits, zero loaded-credential hits under an empty known set; the identical census holds for the base file",
+    "full_content": "the complete 814-line file was read consecutively; credential material enters only at runtime through the ssh fleet-secrets route and is sent only as a Bearer header to the two approved route URLs with redirects disabled and a closed (method, suffix) allowlist; base64 is used only for plan-derived compose payloads; all failure paths emit sanitized reason codes; no stored credential literal, no unrelated encoded payload, no exfiltration destination, no embedded instruction content was found"
+  },
+  "v3_change_evidence": "independent source/provenance review found the scanner hit a code-pattern false positive with no credential literals, and reproduced 13 mock tests passing plus 3 original negative-control failures; the refused v1 payload and the no-peeling violation remain preserved, the UM2059 remote hold remains, and nothing here retries or publishes any refused fragment",
+  "admission_scope": "if independently reviewed and admitted, admits only this repository, full path and exact full-file digest for the generic-assignment categories, with the exact match census pinned; any changed bytes lose the admission and undergo the normal scan, which refuses another match or any other scannable pattern but accepts content that is normally clean (so removing the sole match is not a guaranteed refusal); a refreshed digest carrying stale or incomplete census metadata refuses; loaded-credential and dedicated-shape enforcement remain absolute",
+  "candidate_state": "the candidate bytes are the unpublished working tree version of the file; immutable full-content evidence snapshot: local evidence repository /Users/jay/.local/state/fleet/um2059-upgrade-reviewed-hub-evidence-20261118 on the Mac, commit c2860da5b10125b766919b10f32a735144e55aba, blob d663feb7372b4e67c175dd17bb0bc506ff7a6e12; the pinned census was re-verified against these exact bytes with the scanner's own detection code on 2026-11-18 (exact bytes admitted, a one-byte mutation refused); any further edit re-spins the digest and voids the admission; this record does not authorize publication, installation or deployment of the candidate source by itself"
+}

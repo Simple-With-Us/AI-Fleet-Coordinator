@@ -193,18 +193,20 @@ const BOTFLEET_BUILDS = { 111: [ascBuild(1, "202610171703", "1.0.113", "2026-10-
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-test("buildCutTime reads the UTC cut time and rejects implausible numbers", () => {
+test("buildCutTime reads the Central Time cut time and rejects implausible numbers", () => {
   const up = Date.parse("2026-10-17T17:09:00Z");
-  assert.equal(new Date(buildCutTime("202610171703", up)).toISOString(), "2026-10-17T17:03:00.000Z");
+  assert.equal(new Date(buildCutTime("202610171203", up)).toISOString(), "2026-10-17T17:03:00.000Z", "CDT stamp, UTC-5");
+  assert.equal(new Date(buildCutTime("202611160900", Date.parse("2026-11-16T15:05:00Z"))).toISOString(), "2026-11-16T15:00:00.000Z", "CST stamp, UTC-6");
   assert.equal(buildCutTime("42", up), null);
-  assert.equal(buildCutTime("202610181703", up), null, "a cut after the upload is not a cut time");
+  assert.equal(buildCutTime("202610171703", up), null, "a Central stamp that lands after the upload is not a cut time");
+  assert.equal(buildCutTime("202610181203", up), null, "a cut after the upload is not a cut time");
   assert.equal(buildCutTime("202610100000", up), null, "a cut days before the upload is not a cut time");
 });
 
 test("correlateRun picks the run that uploaded, even when it ended red", () => {
   const w = botfleetLike();
   const up = Date.parse("2026-10-17T17:09:00Z");
-  const hit = correlateRun(w.createdRuns, buildCutTime("202610171703", up), up);
+  const hit = correlateRun(w.createdRuns, buildCutTime("202610171203", up), up);
   assert.equal(hit.head_sha, "ship1");
   assert.equal(correlateRun(w.createdRuns.filter((r) => r.head_sha !== "ship1"), Date.parse("2026-10-17T17:03:00Z"), up), null,
     "a gate-skip run that finished before the cut is not the upload");
@@ -772,8 +774,8 @@ test("time fallback when no run correlates and there is no state file", async ()
   const w = botfleetLike({ createdRuns: [] });
   const { r } = await evalOne(w, BOTFLEET_BUILDS);
   assert.equal(r.shipped.source, "time");
-  assert.equal(r.status, "current", "cut 17:03 is after the 17:02:32 commit");
-  const late = botfleetLike({ createdRuns: [], natives: { ios: { sha: "nat9", date: "2026-10-17T17:05:00Z" } } });
+  assert.equal(r.status, "current", "a Central-stamped build number carries no usable cut here, so the 17:09 upload is after the 17:02:32 commit");
+  const late = botfleetLike({ createdRuns: [], natives: { ios: { sha: "nat9", date: "2026-10-17T17:10:00Z" } } });
   assert.equal((await evalOne(late, BOTFLEET_BUILDS)).r.status, "behind");
 });
 
@@ -1203,38 +1205,27 @@ test("assertRegistryPathsExist rejects a path GitHub does not have on main", asy
 });
 
 test("registry paths in testflight-apps.json exist on each repo's main branch", async (t) => {
-  const githubReadCredential = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!githubReadCredential) {
-    t.skip("needs GH_TOKEN or GITHUB_TOKEN to verify paths on GitHub");
+  if (process.env.TESTFLIGHT_SERVICE_LIVE_READS !== "1") {
+    t.skip("dedicated TestFlight service live reads not enabled; registry paths remain unverified");
     return;
   }
   const reg = loadRegistry(path.join(HERE, "testflight-apps.json"));
-  const deps = makeDeps({ ...process.env, GH_TOKEN: githubReadCredential, GITHUB_TOKEN: githubReadCredential });
-  try {
-    await deps.gh("repos/Simple-With-Us/AI-Fleet-Coordinator/contents/README.md?ref=main");
-  } catch (err) {
-    const msg = String(err.message || err);
-    if (/401|Bad credentials|HTTP 403/i.test(msg)) {
-      t.skip(`GitHub contents API needs a readable token: ${msg.split(":").slice(0, 2).join(":")}`);
-      return;
-    }
-    throw err;
-  }
+  const deps = makeDeps(process.env);
   await assertRegistryPathsExist(reg, (p) => deps.gh(p));
 });
 
 // ---------------------------------------------------------------------------
-// App Store Connect calls under a thrashing host (2026-10-20:  "asc-api.mjs exit ?")
+// App Store Connect calls under a thrashing host (2026-10-20:  "testflight_asc_service.mjs exit ?")
 // ---------------------------------------------------------------------------
 
 const killedErr = () => Object.assign(new Error("Command failed"), { killed: true, signal: "SIGTERM", code: null, stdout: "", stderr: "" });
 
 test("a killed asc-api call names the signal, the timeout and the host load, not exit ?", () => {
   const msg = ascFailureText(killedErr(), "/v1/builds?filter[app]=1", { timeoutMs: 120_000, load: 151.4 });
-  assert.match(msg, /^App Store Connect \/v1\/builds: asc-api\.mjs killed by SIGTERM after the 120s timeout, host load 151$/);
+  assert.match(msg, /^App Store Connect \/v1\/builds: testflight_asc_service\.mjs killed by SIGTERM after the 120s timeout, host load 151$/);
   assert.doesNotMatch(msg, /exit \?/);
   assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "HTTP 401", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: HTTP 401");
-  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: asc-api.mjs exit 1");
+  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: testflight_asc_service.mjs exit 1");
 });
 
 test("a killed asc-api call is retried once and the retry's answer is used", async () => {
@@ -1258,7 +1249,7 @@ test("repeated kills trip the guard so a thrashing host fails fast instead of wa
   let spawned = 0;
   const run = async () => { spawned++; throw killedErr(); };
   await assert.rejects(ascRequest(run, "/v1/apps", guard), /killed by SIGTERM/);
-  await assert.rejects(ascRequest(run, "/v1/builds", guard), /skipped after \d+ asc-api\.mjs calls were killed.*host load 160/);
+  await assert.rejects(ascRequest(run, "/v1/builds", guard), /skipped after \d+ testflight_asc_service\.mjs calls were killed.*host load 160/);
   assert.ok(spawned <= 4, `spawned ${spawned}`);
 });
 
@@ -1275,3 +1266,8 @@ test("the gate runs at most `limit` calls at once and lets the rest through in o
   assert.equal(peak, 2);
   assert.deepEqual(order, [1, 2, 3, 4, 5]);
 });
+
+test('dispatch accepted plus revoke failure remains deduped',async()=>{const reg=registry({x:app()});const {deps}=fakeDeps();let n=0;deps.ghDispatch=async()=>{n++;return {dispatchOutcome:'accepted',revocationFailed:true}};const state={apps:{}};let r=behindResult('x');await runRemedies([r],state,deps,reg,{now:NOW});assert.equal(r.remedy.action,'dispatched');assert.equal(r.remedy.revocationFailed,true);assert.equal(state.apps.x.remedy.dispatchOutcome,'accepted');await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(n,1);});
+test('dispatch unknown persists before POST and blocks even changed HEAD',async()=>{const reg=registry({x:app()});const {deps,calls}=fakeDeps();let n=0;deps.ghDispatch=async()=>{n++;assert.equal(calls.states[0].apps.x.remedy.dispatchOutcome,'unknown');throw Error('transport lost')};const state={apps:{}};let r=behindResult('x');await runRemedies([r],state,deps,reg,{now:NOW});assert.equal(r.remedy.action,'dispatch-unknown');assert.equal(state.apps.x.remedy.dispatchOutcome,'unknown');await runRemedies([behindResult('x',{mainHead:{sha:'new-head'}})],state,deps,reg,{now:NOW});assert.equal(n,1);});
+test('failed intent persistence never makes dispatch call',async()=>{const reg=registry({x:app()});const {deps,calls}=fakeDeps();deps.writeState=()=>{throw Error('disk fail')};const state={apps:{}};await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(calls.dispatch.length,0);assert.equal(state.apps.x.remedy,undefined);});
+test('known pre-POST refusal clears durable intent',async()=>{const reg=registry({x:app()});const {deps}=fakeDeps();deps.ghDispatch=async()=>{const e=Error('auth refused');e.dispatchOutcome='not-attempted';throw e};const state={apps:{}};await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(state.apps.x.remedy,undefined);});

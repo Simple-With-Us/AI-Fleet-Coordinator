@@ -149,6 +149,7 @@ SHIPPED = (
     "scripts/fleet-ops-eavesdropper-settings.json",
     "scripts/fleet_infisical_bootstrap.py",
     "scripts/fleet_infisical_cli.py",
+    "scripts/infisical-scoped.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
@@ -185,6 +186,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/service_zulip.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -202,6 +204,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-412 PR2:  mirrors the release EXACT entry for the Operator chat-thread registry drain.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
         # OPS-1048:  mirror the release EXACT entries for the wake bridges (the receivers the seats' http
@@ -222,6 +225,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
+        "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",
         "scripts/fleet_rag/infisical_settings.py",
         "scripts/fleet_rag/public_fallback.py",
@@ -551,6 +555,7 @@ SHIPPED_REPO_ONLY = frozenset(
         # The thread-registry exporter node test: mirrors the release REPO_ONLY
         # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
         "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 
@@ -1527,25 +1532,24 @@ _UNSET = object()
 def infisical_names(
     folder: str, env: dict[str, str], project: str = "fleet-ops"
 ) -> frozenset[str] | None:
-    """Key NAMES in one Infisical folder (`fleet-secrets names`:  no value reaches this process), or None when
-    fleet-secrets is missing or fails.  Fleet-OPS unless `project` says otherwise.  Once per folder per run."""
+    """Key names through the canonical isolated command; no installed secrets tool or values.
+
+    Fleet-OPS unless `project` says otherwise.  Once per project and folder per run.
+    """
     cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
     if cache_key in _names_cache:
         return _names_cache[cache_key]
-    binary = (
-        env.get("FLEET_SECRETS_BIN")
-        or shutil.which("fleet-secrets")
-        or str(HOME / ".local/bin/fleet-secrets")
-    )
+    command = Path(__file__).resolve().with_name("fleet_infisical_cli.py")
     names: frozenset[str] | None = None
     try:
         proc = subprocess.run(
-            [binary, "names", "--path", folder, "--project", project],
+            [sys.executable, "-I", str(command), "names", "--path", folder, "--project", project],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
+            env=env,
         )
         if proc.returncode == 0:
             names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
@@ -1588,7 +1592,9 @@ def check_seat(
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
-        report.add(f"seat:{seat}", "WARN", "fleet-secrets could not list Infisical Fleet-OPS names")
+        report.add(
+            f"seat:{seat}", "WARN", "The canonical reader could not list Infisical Fleet-OPS names"
+        )
         return
     prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)
     zulip = all(f"{prefix}_ZULIP_{part}" in zulip_names for part in ("EMAIL", "KEY", "SITE"))
@@ -1612,7 +1618,7 @@ def check_seat(
     ]
     notes = ["missing " + ", ".join(missing)] if missing else []
     if unreadable:
-        notes.append("fleet-secrets could not list Infisical fleetlink token names")
+        notes.append("The canonical reader could not list Infisical fleetlink token names")
     if missing:
         status = "FAIL"
     elif unreadable:

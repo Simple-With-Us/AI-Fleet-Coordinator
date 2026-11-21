@@ -52,10 +52,87 @@ class ReviewedGenericTests(unittest.TestCase):
         repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
         for body in (
             self.body,
-            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n",
             "let token = '" + "b" * 32 + "'\n",
+            "let token = Widget" + "Presentation.shortCadence9(cadence: cadence)\n",
+            "let token = widget" + "presentation.shortcadence(cadence: cadence)\n",
+            "let token = Correct" + ".Horse.Battery\n",
         ):
             self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_letters_only_dotted_calls_are_not_secrets(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        self.assertIsNone(secretscan.scan_file(
+            repo, path,
+            "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n"))
+
+    def test_labeled_call_argument_chains_are_not_secrets(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "let s = Reset" + "AlarmCadence.periodSeconds(token: snapshot.wind" + "ow.window, label: snapshot.wind" + "ow.label)\n",
+            "foo(token: config.api" + "Key, label: label)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_form_still_refuses_nonsource_values(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "token: snapshot.window" + ".window\n",
+            "foo(token: \"snapshot.window" + ".window\")\n",
+            "let token = snapshot.window" + ".window\n",
+            "foo(token: " + "a" * 24 + ")\n",
+        ):
+            self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_multiline_and_second_position(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "foo(\n    token: snapshot.wind" + "ow.window,\n    label: label)\n",
+            "foo(a: 1, token: snapshot.wind" + "ow.window)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_requires_call_paren(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "Hello, token: snapshot.wind" + "ow.window\n",
+            "(done), token: snapshot.wind" + "ow.window\n",
+        ):
+            self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_earlier_string_arg_and_closure(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "foo(label: \"x\", token: snapshot.wind" + "ow.window)\n",
+            "foo({ bar in\n    baz(x) }, token: snapshot.wind" + "ow.window)\n",
+        ):
+            self.assertIsNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_balanced_call_before_comma_refuses(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        body = "bar(x), token: snapshot.wind" + "ow.window\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_needs_a_call_paren_not_prose_or_quoted_paren(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        for body in (
+            "see (the note, token: snapshot.wind" + "ow.window)\n",
+            "\"x(\", token: snapshot.wind" + "ow.window)\n",
+        ):
+            self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+        ok = "foo(a: \"x(\", token: snapshot.wind" + "ow.window)\n"
+        self.assertIsNone(secretscan.scan_file(repo, path, ok))
+
+    def test_labeled_argument_balanced_grouping_paren_before_label(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        body = "foo((a + b), c, token: snapshot.wind" + "ow.window)\n"
+        self.assertIsNone(secretscan.scan_file(repo, path, body))
+        body = "foo(a, (see the note, token: snapshot.wind" + "ow.window))\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
+
+    def test_labeled_argument_requires_colon_separator(self):
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
+        body = "foo(token=snapshot.wind" + "ow.window)\n"
+        self.assertIsNotNone(secretscan.scan_file(repo, path, body))
 
     def test_only_exact_bytes_repo_path(self):
         with self.approve(self.body):
