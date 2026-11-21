@@ -72,7 +72,11 @@ case "$1" in
     if [[ "$2" == --property=ActiveState ]]; then unit="${@: -1}"; else exit 2; fi
     if [[ "$unit" == operator-sheets-drain.timer ]]; then
       if [[ "${STUB_TIMER_ACTIVE:-0}" == 1 ]]; then
-        printf 'ActiveState=active\\nSubState=waiting\\nJob=\\nMainPID=0\\n'
+        if [[ "${STUB_TIMER_OMIT_MAINPID:-0}" == 1 ]]; then
+          printf 'ActiveState=active\\nSubState=running\\nJob=\\n'
+        else
+          printf 'ActiveState=active\\nSubState=waiting\\nJob=\\nMainPID=0\\n'
+        fi
       else
         printf 'ActiveState=inactive\\nSubState=dead\\nJob=\\nMainPID=0\\n'
       fi
@@ -93,7 +97,11 @@ case "$1" in
         if [[ -n "${STUB_MUTATE_REPO_MODULE:-}" ]]; then
           printf '// changed after the immutable stage\\n' > "$STUB_MUTATE_REPO_MODULE"
         fi
-        printf 'ActiveState=inactive\\nSubState=dead\\nJob=\\nMainPID=0\\n'
+        if [[ "${STUB_SERVICE_OMIT_MAINPID:-0}" == 1 ]]; then
+          printf 'ActiveState=inactive\\nSubState=dead\\nJob=\\n'
+        else
+          printf 'ActiveState=inactive\\nSubState=dead\\nJob=\\nMainPID=0\\n'
+        fi
       fi
       exit 0
     fi
@@ -277,6 +285,81 @@ class ShellTests(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
+
+    def test_live_modes_refuse_nonroot_before_creating_the_installer_lock(self):
+        root = self.tmp / "lock-root"
+        lock_dir = root / "run/lock"
+        lock_dir.mkdir(parents=True)
+        root.chmod(0o755)
+        (root / "run").chmod(0o755)
+        lock_dir.chmod(0o1777)
+        self.tmp.chmod(0o755)
+
+        fake_repo = self.tmp / "repo"
+        installer_dir = fake_repo / "scripts/simple_tools/server"
+        installer_dir.mkdir(parents=True)
+        for path in (
+            fake_repo,
+            fake_repo / "scripts",
+            fake_repo / "scripts/simple_tools",
+            installer_dir,
+        ):
+            path.chmod(0o755)
+        source = SCRIPT.read_text(encoding="utf-8")
+        prefix_line = '  PREFIX=""\n  OWNER_UID=0\n  OWNER_GID=0\n'
+        self.assertIn(prefix_line, source)
+        source = source.replace(
+            prefix_line,
+            '  PREFIX="${OPERATOR_SHEETS_TEST_LOCK_ROOT}"\n  OWNER_UID=0\n  OWNER_GID=0\n',
+            1,
+        )
+        installer = installer_dir / SCRIPT.name
+        installer.write_text(source, encoding="utf-8")
+        installer.chmod(0o755)
+
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        bindir.chmod(0o755)
+        calls = lock_dir / "external-calls.log"
+        for tool in ("docker", "systemctl"):
+            stub = bindir / tool
+            stub.write_text(
+                "#!/bin/sh\n"
+                f'echo "{tool} $*" >> "{calls}"\n'
+                "exit 97\n"
+            )
+            stub.chmod(0o755)
+        env = {
+            "PATH": f"{bindir}:/usr/bin:/bin",
+            "HOME": str(self.tmp),
+            "OPERATOR_SHEETS_TEST_LOCK_ROOT": str(root),
+            "OPERATOR_SHEETS_WORKBOOK_ID": "workbook_FIXTURE-1",
+            "OPERATOR_SHEETS_TOKEN_FILE": str(self.token),
+        }
+        demote_to_unprivileged = None
+        if os.geteuid() == 0:
+            def demote_to_unprivileged():
+                os.setgid(65534)
+                os.setuid(65534)
+
+        lock = lock_dir / "operator-sheets-drain-installer.lock"
+        for args in ((), ("--code-only",)):
+            with self.subTest(args=args):
+                lock.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["bash", str(installer), *args],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    preexec_fn=demote_to_unprivileged,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertFalse(lock.exists(), "refusal must precede any lock-file creation")
+                self.assertFalse(calls.exists(), "refusal must precede systemctl or docker")
+                self.assertIn("live installs require root", result.stderr)
+                self.assertFalse((root / "usr/local/lib/operator-sheets-drain").exists())
+                self.assertFalse((root / "etc/systemd/system").exists())
 
     def test_test_mode_requires_stub_docker_and_systemctl(self):
         root = self.tmp / "root"
@@ -654,6 +737,33 @@ if (typeof thread.drainThreadRows !== 'function' ||
             calls.index(service_checks[0]),
         )
         self.assertIn("systemctl start operator-sheets-drain.timer", calls)
+
+    def test_code_only_accepts_active_timer_without_mainpid(self):
+        self.seed_existing_install()
+        result = self.run_install(
+            "--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_OMIT_MAINPID="1"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertIn(
+            "systemctl show --property=ActiveState --property=SubState --property=Job --property=MainPID operator-sheets-drain.timer",
+            calls,
+        )
+        self.assertIn("systemctl stop operator-sheets-drain.timer", calls)
+        self.assertIn("systemctl start operator-sheets-drain.timer", calls)
+
+    def test_code_only_refuses_incomplete_service_state_and_restores_prior_timer(self):
+        self.seed_existing_install()
+        prior = {name: (self.lib / name).read_bytes() for name in MODULES[:3]}
+        result = self.run_install(
+            "--code-only", STUB_TIMER_ACTIVE="1", STUB_SERVICE_OMIT_MAINPID="1"
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("systemd returned incomplete state for operator-sheets-drain.service", result.stderr)
+        self.assertIn("systemctl stop operator-sheets-drain.timer", self.calls())
+        self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
+        self.assertEqual({name: (self.lib / name).read_bytes() for name in MODULES[:3]}, prior)
+        self.assertFalse((self.lib / MODULES[3]).exists())
 
     def test_code_only_interrupt_while_waiting_restores_only_the_verified_prior_bundle(self):
         self.seed_existing_install()

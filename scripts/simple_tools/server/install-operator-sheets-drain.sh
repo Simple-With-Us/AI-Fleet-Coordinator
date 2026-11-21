@@ -106,6 +106,13 @@ else
   NODE=/usr/bin/node
   PYTHON=/usr/bin/python3
 fi
+
+# A live install writes root-owned state, so reject non-root callers before they can create the
+# root-owned installer lock.  Dry runs and the isolated test root remain usable without root.
+if [[ "$DRY" -eq 0 && -z "$TEST_ROOT" && "$EUID" -ne 0 ]]; then
+  die "live installs require root"
+fi
+
 LIB_DIR="$PREFIX/usr/local/lib/operator-sheets-drain"
 ETC_DIR="$PREFIX/etc/operator-sheets"
 UNIT_DIR="$PREFIX/etc/systemd/system"
@@ -259,9 +266,9 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
     die "the immutable source stage is unavailable"
 
   unit_busy() {
-    local output key value active_state="" sub_state="" job="" main_pid="" no_job=0
+    local unit="$1" kind="$2" output key value active_state="" sub_state="" job="" main_pid="" no_job=0
     output="$(systemctl show --property=ActiveState --property=SubState --property=Job \
-      --property=MainPID "$1" 2>/dev/null)" || die "could not inspect systemd state for $1"
+      --property=MainPID "$unit" 2>/dev/null)" || die "could not inspect systemd state for $unit"
     while IFS='=' read -r key value; do
       case "$key" in
         ActiveState) active_state="$value" ;;
@@ -270,23 +277,29 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
         MainPID) main_pid="$value" ;;
       esac
     done <<< "$output"
-    [[ -n "$active_state" && -n "$sub_state" && "$main_pid" =~ ^[0-9]+$ ]] ||
-      die "systemd returned incomplete state for $1"
+    [[ -n "$active_state" && -n "$sub_state" ]] ||
+      die "systemd returned incomplete state for $unit"
+    if [[ "$kind" == service ]]; then
+      [[ "$main_pid" =~ ^[0-9]+$ ]] || die "systemd returned incomplete state for $unit"
+    elif [[ "$kind" != timer ]]; then
+      die "unsupported systemd unit type for $unit"
+    fi
     if [[ -z "$job" || "$job" == 0 || "$job" == / ]]; then no_job=1; fi
     if [[ "$active_state" == active || "$active_state" == activating ||
           "$active_state" == deactivating || "$active_state" == reloading ]]; then
       return 0
     fi
-    if [[ "$active_state" == inactive && "$sub_state" == dead &&
-          "$no_job" -eq 1 && "$main_pid" == 0 ]]; then
+    if [[ "$active_state" == inactive && "$sub_state" == dead && "$no_job" -eq 1 &&
+          ( "$kind" == timer || "$main_pid" == 0 ) ]]; then
       return 1
     fi
-    if [[ "$active_state" == failed && "$no_job" -eq 1 && "$main_pid" == 0 ]]; then
+    if [[ "$active_state" == failed && "$no_job" -eq 1 &&
+          ( "$kind" == timer || "$main_pid" == 0 ) ]]; then
       return 1
     fi
-    die "systemd state for $1 is not safely inactive (ActiveState=$active_state, SubState=$sub_state)"
+    die "systemd state for $unit is not safely inactive (ActiveState=$active_state, SubState=$sub_state)"
   }
-  if unit_busy "$TIMER"; then
+  if unit_busy "$TIMER" timer; then
     timer_stopped=1
     systemctl stop "$TIMER" || die "could not stop $TIMER before code-only update"
     say "stopped $TIMER to prevent a new run during code-only update"
@@ -298,7 +311,7 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
   fi
   [[ "$wait_seconds" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid code-only bounded wait setting"
   elapsed=0
-  while unit_busy "$SERVICE"; do
+  while unit_busy "$SERVICE" service; do
     if (( elapsed >= wait_seconds )); then
       die "$SERVICE is still active after the bounded wait; no module files were changed"
     fi
