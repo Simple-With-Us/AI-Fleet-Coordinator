@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import http.server
 import importlib.util
 import io
 import json
 import os
+import plistlib
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +26,254 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("doctor", HERE / "fleet-tools-doctor.py")
 doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
+
+
+class CanonicalNamesTests(unittest.TestCase):
+    def setUp(self):
+        doctor._names_cache.clear()
+        self.addCleanup(doctor._names_cache.clear)
+
+    def test_exact_project_folder_and_environment_use_the_isolated_sibling_command(self):
+        env = {"FLEET_SECRETS_BIN": "/untrusted/fleet-secrets", "HOME": "/test-home"}
+        answer = subprocess.CompletedProcess([], 0, stdout="FLEETLINK_TOKEN_CODEX\n")
+        with mock.patch.object(doctor.subprocess, "run", return_value=answer) as run:
+            first = doctor.infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+            second = doctor.infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+        self.assertEqual(first, frozenset({"FLEETLINK_TOKEN_CODEX"}))
+        self.assertEqual(second, first)
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                sys.executable,
+                "-I",
+                str(HERE / "fleet_infisical_cli.py"),
+                "names",
+                "--path",
+                "/fleetlink",
+                "--project",
+                "ai-fleet-coordinator",
+            ],
+        )
+        self.assertIs(run.call_args.kwargs["env"], env)
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_unavailable_source_or_provider_is_unknown_and_cached(self):
+        for failure in (FileNotFoundError(), subprocess.TimeoutExpired("canonical", 60)):
+            doctor._names_cache.clear()
+            with mock.patch.object(doctor.subprocess, "run", side_effect=failure) as run:
+                self.assertIsNone(doctor.infisical_names("/zulip", {}))
+                self.assertIsNone(doctor.infisical_names("/zulip", {}))
+                run.assert_called_once()
+        doctor._names_cache.clear()
+        answer = subprocess.CompletedProcess([], 4, stdout="must-not-be-consumed")
+        with mock.patch.object(doctor.subprocess, "run", return_value=answer):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+
+
+class CanonicalConsumerTransportTests(unittest.TestCase):
+    """Exercise real isolated children with synthetic loopback responses and no installed CLI."""
+
+    PROJECT = "00000000-0000-4000-8000-000000000861"
+    BINDING = "st.synthetic-command-consumer-test-only"
+    VALUE = "synthetic-consumer-value-never-output"
+
+    def test_tracked_launchagent_sources_are_valid_plists_with_the_system_interpreter_on_path(self):
+        for label in ("com.jay.fleet-tools-doctor", "com.jays.weekly-fleet-mode-digest"):
+            with self.subTest(label=label):
+                data = plistlib.loads((HERE / "launchd" / (label + ".plist")).read_bytes())
+                self.assertTrue(data["ProgramArguments"])
+                self.assertIn("/usr/bin", data["EnvironmentVariables"]["PATH"].split(":"))
+
+    @contextlib.contextmanager
+    def source(self, folder="/zulip", project=None, include_values=False):
+        project = project or self.PROJECT
+        requests = []
+        fixture = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.headers.get("Authorization") != "Bearer " + fixture.BINDING:
+                    self.send_error(401)
+                    return
+                parsed = urllib.parse.urlsplit(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                requests.append((parsed.path, query))
+                if parsed.path == "/api/v2/service-token":
+                    body = {
+                        "workspace": project,
+                        "permissions": ["read"],
+                        "expiresAt": None,
+                        "scopes": [{"environment": "prod", "secretPath": folder}],
+                    }
+                else:
+                    name = parsed.path.rsplit("/", 1)[-1]
+                    row = {
+                        "workspace": project,
+                        "environment": "prod",
+                        "secretPath": folder,
+                        "type": "shared",
+                        "secretKey": name,
+                        "secretValueHidden": False,
+                    }
+                    if parsed.path == "/api/v3/secrets/raw":
+                        row["secretKey"] = "CLAUDE_ZULIP_KEY"
+                        if include_values:
+                            row["secretValue"] = fixture.VALUE
+                        body = {"secrets": [row]}
+                    else:
+                        row["secretValue"] = fixture.VALUE
+                        body = {"secret": row}
+                raw = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty-bin"
+            empty.mkdir()
+            hostile = root / "hostile"
+            hostile.mkdir()
+            (hostile / "fleet_infisical.py").write_text("raise AssertionError('foreign reader')\n")
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            env = {
+                "HOME": directory,
+                "PATH": str(empty),
+                "PYTHONPATH": str(hostile),
+                "INFISICAL_TOKEN": self.BINDING,
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": self.BINDING,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": project,
+                "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": project,
+                "INFISICAL_READ_PATHS": folder,
+                "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % server.server_port,
+            }
+            try:
+                yield root, env, requests
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_doctor_staged_source_and_config_use_only_value_disabled_names_reads(self):
+        from datetime import datetime, timezone
+        from fleet_config.checks import CheckContext
+        from fleet_config.checks_permissions import _secret_store_names
+
+        with self.source() as (root, env, requests):
+            staged = root / "runtime/scripts"
+            staged.mkdir(parents=True)
+            for name in ("fleet-tools-doctor.py", "fleet_infisical_cli.py", "fleet_infisical.py"):
+                shutil.copyfile(HERE / name, staged / name)
+            staged_spec = importlib.util.spec_from_file_location(
+                "staged_doctor", staged / "fleet-tools-doctor.py"
+            )
+            staged_doctor = importlib.util.module_from_spec(staged_spec)
+            staged_spec.loader.exec_module(staged_doctor)
+            self.assertEqual(
+                staged_doctor.infisical_names("/zulip", env), frozenset({"CLAUDE_ZULIP_KEY"})
+            )
+            ctx = CheckContext(home=root, now=datetime.now(timezone.utc), env=env)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    _secret_store_names(ctx, "/zulip"), frozenset({"CLAUDE_ZULIP_KEY"})
+                )
+            listings = [(path, query) for path, query in requests if path != "/api/v2/service-token"]
+            self.assertEqual(len(listings), 2)
+            for path, query in listings:
+                self.assertEqual(path, "/api/v3/secrets/raw")
+                self.assertEqual(query["viewSecretValue"], ["false"])
+                self.assertEqual(query["workspaceId"], [self.PROJECT])
+                self.assertEqual(query["secretPath"], ["/zulip"])
+                self.assertEqual(query["environment"], ["prod"])
+
+    def test_names_consumers_refuse_a_value_bearing_metadata_listing(self):
+        from datetime import datetime, timezone
+        from fleet_config.checks import CheckContext, CheckError
+        from fleet_config.checks_permissions import _secret_store_names
+
+        with self.source(include_values=True) as (root, env, requests):
+            doctor._names_cache.clear()
+            self.addCleanup(doctor._names_cache.clear)
+            self.assertIsNone(doctor.infisical_names("/zulip", env))
+            ctx = CheckContext(home=root, now=datetime.now(timezone.utc), env=env)
+            with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(CheckError) as error:
+                _secret_store_names(ctx, "/zulip")
+            self.assertNotIn(self.VALUE, str(error.exception))
+            self.assertTrue(requests)
+
+    def run_weekly(self, root, env):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "the weekly digest requires the existing Node runtime")
+        marker = root / "feeds-called"
+        preload = root / "feeds.mjs"
+        authorization = json.dumps("Bearer " + self.VALUE)
+        marker_path = json.dumps(str(marker))
+        preload.write_text(
+            f"""import {{ appendFileSync }} from 'node:fs';
+globalThis.fetch = async (url, options) => {{
+  if (options.headers.authorization !== {authorization})
+    throw new Error('unexpected synthetic authorization');
+  appendFileSync({marker_path}, String(url) + '\\n');
+  return {{ok: true, text: async () => JSON.stringify({{rows: [], data: []}})}};
+}};
+"""
+        )
+        staged = root / "runtime/scripts"
+        staged.mkdir(parents=True)
+        for name in ("weekly-fleet-mode-digest.mjs", "fleet_infisical_cli.py", "fleet_infisical.py"):
+            shutil.copyfile(HERE / name, staged / name)
+        result = subprocess.run(
+            [node, "--import", str(preload), str(staged / "weekly-fleet-mode-digest.mjs"), "--dry-run"],
+            env=env,
+            cwd=root / "hostile",
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(self.VALUE, result.stdout + result.stderr)
+        self.assertNotIn(self.BINDING, result.stdout + result.stderr)
+        self.assertNotIn("foreign reader", result.stdout + result.stderr)
+        return result, marker
+
+    def test_weekly_actual_named_reads_need_no_installed_secret_command(self):
+        with self.source(folder="/") as (root, env, requests):
+            result, marker = self.run_weekly(root, env)
+            self.assertEqual(len(marker.read_text().splitlines()), 2)
+            self.assertNotIn("not found", result.stdout)
+            leaves = [path for path, query in requests if path != "/api/v2/service-token"]
+            self.assertEqual(
+                sorted(leaves),
+                [
+                    "/api/v3/secrets/raw/SENTRY_AUTH_TOKEN_FULLSCOPE",
+                    "/api/v3/secrets/raw/USAGE_READ_TOKEN",
+                ],
+            )
+
+    def test_weekly_wrong_grant_refuses_before_value_or_feed_reads(self):
+        with self.source(folder="/other-purpose") as (root, env, requests):
+            env["INFISICAL_READ_PATHS"] = "/"
+            result, marker = self.run_weekly(root, env)
+            self.assertFalse(marker.exists())
+            self.assertIn("USAGE_READ_TOKEN not found", result.stdout)
+            self.assertTrue(requests)
+            self.assertTrue(all(path == "/api/v2/service-token" for path, query in requests))
+
+    def test_weekly_missing_binding_is_unavailable_without_any_provider_read(self):
+        with self.source(folder="/") as (root, env, requests):
+            env.pop("INFISICAL_TOKEN")
+            result, marker = self.run_weekly(root, env)
+            self.assertFalse(marker.exists())
+            self.assertIn("USAGE_READ_TOKEN not found", result.stdout)
+            self.assertEqual(requests, [])
 
 
 class RootSearchPathTests(unittest.TestCase):
