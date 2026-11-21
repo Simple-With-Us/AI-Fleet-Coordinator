@@ -313,21 +313,11 @@ def session_valid(cli: str, env: Mapping[str, str]) -> bool:
 
 
 def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
-    try:
-        proc = subprocess.run(
-            [cli, "--version"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=KEYCHAIN_TIMEOUT,
-            cwd="/",
-            env=_base_env(env),
-            check=False,
-        )
-        text = proc.stdout.decode("utf-8", "replace")
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    m = re.search(r"\d+\.\d+\.\d+", text)
-    return m.group(0) if m else None
+    """Nullable compatibility stub; direct HTTP readers never execute the issuer CLI.
+
+    Doctor retains this optional field, but version discovery is retired and performs no I/O.
+    """
+    return None
 
 
 # --------------------------------------------------------------------------- fetch
