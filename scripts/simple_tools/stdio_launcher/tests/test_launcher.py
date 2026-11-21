@@ -390,7 +390,7 @@ class NativeOriginLaunch(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 0)
         keys = replies[0]["result"]["env_keys"]
-        self.assertIn("CODEX_THREAD_ID", keys)
+        self.assertNotIn("CODEX_THREAD_ID", keys)
         self.assertNotIn("GIT_RELAY_PLATFORM_LETTER", keys)
         self.assertNotIn("CLAUDE_SESSION_ID", keys)
 

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 
-def native_origin_claims(env, identity):
+def native_origin_claims(env, identity, meta=None):
     """Codex-only same-seat claims from its existing private local note.
 
     No process launch, registry call, signing key or post-open mutation.
@@ -23,7 +23,20 @@ def native_origin_claims(env, identity):
     """
     if identity != "CODEX":
         return {}
-    sid = env.get("CODEX_THREAD_ID", "")
+    # A shared MCP process has no authoritative startup thread. Use only this call.
+    if not isinstance(meta, dict):
+        return {}
+    candidates = []
+    if "threadId" in meta:
+        candidates.append(meta["threadId"])
+    turn = meta.get("x-codex-turn-metadata")
+    if isinstance(turn, dict) and "thread_id" in turn:
+        candidates.append(turn["thread_id"])
+    if not candidates or any(not isinstance(x, str) for x in candidates):
+        return {}
+    sid = candidates[0]
+    if any(x != sid for x in candidates):
+        return {}
     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid):
         return {}
     home = env.get("HOME", "")
@@ -440,7 +453,7 @@ class Adapter:
         ):
             args = message["params"].get("arguments")
             if isinstance(args, dict):
-                claims = native_origin_claims(self.env, self.identity)
+                claims = native_origin_claims(self.env, self.identity, params.get("_meta"))
                 args = {k: v for k, v in args.items() if not k.startswith("origin_")}
                 message = {
                     **message,

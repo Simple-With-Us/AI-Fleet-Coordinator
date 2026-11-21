@@ -30,10 +30,38 @@ class NativeCapture(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p, env = self.fixture(d)
             self.assertEqual(
-                M.native_origin_claims(env, "CODEX"),
+                M.native_origin_claims(env, "CODEX", {"threadId": SID}),
                 dict(origin_session_claim=SID, origin_letter_claim="AA", origin_generation_claim=7),
             )
-            self.assertEqual(M.native_origin_claims(env, "CLAUDE"), {})
+            self.assertEqual(M.native_origin_claims(env, "CLAUDE", {"threadId": SID}), {})
+
+    def test_only_per_call_current_thread_never_startup_or_root_session(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, env = self.fixture(d)
+            for meta in (
+                None,
+                {},
+                {"session_id": SID},
+                {"x-codex-turn-metadata": {"session_id": SID}},
+                {"threadId": SID, "x-codex-turn-metadata": {"thread_id": "other"}},
+                {"threadId": True},
+            ):
+                self.assertEqual(M.native_origin_claims(env, "CODEX", meta), {})
+            for meta in (
+                {"threadId": SID},
+                {"x-codex-turn-metadata": {"thread_id": SID, "session_id": "root"}},
+            ):
+                self.assertEqual(
+                    M.native_origin_claims(env, "CODEX", meta)["origin_session_claim"], SID
+                )
+            # One process handles multiple chats. No first-call state may survive.
+            self.assertEqual(
+                M.native_origin_claims(
+                    env, "CODEX", {"threadId": "019a1234-abcd-7123-8123-0123456789ac"}
+                ),
+                {},
+            )
+            self.assertEqual(M.native_origin_claims(env, "CODEX", {}), {})
 
     def test_bad_stale_cross_session_single_letter_generation_and_unsafe_paths_hold(self):
         with tempfile.TemporaryDirectory() as d:
@@ -48,20 +76,20 @@ class NativeCapture(unittest.TestCase):
                 dict(generation=0),
             ):
                 p.write_text(json.dumps(dict(note, **over)))
-                self.assertEqual(M.native_origin_claims(env, "CODEX"), {})
+                self.assertEqual(M.native_origin_claims(env, "CODEX", {"threadId": SID}), {})
             p.write_text(json.dumps(note))
             p.chmod(0o644)
-            self.assertEqual(M.native_origin_claims(env, "CODEX"), {})
+            self.assertEqual(M.native_origin_claims(env, "CODEX", {"threadId": SID}), {})
             p.chmod(0o600)
             p.rename(p.with_suffix(".bak"))
             p.symlink_to(p.with_suffix(".bak"))
-            self.assertEqual(M.native_origin_claims(env, "CODEX"), {})
+            self.assertEqual(M.native_origin_claims(env, "CODEX", {"threadId": SID}), {})
             p.unlink()
             p.with_suffix(".bak").rename(p)
             folder = p.parent
             folder.rename(folder.with_name("other"))
             folder.symlink_to(folder.with_name("other"), target_is_directory=True)
-            self.assertEqual(M.native_origin_claims(env, "CODEX"), {})
+            self.assertEqual(M.native_origin_claims(env, "CODEX", {"threadId": SID}), {})
 
     def test_actual_hosted_name_attaches_only_derived_claims_and_other_tools_unchanged(self):
         with tempfile.TemporaryDirectory() as d:
@@ -83,6 +111,7 @@ class NativeCapture(unittest.TestCase):
                 method="tools/call",
                 params=dict(
                     name="gr_open_pr",
+                    _meta={"threadId": SID},
                     arguments=dict(
                         repo="example/x", origin_session_claim="wrong", origin_token="forbidden"
                     ),
