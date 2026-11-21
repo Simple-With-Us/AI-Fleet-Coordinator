@@ -210,7 +210,7 @@ MAX_ENTRY_TEXT = 60000
 LABEL_CHARS = 280
 # The render format of an entry's quotes.  An entry written by an older build carries no
 # version, and its quotes are read from Zulip again before its comment is edited.
-RENDER_VERSION = 2
+RENDER_VERSION = 3
 # How many standing comments are re-rendered from Zulip in one cycle, and how long an
 # entry whose topic could not be read waits before it is tried again.
 REFRESH_PER_CYCLE = 1
@@ -291,16 +291,62 @@ _SECRET_PATTERNS = (
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{40,}={0,2}\b"),
 )
-# A keyword counts only as an assignment (`password: x`, `token=x`), so prose such as "token
-# refresh" or "password reset" is not withheld; a bare `Bearer` needs a token-shaped value.
+# The names that turn an assignment into a credential.
+_CREDENTIAL_NAME = (
+    r"api[_-]?key|apikey|access[_-]?token|auth[_-]?token|refresh[_-]?token"
+    r"|client[_-]?secret|secret[_-]?key|private[_-]?key|api[_-]?secret|app[_-]?secret"
+    r"|consumer[_-]?secret|session[_-]?key|signing[_-]?key|encryption[_-]?key"
+    r"|token|secret|password|passwd|pwd|authorization|credential"
+)
+# A keyword counts only as an assignment (`password: x`, `token=x`, `"token": "x"`), so prose
+# such as "token refresh" or "password reset" is not withheld; a bare `Bearer` needs a
+# token-shaped value.
 _KEYED_SECRET = re.compile(
-    r"(?i)\b(?:api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
-    r"|authorization|credential)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)[\"']?\b(?:" + _CREDENTIAL_NAME + r")\b[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
     r"|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"
 )
+# The text right before a value that is assigned to a credential name:  `token=`, `"token": "`.
+_ASSIGNED_TO_CREDENTIAL = re.compile(
+    r"(?i)[\"']?\b(?:" + _CREDENTIAL_NAME + r")\b[\"']?\s*[:=]\s*[\"']?$"
+)
+# The text right before a value that is a URL query parameter:  `?sig=`, `&token=`.
+_URL_QUERY_VALUE = re.compile(r"[?&][A-Za-z0-9_.\-]{1,40}=[^\s]*$")
 # The markdown that can change the shape of the comment: emphasis, code spans, links, html,
 # tables, strikethrough and the quote delimiter.
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
+
+
+# A hexadecimal run of 40 or 64 lowercase characters has the shape of a git commit id.  The
+# shape alone does not prove it is one:  it is also the shape of credential material, so the
+# run is masked rather than exempted, and the value itself never reaches the ledger or the
+# comment (AFC-834).
+_COMMIT_ID_WORD = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])")
+
+
+def _mask_commit_ids(text: str) -> str:
+    """Mask every commit-id-shaped run in the text.
+
+    A run of 40 or 64 lowercase hex characters is masked, so the post that quotes one is
+    carried and the value itself is neither stored nor relayed.  A run that is the value of a
+    credential assignment, or a URL query value, is not masked:  the scan then withholds the
+    whole field, as it always did, because that run is credential material (AFC-834)."""
+
+    def replace(match: re.Match[str]) -> str:
+        start, end = match.start(), match.end()
+        before = text[:start]
+        if _ASSIGNED_TO_CREDENTIAL.search(before) or _URL_QUERY_VALUE.search(before):
+            return match.group(0)
+        # A 40/64 lowercase-hex prefix inside a longer token (base64, a mixed
+        # credential) must stay unmasked so has_secret can withhold the field.
+        # Hex neighbours are already excluded by _COMMIT_ID_WORD.
+        prev = text[start - 1] if start else ""
+        nxt = text[end] if end < len(text) else ""
+        tokenish = lambda ch: ch.isalnum() or ch in "_+/=-"
+        if (prev and tokenish(prev)) or (nxt and tokenish(nxt)):
+            return match.group(0)
+        return "(a hex run of %d characters, masked)" % len(match.group(0))
+
+    return _COMMIT_ID_WORD.sub(replace, text)
 
 
 def has_secret(text: str) -> bool:
@@ -447,7 +493,7 @@ def post_text(content: str) -> str:
     attribute can never trip it by itself.  A link's URL stays in the text, so a
     credential inside one is still caught.  A post longer than MESSAGE_CHARS is cut, and
     the cut says how many characters of it are not shown."""
-    converted = zulip_markdown.to_markdown(content)
+    converted = _mask_commit_ids(zulip_markdown.to_markdown(content))
     if has_secret(converted):
         return WITHHELD
     text = defang(converted)
@@ -471,7 +517,7 @@ def _field_is_secret(name: str, value: str) -> bool:
     text, so a credential inside one is still caught.  The other fields are plain text
     and are scanned as they are."""
     if name == "content":
-        value = zulip_markdown.to_markdown(value)
+        value = _mask_commit_ids(zulip_markdown.to_markdown(value))
     return has_secret(value)
 
 

@@ -65,7 +65,12 @@ Eavesdropper, and it hosts the mirror.
   ("_N characters of this message are not shown._", "_N characters of this topic are not
   shown._").  The credential scan runs over the converted text and not over the markup, so
   a Zulip attribute cannot trip a row by itself, while a link's URL stays in the text, so a
-  credential inside one is still caught.  A link is shown, not live.  The comments written
+  credential inside one is still caught.  A run of 40 lowercase hex characters (SHA-1)  or 64
+  (SHA-256) has the shape of a git commit id, and the shape alone does not prove it is one, 
+  so the run is masked:  the post is carried and the value is neither stored nor relayed.  A
+  run in a credential assignment (`token=<id>`,  `"token": "<id>"`,  `client_secret=<id>`) or
+  inside a URL query (`?sig=<id>`) is not masked and is withheld whole.  A link is shown, not
+  live.  The comments written
   before this change hold posts that were cut at 280 characters:  an entry records the
   format its quotes were rendered in, an entry without one is read from Zulip again and
   rendered again, and the comment is edited with the whole posts and says that it was
