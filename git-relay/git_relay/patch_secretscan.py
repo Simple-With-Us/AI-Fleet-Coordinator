@@ -255,6 +255,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "app/src/security/__tests__/originLock.test.ts",
         "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
     ): frozenset({("assigned secret", 547, 580, 557, 580)}),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "upgrade-reviewed-hub.py",
+        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})

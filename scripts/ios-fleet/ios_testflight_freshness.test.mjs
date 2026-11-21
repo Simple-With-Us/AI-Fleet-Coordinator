@@ -193,18 +193,20 @@ const BOTFLEET_BUILDS = { 111: [ascBuild(1, "202610171703", "1.0.113", "2026-10-
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-test("buildCutTime reads the UTC cut time and rejects implausible numbers", () => {
+test("buildCutTime reads the Central Time cut time and rejects implausible numbers", () => {
   const up = Date.parse("2026-10-17T17:09:00Z");
-  assert.equal(new Date(buildCutTime("202610171703", up)).toISOString(), "2026-10-17T17:03:00.000Z");
+  assert.equal(new Date(buildCutTime("202610171203", up)).toISOString(), "2026-10-17T17:03:00.000Z", "CDT stamp, UTC-5");
+  assert.equal(new Date(buildCutTime("202611160900", Date.parse("2026-11-16T15:05:00Z"))).toISOString(), "2026-11-16T15:00:00.000Z", "CST stamp, UTC-6");
   assert.equal(buildCutTime("42", up), null);
-  assert.equal(buildCutTime("202610181703", up), null, "a cut after the upload is not a cut time");
+  assert.equal(buildCutTime("202610171703", up), null, "a Central stamp that lands after the upload is not a cut time");
+  assert.equal(buildCutTime("202610181203", up), null, "a cut after the upload is not a cut time");
   assert.equal(buildCutTime("202610100000", up), null, "a cut days before the upload is not a cut time");
 });
 
 test("correlateRun picks the run that uploaded, even when it ended red", () => {
   const w = botfleetLike();
   const up = Date.parse("2026-10-17T17:09:00Z");
-  const hit = correlateRun(w.createdRuns, buildCutTime("202610171703", up), up);
+  const hit = correlateRun(w.createdRuns, buildCutTime("202610171203", up), up);
   assert.equal(hit.head_sha, "ship1");
   assert.equal(correlateRun(w.createdRuns.filter((r) => r.head_sha !== "ship1"), Date.parse("2026-10-17T17:03:00Z"), up), null,
     "a gate-skip run that finished before the cut is not the upload");
@@ -772,8 +774,8 @@ test("time fallback when no run correlates and there is no state file", async ()
   const w = botfleetLike({ createdRuns: [] });
   const { r } = await evalOne(w, BOTFLEET_BUILDS);
   assert.equal(r.shipped.source, "time");
-  assert.equal(r.status, "current", "cut 17:03 is after the 17:02:32 commit");
-  const late = botfleetLike({ createdRuns: [], natives: { ios: { sha: "nat9", date: "2026-10-17T17:05:00Z" } } });
+  assert.equal(r.status, "current", "a Central-stamped build number carries no usable cut here, so the 17:09 upload is after the 17:02:32 commit");
+  const late = botfleetLike({ createdRuns: [], natives: { ios: { sha: "nat9", date: "2026-10-17T17:10:00Z" } } });
   assert.equal((await evalOne(late, BOTFLEET_BUILDS)).r.status, "behind");
 });
 

@@ -1,16 +1,55 @@
 // One credential seam for both registry exporters. Only the Python child opens the bootstrap.
 import { spawn } from "node:child_process";
 import { lstatSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 
-const WORKER = fileURLToPath(new URL("../fleet_infisical.py", import.meta.url));
+const WORKER_CANDIDATES = [
+  new URL("./fleet_infisical.py", import.meta.url), // the private installed consumer bundle
+  new URL("../fleet_infisical.py", import.meta.url), // the canonical repository scripts path
+];
 const BUDGET_MS = 30_000;
 const CLEANUP_MS = 1_000;
 const MAX_OUTPUT = 64 * 1024;
 const FAILURE = "Registry Google service account unavailable; check GOOGLE_SHEETS_SA or the own OPERATOR_SHEETS_TOKEN_FILE binding";
 const fail = () => new Error(FAILURE);
+
+function canonicalWorkerPath() {
+  const [bundledUrl, repositoryUrl] = WORKER_CANDIDATES;
+  const checkCandidate = (candidate) => {
+    const absolute = resolve(candidate);
+    const { root } = parse(absolute);
+    const parent = dirname(absolute);
+    const parts = relative(root, parent).split(sep).filter(Boolean);
+    let current = root;
+    for (let index = 0; index < parts.length; index += 1) {
+      current = resolve(current, parts[index]);
+      let directory;
+      try { directory = lstatSync(current); } catch { throw fail(); }
+      if (!directory.isDirectory() || directory.isSymbolicLink()) throw fail();
+      const finalParent = index === parts.length - 1;
+      const rootStickyAncestor = !finalParent && directory.uid === 0 && (directory.mode & 0o1000) !== 0;
+      if (![0, process.getuid?.()].includes(directory.uid) ||
+          ((directory.mode & 0o022) !== 0 && !rootStickyAncestor)) throw fail();
+    }
+    let worker;
+    try { worker = lstatSync(absolute); } catch (error) {
+      // A missing worker permits the repository candidate; unsafe metadata never does.
+      if (error?.code === "ENOENT") return null;
+      throw fail();
+    }
+    if (!worker.isFile() || worker.isSymbolicLink() || worker.nlink !== 1 ||
+        ![0, process.getuid?.()].includes(worker.uid) || (worker.mode & 0o022) !== 0) throw fail();
+    return absolute;
+  };
+
+  const bundledPath = checkCandidate(fileURLToPath(bundledUrl));
+  if (bundledPath) return bundledPath;
+  const repositoryPath = checkCandidate(fileURLToPath(repositoryUrl));
+  if (repositoryPath) return repositoryPath;
+  throw fail();
+}
 
 function serviceAccount(raw) {
   if (typeof raw !== "string" || !raw || Buffer.byteLength(raw) > MAX_OUTPUT) throw fail();
@@ -42,10 +81,7 @@ export async function loadRegistryServiceAccount({ env = process.env, signal } =
     names: ["GOOGLE_SHEETS_SA"], timeout: 29, max_output_bytes: MAX_OUTPUT,
   }));
   if (request.length > 128 * 1024) throw fail();
-  try {
-    const info = lstatSync(WORKER);
-    if (!info.isFile() || info.isSymbolicLink()) throw fail();
-  } catch { throw fail(); }
+  const worker = canonicalWorkerPath();
   const raw = await new Promise((resolve, reject) => {
     let child;
     let output = [];
@@ -80,7 +116,7 @@ export async function loadRegistryServiceAccount({ env = process.env, signal } =
       }, remaining);
     };
     try {
-      child = spawn("/usr/bin/python3", ["-I", "-B", WORKER, "--bounded-read-worker"], {
+      child = spawn("/usr/bin/python3", ["-I", "-B", worker, "--bounded-read-worker"], {
         shell: false, env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "ignore"],
       });
       const remaining = BUDGET_MS - CLEANUP_MS - (performance.now() - started);

@@ -4,7 +4,7 @@
 POSTs a signed request to https://agents.simplewithus.com/internal/health/linear
 (src/health.js) and writes ~/.local/state/fleet-tools/worker-health.json, mode 0600,
 atomically.  The answer holds ages, counts and fixed codes only.  The signing key is
-HEALTH_HMAC_KEY from Fleet-OPS (`fleet-secrets get`), read into memory and never printed
+HEALTH_HMAC_KEY from Fleet-OPS through the shared isolated Infisical CLI, read into memory and never printed
 or written.  A reader treats a file older than 45 minutes, missing, malformed or with
 another schemaVersion as unknown.  Python 3.9, standard library only.
 
@@ -22,7 +22,6 @@ import hmac
 import json
 import os
 import secrets
-import shutil
 import subprocess
 import sys
 import time
@@ -35,6 +34,7 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
+INFISICAL_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py")
 
 
 def sign(key, body):
@@ -52,10 +52,25 @@ def read_key():
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
-    binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
+    if not os.path.isfile(INFISICAL_CLI):
+        return ""
     try:
         out = subprocess.run(
-            [binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
+            [
+                sys.executable,
+                "-I",
+                INFISICAL_CLI,
+                "get",
+                "HEALTH_HMAC_KEY",
+                "--path",
+                "/",
+                "--project",
+                "fleet-ops",
+                "--require-finite-expiry",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
