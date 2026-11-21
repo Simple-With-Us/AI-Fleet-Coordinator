@@ -146,7 +146,10 @@ def _take_project(args: Sequence[str]) -> tuple[str, list[str]]:
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, -1, allow_finite_expiry=True)
-    names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
+    requested_names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
+    names = list(dict.fromkeys(requested_names))
+    if len(names) > MAX_RUN_NAMES:
+        raise UsageError(f"get accepts at most {MAX_RUN_NAMES} distinct key names")
     path = core.check_path(str(opts["path"]))
     project_id = core.infisical_project_id(env, core.home_dir(env), project)
     policy = {"require_finite_expiry": True} if opts.get("require_finite_expiry") else {}
@@ -159,7 +162,7 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
             "key {} is not in Infisical at {}".format(", ".join(missing), opts["path"]), 3
         )
     core.reject_unresolved(secrets, names)
-    if len(names) == 1:
+    if len(requested_names) == 1:
         out.write(secrets[names[0]])
     else:
         out.write(json.dumps({n: secrets[n] for n in names}))
