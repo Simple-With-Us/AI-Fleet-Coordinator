@@ -158,7 +158,7 @@ def expected_row(metadata: dict) -> list[str]:
         metadata["owner"],
         metadata["consumer"],
         metadata["status"],
-        metadata["expiresAt"],
+        "Never" if metadata["expiresAt"] is None else metadata["expiresAt"],
         metadata["verifiedAt"],
         metadata["evidence"],
         metadata.get("auditCoverage", ""),
@@ -276,6 +276,53 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         self.assertEqual(
             json.loads(fixture.metadata_path.read_text())["createdAt"], METADATA["createdAt"]
         )
+
+    def test_explicit_null_expiry_registers_never_and_rerun_adds_only_one_row(self) -> None:
+        fixture = self.fixture()
+        fixture.metadata["expiresAt"] = None
+        fixture.write_metadata()
+        first = fixture.run()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(fixture.state()["rows"], [expected_row(fixture.metadata)])
+        self.assertEqual(
+            fixture.state()["rows"][0][HEADERS.index("Expires (UTC)")], "Never"
+        )
+        self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "ok")
+        second = fixture.run()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("already registered", second.stdout)
+        self.assertEqual(fixture.state()["appendCount"], 1)
+        self.assertEqual(len(fixture.state()["rows"]), 1)
+        self.assertEqual(
+            json.loads(fixture.metadata_path.read_text())["createdAt"], METADATA["createdAt"]
+        )
+
+    def test_missing_empty_or_text_expiry_refuses_before_registry_read(self) -> None:
+        for value in ("missing", "", "Never"):
+            with self.subTest(value=value):
+                fixture = self.fixture()
+                if value == "missing":
+                    del fixture.metadata["expiresAt"]
+                else:
+                    fixture.metadata["expiresAt"] = value
+                fixture.write_metadata()
+                result = fixture.run()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("invalid_timestamp", result.stderr)
+                self.assertEqual(fixture.state()["calls"], [])
+                self.assert_no_mutation(fixture)
+
+    def test_created_and_verified_timestamps_remain_required(self) -> None:
+        for field in ("createdAt", "verifiedAt"):
+            with self.subTest(field=field):
+                fixture = self.fixture()
+                del fixture.metadata[field]
+                fixture.write_metadata()
+                result = fixture.run()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("invalid_metadata", result.stderr)
+                self.assertEqual(fixture.state()["calls"], [])
+                self.assert_no_mutation(fixture)
 
     def test_committed_but_thrown_append_is_unknown_and_never_replayed(self) -> None:
         fixture = self.fixture()
