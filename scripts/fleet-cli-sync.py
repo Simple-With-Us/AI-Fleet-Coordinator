@@ -48,7 +48,7 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # wrapper, was deleted (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # fleet-cli-release.py carries the same ledger.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
-# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# simple_tools/operator_platform_feeds.py (the shared Operator's external-platform data feeds).
 # The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
 # The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
 # same ledger.

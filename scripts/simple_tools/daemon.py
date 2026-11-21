@@ -1541,14 +1541,24 @@ class Daemon:
                 self.registry_sweeper = old_sweeper
                 service.sweeper = old_sweeper
             else:
+                from . import operator_platform_feeds as feeds
+
                 self.registry_sweeper = LREG.Sweeper(
                     service,
                     interval_minutes=interval,
                     stale_after_hours=stale,
                     max_share=max_share,
                     log=self.log.write,
+                    feed_runner=self._run_platform_feeds,
+                    feed_scopes=feeds.feed_scopes(),
                 )
         return service
+
+    def _run_platform_feeds(self, service: LREG.RegistryService, now: float) -> dict[str, Any]:
+        """Run the shared platform data-feed table from the one registry-sweeper lifecycle."""
+        from . import operator_platform_feeds as feeds
+
+        return feeds.run_platform_feeds(service, self.env, now=now)
 
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's

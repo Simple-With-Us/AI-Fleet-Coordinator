@@ -1,4 +1,4 @@
-"""The Cursor Cloud letter sweep:  every open Cloud agent takes a letter at location `cloud` and is steered once to
+"""Shared Operator external-feed behavior:  every open Cloud agent takes a letter at location `cloud` and is steered once to
 put that letter in its title.  A chat that already carries its letter is left alone.  A steer the account refuses
 falls back to one DM for a title that names a GB bot.  A run that only looks sends nothing.  The registry runs in
 process against a temporary registry;  the Cursor API and `simple-chat dm` are replaced."""
@@ -9,18 +9,47 @@ import datetime
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
-from simple_tools import cursor_cloud_letters as CCL
+from simple_tools import operator_platform_feeds as CCL
 from simple_tools import operator_registry as OR
+from simple_tools import listener_registry as LR
 from simple_tools import platform_letter as PL
 from simple_tools.tests.registry_fake import FakeRegistry
 
 A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
+
+
+class RegistryCallAdapterTests(unittest.TestCase):
+    def test_in_process_adapter_does_not_receive_network_timeout(self) -> None:
+        env = {"mode": "test"}
+        params = {"session_id": A1}
+        calls: list[tuple[dict, str, dict]] = []
+
+        def local_call(call_env: dict, op: str, call_params: dict) -> dict:
+            calls.append((call_env, op, call_params))
+            return {"ok": True}
+
+        result = PL._call_api(env, "touch", params, timeout=7, api_call=local_call)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, [(env, "touch", params)])
+
+    def test_remote_registry_call_keeps_its_transport_timeout(self) -> None:
+        env = {"mode": "test"}
+        params = {"session_id": A1}
+        with mock.patch("simple_tools.registry_api.call", return_value={"ok": True}) as remote_call:
+            result = PL._call_api(env, "touch", params, timeout=7)
+
+        self.assertEqual(result, {"ok": True})
+        remote_call.assert_called_once_with(env, "touch", params, timeout=7)
 
 
 def stamp(hours_ago: float) -> str:
@@ -291,12 +320,6 @@ class SweepTests(unittest.TestCase):
         self.assertEqual([call[3] for call in self.dm.calls], ["GB-Director", "GB-Builder"])
         self.assertEqual(CCL.read_state(self.env)[A1]["dm"], "sent")
 
-    def test_the_command_reports_an_unsaved_state_in_one_line(self) -> None:
-        with mock.patch.object(CCL, "sweep", side_effect=CCL.StateUnsaved("OSError")), \
-                mock.patch("builtins.print") as printed:
-            self.assertEqual(CCL.main(["sweep"]), 1)
-        self.assertEqual(json.loads(printed.call_args[0][0])["error"], "StateUnsaved")
-
     def test_a_refused_dm_is_asked_again_and_is_final_after_three_refusals(self) -> None:
         self.steer = Steer("unavailable")
         self.dm = Fake(code=2, out="refused: unknown name GB-Director")
@@ -451,255 +474,323 @@ class SharedUnitSweepTests(unittest.TestCase):
         self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", answer["error"])
         self.assertEqual(self.dm.calls, [])  # no ssh hop:  nothing ran
 
+    def test_shared_sweeper_registers_and_reopens_through_the_registry_service(self) -> None:
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
+        cloud = mock.MagicMock()
+        cloud.return_value.discover.return_value = list(self.agents)
+        cloud.return_value.steer.return_value = "not-started"
+        cloud.return_value.last_discovery_status = "complete"
+        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+            first = CCL.run_platform_feeds(self.assigner.service, self.env, now=time.time())
+            original = self.assigner.lookup("cursor", "cloud", PL.SCOPE, A1)
+            self.assertIsNotNone(original)
+            closed = self.assigner.service.call_operator(
+                "close", {"platform": "cursor", "location": "cloud", "scope": PL.SCOPE,
+                          "session_id": A1, "source": "test"}
+            )
+            self.assertNotIn("error", closed)
+            self.agents[0] = agent(A1, "GB-Director: updated title")
+            cloud.return_value.discover.return_value[0] = self.agents[0]
+            second = CCL.run_platform_feeds(self.assigner.service, self.env, now=time.time() + 1)
 
-class UnitRunTests(unittest.TestCase):
-    """`sweep --api-only --no-dm`, run through main() the way the unit runs it:  the registry URL and key come only from
-    the knobs (the process environment does not set them), AGENT_SEAT and SESSION_LETTER_REMOTE are ignored, the Cursor
-    key is read with CURSOR_LETTERS_INFISICAL_TOKEN, and no DM goes out."""
+        reopened = self.assigner.lookup("cursor", "cloud", PL.SCOPE, A1)
+        self.assertTrue(first["cursor-cloud"]["ok"])
+        self.assertTrue(second["cursor-cloud"]["ok"])
+        self.assertEqual(reopened["generation"], original["generation"])
+        self.assertEqual(reopened["label"], original["label"])
+        self.assertEqual(reopened["title"], "GB-Director: updated title")
+        self.assertEqual(reopened["state"], "active")
+        self.assertEqual(reopened["seat"], "CURSOR")
+        self.assertEqual(cloud.call_count, 2)
 
+    def test_partial_discovery_protects_cursor_cleanup_but_keeps_other_sweeps(self) -> None:
+        old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=40)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        for platform, host, seat, sid in (
+            ("cursor", "cloud", "CURSOR", "cursor-old"),
+            ("testbed", "mac", "CLAUDE", "testbed-old"),
+        ):
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=sid, seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+            conn = sqlite3.connect(self.db)
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE sessions SET registered_at = ?, last_seen_at = ? WHERE native_session_id = ?",
+                        (old, old, sid),
+                    )
+            finally:
+                conn.close()
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=platform + "-new", seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
+        cloud = mock.MagicMock()
+        cloud.return_value.discover.return_value = [self.agents[0]]
+        cloud.return_value.steer.return_value = "not-started"
+        cloud.return_value.last_discovery_status = "partial"
+        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+            sweeper = LR.Sweeper(
+                self.assigner.service, interval_minutes=15, stale_after_hours=36,
+                feed_runner=lambda service, now: CCL.run_platform_feeds(service, self.env, now=now),
+                feed_scopes=CCL.feed_scopes(),
+            )
+            result = sweeper.run(time.time())
+
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+        self.assertEqual(self.assigner.lookup("cursor", "cloud", PL.SCOPE, "cursor-old")["state"], "active")
+        self.assertEqual(self.assigner.lookup("testbed", "mac", PL.SCOPE, "testbed-old")["state"], "closed")
+        sweeper.sweep("cursor", "CURSOR")
+        self.assertEqual(self.assigner.lookup("cursor", "cloud", PL.SCOPE, "cursor-old")["state"], "active")
+
+    def test_missing_registry_store_skips_provider_before_any_cursor_call(self) -> None:
+        os.unlink(self.db)
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
+        cloud = mock.MagicMock()
+        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+            sweeper = LR.Sweeper(
+                self.assigner.service, interval_minutes=15, stale_after_hours=36,
+                feed_runner=lambda service, now: CCL.run_platform_feeds(service, self.env, now=now),
+                feed_scopes=CCL.feed_scopes(),
+            )
+            result = sweeper.run(time.time())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["feeds"]["error"], "registry_unavailable")
+        cloud.assert_not_called()
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_missing_feed_report_keeps_all_known_scopes_protected(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: {},
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+
+    def test_malformed_feed_report_keeps_all_known_scopes_protected(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: None,
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["feeds"]["error"], "invalid_feed_report")
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+
+    def test_discovery_does_not_hold_the_cleanup_lock_and_protects_other_sweeps(self) -> None:
+        old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=40)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        groups = (
+            ("cursor", "cloud", "CURSOR", "cloud-old"),
+            ("cursor", "mac", "CURSOR", "mac-old"),
+            ("testbed", "mac", "CLAUDE", "other-old"),
+        )
+        for platform, host, seat, sid in groups:
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=sid, seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=sid + "-fresh", seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+            conn = sqlite3.connect(self.db)
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE sessions SET registered_at = ?, last_seen_at = ? WHERE native_session_id = ?",
+                        (old, old, sid),
+                    )
+            finally:
+                conn.close()
+
+        started, release, direct_sweeps_done = threading.Event(), threading.Event(), threading.Event()
+
+        def blocked_feed(_service, _now):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("test feed release timed out")
+            return {
+                "cursor-cloud": {
+                    "ok": True,
+                    "complete": False,
+                    "platform": "cursor",
+                    "host": "cloud",
+                    "protect_stale_cleanup": True,
+                }
+            }
+
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=blocked_feed,
+            feed_scopes=CCL.feed_scopes(),
+        )
+        run_result = {}
+        run_thread = threading.Thread(target=lambda: run_result.update(sweeper.run(time.time())))
+        run_thread.start()
+        self.assertTrue(started.wait(2))
+
+        def direct_sweeps() -> None:
+            sweeper.sweep("testbed", "CLAUDE")
+            sweeper.sweep("cursor", "CURSOR")
+            direct_sweeps_done.set()
+
+        direct_thread = threading.Thread(target=direct_sweeps)
+        direct_thread.start()
+        completed_before_release = direct_sweeps_done.wait(1)
+        release.set()
+        direct_thread.join(5)
+        run_thread.join(5)
+        self.assertTrue(completed_before_release, "platform sweeps must not wait for provider network I/O")
+        self.assertFalse(direct_thread.is_alive())
+        self.assertFalse(run_thread.is_alive())
+        self.assertEqual(self.assigner.lookup("cursor", "cloud", PL.SCOPE, "cloud-old")["state"], "active")
+        self.assertEqual(self.assigner.lookup("cursor", "mac", PL.SCOPE, "mac-old")["state"], "closed")
+        self.assertEqual(self.assigner.lookup("testbed", "mac", PL.SCOPE, "other-old")["state"], "closed")
+
+    def test_numeric_protection_flag_preserves_provider_host(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: {
+                "cursor-cloud": {
+                    "ok": False,
+                    "platform": "cursor",
+                    "host": "cloud",
+                    "protect_stale_cleanup": 1,
+                }
+            },
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+
+
+class StateSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
-        from simple_tools import registry_api
-        from simple_tools.tests.registry_fake import FakeRegistry
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = {"SIMPLE_TOOLS_STATE_DIR": self.tmp.name}
 
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.fake = FakeRegistry().install()
-        self.addCleanup(self.fake.uninstall)
-        knobs = {registry_api.URL_KNOB: self.fake.url, registry_api.KEY_KNOB: self.fake.keys["OPERATOR"]}
-        registry_api._knob_value = lambda name: knobs.get(name, "")  # restored by the fake's uninstall
-        self.env = {
-            "HOME": tmp.name,
-            "SIMPLE_TOOLS_STATE_DIR": os.path.join(tmp.name, "state"),
-            "AGENT_SEAT": "CLAUDE",
-            "SESSION_LETTER_REMOTE": "mac-somewhere",
-            CCL.CURSOR_TOKEN_ENV: "st." + "fixture-cursor-letters-token-0123",
-        }
-        self.cloud = mock.MagicMock()
-        self.cloud.return_value.discover.return_value = [agent(A1, "GB-Director: tidy"), agent(A2, "fix it")]
-        self.cloud.return_value.steer.return_value = "unavailable"
-        self.cloud.return_value.last_discovery_status = "complete"
+    def test_feed_write_preserves_other_feed_rows(self) -> None:
+        path = CCL.state_path(self.env)
+        os.makedirs(os.path.dirname(path), mode=0o700)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"feeds": {"another-feed": {"row": 1}, "cursor-cloud": {"old": 1}}}, fh)
+        CCL.write_state(self.env, {"new": 2})
+        saved = CCL.L.read_json(path)
+        self.assertEqual(saved["feeds"]["another-feed"], {"row": 1})
+        self.assertEqual(saved["feeds"]["cursor-cloud"], {"new": 2})
 
-    def run_main(self, argv: list[str]) -> tuple[int, str]:
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, self.env, clear=True), \
-                mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", self.cloud), \
-                mock.patch.object(CCL, "read_cursor_key", return_value="fixture-cursor-key") as key, \
-                mock.patch.object(CCL, "send_dm", side_effect=AssertionError("a DM was sent")), \
-                mock.patch.object(PL, "with_registry_env", side_effect=AssertionError("env file read")), \
-                mock.patch("sys.stdout", out):
-            code = CCL.main(argv)
-            self.key_calls = key.call_count
-            self.left = dict(os.environ)
-        return code, out.getvalue()
+    def test_feed_write_refuses_symlinked_directory_and_state_file(self) -> None:
+        target = os.path.join(self.tmp.name, "external")
+        os.mkdir(target)
+        os.symlink(target, os.path.join(self.tmp.name, "operator"))
+        with self.assertRaises(ValueError):
+            CCL.write_state(self.env, {"row": 1})
+        self.assertFalse(os.path.exists(os.path.join(target, CCL.STATE_FILE)))
+        os.unlink(os.path.join(self.tmp.name, "operator"))
+        os.mkdir(os.path.join(self.tmp.name, "operator"))
+        external = os.path.join(target, "state.json")
+        with open(external, "w", encoding="utf-8") as fh:
+            fh.write("sentinel")
+        os.symlink(external, CCL.state_path(self.env))
+        with self.assertRaises(ValueError):
+            CCL.write_state(self.env, {"row": 1})
+        with open(external, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "sentinel")
 
-    def test_the_unit_command_registers_under_cursor_and_sends_no_dm(self) -> None:
-        code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 0, out)
-        report = json.loads(out)
-        self.assertEqual([row.get("dm") for row in report["rows"]], ["off", None])
-        for sid in (A1, A2):
-            row = self.fake.lookup("cursor", "cloud", PL.SCOPE, sid)
-            self.assertEqual(row["seat"], "CURSOR")
-        self.assertEqual(self.key_calls, 1)
-        surfaces = self.cloud.call_args.kwargs["surfaces"]
-        self.assertEqual(surfaces.load_api_key(), "fixture-cursor-key")
-        self.assertNotIn("CURSOR_SYNC_API_KEY", self.left)  # the key never enters the environment
-        self.assertNotIn("fixture-cursor-key", out)
+    def test_symlinked_or_malformed_existing_ledger_stops_before_register_or_steer(self) -> None:
+        path = CCL.state_path(self.env)
+        os.makedirs(os.path.dirname(path), mode=0o700)
 
-    def test_the_unit_command_with_no_cursor_token_stops_before_any_cursor_call(self) -> None:
-        # A missing env file or token line:  the run stops with service-token-required and never falls back to a key
-        # in the environment, `fleet-secrets get`, or any other credential route.
-        from simple_tools import cursor_chat_transport as CT
+        def refused_before_actions() -> None:
+            registered: list[list[str]] = []
+            steered: list[str] = []
+            with self.assertRaises(ValueError):
+                CCL.sweep(
+                    self.env,
+                    discover=lambda: [agent(A1, "GB-Director: tidy")],
+                    transport=lambda argv: registered.append(list(argv)) or {},
+                    steer=lambda sid, _text: steered.append(sid) or "sent",
+                )
+            self.assertEqual(registered, [])
+            self.assertEqual(steered, [])
 
-        env = dict(self.env)
-        del env[CCL.CURSOR_TOKEN_ENV]
-        env["CURSOR_SYNC_API_KEY"] = "fixture-environment-key"
-        env["CURSOR_API_KEY"] = "fixture-environment-key"
-        out = io.StringIO()
-        refuse = AssertionError("another key source was tried")
-        with mock.patch.dict(os.environ, env, clear=True), \
-                mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", self.cloud), \
-                mock.patch.object(CT._surfaces, "load_api_key", side_effect=refuse), \
-                mock.patch.object(CT._surfaces, "_fleet_secrets_key", side_effect=refuse), \
-                mock.patch("subprocess.run", side_effect=refuse), \
-                mock.patch.object(CCL, "send_dm", side_effect=AssertionError("a DM was sent")), \
-                mock.patch("sys.stdout", out):
-            code = CCL.main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 1)
-        lines = out.getvalue().splitlines()
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(json.loads(lines[0]), {"error": "KeyUnavailable", "status": None,
-                                                "code": "service-token-required"})
-        self.cloud.assert_not_called()  # no discovery, no steer
-        self.assertNotIn("fixture-environment-key", out.getvalue())
-        for sid in (A1, A2):
-            self.assertIsNone(self.fake.lookup("cursor", "cloud", PL.SCOPE, sid))
+        outside_dir = os.path.join(self.tmp.name, "outside-dir")
+        os.mkdir(outside_dir)
+        directory_state = os.path.join(outside_dir, CCL.STATE_FILE)
+        with open(directory_state, "w", encoding="utf-8") as fh:
+            fh.write('{"feeds":{"cursor-cloud":{"already":"told"}}}')
+        os.rmdir(os.path.dirname(path))
+        os.symlink(outside_dir, os.path.dirname(path))
+        refused_before_actions()
+        with open(directory_state, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), '{"feeds":{"cursor-cloud":{"already":"told"}}}')
+        os.unlink(os.path.dirname(path))
+        os.mkdir(os.path.dirname(path))
 
-    def _second_agent_answers(self, answer: dict):
-        real = CCL.register
-
-        def register(env, agent_row, **kw):
-            if str(agent_row.get("session_id")) == A2:
-                return dict(answer)
-            return real(env, agent_row, **kw)
-
-        return mock.patch.object(CCL, "register", side_effect=register)
-
-    def test_a_refusal_because_every_pair_is_live_does_not_fail_the_run(self) -> None:
-        # Jay's rule:  when all 26 main-chat pairs are live the letter is refused and the chat carries on.  That is the
-        # registry working as designed, so the row says refused, not error, and the unit does not read as failed.
-        refused = {"error": PL.refused_text(None, "cursor", 26), "code": "labels_exhausted", "swept": 0}
-        with self._second_agent_answers(refused):
-            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 0, out)
-        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
-        self.assertIn("label", rows[A1])
-        self.assertNotIn("error", rows[A2])
-        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[A2]["refused"])
-
-    def test_a_closed_chat_that_cannot_have_a_pair_again_yet_is_refused_not_failed(self) -> None:
-        refused = {"error": "this registry cannot give a closed chat a pair letter again yet", "code": "space_lost",
-                   "swept": 0}
-        with self._second_agent_answers(refused):
-            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 0, out)
-        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
-        self.assertNotIn("error", rows[A2])
-        self.assertIn("cannot give a closed chat a pair letter again", rows[A2]["refused"])
-
-    def test_the_real_api_path_refusal_reaches_the_row_when_every_pair_is_live(self) -> None:
-        # No mocked register:  the shared unit's own path (platform_letter._register_api over the registry API) runs
-        # against the real registry service with a one-pair space, so the second chat is refused by the registry
-        # itself and the code it answers with must reach the row.
-        with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)}):
-            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 0, out)
-        rows = [json.loads(out)["rows"][0], json.loads(out)["rows"][1]]
-        self.assertEqual(rows[0].get("label"), "AA")
-        self.assertNotIn("error", rows[1])
-        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[1]["refused"])
-
-    def test_any_other_registration_error_still_fails_the_run(self) -> None:
-        with self._second_agent_answers({"error": "the registry did not answer in time", "code": "timeout"}):
-            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
-        self.assertEqual(code, 1, out)
-        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
-        self.assertEqual(rows[A2]["error"], "the registry did not answer in time")
-        self.assertNotIn("refused", rows[A2])
-
-    def test_the_ssh_route_is_gone(self) -> None:
-        # One assigner, reached through its API:  there is no --remote and no SESSION_LETTER_REMOTE to name another hop.
-        with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
-            CCL.main(["sweep", "--api-only", "--remote", "mac"])
+        target = os.path.join(self.tmp.name, "outside.json")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write('{"feeds":{"cursor-cloud":{"already":"told"}}}')
+        os.symlink(target, path)
+        refused_before_actions()
+        os.unlink(path)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('{"feeds":')
+        with open(path, encoding="utf-8") as fh:
+            before = fh.read()
+        refused_before_actions()
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), '{"feeds":{"cursor-cloud":{"already":"told"}}}')
 
 
-class CursorKeyTests(unittest.TestCase):
-    """The Cursor key is read with the sweep's own token through fleet_secrets' scoped reader, and a failure names a
-    reason token only."""
+class NativeCursorKeyTests(unittest.TestCase):
+    def test_api_only_transport_uses_the_shared_loaded_key(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            cloud = mock.MagicMock()
+            cloud.return_value.discover.return_value = []
+            cloud.return_value.last_discovery_status = "complete"
+            with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+                CCL.sweep(
+                    {CCL.CURSOR_KEY_NAME: "fixture-api-key", "SIMPLE_TOOLS_STATE_DIR": state},
+                    now=time.time(),
+                    api_only=True,
+                    send_dms=False,
+                )
+            surfaces = cloud.call_args.kwargs["surfaces"]
+            self.assertEqual(surfaces.load_api_key(), "fixture-api-key")
 
-    class Core:
-        class SecretsError(Exception):
-            pass
-
-        def __init__(self, answer=None, error: str = "") -> None:
-            self.answer, self.error, self.calls = answer, error, []
-
-        def home_dir(self, env):
-            return env.get("HOME", "")
-
-        def infisical_project_id(self, env, home):
-            return "00000000-0000-4000-8000-000000000000"
-
-        def fetch_project(self, project, path, env, **kw):
-            self.calls.append((project, path, dict(env), kw))
-            if self.error:
-                raise self.SecretsError(self.error)
-            return self.answer
-
-    TOKEN = "st." + "fixture-cursor-letters-token-0123"
-
-    def test_it_reads_the_one_name_from_the_one_folder(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-        key = CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN, "HOME": "/nowhere"}, core=core)
-        self.assertEqual(key, "fixture-key")
-        project, path, env, kw = core.calls[0]
-        self.assertEqual(path, "/cursor-cloud-letters")
-        self.assertEqual(env, {})
-        self.assertEqual(kw["names"], ["CURSOR_SYNC_API_KEY"])
-        self.assertEqual(kw["token"], self.TOKEN)
-
-    def test_no_token_is_refused_before_any_read(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({"CURSOR_SYNC_API_KEY": "from-the-environment"}, core=core)
-        self.assertEqual(caught.exception.code, "service-token-required")
-        self.assertEqual(core.calls, [])
-
-    def test_a_refusal_is_a_reason_token_only(self) -> None:
-        core = self.Core(error="token-scope-mismatch: " + self.TOKEN)
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
-        self.assertEqual(caught.exception.code, "token-scope-mismatch")
-        self.assertNotIn(self.TOKEN, str(caught.exception))
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core({}))
-        self.assertEqual(caught.exception.code, "unset")
-
-    def test_a_missing_project_id_has_its_own_reason(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-
-        def no_project(env, home):
-            raise core.SecretsError("the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID")
-
-        core.infisical_project_id = no_project
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
-        self.assertEqual(caught.exception.code, "project-id-missing")
-        self.assertEqual(core.calls, [])  # nothing is fetched without a project
-
-    def test_a_message_in_plain_words_is_refused_not_its_first_word(self) -> None:
-        for message, code in (("key CURSOR_SYNC_API_KEY is not in Infisical at /cursor-cloud-letters", "refused"),
-                              ("refusing Infisical environment 'dev' from INFISICAL_ENV", "refused"),
-                              ("fetch-failed:  bad-output for CURSOR_SYNC_API_KEY", "fetch-failed"),
-                              ("token-expired-or-invalid", "token-expired-or-invalid")):
-            with self.assertRaises(CCL.KeyUnavailable) as caught:
-                CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core(error=message))
-            self.assertEqual(caught.exception.code, code, message)
-
-
-class CheckTests(unittest.TestCase):
-    """`check`, the installer's preflight:  names and reason tokens only, and the knob token does not stay behind in
-    the environment."""
-
-    def test_it_reports_by_name_and_leaves_no_token_behind(self) -> None:
-        from simple_tools import registry_api
-
-        knob_token = "st." + "fixture-knobs-token-0123456789"
-        cursor_token = "st." + "fixture-cursor-token-0123456789"
-        seen = {}
-
-        def knob(name: str) -> str:
-            seen[name] = os.environ.get(CCL.KNOBS_TOKEN_ENV)
-            return "https://registry.fake.invalid" if name == registry_api.URL_KNOB else ""
-
-        def key(env):
-            self.assertEqual(env[CCL.CURSOR_TOKEN_ENV], cursor_token)
-            raise CCL.KeyUnavailable("token-scope-mismatch")
-
-        stdin = io.StringIO("%s=%s\n%s=%s\n" % (CCL.KNOBS_TOKEN_ENV, knob_token, CCL.CURSOR_TOKEN_ENV, cursor_token))
-        with mock.patch.dict(os.environ, {registry_api.URL_ENV: "https://from-env.invalid"}, clear=True), \
-                mock.patch.object(registry_api, "_knob_value", side_effect=knob), \
-                mock.patch.object(CCL, "read_cursor_key", side_effect=key):
-            report = CCL.check(stdin)
-            left = dict(os.environ)
-        self.assertEqual(report["registry_url"], "present")
-        self.assertEqual(report["cursor_key"], "token-scope-mismatch")
-        self.assertNotEqual(report["registry_key"], "present")
-        self.assertEqual(seen[registry_api.URL_KNOB], knob_token)  # the URL came from the knob, not the environment
-        self.assertNotIn(CCL.KNOBS_TOKEN_ENV, left)
-        self.assertNotIn(registry_api.URL_ENV, left)
-        self.assertNotIn(knob_token, json.dumps(report))
-        self.assertNotIn(cursor_token, json.dumps(report))
+    def test_api_only_transport_cannot_fall_back_when_shared_key_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            cloud = mock.MagicMock()
+            cloud.return_value.discover.return_value = []
+            cloud.return_value.last_discovery_status = "complete"
+            with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+                CCL.sweep(
+                    {"SIMPLE_TOOLS_STATE_DIR": state},
+                    now=time.time(),
+                    api_only=True,
+                    send_dms=False,
+                )
+            surfaces = cloud.call_args.kwargs["surfaces"]
+            self.assertEqual(surfaces.load_api_key(), "")
 
 
 class RecentTests(unittest.TestCase):

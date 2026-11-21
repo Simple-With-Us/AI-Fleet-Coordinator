@@ -149,6 +149,11 @@ SWEEP = {
     "stale_after_minutes",
     "refused",
     "refused_platforms",
+    "feeds",
+}
+FEED = {
+    "name", "ok", "credential_configured", "complete", "error", "agents", "stale", "invalid",
+    "errors", "refused", "cleanup_protected",
 }
 PAUSE = {"paused", "since", "wakes_only", "set_by"}
 SEAT_KEYS = {
@@ -317,6 +322,16 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
     case.assertEqual(sweep["refused_platforms"], sorted(set(sweep["refused_platforms"])))
     for platform in sweep["refused_platforms"]:
         is_token(platform)
+    case.assertIsInstance(sweep["feeds"], list)
+    case.assertLessEqual(len(sweep["feeds"]), RS.MAX_SWEEP_FEEDS)
+    for feed in sweep["feeds"]:
+        case.assertEqual(set(feed), FEED)
+        is_token(feed["name"])
+        for key in ("ok", "credential_configured", "complete", "cleanup_protected"):
+            optional(feed[key], is_bool)
+        for key in ("agents", "stale", "invalid", "errors", "refused"):
+            optional(feed[key], is_count)
+        optional(feed["error"], lambda v: case.assertTrue(CODE.fullmatch(v), repr(v)))
     text = json.dumps(doc, ensure_ascii=False)
     case.assertLess(len(text), 512 * 1024)
     # No string value in the document holds a control, format, surrogate or private character
@@ -1103,6 +1118,7 @@ class RegistrySweepTests(unittest.TestCase):
         "stale_after_minutes": None,
         "refused": None,
         "refused_platforms": [],
+        "feeds": [],
     }
 
     def reduced(self, block: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1130,6 +1146,7 @@ class RegistrySweepTests(unittest.TestCase):
                 "stale_after_minutes": 2160,
                 "refused": 1,
                 "refused_platforms": ["antigravity"],
+                "feeds": [],
             },
         )
         self.assertEqual(iso(1794453203.19), "2026-11-12T03:13:23Z")
@@ -1143,6 +1160,41 @@ class RegistrySweepTests(unittest.TestCase):
         text = json.dumps(sweep)
         for value in ("CC", "QQ", "CURSOR", "cursor", "claude-code", "mac", "server"):
             self.assertNotIn(value, text)
+
+    def test_feed_qualification_and_counts_survive_without_provider_rows_or_credentials(self) -> None:
+        block = {
+            "ok": False,
+            "feeds": {
+                "cursor-cloud": {
+                    "ok": False,
+                    "credential_configured": False,
+                    "complete": False,
+                    "error": "native-key-missing",
+                    "agents": 0,
+                    "stale": 0,
+                    "invalid": 0,
+                    "errors": 0,
+                    "refused": 0,
+                    "platform": "cursor",
+                    "host": "cloud",
+                    "protect_stale_cleanup": True,
+                    "session_id": RECORD_ID,
+                    "title": "private title",
+                    "token": "secret-token-value-never-project",
+                }
+            },
+        }
+        out = self.sweep(block)
+        self.assertEqual(
+            out["feeds"],
+            [{"name": "cursor-cloud", "ok": False, "credential_configured": False, "complete": False,
+              "error": "native_key_missing", "agents": 0, "stale": 0, "invalid": 0,
+              "errors": 0, "refused": 0, "cleanup_protected": True}],
+        )
+        serialized = json.dumps(out)
+        self.assertNotIn(RECORD_ID, serialized)
+        self.assertNotIn("private title", serialized)
+        self.assertNotIn("secret-token-value-never-project", serialized)
 
     def test_a_clean_pass_and_its_platforms(self) -> None:
         block = {
@@ -1183,6 +1235,7 @@ class RegistrySweepTests(unittest.TestCase):
             ("OperationalError: database is locked", "registry_error"),
             ("FileNotFoundError: [Errno 2] " + PATH, "registry_error"),
             ("ValueError: " + EMAIL, "registry_error"),
+            ("platform_feed_failed", "platform_feed_failed"),
             ("sweep_share_exceeded", "sweep_share_exceeded"),
             ("Something: " + PATH, None),
             ("https://example.invalid: x", None),

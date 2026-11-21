@@ -89,6 +89,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -409,6 +410,52 @@ class RegistryService:
         self._note_seat_table()
         fields = {name: value for name, value in fields.items() if name != "issuer"}
         return OR.register_session(self.db_path, issuer=OPERATOR, **fields)
+
+    def call_operator(
+        self, op: str, params: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Run the shared registry API contract in this process as its existing Operator.
+
+        The platform-letter client keeps its normal register/reopen/update orchestration; this
+        only replaces the HTTPS hop when that client already runs inside the registry daemon.
+        The request still passes through the same signed router and authorization checks.
+        """
+        from . import registry_api as RA
+
+        if op not in OPS:
+            return {"error": "unknown registry op %r" % op, "code": "bad_op"}
+        principal = OPERATOR
+        key = self.keys.get(principal)
+        if not key:
+            return {"error": "the Operator registry key is unavailable", "code": "not_configured"}
+        fields = RA._fold(params)
+        path = PREFIX + op
+        method = _METHODS[op]
+        if method == "GET":
+            query = urllib.parse.urlencode(
+                {name: value for name, value in fields.items() if value is not True}
+            )
+            body = b""
+        else:
+            query = ""
+            body = json.dumps(fields).encode("utf-8")
+        timestamp = str(int(self.clock()))
+        request_headers = {
+            PRINCIPAL_HEADER: principal,
+            TIMESTAMP_HEADER: timestamp,
+            SIGNATURE_HEADER: sign(key, method, path, query, timestamp, principal, body),
+        }
+        status, answer = self.handle(
+            method,
+            path + (("?" + query) if query else ""),
+            request_headers,
+            body,
+        )
+        if isinstance(answer, dict):
+            if status >= 400:
+                answer.setdefault("code", "http_%s" % status)
+            return answer
+        return {"error": "the registry answer was incomplete", "code": "bad_shape"}
 
     # ---- reads (GET) --------------------------------------------------------
 
@@ -898,12 +945,17 @@ class Sweeper:
         stale_after_hours: float,
         max_share: float = DEFAULT_SWEEP_MAX_SHARE,
         log: Callable[..., None] | None = None,
+        feed_runner: Callable[[RegistryService, float], Mapping[str, Any]] | None = None,
+        feed_scopes: frozenset[tuple[str, str]] = frozenset(),
     ) -> None:
         self.service = service
         self.interval_s = max(1, int(interval_minutes)) * 60.0
         self.stale_after_minutes = max(1, round(float(stale_after_hours) * 60))
         self.max_share = float(max_share)
         self.log = log or (lambda *_args, **_kwargs: None)
+        self.feed_runner = feed_runner
+        self.feed_scopes = frozenset(feed_scopes)
+        self._protected_hosts: set[tuple[str, str]] = set(self.feed_scopes)
         self.next_at = 0.0
         self.last: dict[str, Any] | None = None
         self._lock = threading.Lock()
@@ -931,6 +983,71 @@ class Sweeper:
             "refused": [],
             "ok": True,
         }
+        if self.feed_runner is not None:
+            with self._lock:
+                db = self.service.db_path
+                if (
+                    not os.path.isfile(db)
+                    or os.path.islink(db)
+                    or not os.access(db, os.R_OK | os.W_OK)
+                ):
+                    feeds = {"ok": False, "error": "registry_unavailable"}
+                    registry_available = False
+                else:
+                    # Keep every known provider scope safe while network discovery is in flight.  A
+                    # direct platform sweep may run concurrently, but must not treat an unseen row as
+                    # stale until this pass proves that provider discovery is complete.
+                    self._protected_hosts.update(self.feed_scopes)
+                    registry_available = True
+            if registry_available:
+                try:
+                    feeds = self.feed_runner(self.service, now)
+                except Exception as exc:  # noqa: BLE001 - provider data must never stop stale registry cleanup
+                    feeds = {"ok": False, "error": type(exc).__name__}
+                if not isinstance(feeds, Mapping):
+                    feeds = {"ok": False, "error": "invalid_feed_report"}
+            with self._lock:
+                protected_hosts = {
+                    (str(value["platform"]), str(value["host"]))
+                    for value in feeds.values()
+                    if isinstance(value, Mapping)
+                    and value.get("protect_stale_cleanup") == 1
+                    and value.get("platform")
+                    and value.get("host")
+                }
+                # A known scope is released only by one matching, explicitly complete and
+                # successful feed result.  Missing, malformed, partial, or failed results stay
+                # protected so provider absence cannot close sessions during an outage.
+                for scope in self.feed_scopes:
+                    matches = [
+                        value
+                        for value in feeds.values()
+                        if isinstance(value, Mapping)
+                        and (value.get("platform"), value.get("host")) == scope
+                    ]
+                    if (
+                        len(matches) == 1
+                        and matches[0].get("ok") is True
+                        and matches[0].get("complete") is True
+                        and matches[0].get("protect_stale_cleanup") != 1
+                    ):
+                        protected_hosts.discard(scope)
+                    else:
+                        protected_hosts.add(scope)
+                self._protected_hosts = protected_hosts
+            result["feeds"] = feeds
+            failed = feeds.get("ok") is False or any(
+                isinstance(value, Mapping) and value.get("ok") is False for value in feeds.values()
+            )
+            if failed:
+                result.update(ok=False, error="platform_feed_failed")
+            if protected_hosts:
+                result["cleanup_protected"] = [
+                    {"platform": pf, "host": host} for pf, host in sorted(protected_hosts)
+                ]
+            self.log("operator-platform-feeds", feeds=feeds)
+        else:
+            protected_hosts = set()
         try:
             outcome = self.sweep()
         except (OR.RegistryUnavailable, OSError, ValueError, sqlite3.Error) as exc:
@@ -955,12 +1072,22 @@ class Sweeper:
         )
         return result
 
-    def sweep(self, platform: str = "", seat: str = "") -> dict[str, Any]:
+    def sweep(
+        self,
+        platform: str = "",
+        seat: str = "",
+        *,
+        excluded_hosts: set[tuple[str, str]] | frozenset[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
         """One guarded pass, for every platform or for one platform and seat.
 
         Answers {"ended": [...], "refused": [...]}.  Raises RegistryUnavailable when there is no
         store (it never creates one) and lets a sqlite error through to the caller."""
-        if not os.path.isfile(self.service.db_path):
+        if (
+            not os.path.isfile(self.service.db_path)
+            or os.path.islink(self.service.db_path)
+            or not os.access(self.service.db_path, os.R_OK | os.W_OK)
+        ):
             raise OR.RegistryUnavailable("the registry %s is not there" % self.service.db_path)
         only_platform = OR.normalize_platform(platform) if platform else ""
         # Seats compare case-insensitively, as the op's authority check does (kody 4544698048).
@@ -969,6 +1096,7 @@ class Sweeper:
         ended: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
         with self._lock:
+            protected = self._protected_hosts if excluded_hosts is None else excluded_hosts
             registry = OR.SessionRegistry(self.service.db_path)
             try:
                 with registry._write_txn() as conn:
@@ -989,6 +1117,8 @@ class Sweeper:
                         hosts[pair] = hosts.get(pair, 0) + 1
                     doomed: dict[tuple[str, str], list[Any]] = {}
                     for (pf, st, host, _scope), members in groups.items():
+                        if (pf, host) in protected:
+                            continue
                         if only_platform and pf != only_platform:
                             continue
                         if only_seat and str(st).strip().upper() != only_seat:

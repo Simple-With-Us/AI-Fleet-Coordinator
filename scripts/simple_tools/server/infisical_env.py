@@ -10,8 +10,9 @@ INFISICAL_SECRET_PATH and INFISICAL_ENVIRONMENT stop startup if they are set.  E
 (project, exact prod folders, read-only, expiry) is verified before any value is requested, and every metadata
 error names the token's variable.  Two further bindings are optional:  INFISICAL_LISTENER_READ_TOKEN with
 INFISICAL_LISTENER_READ_PROJECT_ID (a secondary project's prod /zulip) and INFISICAL_OPERATOR_VOICE_TOKEN with
-INFISICAL_FLEET_OPS_PROJECT_ID (Fleet-OPS prod /zulip_operator).  An unbound optional source is skipped and the
-line says so;  a bound one that cannot be read stops startup.  The loader execs <program> with the loaded
+INFISICAL_FLEET_OPS_PROJECT_ID (Fleet-OPS prod /zulip_operator).  The latter supplies required voice data and optional
+native provider data from that one verified folder in one startup read.  An absent optional provider key disables only
+that feed; invalid source metadata or row provenance still fails closed.  The loader execs <program> with the loaded
 environment;  exec keeps the listener as the container's PID 1, so SIGTERM still reaches the daemon and it
 deletes its queues on the way out.
 
@@ -68,15 +69,18 @@ from datetime import UTC, datetime
 API_DEFAULT = "https://app.infisical.com/api"
 TOKEN = "INFISICAL_TOKEN"
 LISTENER_READ_TOKEN = "INFISICAL_LISTENER_READ_TOKEN"
-#: The Operator's own voice (AFC-602):  a third, separate read-only token, scoped to exactly the
-#: Fleet-OPS prod folder that holds the Operator bot's address and key.  Its project is the one the
-#: container already names in INFISICAL_FLEET_OPS_PROJECT_ID.  The image ships no fleet-secrets and
-#: carries no machine identity (this loader strips them), so this is the Operator's only route to
-#: its credential on the server;  without the token the Operator stays unavailable, visibly.
+#: The Operator's voice and optional provider data (AFC-859):  one existing read-only Fleet-OPS token and project
+#: binding, with the exact /zulip_operator folder grant.  The image ships no fleet-secrets and carries no machine identity (this loader
+#: strips them), so these are the Operator's only server-side routes to those values.
 OPERATOR_VOICE_TOKEN = "INFISICAL_OPERATOR_VOICE_TOKEN"
 OPERATOR_VOICE_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_VOICE_PATH = "/zulip_operator"
 OPERATOR_VOICE_NAMES = frozenset({"ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"})
+# Optional native provider data for the shared Operator feed.  This is part of the shared /zulip_operator data table;
+# the legacy /cursor-cloud-letters source is migrated separately before runtime cutover.
+OPERATOR_CURSOR_NAME = "CURSOR_SYNC_API_KEY"
+OPERATOR_SHARED_PATHS = (OPERATOR_VOICE_PATH,)
+OPERATOR_OPTIONAL_DATA_SOURCES = (("cursor-cloud", OPERATOR_CURSOR_NAME),)
 #: The wake router's folder (#1816) in the primary (AI Fleet Coordinator) project, read with its own
 #: read-only token scoped to exactly prod /wake-router (eavesdropper-wake-router-ro).  Required:  the
 #: Eavesdropper takes the router's bearer and the registry signing key from it and from nowhere else.
@@ -296,8 +300,8 @@ def verify_service_token(
     stage = "service-token metadata (%s)" % token_name
     if not PROJECT_ID_RE.fullmatch(project_id):
         raise LoadError("%s: project id is invalid" % stage)
-    paths = tuple(dict.fromkeys(_safe_folder(path) for path in expected_paths))
-    if not paths:
+    normalized_paths = tuple(_safe_folder(path) for path in expected_paths)
+    if not normalized_paths or len(normalized_paths) != len(set(normalized_paths)):
         raise LoadError("%s: folder grant is invalid" % stage)
     base = api_base(env)
     metadata = _request(
@@ -331,7 +335,10 @@ def verify_service_token(
         ):
             raise LoadError(stage + ": folder scope is invalid")
         actual_paths.append(_safe_folder(scope["secretPath"]))
-    if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
+    if (
+        len(actual_paths) != len(set(actual_paths))
+        or frozenset(actual_paths) != frozenset(normalized_paths)
+    ):
         raise LoadError(stage + ": folder scope did not match")
     permissions = metadata.get("permissions")
     if (
@@ -363,12 +370,13 @@ def fetch(
     expected_paths: tuple[str, ...] | None = None,
     stage: str = "read",
     keep: frozenset[str] | None = None,
+    optional_names: frozenset[str] = frozenset(),
     **kw,
 ) -> dict[str, str]:
     """{name: value} for every secret in one prod folder using a scoped service token.
 
-    With `keep`, only those names are returned and checked for an unresolved reference:  every listed row is
-    still verified, but a reference in a name the loader never uses cannot stop startup."""
+    With `keep`, only those names are returned:  every listed row is still verified, unresolved required values fail,
+    and unresolved names explicitly listed in `optional_names` are omitted."""
     base = api_base(env)
     if token is None:
         token = (env.get(TOKEN) or "").strip()
@@ -431,6 +439,8 @@ def fetch(
         if keep is not None and item["secretKey"] not in keep:
             continue
         if UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
+            if item["secretKey"] in optional_names:
+                continue
             raise LoadError("%s: secret value contains an unresolved reference" % stage)
         out[item["secretKey"]] = item["secretValue"]
     return out
@@ -475,45 +485,73 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
     return keys, "; listener read keys from the secondary project: %d" % len(keys)
 
 
-def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
-    """The Operator bot's own address and key, read with their own exact-scope token binding.
-
-    Off when INFISICAL_OPERATOR_VOICE_TOKEN is unbound, and the line says so (the Operator then reports
-    `operator_voice` unavailable in its status).  Once it is bound, a bad project id, a failed read or a
-    pair that is not complete stops startup, the same as every other configured source."""
+def operator_shared_data(
+    env: Mapping[str, str], **kw
+) -> tuple[dict[str, str], dict[str, str], str, str]:
+    """Load voice and optional provider data in one exact-scope shared Operator startup read.  A malformed row or provenance mismatch fails the entire read.  Optionality covers only absent, empty, or unresolved values."""
     token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
     if not token:
-        return {}, "; operator voice keys not loaded (no dedicated token)"
+        return (
+            {},
+            {},
+            "; operator voice keys not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN,
+            "; optional Operator data not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN,
+        )
     project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
     if not PROJECT_ID_RE.fullmatch(project):
         raise LoadError("configuration: %s is invalid" % OPERATOR_VOICE_PROJECT)
     if not SERVICE_TOKEN_RE.fullmatch(token):
         raise LoadError("service-token: %s is invalid" % OPERATOR_VOICE_TOKEN)
     source = dict(env, INFISICAL_PROJECT_ID=project)
+    optional_names = frozenset(name for _feed, name in OPERATOR_OPTIONAL_DATA_SOURCES)
     found = fetch(
         source,
         path=OPERATOR_VOICE_PATH,
         token=token,
         token_name=OPERATOR_VOICE_TOKEN,
-        expected_paths=(OPERATOR_VOICE_PATH,),
-        stage="read operator voice",
+        expected_paths=OPERATOR_SHARED_PATHS,
+        stage="read shared Operator data",
+        keep=OPERATOR_VOICE_NAMES | optional_names,
+        optional_names=optional_names,
         **kw,
     )
     keys = {
         name: value.strip()
         for name, value in found.items()
-        if name in OPERATOR_VOICE_NAMES and value.strip() and "${" not in value
+        if name in OPERATOR_VOICE_NAMES and value.strip() and not UNRESOLVED_REFERENCE_RE.search(value)
     }
     if set(keys) != OPERATOR_VOICE_NAMES:
         raise LoadError(
             "Infisical is missing %s (%s)"
             % (", ".join(sorted(OPERATOR_VOICE_NAMES - set(keys))), OPERATOR_VOICE_PATH)
         )
-    return keys, "; operator voice keys from %s: %d of %d" % (
+    voice_note = "; operator voice keys from %s: %d of %d" % (
         OPERATOR_VOICE_PATH,
         len(keys),
         len(OPERATOR_VOICE_NAMES),
     )
+    optional: dict[str, str] = {}
+    notes: list[str] = []
+    for feed, name in OPERATOR_OPTIONAL_DATA_SOURCES:
+        value = (found.get(name) or "").strip()
+        if value and not UNRESOLVED_REFERENCE_RE.search(value):
+            optional[name] = value
+            notes.append("%s data loaded from %s" % (feed, OPERATOR_VOICE_PATH))
+        else:
+            notes.append("%s data unavailable (native key missing)" % feed)
+    return keys, optional, voice_note, "; optional Operator data: " + ", ".join(notes)
+
+
+def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
+    """The Operator bot's own address and key from the shared startup fetch."""
+    voice, _optional, note, _optional_note = operator_shared_data(env, **kw)
+    return voice, note
+
+
+def operator_optional_data(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
+    """Load optional native data from the same verified shared startup response as Operator voice."""
+    _voice, optional, _voice_note, note = operator_shared_data(env, **kw)
+    return optional, note
 
 
 def infisical_only_names() -> set[str]:
@@ -691,7 +729,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # (any seat, server or not), the Operator's names and the INFISICAL_ONLY names.  What follows is only what
     # Infisical returned.
     only = infisical_only_names()
-    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | allowed
+    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | {OPERATOR_CURSOR_NAME} | allowed
 
     def from_container(name: str) -> bool:
         # WAKE_ROUTER_* are the router's own knobs, read by the router alone from /wake-router (including
@@ -738,7 +776,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     for name in conflicts:
         found.pop(name)
         read_keys.pop(name)
-    voice_keys, voice_note = operator_voice_keys(env, **kw)
+    voice_keys, cursor_data, voice_note, cursor_note = operator_shared_data(env, **kw)
     seats = {name: value for name, value in found.items() if name in allowed}
     seats.update(read_keys)
     refused = sorted(name for name, value in seats.items() if not seat_value_usable(name, value))
@@ -747,7 +785,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # The four sources own disjoint names (a test holds them so);  merged in order, never with ** keywords,
     # so a future overlap cannot raise mid-start:  the later, more specific source wins.
     loaded_values: dict[str, str] = {}
-    for part in (seats, operator, voice_keys, only_values):
+    for part in (seats, operator, voice_keys, cursor_data, only_values):
         loaded_values.update(part)
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
@@ -784,7 +822,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     return out, (
         f"loaded {len(loaded)} variables from Infisical (prod {ZULIP_PATH}; {replaced} replaced a container "
         f"value, {ignored} other names in the folder ignored){coverage}{seat_note}{operator_note}"
-        f"{only_note}{removed_note}{read_note}{voice_note}"
+        f"{only_note}{removed_note}{read_note}{voice_note}{cursor_note}"
     )
 
 
