@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -512,6 +513,7 @@ class SharedUnitSweepTests(unittest.TestCase):
             sweeper = LR.Sweeper(
                 self.assigner.service, interval_minutes=15, stale_after_hours=36,
                 feed_runner=lambda service, now: CCL.run_platform_feeds(service, self.env, now=now),
+                feed_scopes=CCL.feed_scopes(),
             )
             result = sweeper.run(time.time())
 
@@ -529,12 +531,128 @@ class SharedUnitSweepTests(unittest.TestCase):
             sweeper = LR.Sweeper(
                 self.assigner.service, interval_minutes=15, stale_after_hours=36,
                 feed_runner=lambda service, now: CCL.run_platform_feeds(service, self.env, now=now),
+                feed_scopes=CCL.feed_scopes(),
             )
             result = sweeper.run(time.time())
         self.assertFalse(result["ok"])
         self.assertEqual(result["feeds"]["error"], "registry_unavailable")
         cloud.assert_not_called()
         self.assertFalse(os.path.exists(self.db))
+
+    def test_missing_feed_report_keeps_all_known_scopes_protected(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: {},
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+
+    def test_malformed_feed_report_keeps_all_known_scopes_protected(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: None,
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["feeds"]["error"], "invalid_feed_report")
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
+
+    def test_discovery_does_not_hold_the_cleanup_lock_and_protects_other_sweeps(self) -> None:
+        old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=40)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        groups = (
+            ("cursor", "cloud", "CURSOR", "cloud-old"),
+            ("cursor", "mac", "CURSOR", "mac-old"),
+            ("testbed", "mac", "CLAUDE", "other-old"),
+        )
+        for platform, host, seat, sid in groups:
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=sid, seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+            OR.register_session(
+                self.db, platform=platform, verified_host=host, profile_scope="default",
+                native_session_id=sid + "-fresh", seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+            conn = sqlite3.connect(self.db)
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE sessions SET registered_at = ?, last_seen_at = ? WHERE native_session_id = ?",
+                        (old, old, sid),
+                    )
+            finally:
+                conn.close()
+
+        started, release, direct_sweeps_done = threading.Event(), threading.Event(), threading.Event()
+
+        def blocked_feed(_service, _now):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("test feed release timed out")
+            return {
+                "cursor-cloud": {
+                    "ok": True,
+                    "complete": False,
+                    "platform": "cursor",
+                    "host": "cloud",
+                    "protect_stale_cleanup": True,
+                }
+            }
+
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=blocked_feed,
+            feed_scopes=CCL.feed_scopes(),
+        )
+        run_result = {}
+        run_thread = threading.Thread(target=lambda: run_result.update(sweeper.run(time.time())))
+        run_thread.start()
+        self.assertTrue(started.wait(2))
+
+        def direct_sweeps() -> None:
+            sweeper.sweep("testbed", "CLAUDE")
+            sweeper.sweep("cursor", "CURSOR")
+            direct_sweeps_done.set()
+
+        direct_thread = threading.Thread(target=direct_sweeps)
+        direct_thread.start()
+        completed_before_release = direct_sweeps_done.wait(1)
+        release.set()
+        direct_thread.join(5)
+        run_thread.join(5)
+        self.assertTrue(completed_before_release, "platform sweeps must not wait for provider network I/O")
+        self.assertFalse(direct_thread.is_alive())
+        self.assertFalse(run_thread.is_alive())
+        self.assertEqual(self.assigner.lookup("cursor", "cloud", PL.SCOPE, "cloud-old")["state"], "active")
+        self.assertEqual(self.assigner.lookup("cursor", "mac", PL.SCOPE, "mac-old")["state"], "closed")
+        self.assertEqual(self.assigner.lookup("testbed", "mac", PL.SCOPE, "other-old")["state"], "closed")
+
+    def test_numeric_protection_flag_preserves_provider_host(self) -> None:
+        sweeper = LR.Sweeper(
+            self.assigner.service,
+            interval_minutes=15,
+            stale_after_hours=36,
+            feed_runner=lambda _service, _now: {
+                "cursor-cloud": {
+                    "ok": False,
+                    "platform": "cursor",
+                    "host": "cloud",
+                    "protect_stale_cleanup": 1,
+                }
+            },
+            feed_scopes=CCL.feed_scopes(),
+        )
+        result = sweeper.run(time.time())
+        self.assertEqual(result["cleanup_protected"], [{"platform": "cursor", "host": "cloud"}])
 
 
 class StateSafetyTests(unittest.TestCase):
