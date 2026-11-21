@@ -2970,7 +2970,9 @@ class CredentialTests(Base):
                 self.assertTrue(
                     ans["detail"].startswith("the Infisical reader refused the token")
                     or ans["detail"].startswith("the Infisical read of the Coolify token failed")
-                    or ans["detail"].startswith("the Infisical read returned no usable Coolify token"),
+                    or ans["detail"].startswith(
+                        "the Infisical read returned no usable Coolify token"
+                    ),
                     ans["detail"],
                 )
                 self.assertEqual(self.api.requests, ["/api/v2/service-token"])
@@ -3002,7 +3004,9 @@ class CredentialTests(Base):
                 self.assertTrue(
                     ans["detail"].startswith("the Infisical reader refused the token")
                     or ans["detail"].startswith("the Infisical read of the Coolify token failed")
-                    or ans["detail"].startswith("the Infisical read returned no usable Coolify token"),
+                    or ans["detail"].startswith(
+                        "the Infisical read returned no usable Coolify token"
+                    ),
                     ans["detail"],
                 )
                 self.assertEqual(len(self.api.requests), 2)
@@ -3110,7 +3114,10 @@ class CredentialTests(Base):
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual(
             (code, ans["detail"]),
-            (1, "the Infisical read returned no usable Coolify token; check the /coolify-deploy-only-token folder grant"),
+            (
+                1,
+                "the Infisical read returned no usable Coolify token; check the /coolify-deploy-only-token folder grant",
+            ),
         )
         self.assertEqual(self.http_calls, [])
         self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN

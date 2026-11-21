@@ -4233,7 +4233,11 @@ def read_coolify_token(ctx):
 
 def _infisical_coolify_read_reason(exc: BaseException) -> str:
     """Allow-listed reason only; never the provider's raw message."""
-    code = getattr(exc, "code", None) or getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    code = (
+        getattr(exc, "code", None)
+        or getattr(exc, "status", None)
+        or getattr(exc, "status_code", None)
+    )
     name = type(exc).__name__.lower()
     text = str(exc).lower()
     if code == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
