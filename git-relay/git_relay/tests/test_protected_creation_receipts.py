@@ -77,6 +77,7 @@ class ProtectedReceipts(unittest.TestCase):
 
     def test_github_mint_failure_returns_audited_502(self):
         from unittest import mock
+
         from git_relay.server import RelayGitHubError
 
         self.relay.app_minter = mock.Mock()
