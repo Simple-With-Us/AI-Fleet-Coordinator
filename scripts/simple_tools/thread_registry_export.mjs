@@ -239,7 +239,10 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
           redirect: "error",
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        if (!write && error?.code === "stopped" && shouldStop()) {
+          throw sheetsError("Sheets read stopped", { code: "stopped" });
+        }
         throw sheetsError(`${where} -> no response`, {
           code: "transport_or_response_error", uncertain: write,
         });
@@ -484,6 +487,10 @@ export async function drainThreadRows({
       result.appended += 1;
     }
   } catch (err) {
+    if (err?.code === "stopped" && shouldStop()) {
+      result.stopped = true;
+      return finish();
+    }
     result.failed = 1;
     result.partial = true;
     result.code = typeof err?.code === "string" ? err.code : "write_failed";

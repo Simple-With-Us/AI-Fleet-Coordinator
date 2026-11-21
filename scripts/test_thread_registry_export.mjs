@@ -442,6 +442,37 @@ test("drainThreadRows: a failed write stops it and records code and status", asy
   }
 });
 
+test("drainThreadRows: stop during a later key re-read preserves confirmed updates", async () => {
+  const keys = Array.from({ length: KEY_CHECK_CHUNK + 1 }, (_, i) => `10:stop${i}`);
+  let keyReads = 0;
+  let stop = false;
+  const { adapter, state } = memorySheet({
+    rows: keys.map((key) => row(key)),
+    onKeys: () => {
+      keyReads += 1;
+      if (keyReads === 2) {
+        stop = true;
+        throw Object.assign(new Error("stopped"), { code: "stopped" });
+      }
+    },
+  });
+  const result = await drainThreadRows({
+    adapter,
+    desired: keys.map((key) => row(key, { count: "2" })),
+    shouldStop: () => stop,
+  });
+
+  assert.equal(result.updated, KEY_CHECK_CHUNK);
+  assert.equal(result.appended, 0);
+  assert.equal(result.remaining, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.stopped, true);
+  assert.equal(result.partial, false);
+  assert.equal(result.code, undefined);
+  assert.equal(keyReads, 2);
+  assert.equal(state.writes.length, KEY_CHECK_CHUNK);
+});
+
 test("drainThreadRows: the same rows again write nothing; dry run never writes", async () => {
   const { adapter, state } = memorySheet();
   const desired = [row("10:a"), row("10:b")];
