@@ -2212,7 +2212,7 @@ class SessionIssuesTest(unittest.TestCase):
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(
-                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 4
             )
         finally:
             conn.close()
