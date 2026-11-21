@@ -952,16 +952,22 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _call_api(
-    env: Mapping[str, str],
+    env: Mapping[str, Any],
     op: str,
     params: Mapping[str, Any],
     timeout: int = 0,
     api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Call the registry; ``timeout`` applies only to its network transport.  
+
+    The optional adapter is an in-process call and does not accept or promise a
+    transport timeout; its caller owns any local execution bound.
+    """
     from . import registry_api
 
-    call = api_call or registry_api.call
-    return call(env, op, params, timeout=timeout or _API_TIMEOUT)
+    if api_call is not None:
+        return api_call(env, op, params)
+    return registry_api.call(env, op, params, timeout=timeout or _API_TIMEOUT)
 
 
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
