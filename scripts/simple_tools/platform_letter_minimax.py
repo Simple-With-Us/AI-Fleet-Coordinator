@@ -742,7 +742,9 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     deadline = time.monotonic() + UNLETTERED_DEADLINE_SECONDS
     children = _unlettered_subthreads(env, deadline)
     chats = _unlettered_noteless_chats(env, deadline)
-    if children is None and chats is None:
+    if children is None or chats is None:
+        # One half could not be read, so this is not a complete inventory:  the pass answers None
+        # and the half that failed is repaired on the next pass, rather than a list that hides it.
         return None
     if time.monotonic() >= deadline:
         return None
