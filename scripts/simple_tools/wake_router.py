@@ -288,9 +288,7 @@ MAX_FRAGMENTS = 8
 # Durable per-wake exclusions are bounded even if a pending file is malformed or edited.
 MAX_REJECTED_TARGETS = 64
 REJECTED_TARGET_CODES = frozenset({"session-subagent"})
-REJECTED_TARGET_PICK_KINDS = frozenset(
-    {"linear-issue", "topic-match", "consultant", "most-recent"}
-)
+REJECTED_TARGET_PICK_KINDS = frozenset({"linear-issue", "topic-match", "consultant", "most-recent"})
 # The registry's times for a row, best first.  letter_history returns only `assigned_at` today.
 RECENCY_FIELDS = ("last_seen_at", "assigned_at")
 HISTORY_LIMIT = 200
@@ -2810,11 +2808,19 @@ def _target_binding(target: Target, code: str) -> dict[str, Any]:
 
 def _valid_rejected_binding(value: object) -> bool:
     if not isinstance(value, Mapping) or set(value) != {
-        "host", "session_id", "letter", "generation", "code"
+        "host",
+        "session_id",
+        "letter",
+        "generation",
+        "code",
     }:
         return False
     host, session_id, letter, generation, code = (
-        value["host"], value["session_id"], value["letter"], value["generation"], value["code"]
+        value["host"],
+        value["session_id"],
+        value["letter"],
+        value["generation"],
+        value["code"],
     )
     safe_host = isinstance(host, str) and (
         host == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", host) is not None
