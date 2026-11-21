@@ -1302,11 +1302,22 @@ class DirectCredentialTests(unittest.TestCase):
         timeout,
         max_output_bytes,
         strict_records,
+        require_finite_expiry,
     ):
         if self.reader_failure is not None:
             raise self.reader_failure
         self.reader_calls.append(
-            (project, path, dict(env), token, names, timeout, max_output_bytes, strict_records)
+            (
+                project,
+                path,
+                dict(env),
+                token,
+                names,
+                timeout,
+                max_output_bytes,
+                strict_records,
+                require_finite_expiry,
+            )
         )
         self.assertEqual(project, self.project)
         self.assertEqual(path, "/cf-usage-watchdog")
@@ -1322,6 +1333,7 @@ class DirectCredentialTests(unittest.TestCase):
         self.assertEqual(timeout, 30)
         self.assertEqual(max_output_bytes, 8192)
         self.assertTrue(strict_records)
+        self.assertTrue(require_finite_expiry)
         # Inject the loopback URL only inside this test adapter; production passes no API override.
         return self.actual_bounded(
             project,
@@ -1332,10 +1344,13 @@ class DirectCredentialTests(unittest.TestCase):
             timeout=timeout,
             max_output_bytes=max_output_bytes,
             strict_records=strict_records,
+            require_finite_expiry=require_finite_expiry,
         )
 
     def test_real_named_read_uses_configured_project_and_own_binding_then_token_cache(self):
         self.assertEqual(self.conn.token(), self.value)
+        self.api.values["CF_USAGE_WATCHDOG_API_TOKEN"] = "changed-after-first-read"
+        self.api.metadata_override = {"expiresAt": None}
         self.assertEqual(self.conn.token(), self.value)
         self.assertEqual(len(self.reader_calls), 1)
         self.assertEqual(
@@ -1351,6 +1366,7 @@ class DirectCredentialTests(unittest.TestCase):
                 ("CF_USAGE_WATCHDOG_API_TOKEN",),
                 30,
                 8192,
+                True,
                 True,
             ),
         )
@@ -1389,10 +1405,11 @@ class DirectCredentialTests(unittest.TestCase):
         self.assertEqual(len(self.api.requests), 2)
         self.no_application.assert_not_called()
 
-    def test_shared_reader_keeps_legacy_null_expiry_compatibility(self):
+    def test_watchdog_refuses_null_expiry_before_reading_values(self):
         self.api.metadata_override = {"expiresAt": None}
-        self.assertEqual(self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN"), self.value)
-        self.assertEqual(len(self.api.requests), 2)
+        with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+            self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN")
+        self.assertEqual(self.api.requests, ["/api/v2/service-token"])
         self.no_application.assert_not_called()
 
     def test_missing_own_binding_never_uses_other_consumers_or_raw_secret_environment(self):

@@ -664,6 +664,7 @@ class Connections:
                 timeout=CREDENTIAL_READ_TIMEOUT,
                 max_output_bytes=MAX_CREDENTIAL_BYTES,
                 strict_records=True,
+                require_finite_expiry=True,
             )
         except PollError:
             raise

@@ -815,6 +815,7 @@ def bounded_fetch_project(
     writer: bool = False,
     max_output_bytes: int | None = None,
     strict_records: bool = False,
+    require_finite_expiry: bool = False,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -824,6 +825,8 @@ def bounded_fetch_project(
     Process launch/OS scheduling must be healthy; provider, DNS, body and worker
     cleanup waits do not extend the caller's remaining budget.
     """
+    if type(require_finite_expiry) is not bool:
+        raise UsageError("finite-expiry-option-invalid")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise UsageError("bounded-read-invalid")
     if max_output_bytes is None:
@@ -863,6 +866,8 @@ def bounded_fetch_project(
         max_output_bytes=max_output_bytes,
         strict_records=strict_records,
     )
+    if require_finite_expiry:
+        request["require_finite_expiry"] = True
     deadline = time.monotonic() + timeout
     values = _bounded_read_request(request, deadline)
     if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
@@ -1123,7 +1128,7 @@ def _bounded_read_worker() -> int:
         }
         if (
             not isinstance(request, dict)
-            or set(request) != fields
+            or set(request) not in (fields, fields | {"require_finite_expiry"})
             or type(request["schema"]) is not int
             or request["schema"] != 1
         ):
@@ -1159,6 +1164,11 @@ def _bounded_read_worker() -> int:
         limit = request["max_output_bytes"]
         if type(limit) is not int or not 1024 <= limit <= MAX_OUTPUT_BYTES:
             raise UsageError("bounded-read-invalid")
+        policy = {}
+        if "require_finite_expiry" in request:
+            if type(request["require_finite_expiry"]) is not bool:
+                raise UsageError("bounded-read-invalid")
+            policy["require_finite_expiry"] = request["require_finite_expiry"]
         values = fetch_project(
             request["project"],
             request["path"],
@@ -1168,6 +1178,7 @@ def _bounded_read_worker() -> int:
             writer=request["writer"],
             timeout=request["timeout"],
             strict_records=request["strict_records"],
+            **policy,
         )
         reply = {"schema": 1, "ok": True, "values": values}
     except _FileReadRefused as exc:

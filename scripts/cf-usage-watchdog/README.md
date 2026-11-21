@@ -62,7 +62,7 @@ Once a UTC day it reads the account again and compares the live Worker list, `li
 
 ## Credentials
 
-Credentials are in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`.  The Watchdog uses its existing project-ID resolver and configured folder with its own explicit `INFISICAL_TOKEN`, requesting one named credential through the checked shared bounded reader.  The reader validates project, prod environment, folder, read-only permission and returned row scope.  The accepted consumer grant must also have finite future expiry, though the current shared verifier retains a compatibility path for legacy read-only grants whose expiry is null; source code does not prove the installed grant meets the finite-expiry requirement.  Values stay in memory only.  No PATH helper, CLI login or machine identity fallback is used.
+Credentials are in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`.  The Watchdog uses its existing project-ID resolver and configured folder with its own explicit `INFISICAL_TOKEN`, requesting one named credential through the checked shared bounded reader.  The reader validates project, prod environment, folder, read-only permission and returned row scope.  The Watchdog opts into finite future expiry, so a null or expired grant is refused during the same metadata check before values are read.  Source tests do not qualify an installed grant or establish runtime acceptance.  Values stay in memory only.  No PATH helper, CLI login or machine identity fallback is used.
 
 | Key | Holds | Needed |
 | --- | --- | --- |
