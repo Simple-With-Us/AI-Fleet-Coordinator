@@ -572,7 +572,12 @@ def fetch_project(
         raise UsageError("finite-expiry-option-invalid")
     if require_finite_expiry:
         paths = verify_service_token(
-            token, project, path, env, writer=writer, deadline=deadline,
+            token,
+            project,
+            path,
+            env,
+            writer=writer,
+            deadline=deadline,
             require_finite_expiry=True,
         )
     else:
@@ -876,11 +881,16 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
     required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC")
     try:
         if (
-            type(path) is not str or not path or len(path) > 4096 or "\0" in path
-            or not Path(path).is_absolute() or ".." in Path(path).parts
+            type(path) is not str
+            or not path
+            or len(path) > 4096
+            or "\0" in path
+            or not Path(path).is_absolute()
+            or ".." in Path(path).parts
             or (private and any(p.casefold() == ".secrets" for p in Path(path).parts))
             or not all(hasattr(os, name) for name in required)
-            or os.open not in os.supports_dir_fd or os.stat not in os.supports_dir_fd
+            or os.open not in os.supports_dir_fd
+            or os.stat not in os.supports_dir_fd
         ):
             raise ValueError
         selected = Path(path)
@@ -891,8 +901,14 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
 
         def identity(info):
             return (
-                info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
-                info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_uid,
+                info.st_nlink,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
             )
 
         def stable_directory(info):
@@ -903,7 +919,8 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
                 raise ValueError
             if info.st_mode & 0o022 and not (
-                info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+                info.st_uid == 0
+                and info.st_mode & stat.S_ISVTX
                 and location in (Path("/tmp"), Path("/private/tmp"))
             ):
                 raise ValueError
@@ -921,13 +938,16 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
             directories.append((fd, parent, part, location, None))
             directories[-1] = (fd, parent, part, location, directory_info(fd, location))
         leaf = os.open(
-            selected.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            selected.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
             dir_fd=fd,
         )
         before = os.fstat(leaf)
         if (
-            not stat.S_ISREG(before.st_mode) or before.st_uid not in ((uid,) if private else (0, uid))
-            or before.st_nlink != 1 or before.st_size > limit
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid not in ((uid,) if private else (0, uid))
+            or before.st_nlink != 1
+            or before.st_size > limit
             or (private and stat.S_IMODE(before.st_mode) not in (0o400, 0o600))
             or (not private and before.st_mode & 0o022)
         ):
@@ -967,30 +987,48 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
 def _file_named_fetch(request: dict, started: float) -> tuple[dict, int]:
     """Disjoint read-only operation: only this isolated child sees the bootstrap."""
     fields = {
-        "schema", "operation", "project_slug", "path", "env", "token_file", "names",
-        "timeout", "max_output_bytes",
+        "schema",
+        "operation",
+        "project_slug",
+        "path",
+        "env",
+        "token_file",
+        "names",
+        "timeout",
+        "max_output_bytes",
     }
     if (
-        set(request) != fields or type(request["schema"]) is not int or request["schema"] != 1
+        set(request) != fields
+        or type(request["schema"]) is not int
+        or request["schema"] != 1
         or request["operation"] != "file-named-fetch"
     ):
         raise UsageError("bounded-read-invalid")
     slug = request["project_slug"]
     timeout, limit = request["timeout"], request["max_output_bytes"]
     if (
-        type(slug) is not str or slug not in PROJECT_SOURCES
-        or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
-        or type(limit) is not int or not 1024 <= limit <= MAX_OUTPUT_BYTES
-        or type(request["names"]) is not list or not 1 <= len(request["names"]) <= 1024
-        or type(request["path"]) is not str or type(request["token_file"]) is not str
+        type(slug) is not str
+        or slug not in PROJECT_SOURCES
+        or type(timeout) not in (int, float)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+        or type(limit) is not int
+        or not 1024 <= limit <= MAX_OUTPUT_BYTES
+        or type(request["names"]) is not list
+        or not 1 <= len(request["names"]) <= 1024
+        or type(request["path"]) is not str
+        or type(request["token_file"]) is not str
     ):
         raise UsageError("bounded-read-invalid")
     env = request["env"]
     project_env, project_file = PROJECT_SOURCES[slug]
     if (
-        type(env) is not dict or set(env) - {"HOME", project_env, ENV_API, *ENV_NAMES}
+        type(env) is not dict
+        or set(env) - {"HOME", project_env, ENV_API, *ENV_NAMES}
         or any(type(v) is not str or len(v) > 4096 for v in env.values())
-        or not env.get("HOME") or "\0" in env["HOME"] or not Path(env["HOME"]).is_absolute()
+        or not env.get("HOME")
+        or "\0" in env["HOME"]
+        or not Path(env["HOME"]).is_absolute()
         or ".." in Path(env["HOME"]).parts
     ):
         raise UsageError("bounded-read-invalid")
@@ -1027,8 +1065,15 @@ def _file_named_fetch(request: dict, started: float) -> tuple[dict, int]:
     read_env[ENV_READ_PATHS] = request["path"]
     try:
         values = fetch_project(
-            project, request["path"], read_env, token=token, names=request["names"],
-            timeout=remaining(), writer=False, strict_records=True, require_finite_expiry=True,
+            project,
+            request["path"],
+            read_env,
+            token=token,
+            names=request["names"],
+            timeout=remaining(),
+            writer=False,
+            strict_records=True,
+            require_finite_expiry=True,
         )
         remaining()
         return values, limit
@@ -1053,7 +1098,9 @@ def _bounded_read_worker() -> int:
         request = _decode_json(raw)
         if isinstance(request, dict) and request.get("operation") == "file-named-fetch":
             values, limit = _file_named_fetch(request, started)
-            output = json.dumps({"schema": 1, "ok": True, "values": values}, ensure_ascii=False).encode("utf-8")
+            output = json.dumps(
+                {"schema": 1, "ok": True, "values": values}, ensure_ascii=False
+            ).encode("utf-8")
             if len(output) > limit:
                 raise SecretsError("bounded-read-failed", failure_kind="unavailable")
             sys.stdout.buffer.write(output)
