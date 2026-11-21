@@ -170,9 +170,7 @@ def _chat_rows(env: Mapping[str, str]) -> list[dict[str, Any]] | None:
     if not db.is_file():
         return None
     try:
-        conn = sqlite3.connect(
-            "file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
-        )
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
     except (OSError, sqlite3.Error):
         return None
     try:
