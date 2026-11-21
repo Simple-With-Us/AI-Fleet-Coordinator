@@ -1,7 +1,7 @@
 // One credential seam for both registry exporters. Only the Python child opens the bootstrap.
 import { spawn } from "node:child_process";
 import { lstatSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 
@@ -17,24 +17,38 @@ const fail = () => new Error(FAILURE);
 
 function canonicalWorkerPath() {
   const [bundledUrl, repositoryUrl] = WORKER_CANDIDATES;
-  const bundledPath = fileURLToPath(bundledUrl);
-  try {
-    const info = lstatSync(bundledPath);
-    if (!info.isFile() || info.isSymbolicLink()) throw fail();
-    return bundledPath;
-  } catch (error) {
-    // A present bundled path with unsafe metadata must fail closed. Fall back to the
-    // repository helper only when the private bundle copy is genuinely absent.
-    if (error?.code !== "ENOENT") throw fail();
-  }
-  const repositoryPath = fileURLToPath(repositoryUrl);
-  try {
-    const info = lstatSync(repositoryPath);
-    if (!info.isFile() || info.isSymbolicLink()) throw fail();
-    return repositoryPath;
-  } catch {
-    throw fail();
-  }
+  const checkCandidate = (candidate) => {
+    const absolute = resolve(candidate);
+    const { root } = parse(absolute);
+    const parent = dirname(absolute);
+    const parts = relative(root, parent).split(sep).filter(Boolean);
+    let current = root;
+    for (let index = 0; index < parts.length; index += 1) {
+      current = resolve(current, parts[index]);
+      let directory;
+      try { directory = lstatSync(current); } catch { throw fail(); }
+      if (!directory.isDirectory() || directory.isSymbolicLink()) throw fail();
+      const finalParent = index === parts.length - 1;
+      const rootStickyAncestor = !finalParent && directory.uid === 0 && (directory.mode & 0o1000) !== 0;
+      if (![0, process.getuid?.()].includes(directory.uid) ||
+          ((directory.mode & 0o022) !== 0 && !rootStickyAncestor)) throw fail();
+    }
+    let worker;
+    try { worker = lstatSync(absolute); } catch (error) {
+      // A missing worker permits the repository candidate; unsafe metadata never does.
+      if (error?.code === "ENOENT") return null;
+      throw fail();
+    }
+    if (!worker.isFile() || worker.isSymbolicLink() || worker.nlink !== 1 ||
+        ![0, process.getuid?.()].includes(worker.uid) || (worker.mode & 0o022) !== 0) throw fail();
+    return absolute;
+  };
+
+  const bundledPath = checkCandidate(fileURLToPath(bundledUrl));
+  if (bundledPath) return bundledPath;
+  const repositoryPath = checkCandidate(fileURLToPath(repositoryUrl));
+  if (repositoryPath) return repositoryPath;
+  throw fail();
 }
 
 function serviceAccount(raw) {

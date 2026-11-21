@@ -72,6 +72,33 @@ test("a present unsafe colocated worker refuses instead of falling back to the r
   await assert.rejects(readFile(join(f.directory, "worker-path")), { code: "ENOENT" });
 });
 
+test("a loose worker file refuses before any fallback worker can execute", async (t) => {
+  const f = await fixture(t, () => "import sys\nsys.stdin.buffer.read()\n", { installed: true });
+  const marker = join(f.directory, "fallback-worker-ran");
+  const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+  await writeFile(join(f.directory, "fleet_infisical.py"),
+    `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(marker)}).touch()\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`,
+    { mode: 0o644 });
+  await chmod(f.worker, 0o666);
+
+  await assert.rejects(f.adapter.loadRegistryServiceAccount({ env: f.env }), fixedFailure);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("a worker in a group-writable parent refuses without trying the repo fallback", async (t) => {
+  const f = await fixture(t, () => "import sys\nsys.stdin.buffer.read()\n", { installed: true });
+  const marker = join(f.directory, "fallback-worker-ran");
+  const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+  await writeFile(join(f.directory, "fleet_infisical.py"),
+    `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(marker)}).touch()\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`,
+    { mode: 0o644 });
+  await chmod(f.modules, 0o777);
+
+  await assert.rejects(f.adapter.loadRegistryServiceAccount({ env: f.env }), fixedFailure);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+  await chmod(f.modules, 0o755);
+});
+
 test("synced SA transport keeps precedence and malformed JSON never falls back or reflects content", async () => {
   assert.deepEqual(await loadRegistryServiceAccount({ env: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } }), SA);
   await assert.rejects(loadRegistryServiceAccount({ env: { GOOGLE_SHEETS_SA: "private-fixture{" } }), (error) => {

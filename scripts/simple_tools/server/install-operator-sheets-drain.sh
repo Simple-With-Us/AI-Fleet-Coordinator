@@ -113,7 +113,8 @@ UNIT_DIR="$PREFIX/etc/systemd/system"
 # Serialize both live installer modes. Dry-run remains read-only.
 if [[ "$DRY" -eq 0 ]]; then
   if [[ -n "$TEST_ROOT" ]]; then
-    mkdir -p -m 0755 -- "$PREFIX/run/lock" || die "could not create the test lock directory"
+    mkdir -p -- "$PREFIX/run/lock" || die "could not create the test lock directory"
+    chmod 0755 -- "$PREFIX/run/lock" || die "could not set the test lock directory mode"
   else
     [[ -d /run/lock && ! -L /run/lock ]] || die "/run/lock must be an existing plain directory"
   fi
@@ -210,19 +211,24 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
   STAGE_DIR=""
   timer_stopped=0
   timer_restored=0
+  # Called through EXIT trap; ShellCheck cannot follow that handler
+  # shellcheck disable=SC2317
   cleanup_code_only() {
     local status=$?
     trap - EXIT INT TERM
     if [[ "$timer_stopped" -eq 1 && "$timer_restored" -eq 0 ]]; then
-      if [[ -x "$PYTHON" ]] && "$PYTHON" -I "$CODE_HELPER_STAGE" \
+      if [[ ! -x "$PYTHON" ]] || ! "$PYTHON" -I "$CODE_HELPER_STAGE" \
         --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
         --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
-        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null &&
-        systemctl start "$TIMER"; then
+        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null; then
+        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
+        [[ "$status" -ne 0 ]] || status=1
+      elif ! systemctl start "$TIMER"; then
+        say "the installed module set is coherent, but could not restore the previously active $TIMER; it remains stopped; inspect the backup before restarting it" >&2
+        [[ "$status" -ne 0 ]] || status=1
+      else
         timer_restored=1
         say "restored the previously active $TIMER"
-      else
-        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
       fi
     fi
     if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]]; then
@@ -231,7 +237,7 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
     if [[ -n "$SOURCE_STAGE" && -d "$SOURCE_STAGE" && ! -L "$SOURCE_STAGE" ]]; then
       rm -rf -- "$SOURCE_STAGE"
     fi
-    return "$status"
+    exit "$status"
   }
   trap cleanup_code_only EXIT
   trap 'exit 130' INT

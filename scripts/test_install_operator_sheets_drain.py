@@ -99,6 +99,11 @@ case "$1" in
     fi
     exit 1 ;;
   is-enabled) echo disabled; exit 1 ;;
+  start)
+    if [[ "$2" == operator-sheets-drain.timer && "${STUB_TIMER_START_EXIT:-0}" != 0 ]]; then
+      exit "$STUB_TIMER_START_EXIT"
+    fi
+    exit 0 ;;
   is-active)
     [[ "$3" == operator-sheets-drain.timer && "${STUB_TIMER_ACTIVE:-0}" == 1 ]] && exit 0
     exit 3 ;;
@@ -687,6 +692,44 @@ if (typeof thread.drainThreadRows !== 'function' ||
         self.assertIn("could not be verified coherent", result.stderr)
         self.assertNotIn("systemctl start operator-sheets-drain.timer", self.calls())
         self.assertNotEqual(target.read_bytes(), b"// installed operator_sheets_export.mjs\n")
+
+    def test_code_only_unverified_recovery_state_is_nonzero_after_successful_install(self):
+        self.seed_existing_install()
+        python_stub = self.root / "bin/python3"
+        python_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ " $* " == *" --verify-state "* ]]; then exit 2; fi\n'
+            'exec "$REAL_PYTHON3" "$@"\n'
+        )
+        python_stub.chmod(0o755)
+
+        result = self.run_install(
+            "--code-only", STUB_TIMER_ACTIVE="1", REAL_PYTHON3=sys.executable
+        )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("could not be verified coherent", result.stderr)
+        self.assertNotIn("systemctl start operator-sheets-drain.timer", self.calls())
+        self.assertTrue((self.lib / MODULES[0]).is_file())
+        backups = list((self.root / "var/backups/operator-sheets-drain-code-only").glob("bundle-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / "manifest.json").is_file())
+
+    def test_code_only_timer_start_failure_is_nonzero_when_bundle_is_coherent(self):
+        self.seed_existing_install()
+
+        result = self.run_install(
+            "--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_START_EXIT="23"
+        )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("could not restore the previously active operator-sheets-drain.timer", result.stderr)
+        self.assertNotIn("could not be verified coherent", result.stderr)
+        self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
+        self.assertTrue((self.lib / MODULES[0]).is_file())
+        backups = list((self.root / "var/backups/operator-sheets-drain-code-only").glob("bundle-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / "manifest.json").is_file())
 
     def test_code_only_installs_the_pre_wait_source_snapshot(self):
         self.seed_existing_install()
