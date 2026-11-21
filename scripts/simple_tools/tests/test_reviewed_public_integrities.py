@@ -27,7 +27,7 @@ class ReviewedPublicIntegrityTests(unittest.TestCase):
         entry = (self.repo, self.path, hashlib.sha256(body.encode()).hexdigest())
         return patch.object(secretscan, "_REVIEWED_PUBLIC_INTEGRITIES", frozenset({entry}))
 
-    def test_shipped_registry_is_only_three_reviewed_complete_ct_files(self):
+    def test_shipped_registry_is_only_four_reviewed_complete_ct_files(self):
         self.assertEqual(secretscan._REVIEWED_PUBLIC_INTEGRITIES, frozenset({
             ("Simple-With-Us/Congress.Trade", self.path,
              "72462e4c39a4a9a2ba6927214072e0f607565db11c3aa1be034e31eb197af7b9"),
@@ -35,6 +35,8 @@ class ReviewedPublicIntegrityTests(unittest.TestCase):
              "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1"),
             ("Simple-With-Us/Congress.Trade", "app/deno.lock",
              "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084"),
+            ("Simple-With-Us/Congress.Trade", self.path,
+             "5ff0b0a6007a6df394d86060251d58a1a7ebd9b3e6330a3c5fc24021793b6932"),
         }))
 
     def test_exact_review_only_and_general_scan_remains_strict(self):
