@@ -16,6 +16,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -1136,7 +1137,9 @@ class SecretStoreCredentialTests(TempHome):
     """The secret-store credential check, which asks for key NAMES and never values."""
 
     SENTINEL = "sentinel-secret-value-do-not-leak"
-    PROJECT = "11111111-2222-3333-4444-555555555555"
+    # The project id is built at run time:  no project id,  UUID or hostname is
+    # committed to source,  not even a synthetic one.
+    PROJECT = str(uuid.uuid4())
 
     def setUp(self) -> None:
         super().setUp()

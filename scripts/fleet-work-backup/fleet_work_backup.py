@@ -2872,8 +2872,11 @@ def _own_token(client):
             token, _status = client.token_from_store(
                 CREDENTIAL_TOKEN_ACCOUNT, dict(os.environ), Path(home)
             )
-        except Exception:
-            token = ""
+        except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+            raise RuntimeError(
+                "the %s scoped token store could not be read (%s)"
+                % (CREDENTIAL_TOKEN_ACCOUNT, type(exc).__name__)
+            ) from None
         if token:
             return token
     return (os.environ.get("INFISICAL_TOKEN") or "").strip()

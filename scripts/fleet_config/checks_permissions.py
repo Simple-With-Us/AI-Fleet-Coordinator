@@ -446,6 +446,13 @@ def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
         found = FI.list_project_names(
             project, folder, env, token=read_token, timeout=ctx.timeout or 10
         )
+    except TimeoutError:
+        # A hung read is a timeout,  not a broken credential:  it keeps the reason
+        # token that says the store may still be fine.
+        raise CheckError(
+            "the secret store could not be read:  %s" % ReasonCode.TIMEOUT.value,
+            ReasonCode.TIMEOUT,
+        ) from None
     except FI.SecretsError as exc:
         reason = ReasonCode.UNPARSEABLE if "bad-output" in exc.message else ReasonCode.ERROR
         # Only the allow-listed reason token is emitted:  the provider's own text

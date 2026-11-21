@@ -117,10 +117,16 @@ def run_with_secrets(command, prepared, optional=()):
     import fleet_infisical as core
     from fleet_infisical import SecretsError
 
-    split = list(command).index("--")
-    folder = command[command.index("--path") + 1]
-    wanted = [name for name in command[command.index("--only") + 1].split(",") if name]
-    executable = command[split + 1 :]
+    try:
+        items = list(command)
+        split = items.index("--")
+        folder = items[items.index("--path") + 1]
+        wanted = [name for name in items[items.index("--only") + 1].split(",") if name]
+        executable = items[split + 1 :]
+    except (ValueError, IndexError, AttributeError, TypeError):
+        raise SecretsError("invalid command", 2) from None
+    if not executable:
+        raise SecretsError("invalid command", 2)
     secrets = core.fetch_all(core.check_path(folder), prepared)
     chosen = {}
     for name in wanted:

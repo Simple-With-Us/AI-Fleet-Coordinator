@@ -2767,15 +2767,21 @@ class FakeInfisical:
     class SecretsError(Exception):
         pass
 
+    class SecretsTimeout(TimeoutError):
+        """A hung read:  a timeout,  not a refusal."""
+
     def __init__(self, value=TOKEN):
         self.value = value
         self.calls = []
         self.timeouts = []
         self.refuse_empty_token = False
+        self.hang = False
 
     def fetch_verified(self, name, path, env, token=None, timeout=None):
         self.calls.append((name, path, dict(env), token))
         self.timeouts.append(timeout)
+        if self.hang:
+            raise self.SecretsTimeout("fetch-failed: timeout")
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
@@ -2865,6 +2871,22 @@ class CredentialTests(Base):
         ((argv, env),) = self.runner.calls
         self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+
+    def test_a_hung_read_is_a_timeout_and_not_a_missing_token(self):
+        """A hung Coolify read keeps its own signal:  it is not a broken credential."""
+        self.client.hang = True
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(ans.get("result"), "failed")
+        self.assertIn("timed out", ans.get("detail", ""))
+        self.assertEqual(ans.get("errorCode"), "timeout")
+        self.assertNotIn("not available", ans.get("detail", ""))
 
     def test_the_read_carries_its_own_deadline(self):
         """The Coolify read is bounded:  the client gets the reader's timeout (Kody, PR #2308)."""

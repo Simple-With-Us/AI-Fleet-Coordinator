@@ -590,6 +590,23 @@ class LaunchTests(unittest.TestCase):
                 launch.run_poll_with_optional_send(command, {})
             execute.assert_not_called()
 
+    def test_a_malformed_command_refuses_instead_of_crashing(self):
+        """A command without its sentinels refuses:  it does not raise ValueError."""
+        import fleet_infisical as core
+
+        from whatsapp_bridge import launch
+
+        for command in (
+            [],
+            ["python3"],
+            ["python3", "--path", "/jet"],
+            ["python3", "--path", "/jet", "--only", "WHATSAPP_API_KEY"],
+            ["python3", "--", "--path", "/jet", "--only"],
+        ):
+            with self.assertRaises(core.SecretsError) as caught:
+                launch.run_with_secrets(command, {})
+            self.assertEqual(caught.exception.code, 2)
+
     def test_poller_and_binder_strip_bootstrap_before_exec(self):
         self._launch("poll")
         self._launch("bind")

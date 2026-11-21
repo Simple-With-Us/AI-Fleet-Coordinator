@@ -2402,6 +2402,9 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
             raise WriteError("outcome_unknown", intent, provider_status=record["provider_status"])
     finally:
+        # Clear the dict that held the value,  then rebind:  a rebind alone leaves the
+        # old dict allocated and inspectable,  which defeats the zero-retention intent.
+        body.clear()
         body = {}
         token = ""
 

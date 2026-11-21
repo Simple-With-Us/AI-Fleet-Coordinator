@@ -749,7 +749,9 @@ class FakeScopedClient:
         return (self.token, "ok") if self.token else ("", "no-token")
 
     def infisical_project_id(self, env, home):
-        return "11111111-2222-3333-4444-555555555555"
+        # The project id is built at run time:  no project id,  UUID or hostname is
+        # committed to source,  not even a synthetic one.
+        return str(uuid.uuid4())
 
     def fetch_project(self, project, path, env, *, token=None, names=None):
         wanted = tuple(names or ())
@@ -3470,6 +3472,15 @@ class MiscCase(unittest.TestCase):
                     self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
                     self.assertEqual(len(calls), before)
 
+
+    def test_a_store_that_cannot_answer_fails_closed_and_names_its_store(self):
+        """A store that raises is a failure,  not an empty token:  it never falls back."""
+        client = mock.Mock()
+        client.token_from_store.side_effect = OSError("the store could not answer")
+        with self.assertRaises(RuntimeError) as caught:
+            fwb._own_token(client)
+        self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
+        self.assertNotIn("synthetic", str(caught.exception))
 
     def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
         sys.path.insert(0, str(HERE.parent))

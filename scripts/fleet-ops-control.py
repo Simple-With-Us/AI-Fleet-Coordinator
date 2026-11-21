@@ -4241,6 +4241,11 @@ def read_coolify_token(ctx):
         value = client.fetch_verified(
             COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token, timeout=SECRET_TIMEOUT
         )
+    except TimeoutError:
+        # A hung read is a timeout,  not an absent token:  it keeps its own signal so
+        # the caller can retry instead of treating the credential as broken.  The read
+        # itself was never sent,  so this is not an unknown end:  nothing was started.
+        raise Failed("the Coolify token read timed out", error_code="timeout") from None
     except client.SecretsError:
         raise Failed("the Coolify token is not available") from None
     if not value or any(c.isspace() or ord(c) < 33 for c in value):
