@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
+from scripts.test_session_disk import RuntimeInfisicalFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 ACP = ROOT / "scripts" / "grok-acp-runtime"
@@ -19,7 +22,11 @@ def _load():
     spec = importlib.util.spec_from_file_location("acp_client_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["acp_client_under_test"] = mod
-    spec.loader.exec_module(mod)
+    if importlib.util.find_spec("websockets") is None:
+        with mock.patch.dict(sys.modules, {"websockets": types.SimpleNamespace()}):
+            spec.loader.exec_module(mod)
+    else:
+        spec.loader.exec_module(mod)
     return mod
 
 
@@ -27,6 +34,29 @@ MOD = _load()
 
 
 class PermissionTests(unittest.TestCase):
+    def test_secret_from_environment_skips_child_reader(self):
+        with mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}), mock.patch.object(
+            MOD.subprocess, "run"
+        ) as run:
+            self.assertEqual(MOD.load_secret(), "env-secret")
+        run.assert_not_called()
+
+    def test_secret_uses_absolute_isolated_shared_cli_against_loopback_provider(self):
+        with RuntimeInfisicalFixture() as provider, tempfile.TemporaryDirectory() as home:
+            env = {
+                "HOME": home,
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": "/hostile",
+                "FLEET_SECRETS_API": provider.url,
+                "INFISICAL_TOKEN": "st.test-only-grok-key",
+                "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                "INFISICAL_ENVIRONMENT": "prod",
+            }
+            with mock.patch.dict("os.environ", env, clear=True):
+                self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
+        self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
+        self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
+
     def test_prefers_allow_always(self):
         params = {
             "options": [

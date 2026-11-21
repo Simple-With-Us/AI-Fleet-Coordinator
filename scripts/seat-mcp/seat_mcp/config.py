@@ -9,7 +9,6 @@ from pathlib import Path
 
 HOME = Path("/Users/jay")
 APP_ROOT = HOME / "apps" / "seat-mcp"
-FLEET_SECRETS_BIN = HOME / ".local" / "bin" / "fleet-secrets"
 TOKEN_FOLDER = "/seat-mcp"
 TOKEN_NAME = "SEAT_MCP_TOKEN"
 JOBS_DIR = HOME / ".seat-mcp" / "jobs"

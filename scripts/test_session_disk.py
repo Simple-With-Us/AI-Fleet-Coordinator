@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, unquote, urlsplit
 
 REPO = Path(__file__).resolve().parents[1]
 DISK = REPO / "scripts" / "grok-acp-runtime"
@@ -421,6 +425,240 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("SEAT_MCP_TOKEN", src)
         self.assertIn("127.0.0.1:8793", src)
         self.assertNotIn("print(token", src)
+
+    def test_installed_runtime_closure_and_loaders_ignore_hostile_python_path(self) -> None:
+        repo_scripts = REPO / "scripts"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            hostile = root / "hostile"
+            home.mkdir()
+            hostile.mkdir()
+            (hostile / "fleet_infisical_cli.py").write_text(
+                "raise AssertionError('hostile CLI executed')\n", encoding="utf-8"
+            )
+            (hostile / "fleet_infisical.py").write_text(
+                "raise AssertionError('hostile library executed')\n", encoding="utf-8"
+            )
+            (hostile / "fleet-secrets").write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            (hostile / "fleet-secrets").chmod(0o700)
+            install_env = {"HOME": str(home), "PATH": os.defpath}
+            installed = subprocess.run(
+                ["bash", str(repo_scripts / "install-grok-tui-drive.sh")],
+                env=install_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+
+            apps = home / "apps"
+            for name in ("fleet_infisical.py", "fleet_infisical_cli.py"):
+                self.assertEqual((apps / name).read_bytes(), (repo_scripts / name).read_bytes())
+            for source, destination in (
+                (repo_scripts / "grok-acp-runtime" / "acp-client.py", apps / "grok-acp-runtime" / "acp-client.py"),
+                (repo_scripts / "seat-mcp" / "seat_mcp" / "auth.py", apps / "seat-mcp" / "seat_mcp" / "auth.py"),
+                (repo_scripts / "mcp-servers" / "seat-mcp-stdio-proxy.py", apps / "mcp-servers" / "seat-mcp-stdio-proxy.py"),
+            ):
+                self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertFalse((apps / "fleet-secrets").exists())
+
+            with RuntimeInfisicalFixture() as provider:
+                script = r'''
+import importlib.util, runpy, sys, types
+sys.modules["websockets"] = types.SimpleNamespace()
+apps, mode = sys.argv[1:]
+acp_dir = apps + "/grok-acp-runtime"
+if mode == "grok":
+    sys.path.insert(0, acp_dir)
+    spec = importlib.util.spec_from_file_location("copied_acp", acp_dir + "/acp-client.py")
+    acp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(acp)
+    assert acp.load_secret() == "fixture-grok-secret"
+else:
+    sys.path.insert(0, apps + "/seat-mcp")
+    from seat_mcp.auth import load_token
+    proxy = runpy.run_path(apps + "/mcp-servers/seat-mcp-stdio-proxy.py")
+    assert load_token() == "fixture-seat-token"
+    assert proxy["load_token"]() == "fixture-seat-token"
+print("copied-loaders-ok")
+'''
+                for mode, token in (
+                    ("grok", "st.test-only-grok-key"),
+                    ("seat", "st.test-only-seat-key"),
+                ):
+                    env = {
+                        "HOME": str(home),
+                        "PATH": os.defpath,
+                        "PYTHONPATH": str(hostile),
+                        "FLEET_SECRETS_API": provider.url,
+                        "INFISICAL_TOKEN": token,
+                        "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                        "INFISICAL_ENVIRONMENT": "prod",
+                    }
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-c", script, str(apps), mode],
+                        cwd=hostile,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), "copied-loaders-ok")
+                    self.assertNotIn("fixture-grok-secret", result.stdout + result.stderr)
+                    self.assertNotIn("fixture-seat-token", result.stdout + result.stderr)
+                self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
+                self.assertTrue(any("%2Fseat-mcp" in call for call in provider.calls))
+                self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
+                self.assertTrue(any("SEAT_MCP_TOKEN" in call for call in provider.calls))
+                self.assertTrue(all("fleet-secrets" not in call for call in provider.calls))
+                value_reads = [
+                    (
+                        unquote(urlsplit(call).path.rsplit("/", 1)[-1]),
+                        unquote(parse_qs(urlsplit(call).query)["secretPath"][0]),
+                    )
+                    for call in provider.calls
+                    if "/v3/secrets/raw/" in call
+                ]
+                self.assertEqual(
+                    sorted(value_reads),
+                    sorted(
+                        [
+                            ("GROK_AGENT_SECRET", "/grok-acp"),
+                            ("SEAT_MCP_TOKEN", "/seat-mcp"),
+                            ("SEAT_MCP_TOKEN", "/seat-mcp"),
+                        ]
+                    ),
+                )
+
+    def test_copied_loader_refuses_bad_grants_before_secret_values(self) -> None:
+        repo_scripts = REPO / "scripts"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            apps = root / "apps"
+            hostile = root / "hostile"
+            hostile.mkdir()
+            apps.mkdir(exist_ok=True)
+            for name in ("fleet_infisical.py", "fleet_infisical_cli.py"):
+                shutil.copyfile(repo_scripts / name, apps / name)
+            acp_dir = apps / "grok-acp-runtime"
+            acp_dir.mkdir()
+            shutil.copyfile(repo_scripts / "grok-acp-runtime" / "acp-client.py", acp_dir / "acp-client.py")
+            shutil.copyfile(repo_scripts / "grok-acp-runtime" / "mcp_catalog.py", acp_dir / "mcp_catalog.py")
+            (hostile / "fleet_infisical_cli.py").write_text(
+                "raise AssertionError('hostile CLI executed')\n", encoding="utf-8"
+            )
+            code = r'''
+import importlib.util, sys, types
+sys.modules["websockets"] = types.SimpleNamespace()
+sys.path.insert(0, str(__import__("pathlib").Path(sys.argv[1]).parent))
+spec = importlib.util.spec_from_file_location("copied_acp", sys.argv[1])
+acp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acp)
+try:
+    acp.load_secret()
+except SystemExit as exc:
+    print(str(exc))
+else:
+    raise AssertionError("bad grant accepted")
+'''
+            for mode in ("wrong", "empty", "malformed"):
+                with self.subTest(mode=mode), RuntimeInfisicalFixture(mode=mode) as provider:
+                    env = {
+                        "HOME": str(root),
+                        "PATH": os.defpath,
+                        "PYTHONPATH": str(hostile),
+                        "FLEET_SECRETS_API": provider.url,
+                        "INFISICAL_TOKEN": "st.test-only-grok-key",
+                        "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                        "INFISICAL_ENVIRONMENT": "prod",
+                    }
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-c", code, str(acp_dir / "acp-client.py")],
+                        cwd=hostile,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("GROK_AGENT_SECRET missing in Infisical /grok-acp", result.stdout)
+                    self.assertNotIn("st.test-only-grok-key", result.stdout + result.stderr)
+                    self.assertFalse(any("/v3/secrets/raw/" in call for call in provider.calls))
+
+
+class RuntimeInfisicalFixture:
+    """Loopback-only provider for the production CLI's real token and folder checks."""
+
+    def __init__(self, mode="normal"):
+        import uuid
+
+        self.mode = mode
+        self.project = str(uuid.uuid4())
+        self.calls = []
+        fixture = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                fixture.calls.append(self.path)
+                received = self.headers.get("Authorization", "").removeprefix("Bearer ")
+                folder_for_token = {
+                    "st.test-only-grok-key": "/grok-acp",
+                    "st.test-only-seat-key": "/seat-mcp",
+                }
+                if received not in folder_for_token:
+                    self.send_error(403)
+                    return
+                if self.path.endswith("/v2/service-token"):
+                    metadata = {
+                        "workspace": fixture.project,
+                        "permissions": ["read"],
+                        "scopes": [{"environment": "prod", "secretPath": folder_for_token[received]}],
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                    }
+                    if fixture.mode == "wrong":
+                        metadata["scopes"] = [{"environment": "prod", "secretPath": "/other"}]
+                    elif fixture.mode == "empty":
+                        metadata["scopes"] = []
+                    elif fixture.mode == "malformed":
+                        metadata.pop("expiresAt")
+                    body = json.dumps(metadata).encode()
+                else:
+                    query = parse_qs(urlsplit(self.path).query)
+                    folder = unquote(query.get("secretPath", [""])[0])
+                    name = unquote(urlsplit(self.path).path.rsplit("/", 1)[-1])
+                    value = "fixture-grok-secret" if folder == "/grok-acp" else "fixture-seat-token"
+                    body = json.dumps({"secret": {
+                        "workspace": fixture.project,
+                        "environment": "prod",
+                        "secretPath": folder,
+                        "type": "shared",
+                        "secretKey": name,
+                        "secretValue": value,
+                        "secretValueHidden": False,
+                    }}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.url = "http://127.0.0.1:%s/api" % self.server.server_address[1]
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
 
 
 class PromptInjectReceiptTests(unittest.TestCase):
