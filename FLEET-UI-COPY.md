@@ -182,7 +182,7 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Mark
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
-**No gap is required at a line break, paragraph end or end of text (owner ruling 2026-11-01).**  The visible gap belongs between sentences that continue in the same paragraph.  Human-readable code comments follow the prose rule; executable code, identifiers and machine-readable configuration remain unchanged.
+**No gap is required at a line break, paragraph end or end of text (owner ruling 2026-11-01).**  The visible gap belongs between sentences that continue in the same paragraph.  Code and code comments remain exempt, as the canonical sentence-gap skill specifies.
 
 **Shared converter:** use the code-aware `scripts/sentence_gap_convert.pl` in AI-Fleet-Coordinator, documented in `docs/fleet-skills/sentence-gap/SKILL.md`, for tool-written bodies that carry code.  Preserve code regions byte for byte, run the converter again and compare the outputs to prove idempotence, and inspect both the gap count and remaining ungapped prose.  The one-line example below documents the canonical pattern for prose-only bodies; it is not a second implementation for a host or seat.
 
