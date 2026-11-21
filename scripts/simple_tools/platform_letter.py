@@ -2024,12 +2024,14 @@ def _is_agents_environment_bootstrap(value: Mapping[str, Any]) -> bool:
         text = content
     elif isinstance(content, list):
         text = "\n".join(
-            part["text"] for part in content
+            part["text"]
+            for part in content
             if isinstance(part, Mapping) and isinstance(part.get("text"), str)
         )
     elif isinstance(content, Mapping) and isinstance(content.get("content"), list):
         text = "\n".join(
-            part["text"] for part in content["content"]
+            part["text"]
+            for part in content["content"]
             if isinstance(part, Mapping) and isinstance(part.get("text"), str)
         )
     elif isinstance(content, Mapping) and isinstance(content.get("content"), str):
@@ -2064,9 +2066,11 @@ def _transcript_strings(
     elif isinstance(value, Mapping):
         kind = value.get("type")
         role = value.get("role")
-        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
-            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
-        ) or _is_agents_environment_bootstrap(value):
+        if (
+            (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
+            or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
+            or _is_agents_environment_bootstrap(value)
+        ):
             return
         hidden = (
             inside
