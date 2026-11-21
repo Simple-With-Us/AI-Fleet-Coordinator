@@ -144,7 +144,7 @@ test("writer lease: a second process is excluded until the owner exits", { timeo
   }
 });
 
-test("writer lease: a contender cannot acquire during the first opener's initialization window", { timeout: 20_000 }, async () => {
+test("writer lease: only the O_EXCL creator may initialize a new empty inode", { timeout: 20_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "drain-lease-init-window-"));
   const lock = join(dir, "drain.lock");
   let signalOpened;
@@ -159,20 +159,39 @@ test("writer lease: a contender cannot acquire during the first opener's initial
       return handle;
     },
   });
-  let second;
   try {
     await opened;
-    second = await acquireLease(lock);
-    assert.ok(second);
+    await assert.rejects(
+      acquireLease(lock),
+      /writer lease has ambiguous empty initialization/,
+    );
+    assert.equal((await stat(lock)).size, 0);
     releaseFirst();
-    assert.equal(await first, null);
-    await second.close();
-    second = null;
+    const firstLease = await first;
+    assert.ok(firstLease);
+    assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+    await firstLease.close();
   } finally {
     releaseFirst();
-    await second?.close().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("writer lease: preexisting empty inode is ambiguous and remains untouched", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-empty-existing-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "");
+  await chmod(lock, 0o600);
+  const before = await stat(lock);
+  await assert.rejects(
+    acquireLease(lock),
+    /writer lease has ambiguous empty initialization/,
+  );
+  const after = await stat(lock);
+  assert.equal(after.dev, before.dev);
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.size, 0);
+  await rm(dir, { recursive: true, force: true });
 });
 
 test("writer lease: stale PID-only lock content does not block a free kernel lock", async () => {
@@ -218,6 +237,17 @@ test("writer lease: a permissive preexisting lock mode fails closed without repa
   await chmod(lock, 0o644);
   await assert.rejects(acquireLease(lock), /writer lease path is not the expected private regular file/);
   assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: arbitrary file content fails closed without clobbering it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-content-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "operator data");
+  await chmod(lock, 0o600);
+  const before = await readFile(lock);
+  await assert.rejects(acquireLease(lock), /writer lease has an invalid legacy owner marker/);
+  assert.deepEqual(await readFile(lock), before);
   await rm(dir, { recursive: true, force: true });
 });
 

@@ -301,9 +301,12 @@ async function validateLeaseFile(lockPath, handle) {
   }
 }
 
-async function legacyPidIsLive(handle) {
+async function legacyPidIsLive(handle, { created = false } = {}) {
   const size = (await handle.stat()).size;
-  if (size === 0) return false;
+  if (size === 0) {
+    if (!created) throw new Error("writer lease has ambiguous empty initialization");
+    return false;
+  }
   if (size > 64) throw new Error("writer lease has an invalid legacy owner marker");
   const marker = Buffer.alloc(size);
   const { bytesRead } = await handle.read(marker, 0, size, 0);
@@ -353,18 +356,26 @@ function tryLockDescriptor(fd, { spawnProcess = spawn, timeoutMs = 5_000 } = {})
 export async function acquireLease(lockPath, options = {}) {
   const openFile = options.openFile ?? open;
   let handle;
+  // Only this O_EXCL creator may initialize empty content; an existing empty inode is ambiguous.
+  let created = false;
   try {
-    handle = await openFile(
-      lockPath,
-      fsConstants.O_CREAT | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
-      0o600,
-    );
+    try {
+      handle = await openFile(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      created = true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      handle = await openFile(lockPath, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+    }
     await validateLeaseFile(lockPath, handle);
     if (!await tryLockDescriptor(handle.fd, options)) {
       await handle.close();
       return null;
     }
-    if (await legacyPidIsLive(handle)) {
+    if (await legacyPidIsLive(handle, { created })) {
       await handle.close();
       return null;
     }

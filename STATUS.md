@@ -2,7 +2,7 @@
 
 ## 2026-11-21 CODEX — Operator Sheets Drain Uses A Stable Flock Lease (AFC-859)
 
-The drain now holds a kernel `flock` on a persistent owner-only lock inode, preserving the live-PID fence for old runners and refusing unsafe lock metadata.  Owner-reported runner tests pass 58/58, including cross-process exclusion, initialization races, crash release, inode stability and helper failure bounds.  Rollout remains pending: old PID-only runners must be quiescent, and both Sheets source units must be installed together through the approved code-only path.  This change does not modify the live runtime or arming.
+The drain and manual CLI now hold a kernel `flock` on one persistent owner-only lock inode, preserving the live-PID fence for old runners and refusing unsafe lock metadata.  The drain and thread-export CLI suites pass 82/82, including cross-process exclusion, ambiguous empty inodes, crash release, inode stability, malformed-content preservation and helper failure bounds.  Rollout remains pending: old PID-only runners must be quiescent, and both Sheets source units must be installed together through the approved code-only path.  This change does not modify the live runtime or arming.
 
 Rollout: `docs/rollouts/2026-11-21-afc-859-sheets-lease.md`.
 

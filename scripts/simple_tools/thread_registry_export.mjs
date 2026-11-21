@@ -45,7 +45,6 @@
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import crypto from "node:crypto";
@@ -597,7 +596,6 @@ export async function runCli(argv, {
   } finally {
     if (lease) {
       await lease.close().catch(() => {});
-      await unlink(lockPath).catch(() => {});
     }
   }
 }
