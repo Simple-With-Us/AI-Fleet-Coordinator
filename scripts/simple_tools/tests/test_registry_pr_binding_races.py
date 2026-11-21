@@ -40,8 +40,29 @@ class ExtraBindings(unittest.TestCase):
   self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'],[])
   self.assertEqual(OR.resolve_label(self.db,'testbed',b['label'])['bound_prs'][0]['number'],537)
   with self.assertRaisesRegex(ValueError,'another live'):self.bind('native-session-a',generation)
- def test_reopen_preserves_uncontested_binding(self):
+ def test_reopen_invalidates_uncontested_binding_until_explicit_rebind(self):
   a=self.register('native-session-a');self.bind('native-session-a',a['generation'])
   OR.close_session(self.db,platform='testbed',verified_host='mac',profile_scope='default',native_session_id='native-session-a',reason='test')
   reg=OR.SessionRegistry(self.db);letter,generation,_=reg.reopen(a['record_id']);reg.close_db()
-  self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'][0]['generation'],generation)
+  self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'],[])
+  self.assertEqual(self.bind('native-session-a',generation)['outcome'],'bound')
+
+ def test_raw_close_is_invalidated_on_reopen_but_live_noop_preserves(self):
+  a=self.register('native-session-a');self.bind('native-session-a',a['generation'])
+  reg=OR.SessionRegistry(self.db);reg.reopen(a['record_id'])
+  self.assertTrue(OR.resolve_label(self.db,'testbed',a['label'])['bound_prs'])
+  with reg._write_txn()as c:
+   c.execute("UPDATE sessions SET closed_at='2026-11-21',state='closed' WHERE record_id=?",(a['record_id'],))
+   c.execute("UPDATE alias_assignments SET retired_at='2026-11-21' WHERE record_id=?",(a['record_id'],))
+  letter,g,_=reg.reopen(a['record_id']);reg.close_db()
+  self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'],[])
+
+ def test_real_relabel_same_generation_invalidates_but_noop_preserves(self):
+  a=self.register('native-session-a');parent=self.register('native-session-parent')
+  self.bind('native-session-a',a['generation']);reg=OR.SessionRegistry(self.db)
+  self.assertEqual(reg.relabel(a['record_id'])['outcome'],'unchanged')
+  self.assertTrue(OR.resolve_label(self.db,'testbed',a['label'])['bound_prs'])
+  changed=reg.relabel(a['record_id'],force=True,parent_session_id='native-session-parent');reg.close_db()
+  self.assertNotEqual(changed['label'],a['label']);self.assertEqual(changed['generation'],a['generation'])
+  self.assertEqual(OR.resolve_label(self.db,'testbed',changed['label'])['bound_prs'],[])
+  self.assertEqual(self.bind('native-session-a',changed['generation'])['outcome'],'bound')

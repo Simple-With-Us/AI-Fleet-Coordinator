@@ -1046,6 +1046,7 @@ class SessionRegistry:
                             identity["native_session_id"],
                             identity.get("parent_letter") or "",
                         )
+                        conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
                         previous = letter
                         letter, generation = self._allocate(
                             conn, identity["platform"], record_id, now, after=parent_pair
@@ -1288,20 +1289,10 @@ class SessionRegistry:
                 letter, generation = self._allocate(
                     conn, namespace, record_id, now, after=parent_pair
                 )
-            # A closed session does not reserve its PRs. Returning to the
-            # same alias generation must not revive a binding claimed by
-            # another live session while this one was closed. Same write
-            # transaction as alias restoration and bind_pr's conflict check.
-            conn.execute(
-                "DELETE FROM session_pr_bindings WHERE record_id = ? AND EXISTS ("
-                " SELECT 1 FROM session_pr_bindings other"
-                " JOIN sessions live ON live.record_id=other.record_id"
-                " JOIN alias_assignments a ON a.record_id=live.record_id AND a.retired_at IS NULL"
-                " WHERE other.record_id<>? AND other.repo=session_pr_bindings.repo"
-                " AND other.number=session_pr_bindings.number AND live.closed_at IS NULL"
-                " AND other.generation=a.generation)",
-                (record_id, record_id),
-            )
+            # A closed-to-open transition never revives an old PR claim,
+            # including rows closed by listener SQL or predating this feature.
+            # Explicit binding after reopen rechecks current ownership.
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -1376,6 +1367,7 @@ class SessionRegistry:
                     " WHERE record_id = ? AND retired_at IS NULL",
                     (now, record_id),
                 )
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             letter, new_generation = self._allocate(
                 conn, row["platform"], record_id, now, after=parent_pair
             )
