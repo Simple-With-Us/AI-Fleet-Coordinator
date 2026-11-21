@@ -683,11 +683,11 @@ class PollFailureTests(Base):
         self.fake.account = wd.PollError("graphql-http-503")
         self.poll()
         self.poll(at=NOW + dt.timedelta(minutes=5))
-        self.fake.account = wd.PollError("credential-binding-missing")
+        self.fake.account = wd.PollError("credential-binding-missing-INFISICAL_TOKEN")
         self.poll(at=NOW + dt.timedelta(minutes=6))
         self.poll(at=NOW + dt.timedelta(minutes=130))
         self.assertEqual(len(self.fake.posts), 2)
-        self.assertIn("credential-binding-missing", self.fake.posts[-1])
+        self.assertIn("credential-binding-missing-INFISICAL_TOKEN", self.fake.posts[-1])
 
     def test_existing_blind_incident_does_not_resend_after_upgrade(self):
         self.state["poll_failed_since"] = (NOW - dt.timedelta(days=3)).timestamp()
@@ -1415,7 +1415,7 @@ class DirectCredentialTests(unittest.TestCase):
     def test_missing_own_binding_never_uses_other_consumers_or_raw_secret_environment(self):
         self.conn.env.pop("INFISICAL_TOKEN")
         self.api.requests.clear()
-        with self.assertRaisesRegex(wd.PollError, "^credential-binding-missing$"):
+        with self.assertRaisesRegex(wd.PollError, "^credential-binding-missing-INFISICAL_TOKEN$"):
             self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN")
         self.assertEqual(self.api.requests, [])
         self.assertEqual(self.reader_calls, [])
@@ -1613,7 +1613,7 @@ class HttpSafetyTests(Base):
         conn = wd.Connections(self.cfg, runner=run, env={})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.page("title", "text"))
-        self.assertIn("credential-binding-missing", out.getvalue())
+        self.assertIn("credential-binding-missing-INFISICAL_TOKEN", out.getvalue())
 
     def test_only_machine_codes_survive_from_an_error_body(self):
         errors = [

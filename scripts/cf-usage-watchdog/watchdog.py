@@ -649,7 +649,7 @@ class Connections:
 
         token = (self.env.get("INFISICAL_TOKEN") or "").strip()
         if not token:
-            raise PollError("credential-binding-missing")
+            raise PollError("credential-binding-missing-INFISICAL_TOKEN")
         try:
             project = fi.infisical_project_id(self.env, fi.home_dir(self.env), conf["project"])
             values = fi.bounded_fetch_project(
