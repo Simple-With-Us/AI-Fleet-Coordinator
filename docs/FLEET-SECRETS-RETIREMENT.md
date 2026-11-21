@@ -35,6 +35,10 @@ reader, used by many consumers, each of which should instead hold its own narrow
    performs the read and also checks the answer own provenance (workspace, environment, secretPath, secretKey),
    so a value from the wrong place fails closed.
 
+   The read pins the approved Infisical origin and refuses every 3xx.  The bearer travels in a header,  so a
+   redirect to another origin would hand the credential to whoever the response named,  and the shared client
+   never follows one (`scripts/fleet_infisical.py`,  the `_NoRedirect` handler and the opener every call uses).
+
    Where a consumer lives outside this repository (a Mac-local script, another repo tool), it calls the same
    route itself, with the same checks its own code needs.  `scripts/mac-resource-watch.py` is the reviewed
    precedent for that shape.

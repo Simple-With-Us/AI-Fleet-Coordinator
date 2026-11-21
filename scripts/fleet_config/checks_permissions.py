@@ -448,8 +448,10 @@ def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
         )
     except FI.SecretsError as exc:
         reason = ReasonCode.UNPARSEABLE if "bad-output" in exc.message else ReasonCode.ERROR
+        # Only the allow-listed reason token is emitted:  the provider's own text
+        # never reaches a diagnostic.
         raise CheckError(
-            "the secret store could not be read:  %s" % exc.message,
+            "the secret store could not be read:  %s" % reason.value,
             reason,
         ) from None
     except OSError:
