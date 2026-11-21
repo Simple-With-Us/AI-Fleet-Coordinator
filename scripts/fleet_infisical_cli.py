@@ -4,9 +4,11 @@
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
+        [--require-finite-expiry]
         print one value, exactly, with no trailing newline.  With several names, print a JSON
         object of name to value instead (only the requested named reads).  Exit 3 when
         any NAME is absent;  nothing is printed then.
+        --require-finite-expiry also refuses read grants without a future finite expiry.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
   set NAME [--path /] [--state-dir ABS] [--purpose SLUG]
@@ -47,7 +49,7 @@ MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
 
 USAGE = (
     "usage: fleet-infisical run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
-    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator] [--require-finite-expiry]\n"
     "       fleet-infisical get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-infisical names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-infisical set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
@@ -57,13 +59,20 @@ USAGE = (
 )
 
 
-def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, object]:
+def _parse(
+    args: Sequence[str], allow_only: bool, positional: int, *, allow_finite_expiry: bool = False
+) -> dict[str, object]:
     """Tiny parser:  --path P, --only A,B, and `positional` bare arguments.  Raises SecretsError(code 2)."""
     opts: dict[str, object] = {"path": "/", "only": None, "args": []}
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--name", "--from", "--var", "--service", "--account"):
+        if a == "--require-finite-expiry" and allow_finite_expiry:
+            if "require_finite_expiry" in opts:
+                raise UsageError("duplicate --require-finite-expiry")
+            opts["require_finite_expiry"] = True
+            i += 1
+        elif a in ("--name", "--from", "--var", "--service", "--account"):
             if i + 1 >= len(args):
                 raise UsageError(f"{a} needs a value")
             opts[a[2:]] = args[i + 1]
@@ -136,11 +145,15 @@ def _take_project(args: Sequence[str]) -> tuple[str, list[str]]:
 
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
-    opts = _parse(rest, False, -1)
-    names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
+    opts = _parse(rest, False, -1, allow_finite_expiry=True)
+    requested_names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
+    names = list(dict.fromkeys(requested_names))
+    if len(names) > MAX_RUN_NAMES:
+        raise UsageError(f"get accepts at most {MAX_RUN_NAMES} distinct key names")
     path = core.check_path(str(opts["path"]))
     project_id = core.infisical_project_id(env, core.home_dir(env), project)
-    secrets = core.fetch_project(project_id, path, env, names=tuple(names))
+    policy = {"require_finite_expiry": True} if opts.get("require_finite_expiry") else {}
+    secrets = core.fetch_project(project_id, path, env, names=tuple(names), **policy)
     # Bound token reads request only the named keys, never the rest of the folder.
     # Nothing is printed unless every requested name resolves.
     missing = [n for n in names if n not in secrets]
@@ -149,7 +162,7 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
             "key {} is not in Infisical at {}".format(", ".join(missing), opts["path"]), 3
         )
     core.reject_unresolved(secrets, names)
-    if len(names) == 1:
+    if len(requested_names) == 1:
         out.write(secrets[names[0]])
     else:
         out.write(json.dumps({n: secrets[n] for n in names}))

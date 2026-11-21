@@ -627,6 +627,13 @@ class ReviewFindingTests(unittest.TestCase):
         result = check_command(self._command("fleet-secrets", "set NAME"), "mac", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn("not allowed to run", result.reason)
+        self.assertIn("not on the allowlist", result.reason)
+
+    def test_command_rules_cannot_run_the_retired_secret_command(self) -> None:
+        for detail in ("names --path /zulip", "get A_KEY", "doctor"):
+            result = check_command(self._command("fleet-secrets", detail), "mac", self.ctx)
+            self.assertIs(result.state, CheckState.UNKNOWN)
+            self.assertIn("not on the allowlist", result.reason)
 
     def test_a_malformed_command_detail_is_not_run_bare(self) -> None:
         result = check_command(self._command("fleet-secrets", 'doctor "unbalanced'), "mac", self.ctx)

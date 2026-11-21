@@ -391,9 +391,26 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     """
     cache_key = "infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
+    if isinstance(cached, CheckError):
+        raise CheckError(str(cached), cached.reason_code) from None
     if cached is not None:
         return cached
+    try:
+        names = _probe_secret_store_names(ctx, folder)
+    except CheckError as exc:
+        # Keep the diagnostic, without retaining a traceback or treating failure as absence.
+        ctx.cache[cache_key] = CheckError(str(exc), exc.reason_code)
+        raise
+    ctx.cache[cache_key] = names
+    return names
 
+
+def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
+    """One uncached, bounded names-only probe, in process.
+
+    No command starts:  the checker's own scoped token comes from the checker's own
+    store,  and the client asks the grant for names only.
+    """
     account = FOLDER_TOKEN_ACCOUNTS.get(folder, "")
     if not account:
         raise CheckError(
@@ -412,13 +429,13 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     env = dict(ctx.child_env())
     env["HOME"] = str(home)
     env[FI.ENV_READ_PATHS] = folder
-    token, status = FI.token_from_store(account, env, home)
-    if not token:
+    read_token, status = FI.token_from_store(account, env, home)
+    if not read_token:
         try:
-            token = FI.resolve_token(env)
+            read_token = FI.resolve_token(env)
         except FI.SecretsError:
-            token = ""
-    if not token:
+            read_token = ""
+    if not read_token:
         raise CheckError(
             "the %s service-token store for the secret-store folder %s is unavailable or "
             "refused (%s)" % (account, folder, status),
@@ -427,7 +444,7 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     try:
         project = FI.infisical_project_id(env, home)
         found = FI.list_project_names(
-            project, folder, env, token=token, timeout=ctx.timeout or 10
+            project, folder, env, token=read_token, timeout=ctx.timeout or 10
         )
     except FI.SecretsError as exc:
         reason = ReasonCode.UNPARSEABLE if "bad-output" in exc.message else ReasonCode.ERROR
@@ -441,7 +458,7 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
             ReasonCode.ERROR,
         ) from None
     finally:
-        token = ""
+        read_token = ""
     names = set()
     for text in found:
         if not _KEY_NAME_RE.match(text):
@@ -450,9 +467,7 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
                 ReasonCode.UNPARSEABLE,
             )
         names.add(text)
-    frozen = frozenset(names)
-    ctx.cache[cache_key] = frozen
-    return frozen
+    return frozenset(names)
 
 
 def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:

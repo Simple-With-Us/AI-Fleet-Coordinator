@@ -2,7 +2,7 @@
 
 The runner is the safety seam of the package:  a command that is not on the allowlist
 is refused before any process exists,  every command has an explicit timeout,  and the
-output is capped.  These tests use a fake ``security`` in a temporary directory,  so
+output is capped.  These tests use a fake ``security`` in a temporary directory, so
 no test starts a real fleet tool,  no test writes outside its own temporary tree and no
 test reads a secret.
 """
@@ -16,6 +16,7 @@ import unittest
 
 from fleet_config import apply as apply_module
 from fleet_config.checks import (
+    INFISICAL_CLI,
     CommandRefused,
     check_cli_allowed,
     run_cli,
@@ -51,6 +52,37 @@ class AllowlistTests(unittest.TestCase):
             check_cli_allowed(["security", "find-certificate", "-a", "-c", "name", "-p"]),
             "security",
         )
+
+    def test_the_canonical_names_command_is_allowed(self):
+        self.assertEqual(
+            check_cli_allowed([sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip"]),
+            "fleet_infisical_cli.py",
+        )
+
+    def test_the_canonical_metadata_doctor_is_allowed(self):
+        self.assertEqual(
+            check_cli_allowed([sys.executable, "-I", INFISICAL_CLI, "doctor", "--json"]),
+            "fleet_infisical_cli.py",
+        )
+
+    def test_canonical_command_cannot_change_interpreter_source_or_operation(self):
+        rejected = [
+            ["/other/python3", "-I", INFISICAL_CLI, "names"],
+            [sys.executable, "-I", "/other/fleet_infisical_cli.py", "names"],
+            [sys.executable, INFISICAL_CLI, "names"],
+            [sys.executable, "-I", INFISICAL_CLI, "get", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "run", "--only", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "set", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/../other"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip", "--path", "/"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--project", "other"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--json"],
+            ["fleet-secrets", "names"],
+            ["/other/fleet-secrets", "names"],
+        ]
+        for argv in rejected:
+            with self.subTest(argv=argv), self.assertRaises(CommandRefused):
+                check_cli_allowed(argv)
 
     def test_an_installer_module_is_allowed(self):
         self.assertEqual(

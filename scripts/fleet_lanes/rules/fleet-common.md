@@ -1,6 +1,6 @@
 ### Coordination
 
-Claim substantial Linear work first; branch `<seat>/<id>-<slug>`; PR `Fixes <ID>` (finished)/`Refs <ID>` (partial).  Zulip topic `<ID> <subject>`, status starts `repo:`.  Effort logs archived; search recall.
+Claim substantial Linear work first; branch `<seat>/<id>-<slug>`; PR `Fixes <ID>` (finished)/`Refs <ID>` (partial).  Zulip topic `<ID> <subject>`, status starts `repo:`.  Effort logs archived.
 
 Use a verified seat/approved route.  Never borrow identities/credentials, expose/persist tokens or use chat tags/letters as native IDs.
 

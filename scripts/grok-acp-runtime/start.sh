@@ -6,16 +6,21 @@
 # Bind 12419 — NOT 2419.
 set -euo pipefail
 
-# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).  It is read through the
-# shared scoped reader with this consumer's own service token, so the value never reaches a
-# command line and never lands in a file.
-READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
-  GROK_AGENT_SECRET="$(python3 "$READER" get GROK_AGENT_SECRET --folder /grok-acp --project fleet-ops --account grok-acp-ro)" \
-    || { echo "missing GROK_AGENT_SECRET in Infisical /grok-acp" >&2; exit 1; }
+  # A reader that could not answer is not a missing secret:  the two failures name
+  # different components,  so an operator repairs the one that is broken.
+  if GROK_AGENT_SECRET="$(/usr/bin/python3 -I "${SCRIPT_DIR}/../fleet_infisical_cli.py" get GROK_AGENT_SECRET --project fleet-ops --path /grok-acp 2>/dev/null)"; then
+    :
+  else
+    reader_status=$?
+    echo "the scoped reader could not return GROK_AGENT_SECRET (reader exit ${reader_status}):  the grok-acp-ro service token store is unavailable, refused the read or timed out" >&2
+    exit "${reader_status}"
+  fi
 fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then
-  echo "GROK_AGENT_SECRET empty in Infisical /grok-acp" >&2
+  echo "GROK_AGENT_SECRET is empty in Infisical /grok-acp" >&2
   exit 1
 fi
 export GROK_AGENT_SECRET
@@ -26,7 +31,7 @@ export GROK_DISABLE_AUTOUPDATER=1
 export GROK_CLAUDE_MCPS_ENABLED=0
 export GROK_CURSOR_MCPS_ENABLED=0
 export GROK_MANAGED_MCPS_ENABLED=0
-HERE="$(cd "$(dirname "$0")" && pwd)"
+HERE="$SCRIPT_DIR"
 ACP_HOME="${HERE}/acp-home"
 ACP_CONFIG_SRC="${HERE}/acp-home-config.toml"
 mkdir -p "$ACP_HOME"

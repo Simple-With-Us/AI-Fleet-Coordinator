@@ -22,7 +22,11 @@ from typing import Any
 from unittest import mock
 
 from fleet_config import contract
-from fleet_config.checks import CheckContext, default_registry, sha256_text
+from fleet_config.checks import (
+    CheckContext,
+    default_registry,
+    sha256_text,
+)
 from fleet_config.checks_hooks import (
     check_hook_registered,
     hook_entries,

@@ -91,11 +91,11 @@ function forbidLegacyIo() {
   return { hits, readFileImpl, execFileImpl };
 }
 
-test("a valid scoped binding is verified and its values are what asc-api.mjs receives", async () => {
+test("a valid scoped binding is verified and its values are what testflight_asc_service.mjs receives", async () => {
   const { calls, fetchImpl } = fetchScript();
   const { hits, readFileImpl, execFileImpl } = forbidLegacyIo();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-scoped-"));
-  const script = path.join(dir, "asc-api.mjs");
+  const script = path.join(dir, "testflight_asc_service.mjs");
   fs.writeFileSync(script, "// fixture\n");
   const env = bindingEnv({ HOME: dir, IOS_FLEET_DIR: dir, [TOKEN_ENV]: FIXTURE });
   const spawned = [];
@@ -118,7 +118,7 @@ test("a valid scoped binding is verified and its values are what asc-api.mjs rec
   ]);
   assert.equal(calls.every((call) => call.url.startsWith(API_BASE)), true);
   assert.equal(calls.every((call) => call.authorization === `Bearer ${FIXTURE}`), true);
-  assert.deepEqual(spawned[0].args, [script, "GET", "/v1/apps?limit=1"]);
+  assert.deepEqual(spawned[0].args, [script, "/v1/apps?limit=1"]);
   for (const name of ASC_NAMES) assert.equal(spawned[0].env[name], CREDS[name]);
   assert.equal(Object.hasOwn(spawned[0].env, TOKEN_ENV), false);
   assert.equal(Object.hasOwn(spawned[0].env, "INFISICAL_TOKEN"), false);
@@ -126,7 +126,7 @@ test("a valid scoped binding is verified and its values are what asc-api.mjs rec
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("a missing binding fails closed before asc-api.mjs and ignores legacy material", async () => {
+test("a missing binding fails closed before testflight_asc_service.mjs and ignores legacy material", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-missing-"));
   const legacyDir = path.join(dir, ".appstoreconnect", "private_keys");
   fs.mkdirSync(legacyDir, { recursive: true });
@@ -136,7 +136,7 @@ test("a missing binding fails closed before asc-api.mjs and ignores legacy mater
   fs.mkdirSync(bin);
   const marker = path.join(dir, "fleet-secrets-was-run");
   fs.writeFileSync(path.join(bin, "fleet-secrets"), `#!/bin/sh\necho ran > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
-  const script = path.join(dir, "asc-api.mjs");
+  const script = path.join(dir, "testflight_asc_service.mjs");
   fs.writeFileSync(script, "// fixture\n");
   const reads = [];
   const commands = [];
@@ -161,7 +161,7 @@ test("a missing binding fails closed before asc-api.mjs and ignores legacy mater
       cb(err, "", "The specified item could not be found in the keychain.");
     },
     runCmd() {
-      throw new Error("asc-api.mjs was spawned");
+      throw new Error("testflight_asc_service.mjs was spawned");
     },
   });
   const out = { text: "", write(chunk) { this.text += chunk; } };
@@ -232,6 +232,27 @@ test("the legacy folder and unscoped route stay unused:  there is no opt-in", as
   // The opt-in is gone:  the scoped token is the only credential source.
   assert.throws(() => parseArgs(["--allow-legacy-asc-creds"]), /unknown argument/);
   assert.equal("allowLegacyAsc" in parseArgs([]), false);
+  // The retired environment opt-in cannot bring it back:  it fails before any
+  // credential read and before any child process is spawned.
+  const legacyEnv = { ...base, IOS_TF_ALLOW_LEGACY_ASC_CREDS: "1" };
+  let legacyFetched = false;
+  const legacySpawned = [];
+  const legacyDeps = makeDeps(legacyEnv, {
+    fetchImpl() {
+      legacyFetched = true;
+      throw new Error("scoped fetch");
+    },
+    execFileImpl() {
+      throw new Error("keychain");
+    },
+    runCmd(_cmd, args, opts) {
+      legacySpawned.push({ args, env: opts.env });
+      return Promise.resolve('{"data":[]}\n');
+    },
+  });
+  await assert.rejects(() => legacyDeps.asc("/v1/apps"), /does not fall back|keychain/);
+  assert.equal(legacyFetched, false);
+  assert.equal(legacySpawned.length, 0, "the legacy helper never runs");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

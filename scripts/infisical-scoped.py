@@ -5,6 +5,9 @@
   infisical-scoped.py names --folder F [--project fleet-ops|ai-fleet-coordinator]
   infisical-scoped.py doctor [--project fleet-ops|ai-fleet-coordinator]
 
+The optional --consumer-binding ABS --consumer EXPECTED selection uses the strict
+generic declaration contract in docs/protocols/declared-consumer-reader.md.
+
 The reader replaces the retired `fleet-secrets` command for Muster.  Every read goes
 through the shared client (`scripts/fleet_infisical.py`), never through HTTP code of
 its own and never through a second reader, and every read uses the consumer's own
@@ -27,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -110,7 +114,7 @@ def _account_for(project: str, folder: str, named: str | None = None) -> str:
     answers, and a folder it does not carry is refused rather than read with somebody
     else's token.
     """
-    if named:
+    if named is not None:
         return named
     account = ACCOUNTS.get((project, folder))
     if not account:
@@ -118,9 +122,19 @@ def _account_for(project: str, folder: str, named: str | None = None) -> str:
     return account
 
 
+def _store_token(account: str, env: dict[str, str], home: Path) -> tuple[str, str]:
+    """Read one existing store item and keep timeout/refusal reasons safe."""
+    try:
+        return FI.token_from_store(account, env, home)
+    except FI.SecretsError as exc:
+        if exc.code == 124:
+            raise ReaderError("the scoped token store timed out", 124) from None
+        raise ReaderError("the scoped token store refused the read", EXIT_REFUSED) from None
+
+
 def _token_for(account: str, env: dict[str, str], home: Path) -> str:
     """The consumer's own token from the host's approved store."""
-    token, status = FI.token_from_store(account, env, home)
+    token, status = _store_token(account, env, home)
     if not token:
         raise ReaderError(f"the reader token is not available ({status})", EXIT_REFUSED)
     return token
@@ -131,7 +145,7 @@ def _project_id(env: dict[str, str], home: Path, project: str) -> str:
     try:
         return FI.infisical_project_id(env, home, project)
     except FI.SecretsError as exc:
-        raise ReaderError(exc.message, EXIT_REFUSED) from None
+        raise ReaderError(_reason_token(exc.message), EXIT_REFUSED) from None
 
 
 def _reason_token(message: str) -> str:
@@ -152,6 +166,166 @@ def _reason_token(message: str) -> str:
     return "read-failed"
 
 
+def _declared_context(args, folder: str):
+    """Select one protected declaration and its exact existing Keychain account."""
+    env, home = _environment()
+    conflicts = FI.AUTH_ENV_VARS | {
+        FI.ENV_API,
+        "INFISICAL_API_URL",
+        FI.ENV_READ_PATHS,
+        FI.ENV_WRITE_PATHS,
+    }
+    if getattr(args, "account", None) is not None or any(key in env for key in conflicts):
+        raise ReaderError("consumer-binding-conflict")
+    if FI.environment_refusal(env):
+        raise ReaderError("consumer-binding-environment-refused")
+    try:
+        declaration = FI._decode_json(
+            FI._protected_read(args.consumer_binding, 16 * 1024, private=True, strict_custody=True)
+        )
+        keys = {
+            "schemaVersion",
+            "consumer",
+            "project",
+            "projectId",
+            "environment",
+            "secretPath",
+            "permissions",
+            "expiresAt",
+            "tokenName",
+            "tokenId",
+            "storage",
+        }
+        if not isinstance(declaration, dict) or set(declaration) != keys:
+            raise ValueError
+        if (
+            type(declaration["schemaVersion"]) is not int
+            or declaration["schemaVersion"] != 1
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", args.consumer)
+            or args.consumer.startswith("st.")
+            or declaration["consumer"] != args.consumer
+            or declaration["project"] != args.project
+            or not isinstance(declaration["projectId"], str)
+            or not FI._UUID_RE.fullmatch(declaration["projectId"])
+            or declaration["environment"] != "prod"
+            or declaration["secretPath"] != folder
+            or declaration["permissions"] != ["read"]
+        ):
+            raise ValueError
+        expected = FI._expected_token_identity(
+            {
+                "id": declaration["tokenId"],
+                "name": declaration["tokenName"],
+                "expiresAt": declaration["expiresAt"],
+            }
+        )
+        if declaration["storage"] != {
+            "kind": "mac-login-keychain",
+            "service": FI.SCOPED_KEYCHAIN_SERVICE,
+            "account": declaration["tokenName"],
+        }:
+            raise ValueError
+        # Resolve the installed project selection first; a declaration cannot override it.
+        project_id = FI.infisical_project_id(env, home, args.project)
+        if project_id != declaration["projectId"]:
+            raise ValueError
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        RecursionError,
+        UnicodeError,
+        FI.SecretsError,
+        FI.UsageError,
+    ):
+        raise ReaderError("consumer-binding-refused") from None
+    try:
+        token, _status = FI.token_from_store(
+            declaration["tokenName"], env, home, bounded_keychain=True
+        )
+    except FI.SecretsError as exc:
+        raise ReaderError("consumer-binding-store-refused", 124 if exc.code == 124 else 4) from None
+    if not token:
+        raise ReaderError("consumer-binding-store-unavailable")
+    # Only nonsecret project and exact scope metadata reaches the canonical reader.
+    private = {"INFISICAL_ENVIRONMENT": "prod", FI.ENV_READ_PATHS: folder}
+    return project_id, token, private, expected
+
+
+def _declared_read(args, folder: str) -> int:
+    project_id, token, env, expected = _declared_context(args, folder)
+    try:
+        if args.verb == "get":
+            values = FI.bounded_fetch_project(
+                project_id,
+                folder,
+                env,
+                token=token,
+                names=(args.name,),
+                timeout=30.0,
+                max_output_bytes=8192,
+                strict_records=True,
+                require_finite_expiry=True,
+                expected_identity=expected,
+            )
+            if args.name not in values:
+                raise ReaderError("that name is absent", EXIT_ABSENT)
+            sys.stdout.write(values[args.name] + "\n")
+        else:
+            found = FI.list_project_names(
+                project_id,
+                folder,
+                env,
+                token=token,
+                timeout=30.0,
+                require_finite_expiry=True,
+                expected_identity=expected,
+                strict_records=True,
+            )
+            if not found:
+                raise ReaderError("that folder holds no name", EXIT_ABSENT)
+            sys.stdout.write("".join(name + "\n" for name in found))
+    except FI.SecretsError as exc:
+        raise ReaderError(
+            "consumer-binding-read-refused", EXIT_ABSENT if exc.code == 3 else 4
+        ) from None
+    except FI.UsageError:
+        raise ReaderError("consumer-binding-read-refused") from None
+    return EXIT_OK
+
+
+def _declared_doctor(args) -> int:
+    """Mask diagnostics while applying the same identity and metadata-only policy."""
+    report = {
+        "ok": False,
+        "environment_ok": False,
+        "project_id_resolvable": False,
+        "reader_configured": False,
+        "fetch_names_ok": False,
+        "names_count": 0,
+        "failure_reason": "",
+    }
+    try:
+        FI.check_path(args.folder)
+        project_id, token, env, expected = _declared_context(args, args.folder)
+        report.update(environment_ok=True, project_id_resolvable=True, reader_configured=True)
+        found = FI.list_project_names(
+            project_id,
+            args.folder,
+            env,
+            token=token,
+            timeout=30.0,
+            require_finite_expiry=True,
+            expected_identity=expected,
+            strict_records=True,
+        )
+        report.update(ok=True, fetch_names_ok=True, names_count=len(found))
+    except (ReaderError, FI.SecretsError, FI.UsageError):
+        report["failure_reason"] = "consumer-binding-refused"
+    sys.stdout.write(json.dumps(report) + "\n")
+    return EXIT_OK
+
+
 # --------------------------------------------------------------------------- verbs
 
 
@@ -165,6 +339,8 @@ def _get(args: argparse.Namespace) -> int:
         FI.check_path(folder)
     except FI.UsageError as exc:
         raise ReaderError(exc.message, EXIT_USAGE) from None
+    if args.consumer_binding is not None:
+        return _declared_read(args, folder)
     account = _account_for(project, folder, getattr(args, "account", None))
     env, home = _environment()
     token = _token_for(account, env, home)
@@ -192,6 +368,8 @@ def _names(args: argparse.Namespace) -> int:
         FI.check_path(folder)
     except FI.UsageError as exc:
         raise ReaderError(exc.message, EXIT_USAGE) from None
+    if args.consumer_binding is not None:
+        return _declared_read(args, folder)
     account = _account_for(project, folder, getattr(args, "account", None))
     env, home = _environment()
     token = _token_for(account, env, home)
@@ -214,6 +392,8 @@ def _names(args: argparse.Namespace) -> int:
 
 def _doctor(args: argparse.Namespace) -> int:
     """One JSON report about this Mac's access.  No value and no token in it."""
+    if args.consumer_binding is not None:
+        return _declared_doctor(args)
     project = args.project
     folder = ROOT_FOLDER
     report = {
@@ -245,7 +425,11 @@ def _doctor(args: argparse.Namespace) -> int:
             report["project_id_resolvable"] = True
         except FI.SecretsError as exc:
             reason = reason or _reason_token(exc.message)
-        token, status = FI.token_from_store(account, env, home)
+        try:
+            token, status = _store_token(account, env, home)
+        except ReaderError as exc:
+            # Keep the doctor's JSON contract on store refusal, including timeout.
+            token, status = "", "keychain-timeout" if exc.code == 124 else "store-refused"
         if not token:
             reason = reason or status
         else:
@@ -298,15 +482,23 @@ def _parser() -> argparse.ArgumentParser:
 
     doctor = verbs.add_parser("doctor", help="one JSON report about this Mac's access")
     doctor.add_argument("--project", choices=PROJECTS, default=DEFAULT_PROJECT)
+    doctor.add_argument("--folder", default=ROOT_FOLDER, help="declared doctor's exact folder")
     doctor.add_argument(
         "--account", help="the consumer's own token account, when it is not in the table"
     )
+    for verb in (get, names, doctor):
+        verb.add_argument("--consumer-binding", help="absolute protected nonsecret declaration")
+        verb.add_argument("--consumer", help="the expected consumer identifier")
     return parser
 
 
 def main(argv: list[str]) -> int:
     args = _parser().parse_args(argv[1:])
     try:
+        if (args.consumer_binding is None) != (args.consumer is None):
+            raise ReaderError("consumer-binding and consumer must be supplied together", EXIT_USAGE)
+        if args.verb == "doctor" and args.consumer_binding is None and args.folder != ROOT_FOLDER:
+            raise ReaderError("doctor folder selection requires a consumer binding", EXIT_USAGE)
         if args.verb == "get":
             return _get(args)
         if args.verb == "names":

@@ -289,6 +289,8 @@ FLEET_OPS_FOLDER = "/global-api-keys"
 FLEET_OPS_ENV_NAMES = (
     FLEET_OPS_TOKEN_ENV,
     FLEET_OPS_PROJECT_ENV,
+    # This reader's own API base,  so a Fleet-OPS read never inherits the recall host.
+    "INFISICAL_FLEET_OPS_API",
     "FLEET_RAG_INFISICAL_API",
     "INFISICAL_ENVIRONMENT",
     "INFISICAL_ENV",
@@ -332,7 +334,7 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
         return {}
     # This reader's own API base wins,  so a self-hosted Infisical is honoured here
     # exactly as it is on the recall route.
-    api_base = source.get("FLEET_RAG_INFISICAL_API")
+    api_base = source.get("INFISICAL_FLEET_OPS_API") or source.get("FLEET_RAG_INFISICAL_API")
     if api_base:
         source[secrets.ENV_API] = api_base
     try:

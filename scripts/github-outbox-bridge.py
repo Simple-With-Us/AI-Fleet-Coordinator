@@ -19,10 +19,10 @@ bridge runs on the Mac, and every tick:
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
 
-No token is read into this process: the simple-chat CLI resolves each seat's own
-Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
-the fleet reader bot's key from Infisical Fleet-OPS /zulip, through this bridge's own scoped
-read-only service token (AFC-359).
+No token is read into this process: the simple-chat CLI resolves each posting seat's
+own credential.  The read side takes either an explicit --rc file of the caller's own or
+the selected bot's names from Infisical Fleet-OPS /zulip, through this bridge's own
+scoped read-only service token (the canonical bounded named reader, AFC-800).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -42,11 +42,15 @@ from __future__ import annotations
 import argparse
 import base64
 import fcntl
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -65,7 +69,8 @@ READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _
 # This bridge's own scoped read-only service token:  Fleet-OPS prod /zulip, the one folder it
 # reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
 # private file on a server);  the shared Infisical client checks the token's own grant and the
-# answer's own provenance before a value is used.
+# answer's own provenance before a value is used.  A token bound in the environment is only a
+# copy of that same grant,  and it is used when the store has none.
 TOKEN_ACCOUNT = "outbox-bridge-ro"
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
@@ -74,7 +79,7 @@ URGENT = ("OBJECTION", "HALT", "PROD DOWN", "URGENT", "HEADS-UP", "DEPLOY CLAIM"
 MAX_OUTBOUND_CHARS = 12000  # keep the post well inside Zulip's message limit
 MAX_MIRROR_CHARS = 4000
 POST_DOWN_AFTER = 3
-# Credentials are never read into this process.  See ZulipPoster and ZulipChannel.
+# Posting credentials stay inside simple-chat; read credentials stay in process memory.
 TOKEN_NAMES = ()
 
 
@@ -456,70 +461,127 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_WARNED = set()
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_github_outbox_bridge_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
 
 
-def _warn(message):
-    """One diagnostic on standard error.  A source name and a reason, never a value.
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parent / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
 
-    The same reason is reported once:  the three Zulip names share one source, and three
-    copies of one line say less than one line does.
-    """
-    if message in _WARNED:
-        return
-    _WARNED.add(message)
-    sys.stderr.write("outbox-bridge:  %s\n" % message)
+
+def _own_token(client):
+    """The bridge's own scoped token:  its own store first,  the bound copy second.
+
+    The store is the authority:  it is the home the process was given,  so a process
+    with no home has no store and falls back to the copy the host bound.  The client
+    still checks the token's own grant,  so a copy is only ever used for the folder
+    that grant names."""
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        try:
+            token, _status = client.token_from_store(
+                TOKEN_ACCOUNT, dict(os.environ), Path(home)
+            )
+        except Exception:
+            token = ""
+        if token:
+            return token
+    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
 
 
-def _infisical_secret(name, folder):
-    """One Infisical value through this bridge's own scoped token, or None.
-
-    A failure says which source was unavailable:  the shared client,  the token store,
-    or the read itself.  The value never appears in the diagnostic.
-    """
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
     try:
-        import fleet_infisical as FI
-    except ImportError:
-        _warn(
-            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
-            + TOKEN_ACCOUNT
-            + " scoped service token cannot be read"
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        return None
-    env = dict(os.environ)
-    env[FI.ENV_READ_PATHS] = folder
-    try:
-        value, status = FI.fetch_scoped(name, folder, TOKEN_ACCOUNT, env)
-    except TimeoutError:
-        _warn("the Infisical read for the " + TOKEN_ACCOUNT + " scoped service token timed out")
-        return None
-    except Exception as exc:
-        _warn(
-            "the Infisical read for the "
-            + TOKEN_ACCOUNT
-            + " scoped service token could not run ("
-            + type(exc).__name__
-            + ")"
+        token = _own_token(client)
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
         )
-        return None
-    if status != "ok":
-        _warn(
-            "the "
-            + TOKEN_ACCOUNT
-            + " scoped service token store is unavailable or refused ("
-            + status
-            + ")"
-        )
-        return None
-    return value or None
+    except Exception:
+        return {}
+
+
 
 
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
     Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
-    Infisical through this bridge's own scoped token, so the key never appears on a command line
-    and never in an exception message.  Refuses any host but the fleet realm and
+    Infisical through this bridge's own scoped token, read by the canonical bounded named
+    reader, so the key never appears on a command line and never in an exception
+    message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
 
@@ -528,10 +590,12 @@ class ZulipClient:
     def __init__(self, rc_path=None, *, bot=READ_AS_DEFAULT):
         self.email = self.key = self.site = None
         if rc_path is None:
-            self.email, self.key, self.site = (
-                _infisical_secret("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part), "/zulip")
+            names = tuple(
+                "%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
                 for part in ("EMAIL", "KEY", "SITE")
             )
+            values = _read_infisical_names(names, "/zulip")
+            self.email, self.key, self.site = (values.get(name) for name in names)
             text = ""
             if not (self.email and self.key and self.site):
                 self.email = self.key = self.site = None
@@ -566,8 +630,8 @@ class ZulipClient:
         if "narrow" in params:
             params["narrow"] = json.dumps(params["narrow"])
         url = "%s/api/v1/%s?%s" % (self.site.rstrip("/"), path, urllib.parse.urlencode(params))
-        token = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
-        req = urllib.request.Request(url, headers={"Authorization": "Basic " + token})
+        basic = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
+        req = urllib.request.Request(url, headers={"Authorization": "Basic " + basic})
         opener = urllib.request.build_opener(_NoRedirectHandler())
         try:
             with opener.open(req, timeout=20) as resp:

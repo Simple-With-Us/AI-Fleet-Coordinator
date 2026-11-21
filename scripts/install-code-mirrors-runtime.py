@@ -57,6 +57,33 @@ LEGACY_FILES = (
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
 )
+# Exact full Docs closure shipped at 43eba4633, before the shared Infisical module.
+# Keep this historical set immutable instead of accepting arbitrary current subsets.
+LEGACY_DOCS_FILES = (
+    "code-main-keeper.sh",
+    "fleet_lanes/__init__.py",
+    "fleet_lanes/code_main_sync.py",
+    "fleet_lanes/code_mirror_credentials.py",
+    "fleet_lanes/placement.py",
+    "fleet_lanes/placement-exceptions.json",
+    "fleet_knobs/__init__.py",
+    "fleet_knobs/knobs.py",
+    "fleet_knobs/lkg.py",
+    "fleet_knobs/registry.py",
+    "fleet_knobs/registry.json",
+    "fleet_knobs/source.py",
+    "fleet_knobs/values.py",
+    "fleet_secrets/__init__.py",
+    "fleet_secrets/core.py",
+    "collect-repo-documents.py",
+    "export-repo-git-source.py",
+    "remote_git_source.py",
+    "repo_catalog.py",
+    "fleet_docs/__init__.py",
+    "fleet_docs/__main__.py",
+    "fleet_docs/pipeline.py",
+    "fleet_docs/snapshot.py",
+)
 
 
 def _real_parents(path):
@@ -150,6 +177,7 @@ def install(source, destination, source_commit):
         if previous.get("schema") != 1 or set(previous.get("files", {})) not in (
             set(FILES),
             set(LEGACY_FILES),
+            set(LEGACY_DOCS_FILES),
         ):
             raise ValueError("Existing bundle manifest is not recognized")
         for name, digest in previous["files"].items():

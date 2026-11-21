@@ -36,12 +36,14 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
-# This script's own scoped read-only service token:  Fleet-OPS prod root, the folder the
-# signing key is read from.  The token lives in the consumer's own store (the owner's login
-# keychain on the Mac, a private file on a server);  the shared Infisical client checks the
-# token's own grant and the answer's own provenance before the value is used.
 TOKEN_ACCOUNT = "worker-health-ro"
 SECRET_FOLDER = "/"
+# The canonical Infisical command source beside this script.  It is the
+# reviewed reader this host's fleet tools share,  so its absence means this
+# host has no reader at all.
+INFISICAL_CLI = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py"
+)
 
 
 def sign(key, body):
@@ -66,6 +68,8 @@ def read_key():
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
+    if not os.path.isfile(INFISICAL_CLI):
+        return ""
     try:
         import fleet_infisical as FI
     except ImportError:
@@ -77,7 +81,13 @@ def read_key():
     env = dict(os.environ)
     env[FI.ENV_READ_PATHS] = SECRET_FOLDER
     try:
-        value, status = FI.fetch_scoped("HEALTH_HMAC_KEY", SECRET_FOLDER, TOKEN_ACCOUNT, env)
+        value, status = FI.fetch_scoped(
+            "HEALTH_HMAC_KEY",
+            SECRET_FOLDER,
+            TOKEN_ACCOUNT,
+            env,
+            require_finite_expiry=True,
+        )
     except Exception as exc:
         raise RuntimeError(
             "the Infisical read for the "
