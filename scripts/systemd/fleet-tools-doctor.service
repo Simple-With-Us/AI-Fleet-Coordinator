@@ -8,8 +8,9 @@ Type=oneshot
 User=jay
 Group=jay
 Environment=HOME=/home/jay
-Environment=AGENT_SEAT=CLAUDE
-ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --seats CLAUDE,CODEX --post
+# Missing binding means alert delivery is unavailable. No agent-identity fallback.
+EnvironmentFile=-/etc/fleet-services/doctor.env
+ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --post
 SuccessExitStatus=0 1
 ConditionPathExists=/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py
 TimeoutStartSec=600

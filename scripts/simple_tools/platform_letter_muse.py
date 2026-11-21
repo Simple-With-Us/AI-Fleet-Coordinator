@@ -341,6 +341,10 @@ SPEC = PL.PlatformSpec(
     stored_title=muse_stored_title,
     close_reasons=(),
     title_writer=muse_rename,
+    unlettered_feed=(
+        "hook-only:  Muse reaches this adapter through its plugin hooks alone, and the adapter reads no Muse session"
+        " store (only its own notes and the rename spool), so there is no list of chats to ask"
+    ),
 )
 
 

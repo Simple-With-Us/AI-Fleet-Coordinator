@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
+import { OperatorSheetsError } from "./simple_tools/operator_sheets_google.mjs";
 
 function fakeAdapter() {
   const sessions = []; // { rowNumber, cells }
@@ -92,6 +93,39 @@ test("adapter failure leaves the row pending", async () => {
   const res = await drainOutbox({ outbox, adapter });
   assert.deepEqual(res, { exported: 0, failed: 1 });
   assert.deepEqual(outbox.marked, []);
+});
+
+test("a stop during a later stale-index rescan flushes confirmed rows without failure", async () => {
+  let inspectCalls = 0;
+  let stop = false;
+  let writes = 0;
+  const marked = [];
+  const adapter = {
+    async validateHeaders() {},
+    async inspect() {
+      inspectCalls += 1;
+      if (inspectCalls === 2) {
+        stop = true;
+        throw new OperatorSheetsError("stopped");
+      }
+      return { sessions: { rowCount: 1 }, events: { rowCount: 1 } };
+    },
+    async readRows() { return { rows: [] }; },
+    async appendEvent() { writes += 1; return {}; }, // forces a safe rescan before reuse
+  };
+  const outbox = {
+    async pending() { return [
+      { outbox_id: "o-stop-first", kind: "event_append", payload: { cells: eventCells("e1", "r1") } },
+      { outbox_id: "o-stop-next", kind: "event_append", payload: { cells: eventCells("e2", "r1") } },
+    ]; },
+    async markExported(ids) { marked.push(...ids); },
+  };
+
+  const result = await drainOutbox({ outbox, adapter, shouldStop: () => stop });
+  assert.deepEqual(result, { exported: 1, failed: 0, stopped: true });
+  assert.deepEqual(marked, ["o-stop-first"]);
+  assert.equal(writes, 1);
+  assert.equal(inspectCalls, 2);
 });
 
 test("unknown outbox kind fails without a write", async () => {

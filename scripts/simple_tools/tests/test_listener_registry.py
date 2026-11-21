@@ -1014,26 +1014,44 @@ class OneWriterTest(RegistryApiTest):
         self.assertEqual(result["ended"], 0, result)
         self.assertEqual(self.open_sids(), set(mac) | {"server-new"})
 
-    def test_the_sweeper_refuses_a_pass_that_would_end_most_of_a_host(self) -> None:
-        # After an outage or a weekend every chat of a host looks stale at once.  A pass
-        # that would end more than half of a (platform, host)'s open rows ends none.
+    def test_the_sweeper_ends_a_bounded_part_of_a_backlog_and_keeps_the_rest(self) -> None:
+        # After an outage or a weekend every chat of a host looks stale at once.  A pass ends at
+        # most a share of a (platform, host)'s open rows:  the quietest first, and the rest wait
+        # for a later pass.  A pass that ended none of them could never drain a backlog at all.
         self.create_store()
         old = ["old-%d" % n for n in range(8)]
         for sid in old:
             self.register_at("CLAUDE", sid, "mac")
             self.age(sid, 40)
         self.register_at("CLAUDE", "new-1", "mac")
-        result = self.sweeper().run(self.clock.now)
+        sweeper = self.sweeper()
+        result = sweeper.run(self.clock.now)
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["error"], "sweep_share_exceeded")
-        self.assertEqual(result["ended"], 0)
+        self.assertEqual(result["ended"], 4)
         self.assertEqual(
-            result["refused"], [{"platform": "testbed", "host": "mac", "would_end": 8, "open": 9}]
+            result["refused"],
+            [{"platform": "testbed", "host": "mac", "would_end": 8, "open": 9, "ended": 4, "deferred": 4}],
         )
-        self.assertEqual(self.open_sids(), set(old) | {"new-1"})
-        # A share set to allow it ends them.
+        # The quietest rows go first, so the four that waited are the four most recent.
+        self.assertEqual(self.open_sids(), {"old-4", "old-5", "old-6", "old-7", "new-1"})
+        # The backlog drains over the passes that follow, and the last of them is clean.
+        self.assertEqual(sweeper.run(self.clock.now)["ended"], 2)
+        self.assertEqual(sweeper.run(self.clock.now)["ended"], 1)
+        result = sweeper.run(self.clock.now)
+        self.assertEqual((result["ok"], result["ended"], result["refused"]), (True, 1, []))
+        self.assertEqual(self.open_sids(), {"new-1"})
+
+    def test_a_share_set_to_allow_a_group_ends_it_whole(self) -> None:
+        self.create_store()
+        old = ["old-%d" % n for n in range(8)]
+        for sid in old:
+            self.register_at("CLAUDE", sid, "mac")
+            self.age(sid, 40)
+        self.register_at("CLAUDE", "new-1", "mac")
         result = self.sweeper(max_share=1.0).run(self.clock.now)
-        self.assertEqual((result["ok"], result["ended"]), (True, 8), result)
+        self.assertEqual((result["ok"], result["ended"], result["refused"]), (True, 8, []), result)
+        self.assertEqual(self.open_sids(), {"new-1"})
 
     def test_the_sweeper_records_a_sqlite_error_and_never_raises(self) -> None:
         os.makedirs(os.path.dirname(self.db), exist_ok=True)
@@ -1078,7 +1096,7 @@ class OneWriterTest(RegistryApiTest):
         self.assertEqual(self.open_sids(), {"new-1"})
 
     def test_a_refused_sweep_op_still_names_what_it_ended(self) -> None:
-        # kody 4544698314:  one host refused, another swept in the same pass;  the 409 says
+        # kody 4544698314:  one host's group was above the share, another's was not;  the 409 says
         # which rows the pass did end.
         self.create_store()
         old = ["old-%d" % n for n in range(3)]
@@ -1094,9 +1112,13 @@ class OneWriterTest(RegistryApiTest):
         )
         self.assertEqual(status, 409, answer)
         self.assertEqual(answer["code"], "sweep_share_exceeded")
-        self.assertEqual(answer["count"], 1, answer)
-        self.assertEqual(answer["ended"][0]["native_session_id"], "srv-old")
-        self.assertEqual(self.open_sids(), set(old) | {"new-mac", "srv-new"})
+        # The Mac's group was above the share:  two of its three stale rows end and one waits.
+        # The server's group was not above it, so its stale row ends.
+        self.assertEqual(answer["count"], 3, answer)
+        self.assertEqual(
+            sorted(row["native_session_id"] for row in answer["ended"]), ["old-0", "old-1", "srv-old"]
+        )
+        self.assertEqual(self.open_sids(), {"old-2", "new-mac", "srv-new"})
 
     def test_the_sweep_op_answers_503_when_the_sweep_is_off(self) -> None:
         self.create_store()
