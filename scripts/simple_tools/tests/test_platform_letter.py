@@ -1206,6 +1206,106 @@ class HookTests(Base):
         ]
         self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-11", "CTS-12"})
 
+    def test_issue_ids_in_lines_skips_runtime_context_but_keeps_chat_content(self) -> None:
+        bootstrap = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>"
+        )
+        lines = [
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": (
+                        "Injected UM-902; old receipt: posted id 8 to #WIP › AFC-906 example"
+                    )}]}}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "system", "content": (
+                    "Injected CT-903; simple-chat post --topic 'OPS-907 old example'"
+                )}}),
+            json.dumps({"type": "world_state", "text": "Startup AFC-904"}),
+            json.dumps({"type": "message", "role": "user", "content": bootstrap}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": bootstrap.replace("AFC-900", "AFC-905")}}),
+            json.dumps({"type": "message", "role": "user", "content": "Please fix AFC-1"}),
+            json.dumps({"type": "message", "role": "user", "content": (
+                "Please preserve this quoted context: > # AGENTS.md instructions for /repo "
+                "<INSTRUCTIONS>Example AFC-910</INSTRUCTIONS> "
+                "<environment_context>Example CTS-911</environment_context>"
+            )}),
+            json.dumps({"type": "message", "role": "assistant", "content": "I fixed CTS-2"}),
+            json.dumps({"type": "tool_use", "input": {"command": "run --issue OPS-3"}}),
+            json.dumps({"type": "tool_result", "content": "posted id 4 to #WIP › CC-5 rollout"}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {
+            "AFC-1", "AFC-910", "CC-5", "CTS-2", "CTS-911", "OPS-3",
+        })
+
+    def test_issue_ids_in_lines_keeps_a_request_after_a_quoted_bootstrap(self) -> None:
+        request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease fix AFC-912 in this request."
+        )
+        event = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease also fix OPS-913."
+        )
+        lines = [
+            json.dumps({"type": "message", "role": "user", "content": request}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": event,
+            }}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-912", "OPS-913"})
+
+    def test_issue_ids_in_lines_keeps_text_blocks_after_an_injected_bootstrap(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": [
+            {"type": "text", "text": (
+                "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-920 rules"
+                "</INSTRUCTIONS>\n<environment_context>Example CTS-921 path</environment_context>"
+            )},
+            {"type": "text", "text": "Please link the actual request UM-922."},
+        ]})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"UM-922"})
+
+    def test_issue_ids_in_lines_skips_standalone_agents_bootstrap_and_keeps_suffix(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-930 rules"
+            "</INSTRUCTIONS>\nPlease link actual work CT-931."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-931"})
+
+    def test_issue_ids_in_lines_ignores_environment_example_inside_instructions(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-940; literal "
+            "<environment_context>Example OPS-941</environment_context></INSTRUCTIONS>\n"
+            "<environment_context>Startup CTS-942</environment_context>\n"
+            "Please link actual work CT-943."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-943"})
+
+    def test_issue_ids_in_lines_keeps_bootstrap_suffix_quoted_inside_tool_result(self) -> None:
+        bootstrap_request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-950"
+            "</INSTRUCTIONS>\nPlease fix quoted AFC-951."
+        )
+        lines = [
+            json.dumps({"type": "tool_result", "content": {
+                "type": "message", "role": "user", "content": bootstrap_request,
+            }}),
+            json.dumps({"type": "message", "role": "user", "content": "Fix actual AFC-952."}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-952"})
+
+    def test_issue_ids_in_lines_keeps_user_text_before_inline_environment_example(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-960 rules"
+            "</INSTRUCTIONS>\nFix AFC-961 and consider "
+            "<environment_context>an inline example</environment_context>."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"AFC-961"})
+
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
         path = self.transcript("one AFC-1", "two AFC-2")
