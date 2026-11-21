@@ -155,6 +155,32 @@ class BoundedReadTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(len(self.children), 1)
 
+    def test_real_worker_finite_expiry_policy_refuses_null_before_values(self):
+        self.expiry = None
+        with self.assertRaisesRegex(core.SecretsError, "token-expired-or-invalid"):
+            self.fetch(require_finite_expiry=True)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0], "/api/v2/service-token")
+        # Opting in changes only this caller; legacy read-only grants retain null.
+        self.calls.clear()
+        self.assertEqual(self.fetch(), {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
+        self.assertEqual(len(self.calls), 3)
+
+    def test_real_worker_finite_expiry_accepts_future_and_refuses_expired(self):
+        self.assertEqual(len(self.fetch(require_finite_expiry=True)), 2)
+        self.calls.clear()
+        self.expiry = "2000-01-01T00:00:00Z"
+        with self.assertRaisesRegex(core.SecretsError, "token-expired-or-invalid"):
+            self.fetch(require_finite_expiry=True)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_finite_expiry_option_is_boolean_before_worker_creation(self):
+        for value in (None, 0, 1, "true"):
+            with self.subTest(value=value), self.assertRaises(core.UsageError):
+                self.fetch(require_finite_expiry=value)
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.calls, [])
+
     def test_large_legal_request_survives_eagain_after_a_real_partial_pipe_write(self):
         program = """
 import json,sys,time

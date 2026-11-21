@@ -9,11 +9,11 @@ Labels are per-platform pairs (AA-ZZ) with one namespace across all hosts.  No s
 registers, reopens or is relabelled.  A pair's generation counts its own issues for the seat.
 A main chat's pair follows one rule for every seat (owner, Nov 11 2026):  only the doubled pairs
 AA, BB ... ZZ, the free one issued the fewest times first, counting every past issue including legacy rows ("count the
-history"), then the lap order, so the seat keeps advancing and starts AA.2 only after ZZ.1;  all 26 live refuses the
+history"), then alphabetically on a tie;  all 26 live refuses the
 letter;  a caller's pick does not change it (see PRIMARY_ORDER and SessionRegistry._allocate).  A session
 another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
 the same row, wrapping past Z (parent CC, child CD;  parent XX, children XY, XZ, XA, XB);  when that row is full it
-takes a random free pair of two different letters, never a doubled one, and all 650 live refuses the letter.  Cross-seat references to a
+is refused a letter.  Cross-seat references to a
 generation > 1 letter must carry the generation:  "MM A (gen 2)".
 
 Seat is checked separately from identity:  a resolve under an unexpected seat returns the
@@ -36,12 +36,11 @@ import argparse
 import json
 import os
 import pathlib
-import random
 import re
 import secrets
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -133,11 +132,6 @@ LETTER_PICKS = ("lowest", "oldest", "primary")
 # CC").  There is no per-platform table:  a single letter is never issued again.  A single letter a chat already holds
 # from before the rule stays readable (letter_space_of), and a relabel or a reopen moves that chat onto a pair.
 DEFAULT_SPACE = "double"
-# The random source for a subthread whose parent's row is full (owner, Nov 11 2026:  "issue random non-pair of letters
-# like random 2 letters not identical ones to preserve those for main chats").  The operating system's generator, so
-# the pick is not predictable from earlier picks;  a test injects its own chooser through SessionRegistry(choose=...)
-# rather than weakening this one.
-_OVERFLOW_RANDOM = random.SystemRandom()
 
 
 def _clean_parent(value: object) -> str:
@@ -457,12 +451,8 @@ class SessionRegistry:
         db_path: str,
         *,
         read_only: bool = False,
-        choose: Callable[[Sequence[str]], str] | None = None,
     ):
         self.db_path = str(db_path)
-        # How a subthread whose parent's row is full picks its random pair.  None is the system's random source
-        # (_OVERFLOW_RANDOM), read at each call;  a test hands in a seeded chooser so its answer is fixed.
-        self._choose = choose
         self.read_only = bool(read_only)
         parent = os.path.dirname(self.db_path)
         if parent and not self.read_only:
@@ -743,20 +733,14 @@ class SessionRegistry:
 
         A main chat (no `after`) takes only a doubled pair (AA, BB ... ZZ):  the free one issued the fewest times,
         counting every row the seat's namespace holds for it, including rows written before this rule ("count the
-        history"), so a pair issued five times waits behind one issued three times;  among those, the first one after
-        where the lap is (the last doubled pair issued in the newest generation), wrapping past ZZ (on a fresh lap that
-        is the alphabet).  That keeps advancing:  AA.1 ... ZZ.1 in order, a released AA not reused while later pairs
-        are un-issued, then AA.2 onward after ZZ;  a pair still live when its turn comes is skipped, issued once it is
-        freed (it has the fewest issues then), and the lap then goes on from where it was rather than handing that pair
-        out again;  a pair live through a whole lap misses that lap's generation.  When all 26 are live the letter is
+        history"), so a pair issued five times waits behind one issued three times;  among those, the alphabetically earliest pair is chosen.
+        A released pair remains behind any free pair with fewer past issues.  When all 26 are live the letter is
         refused ("ok just refuse actually is fine") and the chat carries on unlettered.
 
         `after` is the pair its parent chat holds, for a subthread:  the first pair after the parent's (pairs_after,
         the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
-        live is taken.  When the parent's row is full, the subthread takes a random pair of two different letters that
-        is not live, with any first letter (owner, Nov 11 2026:  "issue random non-pair of letters like random 2
-        letters not identical ones to preserve those for main chats"), never a doubled pair, whether or not one is
-        free.  When none of the 650 is free the letter is refused and the chat carries on unlettered."""
+        live is taken.  When the parent's row is full, the subthread is refused a letter; it never moves to another row.
+        A child never takes the doubled pair reserved for main chats."""
         members = frozenset(LETTER_SPACES["double"])
         live = {
             r["letter"]
@@ -790,37 +774,19 @@ class SessionRegistry:
             follow = [p for p in pairs_after(after) if p in members and p not in live]
             if follow:
                 return issue(follow[0])
-            # The parent's row is full.  A random pair of two different letters, any row, never a doubled one:  the
-            # doubled pairs stay the main chats'.  Sorted first, so a seeded chooser gives the same answer every run.
-            spare = sorted(p for p in members if p[0] != p[1] and p not in live)
-            if spare:
-                return issue((self._choose or _OVERFLOW_RANDOM.choice)(spare))
-            limit = sum(1 for p in members if p[0] != p[1])
+            # Children stay in the parent's row; once its available non-doubled pairs are live, refuse the letter.
+            limit = sum(1 for p in members if p[0] == after[0] and p[0] != p[1])
             exhausted = LabelExhausted(
-                f"all {limit} non-doubled pairs are active on platform {platform!r}:  the parent's row ({after[0]}) is"
-                " full and a subthread never takes a doubled pair (they are the main chats'), so this one is refused a"
-                " letter"
+                f"no free child pairs remain in row {after[0]!r} (capacity {limit}) on platform {platform!r}:"
+                " a subthread stays in its parent's row and is refused a letter when that row is full"
             )
             exhausted.space = "double"
             exhausted.limit = limit
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        # Where the lap is:  the last doubled pair issued in the newest generation.  A pair issued late, to catch up
-        # on a generation it missed while live, is an older generation, so it does not move the lap.
-        doubled_sql = (
-            "platform = ? AND length(letter) = 2 AND substr(letter, 1, 1) = substr(letter, 2, 1)"
-        )
-        last = conn.execute(
-            f"SELECT letter FROM alias_assignments WHERE {doubled_sql} AND generation ="
-            f" (SELECT MAX(generation) FROM alias_assignments WHERE {doubled_sql})"
-            " ORDER BY assigned_at DESC, rowid DESC LIMIT 1",
-            (platform, platform),
-        ).fetchone()
-        start = doubled.index(last["letter"]) + 1 if last and last["letter"] in doubled else 0
-        position = {p: (i - start) % len(doubled) for i, p in enumerate(doubled)} if doubled else {}
         main = sorted(
-            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), position[p])
+            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p)
         )
         if main:
             return issue(main[0])
@@ -1119,8 +1085,7 @@ class SessionRegistry:
             letter, generation = self._allocate(
                 conn, identity["platform"], record_id, now, after=parent_pair
             )
-            # The parent's pair when this chat really took a pair after it, else "" (no parent, or its row was full and
-            # it took a random pair of two different letters).
+            # The parent's pair when this chat really took a pair after it, else "" (no parent).
             placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             self._insert_event(
                 conn,
@@ -1311,8 +1276,8 @@ class SessionRegistry:
         A session that already holds a pair keeps it, so the call is idempotent and a rerun changes nothing.  `space`
         and `pick` are checked and ignored:  a single letter is never issued.  Force places a pair holder again only
         when it names a live parent, which is what a migration needs (a child that already holds a pair may still have
-        to move into its parent's row);  without a parent it changes nothing, so a forced rerun never burns a pair of
-        the seat's lap.
+        to move into its parent's row);  without a parent it changes nothing, so a forced rerun never retires a pair
+        assignment or changes its issue count.
         """
         if space not in LETTER_SPACES:
             raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
@@ -1331,8 +1296,7 @@ class SessionRegistry:
             )
             # Every chat holds a pair now, so a single letter is the only one that moves on its own, and the space a
             # caller names does not change that.  Force only places a pair holder again when it names a live parent
-            # whose row it belongs in:  a forced relabel with no parent would burn a pair of the seat's lap for
-            # nothing, so it changes nothing.
+            # whose row it belongs in:  a forced relabel with no parent would retire an assignment for nothing.
             if current and letter_space_of(current) == "double" and not (force and parent_pair):
                 return {
                     "record_id": record_id,
@@ -1510,7 +1474,7 @@ def register_session(
 
     A seat never chooses its own letter, and no caller changes the order (owner, Nov 11 2026).  Every seat's main
     chat takes a doubled pair by the one rule in SessionRegistry._allocate:  the free one issued the fewest times
-    for the seat, the next after the last one issued on a tie, with its own issue count plus one as the generation;
+    for the seat, alphabetically earliest on a tie, with its own issue count plus one as the generation;
     all 26 live refuses the letter (LabelExhausted).  letter_space and letter_pick are checked and ignored.  The
     title comes back in the display form the platform expects:  "HH: Title".
 
@@ -1518,9 +1482,8 @@ def register_session(
     this platform, on any host) or, for a platform that knows only the letter, parent_letter (the parent's pair,
     which a live session on the platform must hold;  the session id wins when both are given):  when the parent is
     live and holds a pair, the child takes the first free pair after it in the same row, wrapping past Z (parent
-    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB).  When none is free, it takes a random free pair of two
-    different letters from any row, never a doubled pair (owner, Nov 11 2026), and is refused when none of those is
-    free.  When the parent is unknown, closed or holds a single letter, it is picked as a main chat is.  A live chat
+    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB).  When the parent's row has no free pair, the child is
+    refused a letter.  When the parent is unknown, closed or holds a single letter, it is picked as a main chat is.  A live chat
     that still holds a single letter from before the pair rule is moved onto a pair here, on its next registration:
     the answer is its new pair, with `previous` naming the single letter it gave up.  The answer's `placed_after` is the
     parent's pair when the session really took a pair after it, else "".

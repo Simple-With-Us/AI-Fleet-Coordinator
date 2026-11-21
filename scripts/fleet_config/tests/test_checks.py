@@ -16,9 +16,17 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
+from unittest import mock
 
 from fleet_config import contract
-from fleet_config.checks import CheckContext, default_registry, sha256_text
+from fleet_config.checks import (
+    INFISICAL_CLI,
+    CheckContext,
+    CliResult,
+    default_registry,
+    run_cli,
+    sha256_text,
+)
 from fleet_config.checks_hooks import (
     check_hook_registered,
     hook_entries,
@@ -1053,20 +1061,15 @@ class SecretStoreCredentialTests(TempHome):
 
     SENTINEL = "sentinel-secret-value-do-not-leak"
 
-    def fake_secrets(self, body: str) -> None:
-        """Put a fake ``fleet-secrets`` on PATH that prints `body`."""
-        directory = os.path.join(self.home, "bin")
-        os.makedirs(directory, exist_ok=True)
-        script = os.path.join(directory, "fleet-secrets")
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\n" + body + "\n")
-        os.chmod(script, 0o755)
-        self.ctx = self.ctx.__class__(
-            home=self.ctx.home,
-            now=self.ctx.now,
-            timeout=self.ctx.timeout,
-            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
+    def fake_answer(self, stdout=b"", returncode=0, **kwargs):
+        """Control only the runner result; actual isolated transport has integration coverage."""
+        patch = mock.patch(
+            "fleet_config.checks_permissions.run_cli",
+            return_value=CliResult(stdout=stdout, returncode=returncode, **kwargs),
         )
+        runner = patch.start()
+        self.addCleanup(patch.stop)
+        return runner
 
     def rule(self, names=("CLAUDE_ZULIP_KEY",)) -> Rule:
         return make_rule(
@@ -1078,53 +1081,51 @@ class SecretStoreCredentialTests(TempHome):
         )
 
     def test_a_present_key_passes_and_only_names_are_reported(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_EMAIL\necho CLAUDE_ZULIP_KEY")
+        runner = self.fake_answer(b"CLAUDE_ZULIP_EMAIL\nCLAUDE_ZULIP_KEY\n")
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.PASS)
         self.assertEqual(result.observed.names, ("CLAUDE_ZULIP_KEY",))
         self.assertNotIn(self.SENTINEL, result.reason)
         self.assertNotIn(self.SENTINEL, json.dumps(result_to_dict(result)))
+        self.assertEqual(
+            runner.call_args.args[0],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip", "--project", "fleet-ops"],
+        )
 
     def test_an_absent_key_is_missing_and_not_a_pass(self):
-        self.fake_secrets("echo SOME_OTHER_KEY")
+        self.fake_answer(b"SOME_OTHER_KEY\n")
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.MISSING)
         self.assertIs(result.reason_code, ReasonCode.MISSING)
         self.assertTrue(contract.is_failing(result))
 
     def test_an_unreachable_secret_store_is_a_failing_unknown(self):
-        # No fleet-secrets on PATH at all:  the check must not report a pass.
-        self.ctx = self.ctx.__class__(
-            home=self.ctx.home,
-            now=self.ctx.now,
-            timeout=self.ctx.timeout,
-            env={"PATH": os.path.join(self.home, "empty")},
-        )
-        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        with mock.patch("fleet_config.checks_permissions.INFISICAL_CLI", "/missing/canonical.py"):
+            result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
         self.assertTrue(contract.is_failing(result))
 
     def test_a_failing_command_is_a_failing_unknown(self):
-        self.fake_secrets("exit 4")
+        self.fake_answer(returncode=4)
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
 
     def test_unreadable_output_is_a_failing_unknown(self):
-        self.fake_secrets("echo 'not a key name!'")
+        self.fake_answer(b"not a key name!\n")
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_a_rule_with_no_key_to_look_for_is_unparseable(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        self.fake_answer(b"CLAUDE_ZULIP_KEY\n")
         result = check_credential_key_present(self.rule(names=()), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_the_folder_must_be_a_path_the_check_may_ask_for(self):
-        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        self.fake_answer(b"CLAUDE_ZULIP_KEY\n")
         rule = self.rule()
         rule = replace(
             rule,
@@ -1135,26 +1136,85 @@ class SecretStoreCredentialTests(TempHome):
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
 
     def test_one_run_asks_the_secret_store_once_per_folder(self):
-        directory = os.path.join(self.home, "bin")
-        os.makedirs(directory, exist_ok=True)
-        calls = os.path.join(self.home, "calls")
-        script = os.path.join(directory, "fleet-secrets")
-        with open(script, "w", encoding="utf-8") as handle:
-            handle.write("#!/bin/sh\necho called >> %s\necho CLAUDE_ZULIP_KEY\n" % calls)
-        os.chmod(script, 0o755)
-        self.ctx = self.ctx.__class__(
-            home=self.ctx.home,
-            now=self.ctx.now,
-            timeout=self.ctx.timeout,
-            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
-        )
+        runner = self.fake_answer(b"CLAUDE_ZULIP_KEY\n")
         first = check_credential_key_present(self.rule(), "claude", self.ctx)
         second = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(first.state, CheckState.PASS)
         self.assertIs(second.state, CheckState.PASS)
-        with open(calls, encoding="utf-8") as handle:
-            recorded = handle.read().strip().splitlines()
-        self.assertEqual(len(recorded), 1)
+        self.assertEqual(runner.call_count, 1)
+
+    def test_a_truncated_listing_is_unknown_even_if_the_wanted_name_was_seen(self):
+        self.fake_answer(b"CLAUDE_ZULIP_KEY\n", truncated=True)
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_failed_folder_probes_run_once_and_a_new_run_can_recover(self):
+        source = self.write(
+            "probe/fleet_infisical_cli.py",
+            "import os, sys, time\n"
+            "with open(os.environ['PROBE_LOG'], 'a') as log:\n"
+            "    log.write(sys.argv[sys.argv.index('--path') + 1] + '\\n')\n"
+            "mode = os.environ['PROBE_MODE']\n"
+            "if mode == 'timeout': time.sleep(30)\n"
+            "if mode == 'nonzero':\n"
+            "    sys.stderr.write('sentinel-secret-value-do-not-leak')\n"
+            "    sys.exit(4)\n"
+            "if mode == 'truncated': print('CLAUDE_ZULIP_KEY\\n' + 'X' * 128)\n"
+            "elif mode == 'unparseable': print('not a key name!')\n"
+            "else: print('CLAUDE_ZULIP_KEY\\nOTHER_KEY')\n",
+        )
+        first_rule = replace(self.rule(), id="first-key")
+        second_rule = replace(self.rule(names=("OTHER_KEY",)), id="second-key")
+        other_folder = replace(
+            first_rule,
+            check=replace(first_rule.check, target="/other"),
+        )
+        cases = (
+            ("timeout", ReasonCode.TIMEOUT),
+            ("truncated", ReasonCode.UNPARSEABLE),
+            ("nonzero", ReasonCode.ERROR),
+            ("unparseable", ReasonCode.UNPARSEABLE),
+        )
+        for mode, reason_code in cases:
+            with self.subTest(mode=mode):
+                calls = os.path.join(self.home, mode + ".calls")
+                ctx = replace(
+                    self.ctx,
+                    timeout=1,
+                    env={"PROBE_LOG": calls, "PROBE_MODE": mode},
+                    cache={},
+                )
+
+                def bounded(argv, **options):
+                    return run_cli(argv, max_output_bytes=64, **options)
+
+                with (
+                    mock.patch("fleet_config.checks_permissions.INFISICAL_CLI", source),
+                    mock.patch("fleet_config.checks.INFISICAL_CLI", source),
+                    mock.patch(
+                        "fleet_config.checks_permissions.run_cli", side_effect=bounded
+                    ) as runner,
+                ):
+                    first = check_credential_key_present(first_rule, "claude", ctx)
+                    second = check_credential_key_present(second_rule, "claude", ctx)
+                    for result in (first, second):
+                        self.assertIs(result.state, CheckState.UNKNOWN)
+                        self.assertIs(result.reason_code, reason_code)
+                        self.assertIsNone(result.observed.present)
+                        self.assertTrue(contract.is_failing(result))
+                        self.assertNotIn(self.SENTINEL, json.dumps(result_to_dict(result)))
+                    self.assertEqual(first.reason, second.reason)
+                    self.assertEqual(runner.call_count, 1)
+                    check_credential_key_present(other_folder, "claude", ctx)
+                    self.assertEqual(runner.call_count, 2)
+                    recovered_ctx = replace(ctx, env={**ctx.env, "PROBE_MODE": "ok"}, cache={})
+                    for rule in (first_rule, second_rule):
+                        recovered = check_credential_key_present(rule, "claude", recovered_ctx)
+                        self.assertIs(recovered.state, CheckState.PASS)
+                    self.assertEqual(runner.call_count, 3)
+                with open(calls, encoding="utf-8") as log:
+                    self.assertEqual(log.read().splitlines(), ["/zulip", "/other", "/zulip"])
 
 
 class RegistryTests(unittest.TestCase):

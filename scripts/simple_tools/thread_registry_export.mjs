@@ -44,7 +44,6 @@
 // /tmp/operator-sheets-drain.lock) and refuses while a drain run holds it.
 
 import { readFileSync } from "node:fs";
-import { unlink } from "node:fs/promises";
 import { loadRegistryServiceAccount } from "./registry_export_reader.mjs";
 import crypto from "node:crypto";
 import { scanCellText } from "./operator_sheets_google.mjs";
@@ -574,7 +573,6 @@ export async function runCli(argv, {
   } finally {
     if (lease) {
       await lease.close().catch(() => {});
-      await unlink(lockPath).catch(() => {});
     }
   }
 }
