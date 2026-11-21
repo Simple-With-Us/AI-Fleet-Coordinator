@@ -226,7 +226,7 @@ CHILD_MAX_AGE_SECONDS = 7 * 86400
 def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     """This host's sessions whose own start never landed a letter, newest first, for the repair a session's
     start sets off (`platform_letter.repair_after_start`).  Two kinds belong:  an interactive session whose
-    title still carries the "?": " placeholder, and a sub-agent child whose parent's own note holds a letter -
+    title still carries the "??: " placeholder, and a sub-agent child whose parent's own note holds a letter -
     ZCode runs no hook inside a sub-agent, so no start of a child's own ever comes, and its parent's row is
     where its letter belongs.  A child whose parent holds no letter is left out (its replay would register the
     long-gone parent first), and so is one whose own note already holds a letter, an archived or deleted
