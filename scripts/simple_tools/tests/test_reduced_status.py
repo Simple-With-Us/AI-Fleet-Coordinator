@@ -1169,7 +1169,7 @@ class RegistrySweepTests(unittest.TestCase):
                     "ok": False,
                     "credential_configured": False,
                     "complete": False,
-                    "error": "credential-binding-missing",
+                    "error": "native-key-missing",
                     "agents": 0,
                     "stale": 0,
                     "invalid": 0,
@@ -1188,7 +1188,7 @@ class RegistrySweepTests(unittest.TestCase):
         self.assertEqual(
             out["feeds"],
             [{"name": "cursor-cloud", "ok": False, "credential_configured": False, "complete": False,
-              "error": "credential_binding_missing", "agents": 0, "stale": 0, "invalid": 0,
+              "error": "native_key_missing", "agents": 0, "stale": 0, "invalid": 0,
               "errors": 0, "refused": 0, "cleanup_protected": True}],
         )
         serialized = json.dumps(out)

@@ -4,9 +4,9 @@ Cursor Cloud is currently the only provider feed.  Its workers do not run a usa
 platform-letter table supplies their native metadata and last-mile title steer to this shared scheduler.  The one
 Eavesdropper registry sweeper runs this feed before its stale-row pass; this module has no CLI, unit or timer.
 
-The Cursor API credential is read only through the already configured `CURSOR_LETTERS_INFISICAL_TOKEN` binding and
-is held in memory.  The common registry is the Eavesdropper's in-process RegistryService; this feed does not load a
-second registry credential or contact a second assigner.
+The Cursor API key is data loaded once at shared Operator startup through `server/infisical_env.py` and held in
+memory.  The common registry is the Eavesdropper's in-process RegistryService; this feed does not load a provider
+bootstrap credential or contact a second assigner.
 
 1.  Reads the open Cloud agents (IDLE or ACTIVE) from the Cursor API (`CursorCloudTransport.discover`), with the key
     that module already uses (CURSOR_SYNC_API_KEY from Infisical Fleet-OPS, or CURSOR_API_KEY).  Only an agent updated
@@ -75,14 +75,8 @@ MAX_DM_REFUSALS = 3
 MAX_AGE_HOURS = 36
 # A page of 100 agents takes longer than the transport's 5 second default;  30 is the transport's own ceiling.
 API_TIMEOUT = 30
-# The Cursor key's own read:  a read-only service token scoped to Fleet-OPS prod /cursor-cloud-letters, named for its
-# use and for no seat.  The Infisical folder and name are where the hand-installed per-seat wrapper read it before.
-CURSOR_TOKEN_ENV = "CURSOR_LETTERS_INFISICAL_TOKEN"
-CURSOR_KEY_FOLDER = "/cursor-cloud-letters"
+# Canonical native provider data loaded optionally by the shared Operator's startup source table.
 CURSOR_KEY_NAME = "CURSOR_SYNC_API_KEY"
-# A reason from fleet_secrets is a short hyphenated token such as token-scope-mismatch;  only that token is ever
-# reported.  A message that opens with plain words instead (such as "key ... is not in Infisical") reports "refused".
-REASON = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?=$|[:\s])")
 
 Runner = Callable[..., Any]
 Transport = Callable[[list[str]], Mapping[str, Any]]
@@ -332,69 +326,8 @@ def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     return "refused" if named else "unknown"
 
 
-class KeyUnavailable(Exception):
-    """The Cursor key could not be read with CURSOR_LETTERS_INFISICAL_TOKEN.  `code` is a short reason token."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__("the Cursor key cannot be read")
-        self.code = code
-        self.status = None
-
-
-def _reason(exc: BaseException) -> str:
-    """A fleet_secrets refusal as its leading reason token (token-scope-mismatch, fetch-failed), never more."""
-    text = str(getattr(exc, "message", "") or exc or "")
-    match = REASON.match(text.strip())
-    return match.group(0)[:48] if match else "refused"
-
-
-def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
-    """CURSOR_SYNC_API_KEY from Fleet-OPS prod /cursor-cloud-letters, read with CURSOR_LETTERS_INFISICAL_TOKEN.
-
-    The shared `fleet_infisical` client checks the token's own grant
-    (Fleet-OPS, prod, read only, exactly this folder) before it asks for the one name.  The project id comes from
-    INFISICAL_FLEET_OPS_PROJECT_ID or ~/.simple-tools/fleet-ops-project-id, as for every other Fleet-OPS reader.  No
-    other source is tried, so a missing or wrong token stops the sweep instead of reaching another credential."""
-    token = str(env.get(CURSOR_TOKEN_ENV) or "").strip()
-    if not token:
-        raise KeyUnavailable("service-token-required")
-    if core is None:
-        try:
-            import fleet_infisical as core  # the checkout's own reviewed reader, beside simple_tools
-        except Exception:  # noqa: BLE001 - no reader is "unavailable", never a traceback
-            raise KeyUnavailable("scoped-reader-unavailable") from None
-    try:
-        project = core.infisical_project_id(env, core.home_dir(env))
-    except core.SecretsError:
-        # Its message opens with plain words ("the Fleet-OPS Infisical project id is not set..."), so it gets its own
-        # token:  the likeliest preflight failure on a new host.
-        raise KeyUnavailable("project-id-missing") from None
-    except Exception as exc:  # noqa: BLE001 - one reason token for the log, never a traceback
-        raise KeyUnavailable("error-" + type(exc).__name__) from None
-    try:
-        # An empty mapping pins the default Infisical API and the one declared folder, so nothing in the caller's
-        # environment can redirect or widen the read.
-        found = core.fetch_project(
-            project,
-            CURSOR_KEY_FOLDER,
-            {},
-            token=token,
-            names=[CURSOR_KEY_NAME],
-            timeout=API_TIMEOUT,
-        )
-    except core.SecretsError as exc:
-        raise KeyUnavailable(_reason(exc)) from None
-    except Exception as exc:  # noqa: BLE001 - one reason token for the log, never a traceback
-        raise KeyUnavailable("error-" + type(exc).__name__) from None
-    value = str(found.get(CURSOR_KEY_NAME) or "").strip() if isinstance(found, dict) else ""
-    if not value:
-        raise KeyUnavailable("unset")
-    return value
-
-
 class KeyedSurfaces:
-    """The Cursor API helper with its key supplied here:  the transport asks `load_api_key`, which answers the key read
-    with the sweep's own token, so no environment variable and no `fleet-secrets get` is consulted."""
+    """The Cursor API helper with its shared-startup-loaded key supplied in memory, without fallback resolution."""
 
     def __init__(self, base: Any, key: str) -> None:
         self._base = base
@@ -474,12 +407,10 @@ def sweep(
         from .cursor_chat_transport import CursorCloudTransport
 
         extra: dict[str, Any] = {}
-        if api_only or str(env.get(CURSOR_TOKEN_ENV) or "").strip():
-            # The key is read once, with the sweep's own token, before any agent is touched.  Under --api-only (the
-            # shared unit) the token is required:  with none, read_cursor_key stops the run with
-            # service-token-required, so the transport's own fallbacks (CURSOR_API_KEY, CURSOR_SYNC_API_KEY or
-            # `fleet-secrets get` under whatever binding the host has) are never reached.
-            extra["surfaces"] = KeyedSurfaces(CT._surfaces, read_cursor_key(env))
+        if api_only:
+            # The shared startup loader supplies the native key.  Pass it explicitly even when absent so the API
+            # transport cannot fall through to container variables or a provider-specific secret reader.
+            extra["surfaces"] = KeyedSurfaces(CT._surfaces, str(env.get(CURSOR_KEY_NAME) or "").strip())
         cloud = CursorCloudTransport(timeout_seconds=API_TIMEOUT, **extra)
         discover = cloud.discover
         if steer is None:
@@ -667,13 +598,13 @@ def run_platform_feeds(
     visible in the result and never turns absence into a close; `sweep` clears remembered steering rows only after a
     complete discovery.
     """
-    table = (("cursor-cloud", sweep, CURSOR_TOKEN_ENV, "cursor", LOCATION),)
+    table = (("cursor-cloud", sweep, CURSOR_KEY_NAME, "cursor", LOCATION),)
     results: dict[str, Any] = {}
     for name, runner, credential, platform, host in table:
         if not str(env.get(credential) or "").strip():
             results[name] = {
                 "ok": False,
-                "error": "credential-binding-missing",
+                "error": "native-key-missing",
                 "credential_configured": False,
                 "complete": False,
                 "platform": platform,

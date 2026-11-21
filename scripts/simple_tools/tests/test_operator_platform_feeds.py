@@ -449,13 +449,12 @@ class SharedUnitSweepTests(unittest.TestCase):
         self.assertEqual(self.dm.calls, [])  # no ssh hop:  nothing ran
 
     def test_shared_sweeper_registers_and_reopens_through_the_registry_service(self) -> None:
-        self.env[CCL.CURSOR_TOKEN_ENV] = "fixture-binding-present"
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
         cloud = mock.MagicMock()
         cloud.return_value.discover.return_value = list(self.agents)
         cloud.return_value.steer.return_value = "not-started"
         cloud.return_value.last_discovery_status = "complete"
-        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud), \
-                mock.patch.object(CCL, "read_cursor_key", return_value="fixture-api-key"):
+        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
             first = CCL.run_platform_feeds(self.assigner.service, self.env, now=time.time())
             original = self.assigner.lookup("cursor", "cloud", PL.SCOPE, A1)
             self.assertIsNotNone(original)
@@ -504,13 +503,12 @@ class SharedUnitSweepTests(unittest.TestCase):
                 native_session_id=platform + "-new", seat=seat, source="test", issuer=OR.ISSUER_OPERATOR,
             )
 
-        self.env[CCL.CURSOR_TOKEN_ENV] = "fixture-binding-present"
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
         cloud = mock.MagicMock()
         cloud.return_value.discover.return_value = [self.agents[0]]
         cloud.return_value.steer.return_value = "not-started"
         cloud.return_value.last_discovery_status = "partial"
-        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud), \
-                mock.patch.object(CCL, "read_cursor_key", return_value="fixture-api-key"):
+        with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
             sweeper = LR.Sweeper(
                 self.assigner.service, interval_minutes=15, stale_after_hours=36,
                 feed_runner=lambda service, now: CCL.run_platform_feeds(service, self.env, now=now),
@@ -525,7 +523,7 @@ class SharedUnitSweepTests(unittest.TestCase):
 
     def test_missing_registry_store_skips_provider_before_any_cursor_call(self) -> None:
         os.unlink(self.db)
-        self.env[CCL.CURSOR_TOKEN_ENV] = "fixture-binding-present"
+        self.env[CCL.CURSOR_KEY_NAME] = "fixture-api-key"
         cloud = mock.MagicMock()
         with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
             sweeper = LR.Sweeper(
@@ -620,78 +618,36 @@ class StateSafetyTests(unittest.TestCase):
             self.assertEqual(fh.read(), '{"feeds":{"cursor-cloud":{"already":"told"}}}')
 
 
-class CursorKeyTests(unittest.TestCase):
-    """The Cursor key is read with the sweep's own token through fleet_secrets' scoped reader, and a failure names a
-    reason token only."""
+class NativeCursorKeyTests(unittest.TestCase):
+    def test_api_only_transport_uses_the_shared_loaded_key(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            cloud = mock.MagicMock()
+            cloud.return_value.discover.return_value = []
+            cloud.return_value.last_discovery_status = "complete"
+            with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+                CCL.sweep(
+                    {CCL.CURSOR_KEY_NAME: "fixture-api-key", "SIMPLE_TOOLS_STATE_DIR": state},
+                    now=time.time(),
+                    api_only=True,
+                    send_dms=False,
+                )
+            surfaces = cloud.call_args.kwargs["surfaces"]
+            self.assertEqual(surfaces.load_api_key(), "fixture-api-key")
 
-    class Core:
-        class SecretsError(Exception):
-            pass
-
-        def __init__(self, answer=None, error: str = "") -> None:
-            self.answer, self.error, self.calls = answer, error, []
-
-        def home_dir(self, env):
-            return env.get("HOME", "")
-
-        def infisical_project_id(self, env, home):
-            return "00000000-0000-4000-8000-000000000000"
-
-        def fetch_project(self, project, path, env, **kw):
-            self.calls.append((project, path, dict(env), kw))
-            if self.error:
-                raise self.SecretsError(self.error)
-            return self.answer
-
-    TOKEN = "st." + "fixture-cursor-letters-token-0123"
-
-    def test_it_reads_the_one_name_from_the_one_folder(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-        key = CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN, "HOME": "/nowhere"}, core=core)
-        self.assertEqual(key, "fixture-key")
-        project, path, env, kw = core.calls[0]
-        self.assertEqual(path, "/cursor-cloud-letters")
-        self.assertEqual(env, {})
-        self.assertEqual(kw["names"], ["CURSOR_SYNC_API_KEY"])
-        self.assertEqual(kw["token"], self.TOKEN)
-
-    def test_no_token_is_refused_before_any_read(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({"CURSOR_SYNC_API_KEY": "from-the-environment"}, core=core)
-        self.assertEqual(caught.exception.code, "service-token-required")
-        self.assertEqual(core.calls, [])
-
-    def test_a_refusal_is_a_reason_token_only(self) -> None:
-        core = self.Core(error="token-scope-mismatch: " + self.TOKEN)
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
-        self.assertEqual(caught.exception.code, "token-scope-mismatch")
-        self.assertNotIn(self.TOKEN, str(caught.exception))
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core({}))
-        self.assertEqual(caught.exception.code, "unset")
-
-    def test_a_missing_project_id_has_its_own_reason(self) -> None:
-        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
-
-        def no_project(env, home):
-            raise core.SecretsError("the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID")
-
-        core.infisical_project_id = no_project
-        with self.assertRaises(CCL.KeyUnavailable) as caught:
-            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
-        self.assertEqual(caught.exception.code, "project-id-missing")
-        self.assertEqual(core.calls, [])  # nothing is fetched without a project
-
-    def test_a_message_in_plain_words_is_refused_not_its_first_word(self) -> None:
-        for message, code in (("key CURSOR_SYNC_API_KEY is not in Infisical at /cursor-cloud-letters", "refused"),
-                              ("refusing Infisical environment 'dev' from INFISICAL_ENV", "refused"),
-                              ("fetch-failed:  bad-output for CURSOR_SYNC_API_KEY", "fetch-failed"),
-                              ("token-expired-or-invalid", "token-expired-or-invalid")):
-            with self.assertRaises(CCL.KeyUnavailable) as caught:
-                CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core(error=message))
-            self.assertEqual(caught.exception.code, code, message)
+    def test_api_only_transport_cannot_fall_back_when_shared_key_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            cloud = mock.MagicMock()
+            cloud.return_value.discover.return_value = []
+            cloud.return_value.last_discovery_status = "complete"
+            with mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", cloud):
+                CCL.sweep(
+                    {"SIMPLE_TOOLS_STATE_DIR": state},
+                    now=time.time(),
+                    api_only=True,
+                    send_dms=False,
+                )
+            surfaces = cloud.call_args.kwargs["surfaces"]
+            self.assertEqual(surfaces.load_api_key(), "")
 
 
 class RecentTests(unittest.TestCase):

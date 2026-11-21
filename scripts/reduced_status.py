@@ -670,8 +670,8 @@ def _sweep_error(value: Any) -> str | None:
 
 
 def _feed_error(value: Any) -> str | None:
-    if value == "credential-binding-missing":
-        return "credential_binding_missing"
+    if value == "native-key-missing":
+        return "native_key_missing"
     if value == "registry_unavailable":
         return "registry_unavailable"
     return "provider_error" if value else None
