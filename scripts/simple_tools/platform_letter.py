@@ -2009,8 +2009,8 @@ def issue_ids_in(text: str, *, any_case: bool = False) -> set[str]:
     return {OR.valid_issue_id(m.group(1)) for m in _issue_finder(any_case).finditer(text)} - {""}
 
 
-def _is_agents_environment_bootstrap(value: Mapping[str, Any]) -> bool:
-    """Recognize Codex's injected AGENTS/environment bootstrap as runtime context, not a request."""
+def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
+    """Return the user text after Codex's injected AGENTS/environment bootstrap, if present."""
     kind = value.get("type")
     if value.get("role") == "user":
         content = value.get("content")
@@ -2019,7 +2019,7 @@ def _is_agents_environment_bootstrap(value: Mapping[str, Any]) -> bool:
         # payload.type=user_message and payload.message, without a role field.
         content = value.get("message")
     else:
-        return False
+        return None
     if isinstance(content, str):
         text = content
     elif isinstance(content, list):
@@ -2037,14 +2037,19 @@ def _is_agents_environment_bootstrap(value: Mapping[str, Any]) -> bool:
     elif isinstance(content, Mapping) and isinstance(content.get("content"), str):
         text = content["content"]
     else:
-        return False
-    return (
+        return None
+    recognized = (
         text.lstrip().startswith("# AGENTS.md instructions for ")
         and "<INSTRUCTIONS>" in text
         and "</INSTRUCTIONS>" in text
         and "<environment_context>" in text
-        and text.rstrip().endswith("</environment_context>")
     )
+    if not recognized:
+        return None
+    closing = text.find("</environment_context>", text.find("<environment_context>"))
+    if closing < 0:
+        return None
+    return text[closing + len("</environment_context>") :].strip()
 
 
 def _topic_issue_ids(text: str) -> set[str]:
@@ -2069,8 +2074,12 @@ def _transcript_strings(
         if (
             (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
             or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
-            or _is_agents_environment_bootstrap(value)
         ):
+            return
+        bootstrap_tail = _agents_environment_bootstrap_tail(value)
+        if bootstrap_tail is not None:
+            if bootstrap_tail:
+                own.append(bootstrap_tail)
             return
         hidden = (
             inside

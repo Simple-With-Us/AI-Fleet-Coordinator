@@ -1215,9 +1215,13 @@ class HookTests(Base):
         lines = [
             json.dumps({"type": "response_item", "payload": {
                 "type": "message", "role": "developer", "content": [
-                    {"type": "input_text", "text": "Injected UM-902"}]}}),
+                    {"type": "input_text", "text": (
+                        "Injected UM-902; old receipt: posted id 8 to #WIP › AFC-906 example"
+                    )}]}}),
             json.dumps({"type": "response_item", "payload": {
-                "type": "message", "role": "system", "content": "Injected CT-903"}}),
+                "type": "message", "role": "system", "content": (
+                    "Injected CT-903; simple-chat post --topic 'OPS-907 old example'"
+                )}}),
             json.dumps({"type": "world_state", "text": "Startup AFC-904"}),
             json.dumps({"type": "message", "role": "user", "content": bootstrap}),
             json.dumps({"type": "event_msg", "payload": {
@@ -1240,10 +1244,30 @@ class HookTests(Base):
         request = (
             "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
             "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
-            "</environment_context>\nPlease fix AFC-912 in these instructions."
+            "</environment_context>\nPlease fix AFC-912 in this request."
         )
-        line = json.dumps({"type": "message", "role": "user", "content": request})
-        self.assertEqual(PL.issue_ids_in_lines([line]), {"AFC-900", "CTS-901", "AFC-912"})
+        event = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease also fix OPS-913."
+        )
+        lines = [
+            json.dumps({"type": "message", "role": "user", "content": request}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": event,
+            }}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-912", "OPS-913"})
+
+    def test_issue_ids_in_lines_keeps_text_blocks_after_an_injected_bootstrap(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": [
+            {"type": "text", "text": (
+                "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-920 rules"
+                "</INSTRUCTIONS>\n<environment_context>Example CTS-921 path</environment_context>"
+            )},
+            {"type": "text", "text": "Please link the actual request UM-922."},
+        ]})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"UM-922"})
 
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
