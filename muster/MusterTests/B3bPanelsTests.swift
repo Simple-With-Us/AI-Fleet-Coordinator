@@ -1,7 +1,7 @@
 import XCTest
 
 // B3b: knob unset argv, secret names/doctor parsing, recall settings masking.
-// Fakes only; no process, no network, no real secret value anywhere.
+// Synthetic fixtures only; no network, real credential store or provider access.
 
 private let b3bRoot = URL(fileURLWithPath: "/tmp/example-repo", isDirectory: true)
 private let b3bHome = URL(fileURLWithPath: "/Users/example", isDirectory: true)
@@ -36,16 +36,205 @@ final class KnobUnsetBuilderTests: XCTestCase {
 
 private final class B3bCommands: CommandRunning {
     var calls: [(String, [String])] = []
+    var environments: [[String: String]] = []
+    var timeouts: [TimeInterval] = []
     var replies: [String: String] = [:]
     var failure: Error?
     func run(_ executable: String, _ arguments: [String]) throws -> String {
         calls.append((executable, arguments))
         if let failure { throw failure }
-        return replies[arguments.first ?? ""] ?? ""
+        let verb = arguments.first == "-I" ? arguments.dropFirst(2).first : arguments.first
+        return replies[verb ?? ""] ?? ""
+    }
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> String {
+        environments.append(environment)
+        timeouts.append(timeout)
+        return try run(executable, arguments)
     }
 }
 
 final class SecretNamesTests: XCTestCase {
+    func test_default_and_managed_initializers_select_the_same_own_declaration() throws {
+        let fake = B3bCommands()
+        fake.replies = ["get": "fixture-value", "names": "A_KEY\n", "doctor": #"{"ok":true}"#]
+        let readers = [FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot),
+                       FleetSecrets.managed(commands: fake, home: b3bHome, engineRoot: b3bRoot)]
+        XCTAssertTrue(fake.calls.isEmpty, "construction must not access any store")
+        for reader in readers {
+            XCTAssertEqual(try reader.secret(named: "A_KEY"), "fixture-value")
+            XCTAssertEqual(try reader.secretNames(path: "/"), ["A_KEY"])
+            XCTAssertEqual(try reader.doctorReport()["ok"], "true")
+        }
+        for (index, call) in fake.calls.enumerated() {
+            let verb = ["get", "names", "doctor"][index % 3]
+            let arguments = verb == "get" ? [verb, "A_KEY"] : [verb]
+            XCTAssertEqual(call.0, "/usr/bin/python3")
+            XCTAssertEqual(call.1, ["-I", "/tmp/example-repo/scripts/infisical-scoped.py"] + arguments
+                           + ["--folder", "/", "--project", "fleet-ops",
+                              "--consumer-binding", "/Users/example/.config/infisical/muster.json",
+                              "--consumer", "muster-data-reader"])
+        }
+        XCTAssertEqual(fake.timeouts, Array(repeating: 45, count: 6))
+        XCTAssertEqual(fake.environments, Array(repeating:
+            ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": b3bHome.path], count: 6))
+    }
+
+    func test_ambient_authentication_api_and_folder_markers_are_not_inherited_even_when_empty() throws {
+        let names = ["INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_SERVICE_TOKEN",
+                     "INFISICAL_API_URL", "FLEET_SECRETS_API", "INFISICAL_READ_PATHS",
+                     "INFISICAL_ENVIRONMENT", "INFISICAL_ENV", "INFISICAL_ACCOUNT", "PYTHONPATH"]
+        let previous = ProcessInfo.processInfo.environment
+        defer {
+            for name in names {
+                if let value = previous[name] { setenv(name, value, 1) }
+                else { unsetenv(name) }
+            }
+        }
+        let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
+        for value in ["synthetic-marker", ""] {
+            for name in names { XCTAssertEqual(setenv(name, value, 1), 0) }
+            _ = try FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot).secretNames(path: "/")
+        }
+        for environment in fake.environments {
+            for name in names { XCTAssertNil(environment[name], name) }
+            XCTAssertEqual(Set(environment.keys), Set(["HOME", "PATH"]))
+        }
+    }
+
+    func test_exact_missing_reader_diagnostic_is_safe_but_unrelated_exit_two_is_refused() {
+        let fake = B3bCommands()
+        let reader = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+        let marker = UUID().uuidString
+        let reads: [() throws -> Void] = [
+            { _ = try reader.secret(named: "A_KEY") },
+            { _ = try reader.secretNames(path: "/") },
+            { _ = try reader.doctorReport() },
+        ]
+        for quote in ["'", "\""] {
+            fake.failure = CommandExitError(output: "", status: 2,
+                errorOutput: "python3: can't open file \(quote)/tmp/example-repo/scripts/infisical-scoped.py\(quote): [Errno 2] " + marker)
+            for read in reads {
+                XCTAssertThrowsError(try read()) { error in
+                    XCTAssertEqual(error as? FleetSecretError, .notInstalled)
+                    XCTAssertFalse(error.localizedDescription.contains(marker))
+                }
+            }
+        }
+        for diagnostic in ["usage: refused", "can't open file '/unrelated.py': [Errno 2]",
+                           "can't open file '/tmp/example-repo/scripts/infisical-scoped.py.extra': [Errno 2]",
+                           "can't open file '/tmp/example-repo/scripts/infisical-scoped.py': [Errno 13]"] {
+            fake.failure = CommandExitError(output: marker, status: 2, errorOutput: diagnostic)
+            XCTAssertThrowsError(try reader.secret(named: "A_KEY")) { error in
+                XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
+                XCTAssertFalse(error.localizedDescription.contains(marker))
+            }
+        }
+    }
+
+    func test_timeout_status_and_cancellation_survive_all_read_paths() {
+        let fake = B3bCommands()
+        let reader = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+        let reads: [(String, () throws -> Void)] = [
+            ("A_KEY", { _ = try reader.secret(named: "A_KEY") }),
+            ("/", { _ = try reader.secretNames(path: "/") }),
+            ("doctor", { _ = try reader.doctorReport() }),
+        ]
+        fake.failure = CommandExitError(output: #"{"ok":true}"#, status: 124)
+        for (name, read) in reads {
+            XCTAssertThrowsError(try read()) { error in
+                XCTAssertEqual(error as? FleetSecretError, .unavailable(name))
+            }
+        }
+        let cancellations: [Error] = [CancellationError(), URLError(.cancelled)]
+        for cancellation in cancellations {
+            fake.failure = cancellation
+            for (_, read) in reads {
+                XCTAssertThrowsError(try read()) { XCTAssertTrue($0 is CancellationError) }
+            }
+        }
+    }
+
+    func test_doctor_accepts_only_masked_metadata_and_fixed_refusal_reason() throws {
+        let marker = UUID().uuidString
+        let fake = B3bCommands()
+        let reader = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+        fake.failure = CommandExitError(output:
+            #"{"ok":false,"failure_reason":"consumer-binding-refused","names_count":0,"unresolved_reference_count":4}"#,
+            status: 4, errorOutput: marker)
+        let report = try reader.doctorReport()
+        XCTAssertEqual(report["failure_reason"], "consumer-binding-refused")
+        XCTAssertNil(report["unresolved_reference_count"])
+        XCTAssertFalse(FleetSecrets.doctorRows(report).description.contains(marker))
+        let untrusted = try FleetSecrets.parseDoctor("{\"ok\":false,\"failure_reason\":\"\(marker)\"}")
+        XCTAssertNil(untrusted["failure_reason"])
+        for malformed in [#"{"names_count":true,"reader_configured":42}"#,
+                          #"{"names_count":-1,"ok":"true","failure_reason":true}"#,
+                          #"{"names_count":1.5}"#] {
+            XCTAssertTrue(try FleetSecrets.parseDoctor(malformed).isEmpty)
+        }
+    }
+
+    func test_default_location_ignores_ambient_engine_root_and_interpreter_overrides() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("scripts/fleet_config"),
+                                               withIntermediateDirectories: true)
+        for file in ["scripts/fleet_config/__main__.py", "fleet-seats.json", "fleet-apps.json"] {
+            try "".write(to: root.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        }
+        let previous = ProcessInfo.processInfo.environment
+        defer {
+            for name in ["FLEET_ENGINE_ROOT", "FLEET_ENGINE_PYTHON"] {
+                if let value = previous[name] { setenv(name, value, 1) }
+                else { unsetenv(name) }
+            }
+        }
+        setenv("FLEET_ENGINE_ROOT", root.path, 1)
+        setenv("FLEET_ENGINE_PYTHON", "/synthetic/foreign-python", 1)
+        let fake = B3bCommands(); fake.replies["get"] = "fixture-value"
+        let reader = FleetSecrets(commands: fake, home: root)
+        if let reviewed = EngineLocator.locate(environment: [:], home: root)?.root {
+            XCTAssertNotEqual(reviewed, root)
+            XCTAssertEqual(try reader.secret(named: "A_KEY"), "fixture-value")
+            XCTAssertEqual(fake.calls.first?.0, "/usr/bin/python3")
+            XCTAssertEqual(Array(try XCTUnwrap(fake.calls.first?.1).prefix(2)),
+                           ["-I", reviewed.appendingPathComponent("scripts/infisical-scoped.py").path])
+        } else {
+            XCTAssertThrowsError(try reader.secret(named: "A_KEY")) {
+                XCTAssertEqual($0 as? FleetSecretError, .notInstalled)
+            }
+            XCTAssertTrue(fake.calls.isEmpty)
+        }
+    }
+
+    /// The actual process adapter starts isolated Python against a disposable inert script.
+    /// No shared provider module, declaration or credential store is opened by this fixture.
+    func test_real_process_uses_isolated_python_and_exact_declaration_arguments() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scripts = root.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try """
+        import json, os, sys
+        print(json.dumps({"args": sys.argv[1:], "isolated": sys.flags.isolated,
+                          "home": os.environ.get("HOME"), "path": os.environ.get("PATH")}))
+        """.write(to: scripts.appendingPathComponent("infisical-scoped.py"), atomically: true, encoding: .utf8)
+        let reader = FleetSecrets(home: root, engineRoot: root)
+        let answer = try reader.secret(named: "A_KEY")
+        let data = try XCTUnwrap(answer.data(using: .utf8))
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(receipt["isolated"] as? Int, 1)
+        XCTAssertEqual(receipt["home"] as? String, root.path)
+        XCTAssertEqual(receipt["path"] as? String, "/usr/bin:/bin:/usr/sbin:/sbin")
+        XCTAssertEqual(receipt["args"] as? [String], ["get", "A_KEY", "--folder", "/", "--project", "fleet-ops",
+            "--consumer-binding", root.appendingPathComponent(".config/infisical/muster.json").path,
+            "--consumer", "muster-data-reader"])
+        try FileManager.default.removeItem(at: scripts.appendingPathComponent("infisical-scoped.py"))
+        XCTAssertThrowsError(try reader.secret(named: "A_KEY")) {
+            XCTAssertEqual($0 as? FleetSecretError, .notInstalled)
+        }
+    }
+
     func test_names_parse_grouped_and_fail_closed_on_value_shaped_line() throws {
         let grouped = try FleetSecrets.parseNamesByPath([("/", "B_KEY\nA_KEY\n"), ("/linear", "CACHE_X\n")])
         XCTAssertEqual(grouped.map(\.path), ["/", "/linear"])
@@ -70,16 +259,19 @@ final class SecretNamesTests: XCTestCase {
     }
     func test_names_uses_names_verb_only_never_get() throws {
         let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertEqual(try secrets.secretNames(path: "/"), ["A_KEY"])
-        XCTAssertEqual(fake.calls.first?.1.first, "names")
+        XCTAssertEqual(fake.calls.first?.1, ["-I", "/tmp/example-repo/scripts/infisical-scoped.py", "names",
+                                           "--folder", "/", "--project", "fleet-ops",
+                                           "--consumer-binding", "/Users/example/.config/infisical/muster.json",
+                                           "--consumer", "muster-data-reader"])
         XCTAssertFalse(fake.calls.flatMap(\.1).contains("get"))
     }
     func test_names_exit_failure_is_refused_not_a_timeout() {
         // AFC-592: a non-zero exit (here 5, an unexpanded reference elsewhere
         // at the path) is not a timeout and must not be reported as one.
         let fake = B3bCommands(); fake.failure = CommandExitError(output: "", status: 5)
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("/"))
             XCTAssertFalse(FleetSecretError.refused("/").localizedDescription.contains("in time"))
@@ -87,18 +279,18 @@ final class SecretNamesTests: XCTestCase {
     }
     func test_names_timeout_stays_unavailable() {
         let fake = B3bCommands(); fake.failure = StartupPolicyError.commandFailed
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .unavailable("/"))
         }
     }
     func test_get_exit_3_is_missing_and_other_exits_are_refused() {
         let absent = B3bCommands(); absent.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome).secret(named: "A_KEY")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome, engineRoot: b3bRoot).secret(named: "A_KEY")) { error in
             XCTAssertEqual(error as? FleetSecretError, .missing("A_KEY"))
         }
         let refused = B3bCommands(); refused.failure = CommandExitError(output: "", status: 5)
-        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome).secret(named: "A_KEY")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome, engineRoot: b3bRoot).secret(named: "A_KEY")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
         }
     }
@@ -106,11 +298,11 @@ final class SecretNamesTests: XCTestCase {
         // Names and doctor have no key of their own, so even exit 3 is a
         // refusal, never "absent" (Kody finding on PR 1249).
         let names = B3bCommands(); names.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome).secretNames(path: "/")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome, engineRoot: b3bRoot).secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("/"))
         }
         let doctor = B3bCommands(); doctor.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome).doctorReport()) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome, engineRoot: b3bRoot).doctorReport()) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("doctor"))
         }
     }
@@ -126,10 +318,10 @@ final class SecretNamesTests: XCTestCase {
 final class RecallSettingsTests: XCTestCase {
     func test_request_builder_uses_bearer_without_embedding_token_in_url() throws {
         let config = RecallSettingsConfig(baseURLString: "https://recall.example.test", tokenKeyName: "RECALL_ADMIN_TOKEN")
-        let request = try RecallSettingsClient.buildRequest(config: config, token: "fake-token-for-test")
+        let request = try RecallSettingsClient.buildRequest(config: config, token: "fixture-key")
         XCTAssertEqual(request.url?.absoluteString, "https://recall.example.test/admin/settings")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fake-token-for-test")
-        XCTAssertFalse(request.url?.absoluteString.contains("fake-token-for-test") ?? true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-key")
+        XCTAssertFalse(request.url?.absoluteString.contains("fixture-key") ?? true)
     }
     func test_request_builder_rejects_bad_config() {
         XCTAssertThrowsError(try RecallSettingsClient.buildRequest(

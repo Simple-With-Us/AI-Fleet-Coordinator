@@ -18,9 +18,9 @@ import XCTest
 ///
 /// Inert by default:  a few panels read through app singletons (`OpsController.shared`,
 /// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
-/// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
+/// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets.managed()` in
 /// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
-/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
+/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so shared Infisical reads, the
 /// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
 /// every other launch fail at once without starting, and `InertURLProtocol` fails every
 /// request through `URLSession.shared`.  Those panels show their own could-not-read state,
@@ -147,16 +147,28 @@ final class PanelSnapshotTests: XCTestCase {
     /// The readers the Secrets and Recall panels build for themselves, and `ssh` through the
     /// Ops runner, fail without starting anything, and `URLSession.shared` never leaves the Mac.
     func testPanelReadersCannotStartAProcessOrReachTheNetwork() async throws {
-        XCTAssertThrowsError(try FleetSecrets().secretNamesGrouped(paths: ["/"]))
-        XCTAssertThrowsError(try FleetSecrets().doctorReport())
+        // Explicit synthetic locations reach the process trap without discovering an installed engine.
+        let engine = scratch.appendingPathComponent("fixture-engine")
+        let reader = FleetSecrets.managed(home: scratch, engineRoot: engine)
+        XCTAssertThrowsError(try reader.secret(named: "A_KEY"))
+        XCTAssertThrowsError(try reader.secretNamesGrouped(paths: ["/"]))
+        XCTAssertThrowsError(try reader.doctorReport())
         let ssh = OpsInvocation(executable: "/usr/bin/ssh", arguments: ["example.invalid", "true"],
                                 workingDirectory: "/", environment: [:], timeout: 5)
         do {
             _ = try await OpsProcessRunner().run(ssh)
             XCTFail("the Ops runner started ssh")
         } catch {}
-        let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
-        XCTAssertEqual(tried, ["fleet-secrets", "fleet-secrets", "ssh"])
+        let tried = Process.takeInvocations()
+        XCTAssertEqual(tried.map(\.executable), ["/usr/bin/python3", "/usr/bin/python3", "/usr/bin/python3", "/usr/bin/ssh"])
+        for (index, attempt) in tried.prefix(3).enumerated() {
+            let operation = [["get", "A_KEY"], ["names"], ["doctor"]][index]
+            XCTAssertEqual(attempt.arguments, ["-I", engine.appendingPathComponent("scripts/infisical-scoped.py").path]
+                           + operation + ["--folder", "/", "--project", "fleet-ops",
+                                          "--consumer-binding", scratch.appendingPathComponent(".config/infisical/muster.json").path,
+                                          "--consumer", "muster-data-reader"])
+            XCTAssertEqual(attempt.environment, ["HOME": scratch.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        }
 
         do {
             _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)
