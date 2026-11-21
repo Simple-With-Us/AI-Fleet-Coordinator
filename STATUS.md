@@ -1,5 +1,11 @@
 # Status
 
+## 2026-11-21 CODEX — Operator Sheets Drain Uses A Stable Flock Lease (AFC-859)
+
+The drain now holds a kernel `flock` on a persistent owner-only lock inode, preserving the live-PID fence for old runners and refusing unsafe lock metadata.  Owner-reported runner tests pass 58/58, including cross-process exclusion, initialization races, crash release, inode stability and helper failure bounds.  Rollout remains pending: old PID-only runners must be quiescent, and both Sheets source units must be installed together through the approved code-only path.  This change does not modify the live runtime or arming.
+
+Rollout: `docs/rollouts/2026-11-21-afc-859-sheets-lease.md`.
+
 ## 2026-11-16 — fleet-health-recover probes /api/live and waits for ST strategy runs ([ST-4635](https://linear.app/simple-with-us/issue/ST-4635))
 
 `fleet-health-recover@socratic-app` now probes `/api/live` instead of `/api/health`, with the same 12s limit and the same 2-failure threshold.  A new opt-in run guard (`RUN_GUARD_DB`) defers a due restart while a strategy run or an unexpired run lease is in the DB, for at most 15 minutes, then restarts as before.  `usage-monitor` is unchanged.  The host was applied 2026-11-16 6:30pm CT, with backups under `/root/backups/fleet-health-recover-st4635-20261117T003012Z/`.  Rollout: `docs/rollouts/2026-11-16-fleet-health-recover-live-run-guard.md`.

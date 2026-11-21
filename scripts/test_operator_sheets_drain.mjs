@@ -4,7 +4,9 @@
 // Run: node --test scripts/test_operator_sheets_drain.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,19 +67,196 @@ test("systemd unit: the service passes no flags the runner ignores", async () =>
   assert.doesNotMatch(unit, /--once/);
 });
 
-test("writer lease: a live holder excludes, a stale lock is stolen", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
+const leaseModuleUrl = new URL("./simple_tools/operator_sheets_drain.mjs", import.meta.url).href;
+
+function startLeaseProcess(lock, mode) {
+  const source = `
+import { acquireLease } from ${JSON.stringify(leaseModuleUrl)};
+const lease = await acquireLease(process.argv[1]);
+if (!lease) process.exit(75);
+process.stdout.write("locked\\n");
+if (process.argv[2] === "exit") process.exit(0);
+setInterval(() => {}, 60_000);
+`;
+  return spawn(process.execPath, ["--input-type=module", "-e", source, lock, mode], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function withTimeout(promise, label, timeoutMs = 10_000) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function waitForLockMessage(child) {
+  return withTimeout(new Promise((resolve, reject) => {
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("locked\n")) resolve();
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (!output.includes("locked\n")) reject(new Error(`lease child exited early: ${code}`));
+    });
+  }), "lease child lock message");
+}
+
+function waitForClose(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return withTimeout(new Promise((resolve) => child.once("close", resolve)), "lease child close");
+}
+
+test("writer lease: a second process is excluded until the owner exits", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-process-"));
   const lock = join(dir, "drain.lock");
-  const first = await acquireLease(lock);
-  assert.ok(first);
-  assert.equal(await acquireLease(lock), null); // our own pid is alive
-  await first.close();
-  // Simulate a crashed holder: lock file names a pid that cannot exist.
+  const holder = startLeaseProcess(lock, "hold");
+  try {
+    await waitForLockMessage(holder);
+    const before = await readFile(lock);
+    const inodeBefore = await stat(lock);
+    const busy = await acquireLease(lock);
+    assert.equal(busy, null);
+    assert.deepEqual(await readFile(lock), before);
+    const inodeWhileHeld = await stat(lock);
+    assert.equal(inodeWhileHeld.dev, inodeBefore.dev);
+    assert.equal(inodeWhileHeld.ino, inodeBefore.ino);
+
+    holder.kill("SIGKILL"); // Process death releases the kernel lock without close().
+    await waitForClose(holder);
+    const released = await acquireLease(lock);
+    assert.ok(released);
+    await released.close();
+    assert.deepEqual(await readFile(lock), before); // Keep the canonical lock inode stable.
+    const inodeAfterRelease = await stat(lock);
+    assert.equal(inodeAfterRelease.dev, inodeBefore.dev);
+    assert.equal(inodeAfterRelease.ino, inodeBefore.ino);
+  } finally {
+    holder.kill("SIGKILL");
+    await waitForClose(holder);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writer lease: a contender cannot acquire during the first opener's initialization window", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-init-window-"));
+  const lock = join(dir, "drain.lock");
+  let signalOpened;
+  let releaseFirst;
+  const opened = new Promise((resolve) => { signalOpened = resolve; });
+  const gate = new Promise((resolve) => { releaseFirst = resolve; });
+  const first = acquireLease(lock, {
+    openFile: async (...args) => {
+      const handle = await open(...args);
+      signalOpened();
+      await gate;
+      return handle;
+    },
+  });
+  let second;
+  try {
+    await opened;
+    second = await acquireLease(lock);
+    assert.ok(second);
+    releaseFirst();
+    assert.equal(await first, null);
+    await second.close();
+    second = null;
+  } finally {
+    releaseFirst();
+    await second?.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writer lease: stale PID-only lock content does not block a free kernel lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-stale-"));
+  const lock = join(dir, "drain.lock");
   await writeFile(lock, "999999999");
-  const stolen = await acquireLease(lock);
-  assert.ok(stolen);
-  assert.equal((await readFile(lock, "utf8")).trim(), String(process.pid));
-  await stolen.close();
+  await chmod(lock, 0o600);
+  const original = await readFile(lock);
+  const lease = await acquireLease(lock);
+  assert.ok(lease);
+  assert.notDeepEqual(await readFile(lock), original);
+  assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+  await lease.close();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a live legacy PID-only holder is preserved during rollout", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-legacy-live-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, String(process.pid));
+  await chmod(lock, 0o600);
+  const original = await readFile(lock);
+  assert.equal(await acquireLease(lock), null);
+  assert.deepEqual(await readFile(lock), original);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: symlink lock paths fail closed without touching their targets", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-symlink-"));
+  const lock = join(dir, "drain.lock");
+  const target = join(dir, "target");
+  await writeFile(target, "preserve");
+  await symlink(target, lock);
+  await assert.rejects(acquireLease(lock), { code: "ELOOP" });
+  assert.equal(await readFile(target, "utf8"), "preserve");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a permissive preexisting lock mode fails closed without repair", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-mode-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "flock-v1");
+  await chmod(lock, 0o644);
+  await assert.rejects(acquireLease(lock), /writer lease path is not the expected private regular file/);
+  assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a lock-helper timeout kills the helper and fails closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-timeout-"));
+  const lock = join(dir, "drain.lock");
+  let killed = false;
+  const spawnProcess = (_file, _args, options) => {
+    assert.ok(Number.isInteger(options.stdio[3]), "the open lock fd is passed as child fd 3");
+    const child = new EventEmitter();
+    child.kill = (signal) => {
+      assert.equal(signal, "SIGKILL");
+      killed = true;
+      return true;
+    };
+    return child;
+  };
+  await assert.rejects(
+    acquireLease(lock, { spawnProcess, timeoutMs: 5 }),
+    /writer lease lock helper timed out/,
+  );
+  assert.equal(killed, true);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a lock-helper spawn error fails closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-helper-error-"));
+  const lock = join(dir, "drain.lock");
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.kill = () => true;
+    setImmediate(() => child.emit("error", new Error("synthetic helper failure")));
+    return child;
+  };
+  await assert.rejects(
+    acquireLease(lock, { spawnProcess }),
+    /writer lease lock helper failed/,
+  );
+  await rm(dir, { recursive: true, force: true });
 });
 
 // ---- write pacing and HTTP 429 back-off (no real sleeping) ----
@@ -322,35 +501,6 @@ test("registry bridge: every docker exec carries a timeout", async () => {
     assert.equal(call.file, "docker");
     assert.equal(call.options.timeout, 120_000);
     assert.equal(call.options.killSignal, "SIGKILL");
-  }
-});
-
-test("writer lease: only ESRCH proves the holder gone; EPERM and any other probe error keep the lock", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
-  const lock = join(dir, "drain.lock");
-  const realKill = process.kill;
-  const probeWith = (code) => {
-    process.kill = (pid, signal) => {
-      if (signal !== 0) return realKill.call(process, pid, signal);
-      const error = new Error("probe");
-      error.code = code;
-      throw error;
-    };
-  };
-  try {
-    await writeFile(lock, "4242");
-    // EPERM (another user's live process) and any other probe error keep the lease.
-    for (const code of ["EPERM", "EINVAL", "EACCES", undefined]) {
-      probeWith(code);
-      assert.equal(await acquireLease(lock), null, `probe error ${code} must not steal the lock`);
-      assert.equal((await readFile(lock, "utf8")).trim(), "4242");
-    }
-    probeWith("ESRCH");
-    const stolen = await acquireLease(lock);
-    assert.ok(stolen);
-    await stolen.close();
-  } finally {
-    process.kill = realKill;
   }
 });
 
