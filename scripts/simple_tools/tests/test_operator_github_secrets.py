@@ -15,9 +15,14 @@ from simple_tools.github_token_router import RoutingError
 
 
 def fake_read(value="mock", status="ok"):
-    """A fake scoped read:  one name, one value, one status."""
+    """A fake scoped read:  one name, one value, one status.
 
-    def read(name, folder, account, env=None):
+    The fake takes the options the real scoped read takes,  so a caller that passes
+    one (the timeout,  the finite-expiry requirement) reaches the fake instead of
+    raising a TypeError the caller would report as a refused read.
+    """
+
+    def read(name, folder, account, env=None, **options):
         read.calls.append((name, folder, account))
         return (value, status)
 
@@ -97,7 +102,7 @@ class TimeoutOutcomeTests(unittest.TestCase):
     """A hung lookup is retryable;  a refused credential is not."""
 
     def test_a_timeout_is_retryable_and_not_refused(self) -> None:
-        def timeout(name, folder, account, env=None):
+        def timeout(name, folder, account, env=None, **options):
             raise TimeoutError("timed out")
 
         with patch.object(fleet_infisical, "fetch_scoped", timeout):
