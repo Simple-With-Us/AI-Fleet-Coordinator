@@ -167,6 +167,7 @@ EXACT = frozenset(
         # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
         # writer that owns the service-account auth, shipped as a data file beside the Python modules.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
@@ -206,6 +207,7 @@ REPO_ONLY = frozenset(
         # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
         # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
         "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -272,6 +274,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/post_header.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
+        # Imported by the thread exporter; older rollback targets retain their original seam.
+        "scripts/simple_tools/registry_export_reader.mjs",
         "scripts/simple_tools/peer_actions.py",
         "scripts/simple_tools/peer_actions_cli.py",
         "scripts/simple_tools/fleet_bearer.py",

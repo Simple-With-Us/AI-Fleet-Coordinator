@@ -79,10 +79,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-INFISICAL_CLI="$SCRIPT_DIR/fleet_infisical_cli.py"
-PYTHON3=/usr/bin/python3
-
 MODE=create
 DELETE_NOTE_ID=""
 WANT_ACTIVATE=0
@@ -2350,20 +2346,36 @@ if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
 fi
 
-# One secret on stdout: existing Infisical-synced transport, else the shared isolated CLI, else nothing.
+# The installed Mac helper uses the shared scoped reader with this consumer's
+# own service token and grant. It receives one value on stdout and never reads
+# through the retired fleet-secrets CLI or a flat credential file.
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+if [[ -z "$INFISICAL_SCOPED_READER" && -n "${HOME:-}" ]]; then
+  INFISICAL_SCOPED_READER="${HOME}/apps/infisical-scoped/infisical-scoped.py"
+fi
+
+_scoped_secret() {
+  local name="$1" folder="$2" account="$3"
+  [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
+    echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
+    return 4
+  }
+  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+    --folder "$folder" --project fleet-ops --account "$account"
+}
+
+# Preserve the host's bound value contract; when empty, use only the scoped reader.
 _pushover_secret() {
   local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    if [[ -f "$INFISICAL_CLI" ]]; then
-      value="$("$PYTHON3" -I "$INFISICAL_CLI" get "$name" --path / --project fleet-ops 2>/dev/null || true)"
-    fi
+    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" || true)"
   fi
   printf '%s' "$value"
 }
 
 _send_pushover_notification() {
   local user_key token
-  # Environment first, then the shared isolated Infisical CLI (the old flat secrets file is retired, AFC-359).
+  # Environment value first, then this consumer's scoped reader (OPS-818; AFC-359).
   user_key=$(_pushover_secret PUSHOVER_USER_KEY)
   token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
   [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)
