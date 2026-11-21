@@ -4128,9 +4128,19 @@ class SwapOutcome:
 
 
 def _directory_fingerprint(root: str) -> str:
-    """Bind bytes, paths, modes and ownership before and after an exchange."""
+    """Bind managed bytes, paths, modes and ownership before and after an exchange.
+
+    Python may create package bytecode while either tree is live.  Like
+    scan_stable, treat only the real fleet_lanes/__pycache__ directory as
+    generated data; a symlink at that name remains part of the fingerprint.
+    """
     digest = hashlib.sha256()
     for base, dirs, files in os.walk(root, followlinks=False):
+        if os.path.relpath(base, root) == PACKAGE:
+            dirs[:] = [
+                name for name in dirs
+                if name != "__pycache__" or os.path.islink(os.path.join(base, name))
+            ]
         dirs.sort()
         files.sort()
         for name in [".", *dirs, *files]:
