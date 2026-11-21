@@ -6,7 +6,7 @@
   <string>com.jay.ios-testflight-freshness</string>
   <!-- The fleet TestFlight deploy check (AFC-341, docs/ios-testflight-freshness.md).
        It only calls App Store Connect and GitHub:  no xcodebuild runs here.  A catch-up
-       ship is a `gh workflow run` of the app's own ship workflow, which builds on that
+       ship dispatches the app's own workflow through the dedicated TestFlight App API, which builds on that
        workflow's runner.  Installed by scripts/ios-fleet/install-testflight-freshness.sh. -->
   <key>ProgramArguments</key>
   <array>

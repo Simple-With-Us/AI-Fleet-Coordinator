@@ -492,13 +492,15 @@ def _verified_copy(path, environ, *, now=None):
             or type(stored["schemaVersion"]) is not int
             or stored["schemaVersion"] != SCHEMA_VERSION
             or type(stored["verifiedAtEpoch"]) not in (int, float)
-            or revision(stored["document"]) != stored["revision"]
         ):
+            raise SettingsError("verified_copy_unavailable")
+        stored_document = decode(encode(stored["document"]))
+        if revision(stored_document) != stored["revision"]:
             raise SettingsError("verified_copy_unavailable")
         age = (time.time() if now is None else now) - stored["verifiedAtEpoch"]
         if not math.isfinite(age) or age < -300 or age > MAX_COPY_AGE_SECONDS:
             raise SettingsError("verified_copy_stale")
-        return decode(encode(stored["document"]))
+        return stored_document
     except (OSError, ValueError, KeyError, TypeError, RecursionError):
         raise SettingsError("verified_copy_unavailable") from None
     finally:
@@ -1216,6 +1218,8 @@ def _save_core(
     A caller retains a failed response's canonical revision/settings when
     persisted/readback are true; it must not blindly replay a timed-out edit.
     """
+    if not allowlist["applyEnabled"]:
+        raise editor.Refusal("apply_disabled", "The owner-controlled settings apply gate is off")
     if not isinstance(expected, str) or not editor.SHA256_RE.fullmatch(expected):
         raise editor.Refusal("version_required", "save requires the previous canonical revision")
     if not isinstance(requested, dict) or not requested or len(requested) > editor.MAX_CHANGES:
@@ -1330,9 +1334,8 @@ def _save_core(
         return budget.reload(reloader, live_path, revision(verified))
 
     try:
-        # Only this verified Infisical-first route enables the low-level
-        # copy writer; the old TOML-only apply gate remains unchanged.
-        copy_allowlist = dict(allowlist, applyEnabled=True)
+        # The canonical writer preserves the owner-controlled runtime apply gate.
+        copy_allowlist = allowlist
         copied, _ = editor.read_live(path)
         runtime = editor.apply(
             path,

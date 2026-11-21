@@ -35,7 +35,7 @@ class Interrupted(Exception):
 
 def authenticated_env():
     """Pass explicit service tokens only; never inspect a credential store."""
-    token_names = (core.ENV_TOKEN, core.ENV_AI_FLEET_COORDINATOR_TOKEN, core.ENV_WRITE_TOKEN)
+    token_names = (core.ENV_TOKEN, core.COORDINATOR_READ_TOKEN_ENV_NAME, core.WRITE_TOKEN_ENV_NAME)
     env = {
         key: value
         for key, value in os.environ.items()

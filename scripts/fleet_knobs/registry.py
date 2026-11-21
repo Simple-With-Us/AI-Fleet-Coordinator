@@ -777,6 +777,28 @@ REGISTRY: tuple[Spec, ...] = (
         folder=WAKE_ROUTER_FOLDER,
         unit="deliveries",
     ),
+    # AFC-831:  one idle turn of a chat may carry several of its pending wakes.  Off at 1, and
+    # unset counts as not set (requires_explicit);  the router never goes past 8
+    # (wake_router.TURN_MAX_WAKES), whatever this says.
+    _S(
+        "WAKE_ROUTER_TURN_MAX_WAKES",
+        "int",
+        "W2",
+        default=1,
+        requires_explicit=True,
+        narrower="min",
+        minimum=1,
+        maximum=8,
+        note="most wakes one idle turn may carry for one chat;  1 is off, and unset counts "
+        "as not set;  only a platform that declares turns uses more;  a turn may run the "
+        "resume limit once per wake it carries, so it can outlast the shutdown wait",
+        group="Wake Router",
+        label="Most Wakes In One Turn",
+        hosts="server",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
+        unit="wakes",
+    ),
     _S(
         "WAKE_ROUTER_MAX_ATTEMPTS",
         "int",

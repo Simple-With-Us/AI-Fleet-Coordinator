@@ -6,10 +6,10 @@
 # Bind 12419 — NOT 2419.
 set -euo pipefail
 
-# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359), read through `fleet-secrets`.
-FLEET_SECRETS="${FLEET_SECRETS:-${HOME}/.local/bin/fleet-secrets}"
+# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
-  GROK_AGENT_SECRET="$("$FLEET_SECRETS" get GROK_AGENT_SECRET --path /grok-acp)" \
+  GROK_AGENT_SECRET="$(/usr/bin/python3 -I "${SCRIPT_DIR}/../fleet_infisical_cli.py" get GROK_AGENT_SECRET --project fleet-ops --path /grok-acp 2>/dev/null)" \
     || { echo "missing GROK_AGENT_SECRET in Infisical /grok-acp" >&2; exit 1; }
 fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then
@@ -24,7 +24,7 @@ export GROK_DISABLE_AUTOUPDATER=1
 export GROK_CLAUDE_MCPS_ENABLED=0
 export GROK_CURSOR_MCPS_ENABLED=0
 export GROK_MANAGED_MCPS_ENABLED=0
-HERE="$(cd "$(dirname "$0")" && pwd)"
+HERE="$SCRIPT_DIR"
 ACP_HOME="${HERE}/acp-home"
 ACP_CONFIG_SRC="${HERE}/acp-home-config.toml"
 mkdir -p "$ACP_HOME"

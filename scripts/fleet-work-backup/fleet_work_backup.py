@@ -41,6 +41,9 @@ Docs:  scripts/fleet-work-backup/README.md and RESTORE.md.
 
 from __future__ import annotations
 
+import importlib.util
+import stat
+import threading
 import argparse
 import base64
 import concurrent.futures as cf
@@ -2778,71 +2781,113 @@ CRED_NAMES = {
 MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTER_APPLICATION_KEY"}
 
 
-# Child run by `fleet-secrets run`:  prints only the wanted names, as JSON, on the pipe back to this process.
-_PICK_CREDENTIALS = (
-    "import json,os,sys;"
-    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
-)
 
+
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_fleet_work_backup_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
+
+
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parents[1] / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
+    try:
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project, folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token, names=tuple(names), timeout=30,
+            max_output_bytes=65536, strict_records=True,
+        )
+    except Exception:
+        return {}
 
 def fleet_secrets_path(cfg: Config) -> str:
     return cfg.fleet_secrets_bin or str(cfg.home / ".local" / "bin" / "fleet-secrets")
 
 
 def read_credentials(cfg: Config) -> dict[str, str]:
-    """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the old flat
-    credentials file is retired).  Callers overlay the environment on top.  A missing command or any
-    failure is an empty dict, so the caller reports the missing NAMES.  Skipped when the environment
-    already holds all four job credentials.  Values stay in this process.
-
-    Least privilege:  one ``run --only`` fetch injects just the job's own names into the child (a plain
-    ``run`` would inject every secret the token can read), and the B2 master key names are asked for only
-    when FLEET_WORK_BACKUP_ALLOW_MASTER=1, the same gate ``restic_env`` applies before it uses them.
-    ``--only`` exits non-zero when any one name is absent, so a failure falls back to one ``get`` per name:
-    the names that do exist still come back and the caller reports the rest."""
-    if all(os.environ.get(n) for n in CRED_NAMES.values()):
-        return {}
-    binary = fleet_secrets_path(cfg)
-    if not os.access(binary, os.X_OK):
+    """Read only missing job names; master names retain the explicit restore gate."""
+    if all(os.environ.get(name) for name in CRED_NAMES.values()):
         return {}
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
-        wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    try:
-        p = subprocess.run(
-            [
-                binary,
-                "run",
-                "--only",
-                ",".join(wanted),
-                "--",
-                sys.executable,
-                "-c",
-                _PICK_CREDENTIALS,
-                *wanted,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-        )
-        if p.returncode == 0:
-            got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
-            return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
-        out: dict[str, str] = {}
-        for name in wanted:
-            g = subprocess.run(
-                [binary, "get", name],
-                stdin=subprocess.DEVNULL,  # a terminal's stdin would let `get` use a person's own login
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=30,  # a timeout ends the whole read (the except below), never four in a row
-            )
-            value = g.stdout.decode("utf-8", "replace").strip() if g.returncode == 0 else ""
-            if value:
-                out[name] = value
-        return out
-    except (OSError, subprocess.SubprocessError, ValueError):
+        wanted += list(MASTER_NAMES.values())
+    wanted = tuple(name for name in wanted if not os.environ.get(name))
+    if not wanted:
         return {}
+    values = _read_infisical_names(wanted, "/")
+    return {name: value for name, value in values.items()
+            if name in wanted and isinstance(value, str) and value}
+
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:

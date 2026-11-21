@@ -32,10 +32,17 @@ class ReviewedPreservationTests(unittest.TestCase):
         ):
             return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
 
-    def test_registry_empty_and_default_dedicated_refusal_unchanged(self):
-        self.assertEqual(candidate.REVIEWED_PRESERVATIONS, frozenset())
+    def test_default_dedicated_refusal_unchanged(self):
         with self.assertRaises(ValueError):
             candidate.apply_reviewed_patch(self.repo, self.path, self.base, [self.edit])
+
+    def test_approved_destination_does_not_admit_other_source_or_raw_upload(self):
+        repo = "Simple-With-Us/AI-Fleet-Coordinator"
+        path = "scripts/fixtures/muster-vectors-v5.json"
+        with self.assertRaises(ValueError):
+            candidate.apply_reviewed_patch(repo, path, self.base, [self.edit])
+        self.assertIsNotNone(scanner.scan(self.result.decode()))
+        self.assertIsNotNone(scanner.scan_file(repo, path, self.result.decode()))
 
     def test_exact_whole_source_line_and_digest_proof(self):
         self.assertEqual(self.run_candidate(self.base, [self.edit], self.result), self.result)
@@ -65,6 +72,10 @@ class ReviewedPreservationTests(unittest.TestCase):
         for known in [("a",), ("old",), ("new",)]:
             with self.subTest(known=known), self.assertRaises(ValueError):
                 self.run_candidate(self.base, [self.edit], self.result, known)
+
+    def test_loaded_values_iterator_is_not_consumed_before_result_check(self):
+        with self.assertRaisesRegex(ValueError, "loaded credential"):
+            self.run_candidate(self.base, [self.edit], self.result, iter(["new"]))
 
     def test_new_match_cannot_be_blessed_by_result_digest(self):
         base = b"ordinary\n"
