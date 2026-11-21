@@ -337,7 +337,9 @@ class CredentialTests(unittest.TestCase):
             self.assertEqual(folders, ["/zulip", "/"] * 3)
             self.assertEqual(api.requests.count("/api/v2/service-token"), 6)
             self.assertEqual(len(api.requests), 9)
-            self.assertTrue(all("secretPath=%2F&" in path for path in api.requests if "/raw/" in path))
+            self.assertTrue(
+                all("secretPath=%2F&" in path for path in api.requests if "/raw/" in path)
+            )
 
     def test_member_retry_refuses_wrong_or_broader_grants_before_named_reads(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
@@ -354,15 +356,17 @@ class CredentialTests(unittest.TestCase):
             {"expiresAt": "2000-01-01T00:00:00Z"},
         )
         for metadata in cases:
-            with self.subTest(metadata=metadata):
-                with ScopedReadAPI(
+            with (
+                self.subTest(metadata=metadata),
+                ScopedReadAPI(
                     {"CODEX_ZULIP_KEY": "public fixture"}, project=str(uuid.uuid4())
-                ) as api:
-                    api.metadata_override = metadata
-                    with self.real_reader(api) as folders:
-                        self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
-                    self.assertEqual(folders, ["/zulip", "/"])
-                    self.assertEqual(api.requests, ["/api/v2/service-token"] * 2)
+                ) as api,
+            ):
+                api.metadata_override = metadata
+                with self.real_reader(api) as folders:
+                    self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
+                self.assertEqual(folders, ["/zulip", "/"])
+                self.assertEqual(api.requests, ["/api/v2/service-token"] * 2)
 
     def test_member_root_retry_requires_strict_named_row_proof(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
@@ -373,17 +377,19 @@ class CredentialTests(unittest.TestCase):
             ({"secretValueHidden": True}, ()),
         )
         for overrides, omissions in cases:
-            with self.subTest(overrides=overrides, omissions=omissions):
-                with ScopedReadAPI(
+            with (
+                self.subTest(overrides=overrides, omissions=omissions),
+                ScopedReadAPI(
                     {"CODEX_ZULIP_KEY": "public fixture"}, project=str(uuid.uuid4())
-                ) as api:
-                    api.record_override = overrides
-                    api.record_omissions = omissions
-                    with self.real_reader(api) as folders:
-                        self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
-                    self.assertEqual(folders, ["/zulip", "/"])
-                    self.assertEqual(api.requests.count("/api/v2/service-token"), 2)
-                    self.assertEqual(len(api.requests), 3)
+                ) as api,
+            ):
+                api.record_override = overrides
+                api.record_omissions = omissions
+                with self.real_reader(api) as folders:
+                    self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
+                self.assertEqual(folders, ["/zulip", "/"])
+                self.assertEqual(api.requests.count("/api/v2/service-token"), 2)
+                self.assertEqual(len(api.requests), 3)
 
     def run_main(self, *argv):
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
