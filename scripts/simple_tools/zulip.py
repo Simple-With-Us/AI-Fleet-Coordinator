@@ -631,8 +631,7 @@ def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
     read from the host's approved store, else a copy of that same token in the environment.
 
     The store is the authority:  a hand-set environment value never replaces the reviewed,
-    scope-limited grant.  A copy in the environment is only used when the store has no
-    usable token, which is how a host transports a value it already synced from Infisical.
+    scope-limited grant.  A copy in the environment is only used when the scoped read populated it, which is how a host transports a value it already synced from Infisical.
 
     There is no other source:  no shared reader, no machine identity and no cached copy.  A
     missing token, a locked keychain or an unreadable store yields nothing, and the refusal
@@ -656,7 +655,7 @@ def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
 
 def _infisical_context(
     env: Mapping[str, str], home: Path, path: str
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str, dict[str, str], str]:
     """The caller's explicit project binding and exact folder; no CLI or credential-store fallback."""
     import fleet_infisical as FI
 
@@ -672,18 +671,22 @@ def _infisical_context(
     route = hashlib.sha256(
         (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
     ).hexdigest()
-    return project, route, scoped
+    # The binding is resolved once here and passed down:  a second resolution would
+    # ask the token store twice,  and on macOS that is two keychain subprocesses.
+    return project, route, scoped, binding
 
 
 def _direct_infisical_values(
-    wanted: tuple[str, ...], env: Mapping[str, str], home: Path, path: str
+    wanted: tuple[str, ...],
+    project: str,
+    scoped: Mapping[str, str],
+    path: str,
+    binding: str,
 ) -> dict[str, str]:
     """Read named values with verified service-token metadata and row provenance."""
     import fleet_infisical as FI
 
-    project, _route, scoped = _infisical_context(env, home, path)
     try:
-        binding = _scoped_binding(scoped, path)
         values = FI.fetch_project(
             project, path, scoped, token=binding, names=wanted, timeout=FLEET_SECRETS_TIMEOUT
         )
@@ -712,7 +715,7 @@ def _fetch_from_infisical(
     by route, project and folder so one store's outage never refuses the other store's fetch.
     """
     wanted = tuple(sorted(set(names)))
-    project, route, scoped = _infisical_context(env, home, path)
+    project, route, scoped, binding = _infisical_context(env, home, path)
     now = time.monotonic()
     with _cache_lock:
         held = {n: _value_cache.get((route, project, path, n)) for n in wanted}
@@ -730,7 +733,7 @@ def _fetch_from_infisical(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
             )
         try:
-            got = _direct_infisical_values(wanted, scoped, home, path)
+            got = _direct_infisical_values(wanted, project, scoped, path, binding)
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
             if "key-absent" not in str(exc):
@@ -749,7 +752,7 @@ def _fetch_from_infisical(
 
 def _list_from_infisical(env: Mapping[str, str], home: Path) -> frozenset[str]:
     """The key names in the caller's exact /zulip folder, cached like values."""
-    project, route, scoped = _infisical_context(env, home, INFISICAL_PATH)
+    project, route, scoped, binding = _infisical_context(env, home, INFISICAL_PATH)
     now = time.monotonic()
     with _cache_lock:
         held = _names_cache.get((route, project))
@@ -764,7 +767,6 @@ def _list_from_infisical(env: Mapping[str, str], home: Path) -> frozenset[str]:
         try:
             import fleet_infisical as FI
 
-            binding = _scoped_binding(scoped, INFISICAL_PATH)
             names = FI.list_project_names(
                 project, INFISICAL_PATH, scoped, token=binding, timeout=FLEET_SECRETS_TIMEOUT
             )

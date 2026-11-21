@@ -65,6 +65,18 @@ class WorkerHealthReader(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old_env)
 
+    def test_read_key_survives_a_missing_binary(self):
+        old_env = dict(os.environ)
+        os.environ.pop("HEALTH_HMAC_KEY", None)
+        old_cli = fwh.INFISICAL_CLI
+        fwh.INFISICAL_CLI = "/nonexistent/fleet_infisical_cli.py"
+        try:
+            self.assertEqual(fwh.read_key(), "")
+        finally:
+            fwh.INFISICAL_CLI = old_cli
+            os.environ.clear()
+            os.environ.update(old_env)
+
     def test_read_key_comes_from_the_environment_first(self):
         old_env = dict(os.environ)
         os.environ["HEALTH_HMAC_KEY"] = "from-the-environment"
@@ -79,7 +91,7 @@ class WorkerHealthReader(unittest.TestCase):
         os.environ.pop("HEALTH_HMAC_KEY", None)
         asked = []
 
-        def read(name, folder, account, env=None):
+        def read(name, folder, account, env=None, **options):
             asked.append((name, folder, account))
             return ("from-the-scoped-token", "ok")
 

@@ -10,10 +10,9 @@ checking need only a member key, so any seat can run them:
     python3 scripts/zulip_linkifiers.py --apply --admin # realm-admin bot:  apply the plan, then check
 
 Credentials:  with --admin, only the realm-admin bot:  env ZULIP_OPERATOR_EMAIL / _API_KEY / _SITE
-first, then Infisical Fleet-OPS /zulip_operator through this script's own scoped service
-token (no legacy-name fallback).
+first, then Infisical Fleet-OPS /zulip_operator through the canonical bounded named reader (no legacy-name fallback).
 Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
-Infisical CLAUDE_ZULIP_* (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
+the verified seat's Infisical names (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
 No credential file is read (AFC-359).
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
@@ -31,14 +30,19 @@ from __future__ import annotations
 import argparse
 import base64
 import configparser
+import hashlib
+import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 REALM = "https://simplewithus.zulipchat.com"
 GH = "https://github.com/Simple-With-Us"
@@ -205,56 +209,103 @@ CHECKS: list[tuple[str, str | None]] = [
 ]
 
 
-# This script's own scoped read-only service tokens:  one grant per Infisical folder, each
-# named for the folder it covers and held in the consumer's own store (the owner's login
-# keychain on the Mac, a private file on a server).  The store is the authority for the
-# token:  a token in the environment is only a copy of that same grant, and it is used
-# when the store has none.
-TOKEN_ACCOUNTS = {
-    "/zulip_operator": "zulip-linkifiers-operator-ro",
-    "/zulip": "zulip-linkifiers-zulip-ro",
-}
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_zulip_linkifiers_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
+
+
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parent / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
+    try:
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
+        )
+    except Exception:
+        return {}
 
 
 def _fleet_secret(name: str) -> str:
-    """One Infisical value through this script's own scoped token, or "" (never logged).
-
-    The folder is chosen by the name:  the Operator's own credentials live in
-    /zulip_operator, and everything else is read from /zulip.  The project root is not a
-    source for them:  a name at the root is a reference to a name in a subfolder, and the
-    raw route returns the reference rather than the value.
-
-    The token comes from this script's own store:  a token in the environment is only a
-    copy of that same grant, and it is used when the store has none.  The project id comes
-    from the environment or the host's own file, so a host that keeps it only in the file
-    still reads.
-    """
-    import fleet_infisical as FI
-
-    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip"]
-    env = dict(os.environ)
-    try:
-        project = FI.infisical_project_id(env, FI.home_dir(env), "fleet-ops")
-    except FI.SecretsError:
-        return ""
-    scoped = dict(env)
-    scoped[FI.ENV_PROJECT] = project
+    """One named read, retaining the member-only /zulip-to-root retry."""
+    folders = ("/zulip_operator",) if name.startswith("ZULIP_OPERATOR_") else ("/zulip", "/")
     for folder in folders:
-        account = TOKEN_ACCOUNTS.get(folder)
-        if not account:
-            continue
-        scoped[FI.ENV_READ_PATHS] = folder
-        token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
-        if not token:
-            token = (env.get(FI.ENV_TOKEN) or "").strip()
-        if not token:
-            continue
-        try:
-            value = FI.fetch_verified(name, folder, scoped, token=token)
-        except FI.SecretsError:
-            continue
-        except OSError:
-            return ""
+        value = _read_infisical_names((name,), folder).get(name, "").strip()
         if value:
             return value
     return ""

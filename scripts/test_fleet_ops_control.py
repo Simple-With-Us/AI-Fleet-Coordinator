@@ -2770,10 +2770,12 @@ class FakeInfisical:
     def __init__(self, value=TOKEN):
         self.value = value
         self.calls = []
+        self.timeouts = []
         self.refuse_empty_token = False
 
-    def fetch_verified(self, name, path, env, token=None):
+    def fetch_verified(self, name, path, env, token=None, timeout=None):
         self.calls.append((name, path, dict(env), token))
+        self.timeouts.append(timeout)
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
@@ -2863,6 +2865,18 @@ class CredentialTests(Base):
         ((argv, env),) = self.runner.calls
         self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+
+    def test_the_read_carries_its_own_deadline(self):
+        """The Coolify read is bounded:  the client gets the reader's timeout (Kody, PR #2308)."""
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, _ = self.redeploy(inherited)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.client.timeouts[-1], foc.SECRET_TIMEOUT)
 
     def test_process_scoped_token_is_used_when_there_is_no_file(self):
         inherited = {
@@ -7078,7 +7092,34 @@ class SettingsBootstrapTests(unittest.TestCase):
             self.ctx.stdin = lambda: raw
             answer, code = self.install()
             self.assertEqual(code, 2)
-            self.assertEqual(set(answer), {"ok", "result", "errorCode"})
+            self.assertEqual(set(answer), {"ok", "result", "errorCode", "unavailableSource"})
+
+    def test_bootstrap_json_depth_nodes_and_bytes_are_bounded(self):
+        for value in ([[]], [0] * 1001, "x" * (foc.SETTINGS_BOOTSTRAP_MAX + 1)):
+            if value == [[]]:
+                for _ in range(17):
+                    value = [value]
+            with self.subTest(kind=type(value).__name__), self.assertRaises(foc.Refused):
+                foc._settings_json(json.dumps(value).encode())
+
+    def test_missing_bindings_and_unavailable_grant_report_only_fixed_sources(self):
+        for name in (foc.SETTINGS_PROJECT, foc.SETTINGS_WRITER):
+            bootstrap = self.envelope["bootstrap"]
+            value = bootstrap.pop(name)
+            try:
+                answer, code = self.install()
+                self.assertEqual(code, 2)
+                self.assertEqual(answer["requiredBinding"], name)
+                self.assertEqual(answer["unavailableSource"], name)
+                self.assertEqual(self.api.requests, [])
+                self.assertFalse(self.store.exists())
+            finally:
+                bootstrap[name] = value
+        with mock.patch.object(foc, "_load_infisical_reader", side_effect=OSError(self.api.token)):
+            answer, code = self.install()
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["unavailableSource"], "fleet_infisical.py")
+        self.assertNotIn(self.api.token, json.dumps(answer))
 
 
 if __name__ == "__main__":

@@ -8,14 +8,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import cursor_chat_surfaces as ccs
-import fleet_infisical
 
 
 class GithubUrlTests(unittest.TestCase):
@@ -134,11 +132,11 @@ class LoadApiKeyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_api = os.environ.pop("CURSOR_API_KEY", None)
         self.old_sync = os.environ.pop("CURSOR_SYNC_API_KEY", None)
-        self.old_infisical_key = ccs._infisical_key
-        ccs._infisical_key = lambda: None  # never reach the real store or Infisical
+        self.old_infisical = ccs._infisical_api_key
+        ccs._infisical_api_key = lambda: None
 
     def tearDown(self) -> None:
-        ccs._infisical_key = self.old_infisical_key
+        ccs._infisical_api_key = self.old_infisical
         for name, old in (
             ("CURSOR_API_KEY", self.old_api),
             ("CURSOR_SYNC_API_KEY", self.old_sync),
@@ -156,28 +154,30 @@ class LoadApiKeyTests(unittest.TestCase):
         os.environ["CURSOR_SYNC_API_KEY"] = "cursor_sync_test_key"
         self.assertEqual(ccs.load_api_key(), "cursor_sync_test_key")
 
-    def test_the_scoped_read_is_the_fallback(self) -> None:
-        ccs._infisical_key = lambda: "from_the_scoped_read"
-        self.assertEqual(ccs.load_api_key(), "from_the_scoped_read")
+    def test_infisical_cli_fallback(self) -> None:
+        ccs._infisical_api_key = lambda: "from_infisical_cli"
+        self.assertEqual(ccs.load_api_key(), "from_infisical_cli")
 
-    def test_the_scoped_read_asks_for_the_two_cursor_names(self) -> None:
-        asked = []
+    def test_fallback_fails_closed_when_canonical_cli_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cli = ccs.INFISICAL_CLI
+            ccs.INFISICAL_CLI = Path(tmp) / "fleet_infisical_cli.py"
+            try:
+                self.assertIsNone(ccs._infisical_api_key())
+            finally:
+                ccs.INFISICAL_CLI = old_cli
 
-        def read(name, folder, account, env=None):
-            asked.append((name, folder, account))
-            return ("from_the_scoped_read", "ok")
-
-        with mock.patch.object(fleet_infisical, "fetch_scoped", read):
-            self.assertEqual(self.old_infisical_key(), "from_the_scoped_read")
-        self.assertEqual(asked, [("CURSOR_API_KEY", "/global-api-keys", "cursor-surfaces-ro")])
-
-    def test_a_refused_scoped_read_names_the_source(self) -> None:
-        # A refused store is not an absent value:  the source that must be repaired is
-        # named,  so it is not mistaken for a key that is simply missing.
-        with mock.patch.object(fleet_infisical, "fetch_scoped", lambda *a, **k: ("", "no-token")):
-            with self.assertRaises(RuntimeError) as caught:
-                self.old_infisical_key()
-        self.assertIn("cursor-surfaces-ro", str(caught.exception))
+    def test_existing_copy_includes_shared_cli_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_live_dir = ccs.LIVE_DIR
+            ccs.LIVE_DIR = Path(tmp) / "cursor-chat-surfaces"
+            try:
+                ccs.copy_live_files()
+                self.assertTrue((ccs.LIVE_DIR / "fleet_infisical_cli.py").is_file())
+                self.assertTrue((ccs.LIVE_DIR / "fleet_infisical.py").is_file())
+                self.assertTrue((ccs.LIVE_DIR / "cursor_chat_surfaces.py").is_file())
+            finally:
+                ccs.LIVE_DIR = old_live_dir
 
 
 class SaveJsonTests(unittest.TestCase):
