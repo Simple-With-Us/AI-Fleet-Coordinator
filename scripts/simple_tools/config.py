@@ -1680,7 +1680,9 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
         from .server import operator_settings
 
         try:
-            snapshot = operator_settings.accepted_snapshot(runtime_raw, operator_settings._manifest())
+            snapshot = operator_settings.accepted_snapshot(
+                runtime_raw, operator_settings._manifest()
+            )
             cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
         except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
             # Existing listeners remain usable before migration; initialization

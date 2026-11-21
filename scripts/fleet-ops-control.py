@@ -2235,7 +2235,9 @@ def receive_settings_bootstrap(ctx):
         return {"ok": True, "result": "installed"}, 0
     except Exception as exc:  # noqa: BLE001 - only fixed source names become an answer
         reported = getattr(exc, "settings_source", source)
-        refusal = _settings_refusal(source if reported == "operator_settings_bootstrap" else reported)
+        refusal = _settings_refusal(
+            source if reported == "operator_settings_bootstrap" else reported
+        )
         answer = {
             "ok": False,
             "result": "refused",
