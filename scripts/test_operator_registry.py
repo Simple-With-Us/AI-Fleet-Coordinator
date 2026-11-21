@@ -531,7 +531,16 @@ class RegistryTest(unittest.TestCase):
         # A child of AZ wraps to AA, which is reserved for main chats.  Its row has no remaining child pair.
         with self.assertRaises(R.LabelExhausted) as caught:
             self._pair("p-1", "primary", "a-24")
-        self.assertEqual(caught.exception.limit, 24)
+        self.assertEqual(caught.exception.limit, 25)
+
+    def test_child_row_capacity_uses_the_reduced_allowed_space(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC", "BB")}):
+            self._labels(["parent"])  # AA
+            self.assertEqual(self._labels(["kid-1", "kid-2"], parent="parent"), ["AB", "AC"])
+            with self.assertRaises(R.LabelExhausted) as caught:
+                self._pair("overflow", "primary", "kid-2")  # parent AC reaches the same full row.
+            self.assertEqual(caught.exception.limit, 2)
+            self.assertIn("capacity 2", str(caught.exception))
 
     def test_an_unknown_closed_single_or_own_parent_is_no_parent(self):
         parent = self._pair("p", "primary")  # AA
@@ -1134,9 +1143,7 @@ class RegistryTest(unittest.TestCase):
         for _ in range(3):
             out = self._relabel("cl-1", platform="claude", force=True)
             self.assertEqual((out["outcome"], out["label"]), ("unchanged", "AA"))
-        self.assertEqual(
-            self._register("cl-2")["label"], "BB"
-        )  # no issue was added by the no-op relabel.
+        self.assertEqual(self._register("cl-2")["label"], "BB")  # no issue was added by the no-op relabel.
 
     def test_a_relabel_into_the_single_space_keeps_the_pair(self):
         self._register("cl-1")
