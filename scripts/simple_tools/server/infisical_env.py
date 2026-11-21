@@ -543,7 +543,7 @@ def operator_optional_data(env: Mapping[str, str], **kw) -> tuple[dict[str, str]
     """
     token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
     if not token:
-        return {}, "; optional Operator data not loaded (shared token is unbound)"
+        return {}, "; optional Operator data not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN
     project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
     if not PROJECT_ID_RE.fullmatch(project) or not SERVICE_TOKEN_RE.fullmatch(token):
         return {}, "; optional Operator data not loaded (shared source is unavailable)"
