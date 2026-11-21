@@ -74,9 +74,16 @@ def _hosted_log(entry: P.LogEntry, *, dry_run: bool) -> dict:
         action_taken=entry.action_taken.strip(trim_chars),
         result=entry.result.strip(trim_chars),
     )
-    if not os.environ.get("SIMPLE_TOOLS_BEARER", "").strip():
+    from . import fleet_bearer as _fb
+
+    try:
+        bearer_available = bool(_fb.own_bearer(os.environ))
+    except _fb.FleetError as exc:
+        raise P.PeerActionsError("not_configured", str(exc)) from None
+    if not bearer_available:
         raise P.PeerActionsError(
-            "not_configured", "hosted mode needs this bot's own SIMPLE_TOOLS_BEARER"
+            "not_configured",
+            "hosted mode needs this bot's own SIMPLE_TOOLS_BEARER or its canonical seat file",
         )
     try:
         who = _remote_write_identity(os.environ)

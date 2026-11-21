@@ -21,10 +21,10 @@ from simple_tools import registry_api
 from simple_tools.tests.test_platform_letter import PAIR, Base, make_spec
 
 #: Rows whose `unlettered_sessions` is in an open pull request by its own seat, so this change does not edit the
-#: row:  MiniMax's (#2292, `minimax_unlettered_sessions`).  The exemption only covers a row with neither a list nor a
-#: reason:  once #2292 lands, MiniMax's row takes the first branch below and is held to it like any other.  After
-#: #2292 merges, drop "minimax" here and add it to the expected set in `test_the_rows_that_list_their_chats`.
-PENDING_FEEDS = {"minimax"}
+#: row.  The exemption only covers a row with neither a list nor a reason:  once the pull request lands, its row
+#: takes the first branch below and is held to it like any other.  After it merges, drop its name here and add it
+#: to the expected set in `test_the_rows_that_list_their_chats`.
+PENDING_FEEDS: set[str] = set()
 
 
 class FeedTableTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class FeedTableTests(unittest.TestCase):
 
     def test_the_rows_that_list_their_chats(self) -> None:
         listed = {p for p in PL.adapter_platforms() if PL.load_spec(p).unlettered_sessions is not None}
-        self.assertTrue({"antigravity", "claude", "codex", "zcode"} <= listed, listed)
+        self.assertTrue({"antigravity", "claude", "codex", "minimax", "zcode"} <= listed, listed)
 
 
 class RepairAfterStartTests(Base):

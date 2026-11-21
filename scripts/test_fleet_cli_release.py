@@ -232,6 +232,7 @@ class ReleaseTests(unittest.TestCase):
                 "doctor",
                 "public_fallback",
                 "contribute_guard",
+                "fleet_bearer",
             ],
         )
         while queue:
