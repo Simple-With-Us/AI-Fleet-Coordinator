@@ -693,7 +693,7 @@ class DoctorTests(Base):
             and rep["fetch_names_ok"]
         )
         self.assertEqual(
-            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, "0.43.141")
+            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, None)
         )
         self.assertTrue(rep["reader_configured"])
         self.assertTrue(rep["writer_configured"])

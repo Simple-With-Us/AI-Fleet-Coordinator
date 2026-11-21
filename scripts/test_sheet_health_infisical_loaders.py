@@ -42,6 +42,10 @@ VALUES = {
 class Provider(BaseHTTPRequestHandler):
     allowed_paths = {"/"}
     requests: list[str] = []
+    metadata_requests: list[str] = []
+    health_requests: list[bool] = []
+    expiry = "2099-01-01T00:00:00Z"
+    omit_expiry = False
 
     def log_message(self, *_args):
         return
@@ -57,23 +61,48 @@ class Provider(BaseHTTPRequestHandler):
     def do_GET(self):
         auth = self.headers.get("Authorization", "")
         if self.path == "/api/v2/service-token":
+            self.metadata_requests.append("metadata")
             if auth != "Bearer " + FIXTURE_CREDENTIAL:
                 self._send(401, {})
+                return
+            metadata = {
+                "workspace": PROJECT,
+                "permissions": ["read"],
+                "scopes": [
+                    {"environment": "prod", "secretPath": path}
+                    for path in sorted(self.allowed_paths)
+                ],
+                "expiresAt": self.expiry,
+            }
+            if self.omit_expiry:
+                del metadata["expiresAt"]
+            self._send(200, metadata)
+            return
+        parsed = urlsplit(self.path)
+        if parsed.path == "/api/v3/secrets/raw":
+            path = parse_qs(parsed.query).get("secretPath", [""])[0]
+            self.requests.append(f"folder:{path}")
+            if auth != "Bearer " + FIXTURE_CREDENTIAL or path not in self.allowed_paths:
+                self._send(404, {})
                 return
             self._send(
                 200,
                 {
-                    "workspace": PROJECT,
-                    "permissions": ["read"],
-                    "scopes": [
-                        {"environment": "prod", "secretPath": path}
-                        for path in sorted(self.allowed_paths)
-                    ],
-                    "expiresAt": "2099-01-01T00:00:00Z",
+                    "secrets": [
+                        {
+                            "secretKey": name,
+                            "secretValue": value,
+                            "secretValueHidden": False,
+                            "type": "shared",
+                            "workspace": PROJECT,
+                            "environment": "prod",
+                            "secretPath": path,
+                        }
+                        for name, value in VALUES.items()
+                    ]
                 },
             )
             return
-        parsed = urlsplit(self.path)
         if not parsed.path.startswith("/api/v3/secrets/raw/"):
             self._send(404, {})
             return
@@ -102,25 +131,38 @@ class Provider(BaseHTTPRequestHandler):
             },
         )
 
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        valid = self.headers.get(worker.SIGNATURE_HEADER) == worker.sign(
+            VALUES["HEALTH_HMAC_KEY"], body
+        )
+        self.health_requests.append(valid)
+        self._send(
+            200 if valid else 401,
+            {"contract": worker.CONTRACT, "worst": "ok", "bundle": "ok", "seats": []},
+        )
+
 
 class IsolatedInfisicalLoaders(unittest.TestCase):
     def setUp(self):
         self.cwd_before = os.getcwd()
         self.server = HTTPServer(("127.0.0.1", 0), Provider)
         Provider.requests = []
+        Provider.metadata_requests = []
+        Provider.health_requests = []
+        Provider.expiry = "2099-01-01T00:00:00Z"
+        Provider.omit_expiry = False
         Provider.allowed_paths = {"/"}
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.env_before = dict(os.environ)
-        for name in (
-            "HEALTH_HMAC_KEY",
-            "CURSOR_API_KEY",
-            "CURSOR_SYNC_API_KEY",
-            "GOOGLE_SHEETS_SA",
-        ):
-            os.environ.pop(name, None)
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        os.environ.clear()
         os.environ.update(
             {
+                "HOME": self.home.name,
+                "PATH": self.env_before.get("PATH", "/usr/bin:/bin"),
                 "INFISICAL_TOKEN": FIXTURE_CREDENTIAL,
                 "INFISICAL_FLEET_OPS_PROJECT_ID": PROJECT,
                 "INFISICAL_ENVIRONMENT": "prod",
@@ -135,6 +177,127 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
         self.thread.join(timeout=2)
         os.environ.clear()
         os.environ.update(self.env_before)
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-I", str(ROOT / "fleet_infisical_cli.py"), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def run_worker(self):
+        state = Path(self.home.name) / "worker-health.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(ROOT / "fleet-worker-health.py"),
+                "--url",
+                f"http://127.0.0.1:{self.server.server_port}/health",
+                "--write",
+                str(state),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+        emitted = result.stdout + result.stderr + state.read_text()
+        for value in (FIXTURE_CREDENTIAL, *VALUES.values()):
+            self.assertFalse(value in emitted, "fixture credential or value escaped")
+        return result, json.loads(state.read_text())
+
+    def test_finite_policy_refuses_before_values_through_cli_and_real_worker(self):
+        for case, expiry in (
+            ("null", None),
+            ("missing", None),
+            ("expired", "2000-01-01T00:00:00Z"),
+            ("naive", "2099-01-01T00:00:00"),
+            ("malformed", "invalid"),
+        ):
+            with self.subTest(case=case):
+                Provider.expiry = expiry
+                Provider.omit_expiry = case == "missing"
+                Provider.metadata_requests.clear()
+                result = self.run_cli("get", "HEALTH_HMAC_KEY", "--require-finite-expiry")
+                self.assertEqual(result.returncode, 4)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("token-expired-or-invalid", result.stderr)
+                self.assertFalse(FIXTURE_CREDENTIAL in result.stderr)
+                result, state = self.run_worker()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(state["error"], "no_key")
+                self.assertFalse(state["reachable"])
+                self.assertEqual(Provider.metadata_requests, ["metadata", "metadata"])
+                self.assertEqual(Provider.requests, [])
+                self.assertEqual(Provider.health_requests, [])
+
+    def test_finite_success_uses_one_metadata_request_and_signs_real_worker_call(self):
+        result = self.run_cli("get", "HEALTH_HMAC_KEY", "--require-finite-expiry")
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout == VALUES["HEALTH_HMAC_KEY"])
+        self.assertEqual(Provider.metadata_requests, ["metadata"])
+        self.assertEqual(Provider.requests, ["HEALTH_HMAC_KEY:/"])
+        result, state = self.run_worker()
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(state["reachable"])
+        self.assertEqual(Provider.metadata_requests, ["metadata", "metadata"])
+        self.assertEqual(Provider.requests, ["HEALTH_HMAC_KEY:/", "HEALTH_HMAC_KEY:/"])
+        self.assertEqual(Provider.health_requests, [True])
+
+    def test_default_cli_keeps_nonexpiring_read_compatibility(self):
+        Provider.expiry = None
+        result = self.run_cli("get", "HEALTH_HMAC_KEY")
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout == VALUES["HEALTH_HMAC_KEY"])
+        self.assertEqual(Provider.metadata_requests, ["metadata"])
+        self.assertEqual(Provider.requests, ["HEALTH_HMAC_KEY:/"])
+
+    def test_actual_doctor_uses_http_without_executing_discoverable_issuer_cli(self):
+        trap = Path(self.home.name) / "infisical"
+        trap.write_text('#!/bin/sh\n: > "$0.started"\nexit 99\n')
+        trap.chmod(0o700)
+        os.environ["PATH"] = self.home.name
+        result = self.run_cli("doctor", "--json", "--project", "fleet-ops", "--path", "/")
+        self.assertEqual(result.returncode, 0)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["cli_present"])
+        self.assertIsNone(report["cli_version"])
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["fetch_names_ok"])
+        self.assertEqual(report["auth_mode"], "token")
+        self.assertEqual(report["names_count"], len(VALUES))
+        self.assertFalse(Path(str(trap) + ".started").exists())
+        self.assertEqual(Provider.metadata_requests, ["metadata"])
+        self.assertEqual(Provider.requests, ["folder:/"])
+        self.assertEqual(Provider.health_requests, [])
+        for value in (FIXTURE_CREDENTIAL, *VALUES.values()):
+            self.assertFalse(value in result.stdout + result.stderr, "fixture value escaped")
+
+    def test_synced_health_value_keeps_precedence_without_a_provider_read(self):
+        os.environ["HEALTH_HMAC_KEY"] = VALUES["HEALTH_HMAC_KEY"]
+        os.environ["INFISICAL_TOKEN"] = BAD_INPUT
+        result, state = self.run_worker()
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(state["reachable"])
+        self.assertEqual(Provider.metadata_requests, [])
+        self.assertEqual(Provider.requests, [])
+        self.assertEqual(Provider.health_requests, [True])
+
+    def test_finite_option_is_get_only_boolean_and_not_repeatable(self):
+        for args in (
+            ("get", "HEALTH_HMAC_KEY", "--require-finite-expiry=false"),
+            ("get", "HEALTH_HMAC_KEY", "--require-finite-expiry", "--require-finite-expiry"),
+            ("names", "--require-finite-expiry"),
+            ("run", "--require-finite-expiry", "--only", "HEALTH_HMAC_KEY", "--", "ignored"),
+        ):
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+        self.assertEqual(Provider.metadata_requests, [])
+        self.assertEqual(Provider.requests, [])
 
     def test_worker_and_staged_cursor_loader_use_the_cli_from_hostile_cwd(self):
         with tempfile.TemporaryDirectory() as temp:
