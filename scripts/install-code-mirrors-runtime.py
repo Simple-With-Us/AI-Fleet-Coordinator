@@ -73,8 +73,6 @@ LEGACY_DOCS_FILES = (
     "fleet_knobs/registry.json",
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
-    "fleet_secrets/__init__.py",
-    "fleet_secrets/core.py",
     "collect-repo-documents.py",
     "export-repo-git-source.py",
     "remote_git_source.py",
