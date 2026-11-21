@@ -611,9 +611,9 @@ class ActualPipelineMappingTests(unittest.TestCase):
 
     def test_critical_poll_is_ingestion_failure(self):
         payload = self.native()
-        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")[
-            "status"
-        ] = "critical"
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")["status"] = (
+            "critical"
+        )
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertEqual(row["state"], "fail")
         self.assertFalse(row["ingestionAlive"])
