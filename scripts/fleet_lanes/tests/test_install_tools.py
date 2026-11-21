@@ -1324,6 +1324,44 @@ class ToolsTests(World):
         cache.unlink()
         self.assertNotEqual(T._directory_fingerprint(str(self.stable())), before)
 
+    def test_first_install_refuses_before_rename_when_staged_tree_fsync_fails(self) -> None:
+        with mock.patch.object(T, "_fsync_tree", side_effect=OSError(errno.EIO, "injected fsync failure")):
+            res = T.apply_tools(self.source, self.paths, probes=False)
+        self.assertEqual(res.status, "refused", res)
+        self.assertIn("first-install preflight fsync failed", res.detail)
+        self.assertFalse(self.stable().exists())
+        self.assertEqual(list(self.stable().parent.glob(".lane-tools-stage-*")), [])
+
+    def test_pre_exchange_oserror_removes_new_stage_without_backup_claim(self) -> None:
+        self.install(())
+        old_fingerprint = T._directory_fingerprint(str(self.stable()))
+        newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
+        with mock.patch.object(T, "_probe_exchange", side_effect=OSError(errno.EIO, "injected probe failure")):
+            res = T.apply_tools(newer, self.paths, probes=False)
+        self.assertEqual(res.status, "failed", res)
+        self.assertIn("live=old; stage=new staged tree", res.detail)
+        self.assertIsNone(res.backup)
+        self.assertEqual(T._directory_fingerprint(str(self.stable())), old_fingerprint)
+        self.assertEqual(list((self.stable().parent / ".lane-tools-backups").glob("backup-*")), [])
+
+    def test_unexpected_post_exchange_error_keeps_verified_old_backup(self) -> None:
+        self.install(())
+        old_fingerprint = T._directory_fingerprint(str(self.stable()))
+        newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
+        real_exchange = T._native_exchange
+
+        def exchange(stage: str, final: str) -> None:
+            real_exchange(stage, final)
+            if final == str(self.stable()):
+                raise ValueError("injected error after exchange")
+
+        with mock.patch.object(T, "_native_exchange", side_effect=exchange):
+            res = T.apply_tools(newer, self.paths, probes=False)
+        self.assertEqual(res.status, "failed", res)
+        self.assertIn("live=new; stage=old backup", res.detail)
+        self.assertEqual(T._directory_fingerprint(res.backup), old_fingerprint)
+        self.assertEqual(T.parse_version((self.stable() / "VERSION").read_text())["sha"], SHA2)
+
     def test_backup_container_is_owner_only_under_setgid_apps_parent(self) -> None:
         self.install(())
         apps = self.stable().parent
@@ -6347,6 +6385,28 @@ class MinimaxBundleTests(World):
         self.assertEqual(
             sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"]
         )
+
+    def test_unexpected_post_exchange_error_retains_minimax_old_backup(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text(
+            hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'),
+            encoding="utf-8",
+        )
+        old_fingerprint = T._directory_fingerprint(str(self.bundle))
+        real_exchange = T._native_exchange
+
+        def exchange(stage: str, final: str) -> None:
+            real_exchange(stage, final)
+            if final == str(self.bundle):
+                raise ValueError("injected error after MiniMax exchange")
+
+        with mock.patch.object(T, "_native_exchange", side_effect=exchange):
+            result = self.apply()
+        self.assertEqual(result.status, "failed", result)
+        self.assertIn("live=new; stage=old backup", result.detail)
+        self.assertEqual(T._directory_fingerprint(result.backup), old_fingerprint)
+        self.assertEqual(self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10)
 
     def test_a_symlinked_bundle_is_refused_and_left_alone(self) -> None:
         elsewhere = self.tmp / "elsewhere"
