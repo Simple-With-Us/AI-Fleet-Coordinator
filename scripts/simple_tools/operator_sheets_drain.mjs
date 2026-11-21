@@ -50,8 +50,9 @@
 // thread_registry_export.mjs (a test keeps the two equal), and the export-rows payload
 // must name exactly those or the thread sync refuses it unsent.
 
-import { execFile } from "node:child_process";
-import { open, readFile, unlink } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import { drainOutbox, EVENTS_HEADERS, SESSIONS_HEADERS } from "./operator_sheets_export.mjs";
@@ -271,37 +272,125 @@ export function pacedAdapter(adapter, {
 
 // --- writer lease: one drain at a time, cross-process ----------------------------
 
-export async function acquireLease(lockPath) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const handle = await open(lockPath, "wx");
-      await handle.writeFile(String(process.pid));
-      return handle;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      let pid = null;
-      try {
-        pid = Number((await readFile(lockPath, "utf8")).trim());
-      } catch {
-        pid = null; // unreadable: the lock is stale
-      }
-      let holderAlive = false;
-      if (Number.isSafeInteger(pid) && pid > 0) {
-        try {
-          process.kill(pid, 0);
-          holderAlive = true;
-        } catch (probe) {
-          // ESRCH (no such process) is the only answer that proves the holder is gone.
-          // EPERM means it exists under another user; any other error proves nothing,
-          // so the lock is kept rather than risk two drains writing at once.
-          holderAlive = probe?.code !== "ESRCH";
-        }
-      }
-      if (holderAlive) return null;
-      await unlink(lockPath).catch(() => {});
-    }
+const FLOCK_HELPER = [
+  "import fcntl, sys",
+  "try:",
+  "    fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+  "except BlockingIOError:",
+  "    raise SystemExit(75)",
+].join("\n");
+const FLOCK_MARKER = "flock-v1";
+
+async function validateLeaseFile(lockPath, handle) {
+  const info = await handle.stat();
+  const pathInfo = await lstat(lockPath);
+  const ownerUid = process.getuid();
+  const ownerGid = process.getgid();
+  if (
+    !info.isFile()
+    || pathInfo.isSymbolicLink()
+    || !pathInfo.isFile()
+    || info.dev !== pathInfo.dev
+    || info.ino !== pathInfo.ino
+    || info.uid !== ownerUid
+    || info.gid !== ownerGid
+    || (info.mode & 0o777) !== 0o600
+    || info.nlink !== 1
+  ) {
+    throw new Error("writer lease path is not the expected private regular file");
   }
-  return null;
+}
+
+async function legacyPidIsLive(handle, { created = false } = {}) {
+  const size = (await handle.stat()).size;
+  if (size === 0) {
+    if (!created) throw new Error("writer lease has ambiguous empty initialization");
+    return false;
+  }
+  if (size > 64) throw new Error("writer lease has an invalid legacy owner marker");
+  const marker = Buffer.alloc(size);
+  const { bytesRead } = await handle.read(marker, 0, size, 0);
+  const raw = marker.subarray(0, bytesRead).toString("utf8").trim();
+  if (raw === FLOCK_MARKER) return false;
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+    throw new Error("writer lease has an invalid legacy owner marker");
+  }
+  try {
+    process.kill(Number(raw), 0);
+    return true;
+  } catch (error) {
+    // A live pre-flock writer still uses only the PID marker. Preserve its old
+    // exclusion during rollout; permission and probe errors fail closed too.
+    return error?.code !== "ESRCH";
+  }
+}
+
+function tryLockDescriptor(fd, { spawnProcess = spawn, timeoutMs = 5_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const child = spawnProcess("/usr/bin/python3", ["-I", "-c", FLOCK_HELPER], {
+      stdio: ["ignore", "ignore", "ignore", fd],
+    });
+    timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* timeout is already a closed failure */ }
+      finish(reject, new Error("writer lease lock helper timed out"));
+    }, timeoutMs);
+    child.once("error", () => {
+      finish(reject, new Error("writer lease lock helper failed"));
+    });
+    child.once("close", (code) => {
+      if (code === 0) finish(resolve, true);
+      else if (code === 75) finish(resolve, false);
+      else finish(reject, new Error("writer lease lock helper failed"));
+    });
+  });
+}
+
+export async function acquireLease(lockPath, options = {}) {
+  const openFile = options.openFile ?? open;
+  let handle;
+  // Only this O_EXCL creator may initialize empty content; an existing empty inode is ambiguous.
+  let created = false;
+  try {
+    try {
+      handle = await openFile(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      created = true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      handle = await openFile(lockPath, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+    }
+    await validateLeaseFile(lockPath, handle);
+    if (!await tryLockDescriptor(handle.fd, options)) {
+      await handle.close();
+      return null;
+    }
+    if (await legacyPidIsLive(handle, { created })) {
+      await handle.close();
+      return null;
+    }
+    // Keep this exact open-file description alive: Linux flock remains held by
+    // the Node descriptor after the short Python helper exits. Convert a stale
+    // legacy PID marker to an explicit protocol marker, and never unlink the inode.
+    await handle.truncate(0);
+    await handle.writeFile(FLOCK_MARKER);
+    await handle.sync();
+    await validateLeaseFile(lockPath, handle);
+    return handle;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    throw error;
+  }
 }
 
 // --- main ------------------------------------------------------------------------
@@ -647,7 +736,6 @@ async function main() {
     }
   } finally {
     await lease.close().catch(() => {});
-    await unlink(lockPath).catch(() => {});
   }
 }
 
