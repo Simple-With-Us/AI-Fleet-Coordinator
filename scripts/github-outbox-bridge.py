@@ -37,18 +37,18 @@ Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 
 from __future__ import annotations
 
-import hashlib
-import importlib.util
-import stat
-import threading
 import argparse
 import base64
 import fcntl
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -532,18 +532,22 @@ def _read_infisical_names(names, folder):
         if not token:
             return {}
         return client.bounded_fetch_project(
-            project, folder,
+            project,
+            folder,
             {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
-            token=token, names=tuple(names), timeout=30,
-            max_output_bytes=65536, strict_records=True,
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
         )
     except Exception:
         return {}
 
+
 def _fleet_secrets(names, folder):
     """One bounded named batch, using only this caller's explicit read binding."""
     return _read_infisical_names(names, folder)
-
 
 
 class ZulipClient:
@@ -560,8 +564,10 @@ class ZulipClient:
     def __init__(self, rc_path=None, *, bot=READ_AS_DEFAULT):
         self.email = self.key = self.site = None
         if rc_path is None:
-            names = tuple("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
-                          for part in ("EMAIL", "KEY", "SITE"))
+            names = tuple(
+                "%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
+                for part in ("EMAIL", "KEY", "SITE")
+            )
             values = _fleet_secrets(names, "/zulip")
             self.email, self.key, self.site = (values.get(name) for name in names)
             text = ""
