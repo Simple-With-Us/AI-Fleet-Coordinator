@@ -27,6 +27,31 @@ A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
 
 
+class RegistryCallAdapterTests(unittest.TestCase):
+    def test_in_process_adapter_does_not_receive_network_timeout(self) -> None:
+        env = {"mode": "test"}
+        params = {"session_id": A1}
+        calls: list[tuple[dict, str, dict]] = []
+
+        def local_call(call_env: dict, op: str, call_params: dict) -> dict:
+            calls.append((call_env, op, call_params))
+            return {"ok": True}
+
+        result = PL._call_api(env, "touch", params, timeout=7, api_call=local_call)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, [(env, "touch", params)])
+
+    def test_remote_registry_call_keeps_its_transport_timeout(self) -> None:
+        env = {"mode": "test"}
+        params = {"session_id": A1}
+        with mock.patch("simple_tools.registry_api.call", return_value={"ok": True}) as remote_call:
+            result = PL._call_api(env, "touch", params, timeout=7)
+
+        self.assertEqual(result, {"ok": True})
+        remote_call.assert_called_once_with(env, "touch", params, timeout=7)
+
+
 def stamp(hours_ago: float) -> str:
     when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)
     return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")

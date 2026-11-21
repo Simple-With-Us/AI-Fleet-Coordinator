@@ -189,7 +189,7 @@ def register(
             return unconfigured
     api_call = None
     if registry_service is not None:
-        api_call = lambda _env, op, params, timeout=0: registry_service.call_operator(op, params)
+        api_call = lambda _env, op, params: registry_service.call_operator(op, params)
     chat = PL.Chat(
         SPEC,
         env,
