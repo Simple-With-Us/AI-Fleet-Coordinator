@@ -2045,13 +2045,14 @@ def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
     )
     if not recognized:
         return None
-    environment = text.find("<environment_context>")
+    instructions_close = text.find("</INSTRUCTIONS>", text.find("<INSTRUCTIONS>"))
+    environment = text.find("<environment_context>", instructions_close + len("</INSTRUCTIONS>"))
     if environment >= 0:
         closing_tag = "</environment_context>"
         closing = text.find(closing_tag, environment)
     else:
         closing_tag = "</INSTRUCTIONS>"
-        closing = text.find(closing_tag, text.find("<INSTRUCTIONS>"))
+        closing = instructions_close
     if closing < 0:
         return None
     return text[closing + len(closing_tag) :].strip()
@@ -2081,16 +2082,16 @@ def _transcript_strings(
             or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
         ):
             return
-        bootstrap_tail = _agents_environment_bootstrap_tail(value)
-        if bootstrap_tail is not None:
-            if bootstrap_tail:
-                own.append(bootstrap_tail)
-            return
         hidden = (
             inside
             or (isinstance(kind, str) and kind in _QUOTED_TYPES)
             or value.get("isMeta") is True
         )
+        bootstrap_tail = _agents_environment_bootstrap_tail(value)
+        if bootstrap_tail is not None:
+            if bootstrap_tail:
+                (quoted if hidden else own).append(bootstrap_tail)
+            return
         for key, item in value.items():
             if key == "world_state":
                 continue

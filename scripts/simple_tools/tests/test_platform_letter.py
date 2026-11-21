@@ -1276,6 +1276,28 @@ class HookTests(Base):
         )})
         self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-931"})
 
+    def test_issue_ids_in_lines_ignores_environment_example_inside_instructions(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-940; literal "
+            "<environment_context>Example OPS-941</environment_context></INSTRUCTIONS>\n"
+            "<environment_context>Startup CTS-942</environment_context>\n"
+            "Please link actual work CT-943."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-943"})
+
+    def test_issue_ids_in_lines_keeps_bootstrap_suffix_quoted_inside_tool_result(self) -> None:
+        bootstrap_request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-950"
+            "</INSTRUCTIONS>\nPlease fix quoted AFC-951."
+        )
+        lines = [
+            json.dumps({"type": "tool_result", "content": {
+                "type": "message", "role": "user", "content": bootstrap_request,
+            }}),
+            json.dumps({"type": "message", "role": "user", "content": "Fix actual AFC-952."}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-952"})
+
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
         path = self.transcript("one AFC-1", "two AFC-2")
