@@ -488,7 +488,7 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
 def operator_shared_data(
     env: Mapping[str, str], **kw
 ) -> tuple[dict[str, str], dict[str, str], str, str]:
-    """Load voice and optional provider data in one exact-scope shared Operator startup read."""
+    """Load voice and optional provider data in one exact-scope shared Operator startup read.  A malformed row or provenance mismatch fails the entire read.  Optionality covers only absent, empty, or unresolved values."""
     token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
     if not token:
         return (
