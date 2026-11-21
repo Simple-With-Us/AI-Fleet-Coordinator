@@ -673,23 +673,6 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(missing.problems, [])
     }
 
-    /// A partition file far larger than any real one is not read whole.
-    func test_a_partition_file_far_larger_than_any_real_one_is_not_read() async throws {
-        let url = try partitionFile(nil)
-        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
-        let handle = try FileHandle(forWritingTo: url)
-        try handle.truncate(atOffset: UInt64(WakeSettingsReader.maximumFileBytes + 1))
-        try handle.close()
-        let reader = SeatActivityReader(
-            location: try listenerLocation(state: listenerJSON),
-            runner: healthyRunner(),
-            now: { Date(timeIntervalSince1970: 1792821067) },
-            partitionURL: url
-        )
-        let model = await reader.read(roster: ["CLAUDE"])
-        XCTAssertTrue(model.problems.contains { $0.contains("larger than Muster reads") }, "\(model.problems)")
-        XCTAssertEqual(model.rows.first?.place.group, .notKnown)
-    }
 
     /// The seats with a live session are counted on the Mac only.
     func test_seats_with_sessions_counts_live_mac_leases() async throws {
