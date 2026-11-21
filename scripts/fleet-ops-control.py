@@ -4200,7 +4200,10 @@ def read_coolify_token(ctx):
     env = secrets_env(ctx)
     binding = env.pop("INFISICAL_TOKEN", "")
     if not binding:
-        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
+        raise Failed(
+            "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+            "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+        )
     try:
         project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
         scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
@@ -4217,14 +4220,33 @@ def read_coolify_token(ctx):
             strict_records=True,
         )
         token = values.get(COOLIFY_TOKEN_NAME, "").strip()
-    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
+    except Exception as exc:  # noqa: BLE001 - provider/source text and values never become diagnostics
         # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
-        raise Failed(
-            "the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN"
-        ) from None
+        raise Failed(_infisical_coolify_read_reason(exc)) from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
-        raise Failed("the Coolify token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN")
+        raise Failed(
+            "the Infisical read returned no usable Coolify token; "
+            "check the /coolify-deploy-only-token folder grant"
+        )
     return token
+
+
+def _infisical_coolify_read_reason(exc: BaseException) -> str:
+    """Allow-listed reason only; never the provider's raw message."""
+    code = getattr(exc, "code", None) or getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if code == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
+        return (
+            "the Infisical reader refused the token (scope or 403); issue a "
+            "token for /coolify-deploy-only-token and write it to ops-control.env"
+        )
+    if "timeout" in name or "timeout" in text:
+        return "the Infisical read of the Coolify token timed out"
+    return (
+        "the Infisical read of the Coolify token failed; check "
+        "FLEET_OPS_CONTROL_INFISICAL_TOKEN and the folder grant"
+    )
 
 
 def secrets_env(ctx):
