@@ -34,7 +34,8 @@ for (const viewport of viewports) {
   });
 
   test(`digest day cards render unmasked from fixture ${viewport.width}`, async ({ page }) => {
-    await page.setViewportSize(viewport);
+    // Keep the pinned fixture fully inside the viewport before its full-page capture.
+    await page.setViewportSize({ ...viewport, height: viewport.width === 1440 ? 1137 : 1572 });
     await serveRepo(page);
     await page.goto(DIGEST_FIXTURE_PATH);
     await expect(page.locator('.day').first()).toBeVisible();

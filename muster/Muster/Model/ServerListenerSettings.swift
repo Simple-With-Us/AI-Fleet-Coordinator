@@ -315,7 +315,7 @@ indirect enum ServerSettingSpec: Equatable {
     case choice([String])
     case text(pattern: String, maxLength: Int)
     case pairs
-    case seats
+    case seats(maxItems: Int, maxLength: Int)
     case seatEnv
     case table([String: ServerSettingSpec])
 }
@@ -414,7 +414,12 @@ struct ServerSettingsAllowlist: Equatable {
                   (0.0...256.0).contains(length) else { return nil }
             return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
-        case "seats": return .seats
+        case "seats":
+            guard let count = bound(object["maxItems"]), count == count.rounded(),
+                  (1.0...64.0).contains(count),
+                  let length = bound(object["maxLength"]), length == length.rounded(),
+                  (1.0...32.0).contains(length) else { return nil }
+            return .seats(maxItems: Int(count), maxLength: Int(length))
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
             guard !nested, let keys = object["keys"] as? [String: Any], !keys.isEmpty else { return nil }
@@ -857,6 +862,7 @@ enum ServerSettingControl: Equatable {
     case number(min: Double, max: Double)
     case text(pattern: String, maxLength: Int)
     case pairs
+    case seats(maxItems: Int, maxLength: Int)
 }
 
 /// One setting on screen.
@@ -888,6 +894,10 @@ struct ServerSettingRow: Identifiable, Equatable {
 
     var editText: String {
         if case .pairs? = control { return ServerPresenceTopics.canonical(effective, names: channelNames)?.json ?? "[]" }
+        if case .seats? = control {
+            if case .list? = effective { return effective?.json ?? "[]" }
+            return "[]"
+        }
         return effective?.fieldText ?? ""
     }
 
@@ -978,6 +988,26 @@ enum ServerSettingsCopy {
                 ? word.uppercased()
                 : word.prefix(1).uppercased() + word.dropFirst()
         }.joined(separator: " ")
+    }
+}
+
+enum ServerSeatNames {
+    static func text(from draft: String) -> String {
+        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
+        let names = values.map { value -> String in
+            if case .text(let name) = value { return name }
+            // Keep invalid entries visible and invalid until the operator corrects them.
+            return "[Invalid Entry]"
+        }
+        return names.joined(separator: ", ")
+    }
+
+    static func draft(from text: String) -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "[]" }
+        let names = text.components(separatedBy: ",").map {
+            ServerSettingValue.text($0.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return ServerSettingValue.list(names).json ?? ""
     }
 }
 
@@ -1084,6 +1114,7 @@ enum ServerSettingsBuilder {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
                 case .pairs: return .pairs
+                case .seats(let count, let length): return .seats(maxItems: count, maxLength: length)
                 case .seatEnv:
                     guard let sub else { return nil }
                     let existing: String?
@@ -1111,7 +1142,10 @@ enum ServerSettingsBuilder {
         guard case .table(let keys) = spec else {
             var control = control(spec)
             var reason: String?
-            if control == nil { reason = spec == .seats ? ServerSettingsCopy.seats : ServerSettingsCopy.pairs }
+            if control == nil {
+                if case .seats = spec { reason = ServerSettingsCopy.seats }
+                else { reason = ServerSettingsCopy.pairs }
+            }
             if reason == nil, !isStructure {
                 reason = ServerSettingsCopy.knobHome
                 control = nil
@@ -1183,9 +1217,12 @@ enum ServerSettingsBuilder {
         if !ServerSettingsReferences.names(path: row.id).isEmpty, case .choice(let names) = control {
             reference = ServerSettingsReferences.isName(trimmed) && names.contains(trimmed)
         } else { reference = false }
-        let structuredPairs: Bool
-        if case .pairs = control { structuredPairs = true } else { structuredPairs = false }
-        guard reference || structuredPairs || !looksLikeCredential(trimmed) else {
+        let structured: Bool
+        switch control {
+        case .pairs, .seats: structured = true
+        default: structured = false
+        }
+        guard reference || structured || !looksLikeCredential(trimmed) else {
             return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id, verifiedFields: verified)))
         }
         switch control {
@@ -1212,6 +1249,21 @@ enum ServerSettingsBuilder {
             let isWhole = !trimmed.contains(".") && !trimmed.lowercased().contains("e")
             if isWhole, let whole = Int(trimmed) { return .success(.int(whole)) }
             return .success(.number(number))
+        case .seats(let count, let length):
+            guard case .list(let seats)? = ServerSettingJSON.parse(trimmed), seats.count <= count else {
+                return invalid("needs at most \(count) seat names.")
+            }
+            for (index, seat) in seats.enumerated() {
+                guard case .text(let name) = seat else { return invalid("needs a list of seat names.") }
+                if looksLikeCredential(name) {
+                    return .failure(.notAValue(ServerSettingsCopy.credentialShaped("\(row.id)[\(index)]", verifiedFields: verified)))
+                }
+                guard !name.isEmpty, name.count <= length,
+                      name.range(of: "^[A-Z0-9][A-Z0-9_-]*$", options: .regularExpression) != nil else {
+                    return invalid("needs uppercase seat names of 1 to \(length) characters.")
+                }
+            }
+            return .success(.list(seats))
         case .pairs:
             guard case .list(let pairs)? = ServerSettingJSON.parse(trimmed), pairs.count <= 32 else {
                 return invalid("needs at most 32 channel and topic pairs.")

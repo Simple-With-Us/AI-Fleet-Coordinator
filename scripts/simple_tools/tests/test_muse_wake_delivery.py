@@ -438,7 +438,6 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         with mock.patch.object(WP, "mark_delivered", side_effect=OSError("disk full")):
             answer = self._deliver()
         self.assertEqual(answer["delivery"]["outcome"], "sent")
-
     def test_exit_zero_without_a_transcript_record_is_sent_not_completed(self) -> None:
         answer = self._deliver(runner=self._runner(append_wake=False))
         delivery = answer["delivery"]
