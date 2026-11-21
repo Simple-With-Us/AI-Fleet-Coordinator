@@ -1479,6 +1479,31 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _stop_review_alerts(self) -> None:
+        stop = getattr(self, "_review_alert_stop", None)
+        thread = getattr(self, "_review_alert_thread", None)
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            # Ownership cannot move to a new registry or process while the
+            # old loop can still issue an effect. Its HTTP reads have timeouts.
+            thread.join()
+        self._review_alert_thread = None
+        self._review_alert_stop = None
+
+    def _configure_review_alerts(self) -> None:
+        self._stop_review_alerts()
+        if self.stop.is_set() or getattr(self.config, "instance", "mac") != "server":
+            return
+        try:
+            from review_alerts.operator_loop import start
+
+            stop = threading.Event()
+            self._review_alert_stop = stop
+            self._review_alert_thread = start(self.env, self.registry_service, stop, self.log.write)
+        except Exception as exc:
+            self.log.write("review-alert-start-error", reason=type(exc).__name__)
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -1491,6 +1516,7 @@ class Daemon:
 
         One writer (AFC-721):  only the server instance builds the service, and with it the one stale
         sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
+        self._stop_review_alerts()
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
         old_sweeper = getattr(self, "registry_sweeper", None)
@@ -1754,6 +1780,7 @@ class Daemon:
         self._apply_config()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_review_alerts()
         self._configure_linear_comments()
         self._remember_operator_settings()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
@@ -7192,6 +7219,7 @@ class Daemon:
         self._remember_operator_settings()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_review_alerts()
         self._configure_linear_comments()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
@@ -7282,6 +7310,7 @@ class Daemon:
 
     def shutdown(self) -> None:
         self.stop.set()
+        self._stop_review_alerts()
         if self.outgoing_webhook_server is not None:
             self.outgoing_webhook_server.close()
             self.outgoing_webhook_server = None
