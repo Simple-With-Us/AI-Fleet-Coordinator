@@ -11,8 +11,8 @@ credential-shaped literal sits in this file.
 Run:  python3 scripts/test_install_operator_sheets_drain.py
 """
 
-import io
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -346,8 +346,10 @@ class StubbedInstallTests(unittest.TestCase):
             path.chmod(0o600)
         self.units.mkdir(parents=True, mode=0o755)
         self.units.chmod(0o755)
-        for name, content in (("operator-sheets-drain.service", "prior-service"),
-                              ("operator-sheets-drain.timer", "prior-timer")):
+        for name, content in (
+            ("operator-sheets-drain.service", "prior-service"),
+            ("operator-sheets-drain.timer", "prior-timer"),
+        ):
             path = self.units / name
             path.write_text(content)
             path.chmod(0o644)
@@ -400,22 +402,37 @@ class StubbedInstallTests(unittest.TestCase):
     def test_code_only_preserves_consumer_files_and_units_and_backups_missing_module(self):
         self.seed_existing_install()
         etc = self.root / "etc/operator-sheets"
-        configs = {name: ((etc / name).read_bytes(), stat.S_IMODE((etc / name).stat().st_mode))
-                   for name in ("sa.json", "drain.env")}
-        units = {name: (self.units / name).read_bytes() for name in
-                 ("operator-sheets-drain.service", "operator-sheets-drain.timer")}
-        result = self.run_install("--code-only", OPERATOR_SHEETS_WORKBOOK_ID="",
-                                  OPERATOR_SHEETS_TOKEN_FILE="", STUB_TIMER_ACTIVE="1")
+        configs = {
+            name: ((etc / name).read_bytes(), stat.S_IMODE((etc / name).stat().st_mode))
+            for name in ("sa.json", "drain.env")
+        }
+        units = {
+            name: (self.units / name).read_bytes()
+            for name in ("operator-sheets-drain.service", "operator-sheets-drain.timer")
+        }
+        result = self.run_install(
+            "--code-only",
+            OPERATOR_SHEETS_WORKBOOK_ID="",
+            OPERATOR_SHEETS_TOKEN_FILE="",
+            STUB_TIMER_ACTIVE="1",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("code-only update complete", result.stdout)
-        self.assertEqual({name: ((etc / name).read_bytes(), stat.S_IMODE((etc / name).stat().st_mode))
-                          for name in configs}, configs)
+        self.assertEqual(
+            {
+                name: ((etc / name).read_bytes(), stat.S_IMODE((etc / name).stat().st_mode))
+                for name in configs
+            },
+            configs,
+        )
         self.assertEqual({name: (self.units / name).read_bytes() for name in units}, units)
         self.assertTrue((self.lib / MODULES[3]).is_file())
         calls = self.calls()
         self.assertFalse(any(call.startswith("docker ") for call in calls))
         stop = calls.index("systemctl stop operator-sheets-drain.timer")
-        wait = calls.index("systemctl show --property=ActiveState --property=SubState --property=Job --property=MainPID operator-sheets-drain.service")
+        wait = calls.index(
+            "systemctl show --property=ActiveState --property=SubState --property=Job --property=MainPID operator-sheets-drain.service"
+        )
         start = calls.index("systemctl start operator-sheets-drain.timer")
         self.assertLess(stop, wait)
         self.assertNotIn("systemctl stop operator-sheets-drain.service", calls)
@@ -430,25 +447,37 @@ class StubbedInstallTests(unittest.TestCase):
 
     def test_code_only_waits_for_running_service_and_restores_timer(self):
         self.seed_existing_install()
-        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1",
-                                  STUB_SERVICE_ACTIVE_POLLS="2",
-                                  STUB_SERVICE_ACTIVE_STATE="activating")
+        result = self.run_install(
+            "--code-only",
+            STUB_TIMER_ACTIVE="1",
+            STUB_SERVICE_ACTIVE_POLLS="2",
+            STUB_SERVICE_ACTIVE_STATE="activating",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        service_checks = [call for call in calls if call ==
-                          "systemctl show --property=ActiveState --property=SubState --property=Job --property=MainPID operator-sheets-drain.service"]
+        service_checks = [
+            call
+            for call in calls
+            if call
+            == "systemctl show --property=ActiveState --property=SubState --property=Job --property=MainPID operator-sheets-drain.service"
+        ]
         self.assertEqual(len(service_checks), 3)
         self.assertFalse(any(call.startswith("systemctl is-active") for call in calls))
-        self.assertLess(calls.index("systemctl stop operator-sheets-drain.timer"),
-                        calls.index(service_checks[0]))
+        self.assertLess(
+            calls.index("systemctl stop operator-sheets-drain.timer"),
+            calls.index(service_checks[0]),
+        )
         self.assertIn("systemctl start operator-sheets-drain.timer", calls)
 
     def test_code_only_interrupt_while_waiting_restores_only_the_verified_prior_bundle(self):
         self.seed_existing_install()
         prior = {name: (self.lib / name).read_bytes() for name in MODULES[:3]}
-        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1",
-                                  STUB_SERVICE_ACTIVE_POLLS="1",
-                                  STUB_INTERRUPT_INSTALLER_ON_SERVICE_CHECK="1")
+        result = self.run_install(
+            "--code-only",
+            STUB_TIMER_ACTIVE="1",
+            STUB_SERVICE_ACTIVE_POLLS="1",
+            STUB_INTERRUPT_INSTALLER_ON_SERVICE_CHECK="1",
+        )
         self.assertEqual(result.returncode, 143, result.stderr)
         self.assertEqual({name: (self.lib / name).read_bytes() for name in MODULES[:3]}, prior)
         self.assertFalse((self.lib / MODULES[3]).exists())
@@ -460,15 +489,19 @@ class StubbedInstallTests(unittest.TestCase):
         python_stub = self.root / "bin/python3"
         python_stub.write_text(
             "#!/usr/bin/env bash\n"
-            "if [[ \" $* \" == *\" --stage-only \"* || \" $* \" == *\" --verify-state \"* ]]; then\n"
-            "  exec \"$REAL_PYTHON3\" \"$@\"\n"
+            'if [[ " $* " == *" --stage-only "* || " $* " == *" --verify-state "* ]]; then\n'
+            '  exec "$REAL_PYTHON3" "$@"\n'
             "fi\n"
             "printf '// synthetic mixed state\\n' > \"$TEST_MODULE_PATH\"\n"
             "exit 2\n"
         )
         python_stub.chmod(0o755)
-        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1",
-                                  REAL_PYTHON3=sys.executable, TEST_MODULE_PATH=str(target))
+        result = self.run_install(
+            "--code-only",
+            STUB_TIMER_ACTIVE="1",
+            REAL_PYTHON3=sys.executable,
+            TEST_MODULE_PATH=str(target),
+        )
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("could not be verified coherent", result.stderr)
         self.assertNotIn("systemctl start operator-sheets-drain.timer", self.calls())
@@ -478,8 +511,9 @@ class StubbedInstallTests(unittest.TestCase):
         self.seed_existing_install()
         drain_source = self.repo / "scripts/simple_tools/operator_sheets_drain.mjs"
         original = drain_source.read_bytes()
-        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1",
-                                  STUB_MUTATE_REPO_MODULE=str(drain_source))
+        result = self.run_install(
+            "--code-only", STUB_TIMER_ACTIVE="1", STUB_MUTATE_REPO_MODULE=str(drain_source)
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotEqual(drain_source.read_bytes(), original)
         self.assertEqual((self.lib / MODULES[2]).read_bytes(), original)
@@ -491,15 +525,19 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("required existing path is unavailable", result.stderr)
         self.assertNotIn("systemctl stop operator-sheets-drain.timer", self.calls())
-        self.assertEqual(sorted(path.name for path in self.lib.iterdir()),
-                         sorted([MODULES[0], MODULES[2]]))
+        self.assertEqual(
+            sorted(path.name for path in self.lib.iterdir()), sorted([MODULES[0], MODULES[2]])
+        )
 
     def test_code_only_timeout_restores_timer_without_replacing_modules(self):
         self.seed_existing_install()
         previous = {name: (self.lib / name).read_bytes() for name in MODULES[:3]}
-        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1",
-                                  STUB_SERVICE_ACTIVE_POLLS="999",
-                                  OPERATOR_SHEETS_TEST_CODE_ONLY_WAIT_SECONDS="1")
+        result = self.run_install(
+            "--code-only",
+            STUB_TIMER_ACTIVE="1",
+            STUB_SERVICE_ACTIVE_POLLS="999",
+            OPERATOR_SHEETS_TEST_CODE_ONLY_WAIT_SECONDS="1",
+        )
         self.assertEqual(result.returncode, 1)
         self.assertIn("after the bounded wait", result.stderr)
         self.assertEqual({name: (self.lib / name).read_bytes() for name in MODULES[:3]}, previous)
@@ -528,8 +566,12 @@ class StubbedInstallTests(unittest.TestCase):
         etc = self.root / "etc/operator-sheets"
         backup_root = self.root / "var/backups/operator-sheets-drain-code-only"
         staged = helper.stage_source_bundle(
-            source_dir=self.repo / "scripts/simple_tools", staging_root=backup_root,
-            lib_dir=self.lib, node=shutil.which("node"), uid=os.getuid(), gid=os.getgid(),
+            source_dir=self.repo / "scripts/simple_tools",
+            staging_root=backup_root,
+            lib_dir=self.lib,
+            node=shutil.which("node"),
+            uid=os.getuid(),
+            gid=os.getgid(),
         )
         try:
             with mock.patch.object(helper.os, "replace", side_effect=replace_with_one_failure):
@@ -555,7 +597,9 @@ class StubbedInstallTests(unittest.TestCase):
     def test_code_only_sigterm_during_replacement_rolls_back_before_returning(self):
         self.seed_existing_install()
         helper_path = HERE / "simple_tools" / "operator_sheets_code_only.py"
-        spec = importlib.util.spec_from_file_location("operator_sheets_code_only_signal_test", helper_path)
+        spec = importlib.util.spec_from_file_location(
+            "operator_sheets_code_only_signal_test", helper_path
+        )
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
         previous = {name: (self.lib / name).read_bytes() for name in MODULES[:3]}
@@ -580,8 +624,12 @@ class StubbedInstallTests(unittest.TestCase):
             etc = self.root / "etc/operator-sheets"
             backup_root = self.root / "var/backups/operator-sheets-drain-code-only"
             staged = helper.stage_source_bundle(
-                source_dir=self.repo / "scripts/simple_tools", staging_root=backup_root,
-                lib_dir=self.lib, node=shutil.which("node"), uid=os.getuid(), gid=os.getgid(),
+                source_dir=self.repo / "scripts/simple_tools",
+                staging_root=backup_root,
+                lib_dir=self.lib,
+                node=shutil.which("node"),
+                uid=os.getuid(),
+                gid=os.getgid(),
             )
             with mock.patch.object(helper.os, "replace", side_effect=interrupt_second_rename):
                 with self.assertRaisesRegex(helper.InstallError, "prior bundle was restored"):

@@ -10,8 +10,8 @@ import hashlib
 import json
 import os
 import secrets
-import signal
 import shutil
+import signal
 import stat
 import sys
 import time
@@ -121,8 +121,15 @@ def validate_backup_destination(path: Path, *, uid: int, gid: int) -> None:
 
 
 def install_modules(
-    *, source_dir: Path, lib_dir: Path, etc_dir: Path, unit_dir: Path,
-    backup_root: Path, node: str, uid: int = 0, gid: int = 0
+    *,
+    source_dir: Path,
+    lib_dir: Path,
+    etc_dir: Path,
+    unit_dir: Path,
+    backup_root: Path,
+    node: str,
+    uid: int = 0,
+    gid: int = 0,
 ) -> Path:
     """Back up the old bundle, atomically replace four modules, and roll back on failure."""
     validate_existing_install(
@@ -225,7 +232,9 @@ def install_modules(
             raise RecoveryError(
                 f"module replacement failed and prior-bundle restoration is unverified; leave the timer stopped (backup: {backup_dir})"
             ) from None
-        raise InstallError(f"module replacement failed; the prior bundle was restored (backup: {backup_dir})") from None
+        raise InstallError(
+            f"module replacement failed; the prior bundle was restored (backup: {backup_dir})"
+        ) from None
     finally:
         shutil.rmtree(transaction, ignore_errors=True)
 
@@ -263,12 +272,20 @@ def validate_source_bundle(*, source_dir: Path, node: str) -> dict[str, bytes]:
     for name in MODULES:
         source = source_dir / name
         source_info = source.lstat()
-        _check_path(source, uid=source_info.st_uid, gid=source_info.st_gid,
-                    mode=stat.S_IMODE(source_info.st_mode), directory=False)
+        _check_path(
+            source,
+            uid=source_info.st_uid,
+            gid=source_info.st_gid,
+            mode=stat.S_IMODE(source_info.st_mode),
+            directory=False,
+        )
         data = source.read_bytes()
         checked = subprocess.run(
-            [node, "--check", str(source)], check=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            [node, "--check", str(source)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         if checked.returncode:
             raise InstallError(f"source syntax check failed for {name}")
@@ -285,8 +302,13 @@ def stage_source_bundle(
     for name in MODULES:
         source = source_dir / name
         source_info = source.lstat()
-        _check_path(source, uid=source_info.st_uid, gid=source_info.st_gid,
-                    mode=stat.S_IMODE(source_info.st_mode), directory=False)
+        _check_path(
+            source,
+            uid=source_info.st_uid,
+            gid=source_info.st_gid,
+            mode=stat.S_IMODE(source_info.st_mode),
+            directory=False,
+        )
         source_bytes[name] = source.read_bytes()
     stage_dir = staging_root / ("staged-" + secrets.token_hex(12))
     stage_dir.mkdir(mode=0o700)
@@ -363,8 +385,11 @@ def _verify_prior_snapshot(source_dir: Path, lib_dir: Path, *, uid: int, gid: in
         if hashlib.sha256(expected).hexdigest() != record.get("sha256"):
             raise InstallError("the prior module snapshot hash does not match")
         info = _check_path(
-            path, uid=record.get("uid", -1), gid=record.get("gid", -1),
-            mode=record.get("mode", -1), directory=False,
+            path,
+            uid=record.get("uid", -1),
+            gid=record.get("gid", -1),
+            mode=record.get("mode", -1),
+            directory=False,
         )
         if info.st_uid != uid or info.st_gid != gid or path.read_bytes() != expected:
             raise InstallError(f"installed module set changed after staging: {name}")
@@ -412,7 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import subprocess
 
-    parser = argparse.ArgumentParser(description="Install the reviewed Operator Sheets code bundle only")
+    parser = argparse.ArgumentParser(
+        description="Install the reviewed Operator Sheets code bundle only"
+    )
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--lib-dir", type=Path, required=True)
     parser.add_argument("--etc-dir", type=Path, required=True)
@@ -435,20 +462,30 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verify_state:
             state = verify_installed_state(
-                source_dir=args.source_dir, lib_dir=args.lib_dir,
-                uid=args.uid, gid=args.gid, node=args.node,
+                source_dir=args.source_dir,
+                lib_dir=args.lib_dir,
+                uid=args.uid,
+                gid=args.gid,
+                node=args.node,
             )
             print(f"operator-sheets-code-only: coherent={state}")
             return 0
         validate_existing_install(
-            lib_dir=args.lib_dir, etc_dir=args.etc_dir, unit_dir=args.unit_dir,
-            uid=args.uid, gid=args.gid,
+            lib_dir=args.lib_dir,
+            etc_dir=args.etc_dir,
+            unit_dir=args.unit_dir,
+            uid=args.uid,
+            gid=args.gid,
         )
         validate_backup_destination(args.backup_root, uid=args.uid, gid=args.gid)
         if args.stage_only:
             staged = stage_source_bundle(
-                source_dir=args.source_dir, staging_root=args.backup_root, lib_dir=args.lib_dir,
-                node=args.node, uid=args.uid, gid=args.gid,
+                source_dir=args.source_dir,
+                staging_root=args.backup_root,
+                lib_dir=args.lib_dir,
+                node=args.node,
+                uid=args.uid,
+                gid=args.gid,
             )
             print(staged)
             return 0
@@ -457,9 +494,14 @@ def main(argv: list[str] | None = None) -> int:
             print("operator-sheets-code-only: existing install and source bundle validated")
             return 0
         backup = install_modules(
-            source_dir=args.source_dir, lib_dir=args.lib_dir, etc_dir=args.etc_dir,
-            unit_dir=args.unit_dir, backup_root=args.backup_root, node=args.node,
-            uid=args.uid, gid=args.gid,
+            source_dir=args.source_dir,
+            lib_dir=args.lib_dir,
+            etc_dir=args.etc_dir,
+            unit_dir=args.unit_dir,
+            backup_root=args.backup_root,
+            node=args.node,
+            uid=args.uid,
+            gid=args.gid,
         )
     except (InstallError, OSError, subprocess.SubprocessError) as exc:
         print(f"operator-sheets-code-only: {exc}", file=sys.stderr)
