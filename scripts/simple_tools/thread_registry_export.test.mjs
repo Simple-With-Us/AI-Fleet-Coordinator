@@ -4,7 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { getGoogleAccessToken, makeSheetsAdapter, redactForError } from "./thread_registry_export.mjs";
+import { getGoogleAccessToken, makeSheetsAdapter, quotedTab, redactForError, runCli, THREAD_HEADERS, validatePayload } from "./thread_registry_export.mjs";
+import { SPREADSHEET_ID, SHEET_TAB } from "./thread_registry_export.mjs";
 
 function fakeResponse(status, body, { textThrows = false } = {}) {
   return {
@@ -83,8 +84,8 @@ test("a body stream failure still throws the status-only error", async () => {
 test("token endpoint non-JSON 502 names the status and leaks no body secrets", async () => {
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const private_key = privateKey.export({ type: "pkcs8", format: "pem" });
-  const savedEnv = process.env.OPERATOR_GOOGLE_SHEETS_SA;
-  process.env.OPERATOR_GOOGLE_SHEETS_SA = JSON.stringify({
+  const savedEnv = process.env.GOOGLE_SHEETS_SA;
+  process.env.GOOGLE_SHEETS_SA = JSON.stringify({
     client_email: "t@example.iam.gserviceaccount.com", private_key,
   });
   const saved = globalThis.fetch;
@@ -97,7 +98,87 @@ test("token endpoint non-JSON 502 names the status and leaks no body secrets", a
     });
   } finally {
     globalThis.fetch = saved;
-    if (savedEnv === undefined) delete process.env.OPERATOR_GOOGLE_SHEETS_SA;
-    else process.env.OPERATOR_GOOGLE_SHEETS_SA = savedEnv;
+    if (savedEnv === undefined) delete process.env.GOOGLE_SHEETS_SA;
+    else process.env.GOOGLE_SHEETS_SA = savedEnv;
   }
+});
+
+test("tab titles are quoted for A1 ranges, with quotes doubled", () => {
+  assert.equal(quotedTab("Zulip Threads"), "'Zulip Threads'");
+  assert.equal(quotedTab("Simple"), "'Simple'");
+  assert.equal(quotedTab("Bob's Tab"), "'Bob''s Tab'");
+});
+
+test("a payload with the wrong workbook fails validation before the workbook check", async () => {
+  const calls = [];
+  const good = Object.fromEntries(THREAD_HEADERS.map((h, i) => [h, `c${i}`]));
+  void good;
+  const row = THREAD_HEADERS.map((_, i) => (i === 0 ? "thread-1" : "v"));
+  await assert.rejects(
+    runCli(["payload.json"], {
+      readText: () => JSON.stringify({ spreadsheetId: "nope", tab: SHEET_TAB, rows: [{ nope: 1 }] }),
+      getToken: async () => { throw new Error("must not fetch a token"); },
+      makeAdapter: () => { throw new Error("must not build an adapter"); },
+      out: (m) => calls.push(["out", m]),
+      err: (m) => calls.push(["err", m]),
+    }),
+    /thread-rows row 0 is not 15 cells/,
+  );
+  assert.deepEqual(calls, []);
+  // The same shape with a well-formed row must reach the workbook and tab guard.
+  await assert.rejects(
+    runCli(["payload.json"], {
+      readText: () => JSON.stringify({ spreadsheetId: "nope", tab: SHEET_TAB, rows: [row] }),
+      getToken: async () => { throw new Error("must not fetch a token"); },
+      makeAdapter: () => { throw new Error("must not build an adapter"); },
+      out: (m) => calls.push(["out", m]),
+      err: (m) => calls.push(["err", m]),
+    }),
+    /different workbook or tab/,
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("the manual write drops credential-shaped cells and counts them refused", async () => {
+  const seen = {};
+  const good = THREAD_HEADERS.map((_, i) => (i === 0 ? "thread-1" : "v"));
+  const bad = THREAD_HEADERS.map((_, i) => (i === 0 ? "thread-9" : "ghp_" + "x".repeat(30)));
+  let outText = "";
+  const code = await runCli(["payload.json", "--write"], {
+    readText: () => JSON.stringify({ spreadsheetId: SPREADSHEET_ID, tab: SHEET_TAB, rows: [good, bad] }),
+    getToken: async () => "test-token",
+    makeAdapter: () => ({
+      async validateHeaders() { return THREAD_HEADERS; },
+      async readRows() { return []; },
+      async appendRow(cells) { seen.appended = cells; return { rowNumber: 2 }; },
+      async updateRow() { throw new Error("must not update on a fresh tab"); },
+    }),
+    takeLease: async () => ({ close: async () => {} }),
+    out: (m) => { outText = m; },
+    err: () => {},
+  });
+  assert.equal(code, 0);
+  const result = JSON.parse(outText);
+  assert.equal(result.refused, 1);
+  assert.equal(result.appended, 1);
+  assert.deepEqual(seen.appended[0], "thread-1");
+});
+
+test("the drain log carries the code, never the response body", async () => {
+  const { drainThreadRows } = await import("./thread_registry_export.mjs");
+  const logged = [];
+  const err = Object.assign(new Error("sheets blew up: SECRET-BODY-XYZ"), { code: "write_failed", status: 500 });
+  const result = await drainThreadRows({
+    adapter: {
+      async validateHeaders() { return THREAD_HEADERS; },
+      async readRows() { return []; },
+      async appendRow() { throw err; },
+    },
+    desired: [THREAD_HEADERS.map((_, i) => (i === 0 ? "thread-1" : "v"))],
+    log: (m) => logged.push(m),
+  });
+  assert.equal(result.failed, 1);
+  assert.equal(result.error, "write_failed");
+  assert.match(logged.join("\n"), /code=write_failed/);
+  assert.doesNotMatch(logged.join("\n"), /SECRET-BODY-XYZ/);
 });
