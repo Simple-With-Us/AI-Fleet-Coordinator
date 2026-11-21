@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import threading
@@ -147,8 +148,9 @@ class ManualInfisicalConsumerTests(unittest.TestCase):
 class HetznerReaderDeliveryTests(unittest.TestCase):
     def test_incomplete_reader_pair_refuses_before_reader_or_provider_child(self):
         source = (SCRIPTS / "check-hetzner-cx43.sh").read_text()
-        log_line = 'LOG="/Users/jay/apps/hetzner-upgrade-watch.log"'
-        self.assertEqual(source.count(log_line), 1)
+        log_lines = re.findall(r'^LOG="[^"\n]*"$', source, flags=re.MULTILINE)
+        self.assertEqual(len(log_lines), 1)
+        log_line = log_lines[0]
         for delivered in ((), ("fleet_infisical_cli.py",), ("fleet_infisical.py",)):
             with self.subTest(delivered=delivered), tempfile.TemporaryDirectory() as temp:
                 root = pathlib.Path(temp)
