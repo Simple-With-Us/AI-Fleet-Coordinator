@@ -8,19 +8,31 @@ from __future__ import annotations
 import hmac
 import os
 import subprocess
+import sys
+from pathlib import Path
 
-from .config import FLEET_SECRETS_BIN, TOKEN_FOLDER, TOKEN_NAME
+from .config import TOKEN_FOLDER, TOKEN_NAME
+
+FLEET_INFISICAL_CLI = Path(__file__).resolve().parents[2] / "fleet_infisical_cli.py"
 
 
 def load_token() -> str:
-    """SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through `fleet-secrets`
-    (AFC-359).  Empty or absent is a hard fail that names the folder and key, never a value."""
+    """Use existing Infisical-synced transport, else read Fleet-OPS /seat-mcp."""
     token = os.environ.get(TOKEN_NAME, "").strip()
     if not token:
-        binary = os.environ.get("FLEET_SECRETS_BIN") or str(FLEET_SECRETS_BIN)
         try:
             proc = subprocess.run(
-                [binary, "get", TOKEN_NAME, "--path", TOKEN_FOLDER],
+                [
+                    sys.executable,
+                    "-I",
+                    str(FLEET_INFISICAL_CLI),
+                    "get",
+                    TOKEN_NAME,
+                    "--project",
+                    "fleet-ops",
+                    "--path",
+                    TOKEN_FOLDER,
+                ],
                 capture_output=True,
                 text=True,
                 check=False,

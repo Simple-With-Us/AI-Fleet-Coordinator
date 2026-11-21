@@ -10,8 +10,7 @@
 # Run it as root from a clean AI-Fleet-Coordinator checkout at origin/main; it refuses any other
 # checkout.  Safe to run again: an unchanged file is left alone.  In order, it:
 #   1. stops the timer while it works, if the timer is running, and installs
-#      operator_sheets_export.mjs, operator_sheets_google.mjs, operator_sheets_drain.mjs and
-#      thread_registry_export.mjs (the Zulip Threads sync the same run does, AFC-823) into
+#      the five JavaScript modules and private-bundle fleet_infisical.py worker into
 #      /usr/local/lib/operator-sheets-drain (0644, root);
 #   2. reads GOOGLE_SHEETS_SA from Infisical Fleet-OPS prod /google-sheets-sa
 #      with the caller's scoped READ-only service token and writes /etc/operator-sheets/sa.json
@@ -49,7 +48,7 @@ REPO="$(cd -P -- "$SCRIPTS/.." && pwd)"
 SERVICE=operator-sheets-drain.service
 TIMER=operator-sheets-drain.timer
 MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs
-  thread_registry_export.mjs)
+  thread_registry_export.mjs registry_export_reader.mjs fleet_infisical.py)
 PREFLIGHT_TIMEOUT=120
 
 DRY=0
@@ -69,6 +68,13 @@ done
 
 say() { printf 'install-operator-sheets-drain: %s\n' "$*"; }
 die() { say "$1" >&2; exit "${2:-1}"; }
+module_source() {
+  if [[ "$1" == fleet_infisical.py ]]; then
+    printf '%s\n' "$SCRIPTS/fleet_infisical.py"
+  else
+    printf '%s\n' "$SIMPLE_TOOLS/$1"
+  fi
+}
 
 TEST_ROOT="${OPERATOR_SHEETS_INSTALL_TEST_ROOT:-}"
 HOST_PYTHON=/usr/bin/python3
@@ -234,7 +240,9 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
   SOURCE_STAGE="$(mktemp -d "$BACKUP_ROOT/source-XXXXXXXX")" || die "could not create a private source stage"
   CODE_HELPER_STAGE="$SOURCE_STAGE/operator_sheets_code_only.py"
   for name in "${MODULES[@]}" operator_sheets_code_only.py; do
-    repo_git show "$head:scripts/simple_tools/$name" > "$SOURCE_STAGE/$name" || die "could not stage reviewed source $name"
+    repo_path="scripts/simple_tools/$name"
+    [[ "$name" != fleet_infisical.py ]] || repo_path=scripts/fleet_infisical.py
+    repo_git show "$head:$repo_path" > "$SOURCE_STAGE/$name" || die "could not stage reviewed source $name"
     chmod 0600 "$SOURCE_STAGE/$name"
   done
   STAGE_DIR="$("$PYTHON" -I "$CODE_HELPER_STAGE" \
@@ -291,7 +299,7 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
     sleep 1
     ((elapsed += 1))
   done
-  say "$SERVICE is inactive; installing the immutable reviewed module bundle"
+  say "$SERVICE is inactive; installing the immutable reviewed code closure"
   set +e
   "$PYTHON" -I "$CODE_HELPER_STAGE" \
     --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
@@ -340,7 +348,8 @@ read -r token_mode token_uid < <(stat -c '%a %u' -- "$TOKEN_FILE")
   die "OPERATOR_SHEETS_TOKEN_FILE must be mode 0600 or 0400 (it is $token_mode)" 2
 
 for name in "${MODULES[@]}"; do
-  [[ -f "$SIMPLE_TOOLS/$name" ]] || die "missing source $SIMPLE_TOOLS/$name"
+  source="$(module_source "$name")"
+  [[ -f "$source" ]] || die "missing source $source"
 done
 for name in "$SERVICE" "$TIMER"; do
   [[ -f "$HERE/$name" ]] || die "missing source $HERE/$name"
@@ -481,7 +490,7 @@ else
   install -d -m 0755 -o "$OWNER_UID" -g "$OWNER_GID" -- "$LIB_DIR" || die "could not create $LIB_DIR"
 fi
 for name in "${MODULES[@]}"; do
-  install_one "$SIMPLE_TOOLS/$name" "$LIB_DIR/$name" || true
+  install_one "$(module_source "$name")" "$LIB_DIR/$name" || true
 done
 
 # --- 2 and 3. sa.json from Infisical, and drain.env ----------------------------------------

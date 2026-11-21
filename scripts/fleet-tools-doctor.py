@@ -202,6 +202,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-412 PR2:  mirrors the release EXACT entry for the Operator chat-thread registry drain.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
         # OPS-1048:  mirror the release EXACT entries for the wake bridges (the receivers the seats' http
@@ -552,6 +553,7 @@ SHIPPED_REPO_ONLY = frozenset(
         # The thread-registry exporter node test: mirrors the release REPO_ONLY
         # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
         "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 

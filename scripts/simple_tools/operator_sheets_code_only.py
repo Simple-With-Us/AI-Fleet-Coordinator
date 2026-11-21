@@ -6,6 +6,7 @@ configuration or credentials; the installer verifies those files by metadata.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -23,8 +24,11 @@ MODULES = (
     "operator_sheets_google.mjs",
     "operator_sheets_drain.mjs",
     "thread_registry_export.mjs",
+    "registry_export_reader.mjs",
+    "fleet_infisical.py",
 )
 CORE_MODULES = MODULES[:3]
+OPTIONAL_MODULES = MODULES[3:]
 
 
 class InstallError(Exception):
@@ -72,8 +76,8 @@ def validate_existing_install(
         _check_path(unit_dir / name, uid=uid, gid=gid, mode=0o644, directory=False)
     for name in MODULES:
         path = lib_dir / name
-        if name == "thread_registry_export.mjs" and not path.exists() and not path.is_symlink():
-            continue  # AFC-823 may be the first four-module rollout on a three-module install.
+        if name in OPTIONAL_MODULES and not path.exists() and not path.is_symlink():
+            continue  # Upgrade older three- or four-file installations to the complete closure.
         _check_path(path, uid=uid, gid=gid, mode=0o644, directory=False)
     unexpected = sorted(entry.name for entry in lib_dir.iterdir() if entry.name not in MODULES)
     if unexpected:
@@ -131,7 +135,7 @@ def install_modules(
     uid: int = 0,
     gid: int = 0,
 ) -> Path:
-    """Back up the old bundle, atomically replace four modules, and roll back on failure."""
+    """Back up the old code closure, atomically replace six files, and roll back on failure."""
     validate_existing_install(
         lib_dir=lib_dir,
         etc_dir=etc_dir,
@@ -272,7 +276,7 @@ def _verify_new(lib_dir: Path, source_bytes: dict[str, bytes], *, uid: int, gid:
 def validate_source_bundle(
     *, source_dir: Path, node: str, uid: int, gid: int
 ) -> dict[str, bytes]:
-    """Read and syntax-check every plain module before replacing any installed file."""
+    """Read and syntax-check every JavaScript/Python file before replacing installed code."""
     import subprocess
 
     source_bytes: dict[str, bytes] = {}
@@ -286,19 +290,25 @@ def validate_source_bundle(
             directory=False,
         )
         data = source.read_bytes()
-        try:
-            checked = subprocess.run(
-                [node, "--check", "--", str(source)],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            raise InstallError(f"source syntax check timed out for {name}") from None
-        if checked.returncode:
-            raise InstallError(f"source syntax check failed for {name}")
+        if source.suffix == ".py":
+            try:
+                ast.parse(data.decode("utf-8"), filename=name)
+            except (SyntaxError, UnicodeDecodeError):
+                raise InstallError(f"source syntax check failed for {name}") from None
+        else:
+            try:
+                checked = subprocess.run(
+                    [node, "--check", "--", str(source)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                raise InstallError(f"source syntax check timed out for {name}") from None
+            if checked.returncode:
+                raise InstallError(f"source syntax check failed for {name}")
         source_bytes[name] = data
     return source_bytes
 
@@ -311,6 +321,10 @@ def stage_source_bundle(
     source_bytes: dict[str, bytes] = {}
     for name in MODULES:
         source = source_dir / name
+        if name == "fleet_infisical.py" and not source.exists() and not source.is_symlink():
+            # The repository keeps this canonical worker at scripts/fleet_infisical.py,
+            # beside simple_tools/, while the immutable stage itself is flat.
+            source = source_dir.parent / name
         _check_path(
             source,
             uid=uid,
@@ -535,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
     except (InstallError, OSError, subprocess.SubprocessError) as exc:
         print(f"operator-sheets-code-only: {exc}", file=sys.stderr)
         return 2 if isinstance(exc, RecoveryError) else 1
-    print(f"operator-sheets-code-only: installed four-module bundle; backup={backup}")
+    print(f"operator-sheets-code-only: installed six-file code bundle; backup={backup}")
     return 0
 
 
