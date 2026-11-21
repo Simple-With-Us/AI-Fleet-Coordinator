@@ -41,7 +41,9 @@ async function armedStore(shared) {
 test("the gate check and the claim are one decision:  bad epoch spends nothing", async () => {
   const store = await armedStore();
   const r1 = await claimGrAssert(store, { ...GATE, epoch: 8, jti: "a".repeat(16), expiresAt: Date.now() + 60_000 });
-  assert.deepEqual(r1, { ok: false, reason: "grant_invalid" });
+  // The relay-facing reason stays grant_invalid;  `gate` names the gate's own code for
+  // the diagnostics row (AFC-844).
+  assert.deepEqual(r1, { ok: false, reason: "grant_invalid", gate: "stale_epoch" });
   // The jti was not claimed:  with the right epoch it still goes through.
   const r2 = await claimGrAssert(store, { ...GATE, jti: "a".repeat(16), expiresAt: Date.now() + 60_000 });
   assert.deepEqual(r2, { ok: true });

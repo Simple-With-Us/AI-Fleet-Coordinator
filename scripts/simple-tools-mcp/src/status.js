@@ -55,9 +55,45 @@ function failure(record) {
   return false;
 }
 
+// The git relay's check routes (AFC-844):  kinds gr_bearer (/internal/gr-bearer-verify)
+// and gr_assert (/internal/gr-assert-verify).  Their codes overlap the wake route's
+// (bad_signature, stale), so they get their own guidance, keyed by the code before
+// any `:` detail (grant_invalid:stale_epoch reads as grant_invalid).
+const GR_CHECK_KINDS = new Set(["gr_bearer", "gr_assert"]);
+const GR_GUIDANCE = {
+  bad_signature: ["The relay's check call carried a wrong channel signature.", "Check that git-relay's GR_BEARER_VERIFY_KEY matches the Worker's copy in Fleet-OPS /tools;  the relay reads it once at startup, so restart it after a rotation."],
+  stale: ["The relay's check call was older than the accepted window.", "Check the relay host's clock."],
+  future: ["The relay's check call was dated ahead of the Worker's clock.", "Check the relay host's clock."],
+  not_configured: ["The Worker's relay check key is not available.", "Restore GR_BEARER_VERIFY_KEY in Fleet-OPS /tools."],
+  key_unavailable: ["The Worker could not read the relay check key.", "Check the Worker's Infisical access to Fleet-OPS /tools."],
+  sign_key_unavailable: ["The Worker could not read the assertion signing key.", "Check the Worker's Infisical access to the assertion signing folder."],
+  none: ["The named identity has no bearer minted.", "Mint the seat's bearer in Admin, or check that the caller names the right identity."],
+  mismatch: ["The presented bearer does not match the seat's bearer.", "Install the seat's current bearer on the caller;  a rotated or wrong bearer reads this way."],
+  expired: ["The bearer or assertion has expired.", "Mint a new bearer, or check the relay's latency and clock for an assertion."],
+  paused: ["The seat is paused.", "Unpause it in Admin after confirming the seat should accept requests."],
+  events_only: ["The seat is events-only and has no Git tools.", "Lift EVENTS_ONLY_SEATS for the seat if it should use Git."],
+  unavailable: ["The seat's gate could not answer the bearer check.", "Check the SeatGate Durable Object's health and quota;  the relay retries a 503."],
+  grant_invalid: ["The assertion's grant is no longer live, or its seat epoch, phase or approval is stale.", "Reconnect the client to get a fresh grant;  the detail after grant_invalid: names which check refused."],
+  replayed: ["The same assertion was presented twice.", "Look for a retrying caller;  each assertion is valid for one call."],
+  "assertion:bad_signature": ["The assertion was not signed with the Worker's current signing key.", "Look for a signing-key rotation between mint and check, or a forged assertion."],
+  "assertion:bad_token": ["The relay presented something that is not a readable assertion.", "Check the caller's credential;  only the Worker mints assertions."],
+  "assertion:not_configured": ["The Worker's assertion signing key is not available.", "Restore the signing key in its Fleet-OPS folder."],
+  "assertion:stale": ["The assertion was minted longer ago than its accepted window.", "Look for a slow call between mint and check, or a Worker clock fault."],
+  "assertion:future": ["The assertion was minted ahead of the Worker's clock.", "Look for a clock fault between Worker isolates."],
+  bad_contract: ["The relay's assertion check call named a contract version this Worker does not speak.", "Update git-relay and the Worker together;  one of them is older than the contract the other sends."],
+  bad_token: ["The relay's check call carried an unreadable assertion token.", "Check the caller's credential;  only the Worker mints assertions."],
+  bad_action: ["The assertion's action claim does not match the route asked.", "Check that the relay names the action the assertion was minted for;  an assertion reused for another route reads this way."],
+  bad_body_sha256: ["The assertion is bound to a different request body.", "The caller changed the body after minting, or minted for another call;  mint a fresh assertion."],
+  bad_sent_at: ["The relay's check call carried an unreadable sent_at.", "Check the relay host's clock and its relay version."],
+  too_large: ["The relay's check call body was larger than the route accepts.", "Look for a caller posting something other than the check contract."],
+  method_not_allowed: ["The relay's check route was called with a method other than POST.", "Look for a caller that is not the git relay's own check client."],
+};
+
 function errorDetails(record) {
   const code = String(record.error_code ?? record.reason ?? record.outcome ?? record.verdict ?? "unknown");
-  const [cause, remedy] = ERROR_GUIDANCE[code] ?? ["The request was refused or failed.", "Review the event details and configuration, then retry only after correcting the cause."];
+  const grBase = code.startsWith("assertion:") ? code : code.split(":")[0];
+  const grGuidance = GR_CHECK_KINDS.has(record.kind) ? GR_GUIDANCE[grBase] : undefined;
+  const [cause, remedy] = grGuidance ?? ERROR_GUIDANCE[code] ?? ["The request was refused or failed.", "Review the event details and configuration, then retry only after correcting the cause."];
   return { code, cause: record.error_message || cause, remedy };
 }
 

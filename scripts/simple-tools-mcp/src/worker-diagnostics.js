@@ -22,8 +22,14 @@ import { boundedWorkflowInput } from "./gr-workflow-v1.js";
 import { GAP } from "./textfmt.js";
 
 export const WORKER_DIAGNOSTICS_NAME = "worker_diagnostics";
-/** The most rows the store keeps (seat-state.js DIAGNOSTIC_CAP) and the most one call returns. */
+/** The most wake rows one call returns. */
 export const WORKER_DIAGNOSTICS_MAX = 100;
+/**
+ * The whole log, read in one call:  the shared store's 100 rows plus the relay check rows'
+ * own 40 (seat-state.js DIAGNOSTIC_TOTAL_CAP, AFC-844), so relay rows never cut wake rows
+ * out of the read.  test/diagnostic-coalesce.test.mjs pins the two equal.
+ */
+export const WORKER_DIAGNOSTICS_STORE_ROWS = 140;
 export const WORKER_DIAGNOSTICS_DEFAULT = 50;
 /** How many of the newest rows of every kind ride along as `recent`. */
 export const WORKER_DIAGNOSTICS_RECENT = 50;
@@ -79,9 +85,9 @@ export const WORKER_DIAGNOSTICS_TOOLS = Object.freeze([
     name: WORKER_DIAGNOSTICS_NAME,
     title: "Worker Diagnostics",
     description:
-      "The hosted Worker's own diagnostics, newest first, read-only:  `wake` is the wake route's rows (reason such as wake_key_missing, method_not_allowed, payload_too_large or a failed signature check, the seat, how many times, the last HTTP status and when), " +
-      `optionally for one seat, and \`recent\` is the newest rows of every kind (wake, token, mcp, provider).${GAP}Rows are aggregated by kind, reason and seat and kept 90 days.${GAP}` +
-      "Use it to find out why a wake or an MCP call was refused.  It returns names, reasons, seats, counts, timestamps and status codes only, never keys, headers or bodies.",
+      "The hosted Worker's own diagnostics, read-only:  `wake` is the wake route's rows, newest first (reason such as wake_key_missing, method_not_allowed, payload_too_large or a failed signature check, the seat, how many times, the last HTTP status and when), " +
+      `optionally for one seat, and \`recent\` holds the newest rows of every kind (wake, token, mcp, provider, gr_bearer, gr_assert), the kinds taking turns so one busy kind cannot crowd the others out (newest first within a kind).${GAP}Rows are aggregated by kind, reason and seat and kept 90 days.${GAP}` +
+      "Use it to find out why a wake, an MCP call or a relayed GitHub call was refused:  a `gr_bearer` or `gr_assert` row is the reason the Worker refused the relay's check of a bearer or an assertion, which the relay itself reports only as bearer_rejected or verifier_unavailable (in `recent`;  `seat` filters only wake rows).  No such row means the relay refused on its own (its refusal cache or a check call that timed out) or the Worker hit an error (a `provider` row).  It returns names, reasons, seats, counts, timestamps and status codes only, never keys, headers or bodies.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -138,11 +144,11 @@ export const WORKER_DIAGNOSTICS_METHODS = {
       throw new ToolError("not_configured", "The Worker's diagnostics store is not reachable from this connection.  Every other tool still works.");
     }
     await this.reserve("read");
-    // The store keeps at most WORKER_DIAGNOSTICS_MAX rows, so one read is the whole of it, newest first.  A
+    // The log keeps at most WORKER_DIAGNOSTICS_STORE_ROWS rows, so one read is the whole of it.  A
     // rejected or malformed read is a transient store failure:  retryable, and nothing from the error is echoed.
     let stored;
     try {
-      stored = await source.diagnosticTail(WORKER_DIAGNOSTICS_MAX);
+      stored = await source.diagnosticTail(WORKER_DIAGNOSTICS_STORE_ROWS);
     } catch {
       this.log?.({ event: "worker_diagnostics_unavailable" });
       throw storeUnavailable();
