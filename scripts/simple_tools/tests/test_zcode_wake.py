@@ -464,6 +464,17 @@ class DeliverLocalTests(Base):
         with self.assertRaises(OSError):
             zcode_wake._private_dir(link)
 
+    def test_the_shared_private_dir_refuses_a_symlinked_ancestor(self):
+        """A parent that is a symlink would put the new level in the tree that symlink names
+        and not in the tree this path names, so the shared helper refuses it."""
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        link = self.tmp / "link"
+        os.symlink(str(elsewhere), str(link))
+        with self.assertRaises(OSError):
+            private_dir(link / "below")
+        self.assertFalse((elsewhere / "below").exists())
+
     def test_an_exception_after_the_child_started_is_unknown(self):
         def runner(argv, **kwargs):
             self.calls.append(list(argv))
