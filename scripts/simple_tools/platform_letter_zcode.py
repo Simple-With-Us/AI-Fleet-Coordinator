@@ -40,9 +40,11 @@ import sqlite3
 import sys
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import platform_letter as PL
+from . import session_ids as SI
 
 PLATFORM = "zcode"
 SEAT = "ZC"
@@ -201,6 +203,85 @@ def zcode_chat_payload(sid: str) -> Mapping[str, Any]:
     }
 
 
+# The repair pass (`platform_letter.repair_unlettered`) asks for the interactive sessions still showing the "??: "
+# placeholder:  at most this many, only ones old enough that their own start hook has finished (a brand-new "??"
+# can be its start in flight), never an archived or deleted one, and none older than a week.
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's interactive sessions whose title still carries the "??: " placeholder, newest first, for the
+    repair a session's start sets off (`platform_letter.repair_after_start`).  Read only, a short wait for a lock,
+    and any doubt (no store, a locked one, a store without the columns this reads) answers None:  no pass this
+    time.  An id that is not a well-formed session id is left out.  Each session's title is read again in its own
+    replayed start before anything changes."""
+    path = store_file(env)
+    if not os.path.isfile(path):
+        return None
+    try:
+        conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=0.5)
+    except (sqlite3.Error, ValueError):
+        return None
+    try:
+        # The store's shape is not one fixed schema (the module docstring's own table and the
+        # test fixture disagree on which time columns exist), so the query is built from the
+        # columns the store actually has:  a query naming a column that is not there would
+        # raise and answer no sessions at all, every time (Kody, PR 2307).
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(session)").fetchall()}
+        where = ["title LIKE '??: %'"]
+        if "task_type" in cols:
+            where.append("task_type = 'interactive'")
+        if "time_archived" in cols:
+            where.append("time_archived IS NULL")
+        if "time_deleted" in cols:
+            where.append("time_deleted IS NULL")
+        time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
+        # Unknown age is not evidence that a session's own start hook finished.
+        # Skip this pass rather than replaying potentially in-flight sessions.
+        if not time_col:
+            return None
+        select = "id, " + time_col
+        order = "ORDER BY %s DESC" % time_col
+        rows = conn.execute(
+            "SELECT %s FROM session WHERE %s %s" % (select, " AND ".join(where), order),
+        )
+        # Stream candidates until the eligible result cap, rather than truncating before
+        # normalized age checks.  Recent starts must not starve older repair candidates.
+        now = time.time()
+        found: list[str] = []
+        for row in rows:
+            try:
+                sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
+            except ValueError:
+                continue
+            if time_col:
+                stamp = _stored_seconds(row[1] if len(row) > 1 else None)
+                if stamp is None or not (
+                    UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
+                ):
+                    continue
+            found.append(sid)
+            if len(found) >= UNLETTERED_SCAN:
+                break
+        return found
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _stored_seconds(value: object) -> float | None:
+    """A store timestamp in seconds, or None:  seconds, or milliseconds past 1e12."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    stamp = float(value)
+    if stamp > 1e12:
+        stamp /= 1000.0
+    return stamp if stamp > 0 else None
+
+
 def zcode_rename(request: Any) -> bool:
     """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `custom`.
 
@@ -328,6 +409,7 @@ SPEC = PL.PlatformSpec(
     close_reasons=CLOSE_REASONS,
     quiet_events=("Stop",),
     chat_payload=zcode_chat_payload,
+    unlettered_sessions=zcode_unlettered_sessions,
     title_writer=zcode_rename,
     locations=("mac", "server"),
     # The wrapper the retired ZCode client left on a host:  `install --check` names it while it is there.

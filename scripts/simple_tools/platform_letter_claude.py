@@ -577,6 +577,65 @@ def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     return parent
 
 
+# The repair pass (`platform_letter.repair_unlettered`) asks for the desktop app's chats still titled "??: ":  at
+# most this many, from at most UNLETTERED_RECORDS of the newest records, only ones whose record has been still long
+# enough that their own start hook has finished, none untouched for over a week, never an archived one and never one
+# the app runs over ssh (its note is on that host).  A CLI chat has no record:  its own next prompt asks again.
+UNLETTERED_SCAN = 20
+UNLETTERED_RECORDS = 200
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def _project_unlettered(data: object) -> dict[str, Any] | None:
+    """The fields the repair listing takes, `cliSessionId`, `title`, `isArchived` and whether the chat runs over
+    ssh, and nothing else of the record."""
+    if not isinstance(data, dict):
+        return None
+    out: dict[str, Any] = {
+        "remote": bool(data.get("sshConfig")),
+        "isArchived": _archived_flag(data),
+    }
+    for key in ("cliSessionId", "title"):
+        if isinstance(data.get(key), str):
+            out[key] = data[key]
+    return out
+
+
+def claude_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's desktop-app chats whose title still carries the "??: " placeholder, newest first, for the
+    repair a chat's start sets off (`platform_letter.repair_after_start`).  Read only and bounded by the clock
+    (ARCHIVE_SCAN_SECONDS) as well as the counts;  a record that cannot be read, or that is not plainly
+    unarchived, leaves its chat out, and a host with no store answers None.  Each chat's title is read again in
+    its own replayed start before anything changes."""
+    root = store_root(_home(env))
+    if not os.path.isdir(root):
+        return None
+    now = time.time()
+    started = time.monotonic()
+    found: list[str] = []
+    for modified, _size, path in _records(root)[:UNLETTERED_RECORDS]:
+        age = now - modified
+        if age > UNLETTERED_MAX_AGE_SECONDS or time.monotonic() - started > ARCHIVE_SCAN_SECONDS:
+            break  # newest first:  every record after this one is older
+        if age < UNLETTERED_MIN_AGE_SECONDS:
+            continue
+        record = _load(path, _project_unlettered)
+        if not record or record.get("remote") or record.get("isArchived") is not False:
+            continue
+        sid, title = _cli_id(record), record.get("title")
+        if (
+            sid
+            and isinstance(title, str)
+            and title.startswith(PL.UNLETTERED + ": ")
+            and sid not in found
+        ):
+            found.append(sid)
+            if len(found) >= UNLETTERED_SCAN:
+                break
+    return found
+
+
 def claude_chat_payload(sid: str) -> Mapping[str, Any]:
     """A chat's own start event, as a resume sends it, marked as the library's question about a chat this hook did
     not fire for (a sub-thread's parent, registered ahead of the sub-thread)."""
@@ -964,6 +1023,7 @@ SPEC = PL.PlatformSpec(
     title_in_output=True,
     output="hook",
     chat_payload=claude_chat_payload,
+    unlettered_sessions=claude_unlettered_sessions,
     session_env=("CLAUDE_CODE_SESSION_ID",),
     title_advice=claude_title_advice,
     gone_sessions=claude_gone,

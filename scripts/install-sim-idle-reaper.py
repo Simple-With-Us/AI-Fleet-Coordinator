@@ -20,6 +20,7 @@ A replaced file is kept as <file>.bak-sim-reaper-<stamp>.  --skip-hooks and --sk
 those parts alone.  The live mac-process-watch.sh is not touched here;  copy it from the same
 checkout (it lists com.jay.sim-idle-reaper in expect_scheduled).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,9 +44,36 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 END_EVENTS = ("Stop", "SubagentStop", "SessionEnd")
 
 FILES = [
-    (os.path.join(REPO_SCRIPTS, "sim-idle-reaper.py"), os.path.join(HOME, "apps", "sim-idle-reaper.py"), 0o755),
-    (os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.py"), os.path.join(HOOKS_DIR, "sim-session-hook.py"), 0o755),
-    (os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.sh"), os.path.join(HOOKS_DIR, "sim-session-hook.sh"), 0o755),
+    (
+        os.path.join(REPO_SCRIPTS, "service_zulip.py"),
+        os.path.join(HOME, "apps", "service_zulip.py"),
+        0o755,
+    ),
+    (
+        os.path.join(REPO_SCRIPTS, "simple_tools", "secretscan.py"),
+        os.path.join(HOME, "apps", "simple_tools", "secretscan.py"),
+        0o644,
+    ),
+    (
+        os.path.join(REPO_SCRIPTS, "..", "fleet-apps.json"),
+        os.path.join(HOME, "apps", "fleet-apps.json"),
+        0o644,
+    ),
+    (
+        os.path.join(REPO_SCRIPTS, "sim-idle-reaper.py"),
+        os.path.join(HOME, "apps", "sim-idle-reaper.py"),
+        0o755,
+    ),
+    (
+        os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.py"),
+        os.path.join(HOOKS_DIR, "sim-session-hook.py"),
+        0o755,
+    ),
+    (
+        os.path.join(REPO_SCRIPTS, "hooks", "sim-session-hook.sh"),
+        os.path.join(HOOKS_DIR, "sim-session-hook.sh"),
+        0o755,
+    ),
 ]
 PLIST_SRC = os.path.join(REPO_SCRIPTS, "launchd", f"{LABEL}.plist")
 PLIST_DST = os.path.join(HOME, "Library", "LaunchAgents", f"{LABEL}.plist")
@@ -123,13 +151,21 @@ def register_hooks(dry: bool) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(new)
     os.replace(tmp, SETTINGS)
-    say(f"registered the hook in {SETTINGS} for: {', '.join(added)} (backup .bak-sim-reaper-{STAMP})")
+    say(
+        f"registered the hook in {SETTINGS} for: {', '.join(added)} (backup .bak-sim-reaper-{STAMP})"
+    )
 
 
 def launchd(changed: bool, dry: bool) -> None:
     domain = f"gui/{os.getuid()}"
-    loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL).returncode == 0
+    loaded = (
+        subprocess.run(
+            ["launchctl", "print", f"{domain}/{LABEL}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
     if loaded and not changed:
         say(f"unchanged {LABEL} (loaded)")
         return
@@ -137,8 +173,11 @@ def launchd(changed: bool, dry: bool) -> None:
         say(f"would {'reload' if loaded else 'bootstrap'} {LABEL}")
         return
     if loaded:
-        subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{LABEL}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(1)
     rc = subprocess.run(["launchctl", "bootstrap", domain, PLIST_DST]).returncode
     say(f"bootstrap {LABEL} rc={rc}")
