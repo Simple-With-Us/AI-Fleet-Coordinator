@@ -219,6 +219,7 @@ import argparse
 import ast
 import contextlib
 import copy
+import ctypes
 import difflib
 import fcntl
 import functools
@@ -4118,24 +4119,206 @@ class Result:
         return f"{self.status.upper():<10} {self.target:<12} {self.detail}".rstrip()
 
 
-def _swap_dir(stage: str, final: str) -> None:
-    old: str | None = None
-    if os.path.lexists(final):
-        old = f"{final}.old-{os.getpid()}"
-        if os.path.lexists(old):
-            shutil.rmtree(old, ignore_errors=True)
-        os.rename(final, old)
+@dataclass(frozen=True)
+class SwapOutcome:
+    installed: bool
+    backup: str | None = None
+    problem: str = ""
+    cleanup_stage: bool = False
+
+
+def _directory_fingerprint(root: str) -> str:
+    """Bind bytes, paths, modes and ownership before and after an exchange."""
+    digest = hashlib.sha256()
+    for base, dirs, files in os.walk(root, followlinks=False):
+        dirs.sort()
+        files.sort()
+        for name in [".", *dirs, *files]:
+            path = base if name == "." else os.path.join(base, name)
+            relative = os.path.relpath(path, root).encode("utf-8")
+            info = os.lstat(path)
+            digest.update(relative + b"\0")
+            digest.update(
+                f"{info.st_mode:o}:{info.st_uid}:{info.st_gid}\n".encode("ascii")
+            )
+            if stat.S_ISLNK(info.st_mode):
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(info.st_mode):
+                with open(path, "rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        os.rename(stage, final)
-    except BaseException:
-        if old is not None:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_tree(root: str) -> None:
+    """Make both trees' contents durable before the name exchange."""
+    directories: list[str] = []
+    for base, dirs, files in os.walk(root, followlinks=False):
+        directories.append(base)
+        for name in files:
+            path = os.path.join(base, name)
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                # Existing generated directories may hold foreign entries when
+                # --replace-extra is explicit.  Their parent directory fsync
+                # covers each name, and no link is followed.
+                continue
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
-                os.rename(old, final)
-            except OSError:
-                pass
-        raise
-    if old is not None:
-        shutil.rmtree(old, ignore_errors=True)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
+def _native_exchange(left: str, right: str) -> None:
+    """One shared atomic-exchange primitive; unsupported hosts never use two renames."""
+    functions = {
+        "linux": ("renameat2", 2),
+        "darwin": ("renamex_np", 2),
+    }
+    entry = functions.get(sys.platform)
+    if entry is None:
+        raise Refused("atomic directory exchange is unavailable on this platform")
+    library = ctypes.CDLL(None, use_errno=True)
+    native = getattr(library, entry[0], None)
+    if native is None:
+        raise Refused(f"atomic directory exchange API {entry[0]} is unavailable")
+    if sys.platform == "linux":
+        native.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
+        )
+        args = (-100, os.fsencode(left), -100, os.fsencode(right), entry[1])
+    else:
+        native.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        args = (os.fsencode(left), os.fsencode(right), entry[1])
+    native.restype = ctypes.c_int
+    if native(*args) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), left, right)
+
+
+def _probe_exchange(stage_parent: str, final_parent: str) -> None:
+    """Prove swap behavior on this filesystem before touching an active hook path."""
+    if os.stat(stage_parent).st_dev != os.stat(final_parent).st_dev:
+        raise Refused("atomic directory exchange requires one filesystem")
+    with tempfile.TemporaryDirectory(prefix=".exchange-probe-", dir=stage_parent) as first:
+        with tempfile.TemporaryDirectory(prefix=".exchange-probe-", dir=final_parent) as second:
+            with open(os.path.join(first, "first"), "wb") as target:
+                target.write(b"first")
+            with open(os.path.join(second, "second"), "wb") as target:
+                target.write(b"second")
+            try:
+                _native_exchange(first, second)
+            except (OSError, Refused) as exc:
+                raise Refused(f"atomic directory exchange is unsupported: {exc}") from exc
+            if not (
+                os.path.isfile(os.path.join(first, "second"))
+                and os.path.isfile(os.path.join(second, "first"))
+            ):
+                raise Refused("atomic directory exchange did not preserve both directories")
+
+
+def _backup_container(path: str) -> str:
+    """A real, owner-only container for the stage that becomes the old-tree backup."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise Refused(f"cannot create owner-only backup directory {path}: {exc}") from exc
+    else:
+        # A setgid shared-volume parent can add mode bits despite mkdir's requested mode.
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            raise Refused(f"cannot tighten backup directory {path}: {exc}") from exc
+    if os.path.islink(path) or not os.path.isdir(path):
+        raise Refused(f"{path} is not a real backup directory")
+    info = os.lstat(path)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise Refused(f"{path} is not an owner-only backup directory")
+    return path
+
+
+def _swap_dir(stage: str, final: str) -> SwapOutcome:
+    """Keep the active name present, and turn the staged name into a durable old-tree backup."""
+    stage_parent, final_parent = os.path.dirname(stage), os.path.dirname(final)
+    staged = os.stat(stage)
+    if not os.path.lexists(final):
+        try:
+            os.rename(stage, final)  # one atomic rename for a first install
+        except OSError as exc:
+            return SwapOutcome(False, problem=f"first-install rename failed: {exc}", cleanup_stage=True)
+        try:
+            _fsync_directory(final_parent)
+        except OSError as exc:
+            return SwapOutcome(True, problem=f"live=new; parent fsync failed: {exc}")
+        return SwapOutcome(True)
+    if os.path.islink(final) or not os.path.isdir(final):
+        raise Refused("active package is not a real directory")
+    old = os.stat(final)
+    if old.st_dev != staged.st_dev:
+        raise Refused("active package and stage are on different filesystems")
+    # A stage starts 0700.  Preserve the active directory's access and ownership at its stable name.
+    try:
+        if (staged.st_uid, staged.st_gid) != (old.st_uid, old.st_gid):
+            os.chown(stage, old.st_uid, old.st_gid)
+        os.chmod(stage, stat.S_IMODE(old.st_mode))
+    except OSError as exc:
+        raise Refused(f"cannot preserve active directory ownership or mode: {exc}") from exc
+    before_old = _directory_fingerprint(final)
+    before_new = _directory_fingerprint(stage)
+    _probe_exchange(stage_parent, final_parent)
+    try:
+        _fsync_tree(stage)
+        _fsync_tree(final)
+        _fsync_directory(stage_parent)
+        _fsync_directory(final_parent)
+    except OSError as exc:
+        raise Refused(f"directory exchange preflight fsync failed: {exc}") from exc
+    if (
+        (os.stat(final).st_dev, os.stat(final).st_ino) != (old.st_dev, old.st_ino)
+        or _directory_fingerprint(final) != before_old
+    ):
+        raise Refused("active package changed before atomic exchange")
+    try:
+        _native_exchange(stage, final)
+    except (OSError, Refused) as exc:
+        live = os.stat(final)
+        if (live.st_dev, live.st_ino) == (old.st_dev, old.st_ino):
+            return SwapOutcome(False, problem=f"live=old; exchange failed: {exc}", cleanup_stage=True)
+        if (live.st_dev, live.st_ino) == (staged.st_dev, staged.st_ino):
+            return SwapOutcome(True, backup=stage, problem=f"live=new; exchange reported failure: {exc}")
+        return SwapOutcome(False, backup=stage, problem=f"live=unknown; exchange reported failure: {exc}")
+    problems = []
+    try:
+        live = os.stat(final)
+        backup = os.stat(stage)
+        if (live.st_dev, live.st_ino) != (staged.st_dev, staged.st_ino):
+            problems.append("live package inode is not the staged inode")
+        if (backup.st_dev, backup.st_ino) != (old.st_dev, old.st_ino):
+            problems.append("backup inode is not the old package inode")
+        if _directory_fingerprint(final) != before_new:
+            problems.append("live package bytes, modes or ownership changed")
+        if _directory_fingerprint(stage) != before_old:
+            problems.append("old backup bytes, modes or ownership changed")
+    except (OSError, Refused) as exc:
+        problems.append(f"post-exchange fingerprint failed: {exc}")
+    for parent in dict.fromkeys((stage_parent, final_parent)):
+        try:
+            _fsync_directory(parent)
+        except OSError as exc:
+            problems.append(f"parent fsync failed: {exc}")
+    return SwapOutcome(True, backup=stage, problem=("live=new; " + "; ".join(problems)) if problems else "")
 
 
 def probe_formats() -> list[tuple[str, str]]:
@@ -4170,10 +4353,11 @@ def apply_tools(
     emit: Callable[[str], None] = lambda s: None,
     replace_extra: bool = False,
 ) -> Result:
-    """Copy or refresh the stable dir atomically.  The new copy is staged beside the final dir and
-    probed first (every supported platform's format); it is swapped in only if the probes pass.
-    Between the two renames of the swap the dir is briefly absent, and a hook call that lands there
-    fails open.  A non-empty dir that this tool did not write is refused (see `plan_tools`)."""
+    """Stage and probe first; exchange an existing package without removing its active path.
+
+    The stage becomes an owner-only, retained backup of the old tree.  An unsupported exchange
+    refuses before changing an active hook path.  A first install needs only one rename.
+    """
     try:
         if os.path.realpath(src.scripts_dir) == os.path.realpath(paths.stable):
             raise Refused(
@@ -4205,7 +4389,22 @@ def apply_tools(
         return Result("tools", "unchanged", f"{paths.stable} is current (sha {plan.sha[:12]})")
     os.makedirs(paths.apps_dir, exist_ok=True)
     os.makedirs(os.path.dirname(paths.stable), exist_ok=True)
-    stage = tempfile.mkdtemp(prefix=".lane-tools-stage-", dir=os.path.dirname(paths.stable))
+    backup_root: str | None = None
+    created_backup_root = False
+    if os.path.isdir(paths.stable):
+        backup_root = os.path.join(
+            os.path.dirname(paths.stable), f".{os.path.basename(paths.stable)}-backups"
+        )
+        created_backup_root = not os.path.lexists(backup_root)
+        try:
+            _backup_container(backup_root)
+        except Refused as exc:
+            return Result("tools", "refused", str(exc))
+    stage = tempfile.mkdtemp(
+        prefix="backup-" if backup_root else ".lane-tools-stage-",
+        dir=backup_root or os.path.dirname(paths.stable),
+    )
+    exchange_started = False
     try:
         _write_tree(stage, files)
         if probes:
@@ -4292,15 +4491,51 @@ def apply_tools(
         shutil.rmtree(
             os.path.join(stage, PACKAGE, "__pycache__"), ignore_errors=True
         )  # probes wrote it with the stage path
-        _swap_dir(stage, paths.stable)
+        exchange_started = True
+        outcome = _swap_dir(stage, paths.stable)
+        if not outcome.installed:
+            if outcome.cleanup_stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+            return Result("tools", "failed", outcome.problem, outcome.backup)
+        if outcome.problem:
+            return Result(
+                "tools",
+                "failed",
+                outcome.problem + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
+            )
     except Refused as exc:
         shutil.rmtree(stage, ignore_errors=True)
+        if created_backup_root and backup_root:
+            try:
+                os.rmdir(backup_root)
+            except OSError:
+                pass
         return Result("tools", "refused", str(exc))
     except BaseException as exc:
-        shutil.rmtree(stage, ignore_errors=True)
+        if not exchange_started:
+            shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+        # After an exchange attempt the stage may hold the sole old-tree backup.
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        return Result("tools", "failed", f"{type(exc).__name__}: {exc}")
+        live = "present" if os.path.isdir(paths.stable) else "missing"
+        return Result(
+            "tools", "failed",
+            f"unexpected swap error; live={live}; stage "
+            + ("retained" if exchange_started else "removed")
+            + f" at {stage}: {type(exc).__name__}: {exc}",
+            stage if os.path.isdir(stage) else None,
+        )
     extra = ""
     try:
         if plan.lane_shim_state == "foreign":
@@ -4314,11 +4549,18 @@ def apply_tools(
         else:
             extra = f"; no lane shim (the package has no {LANE_MODULE} yet)"
     except OSError as exc:
-        return Result("tools", "failed", f"stable dir installed, but the lane shim failed: {exc}")
+        return Result(
+            "tools", "failed",
+            f"live=new; stable dir installed, but the lane shim failed: {exc}"
+            + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+            outcome.backup,
+        )
     for w in plan.warnings:
         extra += f"; WARNING {w}"
     return Result(
         "tools", "installed", f"{paths.stable} sha {plan.sha[:12]}, {len(files)} files{extra}"
+        + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+        outcome.backup,
     )
 
 
@@ -6929,31 +7171,6 @@ def _minimax_foreign(bundle: str) -> str | None:
     return None
 
 
-def _sweep_stale_minimax_leftovers(plugins_real: str, stage_parent: str, bundle: str) -> None:
-    """Remove `<bundle>.old-<pid>` and `.fleet-guard-stage-*` directories a killed run left behind.  Only ones older
-    than a minute, so a run that is still going is never touched."""
-    cutoff = time.time() - 60
-    candidates: list[str] = []
-    try:
-        base = os.path.basename(bundle) + ".old-"
-        candidates += [
-            os.path.join(plugins_real, n) for n in os.listdir(plugins_real) if n.startswith(base)
-        ]
-        candidates += [
-            os.path.join(stage_parent, n)
-            for n in os.listdir(stage_parent)
-            if n.startswith(".fleet-guard-stage-")
-        ]
-    except OSError:
-        return
-    for c in candidates:
-        try:
-            if os.path.isdir(c) and not os.path.islink(c) and os.lstat(c).st_mtime < cutoff:
-                shutil.rmtree(c, ignore_errors=True)
-        except OSError:
-            pass
-
-
 def plan_minimax(paths: Paths, *, follow_symlinks: bool = False) -> MinimaxPlan:
     """Read-only: what `apply minimax` writes into ~/.minimax/plugins/fleet-guard, compared with what is there."""
     bundle = paths.minimax_bundle
@@ -7010,9 +7227,11 @@ def apply_minimax(
     shim_proven: bool = False,
     follow_symlinks: bool = False,
 ) -> Result:
-    """Write the plugin directory.  It is built in a stage directory beside `plugins/` (so MiniMax never scans a half-written
-    plugin) and renamed into place; an existing directory is replaced only when this tool wrote it.  Like every platform,
-    it is wired in only if the installed fleet hook passes its own probes right now."""
+    """Write the plugin directory through the shared atomic install path.
+
+    A first install uses one rename.  An update exchanges a probed stage with the live
+    plugin, retaining the old tree in an owner-only backup container outside plugins/.
+    """
     mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
     if mp.state == "skip":
         return Result("minimax", "skipped", mp.reason)
@@ -7070,21 +7289,67 @@ def apply_minimax(
         return Result("minimax", "unchanged", f"{mp.bundle} already holds the plugin")
     want = minimax_expected(paths)
     stage: str | None = None
+    backup_root: str | None = None
+    created_backup_root = False
+    exchange_started = False
     try:
         os.makedirs(os.path.dirname(mp.bundle), exist_ok=True)
         # Stage beside the REAL plugins/ directory: when plugins/ is a symlink to another filesystem, a stage under
         # ~/.minimax would make the final rename fail with EXDEV.
         plugins_real = os.path.realpath(os.path.dirname(mp.bundle))
         stage_parent = os.path.dirname(plugins_real)
-        _sweep_stale_minimax_leftovers(plugins_real, stage_parent, mp.bundle)
-        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=stage_parent)
+        if mp.state == "stale":
+            backup_root = os.path.join(stage_parent, ".fleet-guard-backups")
+            created_backup_root = not os.path.lexists(backup_root)
+            _backup_container(backup_root)
+        stage = tempfile.mkdtemp(
+            prefix="backup-" if backup_root else ".fleet-guard-stage-",
+            dir=backup_root or stage_parent,
+        )
         _write_tree(stage, {rel: text.encode("utf-8") for rel, text in want.items()})
-        _swap_dir(stage, mp.bundle)
+        exchange_started = True
+        outcome = _swap_dir(stage, mp.bundle)
+        if not outcome.installed:
+            if outcome.cleanup_stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+            return Result("minimax", "failed", outcome.problem, outcome.backup)
+        if outcome.problem:
+            return Result(
+                "minimax", "failed",
+                outcome.problem + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
+            )
         stage = None
-    except OSError as exc:
+    except Refused as exc:
         if stage:
             shutil.rmtree(stage, ignore_errors=True)
-        return Result("minimax", "failed", f"{mp.bundle} not written: {type(exc).__name__}: {exc}")
+        if created_backup_root and backup_root:
+            try:
+                os.rmdir(backup_root)
+            except OSError:
+                pass
+        return Result("minimax", "refused", str(exc))
+    except OSError as exc:
+        if stage and not exchange_started:
+            shutil.rmtree(stage, ignore_errors=True)
+            if created_backup_root and backup_root:
+                try:
+                    os.rmdir(backup_root)
+                except OSError:
+                    pass
+        # An error after exchange can leave the old package at stage.  Retain it.
+        return Result(
+            "minimax", "failed",
+            f"{mp.bundle} swap error; stage "
+            + ("retained" if exchange_started else "removed")
+            + f" at {stage}: {type(exc).__name__}: {exc}",
+            stage if stage and os.path.isdir(stage) else None,
+        )
     for rel, text in want.items():
         if _read_regular(os.path.join(mp.bundle, *rel.split("/"))) != text.encode(
             "utf-8"
@@ -7092,12 +7357,17 @@ def apply_minimax(
             return Result(
                 "minimax",
                 "failed",
-                f"{mp.bundle}/{rel} is not what was written; check it and re-run `apply minimax`",
+                f"live=new; {mp.bundle}/{rel} is not what was written; "
+                "check it and re-run `apply minimax`"
+                + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+                outcome.backup,
             )
     return Result(
         "minimax",
         "added" if mp.state == "new" else "updated",
-        f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})",
+        f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})"
+        + (f"; old backup {outcome.backup}" if outcome.backup else ""),
+        outcome.backup,
     )
 
 
@@ -8966,7 +9236,8 @@ def _emit_minimax_plan(
     emit(
         "   MiniMax Code takes hooks from a local plugin: a REAL directory under ~/.minimax/plugins (a symlink is skipped), "
         "enabled by default.  `apply minimax` runs `apply tools` first (the fleet hook lives in the stable dir), then "
-        "builds the directory in a stage beside plugins/ and renames it into place.  Nothing else under ~/.minimax is touched."
+        "installs a probed stage with one rename or an atomic exchange.  Updates retain the old plugin in an owner-only "
+        "backup directory outside plugins/."
     )
     emit(f"   command: {mp.command}")
     for fs in mp.files:
