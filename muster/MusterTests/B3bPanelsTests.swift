@@ -174,7 +174,7 @@ final class SecretNamesTests: XCTestCase {
         }
     }
 
-    func test_default_location_uses_existing_engine_lookup_but_pins_the_reader_interpreter() throws {
+    func test_default_location_ignores_ambient_engine_root_and_interpreter_overrides() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("scripts/fleet_config"),
@@ -192,10 +192,19 @@ final class SecretNamesTests: XCTestCase {
         setenv("FLEET_ENGINE_ROOT", root.path, 1)
         setenv("FLEET_ENGINE_PYTHON", "/synthetic/foreign-python", 1)
         let fake = B3bCommands(); fake.replies["get"] = "fixture-value"
-        XCTAssertEqual(try FleetSecrets(commands: fake, home: root).secret(named: "A_KEY"), "fixture-value")
-        XCTAssertEqual(fake.calls.first?.0, "/usr/bin/python3")
-        XCTAssertEqual(Array(try XCTUnwrap(fake.calls.first?.1).prefix(2)),
-                       ["-I", root.appendingPathComponent("scripts/infisical-scoped.py").path])
+        let reader = FleetSecrets(commands: fake, home: root)
+        if let reviewed = EngineLocator.locate(environment: [:], home: root)?.root {
+            XCTAssertNotEqual(reviewed, root)
+            XCTAssertEqual(try reader.secret(named: "A_KEY"), "fixture-value")
+            XCTAssertEqual(fake.calls.first?.0, "/usr/bin/python3")
+            XCTAssertEqual(Array(try XCTUnwrap(fake.calls.first?.1).prefix(2)),
+                           ["-I", reviewed.appendingPathComponent("scripts/infisical-scoped.py").path])
+        } else {
+            XCTAssertThrowsError(try reader.secret(named: "A_KEY")) {
+                XCTAssertEqual($0 as? FleetSecretError, .notInstalled)
+            }
+            XCTAssertTrue(fake.calls.isEmpty)
+        }
     }
 
     /// The actual process adapter starts isolated Python against a disposable inert script.

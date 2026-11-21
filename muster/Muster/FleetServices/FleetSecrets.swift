@@ -85,14 +85,14 @@ public struct FleetSecrets: SecretResolving {
     static let readerTimeout: TimeInterval = 45
     static let consumer = "muster-data-reader"
 
-    /// `engineRoot` and `interpreter` are source-test seams; the production interpreter
-    /// is always the system Python, even if the ordinary engine has an override.
+    /// `engineRoot` and `interpreter` are source-test seams; production discovery ignores
+    /// engine environment overrides and always uses the system Python.
     public init(commands: CommandRunning = ProcessCommandRunner(),
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
                 engineRoot: URL? = nil, interpreter: URL? = nil) {
         self.commands = commands
         self.home = home
-        let root = engineRoot ?? EngineLocator.locate(home: home)?.root
+        let root = engineRoot ?? EngineLocator.locate(environment: [:], home: home)?.root
         self.location = root.map {
             EngineLocation(root: $0,
                            interpreter: interpreter ?? URL(fileURLWithPath: EngineLocator.defaultInterpreter))
