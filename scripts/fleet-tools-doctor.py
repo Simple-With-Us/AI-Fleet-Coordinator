@@ -143,8 +143,12 @@ SHIPPED = (
     "scripts/ag-wake-bridge",
     "scripts/linear-board/",
     "fleet-apps.json",
+    "scripts/service_zulip.py",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
+    "scripts/fleet-ops-eavesdropper-settings.json",
+    "scripts/fleet_infisical_bootstrap.py",
+    "scripts/fleet_infisical_cli.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
@@ -163,6 +167,10 @@ SHIPPED = (
 # copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
 SHIPPED_EXACT = frozenset(
     {
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
@@ -174,6 +182,9 @@ SHIPPED_EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet_infisical_bootstrap.py",
+        "scripts/service_zulip.py",
+        "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -211,6 +222,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
+        "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",
         "scripts/fleet_rag/infisical_settings.py",
         "scripts/fleet_rag/public_fallback.py",
@@ -537,6 +549,9 @@ SHIPPED_REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter node test: mirrors the release REPO_ONLY
+        # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
+        "scripts/simple_tools/thread_registry_export.test.mjs",
     }
 )
 
@@ -3582,7 +3597,19 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         STATE.write_text(json.dumps(doc))
 
     if failing and message_id is not None and previous_checks == checks:
-        outcome = edit_outcome(["simple-chat", "edit", "--id", str(message_id), body], runner)
+        outcome = edit_outcome(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("service_zulip.py")),
+                "--service",
+                "doctor",
+                "edit",
+                "--id",
+                str(message_id),
+                body,
+            ],
+            runner,
+        )
         if outcome == "edited":
             remember(message_id)
             return True
@@ -3594,13 +3621,11 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
         # missing:  post a new message instead and keep its id.
     argv = [
-        "simple-chat",
+        sys.executable,
+        str(Path(__file__).with_name("service_zulip.py")),
+        "--service",
+        "doctor",
         "post",
-        "--channel",
-        "Work-In-Progress",
-        "--topic",
-        "fleet tools doctor",
-        "--json",
         body,
     ]
     try:
@@ -3692,7 +3717,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor';  when only a failing line's text changes, edit that post instead (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
+        help="when the set of failing checks changes, post with the bound dedicated service identity to #Work-In-Progress, topic 'fleet tools doctor'; edit only that identity's own post when a failing line changes",
     )
     parser.add_argument(
         "--no-registry",

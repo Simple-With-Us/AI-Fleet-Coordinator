@@ -1021,6 +1021,18 @@ test("main --ship-behind --alert:  dispatches without alerting, then a later run
   assert.match(rep2.alert.error, /simple-chat/);
   assert.match(rep2.alert.body, /has not landed/);
   assert.equal(later.calls.states.at(-1).apps.b.alert, undefined, "alert stamp rolled back so the next run retries");
+  const uncertain = fakeDeps({ repos: world, builds, state: JSON.parse(JSON.stringify(saved)) });
+  uncertain.deps.now = later.deps.now;
+  uncertain.deps.post = async () => { const err = new Error("service send uncertain"); err.deliveryUnknown = true; throw err; };
+  const unknownOut = sink();
+  await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], uncertain.deps, unknownOut);
+  assert.equal(JSON.parse(unknownOut.text).alert.outcome, "unknown");
+  const unknownState = uncertain.calls.states.at(-1);
+  assert.equal(unknownState.apps.b.alert.outcome, "unknown");
+  const retryUnknown = fakeDeps({ repos: world, builds, state: unknownState });
+  retryUnknown.deps.now = later.deps.now;
+  await main(["--ship-behind", "--alert", "--json", "--registry", writeRegistry(reg)], retryUnknown.deps, sink());
+  assert.equal(retryUnknown.calls.posts.length, 0, "uncertain delivery is not blindly reposted");
 });
 
 test("main --app --ship-behind still sees another app's ship in flight", async () => {
@@ -1191,23 +1203,12 @@ test("assertRegistryPathsExist rejects a path GitHub does not have on main", asy
 });
 
 test("registry paths in testflight-apps.json exist on each repo's main branch", async (t) => {
-  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) {
-    t.skip("needs GH_TOKEN or GITHUB_TOKEN to verify paths on GitHub");
+  if (process.env.TESTFLIGHT_SERVICE_LIVE_READS !== "1") {
+    t.skip("dedicated TestFlight service live reads not enabled; registry paths remain unverified");
     return;
   }
   const reg = loadRegistry(path.join(HERE, "testflight-apps.json"));
-  const deps = makeDeps({ ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token });
-  try {
-    await deps.gh("repos/Simple-With-Us/AI-Fleet-Coordinator/contents/README.md?ref=main");
-  } catch (err) {
-    const msg = String(err.message || err);
-    if (/401|Bad credentials|HTTP 403/i.test(msg)) {
-      t.skip(`GitHub contents API needs a readable token: ${msg.split(":").slice(0, 2).join(":")}`);
-      return;
-    }
-    throw err;
-  }
+  const deps = makeDeps(process.env);
   await assertRegistryPathsExist(reg, (p) => deps.gh(p));
 });
 
@@ -1263,3 +1264,8 @@ test("the gate runs at most `limit` calls at once and lets the rest through in o
   assert.equal(peak, 2);
   assert.deepEqual(order, [1, 2, 3, 4, 5]);
 });
+
+test('dispatch accepted plus revoke failure remains deduped',async()=>{const reg=registry({x:app()});const {deps}=fakeDeps();let n=0;deps.ghDispatch=async()=>{n++;return {dispatchOutcome:'accepted',revocationFailed:true}};const state={apps:{}};let r=behindResult('x');await runRemedies([r],state,deps,reg,{now:NOW});assert.equal(r.remedy.action,'dispatched');assert.equal(r.remedy.revocationFailed,true);assert.equal(state.apps.x.remedy.dispatchOutcome,'accepted');await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(n,1);});
+test('dispatch unknown persists before POST and blocks even changed HEAD',async()=>{const reg=registry({x:app()});const {deps,calls}=fakeDeps();let n=0;deps.ghDispatch=async()=>{n++;assert.equal(calls.states[0].apps.x.remedy.dispatchOutcome,'unknown');throw Error('transport lost')};const state={apps:{}};let r=behindResult('x');await runRemedies([r],state,deps,reg,{now:NOW});assert.equal(r.remedy.action,'dispatch-unknown');assert.equal(state.apps.x.remedy.dispatchOutcome,'unknown');await runRemedies([behindResult('x',{mainHead:{sha:'new-head'}})],state,deps,reg,{now:NOW});assert.equal(n,1);});
+test('failed intent persistence never makes dispatch call',async()=>{const reg=registry({x:app()});const {deps,calls}=fakeDeps();deps.writeState=()=>{throw Error('disk fail')};const state={apps:{}};await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(calls.dispatch.length,0);assert.equal(state.apps.x.remedy,undefined);});
+test('known pre-POST refusal clears durable intent',async()=>{const reg=registry({x:app()});const {deps}=fakeDeps();deps.ghDispatch=async()=>{const e=Error('auth refused');e.dispatchOutcome='not-attempted';throw e};const state={apps:{}};await runRemedies([behindResult('x')],state,deps,reg,{now:NOW});assert.equal(state.apps.x.remedy,undefined);});

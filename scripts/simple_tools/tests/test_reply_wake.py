@@ -852,7 +852,8 @@ class ReplyWakeDaemonTests(DaemonHarness):
         self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
         write_rc(self.secrets_dir / "Codex-zuliprc", email="codex-bot@zulip.test", key=codex_key, site=self.fake.url)
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "http"\nroutine = {}\n\n'
+            '[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
         )
         daemon = self.started(env=self.env(SIMPLE_TOOLS_PARTITION=self.two_seat_partition()))
         self.assertTrue(daemon.connect_seat("CODEX"))
@@ -941,6 +942,8 @@ class ReplyWakeDaemonTests(DaemonHarness):
 
     # ---- the leases, the stale rule and the routine seat's router, as for a direct mention --------
     def test_a_session_that_follows_the_topic_is_interrupted_and_a_routine_seats_session_is_not(self) -> None:
+        # A capture seat:  a seat with a routine never hands the reply to a session (the next test).
+        self.write_config(wake="inbox")
         daemon = self.started()
         asked = self.fake.add_message("Claude", "simple-tools", "t", CHAT_A)
         self.write_lease("L1", topics=[("simple-tools", "t")], posted=[asked])
@@ -995,7 +998,7 @@ class ReplyWakeDaemonTests(DaemonHarness):
         self.assertEqual((L.read_json(guard_file), daemon.loopguard.count(KEY)), before)
         self.assertEqual(daemon.loopguard.count(KEY), 0, "only a `·wake` reply or a `·route` post counts")
         self.assertEqual([r for r in self.ledger() if r["state"] in ("held_back", "dropped")], [])
-        self.assertEqual(len(self.dumps()), 4, "four replies, four wakes")
+        self.assertEqual(len(self.routine.received), 4, "four replies, four wakes")
         budget = daemon.status()["seats"]["CLAUDE"]["budget"]
         self.assertFalse([k for k in budget if "reply" in k], "no budget of its own")
         self.assertEqual(W.LoopGuard.LIMIT, 3)
@@ -1010,7 +1013,7 @@ class ReplyWakeDaemonTests(DaemonHarness):
             self.wake_cycle(daemon, 95)
         reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
         self.assertEqual(reasons, ["per_topic_per_hour"])
-        self.assertEqual(len(self.dumps()), 1)
+        self.assertEqual(len(self.routine.received), 1)
 
     def test_the_existing_loop_guard_is_unchanged_and_a_reply_post_counts_nothing_on_it(self) -> None:
         # The loop guard is off unless the config turns it on.

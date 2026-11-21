@@ -6599,6 +6599,15 @@ def _remote_write_identity() -> str:
     return who
 
 
+def _remote_refused(message: str, code: int) -> "NoReturn":
+    """A proven pre-send or definitive HTTP rejection, still a CLI SystemExit."""
+    try:
+        die(message, code)
+    except SystemExit as exc:
+        exc.remote_definitive = True
+        raise
+
+
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent.
 
@@ -6609,7 +6618,7 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
-        die(f"refused before sending: {hit}", EXIT_USAGE)
+        _remote_refused(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -6636,9 +6645,11 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
             )
         )
     except _TransportError as exc:
+        if not exc.sent:
+            _remote_refused(_remote_failure(exc, write), EXIT_ERROR)
         die(_remote_failure(exc, write), EXIT_ERROR)
     if status in (401, 403):
-        die(_remote_status_message(status, write), EXIT_AUTH)
+        _remote_refused(_remote_status_message(status, write), EXIT_AUTH)
     if status != 200:
         die(_remote_status_message(status, write), EXIT_ERROR)
     result, parts, problem = _remote_answer(ctype, raw, tool, write)
@@ -6667,6 +6678,68 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     return {"structured": sc, "text": "\n".join(parts)}
 
 
+REMOTE_COMMENT_LIMIT = 10000
+
+
+class RemoteResolutionStore(IdemStore):
+    """Per-stage receipts, scoped to the verified identity and transport binding.
+
+    Only request hashes and outcomes are saved, never resolution text or credentials.
+    For the existing 24-hour receipt window, unknown outcomes are not replayed
+    and identical retries reuse completed stages. After that, inspect the issue
+    and use comment alone for a missing resolution, not the compound command.
+    """
+
+    def __init__(self, identity: str, binding: str, request: dict, stage: str):
+        self.path = cache_dir() / "remote-resolution.json"
+        self.ref = hashlib.sha256(
+            stable_json([identity, binding, request, stage]).encode()
+        ).hexdigest()
+
+
+def remote_resolution(args: dict, comment: dict, binding: str) -> dict:
+    request = {"status": args, "comment": comment}
+    result = None
+    for stage, tool, payload in (
+        ("state", "linear_status", args),
+        ("resolution comment", "linear_comment", comment),
+    ):
+        store = RemoteResolutionStore(args["identity"], binding, request, stage)
+        digest = hashlib.sha256(stable_json(payload).encode()).hexdigest()
+        verdict, row = store.begin(digest, tool)
+        if verdict == "duplicate":
+            result = row["data"]
+            continue
+        if verdict == "busy":
+            die(
+                f"resolution {stage} is in flight; retry the identical command shortly",
+                EXIT_RATE_LIMIT,
+            )
+        if verdict != "send":
+            die(
+                f"resolution {stage} outcome is unknown; inspect the issue before retrying. "
+                "The prior stage may or may not have applied; no write was replayed.",
+                EXIT_ERROR,
+            )
+        try:
+            result = remote_call(tool, payload, write=True)
+        except BaseException as exc:
+            if getattr(exc, "remote_definitive", False):
+                store.drop()
+            else:
+                store.unknown()
+            if stage == "resolution comment":
+                warn(
+                    "state change completed; resolution comment failed or is unknown. "
+                    "Inspect comments before posting only the missing resolution; do not repeat the state change. "
+                    "Receipts last 24 hours; after expiry inspect before running this compound command again."
+                )
+            raise
+        # Keep only minimal success markers: hosted text may echo user content.
+        store.finish({"structured": {"completed": True, "stage": stage}, "text": ""})
+    return result
+
+
 def remote_write(a) -> dict:
     """claim / comment / status / file to the hosted linear_* tool of the same meaning.  Needs its own switch
     (SIMPLE_BOARD_REMOTE_WRITES=1);  the hosted server also keeps writes off until its LINEAR_TOOLS_WRITES
@@ -6679,9 +6752,9 @@ def remote_write(a) -> dict:
             EXIT_USAGE,
         )
     unsupported = {
-        "claim": ("steal", "reason", "location", "env"),
-        "comment": ("location", "env", "text_file"),
-        "status": ("resolution",),
+        "claim": ("location", "env"),
+        "comment": ("location", "env"),
+        "status": (),
         "file": (
             "fix",
             "fix_file",
@@ -6695,6 +6768,21 @@ def remote_write(a) -> dict:
     for dest in unsupported[a.cmd]:
         if getattr(a, dest, None):
             die(f"`--{dest.replace('_', '-')}` has no hosted equivalent in remote mode", EXIT_USAGE)
+    if a.cmd == "comment":
+        prepare_inputs(a)
+        if len(a.text or "") > REMOTE_COMMENT_LIMIT:
+            die("remote comment exceeds the hosted 10000-character body limit", EXIT_USAGE)
+    resolution = None
+    if a.cmd == "status" and a.resolution:
+        if a.value == "duplicate":
+            a.of = a.of or duplicate_target(a.resolution)
+            if not a.of:
+                die("status duplicate needs --of or one unambiguous duplicate target in --resolution", EXIT_USAGE)
+            resolution = f"Resolution (duplicate of {a.of}): {a.resolution.strip()}"
+        else:
+            resolution = f"Resolution ({a.value}): {a.resolution.strip()}"
+        if len(resolution) > REMOTE_COMMENT_LIMIT:
+            die("resolution exceeds the hosted 10000-character body limit", EXIT_USAGE)
     sessions = getattr(a, "session_ids", None) or []
     if len(sessions) > 1:
         die("remote mode accepts at most one --session", EXIT_USAGE)
@@ -6712,6 +6800,9 @@ def remote_write(a) -> dict:
         args = {"id": a.id}
         if a.comment:
             args["comment"] = a.comment
+        if a.steal:
+            args["steal"] = True
+            args["reason"] = (a.reason or "").strip()
         tool = "linear_claim"
     elif a.cmd == "comment":
         if not a.text:
@@ -6739,6 +6830,10 @@ def remote_write(a) -> dict:
     hit = _remote_scan_arguments(_remote_scanner(), args, scan_bearer)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
+    if resolution:
+        hit = _remote_scan_arguments(_remote_scanner(), {"body": resolution}, scan_bearer)
+        if hit:
+            die(f"refused before sending: {hit}", EXIT_USAGE)
     identity = _remote_write_identity()
     if claimed and str(claimed).lower() != identity.lower():
         die(
@@ -6747,6 +6842,12 @@ def remote_write(a) -> dict:
             EXIT_USAGE,
         )
     args["identity"] = identity
+    if resolution:
+        comment = {"id": a.id, "body": resolution, "identity": identity}
+        if sessions:
+            comment["session"] = sessions[0]
+        binding = "native-echo" if native_echo_selected() else hashlib.sha256(scan_bearer.encode()).hexdigest()
+        return remote_resolution(args, comment, binding)
     return remote_call(tool, args, write=True)
 
 

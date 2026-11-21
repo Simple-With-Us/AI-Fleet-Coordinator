@@ -56,6 +56,7 @@ the same code `simple-chat daemon check-config` and `simple-chat daemon reload` 
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import difflib
 import fcntl
@@ -74,6 +75,12 @@ from pathlib import Path
 
 TOOL = "eavesdropper-settings"
 SCHEMA_VERSION = 1
+CANONICAL_HOME = {
+    "key": "OPERATOR_SETTINGS",
+    "environment": "prod",
+    "folder": "/operator-settings",
+    "writer": "eavesdropper-settings save",
+}
 DEFAULT_LIVE = "/data/listener.toml"
 ENV_CONFIG = "SIMPLE_TOOLS_CONFIG"
 ENV_STATE_DIR = "SIMPLE_TOOLS_STATE_DIR"
@@ -102,12 +109,14 @@ SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{0,39}")
 NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,95}")
+# A seat's canonical upper-case name, the daemon's _SEAT_RE in config.py.
+SEAT_NAME_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REMOVAL_RE = re.compile(r"[A-Za-z0-9_-]{1,48}(\.[A-Za-z0-9_-]{1,48}){2,3}")
 _ASSIGN_RE = re.compile(r"^(\s*)([A-Za-z0-9_-]+)\s*=")
 _HEADER_LINE_RE = re.compile(r"^\s*\[")
 
-SPEC_TYPES = ("bool", "int", "number", "enum", "string", "table", "pairs", "seat-env")
+SPEC_TYPES = ("bool", "int", "number", "enum", "string", "table", "pairs", "seats", "seat-env")
 
 # Never allowlisted, whatever the allowlist file says.  A table name maps to the keys in it;
 # "seat" stands for every `[seat.X]`.
@@ -228,7 +237,7 @@ def _check_spec(spec, where, nested=False):
         limit = spec.get("maxLength")
         if type(limit) is not int or not 0 <= limit <= 256:
             raise Refusal("allowlist_invalid", "%s needs a maxLength of 0 to 256" % where)
-    elif kind == "pairs":
+    elif kind in ("pairs", "seats"):
         known |= {"maxItems", "maxLength"}
         for bound in ("maxItems", "maxLength"):
             if type(spec.get(bound)) is not int or not 1 <= spec[bound] <= 256:
@@ -268,13 +277,17 @@ def validate_allowlist(doc):
     refuses the whole allowlist:  a file that asks for one is wrong, and is not half trusted."""
     if not isinstance(doc, dict) or doc.get("schemaVersion") != SCHEMA_VERSION:
         raise Refusal("allowlist_invalid", "the allowlist needs schemaVersion %d" % SCHEMA_VERSION)
-    unknown = sorted(set(doc) - {"schemaVersion", "applyEnabled", "seat", "tables", "notes"})
+    unknown = sorted(
+        set(doc) - {"schemaVersion", "applyEnabled", "seat", "tables", "notes", "canonicalHome"}
+    )
     if unknown:
         raise Refusal(
             "allowlist_invalid", "the allowlist has unknown field(s): %s" % ", ".join(unknown)
         )
     if not isinstance(doc.get("applyEnabled"), bool):
         raise Refusal("allowlist_invalid", "applyEnabled must be true or false")
+    if "canonicalHome" in doc and doc["canonicalHome"] != CANONICAL_HOME:
+        raise Refusal("allowlist_invalid", "the canonical Operator settings home is fixed")
     seat = doc.get("seat")
     tables = doc.get("tables")
     if not isinstance(seat, dict) or not isinstance(tables, dict):
@@ -417,6 +430,20 @@ def check_value(spec, value, where, seat=None, current=None, sub=None):
                 )
             for part in pair:
                 _check_string(part, where)
+    elif kind == "seats":
+        if not isinstance(value, list) or len(value) > spec["maxItems"]:
+            raise Refusal("value_not_allowed", "%s must be a list of seat names" % where)
+        for item in value:
+            if (
+                not isinstance(item, str)
+                or not 0 < len(item) <= spec["maxLength"]
+                or not SEAT_NAME_RE.fullmatch(item)
+            ):
+                raise Refusal(
+                    "value_not_allowed",
+                    "%s must be a list of seat names such as CLAUDE" % where,
+                )
+            _check_string(item, where)
     elif kind == "seat-env":
         if not isinstance(value, str) or not ENV_NAME_RE.fullmatch(value):
             raise Refusal("value_not_allowed", "%s must be an environment variable name" % where)
@@ -724,7 +751,7 @@ def _removal_names(remove):
     return set(remove)
 
 
-def build_plan(text, allowlist, requested, remove=None):
+def build_plan(text, allowlist, requested, remove=None, *, _max_changes=MAX_CHANGES):
     """(new text, changes) for a `{key: value}` request against the file's text.
 
     Every key is checked against the allowlist and every value against its spec first.  Then the
@@ -739,8 +766,8 @@ def build_plan(text, allowlist, requested, remove=None):
     drop is refused too, so a plan says exactly what goes."""
     if not isinstance(requested, dict) or not requested:
         raise Refusal("usage", "name at least one setting to change")
-    if len(requested) > MAX_CHANGES:
-        raise Refusal("usage", "at most %d settings in one request" % MAX_CHANGES)
+    if len(requested) > _max_changes:
+        raise Refusal("usage", "at most %d settings in one request" % _max_changes)
     removals = _removal_names(remove)
     dropped = {}
     before = _parse(text, "the live file")
@@ -994,7 +1021,7 @@ def _child_env(live_path, environ=None):
     env = {
         k: v
         for k, v in (os.environ if environ is None else environ).items()
-        if k not in _REMOTE_ENV
+        if k not in _REMOTE_ENV and k != "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
     }
     env[ENV_CONFIG] = str(live_path)
     return env
@@ -1022,7 +1049,7 @@ def _cli(scripts_dir, args, env, timeout):
     return done.returncode, done.stdout.decode("utf-8", "replace")
 
 
-def daemon_check(candidate, live_path, scripts_dir=None, environ=None):
+def daemon_check(candidate, live_path, scripts_dir=None, environ=None, *, timeout=CHECK_TIMEOUT):
     """The Eavesdropper's own verdict on a candidate:  `{"ok", "problems", "warnings"}`.
 
     This is `simple-chat daemon check-config --file CANDIDATE --json` with the live file as the
@@ -1032,7 +1059,7 @@ def daemon_check(candidate, live_path, scripts_dir=None, environ=None):
         scripts_dir or _scripts_dir(),
         ["daemon", "check-config", "--file", str(candidate), "--json"],
         _child_env(live_path, environ),
-        CHECK_TIMEOUT,
+        min(CHECK_TIMEOUT, timeout),
     )
     try:
         answer = json.loads(out)
@@ -1061,7 +1088,15 @@ def _status_path(environ=None):
     return os.path.join(root, "listener", "status.json")
 
 
-def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sleep=time.sleep):
+def daemon_reload(
+    live_path,
+    scripts_dir=None,
+    environ=None,
+    clock=time.time,
+    sleep=time.sleep,
+    expected_revision=None,
+    timeout=None,
+):
     """Tell the Eavesdropper to re-read its config and read back what it made of it.
 
     `{"ok", "confirmed", "code"}`.  `ok` False with `reload_not_sent` when the SIGHUP could not be
@@ -1073,12 +1108,14 @@ def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sl
         scripts_dir or _scripts_dir(),
         ["daemon", "reload"],
         _child_env(live_path, environ),
-        RELOAD_TIMEOUT,
+        RELOAD_TIMEOUT if timeout is None else min(RELOAD_TIMEOUT, timeout),
     )
     if status != 0:
         return {"ok": False, "confirmed": False, "code": "reload_not_sent"}
     path = _status_path(environ)
-    deadline = started + RELOAD_READBACK_SECONDS
+    deadline = started + (
+        RELOAD_READBACK_SECONDS if timeout is None else min(RELOAD_READBACK_SECONDS, timeout)
+    )
     while True:
         try:
             with open(path, "rb") as handle:
@@ -1092,10 +1129,26 @@ def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sl
             if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= started:
                 if document.get("reload_refused"):
                     return {"ok": False, "confirmed": True, "code": "reload_refused"}
-                return {"ok": True, "confirmed": True, "code": "reloaded"}
+                if expected_revision is None:
+                    return {"ok": True, "confirmed": True, "code": "reloaded"}
+                if document.get("operator_settings_revision") == expected_revision:
+                    return {
+                        "ok": True,
+                        "confirmed": True,
+                        "code": "reloaded",
+                        "revision": expected_revision,
+                    }
         if clock() >= deadline:
-            return {"ok": True, "confirmed": False, "code": "reload_unconfirmed"}
-        sleep(RELOAD_POLL_SECONDS)
+            return {
+                "ok": True,
+                "confirmed": False,
+                "code": "reload_revision_mismatch" if expected_revision else "reload_unconfirmed",
+            }
+        sleep(
+            RELOAD_POLL_SECONDS
+            if timeout is None
+            else min(RELOAD_POLL_SECONDS, max(0, deadline - clock()))
+        )
 
 
 # MARK: - The three verbs
@@ -1186,6 +1239,8 @@ def apply(
     reload="auto",
     now=None,
     remove=None,
+    _lock_held=False,
+    _max_changes=MAX_CHANGES,
 ):
     """Carry the plan out.  See the module text for the order of steps and what each failure leaves.
 
@@ -1200,9 +1255,11 @@ def apply(
         raise Refusal("usage", "the expected plan hash is 64 hex characters")
     checker = checker or daemon_check
     reloader = reloader or daemon_reload
-    with _FolderLock(path.parent):
+    with contextlib.nullcontext() if _lock_held else _FolderLock(path.parent):
         data, info = read_live(path)
-        new_text, changes = build_plan(_decode(data), allowlist, requested, remove)
+        new_text, changes = build_plan(
+            _decode(data), allowlist, requested, remove, _max_changes=_max_changes
+        )
         answer = _planned(
             "apply", path, data, new_text, changes, {"ok": True, "problems": [], "warnings": 0}
         )
@@ -1322,16 +1379,135 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
     live = Path(path or os.environ.get(ENV_CONFIG) or DEFAULT_LIVE)
     action = request.get("action") if isinstance(request, dict) else None
     try:
-        if action not in ("get", "plan", "apply"):
-            raise Refusal("usage", "the action is get, plan or apply")
+        if action not in ("get", "plan", "apply", "save", "initialize", "reconcile"):
+            raise Refusal("usage", "the settings action is not supported")
         unknown = sorted(
-            set(request) - {"action", "allowlist", "set", "remove", "expectPlanSHA256"}
+            set(request)
+            - {
+                "action",
+                "allowlist",
+                "set",
+                "remove",
+                "expectPlanSHA256",
+                "expectBaseSHA256",
+                "requestID",
+                "requestCreatedAt",
+            }
         )
         if unknown:
-            raise Refusal("usage", "unknown request field(s): %s" % ", ".join(unknown))
+            raise Refusal("usage", "unknown request fields are not accepted")
         allowlist = validate_allowlist(request.get("allowlist"))
+        if action not in ("save", "initialize") and "expectBaseSHA256" in request:
+            raise Refusal("usage", "expectBaseSHA256 belongs to save or initialize")
+        if action not in ("save", "initialize", "reconcile") and set(request) & {
+            "requestID",
+            "requestCreatedAt",
+        }:
+            raise Refusal("usage", "request identity belongs to a canonical settings operation")
+        if action in ("save", "initialize", "reconcile") or (
+            action == "get" and os.environ.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN")
+        ):
+            # The isolated entry imports only its own trusted scripts tree.
+            scripts = str(_scripts_dir())
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from simple_tools.server import operator_settings
+
+            try:
+                # The canonical writer and daemon reader share this installed
+                # schema; a stale caller cannot widen its keys or bounds.
+                allowlist = operator_settings._manifest()
+                if action == "get":
+                    answer = operator_settings.get(live, allowlist)
+                elif action == "reconcile":
+                    if set(request) - {"action", "allowlist", "requestID", "requestCreatedAt"}:
+                        raise Refusal(
+                            "usage", "reconcile accepts the original request identity only"
+                        )
+                    answer = operator_settings.reconcile(
+                        live,
+                        allowlist,
+                        request.get("requestID"),
+                        request.get("requestCreatedAt"),
+                    )
+                elif action == "initialize":
+                    if (
+                        request.get("set")
+                        or request.get("remove")
+                        or request.get("expectPlanSHA256") is not None
+                    ):
+                        raise Refusal(
+                            "usage",
+                            "initialize reads accepted settings; no supplied values are accepted",
+                        )
+                    answer = operator_settings.initialize(
+                        live,
+                        allowlist,
+                        request.get("expectBaseSHA256"),
+                        checker=checker,
+                        request_id=request.get("requestID"),
+                        created_at=request.get("requestCreatedAt"),
+                    )
+                else:
+                    if request.get("expectPlanSHA256") is not None:
+                        raise Refusal(
+                            "usage",
+                            "save accepts a typed patch, explicit removals and a canonical revision",
+                        )
+                    answer = operator_settings.save(
+                        live,
+                        allowlist,
+                        request.get("set"),
+                        request.get("expectBaseSHA256"),
+                        remove=request.get("remove"),
+                        checker=checker,
+                        reloader=reloader,
+                        request_id=request.get("requestID"),
+                        created_at=request.get("requestCreatedAt"),
+                    )
+                return answer, 0 if answer.get("ok") else 1
+            except operator_settings.SettingsError as exc:
+                diagnostic = {}
+                if exc.required_binding:
+                    diagnostic["requiredBinding"] = exc.required_binding
+                if exc.field:
+                    diagnostic["field"] = exc.field
+                if exc.request_id:
+                    diagnostic.update(requestID=exc.request_id, outcome=exc.outcome)
+                terminal = bool(exc.request_id and exc.outcome == "refused")
+                if terminal:
+                    diagnostic["refusalCode"] = exc.code
+                # Only the journal's identity-bound terminal verdict releases an
+                # uncertain UI attempt.  No canonical snapshot was verified here.
+                return _answer(
+                    action,
+                    live,
+                    ok=False,
+                    result="failed",
+                    errorCode="request_refused" if terminal else exc.code,
+                    persisted=False,
+                    readback=False,
+                    runtimeApplied=False,
+                    detail=("Configure the required binding " + exc.required_binding)
+                    if exc.required_binding
+                    else "The canonical settings operation did not return a verified receipt",
+                    **diagnostic,
+                ), 1
+            except operator_settings.editor.Refusal as exc:
+                raise Refusal(
+                    exc.code, "The settings patch failed schema validation", check=exc.check
+                ) from None
         if action == "get":
-            return get(live, allowlist), 0
+            answer = get(live, allowlist)
+            answer.update(
+                source="runtime-copy",
+                persisted=False,
+                readback=False,
+                runtimeApplied=False,
+                autosaveEnabled=False,
+                revision=answer["baseSHA256"],
+            )
+            return answer, 0
         if action == "plan":
             return (
                 plan(
@@ -1398,9 +1574,121 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
         )
 
 
+BOOTSTRAP_MAX_BYTES = 64 * 1024
+BOOTSTRAP_MAX_DEPTH = 16
+BOOTSTRAP_MAX_NODES = 1000
+BOOTSTRAP_PROJECT = "INFISICAL_OPERATOR_SETTINGS_PROJECT_ID"
+BOOTSTRAP_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
+BOOTSTRAP_READER = "OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"
+
+
+def _validate_json_limits(value, *, max_depth=BOOTSTRAP_MAX_DEPTH, max_nodes=BOOTSTRAP_MAX_NODES):
+    """Iteratively bound JSON depth and node count before inspection."""
+    stack = [(value, 1)]
+    seen = set()
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        if depth > max_depth:
+            raise ValueError("depth_exceeded")
+        nodes += 1
+        if nodes > max_nodes:
+            raise ValueError("nodes_exceeded")
+        if isinstance(current, dict):
+            obj_id = id(current)
+            if obj_id in seen:
+                raise ValueError("cycle")
+            seen.add(obj_id)
+            for child in current.values():
+                stack.append((child, depth + 1))
+        elif isinstance(current, list):
+            obj_id = id(current)
+            if obj_id in seen:
+                raise ValueError("cycle")
+            seen.add(obj_id)
+            for child in current:
+                stack.append((child, depth + 1))
+
+
+def bootstrap_request(raw):
+    """Private host-to-editor envelope only; the original request owns the transaction."""
+    envelope, bootstrap = None, None
+    refused = {"tool": TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    os.environ.pop(BOOTSTRAP_WRITER, None)
+    os.environ.pop(BOOTSTRAP_READER, None)
+    try:
+        if len(raw) > BOOTSTRAP_MAX_BYTES:
+            return refused, 2
+        envelope = json.loads(raw, object_pairs_hook=pairs)
+        _validate_json_limits(envelope)
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"protocol", "request", "bootstrap"}
+            or envelope["protocol"] != "operator-settings-bootstrap/1"
+            or not isinstance(envelope["request"], dict)
+            or envelope["request"].get("action") not in ("save", "initialize", "reconcile")
+        ):
+            return refused, 2
+        bootstrap = envelope["bootstrap"]
+        if (
+            not isinstance(bootstrap, dict)
+            or set(bootstrap) != {BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER}
+            or any(not isinstance(value, str) for value in bootstrap.values())
+            or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                bootstrap[BOOTSTRAP_PROJECT],
+            )
+            or not bootstrap[BOOTSTRAP_WRITER].startswith("st.")
+            or not 20 <= len(bootstrap[BOOTSTRAP_WRITER]) <= 8192
+            or any(c.isspace() for c in bootstrap[BOOTSTRAP_WRITER])
+        ):
+            return refused, 2
+        os.environ.update(bootstrap)
+        return run_request(envelope["request"])
+    except Exception:  # noqa: BLE001 - bootstrap data never becomes an error detail
+        return refused, 2
+    finally:
+        for name in (BOOTSTRAP_WRITER, BOOTSTRAP_READER, BOOTSTRAP_PROJECT):
+            os.environ.pop(name, None)
+        if isinstance(bootstrap, dict):
+            bootstrap.clear()
+        if isinstance(envelope, dict):
+            envelope.clear()
+        raw = b""
+
+
 def main(argv=None, stdin=None, out=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     out = out or sys.stdout
+    if argv == ["--bootstrap-request-stdin"]:
+        try:
+            answer, code = bootstrap_request(
+                (stdin or sys.stdin.buffer).read(BOOTSTRAP_MAX_BYTES + 1)
+            )
+        except Exception:  # noqa: BLE001 - private input failures have one closed response
+            answer, code = (
+                {
+                    "tool": TOOL,
+                    "ok": False,
+                    "result": "refused",
+                    "errorCode": "bootstrap_unavailable",
+                },
+                2,
+            )
+        finally:
+            for name in (BOOTSTRAP_WRITER, BOOTSTRAP_READER, BOOTSTRAP_PROJECT):
+                os.environ.pop(name, None)
+        out.write(json.dumps(answer, sort_keys=True, ensure_ascii=True) + "\n")
+        return code
     if argv != ["--request-stdin"]:
         out.write(
             json.dumps(
