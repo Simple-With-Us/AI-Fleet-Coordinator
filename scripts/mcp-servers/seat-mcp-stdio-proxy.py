@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """stdio MCP proxy to local seat-mcp (127.0.0.1:8793).
 
-Reads SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through
-`fleet-secrets get` (AFC-359).  Never prints it.  Never puts the token on argv.  Loopback only.
+Uses existing Infisical-synced SEAT_MCP_TOKEN transport, else the canonical CLI at Fleet-OPS /seat-mcp.
+Never prints it.  Never puts the token on argv.  Loopback only.
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
+FLEET_INFISICAL_CLI = Path(__file__).resolve().parent.parent / "fleet_infisical_cli.py"
 BASE = "http://127.0.0.1:8793/mcp"
 
 
@@ -26,7 +24,17 @@ def load_token() -> str:
     if not token:
         try:
             proc = subprocess.run(
-                [FLEET_SECRETS, "get", "SEAT_MCP_TOKEN", "--path", "/seat-mcp"],
+                [
+                    sys.executable,
+                    "-I",
+                    str(FLEET_INFISICAL_CLI),
+                    "get",
+                    "SEAT_MCP_TOKEN",
+                    "--project",
+                    "fleet-ops",
+                    "--path",
+                    "/seat-mcp",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,

@@ -4,6 +4,7 @@ and a symlinked profile is a named gap, not a failure.  Covers the AFC-839 revie
 source review plus the Sentry findings) on apply/verify_zcode_seat_default."""
 
 import os
+import shlex
 import tempfile
 import unittest
 from unittest import mock
@@ -204,12 +205,24 @@ class VerifyZcodeSeatDefaultTests(unittest.TestCase):
         )
         self.assertTrue(any("symlink" in c.detail for c in bashrc_checks))
 
-    def test_shim_render_is_byte_stable(self):
+    def test_shim_render_carries_the_full_contract(self):
+        """The rendered shim is asserted against its explicit contract instead of against a second
+        call of the same renderer:  comparing identical invocations proves nothing, so an empty
+        script, a missing seat guard or a malformed exec line would pass.  These asserts pin the
+        guard, the default seat value, the quoted resolved exec target and the shebang."""
         target = "/usr/bin/env"
-        self.assertEqual(
-            render_zcode_seat_shim("simple-chat", target),
-            render_zcode_seat_shim("simple-chat", target),
-        )
+        text = render_zcode_seat_shim("simple-chat", target)
+        self.assertTrue(text.startswith("#!/bin/sh\n"), text)
+        self.assertIn('[ -z "${AGENT_SEAT:-}" ]', text)
+        self.assertIn('[ -z "${AGENT_LAUNCH_SEAT:-}" ]', text)
+        self.assertIn('[ -z "${AGENT_TAG:-}" ]', text)
+        self.assertIn('[ -n "${ZCODE_SESSION_ID:-}${ZCODE_RUNTIME_ENV:-}" ]', text)
+        self.assertIn("AGENT_SEAT=ZC", text)
+        # The launcher variable is only ever read as an override, never written.
+        self.assertNotIn("AGENT_LAUNCH_SEAT=", text.replace('${AGENT_LAUNCH_SEAT:-}"', ""))
+        # The exec target is shlex.quote'd (quoted only when the path needs it) and never re-found
+        # through PATH, which could find the shim itself.
+        self.assertIn(f"exec {shlex.quote(target)} \"$@\"", text)
 
 
 if __name__ == "__main__":

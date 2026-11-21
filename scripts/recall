@@ -98,6 +98,7 @@ from fleet_rag import (
     contribute_guard,
     core,
     doctor,
+    fleet_bearer,
     public_fallback,
     recall_api,
     recall_presentation,
@@ -182,6 +183,9 @@ def cmd_search(a: argparse.Namespace) -> int:
         )
         if k in search_args
     }
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to the user-supplied fields before anything reaches the API.
+    _local_scan_arguments({"query": a.query, "app": a.app, "category": a.category, "seat": a.seat})
     res = public_fallback.call_with_fallback(
         "recall_search",
         fallback_args,
@@ -285,6 +289,9 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     if not text.strip():
         raise FleetRagError("contribute needs non-empty text")
     kwargs = dict(text=text, category=a.category, app=a.app, seat=a.seat, title=a.title, url=a.url)
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     guard = None
     in_range = recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX
     if (
@@ -357,6 +364,9 @@ def cmd_correct(a: argparse.Namespace) -> int:
         url=a.url,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_correct", kwargs, lambda: recall_api.recall_correct(**kwargs)
     )
@@ -380,6 +390,9 @@ def cmd_retract(a: argparse.Namespace) -> int:
         seat=a.seat,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_retract", kwargs, lambda: recall_api.recall_retract(**kwargs)
     )
@@ -573,13 +586,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "text",
         nargs="?",
-        help="the text, or - to read it from stdin (prefer --file / - for anything "
-        "that might contain a credential)",
+        help="the text, or - to read it from stdin (prefer --file / - for long "
+        "text, so it stays out of the shell history)",
     )
     c.add_argument(
         "--file",
-        help="read the text from PATH (- for stdin); safest for log excerpts, "
-        "command lines, or config snippets that might hold a credential",
+        help="read the text from PATH (- for stdin); keeps long text out of the "
+        "shell history.  Credential-shaped content is refused before transmission "
+        "on every route:  redact secrets from the excerpt first",
     )
     c.add_argument("--category", required=True, choices=recall_api.CONTRIB_CATEGORIES)
     c.add_argument("--app", default="fleet")
@@ -726,7 +740,11 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
 # SIMPLE_RECALL_REMOTE=1 sends the supported recall tools to the hosted ST-MCP endpoint with the bot's own bearer
-# (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
+# (SIMPLE_TOOLS_BEARER, or the declared seat's canonical file ~/.secrets/fleet-tools/<seat> when the environment
+# has none).  A process that declares a fleet seat (AGENT_LAUNCH_SEAT, AGENT_SEAT or AGENT_TAG) and has no local
+# corpus configured (no QDRANT_URL) runs the hosted READ verbs this way by default (hosted_default below;  writes
+# keep their explicit SIMPLE_RECALL_REMOTE opt-in, and a search flag with no hosted equivalent keeps the direct
+# route).  An explicit SIMPLE_RECALL_REMOTE=0 keeps the direct route too.  The hosted server serves Recall from ONE shared backend
 # credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
 # constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
 # failure never falls back to the direct or public route.  Every other verb, and every search flag with no
@@ -741,6 +759,38 @@ REMOTE_TIMEOUT_S = 40
 
 def remote_selected() -> bool:
     return os.environ.get("SIMPLE_RECALL_REMOTE", "").strip() == "1"
+
+
+# Search flags with no hosted equivalent:  an invocation naming one keeps the direct route.
+_LOCAL_ONLY_FLAGS = ("--source", "--seat", "--since-days", "--per-doc", "--no-rerank", "--no-lessons", "--full")
+
+
+def hosted_default(cmd: str) -> bool:
+    """Hosted by default for a process that declares a fleet seat:  the seat's own bearer
+    (environment or its canonical file) is the only credential the hosted read verbs need.
+    An explicit SIMPLE_RECALL_REMOTE switch decides either way, a configured local corpus
+    (QDRANT_URL) keeps the direct route, a verb with no hosted route stays local, a write
+    keeps its explicit opt-in, and a search flag with no hosted equivalent stays direct."""
+    if cmd not in ("search", "stats"):
+        return False
+    if os.environ.get("SIMPLE_RECALL_REMOTE", "").strip():
+        return False
+    if os.environ.get("QDRANT_URL", "").strip():
+        return False
+    if any(x == f or x.startswith(f + "=") for x in _ARGV for f in _LOCAL_ONLY_FLAGS):
+        return False
+    if not any(
+        os.environ.get(name, "").strip()
+        for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
+    ):
+        return False
+    # A declaration alone is not enough:  with no usable own bearer (a typo'd or unmanaged
+    # seat) the hosted route would only fail on the missing credential, so keep the direct
+    # route this client had before the hosted default.
+    try:
+        return bool(fleet_bearer.own_bearer())
+    except fleet_bearer.FleetError:
+        return False
 
 
 REMOTE_MAX_BYTES = 4_000_000
@@ -1035,6 +1085,20 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
     return None
 
 
+def _local_scan_arguments(arguments) -> None:
+    """The same gate on the direct (non-remote) route, before anything reaches the API:  a
+    credential-shaped value in any argument field refuses the call naming the field, never the
+    value or a prefix.  The scanner is the fleet's own;  if it cannot be loaded the call is
+    refused, because the local route has no unscanned path either."""
+    scanner = _remote_scanner()
+    hit = _remote_scan_arguments(scanner, arguments, bearer="")
+    if hit:
+        raise FleetRagError(
+            f"{hit} looks like it holds a credential;  nothing was sent.  "
+            "Remove the secret and retry."
+        )
+
+
 def _remote_scanner():
     """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.  If it
     cannot be loaded nothing is sent:  remote mode has no unscanned route."""
@@ -1099,11 +1163,20 @@ def _remote_principal(result: dict) -> str:
     return seat
 
 
+def _own_bearer() -> str:
+    """This bot's own bearer:  SIMPLE_TOOLS_BEARER, else the declared seat's canonical file."""
+    try:
+        return fleet_bearer.own_bearer()
+    except fleet_bearer.FleetError as exc:
+        raise FleetRagError(str(exc)) from None
+
+
 def remote_call(tool: str, arguments: dict, write: bool = False, *, _bearer: str | None = None) -> dict:
-    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip() if _bearer is None else _bearer
+    bearer = _own_bearer() if _bearer is None else _bearer
     if not bearer:
         raise FleetRagError(
-            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV} or the declared seat's "
+            "canonical file (~/.secrets/fleet-tools/<seat>); there is no fallback "
             "to direct or public credentials"
         )
     if not REMOTE_BEARER_RE.fullmatch(bearer):
@@ -1274,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
         a = ap.parse_args(argv)
     except SystemExit as e:
         return 0 if e.code == 0 else 2
-    if remote_selected():
+    if remote_selected() or hosted_default(a.cmd):
         try:
             return remote_main(a)
         except FleetRagError as e:

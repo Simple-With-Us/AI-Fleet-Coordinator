@@ -5,9 +5,11 @@ Owner directive (Tue, Nov 3, 2026):  the Operator should maintain a registry of 
 References workbook — with all the thread info it can carry, human-visible first;  if the
 sheet is also usable as a registry surface (read back by tools), that is a bonus.
 
-Built in this lane (branch `Muse-Assist/operator-thread-registry`, off `main` at `3abb5a2`).
-Nothing here is deployed, no listener config is flipped, and no live Zulip history is
-backfilled.  States are kept distinct throughout:  built and tested in the lane only.
+First built in the lane `Muse-Assist/operator-thread-registry` (off `main` at `3abb5a2`).
+The observation hook and the store ship with the listener image, and AFC-823 runs the
+sheet sync on the server inside the Operator Sheets drain (step 4 below), once that
+drain's installer has run from a checkout that carries it.  No live Zulip history is
+backfilled.
 
 ## The Sheet
 
@@ -36,19 +38,38 @@ backfilled.  States are kept distinct throughout:  built and tested in the lane 
 2. **Projection.**  `ThreadRegistryStore.rows(now)` projects aggregates to sheet rows in
    Thread Key order.  Status and the Registry Updated At stamp are computed from the sync
    run's clock, so one run produces a self-consistent sheet.
-3. **Sync (Google write).**  `scripts/agent_sync/thread_registry_export.mjs` is the only
-   Google writer.  `python3 -m agent_sync.thread_registry export-rows` emits the desired
+3. **Sync (Google write).**  `scripts/simple_tools/thread_registry_export.mjs` is the only
+   Google writer.  `python3 -m simple_tools.thread_registry export-rows` emits the desired
    rows as JSON;  the drain validates the live header against the schema, reads the
    existing rows, plans upserts by Thread Key, and writes.  The Python
    `plan_upserts`/`sync_to_sheet` in `thread_registry.py` are the reference implementation
    of the same semantics and are what the tests exercise;  the JS plan is a line-for-line
-   mirror, the same arrangement as `operator_sheets_export.mjs`.
+   mirror, the same arrangement as `operator_sheets_export.mjs`.  The JS drain adds the
+   guards a live, human-edited tab needs (below).  Run by hand,
+   `node thread_registry_export.mjs rows.json` only reads the tab and prints the plan;
+   `--write` writes, and first takes the Operator Sheets drain's writer lease
+   (`OPERATOR_SHEETS_LOCK`), so it refuses while a scheduled run holds it.
+4. **Schedule (the server, AFC-823).**  The Operator Sheets drain
+   (`scripts/simple_tools/operator_sheets_drain.mjs`, `operator-sheets-drain.service` and its
+   timer) runs this sync on every run, before its Sessions and Events export, under the same
+   lease and with the same service-account key.  It reads the rows with
+   `docker exec -w /app/scripts eavesdropper python3 -m simple_tools.thread_registry export-rows`
+   (the store is in the listener container's volume, and no listener route serves it), writes
+   them with `drainThreadRows` behind its own write pacing, stops after 4 minutes or 200 writes
+   a run, and logs one line of counts.  A failure there never stops the Sessions and Events
+   export.  See "Zulip Threads Sync" in `docs/protocols/operator-sheets-export.md`.
 
 Sync guarantees:
 
-- **Idempotent.**  A row whose cells match (ignoring Registry Updated At) is not rewritten;
-  a re-run with no new observations performs zero writes.
+- **Idempotent.**  The same aggregates at the same age give the same sheet:  a row whose
+  cells match (ignoring Registry Updated At) is not rewritten.  Status is computed from
+  the run's clock, so a thread whose last activity crosses 24 hours or 14 days is
+  rewritten once with no new messages;  a re-run with no new observations and no Status
+  change performs zero writes.
 - **Header first.**  Any header drift aborts the sync before a single write.
+- **The whole tab is read.**  The drain pages to the tab's grid row count, so a blank
+  row a human leaves (Google omits trailing blank rows from a page) never hides the rows
+  below it, which would otherwise be planned as appends and written twice.
 - **Failure is partial and honest.**  Writes stop at the first failure;  rows already
   written stay written, the drain reports the counts and the error, and the next run
   reconciles by Thread Key.  No blind retries.
@@ -56,8 +77,15 @@ Sync guarantees:
   together), so they share one row and the latest casing is shown.  If the sheet itself
   somehow holds two rows with one key, the first is the row of record;  duplicates are
   reported in the sync result and never deleted or written by the sync.
-- **Human edits.**  Purpose is the one column a human may own:  the projection always
-  carries blank, and an update preserves a non-blank Purpose already in the sheet.
+- **Human edits.**  Purpose is the one column a human may own:  the projection always
+  carries blank, and an update never writes the Purpose column (nor the Thread Key), so a
+  Purpose typed at any time, during a run included, survives.  Just before each run of
+  10 updates the drain re-reads those rows' Thread Keys and skips any row a human moved
+  (sorted, inserted or deleted rows);  the next run reads the tab again and updates it at
+  its new row.
+- **Oversized rows.**  A row with a cell over Google's 50,000-character limit (a
+  long-lived topic's growing PR list, say) is skipped and counted rather than sent:
+  Google would refuse it on every run, and that refusal would stop every write after it.
 
 ## Schema — One Row Per Thread, and Where Every Column Comes From
 
@@ -84,32 +112,33 @@ non-stream messages.  A renamed topic is a new key and therefore a new row (the 
 stays, aging to dormant);  merging renamed topics is a possible later refinement, not
 faked here.
 
-## Credential Seam — The One Blocker for a Live Drain
+## Credential Seam
 
 The drain authenticates as a **service account**, never as an agent's Google identity.
 Owner ruling (Nov 3, 2026):  the **existing fleet Sheets service account is reused** for
 the Operator registries;  no dedicated SA is created for this registry.
 
-- Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
-- Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
-  `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the same
-  resolution shape as the existing `/google-sheets-sa` secret, a separate purpose-scoped
-  path that holds a copy of that fleet credential.  The key is never written to disk or
-  printed.
+- Env:  `GOOGLE_SHEETS_SA` (the service-account JSON), or
+- Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
+  `GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the approved
+  fleet Sheets route, no purpose-scoped copy.  The CLI never writes the key to disk
+  or prints it.
+- On the server, the scheduled drain reads the same key from
+  `/etc/operator-sheets/sa.json` (`OPERATOR_SHEETS_SA_FILE`), which
+  `install-operator-sheets-drain.sh` writes (0600, root) from that Infisical path with its
+  scoped read-only service token.  The two routes above are the CLI's, for manual runs.
 
-**What is needed (owner/admin action):**  place the fleet Sheets service account's JSON
-in Infisical Fleet-OPS prod at `/operator-thread-registry` under
-`OPERATOR_GOOGLE_SHEETS_SA`, and share the "Operator Thread Registry" sheet with that
-service account's `client_email` as Editor.  Until then the drain refuses with a clear
-error and writes nothing;  everything up to that seam — observation, store, projection,
-plan, sheet creation — is built and tested.  The code reads only the purpose-scoped key
-above and never falls back to another credential silently.
+**What is needed (owner/admin action):**  share the "Operator Thread Registry" sheet with
+that service account's `client_email` as Editor.  Without the share, the CLI exits with an
+error, and the scheduled drain logs the fixed code `sheet_http_403` on every run and
+writes no thread rows while the Sessions and Events export carries on.  The code reads
+only the approved key above and never falls back to another credential silently.
 
-## Gated Follow-Ups (Not Done Here)
+## Follow-Ups
 
-1. **Deploy.**  Ship the lane (the daemon hook and the new modules) through the normal
-   listener deployment, and schedule the drain (e.g. with the listener's periodic jobs).
-   No config is flipped by this lane.
+1. **Deploy.**  The daemon hook and the store ship with the listener image.  The drain is
+   scheduled in code by AFC-823 (step 4 above): it runs once the Operator Sheets drain's
+   installer has run from a checkout that carries it.
 2. **Historical backfill.**  The store starts empty at deploy time, so threads appear as
    the listener sees new messages.  A one-time backfill is feasible from the listener's
    own stored state only in part (per-seat inbox files carry channel/topic/sender/ts for
@@ -122,10 +151,10 @@ above and never falls back to another credential silently.
 
 ## Rebase Note
 
-PR #1258 renames `scripts/agent_sync` → `scripts/simple_tools`.  Everything in this lane
-lives under `scripts/agent_sync/` (`thread_registry.py`, `thread_registry_export.mjs`,
-`tests/test_thread_registry.py`, and the `daemon.py` hook) and moves with that rename;
-no path outside the package is touched.
+The rename this note expected, `scripts/agent_sync` → `scripts/simple_tools` (PR #1258),
+is in the tree: `thread_registry.py`, `thread_registry_export.mjs`,
+`tests/test_thread_registry.py` and the `daemon.py` hook now live under
+`scripts/simple_tools/`, and `scripts/agent_sync/` holds only the session registry.
 
 ## Seat-Tag Surfaces
 

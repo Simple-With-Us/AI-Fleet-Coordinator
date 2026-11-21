@@ -1,10 +1,8 @@
 """Capacity startup policy uses the existing source before touching durable state."""
 
 import contextlib
-import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -185,17 +183,15 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
 
 
 class OutcomeCapacityRealSourceTests(unittest.TestCase):
-    """The main-branch Source, real CLI and real verifier read only loopback fixtures."""
+    """The direct Source and real bounded verifier read only loopback fixtures."""
 
     def setUp(self):
         scripts = str(Path(__file__).resolve().parents[3] / "scripts")
         sys.path.insert(0, scripts)
         try:
             from fleet_knobs.tests._fake import ScopedReadAPI
-            from fleet_secrets import cli
         finally:
             sys.path.remove(scripts)
-        self.cli = cli
         self.api = ScopedReadAPI(
             {server.OUTCOMES_CAPACITY_KEY: "20000"}, project=str(uuid.uuid4()), path="/github-apps"
         )
@@ -209,21 +205,21 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
         token.write_text(self.api.token)
         token.chmod(0o600)
         self.calls = []
+        client = app_tokens._shared_client()
 
-        def runner(argv, *, capture_output, timeout, env):
-            self.calls.append((list(argv), dict(env), timeout))
-            out, err = io.StringIO(), io.StringIO()
-            # Source keeps production's existing child allowlist.  This test-only
-            # runner routes the real CLI to its synthetic loopback provider.
-            child = {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]}
-            code = self.cli.main(argv[1:], env=child, out=out, err=err)
-            return subprocess.CompletedProcess(
-                argv, code, out.getvalue().encode(), err.getvalue().encode()
+        def reader(project, path, env, **options):
+            self.calls.append((project, path, dict(env), dict(options)))
+            # Only this test callback adds its synthetic loopback endpoint; the
+            # actual Source still supplies its minimal prod/folder environment.
+            return client.bounded_fetch_project(
+                project,
+                path,
+                {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+                **options,
             )
 
         self.source = app_tokens.FleetSecretsSource(
-            executable="synthetic-cli",
-            runner=runner,
+            reader=reader,
             path="/github-apps",
             credential_file=str(token),
             environ={
@@ -234,28 +230,27 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
             },
         )
 
-    def test_real_cli_reads_the_single_folder_proven_setting(self):
+    def test_real_bounded_reader_reads_the_single_folder_proven_setting(self):
         self.assertEqual(server._outcome_capacity_from_source(self.source), 20000)
         self.assertEqual(len(self.calls), 1)
-        argv, env, timeout = self.calls[0]
-        self.assertEqual(
-            argv,
-            [
-                "synthetic-cli",
-                "get-verified",
-                server.OUTCOMES_CAPACITY_KEY,
-                "--path",
-                "/github-apps",
-            ],
-        )
-        self.assertEqual(timeout, 30)
+        project, path, env, options = self.calls[0]
+        self.assertEqual(project, self.api.project)
+        self.assertEqual(path, "/github-apps")
         self.assertEqual(
             env,
             {
-                "PATH": os.defpath,
-                "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
-                "INFISICAL_TOKEN": self.api.token,
                 "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_READ_PATHS": "/github-apps",
+            },
+        )
+        self.assertEqual(
+            options,
+            {
+                "token": self.api.token,
+                "names": (server.OUTCOMES_CAPACITY_KEY,),
+                "timeout": 30,
+                "max_output_bytes": 1048576,
+                "strict_records": True,
             },
         )
         self.assertEqual(len(self.api.requests), 2)
