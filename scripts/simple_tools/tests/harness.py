@@ -33,23 +33,36 @@ from simple_tools.tests.fake_zulip import BOT_EMAIL, FakeZulip
 def private_dir(path) -> str:
     """A private directory, built one level at a time with owner-only permissions.
 
-    Every missing level is created explicitly with mode 0o700, a symlinked level is refused,
-    and nothing outside the test's own home is ever followed.  One helper for the whole fleet:
-    a fixture directory that is not owner-only, or that follows a symlink, is a fixture that
-    another user can read."""
-    missing = []
-    probe = os.path.abspath(str(path))
-    while not os.path.exists(probe):
-        missing.append(probe)
-        parent = os.path.dirname(probe)
-        if parent == probe:
+    Every missing level is created explicitly with mode 0o700, and the whole chain from the
+    tree's base down to the target must be free of symlinks:  a symlinked level would put the
+    new directory in another tree, where another user can read it.  The base is the deepest
+    existing ancestor of the target, which is the tree the caller named.  One helper for the
+    whole fleet:  a fixture directory that is not owner-only, or that follows a symlink, is a
+    fixture that another user can read."""
+    target = os.path.abspath(str(path))
+    if os.path.islink(target):
+        raise OSError("refusing a symlinked directory: %s" % target)
+    # The base is the deepest ancestor that already exists, and it is the tree this path names.
+    base = target
+    while not os.path.exists(base):
+        parent = os.path.dirname(base)
+        if parent == base:
             break
-        probe = parent
-    if os.path.islink(str(path)):
-        raise OSError("refusing a symlinked directory: %s" % path)
-    for level in reversed(missing):
+        base = parent
+    if os.path.islink(base):
+        # The parent the new level hangs under is a symlink, so the level would be created in
+        # the tree that symlink names and not in the tree this path names.
+        raise OSError("refusing a directory under a symlinked parent: %s" % base)
+    levels = []
+    current = base
+    if target != base:
+        for part in os.path.relpath(target, base).split(os.sep):
+            current = os.path.join(current, part)
+            levels.append(current)
+    for level in levels:
         if os.path.islink(level):
             raise OSError("refusing a symlinked directory: %s" % level)
+    for level in levels:
         os.mkdir(level, mode=0o700)
         os.chmod(level, 0o700)
     return str(path)
