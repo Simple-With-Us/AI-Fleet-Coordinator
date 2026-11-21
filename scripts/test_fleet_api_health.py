@@ -491,5 +491,44 @@ class ActualPipelineMappingTests(unittest.TestCase):
         self.assertTrue(row["ingestionAlive"])
 
 
+    def test_st_observation_age_rounds_once_before_freshness_gate(self):
+        # 120.9s must be stored and compared as 121, not truncated to 120
+        # and then still treated as stale against a 120s cap.
+        stamp = NOW - 120.9
+        payload = st_payload(
+            mango={
+                "reachable": True,
+                "checkedAt": datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        row = api_health.map_st_live(payload, 200, NOW)
+        self.assertEqual(row["observationAgeSeconds"], 121)
+        self.assertEqual(row["reason"], "observation_stale")
+        self.assertEqual(row["state"], "unknown")
+
+    def test_legacy_components_ok_without_aggregate_stay_ok(self):
+        payload = {
+            "components": {
+                "house": "ok",
+                "oge": "ok",
+                "senate_efd": "ok",
+                "ingestion": "ok",
+            }
+        }
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertIsNone(row["upstreamStatus"])
+        self.assertEqual(row["state"], "ok")
+
+    def test_critical_upstream_aggregate_is_fail_not_warn(self):
+        payload = self.native()
+        for check in payload["pipeline"]["checks"]:
+            check["status"] = "ok"
+        payload["status"] = "critical"
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "fail")
+        self.assertEqual(row["reason"], "upstream_aggregate_not_ok")
+
+
+
 if __name__ == "__main__":
     unittest.main()

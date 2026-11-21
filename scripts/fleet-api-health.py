@@ -250,7 +250,9 @@ def map_st_live(payload, http_status, now):
         return row
     row["mangoReachable"] = mango["reachable"]
     age = _observation_age(payload, now)
-    row["observationAgeSeconds"] = int(age) if age is not None else None
+    if age is not None:
+        age = round(age)
+    row["observationAgeSeconds"] = age
     if mango["reachable"] is not True:
         row["state"] = "fail"
         row["reason"] = "mango_unreachable"
@@ -332,11 +334,15 @@ def _ct_pipeline_components(payload):
     if "pipeline" not in payload:
         return None
     pipeline = payload.get("pipeline")
-    if not isinstance(pipeline, dict) or "checks" not in pipeline:
+    if not isinstance(pipeline, dict):
+        raise ValueError("CT pipeline must be a dict, got %s" % type(pipeline).__name__)
+    if "checks" not in pipeline:
         return {}
     checks = pipeline.get("checks")
     if not isinstance(checks, list):
-        return {}
+        raise ValueError(
+            "CT pipeline checks must be a list, got %s" % type(checks).__name__
+        )
     by_id = {}
     for entry in checks:
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
@@ -417,7 +423,13 @@ def map_ct_health(payload, http_status, now):
         row["reason"] = "http_%d" % http_status if http_status else "no_answer"
         return row
     row["upstreamStatus"] = _ct_aggregate(payload)
-    found = _ct_components(payload)
+    try:
+        found = _ct_components(payload)
+    except ValueError as exc:
+        # Fail closed without taking down the collector: name the type error
+        # and do not fall back to the legacy component parser.
+        row["reason"] = "pipeline_invalid:%s" % exc
+        return row
     components = []
     for name in CT_COMPONENTS:
         if name in found:
@@ -465,13 +477,17 @@ def map_ct_health(payload, http_status, now):
         row["state"] = "warn"
         row["reason"] = "components_degraded:%s" % ",".join(warning)
         return row
-    aggregate = _component_state(row["upstreamStatus"])
-    if aggregate != "ok":
-        # Other source checks may degrade the aggregate even when the
-        # displayed subset is current. Never hide an upstream warning.
-        row["state"] = "warn" if aggregate in ("warn", "fail") else "unknown"
-        row["reason"] = "upstream_aggregate_not_ok"
-        return row
+    # Legacy payloads may omit an aggregate; do not treat a missing
+    # status as unknown-not-ok when every displayed component is ok.
+    if row["upstreamStatus"] is not None:
+        aggregate = _component_state(row["upstreamStatus"])
+        if aggregate != "ok":
+            # Other source checks may degrade the aggregate even when the
+            # displayed subset is current.  A critical/failed aggregate
+            # stays fail; a warning stays warn; anything else is unknown.
+            row["state"] = aggregate if aggregate in ("warn", "fail") else "unknown"
+            row["reason"] = "upstream_aggregate_not_ok"
+            return row
     row["state"] = "ok"
     row["reason"] = "all_components_ok"
     return row
