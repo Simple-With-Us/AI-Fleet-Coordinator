@@ -102,7 +102,11 @@ done
 # token actually holds.  It pins the API base,  checks the grant against the
 # folder asked for,  and checks the answer's own provenance,  so no token ever
 # reaches an argument list and no inherited API base can redirect it.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+if [[ -z "$INFISICAL_SCOPED_READER" ]]; then
+  echo "INFISICAL_SCOPED_READER is not set:  name the shared scoped reader to read with" >&2
+  exit 2
+fi
 
 # One value on standard output.  The reader's own reason goes to standard error
 # and its exit code says whether the name was absent (3), the grant refused the
@@ -134,7 +138,7 @@ resolve_token() {
     echo "error: pass the fleet GH_PAT secret as GH_TOKEN (the ship workflow does)" >&2
     return 1
   fi
-  # No token in the environment:  read the fleet GH_PAT.  A bare gh login is
+  # No token in the environment:  read the fleet GH_PAT from the shared CLI.  A bare gh login is
   # not used, because it may be a personal or read-only credential.
   #
   # GH_PAT is a plain secret in the Fleet-OPS prod /global-api-keys folder;  the project

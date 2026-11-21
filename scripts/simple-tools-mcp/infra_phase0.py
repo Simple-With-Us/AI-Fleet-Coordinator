@@ -2,8 +2,8 @@
 """Cloudflare setup and checks for the ST-MCP Worker, Phase 0.
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
-read inside this process from the environment or from Infisical through this script's own
-scoped read-only service token, and never printed, logged or put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
+read inside this process from the environment or the shared direct Infisical reader and never printed, logged or
+put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
 
     python3 -I infra_phase0.py status            # read-only inventory
     python3 -I infra_phase0.py access [--apply]  # path-scoped Access app
@@ -59,51 +59,31 @@ BACKUP_DIR = pathlib.Path.home() / ".simple-tools-mcp-phase0"
 
 API = "https://api.cloudflare.com/client/v4"
 
-# This script's own scoped read-only service token:  Fleet-OPS prod root, the folder the
-# Cloudflare credentials are read from.  The token lives in the consumer's own store (the
-# owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
-# checks the token's own grant and the answer's own provenance before the value is used.
-TOKEN_ACCOUNT = "infra-phase0-ro"
-SECRET_FOLDER = "/global-api-keys"
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-
 
 # ---------------------------------------------------------------- credentials
 
 
 def _load(name: str) -> str:
-    """One credential:  the environment first, then this script's own scoped token against
-    Infisical Fleet-OPS prod root.  The flat handoff file is retired (AFC-359).
-
-    A source that failed is not a missing value:  the shared client,  the token store and
-    the read itself are named,  so the source that must be repaired stays visible.  Only
-    the name is ever reported.
-    """
+    """One credential:  the environment first, then the shared direct reader (OPS-818).  The flat
+    handoff file is retired (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
+    cli = pathlib.Path(__file__).resolve().parents[1] / "fleet_infisical_cli.py"
     try:
-        import fleet_infisical as FI
-    except ImportError:
-        raise SystemExit(
-            f"error: the shared Infisical client (fleet_infisical.py) is not importable,  so "
-            f"the {TOKEN_ACCOUNT} scoped service token cannot be read"
+        proc = subprocess.run(
+            [sys.executable, "-I", str(cli), "get", name, "--path", "/", "--project", "fleet-ops"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         )
-    env = dict(os.environ)
-    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
-    try:
-        found, status = FI.fetch_scoped(name, SECRET_FOLDER, TOKEN_ACCOUNT, env)
-    except Exception as exc:
-        raise SystemExit(
-            f"error: the Infisical read for the {TOKEN_ACCOUNT} scoped service token could "
-            f"not run ({type(exc).__name__});  {name} is not available"
-        )
-    if status == "ok" and found:
-        return found
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
     raise SystemExit(
-        f"error: {name} is not in the environment or this consumer's scoped token "
-        f"({status};  name only, no value printed)"
+        f"error: {name} is not in the environment or Infisical (name only; no value printed)"
     )
 
 

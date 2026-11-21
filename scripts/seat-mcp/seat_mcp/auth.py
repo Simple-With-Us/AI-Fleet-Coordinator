@@ -49,6 +49,9 @@ def _read_through_scoped_reader() -> str:
         proc = subprocess.run(
             [
                 sys.executable,
+                # The isolated interpreter:  no inherited PYTHONPATH, no user site
+                # directory,  so the reader runs with the one module it ships.
+                "-I",
                 reader,
                 "get",
                 TOKEN_NAME,
@@ -99,16 +102,16 @@ def load_token() -> str:
     this consumer's own scoped service token,  and every failure names the source that must
     be repaired:  the reader and its account for a failed read,  and the name and the
     folder for a folder that holds no such name.  Never a value."""
-    token = os.environ.get(TOKEN_NAME, "").strip()
-    if not token:
-        token = _read_through_scoped_reader()
-    if not token:
+    token_value = os.environ.get(TOKEN_NAME, "").strip()
+    if not token_value:
+        token_value = _read_through_scoped_reader()
+    if not token_value:
         raise RuntimeError(
             "%s is empty in Infisical %s:  the scoped reader read the folder with the %s "
             "scoped service token and the name holds no value"
             % (TOKEN_NAME, TOKEN_FOLDER, READER_ACCOUNT)
         )
-    return token
+    return token_value
 
 
 def bearer_ok(header: str, token: str) -> bool:

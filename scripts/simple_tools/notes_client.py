@@ -77,8 +77,7 @@ def _binding(scoped: Mapping[str, str], path: str) -> str:
     from its own store, else a copy of that same token in the environment.
 
     The store is the authority:  a hand-set environment value never replaces the reviewed,
-    scope-limited grant.  A copy in the environment is only used when the store has no
-    usable token, which is how a host transports a value it already synced from Infisical.
+    scope-limited grant.  A copy in the environment is only used when the scoped read populated it, which is how a host transports a value it already synced from Infisical.
     """
     account = TOKEN_ACCOUNTS.get((W.KEY_PROJECT, path))
     status = "no-token"
@@ -86,7 +85,7 @@ def _binding(scoped: Mapping[str, str], path: str) -> str:
         token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
         if token:
             return token
-    bound = (scoped.get(FI.ENV_AI_FLEET_COORDINATOR_TOKEN) or "").strip()
+    bound = (scoped.get(FI.COORDINATOR_READ_TOKEN_ENV_NAME) or "").strip()
     if bound:
         return FI.check_service_token(bound)
     if account:
@@ -704,8 +703,23 @@ def _fleet_call(host, seat, request, wait):
     args = {
         key: value
         for key, value in request.items()
-        if key in ("title", "markdown", "session", "format", "query", "limit", "request_id")
+        if key
+        in (
+            "title",
+            "markdown",
+            "session",
+            "format",
+            "query",
+            "limit",
+            "request_id",
+            "note_id",  # a delete names its note;  the hosted tool refuses a delete with no note_id
+        )
     }
+    if action in N.WRITE_ACTIONS:
+        # The gateway refuses a write that names no bot (docs/protocols/per-call-identity.md), so the writer's own
+        # identity travels with the write, exactly as simple-chat names it on a remote write.  It is the seat the
+        # bearer proved, never a guessed one; a read keeps the connection's default.
+        args["identity"] = request.get("identity") or seat
     args.update(N.check_flags(request.get("flags")))
     args["wait_seconds"] = 0
     deadline = time.monotonic() + wait

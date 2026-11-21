@@ -490,32 +490,54 @@ class OperatorLinearComments:
         )
 
     # -- plumbing ----------------------------------------------------------------------
-    def _history(self, stream_id: int, topic: str) -> list[Mapping[str, Any]]:
+    def _history(
+        self, stream_id: int, topic: str, deadline: float | None = None
+    ) -> list[Mapping[str, Any]]:
         """The whole topic, oldest first:  the worker's backfill reader, for an entry a
         message makes or restores.  With no client there is nothing to read with, and that
         is a failed read, not an empty topic:  an empty answer would let a restored entry
-        rewrite its standing comment down to the live message."""
+        rewrite its standing comment down to the live message.
+
+        The deadline is the one the caller's read shares, and the Operator's own budget
+        bounds the read as well, so a walk never gets more time out of a read than a read
+        on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
-            client, stream_id, topic, deadline=time.monotonic() + HISTORY_READ_BUDGET
+            client,
+            stream_id,
+            topic,
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
-    def _history_since(self, stream_id: int, topic: str, after_id: int) -> list[Mapping[str, Any]]:
+    def _history_since(
+        self,
+        stream_id: int,
+        topic: str,
+        after_id: int,
+        deadline: float | None = None,
+    ) -> list[Mapping[str, Any]]:
         """The topic's messages after one message id, oldest first:  the worker's catch-up
         reader.  With no client there is nothing to read with, and that is a failed read,
         not an empty topic:  the worker logs it and a later message tries again, where an
-        empty answer would mark the topic caught up."""
+        empty answer would mark the topic caught up.
+
+        The deadline is the one the caller's walk shares, so a walk of several pages is
+        bounded in time as a whole and not page by page (Kody, PR 2340).  The Operator's
+        own budget bounds the read as well, so a walk never gets more time out of a read
+        than a read on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
             client,
             stream_id,
             topic,
             after_id=after_id,
-            deadline=time.monotonic() + HISTORY_READ_BUDGET,
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
     def _ensure_streams(self, client: ZulipClient | None) -> None:

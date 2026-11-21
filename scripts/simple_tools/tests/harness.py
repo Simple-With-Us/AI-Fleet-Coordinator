@@ -29,6 +29,45 @@ from simple_tools import live as L
 from simple_tools import zulip as Z
 from simple_tools.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
+
+def private_dir(path) -> str:
+    """A private directory, built one level at a time with owner-only permissions.
+
+    Every missing level is created explicitly with mode 0o700, and the whole chain from the
+    tree's base down to the target must be free of symlinks:  a symlinked level would put the
+    new directory in another tree, where another user can read it.  The base is the deepest
+    existing ancestor of the target, which is the tree the caller named.  One helper for the
+    whole fleet:  a fixture directory that is not owner-only, or that follows a symlink, is a
+    fixture that another user can read."""
+    target = os.path.abspath(str(path))
+    if os.path.islink(target):
+        raise OSError("refusing a symlinked directory: %s" % target)
+    # The base is the deepest ancestor that already exists, and it is the tree this path names.
+    base = target
+    while not os.path.exists(base):
+        parent = os.path.dirname(base)
+        if parent == base:
+            break
+        base = parent
+    if os.path.islink(base):
+        # The parent the new level hangs under is a symlink, so the level would be created in
+        # the tree that symlink names and not in the tree this path names.
+        raise OSError("refusing a directory under a symlinked parent: %s" % base)
+    levels = []
+    current = base
+    if target != base:
+        for part in os.path.relpath(target, base).split(os.sep):
+            current = os.path.join(current, part)
+            levels.append(current)
+    for level in levels:
+        if os.path.islink(level):
+            raise OSError("refusing a symlinked directory: %s" % level)
+    for level in levels:
+        os.mkdir(level, mode=0o700)
+        os.chmod(level, 0o700)
+    return str(path)
+
+
 SESSION = "11112222-3333-4444-5555-666677778888"
 TAG = "11112222"
 # The tests exercise both listener instances.  The live partition gives no agent seat to "mac" since
@@ -117,10 +156,10 @@ class Harness(unittest.TestCase):
         (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n%s" % (user_id, extra))
 
     def tearDown(self) -> None:
-        token = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
+        auth = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
         everything = "\n".join(self.transcript)
         self.assertNotIn(self.key, everything, "the API key reached the output")
-        self.assertNotIn(token, everything, "the base64 auth token reached the output")
+        self.assertNotIn(auth, everything, "the base64 auth token reached the output")
 
     def add_infisical_bot(
         self, seat: str, *, email: str, key: str, site: str | None = None

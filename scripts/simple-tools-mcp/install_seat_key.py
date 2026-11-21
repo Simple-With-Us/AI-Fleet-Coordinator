@@ -31,15 +31,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import importlib.util
 import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -166,38 +171,113 @@ def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, 
     return INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY", secret_name, email_var
 
 
-# This script's own scoped read-only service token for the handoff names:  Fleet-OPS prod
-# root, the folder they are read from.  The token lives in the consumer's own store (the
-# owner's login keychain on the Mac, a private file on a server);  the shared Infisical client
-# checks the token's own grant and the answer's own provenance before the value is used.
-HANDOFF_TOKEN_ACCOUNT = "install-seat-key-ro"
-HANDOFF_FOLDER = "/global-api-keys"
-# The Zulip names live in their own folder, so they carry their own grant.
-HANDOFF_ZULIP_TOKEN_ACCOUNT = "install-seat-key-zulip-ro"
-HANDOFF_ZULIP_FOLDER = "/zulip"
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_install_seat_key_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
+
+
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parents[1] / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
+    try:
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
+        )
+    except Exception:
+        return {}
 
 
 def handoff(name: str) -> str:
-    """One credential:  the environment first, then this script's own scoped token against
-    the Infisical Fleet-OPS folder that holds it.  The flat handoff file is retired
-    (AFC-359).  Only the name is ever reported."""
+    """The existing synced value, then this caller's bounded named root read."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    folder = HANDOFF_ZULIP_FOLDER if "ZULIP" in name else HANDOFF_FOLDER
-    account = HANDOFF_ZULIP_TOKEN_ACCOUNT if "ZULIP" in name else HANDOFF_TOKEN_ACCOUNT
-    try:
-        env = dict(os.environ)
-        env[scoped_secrets.ENV_READ_PATHS] = folder
-        found, status = scoped_secrets.fetch_scoped(name, folder, account, env)
-    except Exception:
-        found, status = "", "unavailable"
-    if status == "ok" and found:
-        return found
-    fail(
-        f"{name} is not in the environment or this consumer's scoped token "
-        f"({status};  name only, no value printed)"
-    )
+    if name not in (
+        "CLOUDFLARE_JAY_ACCOUNT_EMAIL",
+        "CLOUDFLARE_JAY_API_KEY",
+        "ZULIP_OWNER_USER_ID",
+    ):
+        fail("unsupported generic handoff name")
+    value = _read_infisical_names((name,), "/").get(name, "").strip()
+    if value:
+        return value
+    fail(f"{name} is not in the environment or scoped Infisical read (name only; no value printed)")
 
 
 def wrangler_vars() -> dict:
@@ -250,38 +330,14 @@ def http_json(
 def infisical_pair(
     email_name: str, key_name: str, project: str = INFISICAL_PROJECT
 ) -> tuple[str, str]:
-    """(email, key) for a seat from Infisical.  Neither is printed.
-
-    The read runs under this consumer's own scoped service token, read from its own
-    store:  the store is the authority,  and a token bound in the environment is only a
-    copy of that same grant,  used when the store has none.
-    """
+    """(email, key) for a seat from Infisical.  Neither is printed."""
     if project == INFISICAL_PROJECT:
         token_name = AFC_TOKEN_ENV
-        # No account is registered for this project's folder yet,  so this branch has
-        # no store to read and falls back to the deployment's own binding.
-        account = ""
     elif project == fleet_ops_project():
         token_name = FLEET_OPS_TOKEN_ENV
-        account = HANDOFF_ZULIP_TOKEN_ACCOUNT
     else:
         fail("unsupported Infisical project")
-    token = ""
-    status = "no-token"
-    if account:
-        token, status = scoped_secrets.token_from_store(
-            account, os.environ, scoped_secrets.home_dir(os.environ)
-        )
-    if not token:
-        token = os.environ.get(token_name, "").strip()
-    if not token:
-        if account:
-            fail(
-                f"no usable service token for {project}{INFISICAL_PATH}:  the {account} "
-                f"service-token store is unavailable or refused ({status})  and "
-                f"{token_name} binds none"
-            )
-        fail(f"{token_name} is missing or is not a valid service token")
+    token = os.environ.get(token_name, "").strip()
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048

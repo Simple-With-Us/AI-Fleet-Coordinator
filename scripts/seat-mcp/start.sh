@@ -5,6 +5,7 @@
 # never a file in the old secrets folder, never agents.json.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JOBS="${HOME}/.seat-mcp/jobs"
 SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 
@@ -21,9 +22,18 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 if [[ -z "${SEAT_MCP_TOKEN:-}" ]]; then
-  if ! SEAT_MCP_TOKEN="$("$PYTHON" "${SCOPED_READER}" get SEAT_MCP_TOKEN \
-    --folder /seat-mcp --project fleet-ops --account seat-mcp-ro)"; then
-    echo "missing SEAT_MCP_TOKEN in Infisical /seat-mcp:  the scoped reader at ${SCOPED_READER} could not read it with the seat-mcp-ro scoped service token" >&2
+  if SEAT_MCP_TOKEN="$("$PYTHON" "${SCOPED_READER}" get SEAT_MCP_TOKEN \
+    --folder /seat-mcp --project fleet-ops --account seat-mcp-ro 2>/dev/null)"; then
+    :
+  else
+    reader_status=$?
+    case "$reader_status" in
+      2) reason="configuration refused" ;;
+      3) reason="missing" ;;
+      4) reason="the grant refused the read" ;;
+      *) reason="reader failed (exit ${reader_status})" ;;
+    esac
+    echo "missing SEAT_MCP_TOKEN in Infisical /seat-mcp:  the scoped reader at ${SCOPED_READER} could not read it with the seat-mcp-ro scoped service token (${reason})" >&2
     exit 1
   fi
 fi

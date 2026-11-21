@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Mocked-API contract tests for populate-scoped-folders.py.
 
-No network and no real credential:  urllib.request.urlopen is stubbed with a
-fake Infisical (token metadata and the upsert write), and the shared client's
-opener is stubbed with the same fake (every read).  Values are sentinel strings
-("VALUE-<name>"); every test asserts they never appear in any printed output
-(names-only reporting, redacted errors)."""
+No network and no provider writes:  urllib.request.urlopen is stubbed with a
+fake Infisical (token metadata and the upsert write), and subprocess.run
+with a fake shared CLI `get` over the same values (every read).  Values are
+sentinel strings ("VALUE-<name>"); every test asserts they never appear in any
+printed output (names-only reporting, redacted errors)."""
 
 import contextlib
 import importlib.util
@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import secrets
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ import uuid
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+import fleet_infisical as fleet_infisical_core
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
@@ -42,34 +44,9 @@ def fixture_service_token():
     return "st." + secrets.token_urlsafe(32)
 
 
-class FakeResponse(io.BytesIO):
-    """A response the shared client can read:  a body, a status and the context-manager shape."""
-
-    def __init__(self, body, status=200):
-        super().__init__(body)
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
-
-
-class FakeOpener:
-    """The opener the shared client builds for every call."""
-
-    def __init__(self, api):
-        self.api = api
-
-    def open(self, request, timeout=None):
-        return self.api.open(request, timeout=timeout)
-
-
 class FakeInfisical:
-    """Routes the API calls over one store:  the token metadata, every value read and
-    the upsert write.  values[(ws, path, name)] -> value;  a missing key is a 404."""
+    """Routes urlopen calls and shared CLI `get` runs over one store.
+    values[(ws, path, name)] -> value;  a missing key is exit 3."""
 
     def __init__(self, scopes=None, values=None, fail=None, read_tokens=None, write_token=None):
         self.scopes = scopes
@@ -79,13 +56,12 @@ class FakeInfisical:
             psf.FLEETOPS: fixture_service_token(),
         }
         self.write_token = write_token or fixture_service_token()
-        # ("read", (ws, path, name)) -> the read's outcome;  ("upsert", name) -> HTTP code
+        # ("read", (ws, path, name)) -> CLI exit code;  ("upsert", name) -> HTTP code
         self.fail = fail or {}
         self.upserts = []
         self.agents = []  # the User-Agent of every API call
         self.authorizations = []
-        self.calls = []  # every API call:  (method, url, the header it carried)
-        self.reads = []  # every value read:  (name, folder, project)
+        self.reads = []  # every shared CLI run:  (argv, child env)
 
     def default_metadata(self, token):
         if token == self.read_tokens[psf.AFC]:
@@ -124,61 +100,44 @@ class FakeInfisical:
             url, code, "err", {}, io.BytesIO(json.dumps({"message": body}).encode())
         )
 
-    def _secret(self, project, path, name, value):
-        """One secret row, with the provenance the shared client checks."""
-        return {
-            "secret": {
-                "secretKey": name,
-                "secretValue": value,
-                "secretValueHidden": False,
-                "workspace": project,
-                "environment": psf.ENV,
-                "secretPath": path,
-                "type": "shared",
-            }
-        }
+    def run(self, argv, env=None, **kwargs):
+        """A fake isolated shared CLI `get NAME --path P --project SLUG` run."""
+        self.reads.append((list(argv), dict(env or {})))
+        if (
+            argv[1:3] != ["-I", str(psf.FLEET_INFISICAL_CLI)]
+            or argv[3] != "get"
+            or argv[5] != "--path"
+            or argv[7] != "--project"
+        ):
+            raise AssertionError("unexpected Infisical CLI call")
+        name, path, slug = argv[4], argv[6], argv[8]
+        id_var = {
+            "ai-fleet-coordinator": "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
+            "fleet-ops": "INFISICAL_FLEET_OPS_PROJECT_ID",
+        }[slug]
+        key = (env[id_var], path, name)
+        if ("read", key) in self.fail:
+            return subprocess.CompletedProcess(argv, self.fail[("read", key)], b"", None)
+        if key not in self.values:
+            return subprocess.CompletedProcess(argv, 3, b"", None)
+        return subprocess.CompletedProcess(argv, 0, self.values[key].encode("utf-8"), None)
 
     def open(self, request, timeout=35):
         url, method = request.full_url, request.get_method()
         self.agents.append(request.get_header("User-agent"))
         self.authorizations.append((method, request.get_header("Authorization")))
-        self.calls.append((method, url, self.authorizations[-1][1]))
         if url.endswith("/api/v2/service-token"):
             token = (request.get_header("Authorization") or "").removeprefix("Bearer ")
-            return FakeResponse(json.dumps(self.default_metadata(token)).encode())
+            return io.BytesIO(json.dumps(self.default_metadata(token)).encode())
         if "/api/v3/secrets/raw/" in url:
-            parsed = urllib.parse.urlsplit(url)
-            name = urllib.parse.unquote(parsed.path.rsplit("/api/v3/secrets/raw/", 1)[-1])
-            query = urllib.parse.parse_qs(parsed.query)
-            project = (query.get("workspaceId") or [""])[0]
-            path = (query.get("secretPath") or [""])[0]
-            key = (project, path, name)
-            if method == "GET":
-                self.reads.append((name, path, project))
-                if ("read", key) in self.fail:
-                    outcome = self.fail[("read", key)]
-                    if outcome == 5:
-                        # an unexpanded reference:  the client refuses it
-                        return FakeResponse(
-                            json.dumps(
-                                self._secret(project, path, name, "${UNRESOLVED_REFERENCE}")
-                            ).encode()
-                        )
-                    if outcome == 3:
-                        return self._err(url, 404, "not found")
-                    return self._err(url, 500, "server message")
-                if key not in self.values:
-                    return self._err(url, 404, "not found")
-                return FakeResponse(
-                    json.dumps(self._secret(project, path, name, self.values[key])).encode()
-                )
+            name = urllib.parse.unquote(url.split("/api/v3/secrets/raw/")[1].split("?")[0])
             if method == "POST":
                 if ("upsert", name) in self.fail:
                     self._err(url, self.fail[("upsert", name)], "leak VALUE-x")
                 body = json.loads(request.data.decode())
                 self.values[(body["workspaceId"], body["secretPath"], name)] = body["secretValue"]
                 self.upserts.append((body["secretPath"], name))
-                return FakeResponse(b"{}")
+                return io.BytesIO(b"{}")
         raise AssertionError("unexpected call: " + method + " " + url)
 
 
@@ -189,8 +148,8 @@ class Base(unittest.TestCase):
         self.fake = FakeInfisical(read_tokens=self.read_tokens, write_token=self.write_token)
         self._orig = psf.urlopen
         psf.urlopen = self.fake.open
-        self._orig_opener = psf.infisical_client._opener
-        psf.infisical_client._opener = lambda: FakeOpener(self.fake)
+        self._orig_run = subprocess.run
+        subprocess.run = self.fake.run
         self._env = dict(os.environ)
         os.environ[psf.READ_TOKEN_ENVS[psf.AFC]] = self.read_tokens[psf.AFC]
         os.environ[psf.READ_TOKEN_ENVS[psf.FLEETOPS]] = self.read_tokens[psf.FLEETOPS]
@@ -198,7 +157,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         psf.urlopen = self._orig
-        psf.infisical_client._opener = self._orig_opener
+        subprocess.run = self._orig_run
         os.environ.clear()
         os.environ.update(self._env)
 
@@ -263,12 +222,7 @@ class TestGate(Base):
         reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
         self.assertTrue(psf.check_scoped_tokens(reads, self.write_token))
         self.assertTrue(self.fake.agents)
-        # The script's own calls name the script;  the shared client's calls name the
-        # client.  Neither is the runtime's default agent.
-        self.assertTrue(
-            all(a in (psf.USER_AGENT, "fleet-infisical") for a in self.fake.agents),
-            "every API call names itself explicitly",
-        )
+        self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
     def test_every_infisical_call_refuses_redirects(self):
         # kody 4366921692:  urllib's default handler would re-send the bearer
@@ -377,20 +331,20 @@ class TestApply(Base):
         self.assertNotIn("VALUE-", out)
 
     def test_read_failure_visible_stop_redacted(self):
-        # a failed read (a fetch or auth failure, a scope denial among them).
+        # Shared CLI exit 4 (fetch or auth failure, a scope denial among them).
         seeded(self.fake)
         sws, spath, victim, _dpath, _dname = psf.MAPPING[5]
         self.fake.fail[("read", (sws, spath, victim))] = 4
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
         self.assertIn("STOP at 6/72", out)
-        self.assertIn("the Infisical read exit 4", out)
+        self.assertIn("Infisical get exit 4", out)
         self.assertIn(victim, out)  # the NAME is fine
         self.assertNotIn("VALUE-", out)  # values never printed
         self.assertEqual(len(self.fake.upserts), 5)
 
     def test_unresolved_reference_stops_names_only(self):
-        # exit 5:  a source still an unexpanded ${...} reference is
+        # Shared CLI exit 5:  a source still an unexpanded ${...} reference is
         # never copied as if it were the value.
         seeded(self.fake)
         sws, spath, victim, _dpath, _dname = psf.MAPPING[70]  # a Fleet-OPS root recall source
@@ -402,12 +356,7 @@ class TestApply(Base):
         self.assertIn(f"exit 5, reading the source Fleet-OPS /{victim}.", out)
         self.assertEqual(len(self.fake.upserts), 70)
         self.assertNotIn("VALUE-", out)
-        # The script's own calls name the script;  the shared client's calls name the
-        # client.  Neither is the runtime's default agent.
-        self.assertTrue(
-            all(a in (psf.USER_AGENT, "fleet-infisical") for a in self.fake.agents),
-            "every API call names itself explicitly",
-        )
+        self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
     def test_destination_read_failure_names_the_destination(self):
         seeded(self.fake)
@@ -418,41 +367,62 @@ class TestApply(Base):
         self.assertIn(f"reading the destination Fleet-OPS {dpath}/{dname}", out)
         self.assertNotIn((dpath, dname), self.fake.upserts)
 
-    def test_reads_go_through_the_shared_client_with_project_and_path(self):
-        # Every value read is a GET on the shared client, pinned to the MAPPING's
-        # workspace and folder, with that project's own read token.
+    def test_reads_use_isolated_shared_cli_with_project_and_path(self):
+        # Every value read uses the isolated canonical CLI, pinned to the
+        # MAPPING's workspace, folder, project ID and caller-owned read token.
         seeded(self.fake)
         code, _out = self.run_main("--apply")
         self.assertIsNone(code)
         self.assertEqual(len(self.fake.reads), 144)  # 72 sources + 72 destinations
         expected = []
         for sws, spath, sname, dpath, dname in psf.MAPPING:
-            expected.append((sname, spath, sws))
-            expected.append((dname, dpath, psf.FLEETOPS))
-        self.assertEqual(self.fake.reads, expected)
-        for _name, path, project in self.fake.reads:
-            workspace = psf.AFC if project == psf.AFC else psf.FLEETOPS
-            self.assertIn(path, psf.READ_PATHS_BY_PROJECT[workspace])
+            expected.append((sname, spath, psf.INFISICAL_PROJECT[sws], sws))
+            expected.append((dname, dpath, "fleet-ops", psf.FLEETOPS))
+        seen = []
+        for argv, env in self.fake.reads:
+            slug = argv[8]
+            id_var = psf.INFISICAL_PROJECT_ID_ENV[
+                psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
+            ]
+            seen.append((argv[4], argv[6], slug, env[id_var]))
+            expected_token = os.environ[
+                psf.READ_TOKEN_ENVS[psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS]
+            ]
+            token_var = (
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+                if slug == "ai-fleet-coordinator"
+                else "INFISICAL_TOKEN"
+            )
+            self.assertEqual(env[token_var], expected_token)
+            workspace = psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
+            self.assertEqual(
+                fleet_infisical_core.declared_paths(env, argv[6]),
+                psf.READ_PATHS_BY_PROJECT[workspace],
+            )
+            self.assertNotIn(
+                "INFISICAL_TOKEN"
+                if token_var != "INFISICAL_TOKEN"
+                else "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+                env,
+            )
+            for dropped in psf.CHILD_DROPPED_ENV:
+                if dropped == token_var:
+                    continue
+                self.assertNotIn(dropped, env, f"{dropped} never reaches the child")
+        self.assertEqual(seen, expected)
         # Metadata checks and writes use the dedicated Fleet-OPS write token.
         self.assertEqual(len(self.fake.upserts), 72)
         self.assertEqual(
             [token for method, token in self.fake.authorizations if method == "POST"],
             ["Bearer " + self.write_token] * 72,
         )
-        # Every value read carries one of the two project read tokens,  and never the
-        # write token:  the write token is the gate's own and the writes'.
-        write_header = [token for method, token in self.fake.authorizations if method == "POST"][0]
-        raw_reads = [
-            header
-            for method, url, header in self.fake.calls
-            if method == "GET" and "/api/v3/secrets/raw/" in url
-        ]
-        self.assertEqual(len(raw_reads), 144)
-        self.assertEqual(len(set(raw_reads)), 2)  # one token per project
-        self.assertNotIn(
-            write_header,
-            raw_reads,
-            "the write token never reads a value",
+        self.assertEqual(
+            [token for method, token in self.fake.authorizations if method == "GET"],
+            [
+                "Bearer " + self.read_tokens[psf.AFC],
+                "Bearer " + self.read_tokens[psf.FLEETOPS],
+                "Bearer " + self.write_token,
+            ],
         )
 
     def test_values_are_not_taken_from_the_environment(self):
@@ -473,43 +443,43 @@ class TestApply(Base):
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-padded é\n")
 
-    def test_a_refused_read_stops_redacted(self):
-        # A refused read stops the run;  the message names no value.
+    def test_missing_infisical_cli_exits_127(self):
+        # Missing canonical source refuses before spawning Python or reaching the provider.
         seeded(self.fake)
-
-        def refuse(*args, **kwargs):
-            raise psf.infisical_client.SecretsError("service-token-required", 2)
-
-        with mock.patch.object(psf.infisical_client, "fetch_project", refuse):
-            code, out = self.run_main("--apply")
-        self.assertEqual(code, 1)
-        self.assertIn("the Infisical read exit 2", out)
-        self.assertNotIn("VALUE-", out)
+        with tempfile.TemporaryDirectory() as directory:
+            missing_cli = pathlib.Path(directory) / "missing-cli.py"
+            with mock.patch.object(psf, "FLEET_INFISICAL_CLI", missing_cli):
+                code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.MISSING_EXECUTABLE)
+        self.assertEqual(code, 127)
+        self.assertIn("Infisical get is not installed", out)
         self.assertEqual(self.fake.upserts, [])
+        self.assertEqual(self.fake.reads, [])
+        self.assertEqual(self.fake.authorizations, [])
 
-    def test_a_read_timeout_exits_124(self):
-        # A stalled read is timeout(1)'s 124, apart from 1.
+    def test_infisical_read_timeout_exits_124(self):
+        # kody 4367021960:  a timed-out read is timeout(1)'s 124, apart from 1 and 127.
         seeded(self.fake)
 
-        def stall(*args, **kwargs):
-            raise TimeoutError("stalled")
+        def slow(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
 
-        with mock.patch.object(psf.infisical_client, "fetch_project", stall):
-            code, out = self.run_main("--apply")
+        subprocess.run = slow
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.TIMED_OUT)
         self.assertEqual(code, 124)
-        self.assertIn("the Infisical read timed out", out)
+        self.assertIn("Infisical get timed out, reading the source", out)
+        self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
 
-    def test_a_read_that_ran_out_of_time_exits_124(self):
-        # kody 4368415894:  a read that ran out of its budget exits 124 too, not as a
-        # generic failure.
+    def test_cli_exit_124_is_a_timeout(self):
+        # Provider timeout exits 124, not as a generic "exit 124" failure.
         seeded(self.fake)
         sws, spath, sname, _dpath, _dname = psf.MAPPING[0]
-        self.fake.fail[("read", (sws, spath, sname))] = 500
-        with mock.patch.object(psf, "READ_TIMEOUT", 0):
-            code, out = self.run_main("--apply")
+        self.fake.fail[("read", (sws, spath, sname))] = 124
+        code, out = self.run_main("--apply")
         self.assertEqual(code, psf.TIMED_OUT)
-        self.assertIn("the Infisical read timed out, reading the source", out)
+        self.assertIn("Infisical get timed out, reading the source", out)
         self.assertNotIn("exit 124", out)
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)

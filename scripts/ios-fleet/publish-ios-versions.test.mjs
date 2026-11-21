@@ -491,7 +491,7 @@ test("a bare gh login is not a credential; the scoped GITHUB_PAT is, or the run 
   chmodSync(join(stub, "gh"), 0o755);
   const res = run(
     ["--bundle-id", "com.socratictrade.ios", "--version", "1.0.69", "--base-json", base, "--skip-local-write"],
-    { PATH: `${stub}:${process.env.PATH}`, GH_TOKEN: "", GITHUB_TOKEN: "" },
+    { PATH: `${stub}:${process.env.PATH}`, GH_TOKEN: "", GITHUB_TOKEN: "", INFISICAL_TOKEN: "" },
   );
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /github-pat-ro service token could not return GITHUB_PAT/);
@@ -561,6 +561,16 @@ test("the sheet sync runs after the publish, a failure fails the run, a missing 
   rmSync(bad.dir, { recursive: true, force: true });
 });
 
+test("the reader must be named by the environment, never a default path", () => {
+  const res = spawnSync("bash", [SCRIPT, "--bundle-id", "com.socratictrade.ios", "--version", "1.0.69"], {
+    encoding: "utf8",
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: "" },
+  });
+  assert.equal(res.status, 2, res.stderr);
+  assert.match(res.stderr, /INFISICAL_SCOPED_READER/);
+  assert.ok(!res.stderr.includes("/Users/"), "no user path may be committed as a default");
+});
+
 test("the local cache is written only after the publish, never before a failed one", () => {
   const copy = mkdtempSync(join(tmpdir(), "afc-ios-copy-"));
   const script = join(copy, "publish-ios-versions.sh");
@@ -571,14 +581,14 @@ test("the local cache is written only after the publish, never before a failed o
   const bad = stubDir({ branch: { doc: thin } });
   const failed = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
   });
   assert.notEqual(failed.status, 0);
   assert.ok(!existsSync(cache), "a failed publish must not write the local cache");
   const good = stubDir();
   const done = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
   });
   assert.equal(done.status, 0, done.stderr);
   assert.equal(JSON.parse(readFileSync(cache, "utf8")).apps["com.socratictrade.ios"].marketingVersion, "1.0.69");
