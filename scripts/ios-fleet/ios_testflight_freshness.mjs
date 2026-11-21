@@ -117,17 +117,25 @@ export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS
 // ---------------------------------------------------------------------------
 
 /**
- * "202610171703" -> Date (UTC).  null when it is not a plausible cut time.
+ * "202611160900" -> ms since epoch.  null when it is not a plausible cut time.
  *
- * The build number is the repo commit count (owner 2026-10-18), so a current
- * build carries no cut time and this returns null for it.  It still resolves
- * the 12-digit UTC stamp of a build uploaded under the retired scheme, which
- * is what lets those older builds be correlated by their cut time.
+ * The build number is the time the build itself runs in YYYYMMDDHHmm form,
+ * Central Time (owner ruling updated 2026-11-15), so the stamp reads as
+ * America/Chicago wall time.  A retired commit-count build number matches nothing here and returns
+ * null, leaving correlation by upload time as before.
  */
 export function buildCutTime(buildNumber, uploadedAt) {
   const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(String(buildNumber || ""));
   if (!m) return null;
-  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  // Central wall time -> UTC instant; the zone resolves CST (-6) or CDT (-5).
+  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(guess));
+  const get = (t) => +((parts.find((p) => p.type === t) || {}).value || 0);
+  const wallAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+  const t = guess + (guess - wallAsUtc);
   if (Number.isNaN(t)) return null;
   if (uploadedAt != null) {
     // A cut time after the upload, or more than 6h before it, is not a cut time.
