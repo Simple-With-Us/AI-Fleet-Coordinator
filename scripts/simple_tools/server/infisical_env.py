@@ -10,10 +10,9 @@ INFISICAL_SECRET_PATH and INFISICAL_ENVIRONMENT stop startup if they are set.  E
 (project, exact prod folders, read-only, expiry) is verified before any value is requested, and every metadata
 error names the token's variable.  Two further bindings are optional:  INFISICAL_LISTENER_READ_TOKEN with
 INFISICAL_LISTENER_READ_PROJECT_ID (a secondary project's prod /zulip) and INFISICAL_OPERATOR_VOICE_TOKEN with
-INFISICAL_FLEET_OPS_PROJECT_ID (Fleet-OPS prod /zulip_operator).  The latter may also read the optional native
-Cursor Cloud API key from prod /cursor-cloud-letters when its exact grant includes both folders.  An unbound or
-unqualified Cursor source is skipped and the line says so; it does not stop the listener.  A configured Operator voice
-source that cannot be read still stops startup.  The loader execs <program> with the loaded
+INFISICAL_FLEET_OPS_PROJECT_ID (Fleet-OPS prod /zulip_operator).  The latter supplies required voice data and optional
+native provider data from that one verified folder in one startup read.  An absent optional provider key disables only
+that feed; invalid source metadata or row provenance still fails closed.  The loader execs <program> with the loaded
 environment;  exec keeps the listener as the container's PID 1, so SIGTERM still reaches the daemon and it
 deletes its queues on the way out.
 
@@ -70,20 +69,18 @@ from datetime import UTC, datetime
 API_DEFAULT = "https://app.infisical.com/api"
 TOKEN = "INFISICAL_TOKEN"
 LISTENER_READ_TOKEN = "INFISICAL_LISTENER_READ_TOKEN"
-#: The Operator's own voice (AFC-602):  the existing read-only Fleet-OPS token and project binding.  The voice is read
-#: from /zulip_operator; an optional shared provider-data source may also use this token only when its verified scope
-#: includes /cursor-cloud-letters.  The image ships no fleet-secrets and carries no machine identity (this loader
+#: The Operator's voice and optional provider data (AFC-859):  one existing read-only Fleet-OPS token and project
+#: binding, with the exact /zulip_operator folder grant.  The image ships no fleet-secrets and carries no machine identity (this loader
 #: strips them), so these are the Operator's only server-side routes to those values.
 OPERATOR_VOICE_TOKEN = "INFISICAL_OPERATOR_VOICE_TOKEN"
 OPERATOR_VOICE_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_VOICE_PATH = "/zulip_operator"
 OPERATOR_VOICE_NAMES = frozenset({"ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"})
-# Optional native provider data for the shared Operator feed.  Read with the existing shared Operator token, never a
-# provider-specific bootstrap binding.
-OPERATOR_CURSOR_PATH = "/cursor-cloud-letters"
+# Optional native provider data for the shared Operator feed.  This is part of the shared /zulip_operator data table;
+# the legacy /cursor-cloud-letters source is migrated separately before runtime cutover.
 OPERATOR_CURSOR_NAME = "CURSOR_SYNC_API_KEY"
-OPERATOR_SHARED_PATHS = (OPERATOR_VOICE_PATH, OPERATOR_CURSOR_PATH)
-OPERATOR_OPTIONAL_DATA_SOURCES = (("cursor-cloud", OPERATOR_CURSOR_PATH, OPERATOR_CURSOR_NAME),)
+OPERATOR_SHARED_PATHS = (OPERATOR_VOICE_PATH,)
+OPERATOR_OPTIONAL_DATA_SOURCES = (("cursor-cloud", OPERATOR_CURSOR_NAME),)
 #: The wake router's folder (#1816) in the primary (AI Fleet Coordinator) project, read with its own
 #: read-only token scoped to exactly prod /wake-router (eavesdropper-wake-router-ro).  Required:  the
 #: Eavesdropper takes the router's bearer and the registry signing key from it and from nowhere else.
@@ -294,7 +291,6 @@ def verify_service_token(
     *,
     project_id: str,
     expected_paths: tuple[str, ...],
-    accepted_path_sets: tuple[tuple[str, ...], ...] | None = None,
     token_name: str = TOKEN,
     **kw,
 ) -> None:
@@ -304,11 +300,8 @@ def verify_service_token(
     stage = "service-token metadata (%s)" % token_name
     if not PROJECT_ID_RE.fullmatch(project_id):
         raise LoadError("%s: project id is invalid" % stage)
-    path_sets = accepted_path_sets or (expected_paths,)
-    normalized_sets = tuple(
-        frozenset(dict.fromkeys(_safe_folder(path) for path in paths)) for paths in path_sets
-    )
-    if not normalized_sets or any(not paths for paths in normalized_sets):
+    normalized_paths = tuple(_safe_folder(path) for path in expected_paths)
+    if not normalized_paths or len(normalized_paths) != len(set(normalized_paths)):
         raise LoadError("%s: folder grant is invalid" % stage)
     base = api_base(env)
     metadata = _request(
@@ -344,7 +337,7 @@ def verify_service_token(
         actual_paths.append(_safe_folder(scope["secretPath"]))
     if (
         len(actual_paths) != len(set(actual_paths))
-        or frozenset(actual_paths) not in normalized_sets
+        or frozenset(actual_paths) != frozenset(normalized_paths)
     ):
         raise LoadError(stage + ": folder scope did not match")
     permissions = metadata.get("permissions")
@@ -375,15 +368,15 @@ def fetch(
     token: str | None = None,
     token_name: str = TOKEN,
     expected_paths: tuple[str, ...] | None = None,
-    accepted_path_sets: tuple[tuple[str, ...], ...] | None = None,
     stage: str = "read",
     keep: frozenset[str] | None = None,
+    optional_names: frozenset[str] = frozenset(),
     **kw,
 ) -> dict[str, str]:
     """{name: value} for every secret in one prod folder using a scoped service token.
 
-    With `keep`, only those names are returned and checked for an unresolved reference:  every listed row is
-    still verified, but a reference in a name the loader never uses cannot stop startup."""
+    With `keep`, only those names are returned:  every listed row is still verified, unresolved required values fail,
+    and unresolved names explicitly listed in `optional_names` are omitted."""
     base = api_base(env)
     if token is None:
         token = (env.get(TOKEN) or "").strip()
@@ -393,8 +386,7 @@ def fetch(
     environment = ENVIRONMENT
     requested_path = _safe_folder(path)
     grant_paths = expected_paths or (requested_path,)
-    path_sets = accepted_path_sets or (grant_paths,)
-    if not any(requested_path in paths for paths in path_sets):
+    if requested_path not in grant_paths:
         raise LoadError(
             "service-token metadata (%s): requested folder is outside the verified grant"
             % token_name
@@ -404,7 +396,6 @@ def fetch(
         token,
         project_id=project_id,
         expected_paths=tuple(grant_paths),
-        accepted_path_sets=accepted_path_sets,
         token_name=token_name,
         **kw,
     )
@@ -448,6 +439,8 @@ def fetch(
         if keep is not None and item["secretKey"] not in keep:
             continue
         if UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
+            if item["secretKey"] in optional_names:
+                continue
             raise LoadError("%s: secret value contains an unresolved reference" % stage)
         out[item["secretKey"]] = item["secretValue"]
     return out
@@ -492,88 +485,73 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
     return keys, "; listener read keys from the secondary project: %d" % len(keys)
 
 
-def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
-    """The Operator bot's own address and key, read with the existing Fleet-OPS binding.
-
-    Off when INFISICAL_OPERATOR_VOICE_TOKEN is unbound, and the line says so (the Operator then reports
-    `operator_voice` unavailable in its status).  Its verified grant may be exactly /zulip_operator or may also
-    include the optional Cursor data folder.  Once bound, a bad project id, failed voice read or incomplete voice
-    pair stops startup, the same as every other configured source."""
+def operator_shared_data(
+    env: Mapping[str, str], **kw
+) -> tuple[dict[str, str], dict[str, str], str, str]:
+    """Load voice and optional provider data in one exact-scope shared Operator startup read."""
     token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
     if not token:
-        return {}, "; operator voice keys not loaded (no dedicated token)"
+        return (
+            {},
+            {},
+            "; operator voice keys not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN,
+            "; optional Operator data not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN,
+        )
     project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
     if not PROJECT_ID_RE.fullmatch(project):
         raise LoadError("configuration: %s is invalid" % OPERATOR_VOICE_PROJECT)
     if not SERVICE_TOKEN_RE.fullmatch(token):
         raise LoadError("service-token: %s is invalid" % OPERATOR_VOICE_TOKEN)
     source = dict(env, INFISICAL_PROJECT_ID=project)
+    optional_names = frozenset(name for _feed, name in OPERATOR_OPTIONAL_DATA_SOURCES)
     found = fetch(
         source,
         path=OPERATOR_VOICE_PATH,
         token=token,
         token_name=OPERATOR_VOICE_TOKEN,
         expected_paths=OPERATOR_SHARED_PATHS,
-        accepted_path_sets=((OPERATOR_VOICE_PATH,), OPERATOR_SHARED_PATHS),
-        stage="read operator voice",
+        stage="read shared Operator data",
+        keep=OPERATOR_VOICE_NAMES | optional_names,
+        optional_names=optional_names,
         **kw,
     )
     keys = {
         name: value.strip()
         for name, value in found.items()
-        if name in OPERATOR_VOICE_NAMES and value.strip() and "${" not in value
+        if name in OPERATOR_VOICE_NAMES and value.strip() and not UNRESOLVED_REFERENCE_RE.search(value)
     }
     if set(keys) != OPERATOR_VOICE_NAMES:
         raise LoadError(
             "Infisical is missing %s (%s)"
             % (", ".join(sorted(OPERATOR_VOICE_NAMES - set(keys))), OPERATOR_VOICE_PATH)
         )
-    return keys, "; operator voice keys from %s: %d of %d" % (
+    voice_note = "; operator voice keys from %s: %d of %d" % (
         OPERATOR_VOICE_PATH,
         len(keys),
         len(OPERATOR_VOICE_NAMES),
     )
+    optional: dict[str, str] = {}
+    notes: list[str] = []
+    for feed, name in OPERATOR_OPTIONAL_DATA_SOURCES:
+        value = (found.get(name) or "").strip()
+        if value and not UNRESOLVED_REFERENCE_RE.search(value):
+            optional[name] = value
+            notes.append("%s data loaded from %s" % (feed, OPERATOR_VOICE_PATH))
+        else:
+            notes.append("%s data unavailable (native key missing)" % feed)
+    return keys, optional, voice_note, "; optional Operator data: " + ", ".join(notes)
+
+
+def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
+    """The Operator bot's own address and key from the shared startup fetch."""
+    voice, _optional, note, _optional_note = operator_shared_data(env, **kw)
+    return voice, note
 
 
 def operator_optional_data(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
-    """Load the shared Operator's optional native-data source table with its existing bootstrap binding.
-
-    A source is available only when that token's verified Fleet-OPS prod grant includes both its existing voice folder
-    and the source folder.  An absent/unqualified source disables only its feed and leaves other Operator tools up.
-    """
-    token = (env.get(OPERATOR_VOICE_TOKEN) or "").strip()
-    if not token:
-        return {}, "; optional Operator data not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN
-    project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
-    if not PROJECT_ID_RE.fullmatch(project) or not SERVICE_TOKEN_RE.fullmatch(token):
-        return {}, "; optional Operator data not loaded (shared source is unavailable)"
-    source = dict(env, INFISICAL_PROJECT_ID=project)
-    loaded: dict[str, str] = {}
-    notes: list[str] = []
-    for feed, path, name in OPERATOR_OPTIONAL_DATA_SOURCES:
-        try:
-            found = fetch(
-                source,
-                path=path,
-                token=token,
-                token_name=OPERATOR_VOICE_TOKEN,
-                expected_paths=OPERATOR_SHARED_PATHS,
-                accepted_path_sets=(OPERATOR_SHARED_PATHS,),
-                stage="read optional Operator data",
-                keep=frozenset({name}),
-                **kw,
-            )
-        except LoadError:
-            # Optional native data cannot stop other shared Operator functions.
-            notes.append("%s data unavailable (shared scope or read not qualified)" % feed)
-            continue
-        value = (found.get(name) or "").strip()
-        if value:
-            loaded[name] = value
-            notes.append("%s data loaded from %s" % (feed, path))
-        else:
-            notes.append("%s data unavailable (native key missing)" % feed)
-    return loaded, "; optional Operator data: " + ", ".join(notes)
+    """Load optional native data from the same verified shared startup response as Operator voice."""
+    _voice, optional, _voice_note, note = operator_shared_data(env, **kw)
+    return optional, note
 
 
 def infisical_only_names() -> set[str]:
@@ -798,8 +776,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     for name in conflicts:
         found.pop(name)
         read_keys.pop(name)
-    voice_keys, voice_note = operator_voice_keys(env, **kw)
-    cursor_data, cursor_note = operator_optional_data(env, **kw)
+    voice_keys, cursor_data, voice_note, cursor_note = operator_shared_data(env, **kw)
     seats = {name: value for name, value in found.items() if name in allowed}
     seats.update(read_keys)
     refused = sorted(name for name, value in seats.items() if not seat_value_usable(name, value))
