@@ -3033,6 +3033,8 @@ class RestoreLetterTests(Base):
         calls = Calls(self)
         done = self.repair("s-0300", calls)
         self.assertEqual(done["repaired"], ["s-0300"])
+        # A restored letter is not a replay:  no start was replayed, so the chat is not a replay either.
+        self.assertEqual(done["asked"], [])
         self.assertEqual(self.written[-1].title, label + ": Fix login")
         # The chat keeps the letter it holds:  no second registration,  so a letter the registry has
         # since retired is never handed out again.
@@ -3066,6 +3068,83 @@ class RestoreLetterTests(Base):
         done = self.repair("s-0302", calls)
         self.assertEqual(done["asked"], [])
         self.assertEqual(done["repaired"], [])
+
+
+    def write_note(self, sid: str, note: dict) -> None:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+    def test_a_writer_that_refuses_the_title_leaves_the_chat_alone(self) -> None:
+        # A writer that refuses the title (a name a person chose, or a chat with no descriptive name yet)
+        # leaves the chat as it is:  the pass does not count the chat as repaired, and the note keeps the
+        # pending stamp, so a later prompt tries the title again.
+        def refusing(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            return False
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            title_writer=refusing,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0303")
+        label = self.note("s-0303")["label"]
+        self.titles["s-0303"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0303", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds, and the note keeps the pending stamp.
+        self.assertEqual(self.note("s-0303")["label"], label)
+        self.assertTrue(self.note("s-0303").get("pending"))
+
+    def test_a_stored_title_that_carries_the_letter_is_not_prefixed_twice(self) -> None:
+        # A stored title that already carries the letter is the chat's own words, so the letter goes back
+        # once:  "AA: Fix login" and never "AA: AA: Fix login".
+        self.start("s-0306")
+        label = self.note("s-0306")["label"]
+        note = self.note("s-0306")
+        note["title"] = label + ": Fix login"
+        self.write_note("s-0306", note)
+        self.titles["s-0306"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0306", calls)
+        self.assertEqual(done["repaired"], ["s-0306"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_a_name_in_another_script_is_not_adopted(self) -> None:
+        # Every title this fleet writes is English, so a name the app put there in another script is never
+        # adopted:  the letter goes back over the chat's own English words.
+        self.start("s-0304")
+        label = self.note("s-0304")["label"]
+        note = self.note("s-0304")
+        note["title"] = "Fix login"
+        self.write_note("s-0304", note)
+        self.titles["s-0304"] = "\u4fee\u590d\u767b\u5f55"
+        calls = Calls(self)
+        done = self.repair("s-0304", calls)
+        self.assertEqual(done["repaired"], ["s-0304"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_the_placeholder_is_not_a_topic_of_its_own(self) -> None:
+        # A chat with no descriptive name yet carries the placeholder, and the letter goes over the words
+        # the chat has of its own.
+        self.start("s-0305")
+        label = self.note("s-0305")["label"]
+        note = self.note("s-0305")
+        note["title"] = "Fix login"
+        self.write_note("s-0305", note)
+        self.titles["s-0305"] = PL.PLACEHOLDER
+        calls = Calls(self)
+        done = self.repair("s-0305", calls)
+        self.assertEqual(done["repaired"], ["s-0305"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
 
 
 class GoneReportTests(Base):

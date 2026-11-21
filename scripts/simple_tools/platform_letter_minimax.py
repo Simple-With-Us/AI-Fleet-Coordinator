@@ -451,8 +451,14 @@ LETTER_GLOB_ONE = "[A-Z]: *"
 LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
 
 
-def _note_sids(env: Mapping[str, str]) -> tuple[set[str], set[str]]:
-    """(the session ids whose own note holds a letter, the session ids the pass will not touch).
+def _note_sids(env: Mapping[str, str]) -> tuple[dict[str, str], set[str]]:
+    """(the letter each chat that holds one holds, keyed by session id, the session ids the pass will
+    not touch).
+
+    The pass reads a chat's note and skips the chat when the note says closed or mismatch, or when
+    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every candidate
+    it names is a chat the pass will really work on, and no slot of the twenty is spent on a chat the
+    pass skips.
 
     The letter is in the note and the note is a file, so the lettered chats are read from the
     folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
@@ -468,7 +474,7 @@ def _note_sids(env: Mapping[str, str]) -> tuple[set[str], set[str]]:
     try:
         names = os.listdir(folder)
     except OSError:
-        return set(), set()
+        return {}, set()
     notes: list[tuple[float, str, str]] = []
     for name in names:
         if not name.endswith(".json"):
@@ -479,7 +485,7 @@ def _note_sids(env: Mapping[str, str]) -> tuple[set[str], set[str]]:
         except OSError:
             continue
     notes.sort(reverse=True)
-    lettered: set[str] = set()
+    lettered: dict[str, str] = {}
     skipped: set[str] = set()
     for _, path, sid in notes[:UNLETTERED_NOTES]:
         try:
@@ -499,32 +505,12 @@ def _note_sids(env: Mapping[str, str]) -> tuple[set[str], set[str]]:
             skipped.add(ident)  # the pass skips this chat:  a closed or a mismatched note
         elif PL.lettered(note):
             skipped.add(ident)  # the pass holds this chat's letter:  it is not replayed
-            if PL.held(note):
-                lettered.add(ident)  # a real letter, so a title that lost it can be repaired
+            labels = PL.held(note)
+            if labels:
+                # A real letter, so a title that lost it can be repaired:  the letter is kept, because
+                # the title is compared with the letter this chat holds, not with any letter.
+                lettered[ident] = labels[0]
     return lettered, skipped
-
-
-def _skipped_sids(env: Mapping[str, str]) -> set[str]:
-    """The session ids the repair pass will not touch:  the chats whose own note holds a letter, and
-    the chats whose note is settled (closed or mismatched).
-
-    The pass reads a chat's note and skips the chat when the note says closed or mismatch, or when
-    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every
-    candidate it names is a chat the pass will really replay, and no slot of the twenty is spent on
-    a chat the pass skips.
-
-    The letter is in the note and the note is a file, so the lettered chats are read from the
-    folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
-    the listing and are used as query values only, so a name the store holds can never place a read
-    outside the folder.
-
-    A name is an id only when the library's own check takes it, and only when it is the file the
-    library reads for that id:  the library reads `<id>.json` for the trimmed id, so a name with
-    spaces around it is no note of any chat and decides nothing.  The store may write the same
-    chat's id with spaces around it; the query and the check below read the id trimmed, so such a
-    chat is left out as well."""
-    lettered, skipped = _note_sids(env)
-    return skipped
 
 
 def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]) -> list[str]:
@@ -754,7 +740,7 @@ def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[
 
 
 def _letter_lost_chats(
-    env: Mapping[str, str], deadline: float, lettered: set[str]
+    env: Mapping[str, str], deadline: float, lettered: Mapping[str, str]
 ) -> list[str] | None:
     """Top-level chats whose own note holds a letter and whose title no longer carries it.
 
@@ -763,10 +749,14 @@ def _letter_lost_chats(
     the title does not carry it.  They are named so the pass can put the letter back,  with no registry
     call:  a letter the registry has since retired is never handed out a second time (AFC-858).
 
-    The age window and the title filter are the ones the chats that hold no letter note use,  so a chat
-    that predates the hook and a chat the app renamed are read the same way.  A sub-thread is in this
-    group too:  a sub-thread is a lettered chat in its own right,  so its title can lose its letter
-    the same way."""
+    The title is read with the chat's own letter in hand and the library's own check decides:  a title
+    that carries another letter is named too (the chat was renamed with a letter of its own), and a title
+    that carries this chat's letter is not (there is nothing to restore).  A title on the no-letter mark
+    ("??: ") belongs to another rule, and the check leaves it out.
+
+    The age window is the one the chats that hold no letter note use,  so a chat that predates the hook
+    and a chat the app renamed are read the same way.  A sub-thread is in this group too:  a sub-thread
+    is a lettered chat in its own right,  so its title can lose its letter the same way."""
     if not lettered:
         return []
     path = store_file(env)
@@ -785,25 +775,21 @@ def _letter_lost_chats(
         if hasattr(conn, "set_progress_handler"):
             conn.set_progress_handler(_expired(deadline), 1000)
         rows = conn.execute(
-            "SELECT session_id FROM local_runtime_sessions"
+            "SELECT session_id, title FROM local_runtime_sessions"
             " WHERE session_kind IN (?, ?)"
             " AND (archived IS NULL OR archived = 0)"
             " AND (created_at_ms IS NULL"
             " OR (created_at_ms >= ? AND created_at_ms <= ?))"
-            " AND (title IS NULL OR (title NOT LIKE ? AND title NOT GLOB ? AND title NOT GLOB ?))"
             " AND TRIM(session_id) IN (%s)" % ",".join("?" * len(lettered)),
             (
                 *CHAT_KINDS,
                 (now - CHAT_UNLETTERED_MAX_AGE_SECONDS) * 1000,
                 (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
-                UNLETTERED_MARK,
-                LETTER_GLOB_ONE,
-                LETTER_GLOB_TWO,
                 *sorted(lettered),
             ),
         ).fetchall()
         found: list[str] = []
-        for (sid,) in rows:
+        for sid, title in rows:
             if time.monotonic() >= deadline:
                 return None
             if not isinstance(sid, str) or not sid:
@@ -811,8 +797,11 @@ def _letter_lost_chats(
                     "session_id must be a non-empty string, got %s" % type(sid).__name__
                 )
             ident = PL.SI.check(sid, "a listed session id")
-            if ident not in lettered:
+            label = lettered.get(ident)
+            if not label:
                 continue  # the store writes the id with spaces around it
+            if not PL.letter_lost({"state": "open", "label": label}, title):
+                continue  # the title carries the letter this chat holds, or the no-letter mark
             found.append(ident)
             if len(found) >= UNLETTERED_SCAN:
                 break

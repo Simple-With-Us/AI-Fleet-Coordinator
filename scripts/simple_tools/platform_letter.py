@@ -4420,7 +4420,14 @@ def _restore_letter(chat: Chat, note: Mapping[str, Any], data: Mapping[str, Any]
     Only the letter is restored:  the owner's words stay as they are.
 
     A chat that shows no words at all is titled with the title the note wanted ("WW: New Chat"), because that is
-    the one the fleet already asked for and never got."""
+    the one the fleet already asked for and never got.
+
+    The words under the letter are English, as every title this fleet writes is:  a name the app put there in
+    another script is not adopted, and the letter goes back over the chat's own English words instead.
+
+    A writer that refuses the title (a name a person chose, or a chat with no descriptive name yet) leaves the
+    chat as it is:  the restore says so, the note keeps the pending stamp for a later retry, and the pass does
+    not count the chat as repaired."""
     spec = chat.spec
     if spec.title_writer is None:
         return False  # a row with no writer cannot change the record the app shows
@@ -4429,15 +4436,28 @@ def _restore_letter(chat: Chat, note: Mapping[str, Any], data: Mapping[str, Any]
         return False
     label = _label(note)
     words = bare(current, held(note))
-    if not words:
+    topic = "" if words == PLACEHOLDER else lettered_topic(words)
+    if not topic:
+        # A name in another script is not a topic this chat holds (the words under a letter are English),
+        # so the name the platform put there is never adopted:  the letter goes back over the words the
+        # chat has of its own, the title it wanted, or the placeholder it was given.
         want = str(note.get("want") or "")
-        words = bare(want, held(note)) or str(note.get("title") or "")
-    title = compose(label, words)
+        topic = lettered_topic(bare(str(note.get("title") or ""), held(note))) or lettered_topic(
+            bare(want, held(note))
+        )
+    title = compose(label, topic)
     if title == current:
         return False
+    if note.get("pending") and str(note.get("want") or "") == title:
+        if chat.now < float(note.get("retry_at") or 0):
+            return False  # the writer refused this title already:  a later prompt tries it again
     work = dict(note)
-    present(chat, work, title, current, data, "repair")
+    present(chat, work, title, current, data, "repair", settable=False)
     chat.write(work)
+    if work.get("pending"):
+        # The writer refused:  the letter is not back on the chat, so the pass does not count it as
+        # repaired.  The note keeps the pending stamp, so a later prompt tries the title again.
+        return False
     return True
 
 
@@ -4470,7 +4490,8 @@ def repair_unlettered(
     title lost its letter is not replayed either, but it is repaired:  a platform with a title writer puts the
     letter the note holds back on the title, with no registry call, so a letter the registry has since retired is
     never handed out a second time.  What the repaired chats' starts print goes nowhere, and one pass replays at
-    most REPAIR_MAX_CHATS."""
+    most REPAIR_MAX_CHATS.  A chat whose letter was restored is not a replay:  it is counted as lettered, not as
+    asked."""
     if (
         spec.unlettered_sessions is None
         or spec.chat_payload is None
@@ -4534,6 +4555,10 @@ def repair_unlettered(
                 # goes back where it was, with no registry call at all.
                 if not _restore_letter(chat, held_note, payload):
                     continue
+                # The letter is back on the title:  no start was replayed, so this chat is not a replay,
+                # and the pass says so instead of counting it as one.
+                repaired.append(sid)
+                continue
             else:
                 on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
