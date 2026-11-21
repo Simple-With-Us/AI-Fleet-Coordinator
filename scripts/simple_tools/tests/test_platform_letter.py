@@ -3104,6 +3104,22 @@ class RestoreLetterTests(Base):
         self.assertEqual(self.note("s-0303")["label"], label)
         self.assertTrue(self.note("s-0303").get("pending"))
 
+    def test_a_corrupt_retry_stamp_does_not_stop_the_restore(self) -> None:
+        # A stamp that is not a number reads as due:  the restore tries the title again instead of
+        # failing the chat.
+        self.start("s-0307")
+        label = self.note("s-0307")["label"]
+        note = self.note("s-0307")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "not a number"
+        self.write_note("s-0307", note)
+        self.titles["s-0307"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0307", calls)
+        self.assertEqual(done["repaired"], ["s-0307"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
     def test_a_stored_title_that_carries_the_letter_is_not_prefixed_twice(self) -> None:
         # A stored title that already carries the letter is the chat's own words, so the letter goes back
         # once:  "AA: Fix login" and never "AA: AA: Fix login".

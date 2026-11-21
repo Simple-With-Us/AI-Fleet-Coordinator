@@ -4449,7 +4449,7 @@ def _restore_letter(chat: Chat, note: Mapping[str, Any], data: Mapping[str, Any]
     if title == current:
         return False
     if note.get("pending") and str(note.get("want") or "") == title:
-        if chat.now < float(note.get("retry_at") or 0):
+        if chat.now < _seconds(note.get("retry_at")):
             return False  # the writer refused this title already:  a later prompt tries it again
     work = dict(note)
     present(chat, work, title, current, data, "repair", settable=False)
