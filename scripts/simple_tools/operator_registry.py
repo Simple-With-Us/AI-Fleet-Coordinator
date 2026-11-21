@@ -801,9 +801,7 @@ class SessionRegistry:
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        main = sorted(
-            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p)
-        )
+        main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
         if main:
             return issue(main[0])
         # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
@@ -2722,13 +2720,10 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _pending_identical_session_snapshots(
-    conn: sqlite3.Connection, cells: Sequence[str]
-) -> int:
+def _pending_identical_session_snapshots(conn: sqlite3.Connection, cells: Sequence[str]) -> int:
     count = 0
     for row in conn.execute(
-        "SELECT payload FROM export_outbox"
-        " WHERE kind = 'session_upsert' AND exported_at IS NULL"
+        "SELECT payload FROM export_outbox WHERE kind = 'session_upsert' AND exported_at IS NULL"
     ):
         try:
             payload = json.loads(row["payload"])
@@ -2761,9 +2756,7 @@ def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
         registry.close_db()
 
 
-def enqueue_session_snapshot(
-    db_path: str, record_id: str, expected_sha256: str
-) -> dict[str, Any]:
+def enqueue_session_snapshot(db_path: str, record_id: str, expected_sha256: str) -> dict[str, Any]:
     """Enqueue through the registry's existing local writer and transaction."""
     registry = SessionRegistry(db_path, initialize=False)
     try:
@@ -3017,7 +3010,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     )
     enqueue.add_argument("--db", default="", help="the registry file (default: the shared path)")
     enqueue.add_argument("--record-id", required=True, help="the stable Operator record id")
-    enqueue.add_argument("--expected-sha256", required=True, help="digest from plan-session-snapshot")
+    enqueue.add_argument(
+        "--expected-sha256", required=True, help="digest from plan-session-snapshot"
+    )
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
@@ -3248,14 +3243,22 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
                 print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
                 return 2
             except StaleSessionSnapshot as exc:
-                print(json.dumps({
-                    "error": "stale_snapshot",
-                    "code": "stale_snapshot",
-                    "snapshot_sha256": exc.current_sha256,
-                }))
+                print(
+                    json.dumps(
+                        {
+                            "error": "stale_snapshot",
+                            "code": "stale_snapshot",
+                            "snapshot_sha256": exc.current_sha256,
+                        }
+                    )
+                )
                 return 2
             except ValueError:
-                print(json.dumps({"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}))
+                print(
+                    json.dumps(
+                        {"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}
+                    )
+                )
                 return 2
             print(json.dumps(answer))
             return 0
