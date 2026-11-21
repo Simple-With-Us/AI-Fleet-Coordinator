@@ -998,6 +998,68 @@ class CodeOnlyHelperTests(unittest.TestCase):
         manifest.chmod(0o600)
         return source, manifest
 
+    def test_install_refuses_group_writable_parent_before_reading_or_replacing_files(self):
+        source, _prior, _manifest, lib, _timer = self.prior_snapshot()
+        etc = self.tmp / "etc"
+        etc.mkdir(mode=0o700)
+        for name in ("sa.json", "drain.env"):
+            path = etc / name
+            path.write_text("private fixture\n")
+            path.chmod(0o600)
+        units = self.tmp / "units"
+        units.mkdir(mode=0o755)
+        for name in ("operator-sheets-drain.service", "operator-sheets-drain.timer"):
+            path = units / name
+            path.write_text("unit fixture\n")
+            path.chmod(0o644)
+        backup_parent = self.tmp / "backups"
+        backup_parent.mkdir(mode=0o755)
+        backup_root = backup_parent / "operator-sheets-drain-code-only"
+        backup_root.mkdir(mode=0o700)
+        original = {name: (lib / name).read_bytes() for name in MODULES}
+        source.chmod(0o770)
+
+        with (
+            mock.patch.object(
+                Path, "read_bytes", side_effect=AssertionError("must not read files")
+            ) as read_bytes,
+            mock.patch("subprocess.run") as run,
+            self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"),
+        ):
+            self.helper.install_modules(
+                source_dir=source,
+                lib_dir=lib,
+                etc_dir=etc,
+                unit_dir=units,
+                backup_root=backup_root,
+                node=shutil.which("node") or "node",
+                uid=os.getuid(),
+                gid=os.getgid(),
+            )
+        read_bytes.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual({name: (lib / name).read_bytes() for name in MODULES}, original)
+        self.assertEqual(list(backup_root.iterdir()), [])
+
+    def test_verify_state_rejects_stray_entry_before_any_node_subprocess(self):
+        source, _prior, _manifest, lib, _timer = self.prior_snapshot()
+        stray = lib / "unexpected-entry"
+        stray.write_text("partial install marker\n")
+
+        with (
+            mock.patch("subprocess.run") as run,
+            self.assertRaisesRegex(self.helper.InstallError, "partial-install entry"),
+        ):
+            self.helper.verify_installed_state(
+                source_dir=source,
+                lib_dir=lib,
+                uid=os.getuid(),
+                gid=os.getgid(),
+                node=shutil.which("node") or "node",
+            )
+        run.assert_not_called()
+        self.assertTrue(stray.is_file())
+
     def test_main_restores_signal_handlers_after_success_and_failure(self):
         source = self.source_bundle()
         hashes = {
@@ -1010,6 +1072,7 @@ class CodeOnlyHelperTests(unittest.TestCase):
 
         lib = self.tmp / "installed-lib"
         lib.mkdir(mode=0o755)
+        lib.chmod(0o755)
         for name in MODULES:
             installed = lib / name
             installed.write_bytes((source / name).read_bytes())
