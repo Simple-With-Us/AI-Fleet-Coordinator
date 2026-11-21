@@ -116,7 +116,7 @@ class SharedOperatorDataTests(unittest.TestCase):
             IE.OPERATOR_VOICE_PROJECT: PROJECT_ID,
             "INFISICAL_API_URL": fake.url,
             "CURSOR_SYNC_API_KEY": "container-copy-fixture",
-            "ZULIP_SITE": "https://simplewithus.zulipchat.com",
+            "ZULIP_SITE": "https://zulip.example.test",
         }
         original_fetch = IE.fetch
 
@@ -146,6 +146,11 @@ class SharedOperatorDataTests(unittest.TestCase):
             mock.patch.object(IE, "SERVICE_TOKEN_RE", re.compile(r".+")),
         ):
             return IE.build_env(env)
+
+    def test_unbound_optional_source_names_the_shared_binding_without_failing_startup(self) -> None:
+        data, note = IE.operator_optional_data({})
+        self.assertEqual(data, {})
+        self.assertIn(IE.OPERATOR_VOICE_TOKEN, note)
 
     def test_existing_voice_only_grant_keeps_voice_and_disables_cursor_data(self) -> None:
         with FakeInfisical((IE.OPERATOR_VOICE_PATH,)) as fake:
