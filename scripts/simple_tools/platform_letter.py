@@ -209,7 +209,9 @@ PROMPT_ARMOR = re.compile(
     r"-----BEGIN (?P<kind>[A-Z0-9 ]+)-----.*?(?:-----END (?P=kind)-----|\Z)", re.DOTALL
 )
 PROMPT_QUOTES = str.maketrans("", "", "\"'`\\*“”‘’")
-PROMPT_CREDENTIAL_WORDS = frozenset({"api", "key", "password", "token", "secret", "bearer", "authorization"})
+PROMPT_CREDENTIAL_WORDS = frozenset(
+    {"api", "key", "password", "token", "secret", "bearer", "authorization"}
+)
 STDIN_LIMIT = 1 << 20
 # What the registry side answers for a chat it has no registration for (the registry was restored from an older copy,
 # or never saw the chat), and what the hook reads as "register again".
@@ -772,12 +774,17 @@ def title_from_prompt(prompt: object) -> str:
                 break
             context = " ".join([*kept[-SECRET_WINDOW:], token])
             opaque = any(
-                any(ch.isalpha() for ch in match.group()) and any(ch.isdigit() for ch in match.group())
+                any(ch.isalpha() for ch in match.group())
+                and any(ch.isdigit() for ch in match.group())
                 for match in PROMPT_OPAQUE_RUN.finditer(token)
             )
             # A quoted JSON/Markdown label must carry the same context as an unquoted assignment.  Scan both
             # forms before splitting words, while preserving the original spelling of ordinary title words.
-            if opaque or secretscan.scan(context) or secretscan.scan(context.translate(PROMPT_QUOTES)):
+            if (
+                opaque
+                or secretscan.scan(context)
+                or secretscan.scan(context.translate(PROMPT_QUOTES))
+            ):
                 dropped = True
                 continue
             kept.append(token)
@@ -785,8 +792,12 @@ def title_from_prompt(prompt: object) -> str:
         del words[TITLE_WORDS:]
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
             words.pop()  # "... Addressed From" reads cut off; end on a word that carries meaning
-        if dropped and words and all(
-            word.translate(PROMPT_QUOTES).lower() in PROMPT_CREDENTIAL_WORDS for word in words
+        if (
+            dropped
+            and words
+            and all(
+                word.translate(PROMPT_QUOTES).lower() in PROMPT_CREDENTIAL_WORDS for word in words
+            )
         ):
             continue
         if words:
@@ -2104,9 +2115,8 @@ def _transcript_strings(
     elif isinstance(value, Mapping):
         kind = value.get("type")
         role = value.get("role")
-        if (
-            (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
-            or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
+        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
+            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
         ):
             return
         hidden = (
