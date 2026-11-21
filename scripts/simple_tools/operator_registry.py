@@ -2725,13 +2725,27 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _pending_identical_session_snapshots(conn: sqlite3.Connection, cells: Sequence[str]) -> int:
-    payload = json.dumps({"cells": list(cells)})
-    row = conn.execute(
-        "SELECT count(*) FROM export_outbox"
-        " WHERE kind = 'session_upsert' AND exported_at IS NULL AND payload = ?",
-        (payload,),
-    ).fetchone()
-    return int(row[0])
+    if not cells:
+        return 0
+    count = 0
+    candidates = conn.execute(
+        "SELECT payload FROM export_outbox"
+        " WHERE kind = 'session_upsert' AND exported_at IS NULL"
+        " AND CASE WHEN json_valid(payload) THEN"
+        "   CASE WHEN json_type(payload, '$.cells') = 'array'"
+        "     THEN json_extract(payload, '$.cells[0]')"
+        "   END"
+        " END = ?",
+        (cells[0],),
+    )
+    for row in candidates:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("cells") == list(cells):
+            count += 1
+    return count
 
 
 def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
