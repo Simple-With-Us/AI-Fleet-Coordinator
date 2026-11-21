@@ -352,6 +352,11 @@ export async function drainOutbox({
       queueAck(row, table, outcome, detail);
       if (ackQueue.length >= ACK_BATCH) await flushAcks();
     } catch (err) {
+      if (err?.code === "stopped" && shouldStop()) {
+        stopped = true;
+        log("stop requested during reconciliation: confirmed rows flush; remaining rows stay pending");
+        break;
+      }
       failed += 1;
       log(`outbox ${row.outbox_id}: ${err.message}`);
       if (table !== null) queueAck(row, table, "failed", err.message, false);
