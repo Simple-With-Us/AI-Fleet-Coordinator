@@ -110,6 +110,11 @@ BUILDERS: dict[str, Builder] = {
     "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
     "MM": Builder("minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"),
+    # An OpenCode session id:  "ses_" and 26 letters and digits, the shape the runtime's own
+    # store holds.
+    "OPENCODE": Builder(
+        "opencode", "simple_tools.opencode_wake", session_re=r"^ses_[0-9A-Za-z]{26}$"
+    ),
     "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
     "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),

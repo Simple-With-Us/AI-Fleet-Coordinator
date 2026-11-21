@@ -30,9 +30,17 @@ class Base(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
-        os.makedirs(self.home)
+        if os.path.islink(self.home):
+            raise RuntimeError("refusing a symlinked directory: %s" % self.home)
+        os.makedirs(self.home, mode=0o700)
         self.fake = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
         self.addCleanup(self.fake.uninstall)
+
+    def private_store_dir(self, path: str) -> None:
+        if os.path.islink(path) or (os.path.exists(path) and os.path.islink(path)):
+            raise RuntimeError("refusing a symlinked directory: %s" % path)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        os.chmod(path, 0o700)
 
     def env(self, **extra: str) -> dict[str, str]:
         out = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **self.fake.env()}
@@ -143,7 +151,7 @@ class MiniMaxRepairRow(Base):
     def setUp(self) -> None:
         super().setUp()
         self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
-        os.makedirs(os.path.dirname(self.store))
+        self.private_store_dir(os.path.dirname(self.store))
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(self.DDL)
@@ -281,21 +289,17 @@ class MiniMaxRepairRow(Base):
                  int((self.now - 3600.0) * 1000), int(self.now * 1000)),
             )
         conn.close()
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            found = self.scan()
-        self.assertIsInstance(found, list)
-        self.assertNotIn(None, found)
-        self.assertIn("1 malformed session id", err.getvalue())
+        with self.assertRaises(ValueError) as caught:
+            self.scan()
+        self.assertIn("session_id", str(caught.exception))
 
     def test_a_row_whose_session_id_is_not_a_session_id_is_not_named(self) -> None:
         # The session id the store holds is checked with the library's own check before anything is
         # done with it:  a name that is not a session id can never become a note path, so it can
         # never read a file outside the notes folder.  Such a row is counted, not named.
         self.add("../escape", "Child work", kind="task", parent="m-0100")
-        found = self.scan()
-        self.assertIsInstance(found, list)
-        self.assertNotIn("../escape", found)
+        with self.assertRaises(ValueError):
+            self.scan()
 
     def test_a_lettered_row_cannot_starve_an_unlettered_one(self) -> None:
         # The scan's bound counts the candidates, not the rows:  a host whose newest sub-threads are
@@ -348,21 +352,28 @@ class MiniMaxRepairRow(Base):
 
 class MiniMaxRow(Base):
     DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
-           " parent_session_id TEXT)")
+           " parent_session_id TEXT, archived INTEGER DEFAULT 0, created_at_ms INTEGER,"
+           " updated_at_ms INTEGER)")
 
     def setUp(self) -> None:
         super().setUp()
         self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
-        os.makedirs(os.path.dirname(self.store))
+        self.private_store_dir(os.path.dirname(self.store))
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(self.DDL)
         conn.close()
 
-    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "") -> None:
+    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "",
+            archived: int = 0, age: float = 3600.0) -> None:
         conn = sqlite3.connect(self.store)
         with conn:
-            conn.execute("INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?)", (sid, title, kind, parent or None))
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, title, kind, parent or None, archived, int((time.time() - age) * 1000),
+                 int((time.time() - age) * 1000)),
+            )
         conn.close()
 
     def title(self, sid: str) -> str:
@@ -503,7 +514,6 @@ class MiniMaxRow(Base):
         self.add("m-0201", "Child work", kind="task", parent="m-0200")
         payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "parent_id": "worker"}
         self.assertEqual(PM.minimax_parent(payload, self.env()), "m-0200")
-
     def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
         # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with
         # HOOK_SCHEMA_INVALID, so an entry over the cap is never run:  the hook file reads as installed and no letter
@@ -741,6 +751,234 @@ class MiniMaxRow(Base):
             self.assertTrue(commands[0].endswith("platform-letter hook --platform minimax"), commands[0])
 
 
+class UnletteredSessionsTests(MiniMaxRow):
+    """`minimax_unlettered_sessions`:  the repair pass's candidates are this host's chats that hold no letter
+    note, old enough that their own start has finished and young enough to be a live loss.  They come in two
+    groups:  the sub-threads whose title carries no letter, newest first by updated_at_ms, and then the top-level
+    chats that hold no letter note, with the rows of unknown age (created_at_ms IS NULL) before the dated rows,
+    newest first.  A chat that started before the hook was installed has no note at all, and the pass that
+    looked for the "??: " placeholder could not see it."""
+
+    def write_note(self, sid: str) -> None:
+        """A lettered chat, written the way the library writes a note:  owner-only folder, the file
+        whole, and a rename in place of a partial write."""
+        path = PL.note_path(self.env(), PM.SEAT, sid)
+        self.assertTrue(
+            PL._save_json(path, {"label": "AA", "generation": 1, "location": "mac"}), path
+        )
+
+    def test_names_the_chats_that_hold_no_note(self) -> None:
+        self.add("m-0001", "A Chat With No Note")
+        self.add("m-0002", "A Lettered Chat")
+        self.write_note("m-0002")
+        self.add("m-0003", "Brand New", age=60)
+        self.add("m-0004", "Ancient", age=365 * 86400)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0001"])
+
+    def test_names_the_newest_first(self) -> None:
+        self.add("m-0005", "Older", age=7200)
+        self.add("m-0006", "Newer", age=3600)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0006", "m-0005"])
+
+    def test_a_sub_thread_that_holds_no_letter_is_a_candidate(self) -> None:
+        """A sub-thread is a lettered chat in its own right:  it takes the pair after its parent's,
+        so one whose title carries no letter is repaired too, and the sub-threads come first."""
+        self.add("m-0007", "A Chat", kind="conversation")
+        self.add("m-0008", "Its Sub-Thread", kind="task", parent="m-0007")
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0008", "m-0007"])
+
+    def test_an_archived_chat_is_not_a_candidate(self) -> None:
+        self.add("m-0009", "Put Away", archived=1)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
+
+    def test_a_cron_run_is_not_a_candidate(self) -> None:
+        self.add("m-0010", "A Cron Run", kind="cron")
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
+
+    def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
+        os.unlink(self.store)
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_store_without_the_columns_it_needs_answers_none(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+                " parent_session_id TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?)",
+                ("m-0011", "Old Store", "conversation", None),
+            )
+        conn.close()
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_partial_scan_answers_nothing(self) -> None:
+        """One half of the scan that cannot be read is not a complete inventory:  the pass answers
+        None, so the half that failed is repaired on the next pass instead of being hidden."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("DROP TABLE local_runtime_sessions")
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT,"
+                " session_kind TEXT, parent_session_id TEXT, archived INTEGER DEFAULT 0,"
+                " created_at_ms INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-7001", "Needs A Letter", "conversation", None, 0, int((time.time() - 7200) * 1000)),
+            )
+        conn.close()
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_malformed_session_id_is_rejected(self) -> None:
+        """A corrupt row fails the scan with ValueError rather than returning a partial inventory."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (None, "A Broken Row", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        self.add("m-4100", "The One That Needs A Letter", age=7200)
+        with self.assertRaises(ValueError) as caught:
+            PM.minimax_unlettered_sessions(self.env())
+        self.assertIn("session_id", str(caught.exception))
+
+    def test_a_row_with_no_timestamp_is_of_unknown_age_and_is_a_candidate(self) -> None:
+        """The chat that predates the hook is the one with no timestamp, so the age window must
+        not drop it."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-0020", "Untimed", "conversation", None, 0, None),
+            )
+        conn.close()
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0020"])
+
+    def test_the_scan_limit_counts_candidates_and_not_rows(self) -> None:
+        """The chats that are already lettered are the newest ones, so a scan that stops at them
+        never reaches the chat that needs a letter."""
+        for n in range(25):
+            sid = "m-1%03d" % n
+            self.add(sid, "Lettered", age=3600 + n)
+            self.write_note(sid)
+        self.add("m-2000", "The One That Needs A Letter", age=7200)
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-2000"])
+
+    def test_the_rows_of_unknown_age_come_first(self) -> None:
+        """A row with no timestamp is the chat that predates the hook, and it is the one a repair
+        pass can least afford to miss:  it is read before the dated rows, so the scan's limit of
+        candidates cannot be spent on the dated ones first."""
+        for n in range(25):
+            sid = "m-2%03d" % n
+            self.add(sid, "Dated", age=3600 + n)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-untimed", "From Before The Hook", "conversation", None, 0, None),
+            )
+        conn.close()
+        found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found[0], "m-untimed")
+        self.assertIn("m-untimed", found)
+        # The scan still stops at its own limit of candidates.
+        self.assertLessEqual(len(found), PM.UNLETTERED_SCAN)
+
+    def test_the_scan_reads_bounded_batches(self) -> None:
+        """The scan asks the store for one bounded batch at a time, so a busy host is not read
+        whole, and it stops as soon as it holds the candidates it needs."""
+        for n in range(25):
+            sid = "m-3%03d" % n
+            self.add(sid, "Lettered", age=3600 + n)
+            self.write_note(sid)
+        self.add("m-3999", "The One That Needs A Letter", age=7200)
+        from unittest import mock
+
+        real_connect = sqlite3.connect
+        seen: list[str] = []
+
+        class Recording:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, params=()):
+                seen.append(sql)
+                return self._conn.execute(sql, params)
+
+            def close(self):
+                self._conn.close()
+
+        def connect(*args, **kwargs):
+            return Recording(real_connect(*args, **kwargs))
+
+        with mock.patch.object(PM.sqlite3, "connect", side_effect=connect):
+            found = PM.minimax_unlettered_sessions(self.env())
+        self.assertEqual(found, ["m-3999"])
+        self.assertTrue(seen, "the scan asked the store for nothing")
+        for sql in seen:
+            self.assertIn("LIMIT", sql, sql)
+
+    def test_a_malformed_session_id_is_rejected_and_said(self) -> None:
+        """A corrupt empty session_id fails the scan with ValueError rather than a partial list."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("", "Corrupt", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        self.add("m-4000", "The One That Needs A Letter", age=7200)
+        with self.assertRaises(ValueError) as caught:
+            PM.minimax_unlettered_sessions(self.env())
+        self.assertIn("session_id", str(caught.exception))
+
+    def test_a_store_path_with_punctuation_is_still_read(self) -> None:
+        """The store is opened by a URI that percent-encodes the path, so a folder whose name
+        holds a question mark or a hash is read and not skipped."""
+        home = os.path.join(self.tmp.name, "home?with#punctuation")
+        if os.path.islink(home):
+            raise RuntimeError("refusing a symlinked directory: %s" % home)
+        os.makedirs(home, mode=0o700)
+        store = os.path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        self.private_store_dir(os.path.dirname(store))
+        conn = sqlite3.connect(store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT,"
+                " session_kind TEXT, parent_session_id TEXT, archived INTEGER DEFAULT 0,"
+                " created_at_ms INTEGER, updated_at_ms INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-0030", "Punctuated", "conversation", None, 0, int((time.time() - 3600) * 1000)),
+            )
+        conn.close()
+        env = {"HOME": home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        self.assertEqual(PM.minimax_unlettered_sessions(env), ["m-0030"])
+
+    def test_the_repair_pass_letters_a_chat_that_started_before_the_hook(self) -> None:
+        """The chat that predates the hook has no note and no placeholder, and the pass gives it a letter and
+        puts it on its title:  the repair the issue asks for, proved."""
+        self.add("m-0012", "A Chat From Before The Hook")
+        out = PL.repair_unlettered(PM.SPEC, self.env(), PM.SEAT, "mac", now=time.time())
+        self.assertEqual(out["asked"], ["m-0012"])
+        self.assertEqual(out["repaired"], ["m-0012"])
+        note = self.note(PM.SEAT, "m-0012")
+        self.assertEqual(len(note["label"]), 2, note)
+        self.assertTrue(self.title("m-0012").startswith(note["label"] + ": "), self.title("m-0012"))
+        # And a second pass finds nothing:  the chat is lettered now.
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), [])
+
+
 class MiniMaxRetiredClient(Base):
     """What the retired MiniMax client (`mm-session-letter`) left on a host:  its hooks in ~/.minimax/hooks.json, its
     wrappers, and its own cache of each chat's letter."""
@@ -750,7 +988,7 @@ class MiniMaxRetiredClient(Base):
     def setUp(self) -> None:
         super().setUp()
         self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
-        os.makedirs(os.path.dirname(self.store))
+        self.private_store_dir(os.path.dirname(self.store))
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(MiniMaxRow.DDL)
@@ -1172,7 +1410,7 @@ class MiniMaxTitleSource(Base):
     def setUp(self) -> None:
         super().setUp()
         self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
-        os.makedirs(os.path.dirname(self.store))
+        self.private_store_dir(os.path.dirname(self.store))
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(self.DDL)
