@@ -1213,17 +1213,17 @@ test("registry paths in testflight-apps.json exist on each repo's main branch", 
 });
 
 // ---------------------------------------------------------------------------
-// App Store Connect calls under a thrashing host (2026-10-20:  "asc-api.mjs exit ?")
+// App Store Connect calls under a thrashing host (2026-10-20:  "testflight_asc_service.mjs exit ?")
 // ---------------------------------------------------------------------------
 
 const killedErr = () => Object.assign(new Error("Command failed"), { killed: true, signal: "SIGTERM", code: null, stdout: "", stderr: "" });
 
 test("a killed asc-api call names the signal, the timeout and the host load, not exit ?", () => {
   const msg = ascFailureText(killedErr(), "/v1/builds?filter[app]=1", { timeoutMs: 120_000, load: 151.4 });
-  assert.match(msg, /^App Store Connect \/v1\/builds: asc-api\.mjs killed by SIGTERM after the 120s timeout, host load 151$/);
+  assert.match(msg, /^App Store Connect \/v1\/builds: testflight_asc_service\.mjs killed by SIGTERM after the 120s timeout, host load 151$/);
   assert.doesNotMatch(msg, /exit \?/);
   assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "HTTP 401", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: HTTP 401");
-  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: asc-api.mjs exit 1");
+  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: testflight_asc_service.mjs exit 1");
 });
 
 test("a killed asc-api call is retried once and the retry's answer is used", async () => {
@@ -1247,7 +1247,7 @@ test("repeated kills trip the guard so a thrashing host fails fast instead of wa
   let spawned = 0;
   const run = async () => { spawned++; throw killedErr(); };
   await assert.rejects(ascRequest(run, "/v1/apps", guard), /killed by SIGTERM/);
-  await assert.rejects(ascRequest(run, "/v1/builds", guard), /skipped after \d+ asc-api\.mjs calls were killed.*host load 160/);
+  await assert.rejects(ascRequest(run, "/v1/builds", guard), /skipped after \d+ testflight_asc_service\.mjs calls were killed.*host load 160/);
   assert.ok(spawned <= 4, `spawned ${spawned}`);
 });
 

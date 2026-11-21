@@ -54,15 +54,12 @@
  * run), or the check itself failing.  One digest post per run, at most one
  * post per app per six hours, and never twice for the same commit and reason.
  *
- * Credentials:  App Store Connect reads use the owned scoped binding in
- * asc_scoped_creds.mjs (a read-only Infisical service token for exactly
- * prod:/asc, verified before any call).  The three ASC_* values are passed to
- * asc-api.mjs.  A missing binding or a scope that does not match fails the
- * run and does not fall back to fleet-secrets /asc or a legacy key folder.
- * --allow-legacy-asc-creds or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1 opts back into
- * that helper fallback.  asc-api.mjs stderr is never echoed, because a crash
- * there can name a key path.  GitHub calls require the dedicated TestFlight App;  Zulip
- * through simple-chat.
+ * Credentials: App Store Connect reads use the owned read-only Infisical binding
+ * for exactly prod:/asc. The scoped in-memory ASC trio is passed only to
+ * testflight_asc_service.mjs, a strict GET-only child with no credential fallback.
+ * Legacy credential opt-in is unsupported and fails before credential access.
+ * Only sanitized HTTP numeric status is reported. GitHub uses the dedicated
+ * TestFlight App and Zulip uses simple-chat.
  */
 import { randomUUID } from "node:crypto";
 import { makeServiceGitHub } from "./testflight_github_service.mjs";
@@ -250,12 +247,12 @@ function ghError(err) {
 // ---------------------------------------------------------------------------
 // App Store Connect calls
 //
-// Each asc-api.mjs child used to sign in through fleet-secrets (three `get`s, each a login
+// Each testflight_asc_service.mjs child used to sign in through fleet-secrets (three `get`s, each a login
 // plus an export), so one call was a handful of process launches.  The scoped binding is
 // verified once per run now, and the child receives ASC_* instead.  On 2026-10-20 the Mac
 // was memory-thrashing (load average 100 to 200, kernel_task near 50% system time) and the
 // 2:20pm and 4:20pm runs lost every call to the 120 second kill timeout:  Node reports a killed
-// child as `code: null`, which the report printed as "asc-api.mjs exit ?" with nothing to say
+// child as `code: null`, which the report printed as "testflight_asc_service.mjs exit ?" with nothing to say
 // the child never finished.  So:  at most ASC_MAX_INFLIGHT children at once (the pool of apps
 // plus the unmapped-app lookup used to start five), one retry of a call that was killed, a
 // fail-fast after repeated kills (a thrashing host will not recover inside this run), and a
@@ -299,22 +296,17 @@ export function wasKilled(err) {
 export function ascFailureText(err, apiPath, { timeoutMs = ASC_TIMEOUT_MS, load = null } = {}) {
   const endpoint = apiPath.split("?")[0];
   const http = /HTTP (\d{3})/.exec(String(err.stderr || ""));
-  let code = "";
-  try {
-    const j = JSON.parse(String(err.stdout || "").slice(String(err.stdout || "").indexOf("{")));
-    code = j?.errors?.[0]?.code ? ` ${j.errors[0].code}` : "";
-  } catch { /* not JSON */ }
-  if (http) return `App Store Connect ${endpoint}: HTTP ${http[1]}${code}`;
+  if (http) return `App Store Connect ${endpoint}: HTTP ${http[1]}`;
   if (wasKilled(err)) {
     const how = err.signal ? `killed by ${err.signal}` : "killed";
     const lo = load === null ? "" : `, host load ${Math.round(load)}`;
-    return `App Store Connect ${endpoint}: asc-api.mjs ${how} after the ${Math.round(timeoutMs / 1000)}s timeout${lo}`;
+    return `App Store Connect ${endpoint}: testflight_asc_service.mjs ${how} after the ${Math.round(timeoutMs / 1000)}s timeout${lo}`;
   }
-  return `App Store Connect ${endpoint}: asc-api.mjs exit ${err.code ?? "?"}${code}`;
+  return `App Store Connect ${endpoint}: testflight_asc_service.mjs exit ${err.code ?? "?"}`;
 }
 
 /**
- * GET one App Store Connect path through `run` (which spawns asc-api.mjs and takes
+ * GET one App Store Connect path through `run` (which spawns testflight_asc_service.mjs and takes
  * {timeout}).  Resolves the parsed JSON.  `guard` comes from makeAscGuard and is shared by
  * every call in the run.
  */
@@ -323,7 +315,7 @@ export async function ascRequest(run, apiPath, guard = makeAscGuard(), { timeout
     let lastErr = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       if (guard.killed >= guard.tripAfter) {
-        throw new Error(`App Store Connect ${apiPath.split("?")[0]}: skipped after ${guard.killed} asc-api.mjs calls were killed by the timeout (host load ${Math.round(guard.load())})`);
+        throw new Error(`App Store Connect ${apiPath.split("?")[0]}: skipped after ${guard.killed} testflight_asc_service.mjs calls were killed by the timeout (host load ${Math.round(guard.load())})`);
       }
       try {
         const out = await run({ timeout: timeoutMs });
@@ -351,7 +343,7 @@ export function makeDeps(env = process.env, options = {}) {
   const run = options.runCmd || runCmd;
   let prepared = null;
   const ascEnvironment = () => {
-    if (allowLegacy) return Promise.resolve(env);
+    if (allowLegacy) return Promise.reject(new Error("legacy ASC credentials unsupported by dedicated freshness reader; use scoped ios-testflight-freshness-ro binding"));
     if (!prepared) {
       prepared = resolveFreshnessAscCredentials({
         env,
@@ -391,10 +383,10 @@ export function makeDeps(env = process.env, options = {}) {
     },
     async asc(apiPath) {
       remaining(1);
-      const script = resolveFleetFile("asc-api.mjs", env);
-      if (!script) throw new Error("asc-api.mjs not found (set IOS_FLEET_DIR or install ~/apps/ios-fleet)");
+      const script = resolveFleetFile("testflight_asc_service.mjs", env);
+      if (!script) throw new Error("dedicated scoped ASC reader not installed");
       const childEnv = await ascEnvironment();
-      return ascRequest((opts) => run(process.execPath, [script, "GET", apiPath], { env: childEnv, ...opts, timeout: remaining(opts.timeout) }), apiPath, ascGuard);
+      return ascRequest((opts) => run(process.execPath, [script, apiPath], { env: childEnv, ...opts, timeout: remaining(opts.timeout) }), apiPath, ascGuard);
     },
     async buildWindow(appKey) {
       remaining(1);
@@ -1567,8 +1559,8 @@ const HELP = `usage: ios_testflight_freshness.mjs [--app KEY[,KEY]] [--repo REPO
 
 Exit 0 every checked app is current, 1 something is behind, 2 the check failed.
 App Store Connect reads need the scoped ios-testflight-freshness-ro binding.
---allow-legacy-asc-creds (or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1) opts into the
-asc-api.mjs fleet-secrets /asc and legacy key-folder fallback.
+--allow-legacy-asc-creds and IOS_TF_ALLOW_LEGACY_ASC_CREDS=1 are unsupported:
+they fail before credential access. Only the scoped binding is accepted; no fallback.
 See docs/ios-testflight-freshness.md in AI-Fleet-Coordinator.`;
 
 export async function main(argv = process.argv.slice(2), deps = undefined, out = process.stdout) {
