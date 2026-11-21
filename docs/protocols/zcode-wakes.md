@@ -80,8 +80,8 @@ receipt ledger on the server, `/home/jay/.local/state/zc-wake/wakes.jsonl`, read
 wakes the bridge attempted, and not one row records a delivery.  The bridge's path is not the
 module's path:  the bridge resumes the session with its own command template and never
 checks the directory the session reports, while the module runs the CLI with the
-workspace the deployment names and refuses a session whose recorded directory differs
-from it (`workspace-mismatch`), so the router can refuse a delivery the bridge would
+workspace root the deployment names and refuses a session whose recorded directory
+lies outside it (`workspace-mismatch`), so the router can refuse a delivery the bridge would
 have attempted.  Both reach the same ZCode runtime and the same model
 credential, so both stop at the provider today.  The bridge stays up and keeps its
 own values, and it retires only after a real wake is delivered end to end.
@@ -196,10 +196,12 @@ made explicit.
 
 - The session's own store row is the binding.  The row carries the exact session id and the
   directory that session reports about itself, and both are compared with the requested
-  session and the workspace the deployment names before anything runs.  The tasks index is a
+  session and the workspace root the deployment names before anything runs.  The root is a
+  root and not one directory, because a seat works in several projects at once:  a chat in
+  another project under the root is the seat's own work.  The tasks index is a
   derived view over the same sessions, so it never authorizes a delivery:  a session whose
-  reported directory is not the workspace the deployment names is never picked, and a
-  delivery into another project's directory is refused (`workspace-mismatch`).
+  reported directory is outside the root is never picked, and a delivery into a directory
+  outside it is refused (`workspace-mismatch`).
 - The externally authored fields are checked before they reach a prompt:  a field of the wrong
   type is refused, a field that carries credential material is refused by name
   (`secret-field`, and the value is never echoed), and the note in front of the data is only the

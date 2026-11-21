@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -490,6 +491,19 @@ def _main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     root = args.state_root or L.state_root(os.environ)
     store = ThreadRegistryStore(thread_store_path(root, os.environ))
+    if args.command == "export-rows":
+        # A missing or unreadable store is a misconfiguration, never a healthy empty export:
+        # fail here instead of printing zero rows that downstream treats as clean.
+        try:
+            with open(store.path, "rb"):
+                pass
+        except OSError as exc:
+            print(
+                "thread registry store unreadable at %s (%s); refusing an empty export"
+                % (store.path, type(exc).__name__),
+                file=sys.stderr,
+            )
+            return 1
     if args.command == "stats":
         records = store.records()
         print(

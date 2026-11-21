@@ -13,8 +13,9 @@
 //
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  Its key JSON comes
-// from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
+// from GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
+// /google-sheets-sa (key GOOGLE_SHEETS_SA) through the shared isolated reader and
+// an explicit own OPERATOR_SHEETS_TOKEN_FILE bootstrap — the
 // same credential seam as the thread registry's drain;  one seam serves both tabs of
 // the workbook.  The workbook must be shared (Editor) with that service account's
 // client_email or every call 403s and the drain writes nothing.  Credentials are never
@@ -25,10 +26,8 @@
 //   node session_registry_export.mjs /path/session-rows.json          # drain once
 //   node session_registry_export.mjs /path/session-rows.json --dry-run  # read + plan only
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { loadRegistryServiceAccount } from "../simple_tools/registry_export_reader.mjs";
 import crypto from "node:crypto";
 
 export const SPREADSHEET_ID = "1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE";
@@ -48,29 +47,8 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function loadServiceAccount() {
-  let raw = process.env.OPERATOR_GOOGLE_SHEETS_SA || "";
-  if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
-    try {
-      raw = execFileSync(bin, ["get", "OPERATOR_GOOGLE_SHEETS_SA", "--path", "/operator-thread-registry"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).replace(/\n$/, "");
-    } catch {
-      raw = "";
-    }
-  }
-  if (!raw) {
-    throw new Error(
-      "Operator session registry service account missing: set OPERATOR_GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /operator-thread-registry"
-    );
-  }
-  return JSON.parse(raw);
-}
-
 async function getGoogleAccessToken() {
-  const sa = loadServiceAccount();
+  const sa = await loadRegistryServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const signingInput = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(
     JSON.stringify({

@@ -696,10 +696,17 @@ class Reaper(Base):
         outcome, calls, log = self.fleet_alert_with(0)
         self.assertEqual(outcome, "ok")
         argv = calls[0]
-        self.assertEqual(argv[1:4], ["--as", "MA", "post"])
-        self.assertIn("--no-tag", argv)  # the #Alerts line starts with its severity, not a seat tag
-        self.assertEqual(argv[argv.index("--channel") + 1], "Alerts")
-        self.assertEqual(argv[argv.index("--topic") + 1], "sim-idle-reaper")
+        self.assertEqual(
+            argv[:5],
+            [
+                sys.executable,
+                str(REPO / "scripts" / "service_zulip.py"),
+                "--service",
+                "sim-reaper",
+                "post",
+            ],
+        )
+        self.assertNotIn("--as", argv)
         # The first line keeps the house format;  the second tags both Housekeepers and Jay (owner, Oct 29 2026).
         self.assertEqual(
             argv[-1],
@@ -708,25 +715,13 @@ class Reaper(Base):
         self.assertNotIn("@**all**", argv[-1])  # load is never an out-of-space issue
         self.assertIn("fleet alert posted", log)
 
-    def test_fleet_alert_explicit_cli_override_wins_over_path(self):
-        with (
-            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": "/opt/pinned/simple-chat"}),
-            patch.object(reaper.shutil, "which", lambda name: "/usr/local/bin/simple-chat"),
+    def test_agent_cli_overrides_are_not_used(self):
+        with patch.dict(
+            os.environ, {"SIM_REAPER_SIMPLE_CHAT": "/opt/pinned/simple-chat", "AGENT_SEAT": "MA"}
         ):
             _, calls, _ = self.fleet_alert_with(0)
-        self.assertEqual(calls[0][0], "/opt/pinned/simple-chat")
-        with (
-            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": ""}),
-            patch.object(reaper.shutil, "which", lambda name: "/usr/local/bin/simple-chat"),
-        ):
-            _, calls, _ = self.fleet_alert_with(0)
-        self.assertEqual(calls[0][0], "/usr/local/bin/simple-chat")
-        with (
-            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": ""}),
-            patch.object(reaper.shutil, "which", lambda name: None),
-        ):
-            _, calls, _ = self.fleet_alert_with(0)
-        self.assertEqual(calls[0][0], reaper.SIMPLE_CHAT)
+        self.assertEqual(calls[0][0], sys.executable)
+        self.assertNotIn("/opt/pinned/simple-chat", calls[0])
 
     def test_fleet_alert_outcomes(self):
         cases = [

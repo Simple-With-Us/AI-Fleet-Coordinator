@@ -671,8 +671,23 @@ def _fleet_call(host, seat, request, wait):
     args = {
         key: value
         for key, value in request.items()
-        if key in ("title", "markdown", "session", "format", "query", "limit", "request_id")
+        if key
+        in (
+            "title",
+            "markdown",
+            "session",
+            "format",
+            "query",
+            "limit",
+            "request_id",
+            "note_id",  # a delete names its note;  the hosted tool refuses a delete with no note_id
+        )
     }
+    if action in N.WRITE_ACTIONS:
+        # The gateway refuses a write that names no bot (docs/protocols/per-call-identity.md), so the writer's own
+        # identity travels with the write, exactly as simple-chat names it on a remote write.  It is the seat the
+        # bearer proved, never a guessed one; a read keeps the connection's default.
+        args["identity"] = request.get("identity") or seat
     args.update(N.check_flags(request.get("flags")))
     args["wait_seconds"] = 0
     deadline = time.monotonic() + wait

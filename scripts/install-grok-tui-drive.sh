@@ -60,6 +60,10 @@ fi
 
 mkdir -p "$ACP_DST" "$SEAT_DST" "$MCP_DST" 2>/dev/null || true
 
+# Shared source closure for the copied runtime consumers.
+copy_file "$REPO_ROOT/scripts/fleet_infisical.py" "${HOME}/apps/fleet_infisical.py"
+copy_file "$REPO_ROOT/scripts/fleet_infisical_cli.py" "${HOME}/apps/fleet_infisical_cli.py"
+
 for f in grok-drive.py leader-client.py session_disk.py grok-idle-unload.py README.md acp-client.py mcp_catalog.py start.sh acp-home-config.toml; do
   copy_file "$ACP_SRC/$f" "$ACP_DST/$f"
 done
