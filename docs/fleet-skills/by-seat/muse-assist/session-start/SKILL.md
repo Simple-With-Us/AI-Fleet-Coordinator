@@ -51,7 +51,7 @@ Skim channel, topic, and sender for your own seat or a repo you are about to tou
 Search shared memory **before** re-deriving a lesson or asking the owner something a past ruling probably answers:
 
 ```bash
-recall "<what this session is about>" --limit 5
+recall --limit 5 -- "<what this session is about>"
 ```
 
 or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issue / note / doc.  Cloud seats reach the same tools through the fleet MCP gateway and REST twin (`docs/RECALL-ACCESS-CHECK.md` names the hostnames).  Owner 2026-09-02: **contribute every reusable lesson** at closeout (`recall_contribute`); do not bulk-ingest chat logs as lessons.
@@ -92,7 +92,7 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 
 ## 4. Claim before substantial edits
 
-1. **Linear** — the MCP tool `linear_list` (`team` = `<app>`) finds the issue, then the MCP tool `linear_claim` with `id` = the issue and `comment` = "<durable VM checkout path> @ <branch>".  If nothing exists:  `linear_file` with `title`, `app` = `<app>`, `severity` = `P1` and `description`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; the hosted server refuses an issue another seat holds.  The CLI fallback is `simple-board list --app <app>`, then `simple-board claim <id> --by <YOUR_TAG> --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.
+1. **Linear** — the MCP tool `linear_list` (`team` = `<app>`) finds the issue, then the MCP tool `linear_claim` with `id` = the issue and `comment` = "<durable VM checkout path> @ <branch>".  If nothing exists:  `linear_file` with `title`, `app` = `<app>`, `severity` = `P1` and `description`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; a claim another seat holds is refused unless the steal fields ride along (hosted `steal` + `reason`, CLI `--steal --reason`).  The CLI fallback is `simple-board list --app <app>`, then `simple-board claim <id> --by <YOUR_TAG> --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.
 2. **Zulip** — open the work topic and post the claim (below).  There is no effort log and no separate GitHub issue to mark; a GitHub issue filed after the cutover is already a Linear issue.
 3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
 

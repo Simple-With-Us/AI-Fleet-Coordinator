@@ -48,16 +48,16 @@
     },
     "save1": {
       "request": {
+        "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 2.0
         },
-        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
-        "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
-        "requestCreatedAt": 1795239823528
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "2b3504a32aa3",
+        "auditID": "d46ef05f75a6",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -82,7 +82,7 @@
             "ok": true,
             "revision": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0"
           },
-          "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
+          "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
           "result": "saved",
           "revision": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0",
           "runtimeApplied": true,
@@ -110,16 +110,16 @@
     },
     "save2": {
       "request": {
+        "requestID": "5e3627b1-a296-5de6-97bd-47ca7ee7751b",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 3.0
         },
-        "expectBaseSHA256": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0",
-        "requestID": "32bc1971-8027-47f2-9cd9-5ef13e522832",
-        "requestCreatedAt": 1795239823539
+        "expectBaseSHA256": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0"
       },
       "response": {
-        "auditID": "8ed118068e14",
+        "auditID": "b45a9c556e5e",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -144,7 +144,7 @@
             "ok": true,
             "revision": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb"
           },
-          "requestID": "32bc1971-8027-47f2-9cd9-5ef13e522832",
+          "requestID": "5e3627b1-a296-5de6-97bd-47ca7ee7751b",
           "result": "saved",
           "revision": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb",
           "runtimeApplied": true,
@@ -172,16 +172,16 @@
     },
     "runtime_pending": {
       "request": {
+        "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 4.0
         },
-        "expectBaseSHA256": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb",
-        "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
-        "requestCreatedAt": 1795239823550
+        "expectBaseSHA256": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb"
       },
       "response": {
-        "auditID": "50ef7e3eefac",
+        "auditID": "27a617a14586",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Saved to Infisical; runtime acceptance remains pending",
@@ -206,7 +206,7 @@
             "confirmed": false,
             "ok": true
           },
-          "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
+          "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
           "result": "failed",
           "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
           "runtimeApplied": false,
@@ -235,12 +235,12 @@
     },
     "reconcile_unknown": {
       "request": {
-        "action": "reconcile",
-        "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
-        "requestCreatedAt": 1795239823550
+        "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
+        "requestCreatedAt": 1794635900000,
+        "action": "reconcile"
       },
       "response": {
-        "auditID": "5977e58334a8",
+        "auditID": "bb9c6ae45b15",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Canonical persistence is verified; prior runtime acceptance remains unconfirmed",
@@ -261,7 +261,7 @@
           "outcome": "unknown",
           "persisted": true,
           "readback": true,
-          "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
+          "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
           "result": "failed",
           "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
           "runtimeApplied": false,
@@ -289,12 +289,12 @@
     },
     "reconcile_saved": {
       "request": {
-        "action": "reconcile",
-        "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
-        "requestCreatedAt": 1795239823550
+        "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
+        "requestCreatedAt": 1794635900000,
+        "action": "reconcile"
       },
       "response": {
-        "auditID": "2a602cdcf25a",
+        "auditID": "7be5a4663281",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -310,7 +310,7 @@
           "outcome": "ok",
           "persisted": true,
           "readback": true,
-          "requestID": "56c4db9c-8ff5-4546-bd3b-8f3b706ce422",
+          "requestID": "211b81d2-efaf-580a-8ef2-b29e29a84393",
           "result": "saved",
           "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
           "runtimeApplied": true,
@@ -337,16 +337,16 @@
     },
     "superseded": {
       "request": {
+        "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 2.0
         },
-        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
-        "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
-        "requestCreatedAt": 1795239823528
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "5988e248355b",
+        "auditID": "31a261136ea5",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Current settings differ from this request; no write was repeated",
@@ -363,7 +363,7 @@
           "outcome": "ok",
           "persisted": false,
           "readback": false,
-          "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
+          "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
           "result": "failed",
           "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
           "runtimeApplied": false,
@@ -391,16 +391,16 @@
     },
     "known_ok_read_failed": {
       "request": {
+        "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 2.0
         },
-        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
-        "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
-        "requestCreatedAt": 1795239823528
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "42f68a600f8a",
+        "auditID": "199be4a54ee5",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "The previous outcome has no current verified runtime receipt; no write was repeated",
@@ -414,7 +414,7 @@
           "outcome": "ok",
           "persisted": false,
           "readback": false,
-          "requestID": "163eab61-f86b-481f-9691-18e98c9a2e59",
+          "requestID": "72deb5dd-781f-5659-b732-c217f916eaf5",
           "result": "failed",
           "runtimeApplied": false,
           "source": "infisical",
@@ -430,12 +430,12 @@
     },
     "cancelled": {
       "request": {
-        "action": "reconcile",
-        "requestID": "74f90915-1114-482b-9d5d-17ea6eb7948b",
-        "requestCreatedAt": 1795239823585
+        "requestID": "82b9179d-6780-5f45-b739-7483138504cd",
+        "requestCreatedAt": 1794635900000,
+        "action": "reconcile"
       },
       "response": {
-        "auditID": "d19bf6363821",
+        "auditID": "e667a32c8454",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "This absent request was durably cancelled; its ID cannot write",
@@ -450,7 +450,7 @@
           "outcome": "refused",
           "persisted": false,
           "readback": false,
-          "requestID": "74f90915-1114-482b-9d5d-17ea6eb7948b",
+          "requestID": "82b9179d-6780-5f45-b739-7483138504cd",
           "result": "failed",
           "runtimeApplied": false,
           "source": "infisical",
@@ -466,16 +466,16 @@
     },
     "early_refused": {
       "request": {
+        "requestID": "2241ebfd-c9e0-5b11-a032-849a02703ec2",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "daemon.coalesce_seconds": 5.0
         },
-        "expectBaseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
-        "requestID": "2cc975ae-1198-4e6a-b65f-eae0c1a4bbb5",
-        "requestCreatedAt": 1795239823591
+        "expectBaseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3"
       },
       "response": {
-        "auditID": "12b29fc4f559",
+        "auditID": "8eb2d66ae109",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Configure the required binding OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
@@ -489,7 +489,7 @@
           "persisted": false,
           "readback": false,
           "refusalCode": "writer_not_configured",
-          "requestID": "2cc975ae-1198-4e6a-b65f-eae0c1a4bbb5",
+          "requestID": "2241ebfd-c9e0-5b11-a032-849a02703ec2",
           "requiredBinding": "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
           "result": "failed",
           "runtimeApplied": false,
@@ -545,13 +545,13 @@
     },
     "initialized": {
       "request": {
+        "requestID": "d1fea7f2-52e0-5ec7-a645-b19f08b32770",
+        "requestCreatedAt": 1794635900000,
         "action": "initialize",
-        "expectBaseSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
-        "requestID": "594fda71-8748-4a00-b00d-e3223096bf20",
-        "requestCreatedAt": 1795239823602
+        "expectBaseSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30"
       },
       "response": {
-        "auditID": "b5c0092c1cba",
+        "auditID": "075dda92c67b",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "canonical settings initialized and read back; runtime source is not activated",
@@ -566,7 +566,7 @@
           "outcome": "ok",
           "persisted": true,
           "readback": true,
-          "requestID": "594fda71-8748-4a00-b00d-e3223096bf20",
+          "requestID": "d1fea7f2-52e0-5ec7-a645-b19f08b32770",
           "result": "initialized",
           "revision": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
           "runtimeApplied": false,
@@ -633,16 +633,16 @@
     },
     "bracket_true": {
       "request": {
+        "requestID": "4b0afaa7-a4de-59e2-9d78-0faf7aa018b0",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "seat.GROK.bracket_recipient_wakes": true
         },
-        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
-        "requestID": "f8f5c8bc-075b-448d-b124-617fc7e64797",
-        "requestCreatedAt": 1795239823627
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "13b3843ddf8c",
+        "auditID": "212f1624c499",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -663,7 +663,7 @@
             "ok": true,
             "revision": "f2d991160da510082bd050d132125f3126f9e6c5aaea79dbae65e5adc57fa804"
           },
-          "requestID": "f8f5c8bc-075b-448d-b124-617fc7e64797",
+          "requestID": "4b0afaa7-a4de-59e2-9d78-0faf7aa018b0",
           "result": "saved",
           "revision": "f2d991160da510082bd050d132125f3126f9e6c5aaea79dbae65e5adc57fa804",
           "runtimeApplied": true,
@@ -692,16 +692,16 @@
     },
     "bracket_false": {
       "request": {
+        "requestID": "38be78b8-e74e-57fb-b04f-e85edbbef81c",
+        "requestCreatedAt": 1794635900000,
         "action": "save",
         "set": {
           "seat.GROK.bracket_recipient_wakes": false
         },
-        "expectBaseSHA256": "f2d991160da510082bd050d132125f3126f9e6c5aaea79dbae65e5adc57fa804",
-        "requestID": "6dac4330-a72d-4702-9646-0ddf45e43510",
-        "requestCreatedAt": 1795239823640
+        "expectBaseSHA256": "f2d991160da510082bd050d132125f3126f9e6c5aaea79dbae65e5adc57fa804"
       },
       "response": {
-        "auditID": "5e5be829835f",
+        "auditID": "1175fd79d051",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -722,7 +722,7 @@
             "ok": true,
             "revision": "b0f8c56c1067c752c7f7fb4da94f491ebb1471b69d31ac1aa009c3f1cfd4db8d"
           },
-          "requestID": "6dac4330-a72d-4702-9646-0ddf45e43510",
+          "requestID": "38be78b8-e74e-57fb-b04f-e85edbbef81c",
           "result": "saved",
           "revision": "b0f8c56c1067c752c7f7fb4da94f491ebb1471b69d31ac1aa009c3f1cfd4db8d",
           "runtimeApplied": true,

@@ -44,7 +44,7 @@ zulip_post   channel=<channel>   topic="<ID> <subject>"   to="<Peer Display Name
 
 `to` adds the `@**Name**` that wakes the peer; the bracket label alone wakes nobody.
 
-Put the same claim on the Linear issue.  The MCP tool `linear_claim` takes the claim over once the peer has released it; while the peer still holds it the hosted claim is refused (the `simple-board` CLI fallback still takes `--steal --reason "picking up <SEAT> cap"`), so use `linear_comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
+Put the same claim on the Linear issue.  The MCP tool `linear_claim` takes the claim over once the peer has released it; while the peer still holds it the claim is refused unless `steal` is set with a reason (every route takes it:  the hosted tool's `steal` + `reason`, or the CLI's `--steal --reason "picking up <SEAT> cap"`), so use `linear_comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
 
 Never take over a stale claim silently.  Post your own `CLAIMED` in the same topic so the history shows the handoff.
 

@@ -415,9 +415,11 @@ struct ServerSettingsAllowlist: Equatable {
             return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
         case "seats":
-            guard let items = bound(object["maxItems"]), items == items.rounded(), (1...64).contains(items),
-                  let length = bound(object["maxLength"]), length == length.rounded(), (1...32).contains(length) else { return nil }
-            return .seats(maxItems: Int(items), maxLength: Int(length))
+            guard let count = bound(object["maxItems"]), count == count.rounded(),
+                  (1.0...64.0).contains(count),
+                  let length = bound(object["maxLength"]), length == length.rounded(),
+                  (1.0...32.0).contains(length) else { return nil }
+            return .seats(maxItems: Int(count), maxLength: Int(length))
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
             guard !nested, let keys = object["keys"] as? [String: Any], !keys.isEmpty else { return nil }
@@ -892,6 +894,10 @@ struct ServerSettingRow: Identifiable, Equatable {
 
     var editText: String {
         if case .pairs? = control { return ServerPresenceTopics.canonical(effective, names: channelNames)?.json ?? "[]" }
+        if case .seats? = control {
+            if case .list? = effective { return effective?.json ?? "[]" }
+            return "[]"
+        }
         return effective?.fieldText ?? ""
     }
 
@@ -982,6 +988,26 @@ enum ServerSettingsCopy {
                 ? word.uppercased()
                 : word.prefix(1).uppercased() + word.dropFirst()
         }.joined(separator: " ")
+    }
+}
+
+enum ServerSeatNames {
+    static func text(from draft: String) -> String {
+        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
+        let names = values.compactMap { value -> String? in
+            if case .text(let name) = value { return name }
+            return nil
+        }
+        guard names.count == values.count else { return "" }
+        return names.joined(separator: ", ")
+    }
+
+    static func draft(from text: String) -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "[]" }
+        let names = text.components(separatedBy: ",").map {
+            ServerSettingValue.text($0.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return ServerSettingValue.list(names).json ?? ""
     }
 }
 
@@ -1088,7 +1114,7 @@ enum ServerSettingsBuilder {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
                 case .pairs: return .pairs
-                case .seats(let items, let length): return .seats(maxItems: items, maxLength: length)
+                case .seats(let count, let length): return .seats(maxItems: count, maxLength: length)
                 case .seatEnv:
                     guard let sub else { return nil }
                     let existing: String?
@@ -1117,7 +1143,8 @@ enum ServerSettingsBuilder {
             var control = control(spec)
             var reason: String?
             if control == nil {
-                if case .seats = spec { reason = ServerSettingsCopy.seats } else { reason = ServerSettingsCopy.pairs }
+                if case .seats = spec { reason = ServerSettingsCopy.seats }
+                else { reason = ServerSettingsCopy.pairs }
             }
             if reason == nil, !isStructure {
                 reason = ServerSettingsCopy.knobHome
@@ -1191,7 +1218,10 @@ enum ServerSettingsBuilder {
             reference = ServerSettingsReferences.isName(trimmed) && names.contains(trimmed)
         } else { reference = false }
         let structured: Bool
-        switch control { case .pairs, .seats: structured = true; default: structured = false }
+        switch control {
+        case .pairs, .seats: structured = true
+        default: structured = false
+        }
         guard reference || structured || !looksLikeCredential(trimmed) else {
             return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id, verifiedFields: verified)))
         }
@@ -1219,15 +1249,18 @@ enum ServerSettingsBuilder {
             let isWhole = !trimmed.contains(".") && !trimmed.lowercased().contains("e")
             if isWhole, let whole = Int(trimmed) { return .success(.int(whole)) }
             return .success(.number(number))
-        case .seats(let maxItems, let maxLength):
-            guard case .list(let seats)? = ServerSettingJSON.parse(trimmed), seats.count <= maxItems else {
-                return invalid("needs at most \(maxItems) seat names.")
+        case .seats(let count, let length):
+            guard case .list(let seats)? = ServerSettingJSON.parse(trimmed), seats.count <= count else {
+                return invalid("needs at most \(count) seat names.")
             }
-            for seat in seats {
-                guard case .text(let name) = seat, !name.isEmpty, name.count <= maxLength,
-                      name.range(of: "^[A-Z0-9][A-Z0-9_-]*$", options: .regularExpression) != nil,
-                      !looksLikeCredential(name) else {
-                    return invalid("needs nonsecret uppercase seat names.")
+            for (index, seat) in seats.enumerated() {
+                guard case .text(let name) = seat else { return invalid("needs a list of seat names.") }
+                if looksLikeCredential(name) {
+                    return .failure(.notAValue(ServerSettingsCopy.credentialShaped("\(row.id)[\(index)]", verifiedFields: verified)))
+                }
+                guard !name.isEmpty, name.count <= length,
+                      name.range(of: "^[A-Z0-9][A-Z0-9_-]*$", options: .regularExpression) != nil else {
+                    return invalid("needs uppercase seat names of 1 to \(length) characters.")
                 }
             }
             return .success(.list(seats))

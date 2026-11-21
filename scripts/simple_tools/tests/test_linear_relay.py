@@ -214,13 +214,17 @@ class Topic:
         self.sloppy = False  # answer `since` with the whole topic, as if the id were ignored
         self.cap: int | None = None
 
-    def whole(self, stream_id: int, topic: str) -> list[dict]:
+    def whole(
+        self, stream_id: int, topic: str, deadline: float | None = None
+    ) -> list[dict]:
         self.whole_calls += 1
         if self.whole_error is not None:
             raise self.whole_error
         return list(self.topics.get(topic, self.messages))[: self.cap]
 
-    def since(self, stream_id: int, topic: str, after_id: int) -> list[dict]:
+    def since(
+        self, stream_id: int, topic: str, after_id: int, deadline: float | None = None
+    ) -> list[dict]:
         self.since_calls.append((stream_id, topic, after_id))
         if self.error is not None:
             raise self.error
@@ -1833,8 +1837,10 @@ class CatchUpTests(WorkerCase):
         self.topic.messages = [past(mid, "m%d" % mid) for mid in range(1, 7)]
         stops = [3]  # the next read stops after this message, once
 
-        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
-            got = self.topic.since(stream_id, topic, after_id)
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            got = self.topic.since(stream_id, topic, after_id, deadline)
             if stops:
                 limit = stops.pop()
                 got = [item for item in got if item["id"] <= limit]
@@ -2142,8 +2148,10 @@ class CatchUpTests(WorkerCase):
             first.handle_event(message(10 * n + 1, topic, "hello"))
         bad: list = []
 
-        def since(stream_id: int, topic: str, after_id: int) -> object:
-            return bad[0] if bad else self.topic.since(stream_id, topic, after_id)
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> object:
+            return bad[0] if bad else self.topic.since(stream_id, topic, after_id, deadline)
 
         second = self.worker(history=self.topic.whole, history_since=since)
         for n, answer in enumerate(answers):
@@ -2349,6 +2357,671 @@ class CatchUpTests(WorkerCase):
         second = self.worker()
         second.handle_event(message(5, "AFC-1 relay", "live again"))
         self.assertEqual(self.entry()["seen"], [1, 5])
+
+
+class ReadablePostTests(WorkerCase):
+    """AFC-847:  the comment carries the whole post, as readable text.
+
+    The relay used to cut every post at 280 characters, collapse its line structure into
+    one line and escape its markup, so a reader of the Linear comment saw a fragment of
+    a post, not the post.  Now the post is converted to Markdown, shown whole up to a
+    bound, and every cut says what it left out.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.w = self.worker(history=self.topic.whole)
+
+    def old_entry(self, quote: str = "the old cut text") -> dict:
+        """An entry as an older build wrote it:  no render format, and a quote that was
+        cut at 280 characters."""
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        del entry["format"]
+        entry["comment_id"] = "c1"
+        entry["count"] = 1
+        entry["seen"] = [1]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": quote}
+        ]
+        self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")] = entry
+        return entry
+
+    # -- the whole post ------------------------------------------------------------------
+    def test_a_post_is_shown_whole_and_keeps_its_line_structure(self) -> None:
+        post = "first line\n\nsecond line\n\n" + "x" * 500
+        self.w.handle_event(message(1, "AFC-1 relay", post))
+        body = self.lin.created[0][1]
+        self.assertIn("first line", body)
+        self.assertIn("second line", body)
+        self.assertIn("x" * 500, body)  # the whole post, not a fragment of it
+
+    def test_a_valid_post_over_four_thousand_characters_is_shown_whole(self) -> None:
+        # Zulip accepts a message of 10,000 characters, and the mirror shows one whole.
+        self.w.handle_event(message(1, "AFC-1 relay", "p" * 6000))
+        body = self.lin.created[0][1]
+        self.assertIn("p" * 6000, body)
+        self.assertNotIn("characters of this message are not shown.", body)
+
+    def test_a_topic_of_several_long_posts_fits_the_comment(self) -> None:
+        # Five posts of 9,000 characters are 45,000 characters, inside the comment's bound.
+        for mid in range(1, 6):
+            self.w.handle_event(message(mid, "AFC-1 relay", "p" * 9000))
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertLessEqual(len(body), lr.COMMENT_CHARS)
+        for mid in range(1, 6):
+            self.assertIn("near/%d)" % mid, body)
+        self.assertNotIn("characters of this topic are not shown.", body)
+
+    def test_the_ledger_holds_bounded_text_per_entry(self) -> None:
+        # Twenty posts of 9,000 characters would be 180,000 characters, and no comment can
+        # show that, so the entry holds only the text a comment can show.
+        for mid in range(1, 21):
+            self.w.handle_event(message(mid, "AFC-1 relay", "p" * 9000))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        held = sum(len(item["quote"]) for item in entry["links"])
+        self.assertLessEqual(held, lr.MAX_ENTRY_TEXT)
+        self.assertLess(len(entry["links"]), lr.MAX_LINKS_SHOWN)
+        self.assertEqual(entry["count"], 20)  # every message was mirrored
+
+    def test_a_post_past_the_message_bound_is_cut_and_says_so(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "y" * (lr.MESSAGE_CHARS + 100)))
+        body = self.lin.created[0][1]
+        self.assertIn("100 characters of this message are not shown.", body)
+        self.assertNotIn("y" * (lr.MESSAGE_CHARS + 1), body)
+
+    def test_the_comment_body_is_bounded_and_says_what_it_left_out(self) -> None:
+        for mid in range(1, 11):
+            self.w.handle_event(message(mid, "AFC-1 relay", "z" * 9000))
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertLessEqual(len(body), lr.COMMENT_CHARS)
+        self.assertRegex(body, r"_\d+ characters of this topic are not shown\._")
+        self.assertIn("near/10)", body)  # the newest post is in
+        self.assertLess(body.count("near/"), 10)  # the oldest ones are out, and it says so
+
+    def test_a_link_in_a_post_is_shown_and_never_becomes_a_live_link(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "see [the docs](https://example.com/x)"))
+        body = self.lin.created[0][1]
+        self.assertIn("the docs", body)
+        self.assertIn("https://example.com/x", body)
+        self.assertNotIn("see [the docs]", body)  # not a link:  the opener is escaped
+
+    def test_a_mention_in_a_post_never_becomes_a_live_mention(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello @**MiniMax**"))
+        body = self.lin.created[0][1]
+        self.assertIn("@\u200bMiniMax", body)
+
+    def test_a_link_behind_an_escaped_backslash_is_never_live(self) -> None:
+        # Two backslashes in front of a link do not escape it:  the bracket has to be
+        # escaped again, or the link is live (Sentry, PR 2340).
+        raw = "a " + chr(92) * 2 + "[b](http://evil) and [ok](http://x)"
+        text = lr.post_text(raw)
+        for marker in ("[b]", "[ok]"):
+            index = text.index(marker)
+            slashes = 0
+            back = index - 1
+            while back >= 0 and text[back] == chr(92):
+                slashes += 1
+                back -= 1
+            self.assertEqual(slashes % 2, 1, marker)  # an odd count escapes the bracket
+
+    def test_a_cut_inside_a_code_block_closes_the_fence(self) -> None:
+        # A post cut in the middle of a code block must not leave the fence open:  the
+        # rest of the comment would render as code (Sentry, PR 2340).
+        raw = "```python\n" + ("print(1)\n" * 2000)
+        text = lr.post_text(raw)
+        self.assertEqual(text.count("```"), 2)  # the fence is closed where the post stops
+        self.assertTrue(text.endswith("characters of this message are not shown._"))
+
+    # -- the credential scan runs over the converted text ---------------------------------
+    def test_a_markup_attribute_cannot_trip_the_credential_scan(self) -> None:
+        # A long hex run in an attribute is markup, not text:  the conversion drops it, so
+        # it can no longer withhold a post whole.
+        sha = "a" * 40
+        html = '<p>the commit is here</p><p><span class="mention" data-sha="%s">@x</span></p>' % sha
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertNotIn(lr.WITHHELD, body)
+        self.assertIn("the commit is here", body)
+        self.assertNotIn(sha, body)
+
+    def test_a_long_hex_run_in_the_text_is_still_withheld_whole(self) -> None:
+        # The text itself is still scanned:  this is the row AFC-834 is about, and this
+        # change does not touch it.
+        sha = "a" * 40
+        self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(sha, body)
+
+    def test_a_credential_inside_a_link_url_is_still_withheld_whole(self) -> None:
+        token = "ghp_" + "fake" * 9
+        html = '<p><a href="https://example.com/%s">the link</a></p>' % token
+        self.w.handle_event(message(1, "AFC-1 relay", html))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(token, body)
+
+    # -- the repair of the comments an older build wrote ----------------------------------
+    def test_a_comment_an_older_build_wrote_is_re_rendered_from_zulip(self) -> None:
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "the whole post\n\nwith its lines")]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the whole post\n\nwith its lines")
+        self.t[0] += 600
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("the whole post", body)
+        self.assertIn("with its lines", body)
+        self.assertNotIn("the old cut text", body)
+        self.assertIn("Re-rendered from Zulip", body)  # the comment says what happened
+        self.assertTrue(any("re-rendered the quotes" in line for line in self.logs))
+
+    def test_the_repair_keeps_the_mention_and_the_credential_protections(self) -> None:
+        # A post that is rendered again from Zulip is protected the way a new post is:  a
+        # mention is never live, and a credential-shaped post is withheld whole.
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "hello @**MiniMax**")]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertIn("@\u200bMiniMax", entry["links"][0]["quote"])
+        token = "ghp_" + "fake" * 9
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "token: %s" % token)]
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(entry["links"][0]["quote"], lr.WITHHELD)
+        self.assertNotIn(token, entry["links"][0]["quote"])
+
+    def test_a_stale_comment_is_re_rendered_by_the_cycle(self) -> None:
+        # A topic that stays silent is repaired anyway:  the cycle reads it back.
+        self.old_entry()
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the whole post")
+        self.assertIn("the whole post", self.lin.updated[-1][1])
+
+    def test_a_repair_that_covers_only_part_of_the_entry_is_not_a_whole_repair(self) -> None:
+        # The entry holds two messages and the read holds one of them:  the entry stays
+        # stale, so a later cycle tries again, and the comment says what was not read
+        # back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)  # a later try is due
+        self.assertEqual(entry["links"][0]["quote"], "the whole post")
+        self.assertEqual(entry["links"][1]["quote"], "the other cut text")
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) were not read back from Zulip", body)
+
+    def test_a_repair_read_that_runs_out_of_time_leaves_the_entry_due(self) -> None:
+        # The pages of the repair read share one deadline, so a walk that runs out of
+        # time stops there and the entry stays due for a later try (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 3
+        entry["seen"] = [1, 2, 3]
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut %d" % mid}
+            for mid in (1, 2, 3)
+        ]
+        self.topic.messages = [past(1, "one"), past(2, "two"), past(3, "three")]
+        self.topic.cap = 1
+        clock = {"now": 1000.0}
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            clock["now"] += 40  # the page takes the clock past the deadline
+            return self.topic.since(stream_id, topic, after_id, deadline)
+
+        with mock.patch.object(lr.time, "monotonic", lambda: clock["now"]):
+            self.w = self.worker(history=self.topic.whole, history_since=since)
+            self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][1]["quote"], "two")  # the page before the deadline
+        self.assertEqual(entry["links"][2]["quote"], "cut 3")  # the one after it
+
+    def test_a_repair_that_changes_nothing_leaves_the_comment_alone(self) -> None:
+        # The note about the messages that were not read back is empty here, and an
+        # empty note is not a change, so the comment is not written again (Kody, PR
+        # 2340).
+        entry = self.old_entry(quote="the whole post")
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual(self.lin.updated, [])
+
+    def test_an_empty_page_that_could_not_be_parsed_does_not_end_the_topic(self) -> None:
+        # A page the reader could not parse is empty as well, and it says nothing about
+        # the end of the topic, so the entry stays due (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            return [{"id": "no id at all"}]  # the reader cannot place it, so the page is empty
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertNotIn("no longer in Zulip", self.lin.updated[-1][1])
+
+    def test_a_repair_read_that_starts_with_an_empty_page_reads_on(self) -> None:
+        # The first page came back empty, and the walk goes on from the start of the
+        # topic with a cursor that is safe, so the entry's own messages are still read
+        # back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+
+        seen_after_ids: list[int] = []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            seen_after_ids.append(after_id)
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
+        self.assertEqual(seen_after_ids, [0])  # the walk starts at the beginning of the topic
+
+    def test_a_missing_legacy_row_reaches_the_comment_when_nothing_else_changed(self) -> None:
+        # The sibling's quote did not change, but a message that is gone from Zulip is
+        # marked as gone, and the comment says so (Jet, PR 2340).
+        entry = self.old_entry(quote="the whole post")
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the whole post"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the missing cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post"), past(3, "a later message")]
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
+
+    def test_the_repair_read_hands_every_reader_the_same_deadline(self) -> None:
+        # The first read of a repair and the pages that follow it share one budget, so
+        # the whole repair read is bounded in time (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+        seen: list[float | None] = []
+
+        def whole(
+            stream_id: int, topic: str, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertTrue(seen)  # every reader of the repair got a deadline
+        self.assertTrue(all(deadline is not None for deadline in seen))
+        self.assertEqual(len(set(seen)), 1)  # and it was the same one
+
+    def test_a_repair_read_with_a_reader_that_takes_no_deadline_is_refused(self) -> None:
+        # A reader that cannot take the deadline cannot hold a bounded walk, so the
+        # repair is not attempted and the entry stays due (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+
+        def since(stream_id: int, topic: str, after_id: int) -> list[dict]:
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertTrue(any("a repair read was refused" in line for line in self.logs))
+        # The log carries the type of the failure and never its text (Kody, PR 2340).
+        refusals = [line for line in self.logs if "a repair read was refused" in line]
+        self.assertTrue(refusals)
+        self.assertNotIn("deadline, and this one does not", refusals[0])
+
+    def test_a_repair_read_with_a_keyword_only_deadline_works(self) -> None:
+        # A reader whose deadline is keyword-only takes it as a keyword (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut one"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "cut two"},
+        ]
+        self.topic.messages = []
+        seen: list[float | None] = []
+
+        def since(
+            stream_id: int, topic: str, after_id: int, *, deadline: float | None = None
+        ) -> list[dict]:
+            seen.append(deadline)
+            return [past(1, "one"), past(2, "two")]
+
+        self.w = self.worker(history=self.topic.whole, history_since=since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two"])
+        self.assertTrue(seen)  # the deadline reached the reader
+        self.assertTrue(all(deadline is not None for deadline in seen))
+
+    def test_a_failed_repair_of_a_live_message_waits_before_it_is_tried_again(self) -> None:
+        # A repair a topic's next message triggers fails the same way the cycle's does:  the
+        # log carries the type of the failure and never its text, and the entry waits
+        # REFRESH_RETRY before it is tried again (Kody, PR 2340).
+        entry = self.old_entry()
+        self.topic.messages = [past(1, "the whole post")]
+        # The repair itself fails, while the message that triggers it is a good one
+        # (Kody, PR 2340).
+        with mock.patch.object(lr.RelayWorker, "_refresh", side_effect=ValueError("boom")):
+            self.w.handle_event(message(2, "AFC-1 relay", "the next message"))
+        failures = [line for line in self.logs if "the repair of" in line]
+        self.assertTrue(failures)
+        self.assertIn("ValueError", failures[0])
+        # The log carries the type of the failure and never its text (Kody, PR 2340).
+        self.assertNotIn("not an id", failures[0])
+        key = lr.ledger_key("AFC-1", 5, "AFC-1 relay")
+        self.assertGreaterEqual(self.w._refresh_retry.get(key, 0.0), self.t[0] + lr.REFRESH_RETRY)
+
+    def test_a_bad_stored_message_id_does_not_stop_the_other_repairs(self) -> None:
+        # A failure in one entry's repair is logged with its type and does not stop the
+        # repairs of the other entries (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"][0]["mid"] = "not an id"
+        other = lr.new_entry("AFC-1", 6, "deploys", "AFC-1 other", 2)
+        del other["format"]
+        other["comment_id"] = "c2"
+        other["count"] = 1
+        other["seen"] = [2]
+        other["links"] = [
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the old cut text"}
+        ]
+        self.led.entries[lr.ledger_key("AFC-1", 6, "AFC-1 other")] = other
+        self.topic.messages = [past(1, "the whole post")]
+        self.topic.topics["AFC-1 other"] = [past(2, "the whole post")]
+        self.w.tick()
+        self.assertTrue(any("the repair of" in line for line in self.logs))
+        self.assertFalse(any("a repair read was refused" in line for line in self.logs))
+        # The failed entry waits before it is tried again, so the next cycle repairs the
+        # other stale entry instead of failing on the same one (Kody, PR 2340).
+        self.t[0] += 10
+        self.w.tick()
+        self.assertEqual(other["links"][0]["quote"], "the whole post")
+        self.assertEqual(other["format"], lr.RENDER_VERSION)
+
+    def test_a_numeric_gone_flag_counts_as_gone(self) -> None:
+        # The flag comes out of the ledger, so a number means the same as a boolean
+        # (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "gone", "gone": 1},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+
+    def test_a_deleted_newest_message_ends_the_repair(self) -> None:
+        # The read reached the end of the topic, so a message the entry holds that is
+        # newer than that end is gone from Zulip, and the repair ends instead of going
+        # round for ever (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the deleted cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w = self.worker(history=self.topic.whole, history_since=self.topic.since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
+
+    def test_the_note_about_a_message_that_was_not_read_back_reaches_the_comment(self) -> None:
+        # The re-render changed nothing, but the comment still says that a message was
+        # not read back, so the reader is told (Jet, PR 2340).
+        entry = self.old_entry(quote="the whole post")
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the whole post"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the other cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post")]
+        self.w.tick()
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) were not read back from Zulip", body)
+
+    def test_a_repair_reads_past_the_first_page_of_a_busy_topic(self) -> None:
+        # A reader answers the oldest messages of a topic first, up to its cap, so the
+        # repair goes on, page by page, until it reaches the entry's own messages (Jet,
+        # PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 3
+        entry["seen"] = [1, 2, 3]
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "cut %d" % mid}
+            for mid in (1, 2, 3)
+        ]
+        self.topic.messages = [past(1, "one"), past(2, "two"), past(3, "three")]
+        self.topic.cap = 2
+        self.w = self.worker(history=self.topic.whole, history_since=self.topic.since)
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        self.assertEqual([item["quote"] for item in entry["links"]], ["one", "two", "three"])
+        self.assertEqual(self.topic.since_calls, [(5, "AFC-1 relay", 2)])
+
+    def test_a_message_that_is_no_longer_in_zulip_stops_waiting(self) -> None:
+        # The read held a message of this topic, so it is a read of this topic, and a
+        # message of the entry that it passed and did not hold is gone from Zulip:  no
+        # read can bring it back (Jet, PR 2340).
+        entry = self.old_entry()
+        entry["count"] = 2
+        entry["seen"] = [1, 2]
+        entry["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "the old cut text"},
+            {"mid": 2, "sender": "Al", "when": "Nov 18 05:08 UTC", "quote": "the gone cut text"},
+        ]
+        self.topic.messages = [past(1, "the whole post"), past(3, "a later message")]
+        self.w.tick()
+        self.assertEqual(entry["format"], lr.RENDER_VERSION)
+        body = self.lin.updated[-1][1]
+        self.assertIn("1 message(s) are no longer in Zulip", body)
+        self.assertNotIn("were not read back", body)  # it is gone, not waiting
+
+    def test_a_repair_that_cannot_read_the_topic_leaves_the_comment_as_it_is(self) -> None:
+        entry = self.old_entry()
+        self.topic.whole_error = RuntimeError("the topic cannot be read")
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)  # it waits for a later try
+        self.assertEqual(entry["links"][0]["quote"], "the old cut text")
+        self.assertEqual(self.lin.updated, [])
+
+    def test_a_repair_of_another_topic_changes_nothing(self) -> None:
+        # The stored topic is the whitespace-collapsed form, so a read can be of another
+        # topic:  the quotes are then left as they are.
+        entry = self.old_entry()
+        self.topic.messages = [past(9, "a different topic")]
+        self.w.tick()
+        self.assertNotEqual(entry.get("format"), lr.RENDER_VERSION)
+        self.assertEqual(entry["links"][0]["quote"], "the old cut text")
+
+    def test_the_repair_reads_one_topic_a_cycle_and_a_topic_it_cannot_read_waits(self) -> None:
+        # A topic the read does not cover is not read again in the next cycle, and it does
+        # not make the cycle read every stale entry (Sentry, PR 2340).
+        self.old_entry()
+        second = lr.new_entry("AFC-1", 6, "builds", "AFC-1 other", 2)
+        del second["format"]
+        second["comment_id"] = "c2"
+        second["count"] = 1
+        second["seen"] = [2]
+        second["links"] = [{"mid": 2, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}]
+        self.led.entries[self.key("AFC-1", 6, "AFC-1 other")] = second
+        self.topic.messages = [past(9, "a different topic")]
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 1)  # one read a cycle, not one an entry
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 2)  # the second entry is read next
+        self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 2)  # both wait before they are tried again
+
+    def test_a_link_whose_text_holds_a_bracket_is_never_live(self) -> None:
+        # The text of a link can hold a bracket of its own, escaped by the conversion:  the
+        # opener is still found and escaped, so the link is shown and never live
+        # (Kody, PR 2340).
+        text = lr.post_text('<p><a href="https://evil.example">a] b</a></p>')
+        self.assertTrue(text.startswith("\\["), text)
+        self.assertIn("a\\] b", text)
+
+    def test_the_cut_says_how_many_characters_are_really_left_out(self) -> None:
+        # The count covers the whitespace the cut trims as well as the tail (Kody, PR
+        # 2340).
+        raw = "y" * (lr.MESSAGE_CHARS - 2) + "   " + "z" * 50
+        text = lr.post_text(raw)
+        self.assertIn("53 characters of this message are not shown.", text)
+
+    def test_the_code_of_a_post_is_not_defanged(self) -> None:
+        # Code is shown as the sender wrote it:  the at sign inside it is left alone
+        # (Kody, PR 2340).
+        text = lr.post_text("run `mail @MiniMax` and mail @**MiniMax**")
+        self.assertIn("`mail @MiniMax`", text)
+        self.assertIn("@\u200bMiniMax", text)  # the prose mention is still broken
+
+    def test_a_fenced_block_is_not_defanged(self) -> None:
+        text = lr.post_text("```\nmail @**MiniMax**\n```")
+        self.assertIn("mail @**MiniMax**", text)
+
+    def test_a_repair_holds_the_same_text_bound_as_a_new_message(self) -> None:
+        # A repaired entry holds as much text as a new message lets it hold:  the whole
+        # posts do not push the entry past what a comment can show (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"] = [
+            {"mid": mid, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}
+            for mid in range(1, 11)
+        ]
+        entry["seen"] = list(range(1, 11))
+        self.topic.messages = [past(mid, "p" * 9000) for mid in range(1, 11)]
+        self.w.tick()
+        held = sum(len(item["quote"]) for item in entry["links"])
+        self.assertLessEqual(held, lr.MAX_ENTRY_TEXT)
+        self.assertGreater(held, 0)
+
+    def test_a_topic_that_cannot_be_read_is_not_read_again_for_every_message(self) -> None:
+        # A topic that cannot be read waits before it is tried again, so every message of
+        # it does not read it again (Kody, PR 2340).
+        self.old_entry()
+        self.topic.whole_error = RuntimeError("the topic cannot be read")
+        self.w.handle_event(message(2, "AFC-1 relay", "a new message"))
+        self.assertEqual(self.topic.whole_calls, 1)
+        self.w.handle_event(message(3, "AFC-1 relay", "another message"))
+        self.assertEqual(self.topic.whole_calls, 1)  # it waits
+
+    def test_a_post_full_of_brackets_does_not_stall_the_relay(self) -> None:
+        # The scan for the link openers is one pass over the text, so a post full of
+        # brackets cannot stall the relay poll loop (Kody, PR 2340).
+        raw = "[" * 20000 + "](x)"
+        start = time.monotonic()
+        text = lr.post_text(raw)
+        self.assertLess(time.monotonic() - start, 5.0)  # a quadratic scan would not
+        self.assertTrue(text.startswith("\\["), text[:40])  # the opener is escaped
+
+    def test_a_bracket_that_opens_no_link_is_left_alone(self) -> None:
+        # Only the brackets that open a link are escaped:  the prose keeps its own shape
+        # (Kody, PR 2340).
+        text = lr.defang("a [note] and [link](https://x)")
+        self.assertIn("a [note]", text)
+        self.assertIn("\\[link](https://x)", text)
+
+    def test_a_repair_that_trims_the_entry_writes_it_back(self) -> None:
+        # A repair that drops the oldest messages leaves the entry shorter, and the
+        # shorter entry is written back even when no quote changed (Kody, PR 2340).
+        entry = self.old_entry()
+        entry["links"] = [
+            {
+                "mid": mid,
+                "sender": "Al",
+                "when": "Nov 18 05:07 UTC",
+                "quote": "p" * 9000,
+            }
+            for mid in range(1, 11)
+        ]
+        entry["seen"] = list(range(1, 11))
+        self.topic.messages = [past(mid, "p" * 9000) for mid in range(1, 11)]
+        self.led.save()  # the file holds the long entry
+        self.w.tick()
+        saved = json.loads(self.led.path.read_text())["entries"][
+            self.key("AFC-1", 5, "AFC-1 relay")
+        ]["links"]
+        self.assertLess(len(saved), 10)
+
+    def test_without_a_reader_nothing_is_re_rendered(self) -> None:
+        # The standalone relay has no history reader:  its comments keep what they have.
+        worker = self.worker()
+        entry = self.old_entry()
+        worker.tick()
+        self.assertNotIn("format", entry)
+
+    def test_the_repair_reads_a_topic_once_for_two_entries_of_it(self) -> None:
+        # Two entries of one topic share the read of that topic (Kody, PR 2340).
+        self.old_entry()
+        second = lr.new_entry("AFC-2", 5, "builds", "AFC-1 relay", 2)
+        del second["format"]
+        second["comment_id"] = "c2"
+        second["count"] = 1
+        second["seen"] = [1]
+        second["links"] = [
+            {"mid": 1, "sender": "Al", "when": "Nov 18 05:07 UTC", "quote": "old"}
+        ]
+        self.led.entries[self.key("AFC-2", 5, "AFC-1 relay")] = second
+        self.topic.messages = [past(1, "the whole post")]
+        with mock.patch.object(lr, "REFRESH_PER_CYCLE", 2):
+            self.w.tick()
+        self.assertEqual(self.topic.whole_calls, 1)  # one read for the topic, not one an entry
 
 
 if __name__ == "__main__":
