@@ -157,6 +157,20 @@ class UnletteredTests(unittest.TestCase):
         found = OC.opencode_unlettered_sessions(self.env)
         self.assertNotIn(self.SID_LETTERED, found)
 
+    def test_a_chat_with_one_letter_is_not_named(self) -> None:
+        # One letter or two, the shape the registry still reads:  a chat that holds a single
+        # letter from before the pairs rule keeps it until it registers on its own, and the
+        # repair does not move it a pair by force.
+        con = sqlite3.connect(self.store)
+        con.execute(
+            "UPDATE session_v2 SET title = 'A: an old single letter' WHERE id = ?",
+            (self.SID_PLAIN,),
+        )
+        con.commit()
+        con.close()
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_PLAIN, found)
+
     def test_a_chat_marked_for_no_letter_is_not_named(self) -> None:
         found = OC.opencode_unlettered_sessions(self.env)
         self.assertNotIn(self.SID_MARKED, found)
@@ -245,7 +259,9 @@ class UnletteredTests(unittest.TestCase):
         argv = seen[0]
         self.assertIn("session.update", argv)
         self.assertIn("sessionID=" + self.SID_PLAIN, argv)
-        self.assertIn("CC: Mac iOS apps UI UX improvement", argv[-1])
+        # The body is one attached token, so the child can never read it as a flag.
+        self.assertIn("--data=" + json.dumps({"title": "CC: Mac iOS apps UI UX improvement"}), argv)
+        self.assertNotIn("-d", argv)
 
     def test_a_rename_with_no_words_writes_nothing(self) -> None:
         request = PL.TitleRequest(

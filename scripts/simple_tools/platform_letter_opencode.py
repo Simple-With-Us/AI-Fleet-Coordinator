@@ -98,10 +98,12 @@ ENV_PLUGIN_DIR = "OPENCODE_LETTER_PLUGIN_DIR"
 # The names OpenCode gives a chat before anything names it.  A chat with one of them is unnamed.
 DEFAULT_TITLE = re.compile(r"^(?:New session|Child session)(?: - \d{4}-\d{2}-\d{2}T[\d:.]+Z?)?$")
 
-#: The title a lettered chat carries:  the pair, a colon and a space, then the chat's own words.
-#: This is the shape the plugin writes, so a chat whose title does not begin with it holds no
-#: letter.
-LETTERED_TITLE = re.compile(r"^[A-Z]{2}: ")
+#: The title a lettered chat carries:  the letter, a colon and a space, then the chat's own
+#: words.  This is the shape the plugin writes, so a chat whose title does not begin with it
+#: holds no letter.  One letter or two, the shape the registry still reads:  a chat that
+#: holds a single letter from before the pairs rule keeps it until it registers on its own,
+#: and the repair does not move it a pair by force.
+LETTERED_TITLE = re.compile(r"^[A-Z]{1,2}: ")
 
 #: How many chats one unlettered pass names, and how old a chat may be to be named by it.  A
 #: chat that is weeks old is not this pass's business:  the owner is looking at today's chats.
@@ -384,8 +386,9 @@ def opencode_rename(request: PL.TitleRequest) -> bool:
                 "session.update",
                 "--param",
                 "sessionID=" + request.session_id,
-                "-d",
-                body,
+                # The body is one attached token, so the child can never read a value that
+                # begins with a dash as a flag of its own.
+                "--data=" + body,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
