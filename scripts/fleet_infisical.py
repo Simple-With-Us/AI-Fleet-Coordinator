@@ -1,8 +1,10 @@
 """Scoped Infisical service-token reads and allowlisted writes.
 
-Only explicit process bindings are consumed: INFISICAL_TOKEN is read-only and
-INFISICAL_WRITE_TOKEN is a separate writer.  No Keychain, Automation identity,
-CLI login session or credential-file fallback runs.  Values stay in memory.
+The core read and write commands consume explicit process bindings: INFISICAL_TOKEN
+is read-only and INFISICAL_WRITE_TOKEN is a separate writer.  The dedicated
+token_from_store API reads a consumer's existing scoped token from its own host
+store.  No Automation identity, CLI login or shared credential fallback runs.
+Values stay in memory.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import uuid
 from collections import namedtuple
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2328,6 +2331,142 @@ def clear_unsettled_write(
         raise
     except Exception:
         raise WriteError("state_unavailable", intent) from None
+
+
+# A consumer outside the repository can use the same shared client's grant and
+# response checks without a shared token.  This dedicated API reads only that
+# consumer's existing scoped token: the owner's login keychain on the Mac, or a
+# private file on a server.  It never falls back to an ambient token binding.
+SCOPED_KEYCHAIN_SERVICE = "infisical-service-token"
+TOKEN_STORE_DIR = ".config/infisical/tokens"
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+
+
+def _is_macos() -> bool:
+    return sys.platform.startswith("darwin")
+
+
+def _token_file(home: Path, account: str) -> Path:
+    return home / TOKEN_STORE_DIR / (account + ".token")
+
+
+def token_from_store(
+    account: str,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> tuple[str, str]:
+    """Return one consumer token and a status, without exposing the token on failure."""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if not isinstance(account, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account):
+        return "", "no-token"
+    if _is_macos():
+        return _token_from_keychain(account)
+    return _token_from_file(home, account)
+
+
+def _token_from_keychain(account: str) -> tuple[str, str]:
+    command = [SECURITY_BIN, "find-generic-password", "-s", SCOPED_KEYCHAIN_SERVICE,
+               "-a", account, "-w"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise SecretsError("keychain-timeout", 124) from None
+    except FileNotFoundError:
+        return "", "keychain-missing"
+    except (OSError, subprocess.SubprocessError):
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = (result.stdout or "").strip()
+        if not token:
+            return "", "no-token"
+        try:
+            return check_service_token(token), "ok"
+        except SecretsError:
+            return "", "token-unreadable"
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _token_from_file(home: Path, account: str) -> tuple[str, str]:
+    path = _token_file(home, account)
+    if not path.is_absolute():
+        return "", "token-unreadable"
+    uid = os.getuid()
+    opened_file = False
+    try:
+        with ExitStack() as opened:
+            root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            opened.callback(os.close, root_fd)
+            parent_fd = root_fd
+            # Walk from / so even a symlink in HOME's ancestors is refused.
+            # Keep every descriptor open; the final identity check sees renames.
+            directories = []
+            home_depth = len(home.parts) - 1
+            for depth, component in enumerate(path.parts[1:-1], start=1):
+                child_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
+                )
+                opened.callback(os.close, child_fd)
+                info = os.fstat(child_fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    return "", "token-unreadable"
+                if depth >= home_depth and (info.st_uid != uid or info.st_mode & 0o022):
+                    return "", "token-unreadable"
+                if depth == len(path.parts) - 2 and (info.st_mode & 0o777) != 0o700:
+                    return "", "token-unreadable"
+                directories.append((parent_fd, component, info))
+                parent_fd = child_fd
+            leaf = path.name
+            file_fd = os.open(
+                leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            opened_file = True
+            opened.callback(os.close, file_fd)
+            before = os.fstat(file_fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid
+                    or (before.st_mode & 0o777) != 0o600 or before.st_size > 65536):
+                return "", "token-unreadable"
+            data = os.read(file_fd, 65537)
+            after = os.fstat(file_fd)
+            if (len(data) != before.st_size or os.read(file_fd, 1)
+                    or (before.st_dev, before.st_ino, before.st_size,
+                        before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size,
+                        after.st_mtime_ns, after.st_ctime_ns)):
+                return "", "token-unreadable"
+            leaf_now = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if (leaf_now.st_dev, leaf_now.st_ino, leaf_now.st_mode, leaf_now.st_uid,
+                    leaf_now.st_size, leaf_now.st_mtime_ns, leaf_now.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                return "", "token-unreadable"
+            for parent, component, info in directories:
+                current = os.stat(component, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino, current.st_mode, current.st_uid,
+                        current.st_ctime_ns) != (
+                        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_ctime_ns):
+                    return "", "token-unreadable"
+            raw = data.decode("utf-8")
+    except FileNotFoundError:
+        return "", "token-unreadable" if opened_file else "no-token"
+    except (OSError, UnicodeDecodeError):
+        return "", "token-unreadable"
+    token = raw.strip()
+    if not token:
+        return "", "no-token"
+    try:
+        return check_service_token(token), "ok"
+    except SecretsError:
+        return "", "token-unreadable"
 
 
 if __name__ == "__main__":
