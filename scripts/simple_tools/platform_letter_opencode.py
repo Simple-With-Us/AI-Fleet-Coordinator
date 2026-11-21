@@ -75,9 +75,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import sqlite3
+import subprocess
 import sys
+import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import quote
 
 from . import platform_letter as PL
 
@@ -89,8 +95,23 @@ PACKAGE_DIRNAME = "simple_tools"
 # A plugin directory to list instead of the checkout's own (a test).
 ENV_PLUGIN_DIR = "OPENCODE_LETTER_PLUGIN_DIR"
 
-# The names OpenCode gives a chat before anything names it.  A chat with one of them is unnamed.
+# The names OpenCode gives a chat before anything names it.  A chat with one of them is unnamed.
 DEFAULT_TITLE = re.compile(r"^(?:New session|Child session)(?: - \d{4}-\d{2}-\d{2}T[\d:.]+Z?)?$")
+
+#: The title a lettered chat carries:  the pair, a colon and a space, then the chat's own words.
+#: This is the shape the plugin writes, so a chat whose title does not begin with it holds no
+#: letter.
+LETTERED_TITLE = re.compile(r"^[A-Z]{2}: ")
+
+#: How many chats one unlettered pass names, and how old a chat may be to be named by it.  A
+#: chat that is weeks old is not this pass's business:  the owner is looking at today's chats.
+UNLETTERED_SCAN = 50
+UNLETTERED_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
+
+#: The store OpenCode keeps its chats in on this host, and the table the live rows are in.
+STORE_REL = os.path.join(".local", "share", "opencode", "opencode.db")
+#: How long a title write to the runtime may take.
+RENAME_TIMEOUT = 20
 
 
 def _text(value: object) -> str:
@@ -120,6 +141,188 @@ def opencode_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = N
     return "" if DEFAULT_TITLE.match(title) else title
 
 
+# --------------------------------------------------------------------------------------------
+# The store, and the chats the plugin did not see
+# --------------------------------------------------------------------------------------------
+
+
+def store_path(env: Mapping[str, str]) -> Path:
+    """The OpenCode runtime store this host keeps its chats in.
+
+    It is the runtime's own file, read only, and it holds every chat of every project on this
+    host:  the plugin inside OpenCode hears a chat's own events and nothing else, so a chat that
+    went quiet before the plugin was loaded keeps its own name and takes no letter until
+    something reaches it.  This store is what names those chats."""
+    explicit = (env.get("OPENCODE_WAKE_STORE") or env.get("OPENCODE_STORE") or "").strip()
+    if explicit:
+        return Path(explicit)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return Path(home) / STORE_REL
+
+
+def _chat_rows(env: Mapping[str, str]) -> list[dict[str, Any]] | None:
+    """Every chat on this host, newest first, read only.  None when the store is not there.
+
+    The live table is `session_v2`:  `id`, the title the chat shows, the chat that started it,
+    the archive stamp and the time it was created.  A store this old cannot say what it holds
+    answers None, and a pass that cannot say is no pass."""
+    db = store_path(env)
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(
+            "file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+        )
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT id, title, parent_id, time_archived, time_created FROM session_v2 "
+            "ORDER BY time_created DESC"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [
+        {
+            "id": str(row[0] or ""),
+            "title": str(row[1] or ""),
+            "parent_id": str(row[2] or ""),
+            "archived": row[3],
+            "created": row[4],
+        }
+        for row in rows
+        if row and row[0]
+    ]
+
+
+def _archived(value: object) -> bool:
+    """Whether the archive stamp says this chat is archived.  The stamp is a millisecond time or
+    nothing at all, so anything that is not a positive number reads as not archived."""
+    try:
+        return int(value or 0) > 0
+    except (TypeError, ValueError):
+        return True
+
+
+def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's OpenCode chats that hold no letter on their title, newest first, for the
+    repair a chat's start sets off (`platform_letter.repair_after_start`).
+
+    The plugin hears a chat's own events, so a chat that went quiet before the plugin was
+    loaded keeps the name OpenCode gave it and takes no letter until something reaches it:  the
+    plugin's own events never come for it.  This is the list of those chats, so the fleet's one
+    repair pass can letter them.
+
+    Ids only, bounded by the count and by the age, and any doubt leaves a chat out:  a chat
+    marked for no letter takes none, an archived chat is over, a chat that already carries a
+    letter is lettered, and a chat whose title is the runtime's own default name is not a chat
+    anybody is looking at.  A store that is not there answers None:  no pass this time."""
+    rows = _chat_rows(env)
+    if rows is None:
+        return None
+    now = time.time()
+    found: list[str] = []
+    for row in rows:
+        if len(found) >= UNLETTERED_SCAN:
+            break
+        title = PL.one_line(row["title"])
+        if not title or DEFAULT_TITLE.match(title):
+            continue
+        if no_letter(title):
+            continue  # a chat marked for no letter takes none
+        if LETTERED_TITLE.match(title):
+            continue  # it holds a letter already
+        if _archived(row["archived"]):
+            continue
+        created = row["created"]
+        try:
+            age = now - (int(created) / 1000.0)
+        except (TypeError, ValueError):
+            age = 0.0
+        if age > UNLETTERED_MAX_AGE_SECONDS:
+            continue
+        found.append(row["id"])
+    return found
+
+
+def opencode_chat_payload(sid: str) -> Mapping[str, Any]:
+    """A chat's own start event, as the library's question about a chat the plugin did not fire
+    for:  the chat's id, the chat that started it, and the name OpenCode shows it under.
+
+    The parent is in the payload, so a chat another chat started registers after that parent and
+    takes the pair after the parent's, the way a chat the plugin saw takes it."""
+    env = os.environ
+    rows = _chat_rows(env) or []
+    for row in rows:
+        if row["id"] != sid:
+            continue
+        payload: dict[str, Any] = {
+            "event": "start",
+            "session_id": sid,
+            "source": "startup",
+            "title": row["title"],
+        }
+        if row["parent_id"]:
+            payload["parent_session_id"] = row["parent_id"]
+        return payload
+    return {"event": "start", "session_id": sid, "source": "startup"}
+
+
+def _opencode_binary(env: Mapping[str, str]) -> str | None:
+    """The `opencode` CLI on this host:  the setting, then PATH, then the runtime's own folder."""
+    for candidate in (env.get("OPENCODE_BIN"), shutil.which("opencode", path=env.get("PATH"))):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    packaged = os.path.join(home, ".opencode", "bin", "opencode")
+    if os.path.isfile(packaged) and os.access(packaged, os.X_OK):
+        return packaged
+    return None
+
+
+def opencode_rename(request: PL.TitleRequest) -> bool:
+    """Put the title on the chat, through the runtime's own API.
+
+    The plugin writes titles itself (`ctx.session.update`), but the library's repair pass runs
+    outside OpenCode, so it needs the runtime's own way in.  `opencode api session.update` is
+    that way:  the CLI finds the running service and holds its own credentials, so nothing here
+    reads a service password and nothing is written to disk.
+
+    A chat with no descriptive name yet is left alone:  OpenCode names a chat itself, from its
+    first message, and a name put on it before the runtime has said anything is one the runtime
+    puts its own over."""
+    words = str(request.words or "").strip()
+    if not request.session_id or not words or words == PL.PLACEHOLDER:
+        return False
+    env = request.env
+    binary = _opencode_binary(env)
+    if not binary:
+        return False
+    body = json.dumps({"title": request.title}, ensure_ascii=False)
+    try:
+        done = subprocess.run(
+            [
+                binary,
+                "api",
+                "session.update",
+                "--param",
+                "sessionID=" + request.session_id,
+                "-d",
+                body,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=RENAME_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -133,11 +336,10 @@ SPEC = PL.PlatformSpec(
     close_reasons=("archived", "deleted"),
     output="json",
     title_in_output=True,
+    title_writer=opencode_rename,
     session_env=("OPENCODE_SESSION_ID",),
-    unlettered_feed=(
-        "hook-only:  the plugin inside OpenCode hears every chat's own events and the adapter reads no OpenCode store,"
-        " so there is no list of chats to ask;  a chat with no letter asks again at its next prompt"
-    ),
+    chat_payload=opencode_chat_payload,
+    unlettered_sessions=opencode_unlettered_sessions,
 )
 
 
