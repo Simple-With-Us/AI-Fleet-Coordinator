@@ -28,7 +28,7 @@ class SyncTests(unittest.TestCase):
             "GH_TOKEN": self.value,
             core.ENV_PROJECT: PROJECT,
             core.ENV_TOKEN: self.reader,
-            core.ENV_WRITE_TOKEN: self.writer,
+            core.WRITE_TOKEN_ENV_NAME: self.writer,
         }
         self.intents, self.puts = [], []
         self.settled_receipts = {}

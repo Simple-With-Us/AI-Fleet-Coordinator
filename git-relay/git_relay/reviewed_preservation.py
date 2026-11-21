@@ -1,4 +1,4 @@
-"""Exact reviewed fixture preservation. Proposal only: registry is empty.
+"""Exact reviewed fixture preservation, scoped to approved source/output pairs.
 
 No raw-upload exemption. The server must fetch the pinned same-path base.
 Dedicated content stays refused unless an immutable source/output pair is
@@ -16,7 +16,18 @@ from .provenance_patch import MAX_BYTES, apply_patch
 
 # (repository, destination path, complete source SHA256, complete result SHA256).
 # Source review does not itself approve the security-policy change.
-REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset()
+REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset(
+    {
+        # Owner-approved AFC-797 public test signatures; complete review and
+        # provenance: docs/security/reviewed-muster-vector-preservation.md.
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fixtures/muster-vectors-v5.json",
+            "0fca2cb4b79206e4eca627bfa6b9632db743ef2c3ff0ada0152c4bdcead32ab0",
+            "73fd3d71ee62c617c802423e4dc7490387152776c0e8270c7d9cc3e87e43bc49",
+        ),
+    }
+)
 
 
 def reviewed_base(repo: str, path: str, base: bytes) -> bool:
