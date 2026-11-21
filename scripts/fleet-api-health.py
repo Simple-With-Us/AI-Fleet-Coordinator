@@ -42,8 +42,8 @@ in ``map_st_live`` and ``map_ct_health``:
     fresh by ``mango.checkedAt`` (age at most ``ST_OBSERVATION_MAX_AGE_SECONDS``).  HTTP 200 and
     the body's ``ok`` flag alone never make ST green.
   * CT keeps its upstream aggregate and its components.  A direct
-    ``senate_efd`` failure does not mean ingestion stopped:  while the
-    all three chamber polls are observed alive, a failing non-ingestion
+    ``senate_efd`` failure does not mean ingestion stopped:  while all
+    three chamber polls are observed alive, a failing non-ingestion
     component degrades CT to ``warn``, never to ``fail``.
   * A missing optional check is ``unknown``, never zero and never green:
     a component the upstream did not report keeps state ``unknown``, and
@@ -94,9 +94,9 @@ MAX_RESPONSE_BYTES = 256 * 1024
 # Mac's /usr/bin/python3 is 3.9, where it is a plain OSError and would read as `unreachable`.
 TIMEOUTS = (TimeoutError, socket.timeout)
 
-# ST green needs an observation at most this old.  Two minutes covers a
-# live loop that observes about once a minute while still refusing to
-# call a wedged loop current.
+# ST green needs an observation at most this old.  Two minutes covers
+# the cached probe, which refreshes about once a minute, while still
+# refusing to call a wedged probe current.
 ST_OBSERVATION_MAX_AGE_SECONDS = 120
 
 # The window Muster grants every collector's file (three 15-minute runs).
@@ -196,7 +196,9 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
         return status, None, "unparseable"
     try:
         payload = json.loads(body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # A body under the size cap can still nest past the recursion
+        # limit;  that is an unparseable answer, not a crashed run.
         return status, None, "unparseable"
     if not isinstance(payload, dict):
         return status, None, "unparseable"
@@ -361,16 +363,22 @@ def _ct_pipeline_components(payload):
     ):
         if source in by_id:
             found[target] = by_id[source]
-    polls = [
-        (by_id.get(name, "unknown") if by_id.get(name) != "warn" else "unknown")
-        for name in ("polling_house", "polling_senate", "polling_executive")
-    ]
-    if "fail" in polls:
-        found["ingestion"] = "fail"
-    elif all(state == "ok" for state in polls):
-        found["ingestion"] = "ok"
-    else:
-        found["ingestion"] = "unknown"
+    poll_names = ("polling_house", "polling_senate", "polling_executive")
+    if any(name in by_id for name in poll_names):
+        # The derived ingestion verdict exists only when at least one
+        # chamber poll was actually reported.  A payload carrying no
+        # polling checks at all (CT's no-poll-data shape) leaves
+        # ingestion unreported instead of reported-but-unknown.
+        polls = [
+            (by_id.get(name, "unknown") if by_id.get(name) != "warn" else "unknown")
+            for name in poll_names
+        ]
+        if "fail" in polls:
+            found["ingestion"] = "fail"
+        elif all(state == "ok" for state in polls):
+            found["ingestion"] = "ok"
+        else:
+            found["ingestion"] = "unknown"
     return found
 
 
@@ -484,7 +492,16 @@ def map_ct_health(payload, http_status, now):
     # Legacy payloads may omit an aggregate; do not treat a missing
     # status as unknown-not-ok when every displayed component is ok.
     if row["upstreamStatus"] is not None:
-        aggregate = _component_state(row["upstreamStatus"])
+        # A native payload's aggregate is decoded with the same exact
+        # enum as its checks:  a legacy alias ("Healthy", "UP", "pass")
+        # must not read as ok and hide upstream degradation.  The loose
+        # legacy decoder remains for legacy payloads only.
+        if "pipeline" in payload:
+            aggregate = _native_ct_state(row["upstreamStatus"])
+            if aggregate == "unknown" and row["upstreamStatus"] == "down":
+                aggregate = "fail"
+        else:
+            aggregate = _component_state(row["upstreamStatus"])
         if aggregate != "ok":
             # Other source checks may degrade the aggregate even when the
             # displayed subset is current.  A critical/failed aggregate
@@ -497,8 +514,16 @@ def map_ct_health(payload, http_status, now):
     return row
 
 
-def _app_row(mapper, url, timeout, now, fetcher):
-    """Fetch one app and finish its row with provenance and freshness."""
+def _app_row(mapper, url, timeout, now, fetcher, clock=None):
+    """Fetch one app and finish its row with provenance and freshness.
+
+    Freshness is judged against ``clock()`` read when the answer
+    arrives, not the ``now`` from before the request:  an upstream
+    that stamps its observation while answering (ST's cold-cache
+    probe) would otherwise read as an observation from the future.
+    Without a clock, the pre-request ``now`` is used, which keeps
+    fixture runs exact.
+    """
     fetched_at = utc_stamp(now)
     try:
         status, payload, error = fetcher(url, timeout)
@@ -512,7 +537,7 @@ def _app_row(mapper, url, timeout, now, fetcher):
         row["reason"] = error if error in FETCH_ERROR_CODES else (error or "no_answer")
         row["error"] = row["reason"]
     else:
-        row = mapper(payload, status, now)
+        row = mapper(payload, status, now if clock is None else clock())
     row["provenance"] = {
         "source": url,
         "fetchedAt": fetched_at,
@@ -531,18 +556,23 @@ def worst_of(rows):
     return worst
 
 
-def collect(now=None, timeout=DEFAULT_TIMEOUT_SECONDS, fetcher=None):
+def collect(now=None, timeout=DEFAULT_TIMEOUT_SECONDS, fetcher=None, clock=None):
     """Fetch both apps and build the store document.
 
     ``fetcher`` is injectable so tests drive every mapping with fixtures
     and no network:  it takes (url, timeout) and returns the
-    ``fetch_json`` triple.
+    ``fetch_json`` triple.  ``clock`` supplies the post-fetch readings
+    freshness is judged against:  a run with no injected ``now`` reads
+    the wall clock, while an injected ``now`` without a clock keeps
+    fixture runs deterministic.
     """
-    now = time.time() if now is None else now
+    if now is None:
+        clock = time.time if clock is None else clock
+        now = clock()
     fetcher = fetch_json if fetcher is None else fetcher
     rows = [
-        _app_row(map_st_live, ST_LIVE_URL, timeout, now, fetcher),
-        _app_row(map_ct_health, CT_HEALTH_URL, timeout, now, fetcher),
+        _app_row(map_st_live, ST_LIVE_URL, timeout, now, fetcher, clock=clock),
+        _app_row(map_ct_health, CT_HEALTH_URL, timeout, now, fetcher, clock=clock),
     ]
     return {
         "schemaVersion": SCHEMA_VERSION,
