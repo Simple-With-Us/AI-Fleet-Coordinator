@@ -1985,6 +1985,8 @@ _POSTED_TOPIC = re.compile("posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)")
 # read can name dozens of issues it never worked on, so only the topic rules read those parts.
 _QUOTED_TYPES = frozenset({"tool_result", "function_call_output", "custom_tool_call_output"})
 _QUOTED_KEYS = frozenset({"toolUseResult", "output", "stdout", "stderr", "result"})
+_RUNTIME_CONTEXT_TYPES = frozenset({"environment_context", "runtime_context", "world_state"})
+_RUNTIME_CONTEXT_ROLES = frozenset({"developer", "system"})
 _issue_finders: dict[bool, Any] = {}
 
 
@@ -2007,6 +2009,42 @@ def issue_ids_in(text: str, *, any_case: bool = False) -> set[str]:
     return {OR.valid_issue_id(m.group(1)) for m in _issue_finder(any_case).finditer(text)} - {""}
 
 
+def _is_agents_environment_bootstrap(value: Mapping[str, Any]) -> bool:
+    """Recognize Codex's injected AGENTS/environment bootstrap as runtime context, not a request."""
+    kind = value.get("type")
+    if value.get("role") == "user":
+        content = value.get("content")
+    elif kind == "user_message":
+        # Codex's event_msg transcript form wraps the same bootstrap in
+        # payload.type=user_message and payload.message, without a role field.
+        content = value.get("message")
+    else:
+        return False
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            part["text"] for part in content
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), list):
+        text = "\n".join(
+            part["text"] for part in content["content"]
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), str):
+        text = content["content"]
+    else:
+        return False
+    return (
+        text.lstrip().startswith("# AGENTS.md instructions for ")
+        and "<INSTRUCTIONS>" in text
+        and "</INSTRUCTIONS>" in text
+        and "<environment_context>" in text
+        and text.rstrip().endswith("</environment_context>")
+    )
+
+
 def _topic_issue_ids(text: str) -> set[str]:
     found: set[str] = set()
     for m in _TOPIC_FLAG.finditer(text):
@@ -2025,12 +2063,19 @@ def _transcript_strings(
         (quoted if inside else own).append(value)
     elif isinstance(value, Mapping):
         kind = value.get("type")
+        role = value.get("role")
+        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
+            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
+        ) or _is_agents_environment_bootstrap(value):
+            return
         hidden = (
             inside
             or (isinstance(kind, str) and kind in _QUOTED_TYPES)
             or value.get("isMeta") is True
         )
         for key, item in value.items():
+            if key == "world_state":
+                continue
             _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
     elif isinstance(value, list):
         for item in value:
@@ -2054,7 +2099,8 @@ def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
 def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
     """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
     replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
-    output shows.  A line that is not JSON is read as the chat's own words."""
+    output shows.  Known runtime context (developer/system envelopes, Codex world state and a recognizable
+    AGENTS/environment bootstrap) is excluded.  A line that is not JSON is read as the chat's own words."""
     found: set[str] = set()
     for line, entry in parsed_lines(lines) if parsed is None else parsed:
         if entry is _NOT_JSON:

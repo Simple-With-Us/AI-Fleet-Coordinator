@@ -1206,6 +1206,45 @@ class HookTests(Base):
         ]
         self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-11", "CTS-12"})
 
+    def test_issue_ids_in_lines_skips_runtime_context_but_keeps_chat_content(self) -> None:
+        bootstrap = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>"
+        )
+        lines = [
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": "Injected UM-902"}]}}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "system", "content": "Injected CT-903"}}),
+            json.dumps({"type": "world_state", "text": "Startup AFC-904"}),
+            json.dumps({"type": "message", "role": "user", "content": bootstrap}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": bootstrap.replace("AFC-900", "AFC-905")}}),
+            json.dumps({"type": "message", "role": "user", "content": "Please fix AFC-1"}),
+            json.dumps({"type": "message", "role": "user", "content": (
+                "Please preserve this quoted context: > # AGENTS.md instructions for /repo "
+                "<INSTRUCTIONS>Example AFC-910</INSTRUCTIONS> "
+                "<environment_context>Example CTS-911</environment_context>"
+            )}),
+            json.dumps({"type": "message", "role": "assistant", "content": "I fixed CTS-2"}),
+            json.dumps({"type": "tool_use", "input": {"command": "run --issue OPS-3"}}),
+            json.dumps({"type": "tool_result", "content": "posted id 4 to #WIP › CC-5 rollout"}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {
+            "AFC-1", "AFC-910", "CC-5", "CTS-2", "CTS-911", "OPS-3",
+        })
+
+    def test_issue_ids_in_lines_keeps_a_request_after_a_quoted_bootstrap(self) -> None:
+        request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease fix AFC-912 in these instructions."
+        )
+        line = json.dumps({"type": "message", "role": "user", "content": request})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"AFC-900", "CTS-901", "AFC-912"})
+
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
         path = self.transcript("one AFC-1", "two AFC-2")
