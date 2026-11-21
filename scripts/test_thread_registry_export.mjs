@@ -8,8 +8,7 @@
 // Run: node --test scripts/test_thread_registry_export.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { mkdtemp, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -443,6 +442,37 @@ test("drainThreadRows: a failed write stops it and records code and status", asy
   }
 });
 
+test("drainThreadRows: stop during a later key re-read preserves confirmed updates", async () => {
+  const keys = Array.from({ length: KEY_CHECK_CHUNK + 1 }, (_, i) => `10:stop${i}`);
+  let keyReads = 0;
+  let stop = false;
+  const { adapter, state } = memorySheet({
+    rows: keys.map((key) => row(key)),
+    onKeys: () => {
+      keyReads += 1;
+      if (keyReads === 2) {
+        stop = true;
+        throw Object.assign(new Error("stopped"), { code: "stopped" });
+      }
+    },
+  });
+  const result = await drainThreadRows({
+    adapter,
+    desired: keys.map((key) => row(key, { count: "2" })),
+    shouldStop: () => stop,
+  });
+
+  assert.equal(result.updated, KEY_CHECK_CHUNK);
+  assert.equal(result.appended, 0);
+  assert.equal(result.remaining, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.stopped, true);
+  assert.equal(result.partial, false);
+  assert.equal(result.code, undefined);
+  assert.equal(keyReads, 2);
+  assert.equal(state.writes.length, KEY_CHECK_CHUNK);
+});
+
 test("drainThreadRows: the same rows again write nothing; dry run never writes", async () => {
   const { adapter, state } = memorySheet();
   const desired = [row("10:a"), row("10:b")];
@@ -594,21 +624,34 @@ test("CLI: --write shares the drain's real lock file and releases it after", asy
   const lock = join(dir, "drain.lock");
   const quiet = { out: () => {}, err: () => {}, readText: () => cliPayload };
   const holder = await acquireLease(lock); // a drain run holds it
-  const refused = await runCli(["rows.json", "--write"], {
-    ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
-    getToken: async () => { throw new Error("no Google call while the drain writes"); },
-  });
-  assert.equal(refused, 3);
-  await holder.close();
-  await unlink(lock);
-  const { adapter, state } = memorySheet();
-  const done = await runCli(["rows.json", "--write"], {
-    ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
-    getToken: async () => "tok", makeAdapter: () => adapter,
-  });
-  assert.equal(done, 0);
-  assert.deepEqual(state.writes, ["append"]);
-  assert.equal(existsSync(lock), false); // released for the next drain run
+  let holderOpen = true;
+  try {
+    const refused = await runCli(["rows.json", "--write"], {
+      ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
+      getToken: async () => { throw new Error("no Google call while the drain writes"); },
+    });
+    assert.equal(refused, 3);
+    const inodeBefore = await stat(lock);
+    await holder.close();
+    holderOpen = false;
+    const { adapter, state } = memorySheet();
+    const done = await runCli(["rows.json", "--write"], {
+      ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
+      getToken: async () => "tok", makeAdapter: () => adapter,
+    });
+    assert.equal(done, 0);
+    assert.deepEqual(state.writes, ["append"]);
+    const inodeAfter = await stat(lock);
+    assert.equal(inodeAfter.dev, inodeBefore.dev);
+    assert.equal(inodeAfter.ino, inodeBefore.ino);
+    assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+    const next = await acquireLease(lock);
+    assert.ok(next); // the persistent inode is released for the next drain run
+    await next.close();
+  } finally {
+    if (holderOpen) await holder.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- the upsert plan and the payload contract ----

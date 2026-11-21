@@ -50,13 +50,14 @@ class WorkerHealthReader(unittest.TestCase):
         self.assertFalse(fwh.document(200, {"contract": "other"}, 0)["reachable"])
 
     def test_read_key_survives_a_missing_binary(self):
-        old_env, old_which = dict(os.environ), fwh.shutil.which
+        old_env = dict(os.environ)
         os.environ.pop("HEALTH_HMAC_KEY", None)
-        fwh.shutil.which = lambda name: "/nonexistent/fleet-secrets"
+        old_cli = fwh.INFISICAL_CLI
+        fwh.INFISICAL_CLI = "/nonexistent/fleet_infisical_cli.py"
         try:
             self.assertEqual(fwh.read_key(), "")
         finally:
-            fwh.shutil.which = old_which
+            fwh.INFISICAL_CLI = old_cli
             os.environ.clear()
             os.environ.update(old_env)
 
