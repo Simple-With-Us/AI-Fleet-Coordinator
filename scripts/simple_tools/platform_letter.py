@@ -466,8 +466,8 @@ class PlatformSpec:
     gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
     unlettered_sessions        for a platform whose own session store on this host lists its chats with the titles
-                               the hook put on them:  the ids of the ones still showing "??: ", for the repair a
-                               chat's start sets off (`repair_after_start`, `repair_unlettered`)
+                               the hook put on them:  the ids of the ones whose title carries no letter, for the
+                               repair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
     unlettered_feed            for a row with no `unlettered_sessions`:  why it has none, in one line (the platform is
                                hook-only:  no store this host can list, or titles that never carry "??: ").  Every
                                row of the table says one or the other (test_platform_letter_feeds)
@@ -1766,6 +1766,35 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
 def lettered(note: Mapping[str, Any]) -> bool:
     """The chat holds a letter:  its note is open and names one."""
     return note.get("state") == "open" and bool(note.get("label"))
+
+
+def _label(note: Mapping[str, Any]) -> str:
+    """The letter the note holds, when it is one:  a note that names something else (a broken label) holds
+    no letter to put on a title."""
+    for label in held(note):
+        return label
+    return ""
+
+
+def letter_lost(note: Mapping[str, Any], current: object) -> bool:
+    """The chat holds a letter and the title on it no longer carries it.
+
+    A chat's letter lives in its own note and the platform shows the title, so a title that lost the letter (the
+    app renamed the chat, or a chat was carried into another one) still belongs to the chat that holds the letter:
+    the letter goes back where it was.  A chat with no title at all is in the same case, for the title it wanted
+    and never got.
+
+    The no-letter mark ("??: ") is another rule's business:  a chat showing it holds no letter to lose, and the
+    repair that gives a chat its first letter owns it."""
+    if not lettered(note):
+        return False
+    label = _label(note)
+    if not label:
+        return False
+    line = one_line(current)
+    if UNLETTERED_PREFIX.match(line):
+        return False
+    return not (line == label + ":" or line.startswith(label + ": "))
 
 
 def no_letter(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
@@ -4382,6 +4411,36 @@ def _release(path: str) -> None:
         pass
 
 
+def _restore_letter(chat: Chat, note: Mapping[str, Any], data: Mapping[str, Any]) -> bool:
+    """Put the letter a chat holds back on the title the platform shows, with no registry call.
+
+    A chat that holds a letter is not replayed:  a replay registers the chat again, and a letter the registry has
+    since retired would be handed out a second time (AFC-858).  The letter is in the note, so the title is rebuilt
+    from the note's own label and the words the chat already carries, and the platform's own writer puts it back.
+    Only the letter is restored:  the owner's words stay as they are.
+
+    A chat that shows no words at all is titled with the title the note wanted ("WW: New Chat"), because that is
+    the one the fleet already asked for and never got."""
+    spec = chat.spec
+    if spec.title_writer is None:
+        return False  # a row with no writer cannot change the record the app shows
+    current = chat_name(spec.current_title(data, chat.env))
+    if not letter_lost(note, current):
+        return False
+    label = _label(note)
+    words = bare(current, held(note))
+    if not words:
+        want = str(note.get("want") or "")
+        words = bare(want, held(note)) or str(note.get("title") or "")
+    title = compose(label, words)
+    if title == current:
+        return False
+    work = dict(note)
+    present(chat, work, title, current, data, "repair")
+    chat.write(work)
+    return True
+
+
 def repair_unlettered(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -4407,8 +4466,11 @@ def repair_unlettered(
     still knows resumes the letter it holds (nothing re-allocates), and one it does not know registers again.  A
     chat whose note already holds a letter is never replayed, even when the app's own record still shows "??: "
     (a row with no title writer cannot change that record):  replaying it every pass would keep a dormant chat
-    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  What the
-    repaired chats' starts print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
+    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  A chat whose
+    title lost its letter is not replayed either, but it is repaired:  a platform with a title writer puts the
+    letter the note holds back on the title, with no registry call, so a letter the registry has since retired is
+    never handed out a second time.  What the repaired chats' starts print goes nowhere, and one pass replays at
+    most REPAIR_MAX_CHATS."""
     if (
         spec.unlettered_sessions is None
         or spec.chat_payload is None
@@ -4466,8 +4528,14 @@ def repair_unlettered(
             if held_note.get("state") in ("closed", "mismatch"):
                 continue  # a settled no-letter state:  replaying it would re-register it every pass
             if lettered(held_note):
-                continue  # it holds a letter:  a replay would only mark a dormant chat seen again
-            on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
+                # It holds a letter:  a replay would only mark a dormant chat seen again, and a second
+                # registration would hand out a letter the registry may have retired.  A title that lost the
+                # letter is a different matter:  the platform can write titles, so the letter the note holds
+                # goes back where it was, with no registry call at all.
+                if not _restore_letter(chat, held_note, payload):
+                    continue
+            else:
+                on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
             failures.append({"sid": sid, "error": type(exc).__name__})
             continue

@@ -2960,6 +2960,114 @@ class RepairCliTests(Base):
         self.assertIn("s-0202", out)
 
 
+class RestoreLetterTests(Base):
+    """A chat that holds a letter and whose title lost it gets the letter back (AFC-858):  the letter goes
+    where it was,  from the note's own label,  and the chat is never registered a second time."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+        self.written: list[PL.TitleRequest] = []
+        self.titles: dict[str, str] = {}
+
+        def writer(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            self.titles[request.session_id] = request.title
+            return True
+
+        def unlettered_sessions(env):
+            return list(self.unlettered)
+
+        def chat_payload(sid: str):
+            return {
+                "hook_event_name": "SessionStart",
+                "source": "resume",
+                "session_id": sid,
+                "title": self.titles.get(sid, ""),
+            }
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+            title_writer=writer,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+
+    def start(self, sid: str) -> None:
+        out = io.StringIO()
+        code = PL.hook(
+            self.spec, self.server_env(), io.StringIO(json.dumps(
+                {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
+            )), out, platform="linux", transport=Calls(self),
+        )
+        self.assertEqual(code, 0)
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def repair(self, sid: str, calls: Calls) -> dict:
+        self.unlettered.append(sid)
+        return PL.repair_unlettered(
+            self.spec, self.server_env(), "CODEX", "server", now=1000.0, transport=calls
+        )
+
+    def test_a_title_that_carries_its_letter_is_not_lost(self) -> None:
+        note = {"state": "open", "label": "AA"}
+        self.assertFalse(PL.letter_lost(note, "AA: Fix login"))
+        self.assertFalse(PL.letter_lost(note, "AA:"))
+        self.assertTrue(PL.letter_lost(note, "Fix login"))
+        self.assertTrue(PL.letter_lost(note, ""))
+        self.assertFalse(PL.letter_lost(note, "??: Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "open", "label": "??"}, "Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "failed", "label": "AA"}, "Fix login"))
+
+    def test_a_chat_whose_title_lost_its_letter_gets_it_back(self) -> None:
+        self.start("s-0300")
+        label = self.note("s-0300")["label"]
+        # The app put its own title over the lettered one.
+        self.titles["s-0300"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0300", calls)
+        self.assertEqual(done["repaired"], ["s-0300"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds:  no second registration,  so a letter the registry has
+        # since retired is never handed out again.
+        self.assertEqual(self.note("s-0300")["label"], label)
+        self.assertNotIn("register", calls.ops())
+
+    def test_a_chat_whose_title_still_carries_its_letter_is_left_alone(self) -> None:
+        self.start("s-0301")
+        label = self.note("s-0301")["label"]
+        calls = Calls(self)
+        done = self.repair("s-0301", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.note("s-0301")["label"], label)
+
+    def test_a_platform_with_no_title_writer_leaves_the_title_alone(self) -> None:
+        # A row with no writer cannot change the record the app shows,  so the letter stays where it
+        # is and the chat is not touched.
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0302")
+        self.titles["s-0302"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0302", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+
+
 class GoneReportTests(Base):
     """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
     them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
