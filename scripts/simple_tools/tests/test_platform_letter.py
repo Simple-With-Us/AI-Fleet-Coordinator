@@ -1269,6 +1269,13 @@ class HookTests(Base):
         ]})
         self.assertEqual(PL.issue_ids_in_lines([line]), {"UM-922"})
 
+    def test_issue_ids_in_lines_skips_standalone_agents_bootstrap_and_keeps_suffix(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-930 rules"
+            "</INSTRUCTIONS>\nPlease link actual work CT-931."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-931"})
+
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
         path = self.transcript("one AFC-1", "two AFC-2")

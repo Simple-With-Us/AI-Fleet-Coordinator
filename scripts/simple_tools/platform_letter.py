@@ -2042,14 +2042,19 @@ def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
         text.lstrip().startswith("# AGENTS.md instructions for ")
         and "<INSTRUCTIONS>" in text
         and "</INSTRUCTIONS>" in text
-        and "<environment_context>" in text
     )
     if not recognized:
         return None
-    closing = text.find("</environment_context>", text.find("<environment_context>"))
+    environment = text.find("<environment_context>")
+    if environment >= 0:
+        closing_tag = "</environment_context>"
+        closing = text.find(closing_tag, environment)
+    else:
+        closing_tag = "</INSTRUCTIONS>"
+        closing = text.find(closing_tag, text.find("<INSTRUCTIONS>"))
     if closing < 0:
         return None
-    return text[closing + len("</environment_context>") :].strip()
+    return text[closing + len(closing_tag) :].strip()
 
 
 def _topic_issue_ids(text: str) -> set[str]:
@@ -2071,8 +2076,9 @@ def _transcript_strings(
     elif isinstance(value, Mapping):
         kind = value.get("type")
         role = value.get("role")
-        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
-            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
+        if (
+            (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
+            or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
         ):
             return
         bootstrap_tail = _agents_environment_bootstrap_tail(value)
