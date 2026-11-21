@@ -41,10 +41,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .checks import (
+    INFISICAL_CLI,
     CheckContext,
     CheckError,
     CommandRefused,
-    INFISICAL_CLI,
     build_result,
     expand_target,
     iso_utc,

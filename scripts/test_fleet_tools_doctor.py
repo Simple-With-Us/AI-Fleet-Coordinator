@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 import urllib.parse
+from datetime import UTC
 from pathlib import Path
 from unittest import mock
 
@@ -163,7 +164,8 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
                 thread.join(timeout=5)
 
     def test_doctor_staged_source_and_config_use_only_value_disabled_names_reads(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         from fleet_config.checks import CheckContext
         from fleet_config.checks_permissions import _secret_store_names
 
@@ -180,12 +182,14 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             self.assertEqual(
                 staged_doctor.infisical_names("/zulip", env), frozenset({"CLAUDE_ZULIP_KEY"})
             )
-            ctx = CheckContext(home=root, now=datetime.now(timezone.utc), env=env)
+            ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
             with mock.patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(
                     _secret_store_names(ctx, "/zulip"), frozenset({"CLAUDE_ZULIP_KEY"})
                 )
-            listings = [(path, query) for path, query in requests if path != "/api/v2/service-token"]
+            listings = [
+                (path, query) for path, query in requests if path != "/api/v2/service-token"
+            ]
             self.assertEqual(len(listings), 2)
             for path, query in listings:
                 self.assertEqual(path, "/api/v3/secrets/raw")
@@ -195,7 +199,8 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
                 self.assertEqual(query["environment"], ["prod"])
 
     def test_names_consumers_refuse_a_value_bearing_metadata_listing(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         from fleet_config.checks import CheckContext, CheckError
         from fleet_config.checks_permissions import _secret_store_names
 
@@ -203,8 +208,11 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             doctor._names_cache.clear()
             self.addCleanup(doctor._names_cache.clear)
             self.assertIsNone(doctor.infisical_names("/zulip", env))
-            ctx = CheckContext(home=root, now=datetime.now(timezone.utc), env=env)
-            with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(CheckError) as error:
+            ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                self.assertRaises(CheckError) as error,
+            ):
                 _secret_store_names(ctx, "/zulip")
             self.assertNotIn(self.VALUE, str(error.exception))
             self.assertTrue(requests)
@@ -228,10 +236,20 @@ globalThis.fetch = async (url, options) => {{
         )
         staged = root / "runtime/scripts"
         staged.mkdir(parents=True)
-        for name in ("weekly-fleet-mode-digest.mjs", "fleet_infisical_cli.py", "fleet_infisical.py"):
+        for name in (
+            "weekly-fleet-mode-digest.mjs",
+            "fleet_infisical_cli.py",
+            "fleet_infisical.py",
+        ):
             shutil.copyfile(HERE / name, staged / name)
         result = subprocess.run(
-            [node, "--import", str(preload), str(staged / "weekly-fleet-mode-digest.mjs"), "--dry-run"],
+            [
+                node,
+                "--import",
+                str(preload),
+                str(staged / "weekly-fleet-mode-digest.mjs"),
+                "--dry-run",
+            ],
             env=env,
             cwd=root / "hostile",
             capture_output=True,

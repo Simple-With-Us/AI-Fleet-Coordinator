@@ -16,8 +16,8 @@ import unittest
 
 from fleet_config import apply as apply_module
 from fleet_config.checks import (
-    CommandRefused,
     INFISICAL_CLI,
+    CommandRefused,
     check_cli_allowed,
     run_cli,
 )
