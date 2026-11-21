@@ -63,6 +63,30 @@ class ProtectedReceipts(unittest.TestCase):
         )
         self.assertEqual(self.read()[1]["body"], [])
 
+    def test_historical_rows_do_not_exhaust_eligible_census(self):
+        from unittest import mock
+
+        self.relay.pr_owners = mock.Mock()
+        row = dict(repo=ARGS["repo"], number=7, confirmed=True, source="open_pr")
+        self.relay.pr_owners.for_repo.return_value = [dict(row, source="audit_backfill")] * 1001 + [
+            row
+        ]
+        self.assertEqual(self.read()[1]["body"], [row])
+        self.relay.pr_owners.for_repo.return_value = [row] * 1001
+        self.assertEqual(self.read()[0], 503)
+
+    def test_github_mint_failure_returns_audited_502(self):
+        from unittest import mock
+        from git_relay.server import RelayGitHubError
+
+        self.relay.app_minter = mock.Mock()
+        self.relay.app_minter.token_for_service.side_effect = RelayGitHubError(503, "fixture")
+        status, body = self.relay.handle(
+            SERVICE_TOKEN, "service_read", dict(repo=ARGS["repo"], number=7, verb="pull")
+        )
+        self.assertEqual(status, 502)
+        self.assertEqual(body, {"error": "read grant unavailable"})
+
 
 if __name__ == "__main__":
     unittest.main()

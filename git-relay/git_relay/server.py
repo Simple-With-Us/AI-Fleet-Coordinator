@@ -951,13 +951,13 @@ class Relay:
             if self.pr_owners is None:
                 return 503, {"error": "creation receipts unavailable"}
             rows = self.pr_owners.for_repo(repo)
-            if len(rows) > 1000:
-                return 503, {"error": "creation receipt census exceeds bounded query"}
             rows = [
                 row
                 for row in rows
                 if row.get("confirmed") is True and row.get("source") == "open_pr"
             ]
+            if len(rows) > 1000:
+                return 503, {"error": "creation receipt census exceeds bounded query"}
             self.audit.record(
                 "service-read",
                 "service_read",
@@ -1002,7 +1002,7 @@ class Relay:
             bearer, _expiry = self.app_minter.token_for_service(
                 SERVICE_READ_APP_SLUG, repo, dict(SERVICE_READ_GRANTS)
             )
-        except AppTokenError:
+        except Exception:
             self.audit.record(
                 "service-read", "service_read", repo, "error", {**detail, "at": "mint"}
             )
