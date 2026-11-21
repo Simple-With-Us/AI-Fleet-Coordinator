@@ -958,11 +958,7 @@ def _call_api(
     timeout: int = 0,
     api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Call the registry; ``timeout`` applies only to its network transport.  
-
-    The optional adapter is an in-process call and does not accept or promise a
-    transport timeout; its caller owns any local execution bound.
-    """
+    """The ``timeout`` bounds remote registry transport only; an injected adapter is synchronous local work."""
     from . import registry_api
 
     if api_call is not None:
