@@ -27,17 +27,18 @@ spec.loader.exec_module(IE)
 
 
 class FakeInfisical:
-    def __init__(self, grant: tuple[str, ...]) -> None:
-        self.grant = grant
+    def __init__(self, cursor_value: str | None = "native-api-fixture") -> None:
+        self.grant = (IE.OPERATOR_VOICE_PATH,)
         self.requests: list[tuple[str, str]] = []
-        self.bad_provenance_path = ""
         self.secrets = {
             "/zulip_operator": {
                 "ZULIP_OPERATOR_EMAIL": "operator-fixture@example.test",
                 "ZULIP_OPERATOR_API_KEY": "operator-voice-fixture",
-            },
-            "/cursor-cloud-letters": {"CURSOR_SYNC_API_KEY": "native-api-fixture"},
+            }
         }
+        if cursor_value is not None:
+            self.secrets["/zulip_operator"][IE.OPERATOR_CURSOR_NAME] = cursor_value
+        self.bad_provenance = False
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -77,7 +78,7 @@ class FakeInfisical:
                     return self._send(404, {"message": "fixture folder not granted"})
                 rows = []
                 for name, value in fake.secrets.get(path, {}).items():
-                    provenance_path = "/wrong-folder" if path == fake.bad_provenance_path else path
+                    provenance_path = "/wrong-folder" if fake.bad_provenance else path
                     rows.append(
                         {
                             "secretKey": name,
@@ -152,12 +153,12 @@ class SharedOperatorDataTests(unittest.TestCase):
         self.assertEqual(data, {})
         self.assertIn(IE.OPERATOR_VOICE_TOKEN, note)
 
-    def test_existing_voice_only_grant_keeps_voice_and_disables_cursor_data(self) -> None:
-        with FakeInfisical((IE.OPERATOR_VOICE_PATH,)) as fake:
+    def test_missing_optional_key_keeps_voice_and_disables_cursor_data(self) -> None:
+        with FakeInfisical(cursor_value=None) as fake:
             out, line = self.build_env(fake)
         self.assertEqual(out["ZULIP_OPERATOR_API_KEY"], "operator-voice-fixture")
         self.assertNotIn("CURSOR_SYNC_API_KEY", out)
-        self.assertIn("cursor-cloud data unavailable (shared scope or read not qualified)", line)
+        self.assertIn("cursor-cloud data unavailable (native key missing)", line)
         raw_paths = [
             urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["secretPath"][0]
             for _, path in fake.requests
@@ -167,11 +168,11 @@ class SharedOperatorDataTests(unittest.TestCase):
         self.assertEqual(raw_paths, [IE.OPERATOR_VOICE_PATH])
         self.assertNotIn("container-copy-fixture", line)
 
-    def test_two_folder_shared_grant_loads_canonical_native_data(self) -> None:
-        with FakeInfisical((IE.OPERATOR_VOICE_PATH, IE.OPERATOR_CURSOR_PATH)) as fake:
+    def test_one_folder_shared_fetch_loads_optional_native_data(self) -> None:
+        with FakeInfisical() as fake:
             out, line = self.build_env(fake)
         self.assertEqual(out["CURSOR_SYNC_API_KEY"], "native-api-fixture")
-        self.assertIn("cursor-cloud data loaded from /cursor-cloud-letters", line)
+        self.assertIn("cursor-cloud data loaded from /zulip_operator", line)
         self.assertNotIn("native-api-fixture", line)
         self.assertNotIn("container-copy-fixture", line)
         raw_paths = [
@@ -179,18 +180,22 @@ class SharedOperatorDataTests(unittest.TestCase):
             for _, path in fake.requests
             if "/api/v3/secrets/raw?" in path
         ]
-        self.assertEqual(len(raw_paths), 2)
-        self.assertIn(IE.OPERATOR_VOICE_PATH, raw_paths)
-        self.assertIn(IE.OPERATOR_CURSOR_PATH, raw_paths)
+        self.assertEqual(raw_paths, [IE.OPERATOR_VOICE_PATH])
 
-    def test_invalid_provider_row_provenance_only_disables_cursor_data(self) -> None:
-        with FakeInfisical((IE.OPERATOR_VOICE_PATH, IE.OPERATOR_CURSOR_PATH)) as fake:
-            fake.bad_provenance_path = IE.OPERATOR_CURSOR_PATH
-            out, line = self.build_env(fake)
-        self.assertEqual(out["ZULIP_OPERATOR_API_KEY"], "operator-voice-fixture")
-        self.assertNotIn("CURSOR_SYNC_API_KEY", out)
-        self.assertIn("cursor-cloud data unavailable (shared scope or read not qualified)", line)
-        self.assertNotIn("/wrong-folder", line)
+    def test_empty_or_unresolved_optional_key_keeps_voice_but_disables_feed(self) -> None:
+        for value in ("", "${UNRESOLVED_FIXTURE}"):
+            with self.subTest(value="empty" if not value else "unresolved"), FakeInfisical(value) as fake:
+                out, line = self.build_env(fake)
+            self.assertEqual(out["ZULIP_OPERATOR_API_KEY"], "operator-voice-fixture")
+            self.assertIn("cursor-cloud data unavailable (native key missing)", line)
+            self.assertNotIn("UNRESOLVED_FIXTURE", line)
+            self.assertNotIn("CURSOR_SYNC_API_KEY", out)
+
+    def test_invalid_source_row_provenance_fails_closed_for_entire_response(self) -> None:
+        with FakeInfisical() as fake:
+            fake.bad_provenance = True
+            with self.assertRaises(IE.LoadError):
+                self.build_env(fake)
 
 
 if __name__ == "__main__":
