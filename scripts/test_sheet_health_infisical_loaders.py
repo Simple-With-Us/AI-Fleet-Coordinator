@@ -85,18 +85,23 @@ class Provider(BaseHTTPRequestHandler):
             if auth != "Bearer " + FIXTURE_CREDENTIAL or path not in self.allowed_paths:
                 self._send(404, {})
                 return
-            self._send(200, {"secrets": [
+            self._send(
+                200,
                 {
-                    "secretKey": name,
-                    "secretValue": value,
-                    "secretValueHidden": False,
-                    "type": "shared",
-                    "workspace": PROJECT,
-                    "environment": "prod",
-                    "secretPath": path,
-                }
-                for name, value in VALUES.items()
-            ]})
+                    "secrets": [
+                        {
+                            "secretKey": name,
+                            "secretValue": value,
+                            "secretValueHidden": False,
+                            "type": "shared",
+                            "workspace": PROJECT,
+                            "environment": "prod",
+                            "secretPath": path,
+                        }
+                        for name, value in VALUES.items()
+                    ]
+                },
+            )
             return
         if not parsed.path.startswith("/api/v3/secrets/raw/"):
             self._send(404, {})
@@ -132,9 +137,10 @@ class Provider(BaseHTTPRequestHandler):
             VALUES["HEALTH_HMAC_KEY"], body
         )
         self.health_requests.append(valid)
-        self._send(200 if valid else 401, {
-            "contract": worker.CONTRACT, "worst": "ok", "bundle": "ok", "seats": []
-        })
+        self._send(
+            200 if valid else 401,
+            {"contract": worker.CONTRACT, "worst": "ok", "bundle": "ok", "seats": []},
+        )
 
 
 class IsolatedInfisicalLoaders(unittest.TestCase):
@@ -175,16 +181,26 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run(
             [sys.executable, "-I", str(ROOT / "fleet_infisical_cli.py"), *args],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
 
     def run_worker(self):
         state = Path(self.home.name) / "worker-health.json"
         result = subprocess.run(
-            [sys.executable, "-I", str(ROOT / "fleet-worker-health.py"),
-             "--url", f"http://127.0.0.1:{self.server.server_port}/health",
-             "--write", str(state)],
-            capture_output=True, text=True, timeout=10,
+            [
+                sys.executable,
+                "-I",
+                str(ROOT / "fleet-worker-health.py"),
+                "--url",
+                f"http://127.0.0.1:{self.server.server_port}/health",
+                "--write",
+                str(state),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         self.assertEqual(state.stat().st_mode & 0o777, 0o600)
         emitted = result.stdout + result.stderr + state.read_text()
@@ -194,8 +210,11 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
 
     def test_finite_policy_refuses_before_values_through_cli_and_real_worker(self):
         for case, expiry in (
-            ("null", None), ("missing", None), ("expired", "2000-01-01T00:00:00Z"),
-            ("naive", "2099-01-01T00:00:00"), ("malformed", "invalid"),
+            ("null", None),
+            ("missing", None),
+            ("expired", "2000-01-01T00:00:00Z"),
+            ("naive", "2099-01-01T00:00:00"),
+            ("malformed", "invalid"),
         ):
             with self.subTest(case=case):
                 Provider.expiry = expiry
