@@ -281,6 +281,7 @@ class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
         with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
             self.assertEqual(relay.scan_file(key[0], key[1], body), "GitHub token")
 
+
 class ReviewRecordShapeTests(unittest.TestCase):
     def test_valid_record_returns_key_and_census(self):
         record = {
@@ -302,17 +303,46 @@ class ReviewRecordShapeTests(unittest.TestCase):
             ([], "review record must be an object"),
             ({}, "reviewed_file must be an object"),
             ({"reviewed_file": "x"}, "reviewed_file must be an object"),
-            ({"reviewed_file": {"path": "p", "sha256": "s"}}, "reviewed_file.repository must be a non-empty string"),
-            ({"reviewed_file": {"repository": "", "path": "p", "sha256": "s"}}, "reviewed_file.repository must be a non-empty string"),
-            ({"reviewed_file": {"repository": "r", "path": "", "sha256": "s"}}, "reviewed_file.path must be a non-empty string"),
-            ({"reviewed_file": {"repository": "r", "path": "p", "sha256": ""}}, "reviewed_file.sha256 must be a non-empty string"),
-            ({"reviewed_file": {"repository": "r", "path": "p", "sha256": "s"}}, "reviewed_file.effective_matches must be a list of label-plus-four-integer rows"),
             (
-                {"reviewed_file": {"repository": "r", "path": "p", "sha256": "s", "effective_matches": [["assigned secret", 1, 2, 3]]}},
+                {"reviewed_file": {"path": "p", "sha256": "s"}},
+                "reviewed_file.repository must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "", "path": "p", "sha256": "s"}},
+                "reviewed_file.repository must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "", "sha256": "s"}},
+                "reviewed_file.path must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "p", "sha256": ""}},
+                "reviewed_file.sha256 must be a non-empty string",
+            ),
+            (
+                {"reviewed_file": {"repository": "r", "path": "p", "sha256": "s"}},
+                "reviewed_file.effective_matches must be a list of label-plus-four-integer rows",
+            ),
+            (
+                {
+                    "reviewed_file": {
+                        "repository": "r",
+                        "path": "p",
+                        "sha256": "s",
+                        "effective_matches": [["assigned secret", 1, 2, 3]],
+                    }
+                },
                 "reviewed_file.effective_matches[0] must be a label plus four integers",
             ),
             (
-                {"reviewed_file": {"repository": "r", "path": "p", "sha256": "s", "effective_matches": [["assigned secret", 1, 2, 3, True]]}},
+                {
+                    "reviewed_file": {
+                        "repository": "r",
+                        "path": "p",
+                        "sha256": "s",
+                        "effective_matches": [["assigned secret", 1, 2, 3, True]],
+                    }
+                },
                 "reviewed_file.effective_matches[0] must be a label plus four integers",
             ),
         ]
