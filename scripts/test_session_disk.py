@@ -347,7 +347,7 @@ class PendingToolTests(unittest.TestCase):
             (d / "summary.json").write_text(
                 json.dumps(
                     {
-                        "info": {"cwd": "/Users/jay/apps"},
+                        "info": {"cwd": str(root / "fixture-apps")},
                         "last_turn_summary": "waiting",
                         "generated_title": "perm",
                     }
@@ -355,7 +355,7 @@ class PendingToolTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "active.json").write_text(
-                json.dumps([{"session_id": sid, "cwd": "/Users/jay/apps", "pid": 1}]),
+                json.dumps([{"session_id": sid, "cwd": str(root / "fixture-apps"), "pid": 1}]),
                 encoding="utf-8",
             )
             with (
