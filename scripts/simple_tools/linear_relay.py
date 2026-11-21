@@ -290,7 +290,6 @@ def _sha_is_exposed(text: str, start: int) -> bool:
     return False
 
 
-
 def _mask_bare_shas(text: str) -> str:
     """Mask only the bare git SHAs, with a character outside every credential alphabet:  the
     mask also breaks any wider run a URL path would otherwise extend across the SHA."""
