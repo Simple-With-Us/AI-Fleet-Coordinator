@@ -141,7 +141,7 @@ def install_modules(
     )
     validate_backup_destination(backup_root, uid=uid, gid=gid)
 
-    source_bytes = _validated_new_snapshot(source_dir, node=node)
+    source_bytes = _validated_new_snapshot(source_dir, node=node, uid=uid, gid=gid)
     _verify_prior_snapshot(source_dir, lib_dir, uid=uid, gid=gid)
 
     original: dict[str, tuple[bytes, int, int, int] | None] = {}
@@ -207,34 +207,39 @@ def install_modules(
         _fsync_dir(lib_dir)
         _verify_new(lib_dir, source_bytes, uid=uid, gid=gid)
     except BaseException:
+        previous_handlers = {}
         for signum in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(signum, signal.SIG_IGN)
+            previous_handlers[signum] = signal.signal(signum, signal.SIG_IGN)
         rollback_error = False
-        for name in reversed(replaced):
-            old = original[name]
-            destination = lib_dir / name
-            try:
-                if old is None:
-                    destination.unlink()
-                else:
-                    os.replace(restore_dir / name, destination)
-            except FileNotFoundError:
-                if old is not None:
-                    rollback_error = True
-            except OSError:
-                rollback_error = True
         try:
-            _fsync_dir(lib_dir)
-            _verify_prior(lib_dir, original, uid=uid, gid=gid)
-        except (InstallError, OSError):
-            rollback_error = True
-        if rollback_error:
-            raise RecoveryError(
-                f"module replacement failed and prior-bundle restoration is unverified; leave the timer stopped (backup: {backup_dir})"
+            for name in reversed(replaced):
+                old = original[name]
+                destination = lib_dir / name
+                try:
+                    if old is None:
+                        destination.unlink()
+                    else:
+                        os.replace(restore_dir / name, destination)
+                except FileNotFoundError:
+                    if old is not None:
+                        rollback_error = True
+                except OSError:
+                    rollback_error = True
+            try:
+                _fsync_dir(lib_dir)
+                _verify_prior(lib_dir, original, uid=uid, gid=gid)
+            except (InstallError, OSError):
+                rollback_error = True
+            if rollback_error:
+                raise RecoveryError(
+                    f"module replacement failed and prior-bundle restoration is unverified; leave the timer stopped (backup: {backup_dir})"
+                ) from None
+            raise InstallError(
+                f"module replacement failed; the prior bundle was restored (backup: {backup_dir})"
             ) from None
-        raise InstallError(
-            f"module replacement failed; the prior bundle was restored (backup: {backup_dir})"
-        ) from None
+        finally:
+            for signum, previous_handler in previous_handlers.items():
+                signal.signal(signum, previous_handler)
     finally:
         shutil.rmtree(transaction, ignore_errors=True)
 
@@ -264,29 +269,34 @@ def _verify_new(lib_dir: Path, source_bytes: dict[str, bytes], *, uid: int, gid:
             raise InstallError(f"installed module verification failed for {name}")
 
 
-def validate_source_bundle(*, source_dir: Path, node: str) -> dict[str, bytes]:
+def validate_source_bundle(
+    *, source_dir: Path, node: str, uid: int, gid: int
+) -> dict[str, bytes]:
     """Read and syntax-check every plain module before replacing any installed file."""
     import subprocess
 
     source_bytes: dict[str, bytes] = {}
     for name in MODULES:
         source = source_dir / name
-        source_info = source.lstat()
         _check_path(
             source,
-            uid=source_info.st_uid,
-            gid=source_info.st_gid,
-            mode=stat.S_IMODE(source_info.st_mode),
+            uid=uid,
+            gid=gid,
+            mode=0o600,
             directory=False,
         )
         data = source.read_bytes()
-        checked = subprocess.run(
-            [node, "--check", str(source)],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        try:
+            checked = subprocess.run(
+                [node, "--check", "--", str(source)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise InstallError(f"source syntax check timed out for {name}") from None
         if checked.returncode:
             raise InstallError(f"source syntax check failed for {name}")
         source_bytes[name] = data
@@ -301,12 +311,11 @@ def stage_source_bundle(
     source_bytes: dict[str, bytes] = {}
     for name in MODULES:
         source = source_dir / name
-        source_info = source.lstat()
         _check_path(
             source,
-            uid=source_info.st_uid,
-            gid=source_info.st_gid,
-            mode=stat.S_IMODE(source_info.st_mode),
+            uid=uid,
+            gid=gid,
+            mode=0o600,
             directory=False,
         )
         source_bytes[name] = source.read_bytes()
@@ -317,7 +326,9 @@ def stage_source_bundle(
     try:
         for name, data in source_bytes.items():
             _write_file(stage_dir / name, data, uid=uid, gid=gid, mode=0o600)
-        staged_bytes = validate_source_bundle(source_dir=stage_dir, node=node)
+        staged_bytes = validate_source_bundle(
+            source_dir=stage_dir, node=node, uid=uid, gid=gid
+        )
         if staged_bytes != source_bytes:
             raise InstallError("staged module bytes differ from the reviewed source snapshot")
         hashes = {name: hashlib.sha256(data).hexdigest() for name, data in staged_bytes.items()}
@@ -399,7 +410,7 @@ def verify_installed_state(
     *, source_dir: Path, lib_dir: Path, uid: int, gid: int, node: str
 ) -> str:
     """Return prior/new only when the complete module set matches a saved state."""
-    new_bytes = _validated_new_snapshot(source_dir, node=node)
+    new_bytes = _validated_new_snapshot(source_dir, node=node, uid=uid, gid=gid)
     unexpected = sorted(entry.name for entry in lib_dir.iterdir() if entry.name not in MODULES)
     if unexpected:
         raise InstallError("the installed module directory contains a partial-install entry")
@@ -421,8 +432,12 @@ def verify_installed_state(
     return "prior"
 
 
-def _validated_new_snapshot(source_dir: Path, *, node: str) -> dict[str, bytes]:
-    source_bytes = validate_source_bundle(source_dir=source_dir, node=node)
+def _validated_new_snapshot(
+    source_dir: Path, *, node: str, uid: int, gid: int
+) -> dict[str, bytes]:
+    source_bytes = validate_source_bundle(
+        source_dir=source_dir, node=node, uid=uid, gid=gid
+    )
     try:
         manifest = json.loads((source_dir / "manifest.json").read_text())
     except (OSError, ValueError):
@@ -489,7 +504,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(staged)
             return 0
-        validate_source_bundle(source_dir=args.source_dir, node=args.node)
+        validate_source_bundle(
+            source_dir=args.source_dir, node=args.node, uid=args.uid, gid=args.gid
+        )
         if args.validate_only:
             print("operator-sheets-code-only: existing install and source bundle validated")
             return 0

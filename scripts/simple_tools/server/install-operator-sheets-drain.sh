@@ -71,6 +71,7 @@ say() { printf 'install-operator-sheets-drain: %s\n' "$*"; }
 die() { say "$1" >&2; exit "${2:-1}"; }
 
 TEST_ROOT="${OPERATOR_SHEETS_INSTALL_TEST_ROOT:-}"
+HOST_PYTHON="$(command -v python3 || true)"
 
 # --- where things go: the real host, or a stubbed test root ---------------------------------
 
@@ -111,10 +112,37 @@ if [[ "$DRY" -eq 0 ]]; then
     [[ -d /run/lock && ! -L /run/lock ]] || die "/run/lock must be an existing plain directory"
   fi
   LOCK_FILE="$PREFIX/run/lock/operator-sheets-drain-installer.lock"
-  [[ ! -L "$LOCK_FILE" ]] || die "$LOCK_FILE is a symlink"
-  command -v flock >/dev/null || die "flock is missing"
-  exec 9>"$LOCK_FILE" || die "could not open the installer lock"
-  flock -x 9 || die "could not acquire the installer lock"
+  [[ -n "$HOST_PYTHON" && -x "$HOST_PYTHON" ]] || die "python3 is missing for the installer lock"
+  if [[ "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" != 1 ]]; then
+    "$HOST_PYTHON" -I - "$LOCK_FILE" "$OWNER_UID" "$OWNER_GID" "$0" "$@" <<'PYLOCK'
+import fcntl
+import os
+import stat
+import sys
+
+lock_path, expected_uid, expected_gid, script, *script_args = sys.argv[1:]
+try:
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != int(expected_uid)
+        or info.st_gid != int(expected_gid)
+        or info.st_nlink != 1
+    ):
+        raise OSError("installer lock is not an owned plain file")
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.dup2(fd, 9, inheritable=True)
+    env = os.environ.copy()
+    env["OPERATOR_SHEETS_INSTALL_LOCK_HELD"] = "1"
+    os.execvpe("bash", ["bash", script, *script_args], env)
+except OSError:
+    print("install-operator-sheets-drain: could not securely open the installer lock", file=sys.stderr)
+    raise SystemExit(1)
+PYLOCK
+    exit "$?"
+  fi
 fi
 
 if [[ "$CODE_ONLY" -eq 1 ]]; then

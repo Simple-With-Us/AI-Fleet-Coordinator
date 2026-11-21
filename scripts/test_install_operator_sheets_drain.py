@@ -307,7 +307,9 @@ class StubbedInstallTests(unittest.TestCase):
         (repo / "scripts" / "fleet_infisical.py").write_text("")
         shutil.copy(SCRIPT, agent / "server" / SCRIPT.name)
         for name in MODULES:
-            (agent / name).write_text(drain if name.endswith("drain.mjs") else f"// {name}\n")
+            path = agent / name
+            path.write_text(drain if name.endswith("drain.mjs") else f"// {name}\n")
+            path.chmod(0o600)
         shutil.copy(HERE / "simple_tools" / "operator_sheets_code_only.py", agent)
         (agent / "server" / "operator-sheets-drain.service").write_text("[Service]\nType=oneshot\n")
         (agent / "server" / "operator-sheets-drain.timer").write_text(timer)
@@ -334,6 +336,22 @@ class StubbedInstallTests(unittest.TestCase):
 
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def test_installer_lock_refuses_a_symlink_without_touching_its_target(self):
+        lock_dir = self.root / "run/lock"
+        lock_dir.mkdir(parents=True)
+        victim = self.tmp / "lock-target"
+        victim.write_text("preserve this file\n")
+        lock = lock_dir / "operator-sheets-drain-installer.lock"
+        lock.symlink_to(victim)
+
+        result = self.run_install("--code-only")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not securely open the installer lock", result.stderr)
+        self.assertTrue(lock.is_symlink())
+        self.assertEqual(victim.read_text(), "preserve this file\n")
+        self.assertEqual(self.calls(), [])
 
     def seed_existing_install(self, *, include_thread=False):
         self.lib.mkdir(parents=True, mode=0o755)
@@ -657,6 +675,8 @@ class StubbedInstallTests(unittest.TestCase):
                         uid=os.getuid(),
                         gid=os.getgid(),
                     )
+            self.assertIs(signal.getsignal(signal.SIGINT), old_sigint)
+            self.assertIs(signal.getsignal(signal.SIGTERM), interrupt_handler)
             shutil.rmtree(staged, ignore_errors=True)
         finally:
             signal.signal(signal.SIGINT, old_sigint)
@@ -754,6 +774,52 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("no group or other access", result.stderr)
         self.assertFalse(self.lib.exists())
+
+
+class CodeOnlyHelperTests(unittest.TestCase):
+    def setUp(self):
+        helper_path = HERE / "simple_tools" / "operator_sheets_code_only.py"
+        spec = importlib.util.spec_from_file_location("operator_sheets_code_only_unit_test", helper_path)
+        self.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.helper)
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def source_bundle(self):
+        source = self.tmp / "source"
+        source.mkdir()
+        for name in MODULES:
+            path = source / name
+            path.write_text("export {};\n")
+            path.chmod(0o600)
+        return source
+
+    def test_source_syntax_timeout_is_bounded_and_reported(self):
+        source = self.source_bundle()
+        with mock.patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired(["node"], timeout=60)
+        ) as run:
+            with self.assertRaisesRegex(self.helper.InstallError, "syntax check timed out"):
+                self.helper.validate_source_bundle(
+                    source_dir=source,
+                    node="node",
+                    uid=os.getuid(),
+                    gid=os.getgid(),
+                )
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[1:3], ["--check", "--"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+    def test_source_bundle_requires_the_root_private_staged_owner_and_mode(self):
+        source = self.source_bundle()
+        (source / MODULES[0]).chmod(0o644)
+        with self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"):
+            self.helper.validate_source_bundle(
+                source_dir=source,
+                node="node",
+                uid=os.getuid(),
+                gid=os.getgid(),
+            )
 
 
 class PythonBlockTests(unittest.TestCase):
