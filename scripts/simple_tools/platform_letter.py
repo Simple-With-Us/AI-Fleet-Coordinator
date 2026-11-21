@@ -2604,7 +2604,7 @@ def turn_note(
     return out
 
 
-def enroll_children(chat: Chat) -> int:
+def enroll_children(chat: Chat, started: float | None = None) -> int:
     """Register the sub-thread children of this chat that hold no letter, on the chat's own turn end
     (`on_turn`):  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every child
     unlettered, so the parent - whose turn end already runs - enrolls its own.  The replay is the child's own
@@ -2617,9 +2617,12 @@ def enroll_children(chat: Chat) -> int:
     enrolls the children).  A child that holds a letter costs one note read;  one that was refused or failed
     is not asked again until RETRY_SECONDS have passed (its note's `failed_at` - a parent row that is full is
     refused, logged in the child's own note, and never retried in a storm);  and a pass replays at most
-    CHILD_ENROLL_MAX children, starting no new replay once CHILD_ENROLL_SECONDS have gone by.  Whatever one
-    child's replay breaks never reaches the parent's chat:  each child is its own try, and this whole pass is
-    the hook's quiet side work.  Returns the children whose starts were replayed."""
+    CHILD_ENROLL_MAX children, starting no new replay once CHILD_ENROLL_SECONDS have gone by since the
+    turn-end pass began - `on_turn` passes its own start, so the gate covers the parent's turn work too,
+    not just the enrollment tail.  Whatever one child's replay breaks never reaches the parent's chat:
+    each child is its own try (naming it, reading its note, checking its retry window and replaying its
+    start all sit inside one guarded region), and this whole pass is the hook's quiet side work.
+    Returns the children whose starts were replayed."""
     spec = chat.spec
     if spec.child_sessions is None or spec.chat_payload is None:
         return 0
@@ -2630,10 +2633,10 @@ def enroll_children(chat: Chat) -> int:
     except Exception:  # noqa: BLE001 - the store an adapter reads is never the chat's own business
         return 0
     home = str(chat.env.get("HOME") or os.path.expanduser("~"))
-    started = time.monotonic()
+    deadline = (time.monotonic() if started is None else started) + CHILD_ENROLL_SECONDS
     replayed = 0
     for item in listed:
-        if replayed >= CHILD_ENROLL_MAX or time.monotonic() - started >= CHILD_ENROLL_SECONDS:
+        if replayed >= CHILD_ENROLL_MAX or time.monotonic() >= deadline:
             break  # the rest wait for the next turn end:  no child's start may stretch this one
         try:
             sid = SI.check(_text(item), "a listed child session id")
@@ -2643,23 +2646,20 @@ def enroll_children(chat: Chat) -> int:
                 or not in_scope(spec, chat.env, payload)
             ):
                 continue  # the store no longer calls it this chat's sub-thread child
-        except Exception:  # noqa: BLE001 - one child the store cannot name is one child not enrolled
-            continue
-        child = Chat(
-            spec,
-            chat.env,
-            chat.location,
-            sid,
-            now=chat.now,
-            transport=chat.transport,
-            seat=chat.seat,
-        )
-        note = child.read()
-        if note.get("state") in ("closed", "mismatch") or lettered(note):
-            continue
-        if chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
-            continue  # a refusal or a failed ask is not repeated on every turn end
-        try:
+            child = Chat(
+                spec,
+                chat.env,
+                chat.location,
+                sid,
+                now=chat.now,
+                transport=chat.transport,
+                seat=chat.seat,
+            )
+            note = child.read()  # inside the guard:  one unreadable note is one child not enrolled
+            if note.get("state") in ("closed", "mismatch") or lettered(note):
+                continue
+            if chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
+                continue  # a refusal or a failed ask is not repeated on every turn end
             on_start(child, payload, Out(io.StringIO(), spec, ""), home)
         except Exception:  # noqa: BLE001 - one child's enrollment never stops the pass, or the chat
             continue
@@ -2672,9 +2672,10 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     print nothing, close nothing.
 
     A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
-    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
+    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
     lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
     that retitled the chat itself, dropping the letter, gets it back)."""
+    started = time.monotonic()  # the enrollment tail shares this pass's whole budget, not a fresh one
     note = chat.read()
     if not note:
         return 0
@@ -2701,7 +2702,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     merged = turn_note(before, note, chat.read())
     if merged is not None:
         chat.write(merged)
-    enroll_children(chat)
+    enroll_children(chat, started)
     return 0
 
 
