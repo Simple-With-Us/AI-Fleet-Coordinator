@@ -309,11 +309,17 @@ class StubbedInstallTests(unittest.TestCase):
         (agent / "server").mkdir(parents=True)
         shutil.copy(SCRIPT, agent / "server" / SCRIPT.name)
         for name in MODULES:
-            path = repo / "scripts" / "fleet_infisical.py" if name == "fleet_infisical.py" else agent / name
+            path = (
+                repo / "scripts" / "fleet_infisical.py"
+                if name == "fleet_infisical.py"
+                else agent / name
+            )
             content = (
                 "# reviewed worker fixture\n"
                 if name == "fleet_infisical.py"
-                else drain if name.endswith("drain.mjs") else f"// {name}\n"
+                else drain
+                if name.endswith("drain.mjs")
+                else f"// {name}\n"
             )
             path.write_text(content)
             path.chmod(0o600)
@@ -424,8 +430,7 @@ class StubbedInstallTests(unittest.TestCase):
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 if self.log.exists() and any(
-                    "systemctl show --property=ActiveState" in call
-                    for call in self.calls()
+                    "systemctl show --property=ActiveState" in call for call in self.calls()
                 ):
                     break
                 if first.poll() is not None:
@@ -502,8 +507,14 @@ class StubbedInstallTests(unittest.TestCase):
             self.skipTest("node is not installed")
         agent = self.repo / "scripts" / "simple_tools"
         for name in MODULES:
-            source = HERE / "fleet_infisical.py" if name == "fleet_infisical.py" else HERE / "simple_tools" / name
-            destination = self.repo / "scripts" / name if name == "fleet_infisical.py" else agent / name
+            source = (
+                HERE / "fleet_infisical.py"
+                if name == "fleet_infisical.py"
+                else HERE / "simple_tools" / name
+            )
+            destination = (
+                self.repo / "scripts" / name if name == "fleet_infisical.py" else agent / name
+            )
             shutil.copyfile(source, destination)
         git(self.repo, "add", "scripts")
         git(self.repo, "commit", "-q", "-m", "actual module closure fixture")
@@ -917,7 +928,9 @@ if (typeof thread.drainThreadRows !== 'function' ||
 class CodeOnlyHelperTests(unittest.TestCase):
     def setUp(self):
         helper_path = HERE / "simple_tools" / "operator_sheets_code_only.py"
-        spec = importlib.util.spec_from_file_location("operator_sheets_code_only_unit_test", helper_path)
+        spec = importlib.util.spec_from_file_location(
+            "operator_sheets_code_only_unit_test", helper_path
+        )
         self.helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.helper)
         self.tmp = Path(tempfile.mkdtemp())
@@ -988,16 +1001,18 @@ class CodeOnlyHelperTests(unittest.TestCase):
 
     def test_source_syntax_timeout_is_bounded_and_reported(self):
         source = self.source_bundle()
-        with mock.patch(
-            "subprocess.run", side_effect=subprocess.TimeoutExpired(["node"], timeout=60)
-        ) as run:
-            with self.assertRaisesRegex(self.helper.InstallError, "syntax check timed out"):
-                self.helper.validate_source_bundle(
-                    source_dir=source,
-                    node="node",
-                    uid=os.getuid(),
-                    gid=os.getgid(),
-                )
+        with (
+            mock.patch(
+                "subprocess.run", side_effect=subprocess.TimeoutExpired(["node"], timeout=60)
+            ) as run,
+            self.assertRaisesRegex(self.helper.InstallError, "syntax check timed out"),
+        ):
+            self.helper.validate_source_bundle(
+                source_dir=source,
+                node="node",
+                uid=os.getuid(),
+                gid=os.getgid(),
+            )
         argv = run.call_args.args[0]
         self.assertEqual(argv[1:3], ["--check", "--"])
         self.assertEqual(run.call_args.kwargs["timeout"], 60)
@@ -1030,11 +1045,13 @@ class CodeOnlyHelperTests(unittest.TestCase):
         target.chmod(0o600)
         manifest.unlink()
         manifest.symlink_to(target)
-        with mock.patch("subprocess.run") as run:
-            with self.assertRaisesRegex(self.helper.InstallError, "refusing symlink path component"):
-                self.helper._validated_new_snapshot(
-                    source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
-                )
+        with (
+            mock.patch("subprocess.run") as run,
+            self.assertRaisesRegex(self.helper.InstallError, "refusing symlink path component"),
+        ):
+            self.helper._validated_new_snapshot(
+                source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
+            )
         run.assert_not_called()
 
     def test_prior_snapshot_manifest_requires_private_plain_file_before_read(self):
@@ -1089,10 +1106,10 @@ class CodeOnlyHelperTests(unittest.TestCase):
         )  # Positive control: this snapshot and installed set are coherent.
         manifest.write_text(json.dumps({"modules": []}))
         manifest.chmod(0o600)
-        with self.assertRaisesRegex(self.helper.InstallError, "prior module snapshot is incomplete"):
-            self.helper._verify_prior_snapshot(
-                source, lib, uid=os.getuid(), gid=os.getgid()
-            )
+        with self.assertRaisesRegex(
+            self.helper.InstallError, "prior module snapshot is incomplete"
+        ):
+            self.helper._verify_prior_snapshot(source, lib, uid=os.getuid(), gid=os.getgid())
 
     def test_prior_snapshot_refusal_does_not_change_installed_modules_or_timer(self):
         for target_kind in ("manifest", "module"):
@@ -1124,7 +1141,10 @@ class CodeOnlyHelperTests(unittest.TestCase):
                         )
                     self.assertEqual(
                         {
-                            name: ((lib / name).read_bytes(), stat.S_IMODE((lib / name).stat().st_mode))
+                            name: (
+                                (lib / name).read_bytes(),
+                                stat.S_IMODE((lib / name).stat().st_mode),
+                            )
                             for name in MODULES
                         },
                         before_modules,

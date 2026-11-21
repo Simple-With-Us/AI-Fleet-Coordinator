@@ -273,9 +273,7 @@ def _verify_new(lib_dir: Path, source_bytes: dict[str, bytes], *, uid: int, gid:
             raise InstallError(f"installed module verification failed for {name}")
 
 
-def validate_source_bundle(
-    *, source_dir: Path, node: str, uid: int, gid: int
-) -> dict[str, bytes]:
+def validate_source_bundle(*, source_dir: Path, node: str, uid: int, gid: int) -> dict[str, bytes]:
     """Read and syntax-check every JavaScript/Python file before replacing installed code."""
     import subprocess
 
@@ -340,9 +338,7 @@ def stage_source_bundle(
     try:
         for name, data in source_bytes.items():
             _write_file(stage_dir / name, data, uid=uid, gid=gid, mode=0o600)
-        staged_bytes = validate_source_bundle(
-            source_dir=stage_dir, node=node, uid=uid, gid=gid
-        )
+        staged_bytes = validate_source_bundle(source_dir=stage_dir, node=node, uid=uid, gid=gid)
         if staged_bytes != source_bytes:
             raise InstallError("staged module bytes differ from the reviewed source snapshot")
         hashes = {name: hashlib.sha256(data).hexdigest() for name, data in staged_bytes.items()}
@@ -455,9 +451,7 @@ def verify_installed_state(
     return "prior"
 
 
-def _validated_new_snapshot(
-    source_dir: Path, *, node: str, uid: int, gid: int
-) -> dict[str, bytes]:
+def _validated_new_snapshot(source_dir: Path, *, node: str, uid: int, gid: int) -> dict[str, bytes]:
     _check_path(source_dir, uid=uid, gid=gid, mode=0o700, directory=True)
     manifest_path = source_dir / "manifest.json"
     _check_path(manifest_path, uid=uid, gid=gid, mode=0o600, directory=False)
@@ -465,9 +459,7 @@ def _validated_new_snapshot(
         manifest = json.loads(manifest_path.read_text())
     except (OSError, ValueError):
         raise InstallError("the new module snapshot manifest is missing or invalid") from None
-    source_bytes = validate_source_bundle(
-        source_dir=source_dir, node=node, uid=uid, gid=gid
-    )
+    source_bytes = validate_source_bundle(source_dir=source_dir, node=node, uid=uid, gid=gid)
     expected = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
     if manifest != expected:
         raise InstallError("the new module snapshot hash does not match")
