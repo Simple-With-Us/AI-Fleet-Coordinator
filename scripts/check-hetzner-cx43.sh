@@ -6,11 +6,13 @@
 # HIT only when an 8-vCPU type cheaper than the current monthly price is
 # available for migration in nbg1.  cx43 itself being listed is not a HIT
 # -- we already run that.  Never echoes the token.
-# Live cron runs ~/apps/check-hetzner-cx43.sh -- keep that copy in sync.
+# The historical cron was retired 2026-08-28 (docs/MAC-LOCAL-PROCESSES.md).
+# An on-demand copy requires this checker, fleet_infisical_cli.py and
+# fleet_infisical.py together in one reviewed bundle; no cron is installed here.
 
 set -uo pipefail
 
-# Cron's PATH is minimal, so resolve the shared reader relative to this script.
+# Resolve the shared reader beside this checker in the reviewed on-demand bundle.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_INFISICAL_CLI="${SCRIPT_DIR}/fleet_infisical_cli.py"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
@@ -21,7 +23,11 @@ STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # Environment first, then the shared direct Infisical reader (the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -f "$FLEET_INFISICAL_CLI" ]; then
+if [ -z "$TOKEN" ]; then
+  if [ ! -f "$FLEET_INFISICAL_CLI" ] || [ ! -f "${SCRIPT_DIR}/fleet_infisical.py" ]; then
+    echo "$STAMP  ERROR: shared Infisical reader pair missing" >> "$LOG"
+    exit 1
+  fi
   TOKEN="$(/usr/bin/python3 -I "$FLEET_INFISICAL_CLI" get HCLOUD_TOKEN --path / --project fleet-ops 2>/dev/null || true)"
 fi
 if [ -z "$TOKEN" ]; then

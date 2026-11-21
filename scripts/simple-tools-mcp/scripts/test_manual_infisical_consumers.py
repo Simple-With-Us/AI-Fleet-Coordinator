@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -141,6 +142,56 @@ class ManualInfisicalConsumerTests(unittest.TestCase):
             ("/api/v2/service-token", f"Bearer {FIXTURE_CREDENTIAL}", "GET"),
         )
         self.assertNotIn(TEST_VALUE, error)
+
+
+class HetznerReaderDeliveryTests(unittest.TestCase):
+    def test_incomplete_reader_pair_refuses_before_reader_or_provider_child(self):
+        source = (SCRIPTS / "check-hetzner-cx43.sh").read_text()
+        log_line = 'LOG="/Users/jay/apps/hetzner-upgrade-watch.log"'
+        self.assertEqual(source.count(log_line), 1)
+        for delivered in ((), ("fleet_infisical_cli.py",), ("fleet_infisical.py",)):
+            with self.subTest(delivered=delivered), tempfile.TemporaryDirectory() as temp:
+                root = pathlib.Path(temp)
+                log = root / "watch.log"
+                marker = root / "child-called"
+                launcher = root / "check-hetzner-cx43.sh"
+                launcher.write_text(source.replace(log_line, f'LOG="{log}"'))
+                stub = (
+                    "from pathlib import Path\n"
+                    f"Path({str(marker)!r}).write_text('reader')\n"
+                    "print('fixture-only-not-a-live-value')\n"
+                )
+                for name in delivered:
+                    (root / name).write_text(stub)
+                binaries = root / "bin"
+                binaries.mkdir()
+                curl = binaries / "curl"
+                curl.write_text(
+                    "#!/bin/sh\n"
+                    f"printf provider > '{marker}'\n"
+                    "printf fixture-only-not-a-live-value\n"
+                    "exit 99\n"
+                )
+                curl.chmod(0o700)
+                result = subprocess.run(
+                    ["/bin/bash", str(launcher)],
+                    cwd=root,
+                    env={"PATH": f"{binaries}:{os.defpath}", "HOME": str(root)},
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+                self.assertFalse(marker.exists())
+                diagnostic = log.read_text()
+                self.assertRegex(
+                    diagnostic,
+                    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  ERROR: shared Infisical reader pair missing\n$",
+                )
+                self.assertNotIn("fixture-only-not-a-live-value", diagnostic)
+                self.assertNotIn("HCLOUD_TOKEN missing/empty", diagnostic)
 
 
 if __name__ == "__main__":
