@@ -32,6 +32,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -184,7 +185,12 @@ def expand_target(target: str, home: os.PathLike[str]) -> str:
 # The programs this package may start.  Every one of them is a fleet tool with a fixed
 # shape,  so the allowlist is a closed set:  a command that is not on it is refused
 # before any process exists.
-ALLOWED_COMMANDS: frozenset[str] = frozenset({"fleet-secrets", "security"})
+ALLOWED_COMMANDS: frozenset[str] = frozenset({"security"})
+
+# Only this source command under this interpreter may read Infisical metadata.
+INFISICAL_CLI = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "fleet_infisical_cli.py")
+)
 
 # The scripts this package may run with the interpreter,  by file name.  The MAC level
 # doctor is the only one.
@@ -253,6 +259,34 @@ def check_cli_allowed(argv: Sequence[str]) -> str:
     if not argv or not all(isinstance(part, str) for part in argv):
         raise CommandRefused("the command is empty or holds a value that is not text")
     program = argv[0]
+    if len(argv) > 1 and argv[1] == "-I":
+        if list(argv[:3]) != [sys.executable, "-I", INFISICAL_CLI]:
+            raise CommandRefused("the isolated command path or interpreter is not allowlisted")
+        if len(argv) < 4 or argv[3] not in ("names", "doctor"):
+            raise CommandRefused("the canonical command may only read names or diagnostics")
+        options = list(argv[4:])
+        seen = set()
+        while options:
+            option = options.pop(0)
+            if option == "--json" and argv[3] == "doctor" and option not in seen:
+                seen.add(option)
+                continue
+            if option not in ("--path", "--project") or option in seen or not options:
+                raise CommandRefused("the canonical read options are not allowlisted")
+            seen.add(option)
+            value = options.pop(0)
+            if option == "--project" and value not in ("fleet-ops", "ai-fleet-coordinator"):
+                raise CommandRefused("the canonical read project is not allowlisted")
+            if option == "--path" and (
+                not value.startswith("/")
+                or any(part in (".", "..") for part in value.split("/"))
+                or any(
+                    char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/"
+                    for char in value
+                )
+            ):
+                raise CommandRefused("the canonical read folder is invalid")
+        return "fleet_infisical_cli.py"
     if _is_interpreter(program):
         rest = list(argv[1:])
         if not rest:

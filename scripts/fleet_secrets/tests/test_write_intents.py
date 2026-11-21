@@ -35,7 +35,7 @@ class WriteIntentTests(unittest.TestCase):
         self.directory = Path(self.temporary.name) / "writer"
         self.token = "st." + secrets.token_urlsafe(32)
         self.value = secrets.token_urlsafe(40)
-        self.env = {core.ENV_PROJECT: PROJECT, core.ENV_WRITE_TOKEN: self.token}
+        self.env = {core.ENV_PROJECT: PROJECT, core.WRITE_TOKEN_ENV_NAME: self.token}
         self.intent = self.new_intent()
         self.calls = []
         self.mutations = []
@@ -393,8 +393,12 @@ class WriteIntentTests(unittest.TestCase):
         self.assertEqual(self.calls, before)
 
     def test_scope_expiry_and_writer_binding_refuse_before_mutation(self):
-        for change in (
+        valid_metadata = dict(self.metadata)
+        cases = (
             {"expiresAt": None},
+            {"expiresAt": "invalid"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
             {"permissions": ["read"]},
             {"scopes": [{"environment": "prod", "secretPath": "/"}]},
             {
@@ -403,20 +407,25 @@ class WriteIntentTests(unittest.TestCase):
                     {"environment": "prod", "secretPath": "/"},
                 ]
             },
-        ):
+        )
+        for change in cases:
             with self.subTest(change=change):
-                self.metadata.update(change)
+                self.metadata = {**valid_metadata, **change}
                 self.assert_outcome("refused", lambda: self.put(self.new_intent()))
                 self.assertEqual(self.mutations, [])
+        self.metadata = dict(valid_metadata)
+        self.metadata.pop("expiresAt")
+        self.assert_outcome("refused", lambda: self.put(self.new_intent()))
+        self.assertEqual(self.mutations, [])
 
     def test_diagnostics_preserve_expiry_reason_and_exact_missing_binding_name(self):
         self.metadata["expiresAt"] = None
         error = self.assert_outcome("refused", self.put)
         self.assertEqual(error.reason, "token-expired-or-invalid")
-        self.env.pop(core.ENV_WRITE_TOKEN)
+        self.env.pop(core.WRITE_TOKEN_ENV_NAME)
         error = self.assert_outcome("refused", lambda: self.put(self.new_intent()))
-        self.assertEqual(error.required_binding, core.ENV_WRITE_TOKEN)
-        self.assertIn(core.ENV_WRITE_TOKEN, error.message)
+        self.assertEqual(error.required_binding, core.WRITE_TOKEN_ENV_NAME)
+        self.assertIn(core.WRITE_TOKEN_ENV_NAME, error.message)
 
     def test_definite_refusal_preserves_safe_status_retryability_and_terminal_id_on_restart(self):
         for status in (401, 403, 429):

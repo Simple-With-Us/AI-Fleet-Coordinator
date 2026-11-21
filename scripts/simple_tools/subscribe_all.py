@@ -166,7 +166,7 @@ def infisical_credentials(realm: str) -> list[Z.Credentials]:
     }
     env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
     env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = INFISICAL_PROJECT
-    env[scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN] = token
+    env[scoped_secrets.COORDINATOR_READ_TOKEN_ENV_NAME] = token
     try:
         found = scoped_secrets.fetch_project(INFISICAL_PROJECT, INFISICAL_PATH, env, token=token)
     except scoped_secrets.SecretsError as exc:

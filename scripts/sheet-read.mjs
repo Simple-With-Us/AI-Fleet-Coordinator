@@ -2,7 +2,7 @@
 /**
  * sheet-read.mjs — read-only dump of the Fleet ASC / TestFlight registry sheet.
  * Spreadsheet: 1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY (strictly private).
- * Auth: service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via fleet-secrets.
+ * Auth: service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via the shared reader.
  * Never prints credentials.
  *
  * Usage:
@@ -11,8 +11,8 @@
  *   node sheet-read.mjs --meta          # tab names + grid sizes only
  */
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
@@ -22,13 +22,13 @@ function base64url(input) {
 }
 
 // AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
-// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
+// Infisical Fleet-OPS /google-sheets-sa through the shared direct CLI.  Never written to disk or printed.
 function loadServiceAccount() {
   let raw = process.env.GOOGLE_SHEETS_SA || "";
   if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
+    const cli = join(dirname(fileURLToPath(import.meta.url)), "fleet_infisical_cli.py");
     try {
-      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
+      raw = execFileSync("/usr/bin/python3", ["-I", cli, "get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa", "--project", "fleet-ops"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
       }).replace(/\n$/, "");

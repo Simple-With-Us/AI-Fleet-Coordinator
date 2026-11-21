@@ -77,6 +77,9 @@ class AutosaveTests(unittest.TestCase):
         self.addCleanup(status.stop)
         source = Path(__file__).resolve().parents[2] / "fleet-ops-eavesdropper-settings.json"
         self.allowlist = editor.validate_allowlist(json.loads(source.read_text()))
+        # Synthetic successful saves explicitly enable the same owner gate as production.
+        self.allowlist["applyEnabled"] = True
+        self.enterContext(mock.patch.object(settings, "_manifest", return_value=self.allowlist))
         self.document = settings.document({
             "daemon.coalesce_seconds": 1.0,
             "daemon.presence_topics": [["Work-In-Progress", "A Topic"]],
@@ -334,7 +337,47 @@ class AutosaveTests(unittest.TestCase):
         self.assertIn('# unrelated comment survives', self.path.read_text())
         self.assertIn('owner_user_id = 12', self.path.read_text())
         self.assertEqual(len(self.store.writes), 1)
-        self.assertFalse(self.allowlist["applyEnabled"])
+        self.assertTrue(self.allowlist["applyEnabled"])
+
+    def test_disabled_apply_gate_refuses_before_provider_or_runtime_mutation(self):
+        self.allowlist["applyEnabled"] = False
+        before = self.path.read_bytes()
+        with mock.patch.object(self.store, "read", side_effect=AssertionError("gate precedes provider")):
+            with self.assertRaises(editor.Refusal) as caught:
+                self.save()
+        self.assertEqual(caught.exception.code, "apply_disabled")
+        self.assertEqual(self.store.writes, [])
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_runtime_snapshot_revision_uses_preoverlay_toml(self):
+        from simple_tools import config
+        snapshot = settings.accepted_snapshot(editor._parse(self.original, "fixture"), self.allowlist)
+        self.store.document["settings"]["daemon.coalesce_seconds"] = 9.0
+        with mock.patch.object(settings, "InfisicalStore", return_value=self.store):
+            result = config.load(str(self.path.parent), str(self.path), environ=self.runtime_env())
+        self.assertEqual(result.operator_settings_snapshot_revision, settings.revision(snapshot))
+        self.assertEqual(result.operator_settings_revision, settings.revision(self.store.document))
+        self.assertNotEqual(result.operator_settings_snapshot_revision, result.operator_settings_revision)
+
+    def test_verified_copy_validates_shape_before_revision_consumption(self):
+        env = self.runtime_env()
+        settings.remember_verified(self.path, self.document, env)
+        cache = self.path.with_name(settings.VERIFIED_COPY_NAME)
+        payload = json.loads(cache.read_text())
+        payload["document"] = {"unexpected": "untrusted"}
+        cache.write_text(json.dumps(payload))
+        with mock.patch.object(settings, "revision", side_effect=AssertionError("invalid shape reached hash")):
+            with self.assertRaises(settings.SettingsError):
+                settings._verified_copy(self.path, env)
+
+    def test_runtime_missing_project_is_named_even_when_no_fallback_can_be_used(self):
+        from simple_tools import config
+        env = self.runtime_env()
+        env.pop(settings.PROJECT)
+        result = config.load(str(self.path.parent), str(self.path), environ=env)
+        self.assertTrue(result.operator_settings_error)
+        self.assertIn(settings.PROJECT, result.errors[0])
+        self.assertNotIn(env[settings.READ_BINDING], result.errors[0])
 
     def test_stale_revision_does_not_write_or_change_runtime(self):
         self.store.document["settings"]["daemon.coalesce_seconds"] = 3.0
@@ -727,9 +770,21 @@ class AutosaveTests(unittest.TestCase):
         answer = self.save(patch, remove=["seat.GROK.budget.wakes_per_day"])
         self.assertTrue(answer["ok"])
         self.assertEqual(answer["settings"]["seat.GROK.budget"], {"board_per_day": 0})
+        self.assertEqual(self.store.document["settings"]["seat.GROK.budget"], {"board_per_day": 0})
+        reread = settings.get(self.path, self.allowlist, store=self.store)
+        self.assertEqual(reread["settings"]["seat.GROK.budget"], {"board_per_day": 0})
+        self.assertEqual(reread["revision"], settings.revision(self.store.document))
         self.assertNotIn("wakes_per_day", self.path.read_text())
         self.assertIn("board_per_day = 0", self.path.read_text())
         self.assertIn("owner_user_id = 12", self.path.read_text())
+
+    def test_canonical_overlay_removes_lagging_runtime_subkeys_with_tuple_key_contract(self):
+        text = self.original + 'budget = { wakes_per_day = 4, board_per_day = 0 }\n'
+        canonical = {"seat.GROK.budget": {"board_per_day": 0}}
+        self.assertEqual(settings._canonical_removals(text, canonical), ["seat.GROK.budget.wakes_per_day"])
+        overlaid = editor._parse(settings.overlay_text(text, self.allowlist, canonical), "fixture")
+        self.assertEqual(overlaid["seat"]["GROK"]["budget"], {"board_per_day": 0})
+        self.assertEqual(overlaid["daemon"]["owner_user_id"], 12)
 
     def confirm(self, value=None, *, activated=True):
         value = value or self.store.document

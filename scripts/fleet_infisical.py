@@ -1,8 +1,10 @@
 """Scoped Infisical service-token reads and allowlisted writes.
 
-Only explicit process bindings are consumed: INFISICAL_TOKEN is read-only and
-INFISICAL_WRITE_TOKEN is a separate writer.  No Keychain, Automation identity,
-CLI login session or credential-file fallback runs.  Values stay in memory.
+The core read and write commands consume explicit process bindings: INFISICAL_TOKEN
+is read-only and INFISICAL_WRITE_TOKEN is a separate writer.  The dedicated
+token_from_store API reads a consumer's existing scoped token from its own host
+store.  No Automation identity, CLI login or shared credential fallback runs.
+Values stay in memory.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import os
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +29,7 @@ import uuid
 from collections import namedtuple
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -88,18 +92,18 @@ PROJECT_SOURCES = {
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 KEYCHAIN_SERVICE = "fleet-secrets"
 KEYCHAIN_CLIENT_ID = "infisical-client-id"
-KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
+KEYCHAIN_CLIENT_SECRET_ACCOUNT_NAME = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
-ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
-ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
+COORDINATOR_READ_TOKEN_ENV_NAME = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+WRITE_TOKEN_ENV_NAME = "INFISICAL_WRITE_TOKEN"
 MAX_NAMED_READS = 8
 ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 ENV_WRITE_PATHS = "INFISICAL_WRITE_PATHS"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
-ENV_CLIENT_SECRET = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
+UNIVERSAL_AUTH_SECRET_ENV_NAME = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
 # Retired universal-auth variable names are stripped from helper environments.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
-ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
+AUTOMATION_SECRET_ENV_NAME = "INFISICAL_AUTOMATION_CLIENT_SECRET"
 
 MACHINE_MODES = ()
 
@@ -107,12 +111,12 @@ MACHINE_MODES = ()
 AUTH_ENV_VARS = frozenset(
     {
         ENV_TOKEN,
-        ENV_AI_FLEET_COORDINATOR_TOKEN,
-        ENV_WRITE_TOKEN,
+        COORDINATOR_READ_TOKEN_ENV_NAME,
+        WRITE_TOKEN_ENV_NAME,
         ENV_CLIENT_ID,
-        ENV_CLIENT_SECRET,
+        UNIVERSAL_AUTH_SECRET_ENV_NAME,
         ENV_AUTOMATION_ID,
-        ENV_AUTOMATION_SECRET,
+        AUTOMATION_SECRET_ENV_NAME,
         "INFISICAL_CLIENT_ID",
         "INFISICAL_CLIENT_SECRET",
         "INFISICAL_SHARED_CLIENT_ID",
@@ -309,21 +313,11 @@ def session_valid(cli: str, env: Mapping[str, str]) -> bool:
 
 
 def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
-    try:
-        proc = subprocess.run(
-            [cli, "--version"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=KEYCHAIN_TIMEOUT,
-            cwd="/",
-            env=_base_env(env),
-            check=False,
-        )
-        text = proc.stdout.decode("utf-8", "replace")
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    m = re.search(r"\d+\.\d+\.\d+", text)
-    return m.group(0) if m else None
+    """Nullable compatibility stub; direct HTTP readers never execute the issuer CLI.
+
+    Doctor retains this optional field, but version discovery is retired and performs no I/O.
+    """
+    return None
 
 
 # --------------------------------------------------------------------------- fetch
@@ -346,7 +340,7 @@ def project_token_name(project_name: str) -> str:
     if project_name == "fleet-ops":
         return ENV_TOKEN
     if project_name == "ai-fleet-coordinator":
-        return ENV_AI_FLEET_COORDINATOR_TOKEN
+        return COORDINATOR_READ_TOKEN_ENV_NAME
     raise UsageError("unknown Infisical project")
 
 
@@ -384,10 +378,57 @@ def declared_paths(env: Mapping[str, str], path: str, *, writer: bool = False) -
     return paths
 
 
+def _expected_token_identity(expected: object) -> dict | None:
+    """Validate nonsecret expected grant metadata with closed diagnostics."""
+    if expected is None:
+        return None
+    try:
+        if not isinstance(expected, dict) or set(expected) != {"id", "name", "expiresAt"}:
+            raise ValueError
+        if (
+            not isinstance(expected["id"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", expected["id"])
+            or not isinstance(expected["name"], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", expected["name"])
+            or expected["name"].startswith("st.")
+            or not isinstance(expected["expiresAt"], str)
+            or not re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})",
+                expected["expiresAt"],
+            )
+        ):
+            raise ValueError
+        expiry = datetime.fromisoformat(expected["expiresAt"].replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise UsageError("expected-token-identity-invalid") from None
+    return dict(expected)
+
+
 def validate_service_metadata(
-    metadata: object, project: str, paths: Iterable[str], permissions: Iterable[str]
+    metadata: object,
+    project: str,
+    paths: Iterable[str],
+    permissions: Iterable[str],
+    *,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> None:
     """Validate the token's own grant, never a successful secret query."""
+    if type(require_finite_expiry) is not bool:
+        raise UsageError("finite-expiry-option-invalid")
+    expected_identity = _expected_token_identity(expected_identity)
+    if expected_identity is not None:
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("id") != expected_identity["id"]
+            or metadata.get("name") != expected_identity["name"]
+            or ("_id" in metadata and metadata["_id"] != expected_identity["id"])
+        ):
+            raise SecretsError("token-identity-mismatch")
+        require_finite_expiry = True
     if (
         not isinstance(metadata, dict)
         or metadata.get("workspace") != project
@@ -416,10 +457,24 @@ def validate_service_metadata(
     if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
         raise SecretsError("token-scope-mismatch")
     expiry = metadata.get("expiresAt")
+    # Infisical represents an explicitly nonexpiring token with JSON null. Only
+    # read-only grants may use that compatibility path; writers stay finite.
+    # An absent field is malformed metadata, not a nonexpiring registration.
+    if (
+        not require_finite_expiry
+        and "expiresAt" in metadata
+        and expiry is None
+        and tuple(permissions) == ("read",)
+    ):
+        return
     try:
         if not isinstance(expiry, str):
             raise ValueError()
         parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if expected_identity is not None and parsed != datetime.fromisoformat(
+            expected_identity["expiresAt"].replace("Z", "+00:00")
+        ):
+            raise SecretsError("token-identity-mismatch")
         if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
             raise ValueError()
     except (ValueError, TypeError, AttributeError):
@@ -445,7 +500,12 @@ def verify_service_token(
     *,
     writer: bool = False,
     deadline: float | None = None,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> tuple[str, ...]:
+    if type(require_finite_expiry) is not bool:
+        raise UsageError("finite-expiry-option-invalid")
+    expected_identity = _expected_token_identity(expected_identity)
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2, failure_kind="refused")
@@ -466,9 +526,23 @@ def verify_service_token(
             provider_status=status,
         )
     try:
-        validate_service_metadata(
-            metadata, project, paths, ("read", "write") if writer else ("read",)
-        )
+        permissions = ("read", "write") if writer else ("read",)
+        if expected_identity is not None:
+            validate_service_metadata(
+                metadata,
+                project,
+                paths,
+                permissions,
+                require_finite_expiry=True,
+                expected_identity=expected_identity,
+            )
+        elif require_finite_expiry:
+            validate_service_metadata(
+                metadata, project, paths, permissions, require_finite_expiry=True
+            )
+        else:
+            # Existing consumers wrap the four-positional verifier to strengthen their grant.
+            validate_service_metadata(metadata, project, paths, permissions)
     except SecretsError as exc:
         exc.failure_kind = "refused"
         raise
@@ -532,6 +606,8 @@ def fetch_project(
     names: Iterable[str] | None = None,
     timeout: float = EXPORT_TIMEOUT,
     strict_records: bool = False,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> dict[str, str]:
     """Explicit project route; strict_records preserves folder-proven row checks."""
     if type(strict_records) is not bool:
@@ -541,7 +617,31 @@ def fetch_project(
         project_name = project_name_for_id(project, env)
         token = resolve_token(env, writer=writer, project_name=project_name)
     deadline = time.monotonic() + timeout
-    paths = verify_service_token(token, project, path, env, writer=writer, deadline=deadline)
+    if type(require_finite_expiry) is not bool:
+        raise UsageError("finite-expiry-option-invalid")
+    if expected_identity is not None:
+        paths = verify_service_token(
+            token,
+            project,
+            path,
+            env,
+            writer=writer,
+            deadline=deadline,
+            require_finite_expiry=True,
+            expected_identity=expected_identity,
+        )
+    elif require_finite_expiry:
+        paths = verify_service_token(
+            token,
+            project,
+            path,
+            env,
+            writer=writer,
+            deadline=deadline,
+            require_finite_expiry=True,
+        )
+    else:
+        paths = verify_service_token(token, project, path, env, writer=writer, deadline=deadline)
     wanted = None if names is None else set(names)
     found: dict[str, str] = {}
     if wanted is None:
@@ -772,6 +872,8 @@ def bounded_fetch_project(
     writer: bool = False,
     max_output_bytes: int | None = None,
     strict_records: bool = False,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -781,6 +883,9 @@ def bounded_fetch_project(
     Process launch/OS scheduling must be healthy; provider, DNS, body and worker
     cleanup waits do not extend the caller's remaining budget.
     """
+    expected_identity = _expected_token_identity(expected_identity)
+    if type(require_finite_expiry) is not bool:
+        raise UsageError("finite-expiry-option-invalid")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise UsageError("bounded-read-invalid")
     if max_output_bytes is None:
@@ -820,6 +925,11 @@ def bounded_fetch_project(
         max_output_bytes=max_output_bytes,
         strict_records=strict_records,
     )
+    if require_finite_expiry:
+        request["require_finite_expiry"] = True
+    if expected_identity is not None:
+        request["require_finite_expiry"] = True
+        request["expected_identity"] = expected_identity
     deadline = time.monotonic() + timeout
     values = _bounded_read_request(request, deadline)
     if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
@@ -828,6 +938,223 @@ def bounded_fetch_project(
     if time.monotonic() >= deadline:
         raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
     return values
+
+
+class _FileReadRefused(SecretsError):
+    """Closed file-operation reasons; never retain an OS error or selected path."""
+
+
+def _protected_read(path: str, limit: int, *, private: bool, strict_custody: bool = False) -> bytes:
+    """Read one explicit regular file through held, rechecked directory descriptors."""
+    directories = []
+    leaf = None
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC")
+    try:
+        if (
+            type(path) is not str
+            or not path
+            or len(path) > 4096
+            or "\0" in path
+            or not Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or (private and any(p.casefold() == ".secrets" for p in Path(path).parts))
+            or not all(hasattr(os, name) for name in required)
+            or os.open not in os.supports_dir_fd
+            or os.stat not in os.supports_dir_fd
+        ):
+            raise ValueError
+        selected = Path(path)
+        if not strict_custody:
+            selected = selected.parent.resolve(strict=True) / selected.name
+        if private and any(p.casefold() == ".secrets" for p in selected.parts):
+            raise ValueError
+        uid = os.getuid()
+
+        def identity(info):
+            return (
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_uid,
+                info.st_nlink,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+
+        def stable_directory(info):
+            return info.st_dev, info.st_ino, info.st_mode, info.st_uid
+
+        def directory_info(fd, location):
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+                raise ValueError
+            if info.st_mode & 0o022 and not (
+                info.st_uid == 0
+                and info.st_mode & stat.S_ISVTX
+                and location in (Path("/tmp"), Path("/private/tmp"))
+            ):
+                raise ValueError
+            return info
+
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        location = Path(selected.anchor)
+        fd = os.open(str(location), flags)
+        directories.append((fd, None, None, location, None))
+        directories[-1] = (fd, None, None, location, directory_info(fd, location))
+        for part in selected.parent.parts[1:]:
+            parent = fd
+            fd = os.open(part, flags, dir_fd=parent)
+            location /= part
+            directories.append((fd, parent, part, location, None))
+            directories[-1] = (fd, parent, part, location, directory_info(fd, location))
+        if strict_custody:
+            parent_info = os.fstat(fd)
+            if parent_info.st_uid != uid or stat.S_IMODE(parent_info.st_mode) != 0o700:
+                raise ValueError
+        leaf = os.open(
+            selected.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=fd,
+        )
+        before = os.fstat(leaf)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid not in ((uid,) if private else (0, uid))
+            or before.st_nlink != 1
+            or before.st_size > limit
+            or (strict_custody and stat.S_IMODE(before.st_mode) != 0o600)
+            or (private and stat.S_IMODE(before.st_mode) not in (0o400, 0o600))
+            or (not private and before.st_mode & 0o022)
+        ):
+            raise ValueError
+        if identity(os.stat(selected.name, dir_fd=fd, follow_symlinks=False)) != identity(before):
+            raise ValueError
+        raw = bytearray()
+        while len(raw) <= limit:
+            chunk = os.read(leaf, min(4096, limit + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if len(raw) > limit or identity(os.fstat(leaf)) != identity(before):
+            raise ValueError
+        if identity(os.stat(selected.name, dir_fd=fd, follow_symlinks=False)) != identity(before):
+            raise ValueError
+        for held, parent, name, location, original in directories:
+            current = directory_info(held, location)
+            # Directory timestamps/size can change for unrelated sibling files.
+            if stable_directory(current) != stable_directory(original):
+                raise ValueError
+            if parent is not None and stable_directory(
+                os.stat(name, dir_fd=parent, follow_symlinks=False)
+            ) != stable_directory(current):
+                raise ValueError
+        return bytes(raw)
+    except (OSError, RuntimeError, ValueError, TypeError, NotImplementedError):
+        reason = "bootstrap-file-refused" if private else "project-binding-required"
+        raise _FileReadRefused(reason, failure_kind="refused") from None
+    finally:
+        if leaf is not None:
+            os.close(leaf)
+        for held, *_rest in reversed(directories):
+            os.close(held)
+
+
+def _file_named_fetch(request: dict, started: float) -> tuple[dict, int]:
+    """Disjoint read-only operation: only this isolated child sees the bootstrap."""
+    fields = {
+        "schema",
+        "operation",
+        "project_slug",
+        "path",
+        "env",
+        "token_file",
+        "names",
+        "timeout",
+        "max_output_bytes",
+    }
+    if (
+        set(request) != fields
+        or type(request["schema"]) is not int
+        or request["schema"] != 1
+        or request["operation"] != "file-named-fetch"
+    ):
+        raise UsageError("bounded-read-invalid")
+    slug = request["project_slug"]
+    timeout, limit = request["timeout"], request["max_output_bytes"]
+    if (
+        type(slug) is not str
+        or slug not in PROJECT_SOURCES
+        or type(timeout) not in (int, float)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+        or type(limit) is not int
+        or not 1024 <= limit <= MAX_OUTPUT_BYTES
+        or type(request["names"]) is not list
+        or not 1 <= len(request["names"]) <= 1024
+        or type(request["path"]) is not str
+        or type(request["token_file"]) is not str
+    ):
+        raise UsageError("bounded-read-invalid")
+    env = request["env"]
+    project_env, project_file = PROJECT_SOURCES[slug]
+    if (
+        type(env) is not dict
+        or set(env) - {"HOME", project_env, ENV_API, *ENV_NAMES}
+        or any(type(v) is not str or len(v) > 4096 for v in env.values())
+        or not env.get("HOME")
+        or "\0" in env["HOME"]
+        or not Path(env["HOME"]).is_absolute()
+        or ".." in Path(env["HOME"]).parts
+    ):
+        raise UsageError("bounded-read-invalid")
+    check_path(request["path"])
+    for name in request["names"]:
+        check_name(name)
+    if environment_refusal(env):
+        raise UsageError("bounded-read-invalid")
+    deadline = started + timeout
+
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+        return budget
+
+    remaining()
+    project = env.get(project_env, "").strip()
+    if not project:
+        try:
+            raw = _protected_read(str(Path(env["HOME"]) / project_file), 4096, private=False)
+            project = raw.decode("utf-8").strip().splitlines()[0].strip()
+        except (UnicodeError, IndexError):
+            raise _FileReadRefused("project-binding-required", failure_kind="refused") from None
+    if not _UUID_RE.fullmatch(project):
+        raise _FileReadRefused("project-binding-required", failure_kind="refused")
+    remaining()
+    try:
+        token = _protected_read(request["token_file"], 8192, private=True).decode("utf-8").strip()
+        check_service_token(token)
+    except (UnicodeError, SecretsError):
+        raise _FileReadRefused("bootstrap-file-refused", failure_kind="refused") from None
+    read_env = {key: env[key] for key in (ENV_API, *ENV_NAMES) if key in env}
+    read_env[ENV_READ_PATHS] = request["path"]
+    try:
+        values = fetch_project(
+            project,
+            request["path"],
+            read_env,
+            token=token,
+            names=request["names"],
+            timeout=remaining(),
+            writer=False,
+            strict_records=True,
+            require_finite_expiry=True,
+        )
+        remaining()
+        return values, limit
+    finally:
+        token = ""
 
 
 def _bounded_read_worker() -> int:
@@ -839,11 +1166,21 @@ def _bounded_read_worker() -> int:
         "failure_kind": "unavailable",
     }
     limit = MAX_VERIFIED_BYTES
+    started = time.monotonic()
     try:
         raw = sys.stdin.buffer.read(128 * 1024 + 1)
         if len(raw) > 128 * 1024:
             raise UsageError("bounded-read-invalid")
         request = _decode_json(raw)
+        if isinstance(request, dict) and request.get("operation") == "file-named-fetch":
+            values, limit = _file_named_fetch(request, started)
+            output = json.dumps(
+                {"schema": 1, "ok": True, "values": values}, ensure_ascii=False
+            ).encode("utf-8")
+            if len(output) > limit:
+                raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+            sys.stdout.buffer.write(output)
+            return 0
         fields = {
             "schema",
             "operation",
@@ -859,7 +1196,12 @@ def _bounded_read_worker() -> int:
         }
         if (
             not isinstance(request, dict)
-            or set(request) != fields
+            or set(request)
+            not in (
+                fields,
+                fields | {"require_finite_expiry"},
+                fields | {"require_finite_expiry", "expected_identity"},
+            )
             or type(request["schema"]) is not int
             or request["schema"] != 1
         ):
@@ -895,6 +1237,13 @@ def _bounded_read_worker() -> int:
         limit = request["max_output_bytes"]
         if type(limit) is not int or not 1024 <= limit <= MAX_OUTPUT_BYTES:
             raise UsageError("bounded-read-invalid")
+        policy = {}
+        if "require_finite_expiry" in request:
+            if type(request["require_finite_expiry"]) is not bool:
+                raise UsageError("bounded-read-invalid")
+            policy["require_finite_expiry"] = request["require_finite_expiry"]
+            if "expected_identity" in request:
+                policy["expected_identity"] = _expected_token_identity(request["expected_identity"])
         values = fetch_project(
             request["project"],
             request["path"],
@@ -904,8 +1253,11 @@ def _bounded_read_worker() -> int:
             writer=request["writer"],
             timeout=request["timeout"],
             strict_records=request["strict_records"],
+            **policy,
         )
         reply = {"schema": 1, "ok": True, "values": values}
+    except _FileReadRefused as exc:
+        reply.update(reason=exc.message, failure_kind="refused")
     except UnresolvedReferenceError as exc:
         reply.update(reason="unresolved-reference", code=5, failure_kind=exc.failure_kind)
     except UsageError:
@@ -941,6 +1293,9 @@ def list_project_names(
     *,
     token: str | None = None,
     timeout: float = EXPORT_TIMEOUT,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
+    strict_records: bool = False,
 ) -> tuple[str, ...]:
     """List one folder's names without requesting or retaining secret values.
 
@@ -948,6 +1303,8 @@ def list_project_names(
     exactly this prod folder and read-only permission; ambient folder declarations
     cannot widen the grant accepted here.
     """
+    if type(require_finite_expiry) is not bool or type(strict_records) is not bool:
+        raise UsageError("name-policy-invalid")
     check_path(path)
     scoped_env = dict(env)
     scoped_env[ENV_READ_PATHS] = path
@@ -955,7 +1312,18 @@ def list_project_names(
         project_name = project_name_for_id(project, scoped_env)
         token = resolve_token(scoped_env, project_name=project_name)
     deadline = time.monotonic() + timeout
-    verify_service_token(token, project, path, scoped_env, deadline=deadline)
+    if require_finite_expiry or expected_identity is not None:
+        verify_service_token(
+            token,
+            project,
+            path,
+            scoped_env,
+            deadline=deadline,
+            require_finite_expiry=require_finite_expiry,
+            expected_identity=expected_identity,
+        )
+    else:
+        verify_service_token(token, project, path, scoped_env, deadline=deadline)
     status, payload = _api_json(
         "GET",
         "/v3/secrets/raw?" + secret_query(project, path, values=False),
@@ -972,7 +1340,7 @@ def list_project_names(
         raise SecretsError("fetch-failed: bad-output")
     found: set[str] = set()
     for record in records:
-        key = validate_secret_name_record(record, project, path)
+        key = validate_secret_name_record(record, project, path, single_scope=not strict_records)
         value = record.get("secretValue")
         hidden_mask = record.get("secretValueHidden") is True and value in (
             None,
@@ -1196,7 +1564,10 @@ def _api_json(
     check):  an oversized answer fails closed as (0, None) without the body being
     buffered whole.  Calls without a narrower cap use MAX_OUTPUT_BYTES.
     """
-    base = (env.get(ENV_API) or API_BASE).rstrip("/")
+    try:
+        base = _provider_base(env, strict=True)
+    except ValueError:
+        raise SecretsError("read-provider-invalid", 2, failure_kind="refused") from None
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         base + path,
@@ -1310,7 +1681,7 @@ def resolve_token(
     """Resolve one explicit binding, without cross-purpose or identity fallback."""
     if writer and project_name != DEFAULT_PROJECT:
         raise SecretsError("write-token-project-mismatch: writes are configured for Fleet-OPS only")
-    name = ENV_WRITE_TOKEN if writer else project_token_name(project_name)
+    name = WRITE_TOKEN_ENV_NAME if writer else project_token_name(project_name)
     token = (env.get(name) or "").strip()
     if not token:
         raise SecretsError(f"service-token-required: {name} is not set")
@@ -1412,7 +1783,9 @@ class WriteError(SecretsError):
         )
         self.retryable = retryable is True and not self.request_may_have_been_sent
         self.reason = reason if reason == "token-expired-or-invalid" else None
-        self.required_binding = required_binding if required_binding == ENV_WRITE_TOKEN else None
+        self.required_binding = (
+            required_binding if required_binding == WRITE_TOKEN_ENV_NAME else None
+        )
         if self.reason:
             self.message += ": " + self.reason
         if self.required_binding:
@@ -1446,12 +1819,26 @@ def _write_ledger(directory: Path):
         raise SecretsError("write-state-unavailable") from None
 
 
-def _write_provider(env):
+def _provider_base(env, *, strict=False):
+    """Normalize a configured provider; syntax validation grants no endpoint authority.
+
+    Writers retain their historical normalization for durable ledger identities.  Reads also
+    reject ambiguous raw syntax before constructing an authenticated request.
+    """
     try:
         provider = (env.get(ENV_API) or API_BASE).rstrip("/")
         parsed = urllib.parse.urlsplit(provider)
         if (
             len(provider) > 2048
+            or (
+                strict
+                and (
+                    any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in provider)
+                    or "@" in parsed.netloc
+                    or "?" in provider
+                    or "#" in provider
+                )
+            )
             or parsed.scheme not in ("https", "http")
             or not parsed.netloc
             or parsed.username
@@ -1482,6 +1869,13 @@ def _write_provider(env):
             host += ":" + str(port)
         return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except (ValueError, TypeError, AttributeError, UnicodeError):
+        raise ValueError() from None
+
+
+def _write_provider(env):
+    try:
+        return _provider_base(env)
+    except ValueError:
         raise SecretsError("write-provider-invalid", 2) from None
 
 
@@ -1815,7 +2209,9 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             provider_status=exc.provider_status or 0,
         )
         _write_checkpoint(ledger, namespace, intent, record, "refused")
-        missing = ENV_WRITE_TOKEN if token is None and not env.get(ENV_WRITE_TOKEN) else None
+        missing = (
+            WRITE_TOKEN_ENV_NAME if token is None and not env.get(WRITE_TOKEN_ENV_NAME) else None
+        )
         raise WriteError(
             "refused",
             intent,
@@ -2061,6 +2457,243 @@ def clear_unsettled_write(
         raise
     except Exception:
         raise WriteError("state_unavailable", intent) from None
+
+
+# A consumer outside the repository can use the same shared client's grant and
+# response checks without a shared token.  This dedicated API reads only that
+# consumer's existing scoped token: the owner's login keychain on the Mac, or a
+# private file on a server.  It never falls back to an ambient token binding.
+SCOPED_KEYCHAIN_SERVICE = "infisical-service-token"
+TOKEN_STORE_DIR = ".config/infisical/tokens"
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+
+
+def _is_macos() -> bool:
+    return sys.platform.startswith("darwin")
+
+
+def _token_file(home: Path, account: str) -> Path:
+    return home / TOKEN_STORE_DIR / (account + ".token")
+
+
+def token_from_store(
+    account: str,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    *,
+    bounded_keychain: bool = False,
+) -> tuple[str, str]:
+    """Return one consumer token and a status, without exposing the token on failure."""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if not isinstance(account, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account
+    ):
+        return "", "no-token"
+    if bounded_keychain:
+        if not _is_macos():
+            return "", "keychain-unavailable"
+        return _bounded_keychain_token(account, home)
+    if _is_macos():
+        return _token_from_keychain(account)
+    return _token_from_file(home, account)
+
+
+def _bounded_keychain_token(account: str, home: Path) -> tuple[str, str]:
+    """Read the same exact item with bounded capture, without another store attempt."""
+    if not home.is_absolute() or "\0" in str(home):
+        return "", "token-unreadable"
+    keychain = home / "Library" / "Keychains" / "login.keychain-db"
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        SCOPED_KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        str(keychain),
+    ]
+    deadline = time.monotonic() + 5.0
+    child = None
+    try:
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
+        )
+        raw = _read_worker_pipes(child, b"", 8192, deadline - 0.1)
+        if child.returncode != 0:
+            if child.returncode == SECURITY_ITEM_NOT_FOUND:
+                return "", "no-token"
+            if child.returncode == SECURITY_INTERACTION_NOT_ALLOWED:
+                return "", "keychain-locked"
+            return "", "token-unreadable"
+        token = raw.decode("utf-8").strip()
+        return (check_service_token(token), "ok") if token else ("", "no-token")
+    except subprocess.TimeoutExpired:
+        raise SecretsError("keychain-timeout", 124) from None
+    except (OSError, UnicodeError, SecretsError):
+        return "", "token-unreadable"
+    finally:
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except (OSError, subprocess.TimeoutExpired):
+                raise SecretsError("keychain-cleanup-failed") from None
+            finally:
+                for stream in (child.stdin, child.stdout):
+                    if stream is not None:
+                        stream.close()
+
+
+def _token_from_keychain(account: str) -> tuple[str, str]:
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        SCOPED_KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise SecretsError("keychain-timeout", 124) from None
+    except FileNotFoundError:
+        return "", "keychain-missing"
+    except (OSError, subprocess.SubprocessError):
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = (result.stdout or "").strip()
+        if not token:
+            return "", "no-token"
+        try:
+            return check_service_token(token), "ok"
+        except SecretsError:
+            return "", "token-unreadable"
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _token_from_file(home: Path, account: str) -> tuple[str, str]:
+    path = _token_file(home, account)
+    if not path.is_absolute():
+        return "", "token-unreadable"
+    uid = os.getuid()
+    opened_file = False
+    try:
+        with ExitStack() as opened:
+            root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            opened.callback(os.close, root_fd)
+            parent_fd = root_fd
+            # Walk from / so even a symlink in HOME's ancestors is refused.
+            # Keep every descriptor open; the final identity check sees renames.
+            directories = []
+            home_depth = len(home.parts) - 1
+            for depth, component in enumerate(path.parts[1:-1], start=1):
+                child_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
+                )
+                opened.callback(os.close, child_fd)
+                info = os.fstat(child_fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    return "", "token-unreadable"
+                if depth >= home_depth and (info.st_uid != uid or info.st_mode & 0o022):
+                    return "", "token-unreadable"
+                if depth == len(path.parts) - 2 and (info.st_mode & 0o777) != 0o700:
+                    return "", "token-unreadable"
+                directories.append((parent_fd, component, info))
+                parent_fd = child_fd
+            leaf = path.name
+            file_fd = os.open(
+                leaf,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            opened_file = True
+            opened.callback(os.close, file_fd)
+            before = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != uid
+                or (before.st_mode & 0o777) != 0o600
+                or before.st_size > 65536
+            ):
+                return "", "token-unreadable"
+            data = os.read(file_fd, 65537)
+            after = os.fstat(file_fd)
+            if (
+                len(data) != before.st_size
+                or os.read(file_fd, 1)
+                or (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                )
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            ):
+                return "", "token-unreadable"
+            leaf_now = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                leaf_now.st_dev,
+                leaf_now.st_ino,
+                leaf_now.st_mode,
+                leaf_now.st_uid,
+                leaf_now.st_size,
+                leaf_now.st_mtime_ns,
+                leaf_now.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                return "", "token-unreadable"
+            for parent, component, info in directories:
+                current = os.stat(component, dir_fd=parent, follow_symlinks=False)
+                if (
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_mode,
+                    current.st_uid,
+                    current.st_ctime_ns,
+                ) != (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_ctime_ns):
+                    return "", "token-unreadable"
+            raw = data.decode("utf-8")
+    except FileNotFoundError:
+        return "", "token-unreadable" if opened_file else "no-token"
+    except (OSError, UnicodeDecodeError):
+        return "", "token-unreadable"
+    token = raw.strip()
+    if not token:
+        return "", "no-token"
+    try:
+        return check_service_token(token), "ok"
+    except SecretsError:
+        return "", "token-unreadable"
 
 
 if __name__ == "__main__":
