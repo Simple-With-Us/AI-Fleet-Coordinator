@@ -40,7 +40,7 @@ def st_payload(**overrides):
     """A healthy ST /api/live body, with any field replaced per test."""
     body = {
         "ok": True,
-        "mango": {"reachable": True, "observedAt": FRESH_STAMP},
+        "mango": {"reachable": True, "checkedAt": FRESH_STAMP},
     }
     body.update(overrides)
     return body
@@ -104,7 +104,7 @@ class SocraticTradeMappingTests(unittest.TestCase):
         self.assertIsNone(row["mangoReachable"])
 
     def test_st_mango_unreachable_is_fail(self):
-        body = st_payload(mango={"reachable": False, "observedAt": FRESH_STAMP})
+        body = st_payload(mango={"reachable": False, "checkedAt": FRESH_STAMP})
         doc = collect_with((200, body, None), (200, ct_payload(), None))
         row = app_row(doc, "ST")
         self.assertEqual(row["state"], "fail")
@@ -113,7 +113,7 @@ class SocraticTradeMappingTests(unittest.TestCase):
         self.assertEqual(doc["worst"], "fail")
 
     def test_st_stale_observation_is_unknown_never_green(self):
-        body = st_payload(mango={"reachable": True, "observedAt": STALE_STAMP})
+        body = st_payload(mango={"reachable": True, "checkedAt": STALE_STAMP})
         doc = collect_with((200, body, None), (200, ct_payload(), None))
         row = app_row(doc, "ST")
         self.assertEqual(row["state"], "unknown")
@@ -198,7 +198,12 @@ class CongressTradeMappingTests(unittest.TestCase):
 
     def test_an_unreadable_ingestion_value_proves_neither_alive_nor_stopped(self):
         body = ct_payload(
-            components={"house": "ok", "senate_efd": "ok", "oge": "ok", "ingestion": "sideways"}
+            components={
+                "house": "ok",
+                "senate_efd": "ok",
+                "oge": "ok",
+                "ingestion": "sideways",
+            }
         )
         doc = collect_with((200, st_payload(), None), (200, body, None))
         row = app_row(doc, "CT")
@@ -274,7 +279,8 @@ class FailClosedTests(unittest.TestCase):
                     (0, None, "timeout"),
                 )
         self.assertEqual(
-            api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()), (0, None, "timeout")
+            api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()),
+            (0, None, "timeout"),
         )
         self.assertIn(socket.timeout, api_health.TIMEOUTS)
 
@@ -338,6 +344,190 @@ class BoundAndStoreTests(unittest.TestCase):
         self.assertEqual(api_health.store_reading(dict(doc, tool="other"), now=NOW), "unknown")
         self.assertEqual(api_health.store_reading(None, now=NOW), "unknown")
         self.assertEqual(api_health.store_reading({}, now=NOW), "unknown")
+
+
+class ActualPipelineMappingTests(unittest.TestCase):
+    def native(self):
+        return json.loads((_HERE / "fixtures/api-health/ct-actual-20261118.json").read_text())
+
+    def test_actual_st_checked_at(self):
+        payload = json.loads((_HERE / "fixtures/api-health/st-actual-20261118.json").read_text())
+        now = api_health.parse_iso("2026-11-18T17:23:23Z")
+        row = api_health.map_st_live(payload, 200, now)
+        self.assertEqual(row["state"], "ok")
+        self.assertEqual(row["observationAgeSeconds"], 37)
+        payload["mango"]["checkedAt"] = "2026-11-18T17:00:00Z"
+        self.assertEqual(api_health.map_st_live(payload, 200, now)["state"], "unknown")
+
+    def test_st_legacy_observation_does_not_substitute_for_native_probe(self):
+        payload = {
+            "ok": True,
+            "mango": {"reachable": True, "observedAt": FRESH_STAMP},
+            "observationAgeSeconds": 0,
+        }
+        self.assertEqual(api_health.map_st_live(payload, 200, NOW)["state"], "unknown")
+        for stamp in ("bad", "2026-11-17T11:59:30", "2026-11-17T12:00:30Z"):
+            payload["mango"]["checkedAt"] = stamp
+            self.assertEqual(api_health.map_st_live(payload, 200, NOW)["state"], "unknown")
+
+    def test_st_fractional_gate_boundaries(self):
+        payload = {"ok": True, "mango": {"reachable": True, "checkedAt": FRESH_STAMP}}
+        stamp = api_health.parse_iso(FRESH_STAMP)
+        for elapsed, expected in (
+            (-0.001, "unknown"),
+            (0, "ok"),
+            (120, "ok"),
+            (120.001, "unknown"),
+        ):
+            self.assertEqual(
+                api_health.map_st_live(payload, 200, stamp + elapsed)["state"], expected
+            )
+        payload["mango"]["reachable"] = False
+        self.assertEqual(api_health.map_st_live(payload, 200, stamp)["state"], "fail")
+
+    def test_present_invalid_pipeline_never_falls_back(self):
+        for native in (None, [], "bad", {}, {"checks": None}):
+            self.assertEqual(
+                api_health.map_ct_health(ct_payload(pipeline=native), 200, NOW)["state"],
+                "unknown",
+            )
+
+    def test_native_statuses_are_exact_and_poll_degraded_is_unproved(self):
+        for value in (
+            True,
+            {"ok": True},
+            "healthy",
+            "warn",
+            "OK",
+            " ok ",
+            "degraded",
+            None,
+        ):
+            payload = self.native()
+            next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")[
+                "status"
+            ] = value
+            row = api_health.map_ct_health(payload, 200, NOW)
+            self.assertIsNone(row["ingestionAlive"])
+            self.assertEqual(row["state"], "unknown")
+
+    def test_known_poll_failure_not_hidden_by_missing_other_poll(self):
+        payload = self.native()
+        payload["pipeline"]["checks"] = [
+            c for c in payload["pipeline"]["checks"] if c["id"] != "polling_house"
+        ]
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")["status"] = (
+            "stalled"
+        )
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertFalse(row["ingestionAlive"])
+        self.assertEqual(row["state"], "fail")
+
+    def test_actual_ct_canary_degraded_while_polling_alive(self):
+        row = api_health.map_ct_health(self.native(), 200, NOW)
+        self.assertEqual(row["state"], "warn")
+        self.assertTrue(row["ingestionAlive"])
+        self.assertEqual(row["upstreamStatus"], "degraded")
+        self.assertEqual(
+            next(c for c in row["components"] if c["name"] == "senate_efd")["state"],
+            "warn",
+        )
+
+    def test_each_chamber_poll_required_for_ingestion(self):
+        for source in ("polling_house", "polling_senate", "polling_executive"):
+            payload = self.native()
+            payload["pipeline"]["checks"] = [
+                c for c in payload["pipeline"]["checks"] if c["id"] != source
+            ]
+            row = api_health.map_ct_health(payload, 200, NOW)
+            self.assertIsNone(row["ingestionAlive"])
+            self.assertEqual(row["state"], "unknown")
+
+    def test_stalled_poll_is_failure_not_unknown_or_canary_warning(self):
+        for source in ("polling_house", "polling_senate", "polling_executive"):
+            payload = self.native()
+            next(c for c in payload["pipeline"]["checks"] if c["id"] == source)["status"] = (
+                "stalled"
+            )
+            row = api_health.map_ct_health(payload, 200, NOW)
+            self.assertEqual(row["state"], "fail")
+            self.assertFalse(row["ingestionAlive"])
+
+    def test_clear_backlog_alone_never_proves_ingestion_alive(self):
+        payload = {
+            "status": "ok",
+            "pipeline": {"checks": [{"id": "ingestion_backlog", "status": "ok"}]},
+        }
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertIsNone(row["ingestionAlive"])
+        self.assertEqual(row["state"], "unknown")
+
+    def test_duplicate_poll_unknown_not_first_wins(self):
+        payload = self.native()
+        payload["pipeline"]["checks"].append({"id": "polling_senate", "status": "ok"})
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertIsNone(row["ingestionAlive"])
+        self.assertEqual(row["state"], "unknown")
+
+    def test_native_malformed_does_not_fall_back_to_legacy_green(self):
+        payload = ct_payload(pipeline={"checks": None})
+        self.assertEqual(api_health.map_ct_health(payload, 200, NOW)["state"], "unknown")
+
+    def test_other_upstream_degradation_is_not_hidden_by_display_subset(self):
+        payload = self.native()
+        for check in payload["pipeline"]["checks"]:
+            check["status"] = "ok"
+        self.assertEqual(api_health.map_ct_health(payload, 200, NOW)["state"], "warn")
+        payload["status"] = "ok"
+        self.assertEqual(api_health.map_ct_health(payload, 200, NOW)["state"], "ok")
+
+    def test_native_canary_failure_does_not_mean_ingestion_stopped(self):
+        payload = self.native()
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")["status"] = (
+            "stalled"
+        )
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "warn")
+        self.assertTrue(row["ingestionAlive"])
+
+    def test_st_observation_age_rounds_once_before_freshness_gate(self):
+        # 120.9s must be stored and compared as 121 (ceil), not truncated
+        # to 120 and then still treated as stale against a 120s cap.
+        stamp = NOW - 120.9
+        payload = st_payload(
+            mango={
+                "reachable": True,
+                "checkedAt": datetime.fromtimestamp(stamp, timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        )
+        row = api_health.map_st_live(payload, 200, NOW)
+        self.assertEqual(row["observationAgeSeconds"], 121)
+        self.assertEqual(row["reason"], "observation_stale")
+        self.assertEqual(row["state"], "unknown")
+
+    def test_legacy_components_ok_without_aggregate_stay_ok(self):
+        payload = {
+            "components": {
+                "house": "ok",
+                "oge": "ok",
+                "senate_efd": "ok",
+                "ingestion": "ok",
+            }
+        }
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertIsNone(row["upstreamStatus"])
+        self.assertEqual(row["state"], "ok")
+
+    def test_critical_upstream_aggregate_is_fail_not_warn(self):
+        payload = self.native()
+        for check in payload["pipeline"]["checks"]:
+            check["status"] = "ok"
+        payload["status"] = "critical"
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "fail")
+        self.assertEqual(row["reason"], "upstream_aggregate_not_ok")
 
 
 if __name__ == "__main__":
