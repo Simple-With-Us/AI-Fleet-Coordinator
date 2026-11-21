@@ -273,6 +273,10 @@ def plan(env, config, euid=None):
     if refusal:
         return ("refuse", seat, refusal, notice)
     child_env = {"PATH": "/usr/bin:/bin", "HOME": config["HOME"], "ASSIGNED_MCP_BEARER": token}
+    if seat == "CODEX":
+        native = env.get("CODEX_THREAD_ID", "")
+        if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", native):
+            child_env["CODEX_THREAD_ID"] = native
     return ("exec", [config["PYTHON"], "-I", config["TRANSPORT"]], child_env, notice)
 
 

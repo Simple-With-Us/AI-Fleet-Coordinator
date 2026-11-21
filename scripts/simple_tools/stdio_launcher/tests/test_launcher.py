@@ -376,5 +376,24 @@ class Installer(unittest.TestCase):
             install.render("CLAUDE", "relative/bearer", sys.executable, "/t.py", "/home")
 
 
+class NativeOriginLaunch(unittest.TestCase):
+    def test_only_codex_native_id_survives_minimal_environment(self):
+        sid = "019a1234-abcd-7123-8123-0123456789ab"
+        installed = Installed(seat="CODEX", token="sbt_codex_" + "A" * 43)
+        self.addCleanup(installed.close)
+        done, replies = installed.run(
+            {
+                "CODEX_THREAD_ID": sid,
+                "CLAUDE_SESSION_ID": "other",
+                "GIT_RELAY_PLATFORM_LETTER": "/untrusted/path",
+            }
+        )
+        self.assertEqual(done.returncode, 0)
+        keys = replies[0]["result"]["env_keys"]
+        self.assertIn("CODEX_THREAD_ID", keys)
+        self.assertNotIn("GIT_RELAY_PLATFORM_LETTER", keys)
+        self.assertNotIn("CLAUDE_SESSION_ID", keys)
+
+
 if __name__ == "__main__":
     unittest.main()
