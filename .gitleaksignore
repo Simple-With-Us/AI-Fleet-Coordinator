@@ -139,3 +139,47 @@ ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTest
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:45
 7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:66
 eaef7728bc36e12af3d316ecb1302c6644cff39e:scripts/build-workflow-client-release.py:generic-api-key:14
+
+# Push-client scanner pin bump (PR #2368):  the pinned scanner commit id sits on an assignment
+# whose constant name holds the scanner's name, so generic-api-key read the 64-hex pin as a key.
+# The value is a git commit id, not a credential.  The PR squash-merges;  if main's push-range scan
+# flags the squash commit, it gets its own fingerprint (the PR #359 squash entry above is the precedent).
+81535dfc3c6d35bd53488e571418247d727b8197:scripts/build-push-client-release.py:generic-api-key:16
+
+# Squash commit of PR #2368 on main (the scanner pin bump):  the same literal the branch entry above
+# silences, re-introduced under the squash commit id;  fingerprints are per commit (the PR #359 squash
+# entry above is the precedent).
+745a5da3857e9625bb78deb08ab8f29586a95c34:scripts/build-push-client-release.py:generic-api-key:16
+
+# Push-client scanner pin bump (second, covering PR #2363's CT admission):  the pinned scanner
+# literal sits on the same assignment shape as the PR #2368 entry above, under this branch
+# commit id;  fingerprints are per commit, so the squash commit gets its own follow-up entry
+# after merge (PR #2370 precedent).
+83b3925839b49b582bcb3749d936ed8656da594d:scripts/build-push-client-release.py:generic-api-key:16
+
+# Squash commit of PR #2372 on main (the second scanner pin bump):  the same literal the branch
+# entry above silences, re-introduced under the squash commit id;  fingerprints are per commit
+# (the PR #2370 squash entry above is the precedent).
+d023365a875b3fc9ef8cbeb3b8759bbd4c1a6019:scripts/build-push-client-release.py:generic-api-key:16
+
+# Push-client scanner pin bump (third, covering PR #2375's labeled call arguments):  the pinned
+# scanner literal sits on the same assignment shape as the PR #2372 entries above, under this branch
+# commit id;  fingerprints are per commit, so the squash commit gets its own follow-up entry after
+# merge (PR #2372 precedent).
+e80ee810190a03ff7f1b139b3f1295d31f102799:scripts/build-push-client-release.py:generic-api-key:16
+
+# Squash commit of PR #2379 on main (the third scanner pin bump):  the same literal the branch
+# entry above silences, re-introduced under the squash commit id;  fingerprints are per commit
+# (the PR #2372 squash entry above is the precedent).
+6c04330d9342c370e510cd33212cbd92b6ef281e:scripts/build-push-client-release.py:generic-api-key:16
+
+# Push-client scanner pin bump (fourth, covering PR #2381 CT package-lock admission):  the pinned
+# scanner literal sits on the same assignment shape as the PR #2379 entries above, under this branch
+# commit id;  fingerprints are per commit, so the squash commit gets its own follow-up entry after
+# merge (PR #2380 precedent).
+3d82757063967a89476eed3cc34335516944a006:scripts/build-push-client-release.py:generic-api-key:16
+
+# Squash commit of PR #2382 on main (the fourth scanner pin bump):  the same literal the branch
+# entry above silences, re-introduced under the squash commit id;  fingerprints are per commit
+# (the PR #2379 squash entry above is the precedent).
+0e6f7c982ddda978f4cfcffc3f910adccc150702:scripts/build-push-client-release.py:generic-api-key:16
