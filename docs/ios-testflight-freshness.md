@@ -19,7 +19,7 @@ fleet's TestFlight guards.
 | `scripts/ios-fleet/testflight_dispatch_reconcile.mjs` | Exact intent inspection and explicit approved resolution audit. Never retries POST. |
 | `scripts/ios-fleet/testflight-apps.json` | The registry:  one row per App Store Connect record.  **Edit this** when an app, a repo path, a ship workflow or a compile check changes. |
 | `scripts/ios-fleet/ios_testflight_freshness.test.mjs` | Tests (`node --test`, everything stubbed, run in CI). |
-| `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series builds from 1000 upward, marketing `0.1.0` / CT `1.1.2`).  Default scope is each app's **current** train only;  `--json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
+| `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  checks the standing build ruling (builds numbered by their own run time in YYYYMMDDHHMM Central form, marketing `0.1.0` / CT `1.1.2`).  Default scope is each app's **current** train only;  `--json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
 | `scripts/ios-fleet/build_number_audit.test.mjs` | Audit tests (`node --test`, ASC stubbed). |
 | `scripts/ios-fleet/install-testflight-freshness.sh` | Copies the check, service adapter, isolated GitHub-key resolver, reconciliation utility, scoped ASC helper and registry. Files-only by default; --activate is explicit and prohibited until release blockers clear. |
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |

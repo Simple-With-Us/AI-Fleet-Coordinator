@@ -3,10 +3,11 @@
  * build_number_audit.mjs — read-only fleet build-number audit (AFC-675).
  *
  * For every app in testflight-apps.json it reads App Store Connect builds and
- * reports drift from FLEET-PROTOCOL.md § App Version and Build Numbers:  integer
- * build numbers from 1000 upward (1000-series), shared between iOS and Mac for a
- * release, and monotonically increasing.  Marketing version is 0.1.0 for all apps
- * except Congress.Trade (1.1.2), unless an approved App Store version is higher.
+ * reports drift from the owner's build ruling (updated 2026-11-15):  every build,
+ * including rebuilds, is numbered by the time the build itself runs, in YYYYMMDDHHMM form, Central Time, no dots and no counter,
+ * shared between iOS and Mac for a release, and monotonically increasing.
+ * Marketing version is 0.1.0 for all apps except Congress.Trade (1.1.2), unless
+ * an approved App Store version is higher.
  *
  *   node build_number_audit.mjs              human-readable table (current train)
  *   node build_number_audit.mjs --json       machine-readable report
@@ -33,18 +34,15 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Standing rule: builds start at 1000 and count up (FLEET-PROTOCOL.md). */
-export const BUILD_NUMBER_MIN = 1000;
-/** Retired UTC timestamp stamps; invalid under the standing rule. */
-export const LEGACY_TIMESTAMP_BUILD_RE = /^20\d{10}$/;
-/** Positive integer build string (before min check). */
-export const BUILD_NUMBER_RE = /^[1-9]\d+$/;
+/** Standing rule (owner ruling, updated 2026-11-15): the time the build itself
+ * runs, in YYYYMMDDHHMM form, Central Time - no dots, no counter. */
+export const FLEET_BUILD_TIMESTAMP_RE = /^20\d{10}$/;
 
 export const EXIT_OK = 0;
 export const EXIT_STRICT = 1;
 export const EXIT_FAILED = 2;
 
-export const FLEET_BUILD_RULE_SOURCE = "FLEET-PROTOCOL.md § App Version and Build Numbers";
+export const FLEET_BUILD_RULE_SOURCE = "the owner build ruling (each build's own run time, Central Time; updated 2026-11-15)";
 
 /** App Store states that mean a version is approved and may raise the marketing floor. */
 export const APPROVED_STORE_STATES = new Set([
@@ -94,12 +92,23 @@ export function parseAuditArgs(argv) {
   return opts;
 }
 
+/** Calendar validity for a YYYYMMDDHHMM stamp: a fleet build is a real Central
+ * clock time, so month, day, hour and minute must exist (leap days included). */
+export function isValidTimestampBuild(build) {
+  const s = String(build ?? "");
+  if (!FLEET_BUILD_TIMESTAMP_RE.test(s)) return false;
+  const year = Number(s.slice(0, 4));
+  const month = Number(s.slice(4, 6));
+  const day = Number(s.slice(6, 8));
+  const hour = Number(s.slice(8, 10));
+  const minute = Number(s.slice(10, 12));
+  if (month < 1 || month > 12 || hour > 23 || minute > 59) return false;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day >= 1 && day <= daysInMonth;
+}
+
 export function isFleetBuildNumber(build) {
-  const s = build == null ? "" : String(build);
-  if (LEGACY_TIMESTAMP_BUILD_RE.test(s)) return false;
-  if (!BUILD_NUMBER_RE.test(s)) return false;
-  const n = Number(s);
-  return Number.isFinite(n) && n >= BUILD_NUMBER_MIN;
+  return isValidTimestampBuild(build);
 }
 
 export function invalidBuildDetail(build) {
@@ -107,10 +116,7 @@ export function invalidBuildDetail(build) {
   if (build == null || build === "") {
     return `build number is missing (${FLEET_BUILD_RULE_SOURCE})`;
   }
-  if (LEGACY_TIMESTAMP_BUILD_RE.test(shown)) {
-    return `build ${shown} uses retired UTC timestamp scheme; ${FLEET_BUILD_RULE_SOURCE} requires 1000-series builds`;
-  }
-  return `build ${shown} is not a valid 1000-series build number (${FLEET_BUILD_RULE_SOURCE})`;
+  return `build ${shown} is not a build-run timestamp build in YYYYMMDDHHMM form (${FLEET_BUILD_RULE_SOURCE})`;
 }
 
 /**
