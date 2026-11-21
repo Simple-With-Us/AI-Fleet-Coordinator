@@ -38,7 +38,7 @@ done
 say() { printf 'install-testflight-freshness: %s\n' "$*"; }
 
 [[ -d "$DEST" ]] || { say "missing $DEST (the ios-fleet install target)"; exit 1; }
-[[ -f "$DEST/asc-api.mjs" ]] || say "warning: $DEST/asc-api.mjs is missing; the check will fail until it is installed"
+[[ -f "$HERE/testflight_asc_service.mjs" ]] || { say "missing owned scoped ASC reader source; no files changed"; exit 1; }
 
 # Shared consumers must not be changed as a side effect of this installer.
 # Resolve an existing mismatch separately before copying ANY files or activating.
@@ -92,6 +92,7 @@ install_one "$HERE/testflight_infisical_key.mjs" "$DEST/testflight_infisical_key
 install_one "$HERE/testflight_github_service.mjs" "$DEST/testflight_github_service.mjs" 644 || true
 install_one "$HERE/testflight_dispatch_reconcile.mjs" "$DEST/testflight_dispatch_reconcile.mjs" 644 || true
 install_one "$HERE/asc_scoped_creds.mjs" "$DEST/asc_scoped_creds.mjs" 644 || true
+install_one "$HERE/testflight_asc_service.mjs" "$DEST/testflight_asc_service.mjs" 644 || true
 install_one "$HERE/testflight-apps.json" "$DEST/testflight-apps.json" 644 || true
 
 if [[ "$LAUNCHD" -eq 1 ]]; then
