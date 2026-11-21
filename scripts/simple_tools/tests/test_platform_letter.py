@@ -62,16 +62,24 @@ def prompt_safety_cases():
     """Synthetic data only; callers label failures by case, never by the prompt or extracted data."""
     value = "fixture" * 3 + "123"
     opaque = "fixture7" * 7
+    alphabetic = "fixture" * 4
     yield "quoted-label", json.dumps({"password": value}) + " fix login", value, "Password Fix Login"
     yield "opaque-token", "rotate " + opaque + " today", opaque, "Rotate Today"
+    yield "alphabetic-opaque-token", "rotate " + alphabetic + " today", alphabetic, "Rotate Today"
     yield "cut-token", " " * (PL.PROMPT_SCAN_CHARS - 12) + opaque, opaque[:12], ""
     yield "cut-fence", "```\n" + value + "\n" + " " * PL.PROMPT_SCAN_CHARS + "```", value, ""
     yield "open-fence", "```\n" + value, value, ""
     for kind in ("PRIVATE KEY", "CERTIFICATE"):
-        header = "-----" + "BEGIN " + kind + "-----\n"
-        footer = "\n-----" + "END " + kind + "-----"
-        yield "closed-armor-" + kind, header + value + footer + "\nfix login", value, "Fix Login"
-        yield "open-armor-" + kind, header + value, value, ""
+        for case, begin, end, header_kind, footer_kind in (
+            ("upper", "BEGIN", "END", kind, kind),
+            ("lower", "begin", "end", kind.lower(), kind.lower()),
+            ("mixed", "BeGiN", "eNd", kind.title(), kind.swapcase()),
+        ):
+            header = "-----" + begin + " " + header_kind + "-----\n"
+            footer = "\n-----" + end + " " + footer_kind + "-----"
+            name = case + "-" + kind
+            yield "closed-armor-" + name, header + value + footer + "\nfix login", value, "Fix Login"
+            yield "open-armor-" + name, header + value, value, ""
 
 
 class Base(unittest.TestCase):

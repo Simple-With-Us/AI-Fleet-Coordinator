@@ -206,7 +206,8 @@ SECRET_WINDOW = 12
 # they do not change the shared scanner's policy for source code or other fleet text.
 PROMPT_OPAQUE_RUN = re.compile(r"[A-Za-z0-9_+/=.-]{28,}")
 PROMPT_ARMOR = re.compile(
-    r"-----BEGIN (?P<kind>[A-Z0-9 ]+)-----.*?(?:-----END (?P=kind)-----|\Z)", re.DOTALL
+    r"-----BEGIN (?P<kind>[A-Z0-9 ]+)-----.*?(?:-----END (?P=kind)-----|\Z)",
+    re.DOTALL | re.IGNORECASE,
 )
 PROMPT_QUOTES = str.maketrans("", "", "\"'`\\*“”‘’")
 PROMPT_CREDENTIAL_WORDS = frozenset(
@@ -774,9 +775,7 @@ def title_from_prompt(prompt: object) -> str:
                 break
             context = " ".join([*kept[-SECRET_WINDOW:], token])
             opaque = any(
-                any(ch.isalpha() for ch in match.group())
-                and any(ch.isdigit() for ch in match.group())
-                for match in PROMPT_OPAQUE_RUN.finditer(token)
+                any(ch.isalpha() for ch in match.group()) for match in PROMPT_OPAQUE_RUN.finditer(token)
             )
             # A quoted JSON/Markdown label must carry the same context as an unquoted assignment.  Scan both
             # forms before splitting words, while preserving the original spelling of ordinary title words.
