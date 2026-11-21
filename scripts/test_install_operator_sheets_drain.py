@@ -998,6 +998,71 @@ class CodeOnlyHelperTests(unittest.TestCase):
         manifest.chmod(0o600)
         return source, manifest
 
+    def test_main_restores_signal_handlers_after_success_and_failure(self):
+        source = self.source_bundle()
+        hashes = {
+            name: self.helper.hashlib.sha256((source / name).read_bytes()).hexdigest()
+            for name in MODULES
+        }
+        manifest = source / "manifest.json"
+        manifest.write_text(json.dumps(hashes, sort_keys=True))
+        manifest.chmod(0o600)
+
+        lib = self.tmp / "installed-lib"
+        lib.mkdir(mode=0o755)
+        for name in MODULES:
+            installed = lib / name
+            installed.write_bytes((source / name).read_bytes())
+            installed.chmod(0o644)
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def prior_sigint(_signum, _frame):
+            return None
+
+        def prior_sigterm(_signum, _frame):
+            return None
+
+        args = [
+            "--source-dir",
+            str(source),
+            "--lib-dir",
+            str(lib),
+            "--etc-dir",
+            str(self.tmp / "etc"),
+            "--unit-dir",
+            str(self.tmp / "units"),
+            "--backup-root",
+            str(self.tmp / "backups"),
+            "--node",
+            shutil.which("node") or "node",
+            "--uid",
+            str(os.getuid()),
+            "--gid",
+            str(os.getgid()),
+            "--verify-state",
+        ]
+        try:
+            signal.signal(signal.SIGINT, prior_sigint)
+            signal.signal(signal.SIGTERM, prior_sigterm)
+            with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+                self.assertEqual(self.helper.main(args), 0)
+            self.assertIs(signal.getsignal(signal.SIGINT), prior_sigint)
+            self.assertIs(signal.getsignal(signal.SIGTERM), prior_sigterm)
+
+            signal.signal(signal.SIGINT, prior_sigint)
+            signal.signal(signal.SIGTERM, prior_sigterm)
+            failed_args = list(args)
+            failed_args[failed_args.index("--lib-dir") + 1] = str(self.tmp / "missing-lib")
+            with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+                self.assertEqual(self.helper.main(failed_args), 1)
+            self.assertIs(signal.getsignal(signal.SIGINT), prior_sigint)
+            self.assertIs(signal.getsignal(signal.SIGTERM), prior_sigterm)
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+            signal.signal(signal.SIGTERM, original_sigterm)
+
     def prior_snapshot(self):
         source = Path(tempfile.mkdtemp(dir=self.tmp, prefix="prior-stage-"))
         source.chmod(0o700)

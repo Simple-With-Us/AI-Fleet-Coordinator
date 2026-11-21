@@ -489,60 +489,64 @@ def main(argv: list[str] | None = None) -> int:
     def interrupt(signum: int, _frame: object) -> None:
         raise InstallInterrupted(f"interrupted by signal {signum}")
 
-    signal.signal(signal.SIGINT, interrupt)
-    signal.signal(signal.SIGTERM, interrupt)
-
+    previous_handlers = {}
     try:
-        if args.verify_state:
-            state = verify_installed_state(
-                source_dir=args.source_dir,
+        previous_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, interrupt)
+        previous_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, interrupt)
+        try:
+            if args.verify_state:
+                state = verify_installed_state(
+                    source_dir=args.source_dir,
+                    lib_dir=args.lib_dir,
+                    uid=args.uid,
+                    gid=args.gid,
+                    node=args.node,
+                )
+                print(f"operator-sheets-code-only: coherent={state}")
+                return 0
+            validate_existing_install(
                 lib_dir=args.lib_dir,
-                uid=args.uid,
-                gid=args.gid,
-                node=args.node,
-            )
-            print(f"operator-sheets-code-only: coherent={state}")
-            return 0
-        validate_existing_install(
-            lib_dir=args.lib_dir,
-            etc_dir=args.etc_dir,
-            unit_dir=args.unit_dir,
-            uid=args.uid,
-            gid=args.gid,
-        )
-        validate_backup_destination(args.backup_root, uid=args.uid, gid=args.gid)
-        if args.stage_only:
-            staged = stage_source_bundle(
-                source_dir=args.source_dir,
-                staging_root=args.backup_root,
-                lib_dir=args.lib_dir,
-                node=args.node,
+                etc_dir=args.etc_dir,
+                unit_dir=args.unit_dir,
                 uid=args.uid,
                 gid=args.gid,
             )
-            print(staged)
-            return 0
-        validate_source_bundle(
-            source_dir=args.source_dir, node=args.node, uid=args.uid, gid=args.gid
-        )
-        if args.validate_only:
-            print("operator-sheets-code-only: existing install and source bundle validated")
-            return 0
-        backup = install_modules(
-            source_dir=args.source_dir,
-            lib_dir=args.lib_dir,
-            etc_dir=args.etc_dir,
-            unit_dir=args.unit_dir,
-            backup_root=args.backup_root,
-            node=args.node,
-            uid=args.uid,
-            gid=args.gid,
-        )
-    except (InstallError, OSError, subprocess.SubprocessError) as exc:
-        print(f"operator-sheets-code-only: {exc}", file=sys.stderr)
-        return 2 if isinstance(exc, RecoveryError) else 1
-    print(f"operator-sheets-code-only: installed six-file code bundle; backup={backup}")
-    return 0
+            validate_backup_destination(args.backup_root, uid=args.uid, gid=args.gid)
+            if args.stage_only:
+                staged = stage_source_bundle(
+                    source_dir=args.source_dir,
+                    staging_root=args.backup_root,
+                    lib_dir=args.lib_dir,
+                    node=args.node,
+                    uid=args.uid,
+                    gid=args.gid,
+                )
+                print(staged)
+                return 0
+            validate_source_bundle(
+                source_dir=args.source_dir, node=args.node, uid=args.uid, gid=args.gid
+            )
+            if args.validate_only:
+                print("operator-sheets-code-only: existing install and source bundle validated")
+                return 0
+            backup = install_modules(
+                source_dir=args.source_dir,
+                lib_dir=args.lib_dir,
+                etc_dir=args.etc_dir,
+                unit_dir=args.unit_dir,
+                backup_root=args.backup_root,
+                node=args.node,
+                uid=args.uid,
+                gid=args.gid,
+            )
+        except (InstallError, OSError, subprocess.SubprocessError) as exc:
+            print(f"operator-sheets-code-only: {exc}", file=sys.stderr)
+            return 2 if isinstance(exc, RecoveryError) else 1
+        print(f"operator-sheets-code-only: installed six-file code bundle; backup={backup}")
+        return 0
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
