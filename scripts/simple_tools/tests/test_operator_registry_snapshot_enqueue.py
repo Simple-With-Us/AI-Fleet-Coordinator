@@ -295,6 +295,104 @@ class SessionSnapshotEnqueueTests(unittest.TestCase):
         self.assertNotIn(record_id, raw)
         self.assertEqual(self._table_snapshot(), before)
 
+    def test_valid_digest_internal_value_error_is_not_reported_as_invalid_digest(self) -> None:
+        record_id, native_id = self._record(closed=False)
+        plan, _ = self._plan(record_id)
+        before = self._table_snapshot()
+        internal_detail = f"fixture internal failure for {record_id} {native_id}"
+        native_enqueue = OR.SessionRegistry._enqueue_session_upsert
+
+        def fail_after_insert(registry, conn, current_id, now):
+            native_enqueue(registry, conn, current_id, now)
+            raise ValueError(internal_detail)
+
+        with mock.patch.object(
+            OR.SessionRegistry, "_enqueue_session_upsert", new=fail_after_insert
+        ):
+            code, answer, raw = self._enqueue(record_id, str(plan["snapshot_sha256"]))
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "registry_error")
+        self.assertNotEqual(answer["code"], "invalid_snapshot_sha256")
+        self.assertNotIn(internal_detail, raw)
+        self.assertNotIn(record_id, raw)
+        self.assertNotIn(native_id, raw)
+        self.assertEqual(self._table_snapshot(), before)
+
+    def test_existing_empty_and_nonregistry_databases_return_fixed_errors_unchanged(self) -> None:
+        paths = {
+            "empty": os.path.join(self.tmp.name, "empty.sqlite3"),
+            "nonregistry": os.path.join(self.tmp.name, "nonregistry.sqlite3"),
+        }
+        with open(paths["empty"], "wb"):
+            pass
+        conn = sqlite3.connect(paths["nonregistry"])
+        try:
+            conn.execute("CREATE TABLE unrelated_fixture (value TEXT NOT NULL)")
+            conn.execute("INSERT INTO unrelated_fixture VALUES (?)", ("preserve-this-row",))
+            conn.commit()
+        finally:
+            conn.close()
+
+        def file_bytes(path: str) -> bytes:
+            with open(path, "rb") as handle:
+                return handle.read()
+
+        for name, db_path in paths.items():
+            with self.subTest(database=name):
+                before = file_bytes(db_path)
+                for operation in ("plan", "enqueue"):
+                    with self.subTest(operation=operation):
+                        if operation == "plan":
+                            code, answer, raw = self._cli(
+                                "plan-session-snapshot",
+                                "--db",
+                                db_path,
+                                "--record-id",
+                                "synthetic-record-id",
+                            )
+                        else:
+                            code, answer, raw = self._cli(
+                                "enqueue-session-snapshot",
+                                "--db",
+                                db_path,
+                                "--record-id",
+                                "synthetic-record-id",
+                                "--expected-sha256",
+                                "0" * 64,
+                            )
+                        self.assertEqual(code, 3)
+                        self.assertEqual(answer["code"], "registry_unavailable")
+                        self.assertNotIn("synthetic-record-id", raw)
+                        self.assertNotIn("preserve-this-row", raw)
+                        self.assertEqual(file_bytes(db_path), before)
+
+    def test_plan_filters_unrelated_pending_backlog_without_python_json_decoding(self) -> None:
+        record_id, _ = self._record(closed=False)
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executemany(
+                "INSERT INTO export_outbox(outbox_id, kind, payload, created_at)"
+                " VALUES (?, 'session_upsert', ?, ?)",
+                [
+                    (
+                        f"unrelated-pending-{index:04d}",
+                        json.dumps({"cells": [f"other-record-{index}", "unrelated"]}),
+                        "2026-11-21T12:04:00.000Z",
+                    )
+                    for index in range(128)
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.object(
+            OR.json, "loads", side_effect=AssertionError("unexpected JSON decode")
+        ):
+            plan = OR.plan_session_snapshot(self.db, record_id)
+        self.assertEqual(plan["pending_identical"], 0)
+        self.assertEqual(plan["action"], "enqueue")
+
     def test_local_snapshot_commands_do_not_add_or_use_registry_api_operations(self) -> None:
         record_id, _ = self._record(closed=True)
         env = {
