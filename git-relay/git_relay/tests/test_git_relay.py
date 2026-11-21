@@ -944,7 +944,8 @@ class TestAppActions(unittest.TestCase):
                 relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
             )
             self.assertEqual(
-                relay.client.calls, [("edit_pr", "example/x", 1, "t2", None, "MINTED-FAKE-TOKEN")]
+                relay.client.calls,
+                [("edit_pr", "example/x", 1, "[ECHO] t2", None, "MINTED-FAKE-TOKEN")],
             )
 
     def test_reply_thread_uses_minted_bearer(self):

@@ -599,11 +599,103 @@ class AppTokenMinter:
             self._tokens[cache_key] = (expiry, token)
             return token, expiry
 
+    def token_for_service(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
+        """Mint one installation token for the dedicated service-read lane and
+        validate the ANSWER before the token may be used:  the granted
+        permissions must be exactly the requested keys at the requested
+        levels (GitHub may add metadata:read, at read only), and the returned
+        repository set must be exactly the one repo asked for.  Any deviation
+        revokes the minted token at once and raises;  the token is never
+        cached, never returned, never used.  Legacy token_for is unchanged:
+        this strict path exists only for the service lane.
+        """
+        # Fresh mint, never the cache:  a cached token was not re-validated
+        # against THIS answer, and the lane's volume is small.
+        for key, level in permissions.items():
+            if not mint_permission_allowed(key, level):
+                raise AppTokenError(
+                    f"permission {key!r} at level {level!r} is outside the mint ceiling"
+                )
+        now = self._clock()
+        app_id, pem = self._app_credentials(slug)
+        bearer = self._signer(app_id, pem, int(now))
+        del pem
+        app = self._api("GET", "/app", bearer)
+        if not isinstance(app, dict) or app.get("id") != app_id:
+            raise AppTokenError("app key belongs to a different app")
+        owner, name = repo.split("/", 1)
+        install = self._api("GET", f"/repos/{owner}/{name}/installation", bearer)
+        if not isinstance(install, dict):
+            raise AppTokenError("installation lookup was malformed")
+        iid = install.get("id")
+        if (
+            not isinstance(iid, int)
+            or iid <= 0
+            or install.get("suspended_at")
+            or str((install.get("account") or {}).get("login", "")).casefold() != owner.casefold()
+        ):
+            raise AppTokenError("app installation is missing, suspended, or on another account")
+        data = self._api(
+            "POST",
+            f"/app/installations/{iid}/access_tokens",
+            bearer,
+            {"repositories": [name], "permissions": permissions},
+        )
+        if not isinstance(data, dict):
+            raise AppTokenError("minted-token response was malformed")
+        token = data.get("token")
+        expires_at = str(data.get("expires_at") or "")
+
+        def refuse(why: str):
+            # The token exists upstream:  revoke it before refusing, so a
+            # mis-granted credential is never left live.  A revocation that
+            # GitHub does not accept leaves a live token behind, so the
+            # refusal must carry secret-free operational evidence of that
+            # ("+revocation-failed" in the error:  the reason only, never the
+            # token itself).  A missing token has nothing to revoke.
+            if isinstance(token, str) and token:
+                if not self.revoke_installation_token(token):
+                    why = why + "+revocation-failed"
+            raise AppTokenError(f"minted-token answer failed service validation ({why})")
+
+        if not isinstance(token, str) or not token or not expires_at:
+            # Every post-mint validation failure goes through refuse, so a
+            # usable token inside a malformed answer is still revoked.
+            refuse("minted-token response was malformed")
+
+        granted = data.get("permissions")
+        if not isinstance(granted, dict) or not granted:
+            refuse("permissions missing or malformed")
+        for key, level in granted.items():
+            if key == "metadata" and key not in permissions:
+                if level != "read":
+                    refuse("implicit metadata grant above read")
+            elif permissions.get(key) != level:
+                refuse("granted scope outside the request")
+        for key, level in permissions.items():
+            if granted.get(key) != level:
+                refuse("requested scope not granted")
+        repos = data.get("repositories")
+        if (
+            not isinstance(repos, list)
+            or len(repos) != 1
+            or not isinstance(repos[0], dict)
+            or str(repos[0].get("full_name") or "").casefold() != repo.casefold()
+        ):
+            refuse("repository set is not exactly the requested repo")
+        import datetime as dt
+
+        try:
+            expiry = dt.datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            refuse("expiry malformed")
+        return token, expiry
+
     def token_for_namespace(self, slug: str, owner: str, kind: str) -> str:
-        """Mint one uncached installation token for creating a repository.
+        """Mint one uncached installation issued_credential for creating a repository.
 
         The permission object is the fixed pair for `kind`.  A caller cannot
-        pass its own permissions.  The token is not stored on this minter.
+        pass its own permissions.  The issued_credential is not stored on this minter.
         """
         permissions = _NAMESPACE_CREATE_PERMISSIONS.get(kind)
         if (
@@ -616,7 +708,7 @@ class AppTokenMinter:
         app_id, pem = self._app_credentials(slug)
         bearer = self._signer(app_id, pem, int(self._clock()))
         del pem
-        token = None
+        issued_credential = None
         try:
             app = self._api("GET", "/app", bearer)
             if not isinstance(app, dict) or app.get("id") != app_id:
@@ -652,9 +744,9 @@ class AppTokenMinter:
             minted = data.get("token")
             if not isinstance(minted, str) or not minted:
                 raise AppTokenError("namespace mint failed")
-            token = minted
-            issued = token
-            token = None
+            issued_credential = minted
+            issued = issued_credential
+            issued_credential = None
             return issued
         except AppTokenError:
             raise
@@ -662,14 +754,18 @@ class AppTokenMinter:
             raise AppTokenError("namespace mint failed") from None
         finally:
             del bearer
-            if token:
-                self.revoke_installation_token(token)
+            if issued_credential:
+                self.revoke_installation_token(issued_credential)
 
-    def revoke_installation_token(self, token: str) -> None:
-        """Revoke one installation token.  A failure does not change the call result."""
+    def revoke_installation_token(self, token: str) -> bool:
+        """Revoke one installation token.  Returns True when GitHub accepted
+        the revocation, False otherwise.  A failure never raises:  the legacy
+        callers' results are unchanged, and the strict service lane reports
+        the failure itself."""
         if not isinstance(token, str) or not token:
-            return
+            return False
         try:
             self._api("DELETE", "/installation/token", token)
         except Exception:
-            return
+            return False
+        return True
