@@ -43,6 +43,14 @@ A chat marked `[no-letter]` takes no letter:  it is how a headless run says so, 
 workers carry the mark (`scripts/pr_sweep/platforms.json`).  A chat the plugin never saw does
 not carry the mark, so the repair letters it.
 
+**How far back the repair reaches.**  A chat older than fourteen days is left alone, and that
+is a bound and not an oversight.  The fleet has twenty-six main pairs and the whole seat's
+history on this host is larger than that:  thirty-eight chats on Nov 21 were older than the
+bound, and twenty-six of them would have been main chats.  Lettering them all would have
+taken every main pair for chats from weeks ago and left the live ones with none, which is the
+wrong-chat delivery the registry exists to refuse.  The bound keeps the repair on the chats
+the owner is actually looking at, and the oldest of the thirty-eight was seventeen days old.
+
 ## The wake half
 
 The seat can be woken through the one wake router, with `scripts/simple_tools/opencode_wake.py`
