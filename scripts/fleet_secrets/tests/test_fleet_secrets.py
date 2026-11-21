@@ -1188,6 +1188,105 @@ class TestFetchVerified(unittest.TestCase):
             self.assertEqual(core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value")
 
 
+class TestApiProvider(unittest.TestCase):
+    def test_invalid_reader_origins_refuse_before_request_or_opener(self):
+        providers = (
+            "http://provider.invalid/api",
+            "http://192.0.2.1/api",
+            "http://[2001:db8::1]/api",
+            "http://localhost/api",
+            "ftp://provider.invalid/api",
+            "https:///api",
+            "https://reader@provider.invalid/api",
+            "https://reader:password@provider.invalid/api",
+            "https://@provider.invalid/api",
+            "https://provider.invalid/api?query",
+            "https://provider.invalid/api?",
+            "https://provider.invalid/api#fragment",
+            "https://provider.invalid/api#",
+            "https://provider.invalid/api/%2e%2e",
+            "https://provider.invalid/api/../other",
+            "https://provider.invalid/api/./other",
+            "https://provider.invalid/api//other",
+            "https://provider.invalid/api\\other",
+            "https://provider.invalid:invalid/api",
+            "https://[::1/api",
+            "https://provider.invalid/a path",
+            "https://provider.invalid/a\tpath",
+            " https://provider.invalid/api",
+            "https://provider.invalid/api\x7f",
+            1,
+        )
+        token = "st." + str(uuid.uuid4())
+        with (
+            mock.patch.object(core.urllib.request, "Request") as request,
+            mock.patch.object(core, "_opener") as opener,
+        ):
+            for provider in providers:
+                with self.subTest(provider=provider):
+                    env = {
+                        core.ENV_API: provider,
+                        core.ENV_TOKEN: token,
+                        core.ENV_PROJECT: PROJECT,
+                    }
+                    with self.assertRaises(core.SecretsError) as caught:
+                        core.fetch_project(PROJECT, "/", env, names=("ALPHA",))
+                    self.assertEqual(str(caught.exception), "read-provider-invalid")
+                    self.assertEqual(caught.exception.failure_kind, "refused")
+                    out, err = io.StringIO(), io.StringIO()
+                    self.assertEqual(cli.main(["get", "ALPHA"], env=env, out=out, err=err), 2)
+                    self.assertEqual(out.getvalue(), "")
+                    self.assertEqual(err.getvalue(), "fleet-secrets: read-provider-invalid\n")
+                    request.assert_not_called()
+                    opener.assert_not_called()
+
+    def test_configured_https_and_loopback_reach_actual_request_with_normalized_base(self):
+        for supplied, expected in (
+            (None, core.API_BASE),
+            ("", core.API_BASE),
+            (
+                "https://INFISICAL.EXAMPLE.INVALID.:443/custom/api/",
+                "https://infisical.example.invalid/custom/api",
+            ),
+            (
+                "https://infisical.example.invalid:8443/api",
+                "https://infisical.example.invalid:8443/api",
+            ),
+            ("http://127.0.0.1:43210/api", "http://127.0.0.1:43210/api"),
+            ("http://[::1]:43210/api", "http://[::1]:43210/api"),
+        ):
+            with self.subTest(supplied=supplied):
+                env = {} if supplied is None else {core.ENV_API: supplied}
+                response = io.BytesIO(b'{"ok":true}')
+                response.status = 200
+                with mock.patch.object(core, "_opener") as opener:
+                    opener.return_value.open.return_value = response
+                    result = core._api_json("GET", "/v2/service-token", "fixture", None, env)
+                self.assertEqual(result, (200, {"ok": True}))
+                request = opener.return_value.open.call_args.args[0]
+                self.assertIsInstance(request, core.urllib.request.Request)
+                self.assertEqual(request.full_url, expected + "/v2/service-token")
+                self.assertEqual(request.get_header("Authorization"), "Bearer fixture")
+                self.assertEqual(core._write_provider(env), expected)
+
+    def test_writer_normalization_compatibility_is_separate_from_strict_reader_syntax(self):
+        for supplied, expected in (
+            ("https://@provider.invalid/api", "https://provider.invalid/api"),
+            ("https://provider.invalid/a\tpath", "https://provider.invalid/apath"),
+            ("https://provider.invalid/api?", "https://provider.invalid/api"),
+            ("https://provider.invalid/api#", "https://provider.invalid/api"),
+            ("https://provider.invalid/a path", "https://provider.invalid/a path"),
+        ):
+            with self.subTest(supplied=supplied):
+                self.assertEqual(core._write_provider({core.ENV_API: supplied}), expected)
+        with self.assertRaises(core.SecretsError) as caught:
+            core._write_provider({core.ENV_API: "http://provider.invalid/api"})
+        self.assertEqual(
+            (str(caught.exception), caught.exception.code), ("write-provider-invalid", 2)
+        )
+        self.assertIsNone(caught.exception.failure_kind)
+
+
 class TestApiJsonBoundedRead(unittest.TestCase):
     def test_oversized_answer_fails_closed_without_logging(self):
         class _Resp:
