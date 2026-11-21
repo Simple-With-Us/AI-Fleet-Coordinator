@@ -12,7 +12,7 @@ checking need only a member key, so any seat can run them:
 Credentials:  with --admin, only the realm-admin bot:  env ZULIP_OPERATOR_EMAIL / _API_KEY / _SITE
 first, then Infisical Fleet-OPS /zulip_operator through the canonical bounded named reader (no legacy-name fallback).
 Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
-the verified seat's Infisical names (/zulip only).  --apply needs --admin.  Keys are never printed.
+the verified seat's Infisical names (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
 No credential file is read (AFC-359).
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
@@ -302,9 +302,13 @@ def _read_infisical_names(names, folder):
 
 
 def _fleet_secret(name: str) -> str:
-    """One exact-folder named read; legacy project-root retry is retired."""
-    folder = "/zulip_operator" if name.startswith("ZULIP_OPERATOR_") else "/zulip"
-    return _read_infisical_names((name,), folder).get(name, "").strip()
+    """One named read, retaining the member-only /zulip-to-root retry."""
+    folders = ("/zulip_operator",) if name.startswith("ZULIP_OPERATOR_") else ("/zulip", "/")
+    for folder in folders:
+        value = _read_infisical_names((name,), folder).get(name, "").strip()
+        if value:
+            return value
+    return ""
 
 
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
