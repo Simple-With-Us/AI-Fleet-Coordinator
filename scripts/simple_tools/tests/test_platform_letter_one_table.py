@@ -751,9 +751,11 @@ class MiniMaxRow(Base):
 
 class UnletteredSessionsTests(MiniMaxRow):
     """`minimax_unlettered_sessions`:  the repair pass's candidates are this host's chats that hold no letter
-    note, old enough that their own start has finished and young enough to be a live loss, newest first.  A chat
-    that started before the hook was installed has no note at all, and the pass that looked for the "??: "
-    placeholder could not see it."""
+    note, old enough that their own start has finished and young enough to be a live loss.  They come in two
+    groups:  the sub-threads whose title carries no letter, newest first by updated_at_ms, and then the top-level
+    chats that hold no letter note, with the rows of unknown age (created_at_ms IS NULL) before the dated rows,
+    newest first.  A chat that started before the hook was installed has no note at all, and the pass that
+    looked for the "??: " placeholder could not see it."""
 
     def write_note(self, sid: str) -> None:
         """A lettered chat, written the way the library writes a note:  owner-only folder, the file
