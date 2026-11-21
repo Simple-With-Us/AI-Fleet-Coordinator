@@ -239,17 +239,9 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(doctor.post_changes(report, runner))
         self.assertFalse(doctor.post_changes(report, runner))
         self.assertEqual(
-            calls[0][:6],
-            [
-                "simple-chat",
-                "post",
-                "--channel",
-                "Work-In-Progress",
-                "--topic",
-                "fleet tools doctor",
-            ],
+            calls[0][:5],
+            [sys.executable, str(HERE / "service_zulip.py"), "--service", "doctor", "post"],
         )
-        self.assertEqual(calls[0][6], "--json")
         self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][-1])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
         self.assertIn("every check passes again", calls[1][-1])
@@ -261,10 +253,10 @@ class SeatAndMcpTests(unittest.TestCase):
 
         def runner(argv, **kw):
             calls.append(argv)
-            if argv[1] == "post":
+            if argv[4] == "post":
                 out = json.dumps({"id": next(ids), "channel": "x", "topic": "y"}) + "\n"
                 return subprocess.CompletedProcess(argv, 0, out, "")
-            if argv[1] == "edit":
+            if argv[4] == "edit":
                 return subprocess.CompletedProcess(
                     argv, edit_code, "", "" if edit_code == 0 else edit_err
                 )
@@ -287,8 +279,8 @@ class SeatAndMcpTests(unittest.TestCase):
         runner = self.chat_runner(calls, [4101])
         report = self.failing_report(("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(report, runner))
-        self.assertEqual(calls[0][1], "post")
-        self.assertIn("--json", calls[0])
+        self.assertEqual(calls[0][4], "post")
+        self.assertNotIn("--as", calls[0])
         self.assertEqual(self.state()["message_id"], 4101)
         self.assertEqual(self.state()["checks"], ["tool:gitleaks"])
 
@@ -301,8 +293,8 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post", "edit"])
-        self.assertEqual(calls[1][2:4], ["--id", "4101"])
+        self.assertEqual([c[4] for c in calls], ["post", "edit"])
+        self.assertEqual(calls[1][5:7], ["--id", "4101"])
         self.assertIn("tool:gh: 2.60.0, latest 2.62.0", calls[1][-1])
         self.assertEqual(self.state()["message_id"], 4101)
         self.assertEqual(self.state()["failing"], ["tool:gh: 2.60.0, latest 2.62.0"])
@@ -318,11 +310,11 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.post_changes(self.failing_report(("tool:gh", "behind")), runner)
         added = self.failing_report(("tool:gh", "behind"), ("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(added, runner))
-        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
         cleared = self.failing_report(("tool:gitleaks", "not installed"))
         self.assertTrue(doctor.post_changes(cleared, runner))
-        self.assertEqual([c[1] for c in calls], ["post", "post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post", "post"])
         self.assertEqual(self.state()["message_id"], 4103)
 
     def test_a_failed_edit_falls_back_to_a_new_post(self):
@@ -333,7 +325,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post", "edit", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "edit", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
         self.assertEqual(self.state()["failing"], ["tool:gh: behind by 2"])
 
@@ -343,7 +335,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
         def runner(argv, **kw):
             calls.append(argv)
-            if argv[1] == "edit":
+            if argv[4] == "edit":
                 raise FileNotFoundError(argv[0])
             return subprocess.CompletedProcess(argv, 0, json.dumps({"id": next(ids)}), "")
 
@@ -351,7 +343,7 @@ class SeatAndMcpTests(unittest.TestCase):
             json.dumps({"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101})
         )
         self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
-        self.assertEqual([c[1] for c in calls], ["edit", "post"])
+        self.assertEqual([c[4] for c in calls], ["edit", "post"])
         self.assertEqual(self.state()["message_id"], 4102)
 
     def test_an_edit_that_may_have_landed_posts_nothing_and_retries_next_run(self):
@@ -378,7 +370,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
                 (self.home / "state.json").write_text(json.dumps(old))
                 self.assertFalse(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
-                self.assertEqual([c[1] for c in calls], ["edit"])
+                self.assertEqual([c[4] for c in calls], ["edit"])
                 self.assertEqual(self.state(), old)
                 # The next run edits the same message again.
                 retry = []
@@ -387,8 +379,8 @@ class SeatAndMcpTests(unittest.TestCase):
                         self.failing_report(("tool:gh", "b")), self.chat_runner(retry, [])
                     )
                 )
-                self.assertEqual([c[1] for c in retry], ["edit"])
-                self.assertEqual(retry[0][2:4], ["--id", "4101"])
+                self.assertEqual([c[4] for c in retry], ["edit"])
+                self.assertEqual(retry[0][5:7], ["--id", "4101"])
                 self.assertEqual(self.state()["message_id"], 4101)
 
     def test_an_old_state_without_an_id_posts_as_before(self):
@@ -398,7 +390,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertTrue(
             doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
         )
-        self.assertEqual([c[1] for c in calls], ["post"])
+        self.assertEqual([c[4] for c in calls], ["post"])
         self.assertEqual(self.state()["message_id"], 4101)
         # An unchanged set against the old state is still silent.
         (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 2"]}))
@@ -417,7 +409,7 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
         self.assertNotIn("message_id", self.state())
         doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
-        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual([c[4] for c in calls], ["post", "post"])
 
     def test_a_post_that_may_have_landed_is_not_posted_again(self):
         # Kody on PR 1467:  a post that timed out, or failed with a network or internal error, may
@@ -451,7 +443,7 @@ class SeatAndMcpTests(unittest.TestCase):
                         self.chat_runner(calls, [4101]),
                     )
                 )
-                self.assertEqual([c[1] for c in calls], ["post"])
+                self.assertEqual([c[4] for c in calls], ["post"])
 
     def test_a_refused_or_impossible_post_is_tried_again_next_run(self):
         # Zulip refused it (exit 3), or simple-chat is missing:  nothing was posted, so nothing is
@@ -468,7 +460,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 self.assertFalse((self.home / "state.json").exists())
                 calls = []
                 self.assertTrue(doctor.post_changes(report, self.chat_runner(calls, [4101])))
-                self.assertEqual([c[1] for c in calls], ["post"])
+                self.assertEqual([c[4] for c in calls], ["post"])
 
     def test_posted_message_id_reads_only_a_positive_integer_id(self):
         self.assertEqual(doctor.posted_message_id('{"id": 7, "channel": "c"}\n'), 7)
@@ -1339,6 +1331,10 @@ class MacUpdaterTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("missing", "FAIL"))
 
 
+# The real PATH, taken before a case empties it:  the copy comparison reads a real repository.
+GIT_PATH = os.environ.get("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
+
+
 def git_repo(root: Path, commits):
     """A real repository:  `commits` is a list of {path: text} applied in order;  returns their shas."""
 
@@ -1835,6 +1831,118 @@ class ReportAndRunTests(HomeCase):
         runtime = {r["check"]: r for r in json.loads(text)["checks"]}["runtime"]
         self.assertEqual(runtime["installed"], TIP)  # the managed runtime's HEAD, not the release's
         self.assertNotIn("release", runtime["detail"])
+
+
+class MacCopyRowsTests(ReportAndRunTests):
+    """AFC-1052:  the Mac's installed copies are judged on every Mac, whichever runtime layout it has.
+
+    The copy rows used to ride check_mac_tools, which only runs when the doctor judges the host
+    mac-style.  A Mac that also carries a fleet-cli release checkout (it publishes the server's
+    bundle from it) was judged server-style and lost every one of those rows, so a stale
+    ~/apps/fleet-rag went unnoticed and `recall contribute` failed for every seat on the Mac.
+    The revision the copies are judged against comes from the managed runtime itself, and the tip
+    is the one read from GitHub in this run:  a local origin/main ref is never a tip.
+    """
+
+    def private_dir(self, path: Path) -> Path:
+        """A new directory that is owner-only and is never reached through a symlink."""
+        assert not path.parent.is_symlink(), path.parent
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.chmod(0o700)
+        return path
+
+    def managed_runtime(self, root: Path, files=None) -> str:
+        """A real managed runtime:  a git repository with an origin/main the doctor can read."""
+        shas = git_repo(root, files or [{"scripts/recall": "r1"}])
+        subprocess.run(
+            ["git", "-C", str(root), "update-ref", "refs/remotes/origin/main", shas[-1]],
+            check=True,
+            capture_output=True,
+        )
+        return shas[-1]
+
+    def test_a_mac_with_a_release_checkout_still_reports_its_installed_copies(self):
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            self.private_dir(self.home / ".local/share/fleet-cli/repo/.git")
+            tip = self.managed_runtime(self.rt_dir)
+        seen = {}
+
+        def spy(name, spec, repo, rt, runner=subprocess.run, **kw):
+            seen["name"] = name
+            seen["repo"] = repo
+            seen["rt"] = dict(rt)
+            return {"status": "OK", "detail": "stub", "state": "current", "category": "fleet-tool"}
+
+        # The tip as it is read from GitHub:  the sha, a tab, and the ref name.
+        ls_remote = tip + chr(9) + "refs/heads/main" + chr(10)
+        rules = [
+            (("ls-remote",), (0, ls_remote)),
+            (("rev-parse", "HEAD"), (0, tip + chr(10))),
+        ]
+        with mock.patch.object(doctor, "compare_copy", side_effect=spy):
+            text, _ = self.run_doctor(["--json"], rules, host="mac")
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        self.assertIn("tool:recall", rows)
+        self.assertIn("tool:fleet-mode", rows)
+        self.assertEqual(rows["tool:recall"]["status"], "OK")
+        # The comparison runs against the managed runtime, with the tip that was read from GitHub
+        # and the head of that runtime, never a foreign checkout's revision.
+        self.assertEqual(seen["repo"], doctor.MAC_RUNTIME)
+        self.assertEqual(seen["rt"]["tip"], tip)
+        self.assertEqual(seen["rt"]["head"], tip)
+
+    def test_a_stale_installed_copy_is_reported_with_the_fix(self):
+        # This case keeps a real git:  the comparison reads the blobs of a real repository.
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            repo = Path(self.tmp.name) / "runtime"
+            tip = self.managed_runtime(
+                repo, [{"scripts/recall": "r1", "scripts/fleet_rag/core.py": "v1"}]
+            )
+            self.touch("apps/fleet-rag/recall", "r1")
+            self.touch("apps/fleet-rag/fleet_rag/core.py", "v1")
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                report = doctor.Report()
+                doctor.check_mac_copies(report, tip=tip)
+            rows = {r["check"]: r for r in report.rows}
+            self.assertEqual(
+                (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("current", "OK")
+            )
+            # The row names the revision it judged the copy against.
+            self.assertIn(tip[:7], rows["tool:recall"]["detail"])
+
+            # Without the tip that was read from GitHub the row is unknown, never current:  a local
+            # origin/main ref is never enough.
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                report = doctor.Report()
+                doctor.check_mac_copies(report)
+            rows = {r["check"]: r for r in report.rows}
+            self.assertEqual(
+                (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("unknown", "WARN")
+            )
+
+            # An older copy of one file is stale, and the row names the command that fixes it.
+            self.touch("apps/fleet-rag/fleet_rag/core.py", "v0")
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                report = doctor.Report()
+                doctor.check_mac_copies(report, tip=tip)
+            rows = {r["check"]: r for r in report.rows}
+            self.assertEqual(
+                (rows["tool:recall"]["state"], rows["tool:recall"]["status"]), ("stale", "FAIL")
+            )
+            self.assertIn("install-fleet-rag.sh", rows["tool:recall"]["detail"])
+
+    def test_the_tip_is_the_one_read_from_github_and_the_head_is_the_runtime(self):
+        with mock.patch.dict(os.environ, {"PATH": GIT_PATH}):
+            repo = Path(self.tmp.name) / "runtime"
+            tip = self.managed_runtime(repo)
+            with mock.patch.object(doctor, "MAC_RUNTIME", repo):
+                # The tip is the one that was read,  and the head is the managed runtime's own.
+                self.assertEqual(doctor.mac_copy_revision(tip=tip), {"tip": tip, "head": tip})
+                # No tip read means no tip:  a local origin/main ref is never enough.
+                self.assertEqual(doctor.mac_copy_revision(), {"tip": None, "head": tip})
+            # A Mac with no managed runtime has no revision at all.
+            with mock.patch.object(doctor, "MAC_RUNTIME", Path(self.tmp.name) / "nothing"):
+                self.assertEqual(doctor.mac_copy_revision(tip=tip), {"tip": tip, "head": None})
 
 
 class ServerStatusTests(HomeCase):

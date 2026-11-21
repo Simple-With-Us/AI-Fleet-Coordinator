@@ -168,7 +168,7 @@ sight.
 ## Sentence Gaps: U+00A0 Plus a Normal Space (Current Owner Rule — All Agents, All Contexts)
 
 Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included, except the three chat panes named below, which take the `&nbsp;` entity plus a space), including App Store
-submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
+submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 **Every single agent, every app, every surface, forever.**
 
 **Strengthened again 2026-08-19 (owner, in-conversation, with the two spaces made as "HOW to emit it" below says, never as two plain ASCII spaces):** "For any and all paragraphs in
@@ -182,6 +182,10 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Mark
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
+**No gap is required at a line break, paragraph end or end of text (owner ruling 2026-11-01).**  The visible gap belongs between sentences that continue in the same paragraph.  Code and code comments remain exempt, as the canonical sentence-gap skill specifies.
+
+**Shared converter:** use the code-aware `scripts/sentence_gap_convert.pl` in AI-Fleet-Coordinator, documented in `docs/fleet-skills/sentence-gap/SKILL.md`, for tool-written bodies that carry code.  Preserve code regions byte for byte, run the converter again and compare the outputs to prove idempotence, and inspect both the gap count and remaining ungapped prose.  The one-line example below documents the canonical pattern for prose-only bodies; it is not a second implementation for a host or seat.
+
 **HOW to emit it (owner ruling 2026-10-23, the same on every surface but three chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
 - **Claude Code Code tab, MiniMax Code and Z Code chat panes (the one exception, owner ruling 2026-10-23):**
@@ -193,9 +197,7 @@ the gap BETWEEN sentences.)
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
   (anything a tool writes that a Markdown or HTML renderer then shows):  a real U+00A0 plus a
   space.  Never the entity there, because GitHub can copy a PR body
-  into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
-  space — intermittently, not deterministically, so never diagnose it and always verify.  So
+  into a plain-text squash commit, where it would show literally.  Some chat panes normalize typed U+00A0, and a double space emitted into a tool call can arrive collapsed to a single space.  Verify the stored bytes and rendered result rather than assuming the transport preserved the gap.  So
   generate the gap in the shell, matching one *or more* spaces so it works in both states:
   ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
   sentence end *inside* markup or inside a quoted span, where the space comes after the closing
@@ -210,7 +212,7 @@ the gap BETWEEN sentences.)
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt
   ```
   `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
-  so `chmod 600` it first.  Code, code comments, identifiers and config never get a U+00A0,
+  so `chmod 600` it first.  Executable code, identifiers and machine-readable config never get a U+00A0,
   which is a real defect there rather than a fix.
 - **Repo docs and Markdown, skills, agent instructions and commit messages** (owner ruling
   2026-10-23):  the same U+00A0 plus a space.  Rewrite only text you are already editing;  do
@@ -220,6 +222,8 @@ the gap BETWEEN sentences.)
   Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to one.  Never
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
+
+**MiniMax provenance retained from the prior Mac copy (2026-10-18, reaffirmed 2026-10-20):** the owner had already confirmed that this pane needs the entity plus a normal space.  A 2026-10-20 note briefly substituted raw U+00A0 on an inference; the owner reversed it.  Never override an owner-verified mechanism on an inference.  Treat a collapsed reply as a defect in the emitting step and diagnose the rendering/transport layer.  The current three-pane exception above governs; this history does not extend that exception to any other pane.
 
 **Rendering trap — history (chat advice reversed twice; the 2026-10-23 ruling above supersedes all of it except in the chat panes it names as its exception):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was

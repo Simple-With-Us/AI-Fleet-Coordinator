@@ -1,8 +1,8 @@
 # git-relay - the GitHub relay CLI, and GR-MCP
 
 git-relay knows each seat from its bearer token and picks the credential by task:  Opening a PR
-runs under the owner's scoped PR-only token (the only copy lives in the service's
-environment), and every other GitHub task runs under the seat's own GitHub App token, which
+runs under the owner's scoped PR-only token (read from its dedicated Infisical folder into
+service memory), and every other GitHub task runs under the seat's own GitHub App token, which
 git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
 policy, and every denial, failure and write is written to the audit log (a successful read is not).
 
@@ -82,7 +82,7 @@ Only opening a PR is authored as the owner through the scoped PR-only token.  E
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
 seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_files_put`) commit through the API, on a non-default branch by default (the default branch takes only the exact paths in `default_branch_paths`);  a path under `.github/workflows` is refused unless the request names it, and then the relay mints that one write under a token that also holds the `workflows` permission (`wf_file_patch` refuses every such path);  no seat policy can exceed its GitHub credential.
 
-**Pull request writes.**  `wf_pr_create` and `wf_pr_edit` are deliberately ungranted: no seat policy grants them.  `gr_open_pr` is the route to open a pull request, authored as the owner by design, and `gr_edit_pr` is the route to edit a title or body, which the current seat policy grants.
+**Pull request writes.** Normal fleet PR creation uses `gr_open_pr` / `open_pr` through the relay under the owner's scoped PR-only token. Other operations use the seat's own GitHub App. `wf_pr_create` is retired and refused unconditionally:  `SeatPolicy.authorize` rejects it before the action lookup and the hosted front refuses `gr_wf_pr_create`, so no live seat policy can grant it.  `gr_open_pr` is the sole PR-creation route. `gr_edit_pr` remains the supported title/body edit route when `wf_pr_edit` is not granted. Review requirements remain unchanged. A refusal never authorizes direct GitHub fallback.
 
 How the default branch is recognised (AFC-775): GitHub drops `.` segments from a URL path, so `./main` reaches `main`.  The ref validator therefore refuses any branch, tag or ref name with an empty, `.`, `..` or dot-leading segment, or a segment ending in `.` or `.lock`.  One helper, `_is_default_branch`, decides for every verb that refuses the default branch (`wf_branch_update`, `wf_branch_delete`, `wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_file_patch`, `wf_files_put`).  It compares case-folded names with any `refs/heads/` or `heads/` prefix and any `.` segment removed, and counts an unknown default branch as the default.  Each of those verbs also checks the provider's own answer against the default branch before any write:  the ref it returned (`refs/heads/<name>`) for the ref-based verbs, the branch name it returned for `wf_file_put` and `wf_file_delete`.  An answer that lacks the ref or name, or names a branch other than the one asked for, is refused.  For `wf_file_put` and `wf_file_delete` such an answer is a retryable pre-read failure with no write attempted, so the idempotency key is released;  the ref-based verbs refuse it outright.  GitHub branch names are case-sensitive, so a case or prefix variant of the default branch (`Main`, `MAIN`, `refs/heads/main`) is still the default branch and is refused by every file verb.  Only the exact default name, byte for byte, can take the exact-path route below, and on that route `wf_file_put` makes no separate branch read because the contents read already proves the branch exists.
 
@@ -425,7 +425,11 @@ Explicit `GIT_RELAY_APP_MINT=0` preserves the existing legacy startup behavior: 
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
+| GITHUB_TOKEN | ignored | Ambient owner tokens are not a credential source; the fixed `/git-relay-owner` reader supplies the scoped PR-only token |
+| INFISICAL_FLEET_OPS_PROJECT_ID | (required) | Explicit Fleet-OPS project UUID for every source; no HOME or project-file discovery |
+| GIT_RELAY_OWNER_CREDENTIAL_FILE | systemd credential `git-relay-owner-token` | Existing protected own read-token file for fixed prod `/git-relay-owner` |
+| GIT_RELAY_APPS_CREDENTIAL_FILE | systemd credential `git-relay-apps-token` | Existing protected own read-token file for the configured App-key folder |
+| GIT_RELAY_TOOLS_CREDENTIAL_FILE | existing App-file selector when unset | Existing explicit `/tools` file override; the legacy default selector does not prove a usable grant and remains an activation gate |
 | GIT_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
 | GIT_RELAY_VERIFY_CACHE_S | 3600 | Seconds one relay process reuses a positive `sbt_`/`gbb_` bearer verify, capped at 3600 and never past the bearer's expiry;  0 verifies live on every call.  A pause or revocation can reach that bearer's Git calls, writes included, up to this late (owner ruling Fri, Nov 6, 2026).  The hour runs from the Worker's own live check (`verified_at` in its answer), so the Worker's cache and this one together stay within one hour, and an older positive answer never replaces a newer refusal.  Refusals are remembered for 30 seconds as refusals only. |
 | GIT_RELAY_AUDIT_PATH | git-relay-audit.jsonl | Audit log location |
@@ -450,6 +454,59 @@ python3 -m git_relay.server     # equivalent, no wrapper needed
 
 `git-relay/bin/git-relay` runs straight from a checkout with no install step.  Stdlib only, no
 dependencies to install.
+
+## Direct Infisical Reader And Code Artifact
+
+`FleetSecretsSource` retains the `.secret`, `.secrets` and `.verified_secret` protocol, but reads
+through the canonical `scripts/fleet_infisical.py` rather than an external `fleet-secrets` app.
+The code path is fixed relative to the relay package: `<artifact>/git-relay/git_relay/app_tokens.py`
+loads only `<artifact>/scripts/fleet_infisical.py` through an owned private module handle and lock.
+Neither an import-path candidate nor a preloaded public or private module can supply this reader.
+The source is validated before its own protected token file is opened or passed to it.
+
+Each uncached batch names only the requested keys and uses `bounded_fetch_project` with a
+30-second operation budget and a 1-MiB whole-batch output cap.  The shared disposable worker
+performs the actual exact-project/prod/folder/read-only grant and strict record verification.
+The shared expiry contract accepts a future finite expiry or an explicitly present null expiry
+for an otherwise valid read-only grant; missing, malformed, expired and naive expiry still refuse.
+Only that explicit bootstrap token goes through private worker stdin, never argv or an inherited
+credential environment.  The source supplies only prod and its exact read path; it never discovers
+another consumer, an ambient token, a project file, a login session or a fallback application.
+No writer ledger is needed for these read-only calls.
+
+The existing process cache remains: verified values and confirmed missing names are reused by that
+source until restart.  Transient failures are not remembered as absence, and an incomplete batch
+does not cache partial values.  Rotating the own file affects uncached reads; restart is required to
+refresh an already cached value or missing name.  No upstream body or secret value enters an error.
+
+The three purposes remain separate: App id/key pairs come from configured prod `/github-apps`,
+the verification-channel key comes from configured prod `/tools`, and the owner PR-only token
+comes from fixed prod `/git-relay-owner`.  Existing factory/file selectors are preserved.
+In particular, the historical `/tools` default still selects the App token file, but a multi-folder
+grant cannot satisfy the canonical exact-one-folder verifier.  A dedicated, declared own `/tools`
+binding and its actual finite expiry must be verified before activation; this source change does
+not create, widen, borrow or prove any grant.
+
+Build the reviewed public code separately from installation:
+
+```text
+python3 git-relay/build-runtime.py <full-source-commit> <new-absolute-artifact-root>
+```
+
+The builder reads only one full immutable local Git commit and an explicit inventory of 38 code
+files: the existing launcher, 36 relay modules and the exact canonical client.  It writes the same
+monorepo-shaped layout plus `relay-runtime.json`, then verifies every mode, byte count and SHA-256
+and the complete finite inventory.  It refuses missing, oversized or symlinked source entries,
+existing destinations and symlinked or unsafe destination parents.  The artifact contains no live
+seat policy, host configuration, environment, credential file, external app or second client implementation.
+The receipt proves prepared code bytes only; it authorizes no installation or restart.
+
+The canonical bounded reader is on main; this source unit does not qualify a live binding.
+Activation remains held until every existing purpose has a verified own exact-scope read binding
+with finite expiry and the managed installed layout passes normal owner-PR/App/verification-channel
+acceptance.  The existing fixed
+five-file deployment transaction does not install this larger artifact.  Preserve the working release
+until a separately authorized installation and those actual acceptance checks succeed.
 
 ## Seat provisioning and deployment
 

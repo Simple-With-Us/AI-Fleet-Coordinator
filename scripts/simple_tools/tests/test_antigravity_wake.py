@@ -11,8 +11,11 @@ import fcntl
 import json
 import os
 import sqlite3
+import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +24,7 @@ from unittest import mock
 from simple_tools import antigravity_wake as AGW
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
+from simple_tools.tests import test_wake_router as TWR
 
 SID_VALID = "11111111-2222-4333-8444-555555555555"
 SID_SUB = "22222222-3333-4444-8555-666666666666"
@@ -38,6 +42,90 @@ SUMMARIES_DDL = (
     " killed INTEGER DEFAULT 0,"
     " not_fully_idle INTEGER DEFAULT 0)"
 )
+
+# The lines the compiled `agy` writes to stderr when a resume fails (AFC-838).  Fixtures only:  no
+# test here launches the real CLI.
+SIGNIN_LINES = (
+    "Error: authentication required. Run 'agy' to log in, then retry.",
+    "error: authentication failed or timed out",
+)
+QUOTA_LINES = (
+    "error: Individual quota reached.",
+    'AGY_ERROR: {"short_error":"Individual quota reached.","status":"RESOURCE_EXHAUSTED",'
+    '"error_code":429,"retryable":false,"error_id":"e-1"}',
+)
+INTERACTIVE_LINES = (
+    "Authentication required. Please visit the URL to log in:",
+    "  https://example.invalid/auth",
+    "Or, paste the authorization code here and press Enter:",
+    "Error: authentication timed out.",
+)
+# printmode.go:440:  the browser branch ran StartOAuthProcess (433) and got no URL back.
+BROWSER_BRANCH_LINE = "Error: authentication required. Run 'agy' to log in."
+# projectresolve.go:75:  the id was not found, so agy started a new chat.
+NEW_CHAT_LINE = 'warning: conversation "%s" not found' % SID_VALID
+CANARY = "CANARY-afc838"
+RESOLVE_MAC = {
+    "found": True,
+    "seat": "AG",
+    "platform": "antigravity",
+    "native_session_id": SID_VALID,
+    "letter": "CC",
+    "generation": 1,
+    "verified_host": "mac",
+}
+
+# A stand-in for the compiled sign-in gate (printmode.go:390-397, 425-433):  a character device
+# on stdin, or a controlling terminal, takes the browser branch;  anything else fails fast.
+FAKE_AGY = """#!@PYTHON@
+import os
+import stat
+import sys
+
+
+def interactive():
+    try:
+        if stat.S_ISCHR(os.fstat(0).st_mode):
+            return True
+    except OSError:
+        pass
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+if interactive():
+    open(os.path.join(os.environ["HOME"], "browser-opened"), "w").close()
+    sys.stderr.write("Authentication required. Please visit the URL to log in:\\n")
+    sys.stderr.write("Error: authentication timed out.\\n")
+else:
+    sys.stderr.write("Error: authentication required. Run 'agy' to log in, then retry.\\n")
+    sys.stderr.write("error: authentication failed or timed out\\n")
+sys.exit(1)
+"""
+
+
+def agy(returncode: int, *lines: str, calls: list | None = None):
+    """A fake `agy` run:  writes `lines` into the stderr pipe it is handed, then exits."""
+
+    def run(argv, **kwargs):
+        if calls is not None:
+            calls.append(list(argv))
+        os.write(kwargs["stderr"], "".join(line + "\n" for line in lines).encode("utf-8"))
+        return subprocess.CompletedProcess(argv, returncode)
+
+    return run
+
+
+def open_fds() -> set[str]:
+    """This process's open file descriptors (Linux /proc, else the BSD /dev/fd)."""
+    for folder in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(folder):
+            return set(os.listdir(folder))
+    raise unittest.SkipTest("no descriptor listing on this host")
 
 
 class BaseTest(unittest.TestCase):
@@ -120,6 +208,11 @@ class TestAntigravityWakeConfig(BaseTest):
     def test_never_ran_codes_match_re(self) -> None:
         for code in AGW.NEVER_RAN:
             self.assertTrue(SVC.NEVER_RAN_CODE.fullmatch(code), code)
+
+    def test_sign_in_never_ran_quota_may_have(self) -> None:
+        # A sign-in failure ends before the turn starts;  a quota failure comes after it started.
+        self.assertLessEqual({"resume-signin-required", "resume-signin-interactive"}, AGW.NEVER_RAN)
+        self.assertNotIn("resume-quota-exhausted", AGW.NEVER_RAN)
 
     def test_state_dir(self) -> None:
         self.assertEqual(AGW.state_dir(self.env), self.root / "state")
@@ -568,10 +661,16 @@ class TestAntigravityDeliverLocal(BaseTest):
             return subprocess.CompletedProcess(argv, returncode=127)
 
         with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            # A run past its timeout had started its turn, which may have run (AFC-838):
+            # unknown, so the router neither retries it nor records it as delivered.
             d_time = AGW.deliver_local(
                 self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=timeout_runner
             )
-            self.assertEqual((d_time.outcome, d_time.code), ("refused", "resume-timeout"))
+            self.assertEqual(
+                (d_time.outcome, d_time.route, d_time.code),
+                ("unknown", "resume", "resume-timeout"),
+            )
+            self.assertNotIn("resume-timeout", AGW.NEVER_RAN)
 
             d_os = AGW.deliver_local(
                 self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=oserror_runner
@@ -694,6 +793,485 @@ class TestAntigravityDeliverRequest(BaseTest):
         self.assertEqual(ans["delivery"]["outcome"], "sent")
         self.assertEqual(ans["delivery"]["ack"], "unknown")
         self.assertEqual(ans["delivery"]["route"], "resume")
+
+
+class ResumeBase(BaseTest):
+    """One idle chat on this host, and `agy` found at a fixed path (AFC-838)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._insert(SID_VALID)
+        patcher = mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def server(self, runner) -> WR.Delivery:
+        deliver = AGW.make_deliver(self.env, AGW.DEFAULTS, runner=runner)
+        return deliver(WR.Target(SID_VALID, "CC", "server", generation=1), self.wake())
+
+    def mac_request(self) -> dict:
+        return {
+            "platform": "antigravity",
+            "target": {"session_id": SID_VALID, "letter": "CC", "host": "mac", "generation": 1},
+            "wake": WR.asdict(self.wake()),
+        }
+
+    def mac(self, runner) -> dict:
+        with mock.patch("simple_tools.wake_router.registry_api.call", return_value=RESOLVE_MAC):
+            return AGW.deliver_request(self.mac_request(), env=self.env, runner=runner)
+
+    @staticmethod
+    def four(delivery: WR.Delivery) -> tuple[str, str, str, str]:
+        return (delivery.outcome, delivery.route, delivery.code, delivery.note)
+
+    @staticmethod
+    def four_of(answer: dict) -> tuple[str, str, str, str]:
+        d = answer["delivery"]
+        return (d["outcome"], d["route"], d["code"], d["note"])
+
+
+class TestAntigravityResumeHeadless(ResumeBase):
+    """Every resume runs with no terminal:  an empty pipe on stdin and a session of its own, so
+    the compiled sign-in fails fast instead of opening a browser (AFC-838)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.fake_agy = self.root / "bin" / "agy"
+        self.fake_agy.parent.mkdir()
+        self.fake_agy.write_text(FAKE_AGY.replace("@PYTHON@", sys.executable), encoding="utf-8")
+        self.fake_agy.chmod(0o755)
+
+    def record(self, calls: list):
+        def run(argv, **kwargs):
+            stderr = kwargs.get("stderr")
+            is_pipe = type(stderr) is int and stat.S_ISFIFO(os.fstat(stderr).st_mode)
+            calls.append((list(argv), dict(kwargs), is_pipe))
+            return subprocess.CompletedProcess(argv, 0)
+
+        return run
+
+    def assert_headless(self, calls: list, text: str) -> None:
+        self.assertEqual(len(calls), 1)
+        argv, kwargs, is_pipe = calls[0]
+        self.assertEqual(argv, ["/bin/agy", "--conversation", SID_VALID, "-p", text])
+        self.assertEqual(kwargs.get("input"), b"")
+        self.assertNotIn("stdin", kwargs)
+        self.assertIs(kwargs.get("start_new_session"), True)
+        self.assertEqual(kwargs.get("stdout"), subprocess.DEVNULL)
+        # stderr is the write end of our own pipe:  a real descriptor, not one of subprocess's
+        # PIPE, DEVNULL or STDOUT constants, and not a file on disk.
+        self.assertIs(type(kwargs.get("stderr")), int)
+        self.assertGreater(kwargs["stderr"], 2)
+        self.assertTrue(is_pipe)
+        self.assertEqual(kwargs.get("timeout"), 900)
+        self.assertEqual(kwargs.get("cwd"), str(self.valid_project))
+
+    def test_server_resume_has_no_tty_and_an_empty_pipe(self) -> None:
+        calls: list = []
+        delivery = self.server(self.record(calls))
+        self.assertEqual(delivery.outcome, "sent")
+        self.assert_headless(calls, AGW.wake_text(self.wake()))
+
+    def test_mac_resume_has_no_tty_and_an_empty_pipe(self) -> None:
+        calls: list = []
+        answer = self.mac(self.record(calls))
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        text = AGW.wake_text(AGW._wake_from(self.mac_request()["wake"]))
+        self.assert_headless(calls, text)
+
+    def test_fake_cli_takes_the_fail_fast_branch(self) -> None:
+        # The real subprocess.run and a real child process:  no browser branch on either host.
+        opened = self.root / "browser-opened"
+        with mock.patch.object(AGW, "_find_agy_binary", return_value=str(self.fake_agy)):
+            delivery = self.server(subprocess.run)
+            self.assertFalse(opened.exists())
+            self.assertEqual(
+                self.four(delivery),
+                ("refused", "resume", "resume-signin-required", "agy-exit-1"),
+            )
+            answer = self.mac(subprocess.run)
+            self.assertFalse(opened.exists())
+            self.assertEqual(
+                self.four_of(answer),
+                ("refused", "resume", "resume-signin-required", "agy-exit-1"),
+            )
+
+
+class TestAntigravityResumeOutcome(ResumeBase):
+    """A failed resume is named from a bounded read of the CLI's own stderr lines:  quota, sign-in,
+    or today's resume-exit-N.  No output text reaches a receipt (AFC-838)."""
+
+    def test_server_quota_exhausted(self) -> None:
+        expected = ("refused", "resume", "resume-quota-exhausted", "agy-exit-3")
+        self.assertEqual(self.four(self.server(agy(3, *QUOTA_LINES))), expected)
+        self.assertNotIn("resume-quota-exhausted", AGW.NEVER_RAN)
+        for line in (
+            "error: rpc error: RESOURCE_EXHAUSTED",
+            'AGY_ERROR: {"short_error":"request failed with code 429"}',
+            "error: rpc error: code = ResourceExhausted desc = quota",
+            'AGY_ERROR: {"code": 429, "message": "x"}',
+            "error: 429 Too Many Requests",
+            "error: You have exhausted your quota on this model.",
+            "error: Your AI credits balance is too low to continue.",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.four(self.server(agy(3, line))), expected)
+
+    def test_mac_sign_in_required(self) -> None:
+        answer = self.mac(agy(1, *SIGNIN_LINES))
+        self.assertEqual(
+            self.four_of(answer), ("refused", "resume", "resume-signin-required", "agy-exit-1")
+        )
+        self.assertIn("resume-signin-required", AGW.NEVER_RAN)
+
+    def test_mac_sign_in_reaches_the_server_receipt(self) -> None:
+        config = {**AGW.DEFAULTS, "mac_ssh": "mac"}
+        commands: list[str] = []
+
+        def ssh(argv, **kwargs):
+            commands.append(argv[-1])
+            if argv[-1] == "true":
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            request = json.loads(kwargs["input"])
+            answer = AGW.deliver_request(request, env=self.env, runner=agy(1, *SIGNIN_LINES))
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(answer) + "\n", stderr="")
+
+        with mock.patch("simple_tools.wake_router.registry_api.call", return_value=RESOLVE_MAC):
+            deliver = AGW.make_deliver(self.env, config, runner=ssh)
+            delivery = deliver(WR.Target(SID_VALID, "CC", "mac", generation=1), self.wake())
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(
+            delivery,
+            WR.Delivery(
+                "refused", "ssh:resume", code="resume-signin-required", note="agy-exit-1"
+            ),
+        )
+
+    def test_interactive_sign_in_is_named(self) -> None:
+        for last in (
+            "Error: authentication timed out.",
+            "Error: authentication interrupted.",
+            "Error: authentication failed: x",
+        ):
+            with self.subTest(last=last):
+                delivery = self.server(agy(1, *INTERACTIVE_LINES[:-1], last))
+                self.assertEqual(
+                    self.four(delivery),
+                    ("refused", "resume", "resume-signin-interactive", "agy-exit-1"),
+                )
+        self.assertIn("resume-signin-interactive", AGW.NEVER_RAN)
+
+    def test_browser_branch_sign_in_is_interactive(self) -> None:
+        # printmode.go:440 prints the same opening as the fast exit (428), but only after
+        # StartOAuthProcess ran:  the no-browser stdio did not hold, so it is not "required".
+        expected = ("refused", "resume", "resume-signin-interactive", "agy-exit-1")
+        tail = (BROWSER_BRANCH_LINE, "error: authentication failed or timed out")
+        self.assertEqual(self.four(self.server(agy(1, *tail))), expected)
+        self.assertEqual(self.four_of(self.mac(agy(1, *tail))), expected)
+        # An opening with neither of the two endings is not read as either branch.
+        delivery = self.server(agy(1, "Error: authentication required. Sign in elsewhere."))
+        self.assertEqual(self.four(delivery), ("refused", "resume", "resume-exit-1", ""))
+
+    def test_the_last_line_that_names_an_ending_decides(self) -> None:
+        cases = (
+            # A sign-in-shaped line from another process, then the CLI's own quota ending.
+            ((SIGNIN_LINES[0], "tool says hello", *QUOTA_LINES), 3, "resume-quota-exhausted"),
+            # A quota-shaped line earlier, then the CLI's own fast sign-in exit.
+            ((QUOTA_LINES[0], *SIGNIN_LINES), 1, "resume-signin-required"),
+            ((SIGNIN_LINES[0], BROWSER_BRANCH_LINE), 1, "resume-signin-interactive"),
+        )
+        for lines, returncode, code in cases:
+            with self.subTest(code=code):
+                delivery = self.server(agy(returncode, *lines))
+                self.assertEqual(
+                    self.four(delivery), ("refused", "resume", code, "agy-exit-%d" % returncode)
+                )
+
+    def test_unknown_failure_keeps_today_s_code(self) -> None:
+        cases = (
+            (1, ("error: invalid model",)),
+            (3, ('AGY_ERROR: {"short_error":"x","status":"INTERNAL","error_code":500}',)),
+            (2, ()),
+            (4, ("error: request 4290 failed", "error: line 1429 of the plan")),
+            (5, (NEW_CHAT_LINE, "error: invalid model")),
+        )
+        for returncode, lines in cases:
+            with self.subTest(returncode=returncode):
+                delivery = self.server(agy(returncode, *lines))
+                self.assertEqual(
+                    self.four(delivery), ("refused", "resume", "resume-exit-%d" % returncode, "")
+                )
+
+    def test_success_names_only_a_new_chat(self) -> None:
+        delivery = self.server(agy(0, QUOTA_LINES[1], SIGNIN_LINES[0]))
+        self.assertEqual(
+            (delivery.outcome, delivery.route, delivery.ack, delivery.note, delivery.code),
+            ("sent", "resume", "unknown", "agy-exit-0", ""),
+        )
+        # The CLI could not find the chat and ran the turn in a new one (projectresolve.go:75):
+        # final, never retried, and not "never ran", since a turn did run.
+        expected = ("refused", "resume", "resume-new-chat", "agy-exit-0")
+        self.assertEqual(self.four(self.server(agy(0, NEW_CHAT_LINE))), expected)
+        self.assertEqual(self.four_of(self.mac(agy(0, NEW_CHAT_LINE))), expected)
+        self.assertNotIn("resume-new-chat", AGW.NEVER_RAN)
+        delivery = self.server(agy(0, "note: " + NEW_CHAT_LINE))
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_markers_must_open_a_line(self) -> None:
+        lines = ("tool output: RESOURCE_EXHAUSTED", "note: Error: authentication required.")
+        delivery = self.server(agy(1, *lines))
+        self.assertEqual(self.four(delivery), ("refused", "resume", "resume-exit-1", ""))
+
+    def test_every_line_is_read_wherever_it_falls(self) -> None:
+        """stderr is read one line at a time as it comes, so a line that names an ending counts
+        however much output follows it, and no whole line is dropped (AFC-838, PR 2320)."""
+        cap = AGW.OUTPUT_SCAN_CAP
+        filler = ["filler line %06d" % i for i in range((cap + 100) // 19 + 1)]
+        self.assertGreater(sum(len(line) + 1 for line in filler), cap + 100)
+        mark = SIGNIN_LINES[0]
+        named = ("refused", "resume", "resume-signin-required", "agy-exit-1")
+        with self.subTest("a sign-in line, then more than the cap of other output"):
+            self.assertEqual(self.four(self.server(agy(1, mark, *filler))), named)
+        with self.subTest("a sign-in line at the end"):
+            self.assertEqual(self.four(self.server(agy(1, *filler, mark))), named)
+        with self.subTest("a whole sign-in line that starts exactly one cap from the end"):
+            rest = "f" * (cap - len(mark) - 2)
+            self.assertEqual(len(mark) + 1 + len(rest) + 1, cap)
+            self.assertEqual(self.four(self.server(agy(1, *filler, mark, rest))), named)
+        with self.subTest("a sign-in line, then one unended line longer than the cap"):
+
+            def run(argv, **kwargs):
+                os.write(kwargs["stderr"], (mark + "\n" + "x" * (cap + 10)).encode("ascii"))
+                return subprocess.CompletedProcess(argv, 1)
+
+            self.assertEqual(self.four(self.server(run)), named)
+        with self.subTest("the new-chat warning, then more than the cap of other output"):
+            expected = ("refused", "resume", "resume-new-chat", "agy-exit-0")
+            self.assertEqual(self.four(self.server(agy(0, NEW_CHAT_LINE, *filler))), expected)
+            self.assertEqual(self.four_of(self.mac(agy(0, NEW_CHAT_LINE, *filler))), expected)
+
+    def test_a_line_longer_than_the_cap_names_nothing(self) -> None:
+        """The CLI's own ending lines are short, so a longer line is skipped:  a mark anywhere in
+        it is not read as a line the CLI began or ended with."""
+        cap = AGW.OUTPUT_SCAN_CAP
+        mark = SIGNIN_LINES[0]
+        cases = (
+            (1, "x" * cap + mark),
+            (1, "x" * 5 + mark + "f" * cap),
+            (1, mark + " " + "x" * cap),
+            (3, QUOTA_LINES[0] + " " + "x" * cap),
+        )
+        for returncode, line in cases:
+            with self.subTest(returncode=returncode, start=line[:8]):
+                delivery = self.server(agy(returncode, line))
+                self.assertEqual(
+                    self.four(delivery),
+                    ("refused", "resume", "resume-exit-%d" % returncode, ""),
+                )
+
+    def test_only_the_line_being_read_is_held(self) -> None:
+        cap = AGW.OUTPUT_SCAN_CAP
+        lines = AGW._StderrLines(cap)
+        for _ in range(3 * cap // 100 + 1):
+            os.write(lines.write_fd, ("y" * 99 + "\n").encode("ascii"))
+        for _ in range(3 * cap // 1000 + 1):
+            os.write(lines.write_fd, ("z" * 1000).encode("ascii"))
+        lines.finish(5.0)
+        self.assertTrue(lines._done.is_set())
+        self.assertLessEqual(len(lines._line), cap)
+        self.assertEqual(lines.result(), ("", False))
+        # A line that comes in pieces, with a character split between two of them, is one line:
+        # it names its ending once it is whole, and not before.
+        pieces = AGW._StderrLines(cap)
+        pieces.finish(5.0)
+        raw = "Error: authentication required. Run 'ågy' to log in, then retry.\n"
+        data = raw.encode("utf-8")
+        split = data.index(b"\xc3") + 1
+        with pieces._lock:
+            pieces._feed(data[:split])
+        self.assertEqual(pieces.result(), ("", False))
+        with pieces._lock:
+            pieces._feed(data[split:])
+        self.assertEqual(pieces.result(), (AGW.SIGNIN_REQUIRED, False))
+
+    def test_a_timeout_is_unknown_on_both_hosts(self) -> None:
+        def timeout(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, timeout=900)
+
+        expected = ("unknown", "resume", "resume-timeout", "")
+        self.assertEqual(self.four(self.server(timeout)), expected)
+        self.assertEqual(self.four_of(self.mac(timeout)), expected)
+
+    def test_receipt_carries_no_output_text(self) -> None:
+        fixtures = (
+            (
+                "resume-quota-exhausted",
+                3,
+                (
+                    "error: Individual quota reached. " + CANARY,
+                    'AGY_ERROR: {"short_error":"Individual quota reached. %s",'
+                    '"status":"RESOURCE_EXHAUSTED","error_code":429}' % CANARY,
+                ),
+            ),
+            ("resume-signin-required", 1, (SIGNIN_LINES[0], SIGNIN_LINES[1] + " " + CANARY)),
+            (
+                "resume-signin-interactive",
+                1,
+                (
+                    INTERACTIVE_LINES[0],
+                    "  https://example.invalid/auth?" + CANARY,
+                    INTERACTIVE_LINES[-1],
+                ),
+            ),
+            ("resume-signin-interactive", 1, (CANARY, BROWSER_BRANCH_LINE)),
+            ("resume-new-chat", 0, (NEW_CHAT_LINE, "turn note " + CANARY)),
+        )
+        for code, returncode, lines in fixtures:
+            with self.subTest(code=code):
+                delivery = self.server(agy(returncode, *lines))
+                self.assertEqual(delivery.code, code)
+                self.assertNotIn(CANARY, json.dumps(WR.asdict(delivery)))
+                answer = self.mac(agy(returncode, *lines))
+                self.assertEqual(answer["delivery"]["code"], code)
+                self.assertNotIn(CANARY, json.dumps(answer))
+
+    def test_capture_closes_every_descriptor(self) -> None:
+        def raises(exc):
+            def run(argv, **kwargs):
+                raise exc
+
+            return run
+
+        runners = (
+            ("sign-in", agy(1, *SIGNIN_LINES)),
+            ("success", agy(0)),
+            ("timeout", raises(subprocess.TimeoutExpired(["agy"], timeout=10))),
+            ("no exec", raises(FileNotFoundError("agy"))),
+            ("other", raises(RuntimeError("x"))),
+        )
+        self.server(agy(0))  # the lock file and folders exist before the count
+        before = open_fds()
+        for name, runner in runners:
+            with self.subTest(name):
+                self.server(runner)
+                self.assertEqual(open_fds(), before)
+        names = sorted(p.name for p in (AGW.state_dir(self.env) / "locks").iterdir())
+        self.assertEqual(names, ["session-%s.lock" % SID_VALID])
+        self.assertEqual(list(self.valid_project.iterdir()), [])
+
+    def test_capture_failure_runs_nothing(self) -> None:
+        before = open_fds()
+        calls: list = []
+        with mock.patch.object(AGW.os, "pipe", side_effect=OSError):
+            delivery = self.server(agy(0, calls=calls))
+        self.assertEqual(
+            (delivery.outcome, delivery.route, delivery.code),
+            ("failed", "resume", "resume-capture-OSError"),
+        )
+        with mock.patch.object(AGW.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("can't start new thread")
+            delivery = self.server(agy(0, calls=calls))
+        self.assertEqual(
+            (delivery.outcome, delivery.route, delivery.code),
+            ("failed", "resume", "resume-capture-RuntimeError"),
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(open_fds(), before)
+
+    def test_a_process_left_holding_the_pipe_is_not_waited_for(self) -> None:
+        # A real child that keeps agy's stderr open after agy itself has exited:  the answer comes
+        # after the short wait, from what was read by then, and the child is never blocked.
+        held: list = []
+        tails: list = []
+        real_tail = AGW._StderrLines
+
+        def make_tail(cap):
+            tails.append(real_tail(cap))
+            return tails[-1]
+
+        def run(argv, **kwargs):
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=kwargs["stderr"],
+            )
+            held.append(child)
+            self.addCleanup(child.wait)
+            self.addCleanup(child.kill)
+            os.write(kwargs["stderr"], (SIGNIN_LINES[0] + "\n").encode("utf-8"))
+            return subprocess.CompletedProcess(argv, 1)
+
+        # Runs last:  once the child is gone the drain thread reads the end and closes its side.
+        self.addCleanup(lambda: [tail._done.wait(10) for tail in tails])
+        with (
+            mock.patch.object(AGW, "OUTPUT_WAIT_SECONDS", 0.5),
+            mock.patch.object(AGW, "_StderrLines", side_effect=make_tail),
+        ):
+            started = time.monotonic()
+            delivery = self.server(run)
+            elapsed = time.monotonic() - started
+        self.assertEqual((len(held), len(tails)), (1, 1))
+        self.assertIsNone(held[0].poll())
+        self.assertFalse(tails[0]._done.is_set())  # still draining for the child
+        self.assertLess(elapsed, 10)
+        self.assertEqual(
+            self.four(delivery), ("refused", "resume", "resume-signin-required", "agy-exit-1")
+        )
+
+
+class TestAntigravityEndingsInTheRouter(TWR.Base):
+    """The new AG endings through the router itself, with the router tests' fixtures."""
+
+    def test_antigravity_failures_settle_once(self) -> None:
+        """A sign-in or quota failure is one final receipt (AFC-838):  no retry against the quota
+        or the missing sign-in, and no hold on the chat, so the next wake to it runs as usual."""
+        self.registry.rows = [TWR.row(TWR.SID_A, "AA", "Only chat")]
+        cases = (
+            ("resume-signin-required", False),
+            ("resume-signin-interactive", False),
+            ("resume-quota-exhausted", None),
+        )
+        for code, delivered in cases:
+            with self.subTest(code=code):
+                self.delivered.clear()
+                self.results = [WR.Delivery("refused", "resume", code=code, note="agy-exit-1")]
+                router = self.router()
+                router.never_ran = WR.NEVER_RAN | AGW.NEVER_RAN
+                wake_id = "w-" + code
+                router.accept(self.wake(wake_id))
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                receipt = self.done(wake_id)
+                self.assertEqual(receipt["status"], "dead")
+                self.assertIs(receipt["delivered"], delivered)
+                self.assertFalse(self.pending(wake_id).exists())
+                router.accept(self.wake(wake_id + "-next"))
+                self.drain(router)
+                self.assertEqual(
+                    self.delivered, [(TWR.SID_A, wake_id), (TWR.SID_A, wake_id + "-next")]
+                )
+                self.assertEqual(self.done(wake_id + "-next")["status"], "delivered")
+
+    def test_a_timeout_is_one_unknown_receipt(self) -> None:
+        """A resume past its timeout may have run its turn (AFC-838, PR 2320):  one final
+        `unknown` receipt with `delivered` null, never run again, and no hold on the chat."""
+        self.registry.rows = [TWR.row(TWR.SID_A, "AA", "Only chat")]
+        self.results = [WR.Delivery("unknown", "resume", code="resume-timeout")]
+        router = self.router()
+        router.never_ran = WR.NEVER_RAN | AGW.NEVER_RAN
+        router.accept(self.wake("w-timeout"))
+        self.drain(router)
+        receipt = self.done("w-timeout")
+        self.assertEqual((receipt["status"], receipt["code"]), ("unknown", "resume-timeout"))
+        self.assertIsNone(receipt["delivered"])
+        self.assertFalse(self.pending("w-timeout").exists())
+        router.accept(self.wake("w-timeout-next"))
+        self.drain(router)
+        self.assertEqual(
+            self.delivered, [(TWR.SID_A, "w-timeout"), (TWR.SID_A, "w-timeout-next")]
+        )
+        self.assertEqual(self.done("w-timeout-next")["status"], "delivered")
 
 
 class TestAntigravityBuilderIntegration(unittest.TestCase):

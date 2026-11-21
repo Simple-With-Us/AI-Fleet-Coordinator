@@ -55,6 +55,7 @@ import shutil
 import signal  # SIGKILL for the isolated pattern-check child only, never this process
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -275,11 +276,71 @@ def _prompt_terminal_available() -> bool:
     return True
 
 
+# Mirrored from simple_tools/fleet_bearer.py (TOKEN, SEAT_ALIASES):  this file stays self-contained.
+_SEAT_TOKEN = re.compile(r"(?:sbt_([a-z][a-z0-9-]{1,19})|gbb_([a-z][a-z0-9]{1,19}))_([A-Za-z0-9_-]{43})")
+_SEAT_ALIASES = {
+    "INSTINCT": "WISE",
+    "WISE-INSTINCT": "WISE",
+    "ECHO-INSTINCT": "WISE",
+    "MUSE-ASSIST": "MA",
+    "ROB": "MA",
+    "ROB-MUSE": "MA",
+}
+
+
+def _own_seat_file_bearer() -> str:
+    """The declared seat's own bearer from its canonical private file (~/.secrets/fleet-tools/<seat>,
+    the fleet convention), or "" when no seat is declared or the file is absent, malformed, unsafe or
+    another seat's.  The file is opened O_NOFOLLOW and every check runs on that one descriptor, so a
+    swapped symlink never redirects the read.  Held only in process memory, never logged."""
+    seats = {
+        _SEAT_ALIASES.get(env(name).strip().upper(), env(name).strip().upper())
+        for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
+    } - {""}
+    if len(seats) != 1:
+        return ""
+    stem = next(iter(seats)).lower()
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,19}", stem):
+        return ""
+    path = Path.home().joinpath(".secrets", "fleet-tools", stem)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    try:
+        handle = os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        return ""
+    try:
+        with handle:
+            info = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+                or info.st_nlink != 1
+                or info.st_size > 256
+            ):
+                return ""
+            raw = handle.read(257).decode("ascii").strip()
+    except (OSError, UnicodeError):
+        return ""
+    match = _SEAT_TOKEN.fullmatch(raw)
+    if not match:
+        return ""
+    file_seat = (match[1] or ("gb-" + match[2])).lower()
+    return raw if file_seat == stem else ""
+
+
 def remote_bearer() -> str:
-    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER from the environment (automation), otherwise one
+    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER from the environment (automation), then the
+    declared seat's canonical file (~/.secrets/fleet-tools/<seat>), otherwise one
     hidden prompt on the controlling terminal.  The answer is held only in process memory for the
     session - never an argument, history, a file this tool writes or a log line."""
     v = env(REMOTE_BEARER_ENV)
+    if not v:
+        v = _own_seat_file_bearer()
     if not v and _prompt_terminal_available():
         try:
             with warnings.catch_warnings():
@@ -2105,8 +2166,11 @@ def _publish_path_check(path: str) -> None:
     refuses the first batch like the last, so it cannot leave a partial chain."""
     if _PUBLISH_PATH.fullmatch(path) is None:
         die(f"{path!r} is not a repo path the relay accepts", EXIT_USAGE)
-    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
-        die(f"{path!r} is a workflow path;  publish cannot write it", EXIT_USAGE)
+    # Actual workflow files use the same hosted batch route as other files.  The relay
+    # checks this seat's workflows:write ceiling and mints that permission only when
+    # needed.  Never mistake the directory entries themselves for writable files.
+    if path in (".github", ".github/workflows"):
+        die(f"{path!r} is a workflow directory, not a writable file", EXIT_USAGE)
 
 
 def _publish_payload(repo: str, branch: str, message: str, number: int, count: int, batch) -> dict:
@@ -2133,6 +2197,10 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         die("name at least one --file", EXIT_USAGE)
     _repo_url(a.repo)
     batches = _publish_batches(files)
+    # A workflow permission refusal must reject the whole operation, not arrive
+    # after earlier ordinary-file batches committed. Keep workflow publishes atomic.
+    if len(batches) > 1 and any(path.startswith(".github/workflows/") for path, _ in files):
+        die("workflow publish must fit one atomic batch; no write was sent", EXIT_USAGE)
     # Every commit is checked before the first is sent, so a bad path or a flagged file in a later batch cannot leave a
     # partial publish on the branch.  One batch's base64 payload exists at a time, so a large publish does not
     # hold the whole encoded set in memory.
@@ -2612,7 +2680,7 @@ def _push_tree_files(repo_dir: str, base_tree: str, tree: str, remote_blobs, bea
             reasons.append(f"{shown} is not a path the relay accepts (letters, digits and . _ / + @ ~ - only)")
             continue
         if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
-            reasons.append(f"{shown} is a workflow path;  the relay refuses workflow files")
+            reasons.append(f"{shown} is a workflow path;  git-object push refuses it (full-file publish uses separate workflow permission checks)")
             continue
         _, out = _local_git(repo_dir, ["cat-file", "-s"], operands=(blob,))
         size = int(out.decode("ascii", "replace").strip() or -1)

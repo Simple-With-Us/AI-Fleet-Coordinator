@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from simple_tools.operator_github import Broker, CallerPolicy, Refused
 from simple_tools.operator_github_policy import (
@@ -83,7 +84,7 @@ class PolicyTests(unittest.TestCase):
             router=Router(),
             bot_identity=lambda slug: {'login': slug + '[bot]', 'id': 7},
             enabled=True,
-            nonce_ledger=NonceLedger(tempfile.mkdtemp()),
+            nonce_ledger=NonceLedger(Path(tempfile.mkdtemp()).resolve()),
         )
 
         nonces = iter('%.64x' % i for i in range(1, 20))

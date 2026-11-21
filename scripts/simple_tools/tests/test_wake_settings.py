@@ -76,9 +76,49 @@ class Registered(Settings):
         self.assertEqual(backoff, WR.ROUTER_DEFAULTS["retry_backoff"])
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
+    def test_turn_max_wakes_is_a_registered_router_knob(self) -> None:
+        # AFC-831:  most wakes one idle turn may carry for one chat;  1 is off.
+        self.assertEqual(WS.INT_KNOBS["turn_max_wakes"], "WAKE_ROUTER_TURN_MAX_WAKES")
+        spec = BY_NAME["WAKE_ROUTER_TURN_MAX_WAKES"]
+        self.assertEqual((spec.kind, spec.default, spec.minimum, spec.maximum), ("int", 1, 1, 8))
+        self.assertTrue(spec.requires_explicit)
+        self.assertEqual((spec.narrower, spec.local, spec.folder), ("min", "narrow", WS.FOLDER))
+        self.assertEqual(spec.default, WR.ROUTER_DEFAULTS["turn_max_wakes"])
+        self.assertEqual(spec.maximum, WR.TURN_MAX_WAKES)
+
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
+        import importlib
+
+        from simple_tools import wake_service as SVC
+
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
-        self.assertEqual(set(CW.DEFAULTS), handled)
+        defaults: set[str] = set()
+        # The one platform table is the list of modules, so a platform's module lands with its
+        # own facts and this test never has to name a module.
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            defaults |= set(getattr(module, "DEFAULTS", {}))
+        self.assertLessEqual(defaults, handled)
+        # A host fact no module on this host carries is fine:  its platform's module lands with
+        # it.  A knob no module carries is not:  that is a tunable nothing can read.
+        self.assertLessEqual(handled - defaults, set(WS.HOST_FACTS))
+
+    def test_a_platforms_own_facts_reach_the_delivery(self) -> None:
+        from simple_tools import minimax_wake as MW
+
+        self.local(
+            workspace="/opt/work",
+            mcode_bin="/opt/bin/mcode",
+            mcode_model="minimax/Another-Served-Model",
+        )
+        settings = WS.WakeSettings(MW.SEAT, MW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertEqual(settings["workspace"], "/opt/work")
+        self.assertEqual(settings["mcode_bin"], "/opt/bin/mcode")
+        self.assertEqual(settings["mcode_model"], "minimax/Another-Served-Model")
 
     def test_every_router_knob_and_only_those_live_in_its_own_folder(self) -> None:
         names = {*WS.INT_KNOBS.values(), WS.DELIVERY_ENABLED, WS.DELIVERY_SEATS}
@@ -440,6 +480,30 @@ class LocalFile(Settings):
                 with self.assertRaises(SystemExit):
                     self.loaded()
 
+    def test_a_platform_this_host_does_not_serve_still_owns_its_names(self) -> None:
+        """The shared file is one file, and one seat's key never refuses it for the others.
+
+        A platform whose module cannot be imported here still owns the names the file may
+        carry, so the union holds every name every platform owns:  the test makes every
+        platform's module fail to import and holds that each platform's own names are in the
+        union anyway.  A platform whose module is not on this host at all is covered by the
+        host facts, which are here for every platform.
+        """
+        def missing(name, *args, **kwargs):
+            raise ImportError("not installed on this host")
+
+        with mock.patch.object(SVC.importlib, "import_module", side_effect=missing):
+            values = SVC.file_defaults()
+        for seat, entry in sorted(SVC.BUILDERS.items()):
+            try:
+                module = importlib.import_module(entry.module)
+            except ImportError:
+                continue
+            for name in getattr(module, "DEFAULTS", {}):
+                self.assertIn(name, values, "%s owns %s" % (seat, name))
+        for name in WS.HOST_FACTS:
+            self.assertIn(name, values)
+
     def test_a_named_file_that_is_missing_stops_the_router(self) -> None:
         settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path, required=True)
         with self.assertRaises(SystemExit):
@@ -740,7 +804,8 @@ class Wiring(Settings):
             served = SVC.build({"HOME": str(self.home)}, importer=importer)
         self.assertEqual(served.seats.not_installed, {"CODEX", "MC", "ZC"})
         self.assertEqual(
-            (served.seats.down, sorted(served.seats.routers)), ({}, ["AG", CW.SEAT, "GROK"])
+            (served.seats.down, sorted(served.seats.routers)),
+            ({}, ["AG", CW.SEAT, "GROK", "MM"]),
         )
         status, health = served.seats.health()
         self.assertEqual(status, 200)
@@ -781,7 +846,7 @@ class Wiring(Settings):
                 with mock.patch.object(CW, "state_dir", return_value=self.state):
                     served = SVC.build({"HOME": str(self.home)}, importer=importer)
                 self.assertEqual(served.seats.down, {"MC": reason})
-                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK", "MM"])
                 status, health = served.seats.health()
                 self.assertEqual(status, 503, "a module that is there and broken is a fault")
                 self.assertEqual(
@@ -793,7 +858,9 @@ class Wiring(Settings):
                 claude = served.seats.routers[CW.SEAT]
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)
-                self.assertEqual([m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(
+                    [m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK", "MM"]
+                )
 
     def test_a_non_prod_environment_stops_the_service(self) -> None:
         os.environ[source.ENV_NAMES[0]] = "dev"
@@ -1188,6 +1255,8 @@ class OneService(Settings):
                        r"^sess_[A-Za-z0-9._-]{1,123}$"),
                 "GROK": ("grok-leader", "simple_tools.grok_wake", "router_platform",
                          "deliver_request", uuid),
+                "MM": ("minimax", "simple_tools.minimax_wake", "router_platform",
+                       "deliver_request", r"^mvs_[0-9a-f]{32}$"),
             },
         )
 

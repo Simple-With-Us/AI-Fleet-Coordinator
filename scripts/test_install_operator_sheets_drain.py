@@ -37,15 +37,26 @@ FAKE_SA = json.dumps(
         "private_key": PEM_BEGIN + "\nfixture-key-body\n" + PEM_END + "\n",
     }
 )
-MODULES = ("operator_sheets_export.mjs", "operator_sheets_google.mjs", "operator_sheets_drain.mjs")
+MODULES = (
+    "operator_sheets_export.mjs",
+    "operator_sheets_google.mjs",
+    "operator_sheets_drain.mjs",
+    "thread_registry_export.mjs",
+    "registry_export_reader.mjs",
+)
 REVIEWED_DRAIN = "export function pacedAdapter() {}\nexport const RUN_DEADLINE_MS = 1;\n"
 REVIEWED_TIMER = "[Timer]\nOnUnitInactiveSec=5min\n"
 
+# The thread rows payload (thread_registry export-rows) is an object, so its default sits in a
+# variable:  braces inside ${VAR-default} would end the expansion early.
 DOCKER_STUB = """#!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
+threads_default='{"tab": "Zulip Threads", "rows": [["10:fixture topic"]]}'
 case "$*" in
   *pending-outbox*) printf '%s\\n' "${STUB_PENDING_OUT-[]}"; exit "${STUB_PENDING_EXIT:-0}" ;;
   *export-attempts*) printf '%s\\n' "${STUB_ATTEMPTS_OUT-[]}"; exit "${STUB_ATTEMPTS_EXIT:-0}" ;;
+  *thread_registry*)
+    printf '%s\\n' "${STUB_THREADS_OUT-$threads_default}"; exit "${STUB_THREADS_EXIT:-0}" ;;
 esac
 exit 0
 """
@@ -81,7 +92,7 @@ def fake_core(found=None, error=None):
         calls.append({"project": project, "path": path, "env": env, "token": token, "names": names})
         if error:
             raise SecretsError(error)
-        return {"OPERATOR_GOOGLE_SHEETS_SA": FAKE_SA} if found is None else found
+        return {"GOOGLE_SHEETS_SA": FAKE_SA} if found is None else found
 
     core = types.SimpleNamespace(
         SecretsError=SecretsError,
@@ -153,13 +164,14 @@ class ShellTests(unittest.TestCase):
             self.assertRegex(
                 out, r"(would install|unchanged) /usr/local/lib/operator-sheets-drain/" + name
             )
-        self.assertIn("Fleet-OPS prod /operator-thread-registry", out)
+        self.assertIn("Fleet-OPS prod /google-sheets-sa", out)
         self.assertIn("the token is not read in a dry run", out)
         self.assertIn("OPERATOR_SHEETS_WORKBOOK_ID=workbook_FIXTURE-1", out)
         self.assertIn("OPERATOR_SHEETS_SESSIONS_SHEET_ID=20964676", out)
         self.assertIn("OPERATOR_SHEETS_EVENTS_SHEET_ID=1449318075", out)
         self.assertIn("pending-outbox", out)
         self.assertIn("export-attempts", out)
+        self.assertIn("thread_registry export-rows", out)
         self.assertRegex(
             out, r"(would install|unchanged) /etc/systemd/system/operator-sheets-drain.timer"
         )
@@ -298,6 +310,15 @@ class StubbedInstallTests(unittest.TestCase):
         calls = self.calls()
         self.assertTrue(any("pending-outbox" in c and "--limit 1" in c for c in calls))
         self.assertTrue(any("export-attempts" in c and "--limit 1" in c for c in calls))
+        self.assertIn(
+            "docker exec -w /app/scripts eavesdropper python3 -m simple_tools.thread_registry"
+            " export-rows",
+            calls,
+        )
+        self.assertIn(
+            "preflight ok: thread_registry export-rows returned 1 thread row(s)", result.stdout
+        )
+        self.assertNotIn("fixture topic", result.stdout + result.stderr)  # counts, never rows
         self.assertIn("systemctl daemon-reload", calls)
         self.assertFalse(any(c.startswith(("systemctl enable", "systemctl start")) for c in calls))
         self.assertIn("test mode: skipped the Infisical read", result.stdout)
@@ -307,6 +328,53 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertNotIn("installed /", again.stdout)
         self.assertNotIn("systemctl daemon-reload", self.calls())
+
+    def test_actual_installed_exporter_and_drain_import_the_complete_module_closure(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        agent = self.repo / "scripts" / "simple_tools"
+        for name in MODULES:
+            shutil.copyfile(HERE / "simple_tools" / name, agent / name)
+        git(self.repo, "add", "scripts/simple_tools")
+        git(self.repo, "commit", "-q", "-m", "actual module closure fixture")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        program = """
+const thread = await import(process.argv[1]);
+const drain = await import(process.argv[2]);
+if (typeof thread.drainThreadRows !== 'function' ||
+    typeof drain.drainOnce !== 'function' || typeof drain.pacedAdapter !== 'function') {
+  throw new Error('installed module closure incomplete');
+}
+"""
+
+        def installed_import():
+            return subprocess.run(
+                [
+                    node,
+                    "--input-type=module",
+                    "-e",
+                    program,
+                    (self.lib / "thread_registry_export.mjs").as_uri(),
+                    (self.lib / "operator_sheets_drain.mjs").as_uri(),
+                ],
+                cwd=self.tmp,
+                env={"PATH": os.defpath, "HOME": str(self.tmp)},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+        imported = installed_import()
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        # The real copied exporter must depend on the adapter the installer supplied.
+        (self.lib / "registry_export_reader.mjs").unlink()
+        missing = installed_import()
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("ERR_MODULE_NOT_FOUND", missing.stderr)
+        self.assertIn("registry_export_reader.mjs", missing.stderr)
 
     def test_a_drifted_mode_is_repaired(self):
         self.assertEqual(self.run_install().returncode, 0)
@@ -352,6 +420,24 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertIn("pending-outbox", result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         self.assertFalse((self.units / "operator-sheets-drain.service").exists())
+
+    def test_a_failing_thread_preflight_warns_and_still_installs(self):
+        # AFC-823:  the Zulip Threads read is not something the Sessions and Events drain needs,
+        # so an image without it, or an unreadable answer, is a warning and the install goes on.
+        for env in (
+            {"STUB_THREADS_OUT": "usage: thread_registry: bad choice", "STUB_THREADS_EXIT": "2"},
+            {"STUB_THREADS_OUT": "[1, 2, 3]"},  # JSON, but not the payload object
+        ):
+            with self.subTest(env=env):
+                result = self.run_install(STUB_TIMER_ACTIVE="1", **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("warning: thread_registry export-rows", result.stderr)
+                self.assertIn("the Sessions and Events drain is not affected", result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertTrue((self.units / "operator-sheets-drain.service").is_file())
+                self.assertTrue((self.lib / "thread_registry_export.mjs").is_file())
+                # The timer it stopped is started again, as on any successful install.
+                self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
 
     def test_a_dirty_checkout_is_refused_before_any_change(self):
         (self.repo / "scripts" / "simple_tools" / "operator_sheets_google.mjs").write_text("edit\n")
@@ -433,10 +519,10 @@ class PythonBlockTests(unittest.TestCase):
             [
                 {
                     "project": "00000000-0000-4000-8000-000000000000",
-                    "path": "/operator-thread-registry",
+                    "path": "/google-sheets-sa",
                     "env": {},  # no caller variable can redirect the API or widen the folders
                     "token": FAKE_TOKEN,
-                    "names": ["OPERATOR_GOOGLE_SHEETS_SA"],
+                    "names": ["GOOGLE_SHEETS_SA"],
                 }
             ],
         )
@@ -450,7 +536,7 @@ class PythonBlockTests(unittest.TestCase):
         core, _ = fake_core(found={})
         with self.assertRaises(self.block.InstallError) as caught:
             self.block.fetch_service_account(core, FAKE_TOKEN, {})
-        self.assertIn("OPERATOR_GOOGLE_SHEETS_SA is not in Fleet-OPS prod", str(caught.exception))
+        self.assertIn("GOOGLE_SHEETS_SA is not in Fleet-OPS prod", str(caught.exception))
 
     def test_service_account_shape_is_checked_without_echoing_it(self):
         self.assertEqual(self.block.check_service_account(FAKE_SA), FAKE_SA.encode())

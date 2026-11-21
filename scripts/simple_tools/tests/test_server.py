@@ -32,6 +32,7 @@ from simple_tools import config as C
 from simple_tools import launchd
 from simple_tools import live as L
 from simple_tools import service_identity as S
+from simple_tools import wake_service as WS
 from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
 from simple_tools.tests.listener_harness import ListenerHarness, SYNTHETIC_STREAM_ID
@@ -58,6 +59,9 @@ MAC_CLI_SEATS = [
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
 ]
 MAC_CLI_DISABLED = ["AMP"]
+# The seats the one wake router serves:  the platform table (the one table on both hosts) says
+# which seats have a platform module here, and the router can serve only those.
+ROUTER_SEATS = WS.installed_seats()
 # A lone seat (ZC) naming the router's bearer in another role (OPS-1048):  its error and reason.
 LONE_BEARER_ERROR = (
     "environment variable WAKE_ROUTER_KEY is the wake router's bearer and may be named only as a "
@@ -465,13 +469,13 @@ class ConfigTests(unittest.TestCase):
         # exports it for every server seat, listed or not;  a seat that names another seat's token in
         # any role would send it to its own routine or use it as its own Zulip credential.
         for owner, other in (("CLAUDE", "ZC"), ("ZC", "CLAUDE")):
-            token = C.outgoing_webhook_token_env(owner)
+            webhook_env = C.outgoing_webhook_token_env(owner)
             misuses = {
                 "routine key_env": self.router_routine(
-                    "OTHER_ROUTINE_URL", key_env=token, auth="header"
+                    "OTHER_ROUTINE_URL", key_env=webhook_env, auth="header"
                 ),
-                "routine url_env": self.router_routine(token),
-                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % token,
+                "routine url_env": self.router_routine(webhook_env),
+                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % webhook_env,
             }
             listings = {"listed": 'outgoing_webhook_seats = ["%s"]' % owner, "not listed": ""}
             for role, misuse in misuses.items():
@@ -479,7 +483,7 @@ class ConfigTests(unittest.TestCase):
                     with self.subTest(owner=owner, role=role, owner_is=listing):
                         sections = {owner: self.router_routine("BEARER_ROUTINE_URL"), other: misuse}
                         cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"], daemon=daemon)
-                        self.assert_both_dropped(cfg, token)
+                        self.assert_both_dropped(cfg, webhook_env)
 
     def test_a_seat_whose_routine_reads_its_own_outgoing_webhook_token_falls_back_to_inbox(
         self,
@@ -1336,7 +1340,7 @@ class PartitionTests(ServerHarness):
 
     def test_a_seat_marked_for_the_other_instance_refuses_start(self) -> None:
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n\n'
             '[seat.CODEX]\nbot = "Codex"\ninstance = "server"\n'
         )
         err = self.refused(self.env())
@@ -1351,7 +1355,7 @@ class PartitionTests(ServerHarness):
     def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
         # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
         # server since the one-listener cutover (owner, Tue, Nov 10).
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n')
         err = self.refused(self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.assertIn(
             "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
@@ -1518,7 +1522,7 @@ class PartitionTests(ServerHarness):
         # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
         # server since the one-listener cutover (owner, Tue, Nov 10).
         daemon = self.started(env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
         self.assertNotIn("CLAUDE", daemon.config.seats)
@@ -1604,7 +1608,26 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            if seat == "ZC":
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is not None and routine.key_env == C.ROUTER_BEARER_ENV:
+                # A seat the sample routes at the router names the router's front and the one
+                # bearer the router checks.  A seat that has a platform module is not routed at
+                # the router yet, though:  it moves there only after its own path is deployed and
+                # verified live, and until then it keeps the binding it has.
+                self.assertIn(
+                    seat, ROUTER_SEATS, "%s is routed at the router with no module" % seat
+                )
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "%s wakes at the one router" % seat,
+                )
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("%s_ROUTINE_URL" % seat, C.ROUTER_BEARER_ENV, "bearer", "Authorization", "POST"),
+                    "%s names the router's front and the router's bearer" % seat,
+                )
+            elif seat == "ZC":
                 # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
                 # bearer, so it is the one Mac CLI seat with a routine.
                 self.assertEqual(
@@ -1959,9 +1982,10 @@ class ServerInitCredentialSourceTests(ServerHarness):
         self.director = self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", self.director_key)
 
     def director_env(self, **extra: str | None) -> dict[str, str]:
+        director_key = self.director_key
         return self.server_env(
             ZULIP_GB_DIRECTOR_EMAIL=DIRECTOR_EMAIL,
-            ZULIP_GB_DIRECTOR_API_KEY=self.director_key,
+            ZULIP_GB_DIRECTOR_API_KEY=director_key,
             **extra,
         )
 

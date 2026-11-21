@@ -17,23 +17,28 @@ naming another would move the chat.  The holder check fails closed:  a session s
 cannot be read well enough to say no process holds the chat is `busy`, and no headless run
 starts.
 
-While a process does hold the chat, the answer is `busy` too, and nothing is delivered.
-Waking a held chat in place has no supported route today, measured on Muse 1.4.15:
-`muse session-message send` from outside a Muse session answers `sender_unverified`
-(the channel verifies its sender as a Muse session, and this delivery runs under the ssh
-forced command, as no session), and a headless run against a held chat would be a second
-writer on one session.  The experimental MSP method `turn/start` on an attached host is
-the candidate route;  until it is built and proven, a held chat's wake waits, `busy`, and
-lands as a headless turn in the same session once the chat is let go.  It is never refused
-for being live:  the turn has not run, and a later try can run it.
+While a process does hold the chat, the wake is parked for it and the answer is `busy`
+(the router waits on `busy` without using up an attempt):  waking a held chat in place
+has no direct route, measured on Muse 1.4.15 (`muse session-message send` from outside a
+Muse session answers `sender_unverified`, because the channel verifies its sender as a
+Muse session and this delivery runs under the ssh forced command, as no session;  a
+headless run against a held chat would be a second writer on one session;  the chat's
+own socket speaks the peer-message hello and nothing else).  Instead the parked wake is
+handed over by the chat's own UserPromptSubmit hook, as prompt context on its next turn,
+and a later retry finds the wake id consumed (or in the transcript) and answers `sent`
+without running anything twice.  A held chat's wake is never refused for being live:
+the turn has not run, and parking uses up no attempt.
 
 The registry is asked again immediately before delivering, while the per-session lock is
 held, as the router did before sending.  A letter that no longer holds this session at this
-generation, or is closed, is `refused`.  A registry that cannot be read, and a live row that
-cannot be read as a well-formed Muse Code chat of this seat, are `failed` -- nothing has run,
-so a bounded retry is safe, and neither is proof that the letter was released.  `failed` is
-used only there and where the delivery command itself never started;  once a command may
-have run a turn, any failure is `refused` and final.
+generation, or is closed, is `refused`.  A registry that cannot be read is `busy`:  nothing
+has run, and the outage may outlast the wake's attempts, so the retry spends none of them.
+A host with no registry address or key is `failed`, because a retry does not fix a
+deployment fault.  A live row that cannot be read as a well-formed Muse Code chat of this
+seat is `failed` too -- nothing has run, so a bounded retry is safe, and neither is proof
+that the letter was released.  `failed` is used only there and where the delivery command
+itself never started;  once a command may have run a turn, any failure is `refused` and
+final.
 
 Host facts come from this host only:  the session store under this user's Muse data root
 and the `muse` binary on this host's PATH.  Delivery settings are the router's, passed to
@@ -49,6 +54,15 @@ The wire is the router's envelope (see `claude_wake.py`):  a request
 `{"platform", "target": {"session_id", "letter", "host", "generation"}, "wake": <Wake>}` and
 an answer that repeats `wake_id`, `session_id` and `generation` exactly, plus the delivery.
 A request that names no generation to check against is not this module's to deliver.
+
+Turns (wake_router, Turns).  This module takes them (`TURNS`), and only by the Mac
+dispatcher's mark:  a request marked `turn_dispatch` puts its valid riders into the same one
+headless run, as the router's turn text with this module's prefix, given the resume limit once
+per wake it carries, and the answer echoes them:
+every rider as carried once the run may have started, none when it never started, and every
+one as confirmed when the turn id shows up in the transcript.  `router_platform` declares
+`deliver_turn`, by the same routes as `deliver`.  A request without the mark is delivered
+exactly as before.
 
 Python 3.11+, standard library only.
 """
@@ -71,6 +85,7 @@ from typing import Any, TextIO
 from . import claude_wake as CW
 from . import muse_session_rename as MR
 from . import platform_letter_muse as PLM
+from . import wake_pending as WP
 from . import wake_router as WR
 
 SEAT = "MC"
@@ -82,8 +97,12 @@ LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
 BAD_REQUEST = "bad-request"
 STDIN_LIMIT = 16 * 1024
-TAIL_BYTES = 256 * 1024
 CONFIRM_POLL_SECONDS = 1.0
+#: The transcript is scanned newest-first in chunks of this size:  a live transcript can
+#: record its cwd far from the tail, so no tail window can decide a missing cwd.
+_SCAN_CHUNK = 1 << 20
+#: A line cut by a chunk edge is carried into the next pass whole, so no overlap
+#: allowance is needed:  a chunk boundary only ever splits lines, never records.
 
 #: This seat's settings for the one-router service:  every router key, plus this platform's
 #: own.  `wake_service` refuses a module whose DEFAULTS miss a router key (`bad-defaults`).
@@ -98,7 +117,11 @@ DEFAULTS: dict[str, Any] = {
 
 # The router's own fixed text, as `command_platform` uses:  only the wake id, the router's
 # link note and the message id can vary, so no Zulip-authored field reaches the prompt.
-WAKE_TEXT = "[MC wake] " + WR.COMMAND_TEXT
+PREFIX = "[MC wake] "
+WAKE_TEXT = PREFIX + WR.COMMAND_TEXT
+#: This module takes turns (wake_router, Turns):  the Mac dispatcher reads this before it hands
+#: a turn's offer to `deliver_request`.
+TURNS = WR.TURN_CONTRACT
 
 Runner = Callable[..., Any]
 Resolve = Callable[[Mapping[str, str], str], Any]
@@ -230,15 +253,26 @@ def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """`env` with the registry's address and key:  a forced ssh command has no login profile."""
+    """`env` with the registry's address and key:  a forced ssh command has no login profile.
+
+    The loader is read once and the mapping it gives is the one every call and every
+    classification uses, so the host is judged on the configuration it really has.  A loader
+    that cannot be read leaves the environment's own values in place."""
     from . import platform_letter as PL
 
-    return PL.with_registry_env(dict(env))
+    merged = dict(env)
+    try:
+        merged = PL.with_registry_env(merged)
+    except Exception:  # noqa: BLE001 - the host's own configuration still decides
+        pass
+    return merged
 
 
-def _resolve(env: Mapping[str, str], letter: str) -> Any:
+def _resolve(registry_env: Mapping[str, str], letter: str) -> Any:
+    """The registry's answer for one letter, made on the registry environment the caller
+    built."""
     return WR.registry_api.call(
-        _registry_env(env),
+        registry_env,
         "resolve",
         {"platform": PLATFORM, "letter": letter},
         timeout=WR.REGISTRY_TIMEOUT,
@@ -247,13 +281,28 @@ def _resolve(env: Mapping[str, str], letter: str) -> Any:
 
 def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.Delivery | None:
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run
-    yet, so a registry that cannot be read is `failed` and is tried again."""
+    yet, so a registry that cannot be read is `busy` and is tried again without spending an
+    attempt."""
+    # The registry environment is the one the call uses and the one the host is judged on:
+    # the shared loader file on the Mac, the knobs on the server.  One mapping, built once,
+    # so a call and the classification that follows it are made on the same configuration.
+    registry_env = _registry_env(env)
+    if WR.registry_loader_lost(env, registry_env):
+        # The loader holds the registry's address and the mapping lost it:  the loader
+        # could not be read, so the registry's identity is unverifiable here and the
+        # delivery fails closed with the source named.  A loader that was read and holds
+        # no address is a host that is not configured, and `registry_failure` answers that
+        # one with the variable that is missing.  A registry that was configured and later
+        # became unreachable is the outage, and it is `busy`.
+        return WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
     try:
-        answer = resolve(env, target.letter)
+        answer = resolve(registry_env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        # The host's own configuration decides:  a host with no address or key fails
+        # closed, and a host that is configured answers the outage and spends no attempt.
+        return WR.registry_failure(registry_env)
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code="registry-unavailable")
+        return WR.registry_delivery(answer)
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed MC chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
@@ -375,26 +424,65 @@ def _list(path: str) -> list[str]:
         raise StoreUnreadable(str(exc)) from exc
 
 
+def _record_cwd(record: object) -> str:
+    """The working directory a transcript record asserts, or "" when it asserts none.
+    Only the schema-defined fields count:  a `cwd` mentioned inside a string value (tool
+    output, quoted chat text, a pasted snippet) is content, never an assertion, so raw
+    text matching must not decide this."""
+    if not isinstance(record, dict):
+        return ""
+    cwd = record.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return cwd
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        inner = payload.get("record")
+        if isinstance(inner, dict):
+            cwd = inner.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return ""
+
+
 def _session_cwd(session_dir: str) -> str:
-    """The chat's working directory, from the last `cwd` its transcript names in its tail, or
-    "" when it names none.  A transcript that cannot be read raises StoreUnreadable:  an
+    """The chat's working directory, from the newest `cwd` its transcript asserts, or ""
+    when it asserts none.  The scan runs newest-first in bounded chunks and stops at the
+    first assertion, so a transcript whose cwd sits far from the tail costs one backward
+    walk, not a tail window that can miss it;  proving no cwd exists still reads the
+    whole file, which no window can avoid.  A line cut by a chunk edge is carried into
+    the next pass whole.  A transcript that cannot be read raises StoreUnreadable:  an
     unknown cwd is a doubt that fails closed, never the absence a refusal is built on."""
     path = os.path.join(session_dir, "session.jsonl")
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - TAIL_BYTES))
-            tail = fh.read().decode("utf-8", "replace")
+            end = fh.tell()
+            carry = b""
+            while end > 0:
+                start = max(0, end - _SCAN_CHUNK)
+                fh.seek(start)
+                buf = fh.read(end - start) + carry
+                lines = buf.split(b"\n")
+                if start > 0:
+                    carry = lines[0]
+                    candidates = lines[1:]
+                else:
+                    carry = b""
+                    candidates = lines
+                for raw in reversed(candidates):
+                    if not raw.strip():
+                        continue
+                    try:
+                        record = json.loads(raw.decode("utf-8"))
+                    except ValueError:
+                        continue
+                    cwd = _record_cwd(record)
+                    if cwd and os.path.isabs(cwd):
+                        return cwd
+                end = start
     except OSError as exc:
         raise StoreUnreadable(str(exc)) from exc
-    found = re.findall(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', tail)
-    if not found:
-        return ""
-    try:
-        cwd = json.loads('"%s"' % found[-1])
-    except ValueError:
-        return ""
-    return cwd if isinstance(cwd, str) else ""
+    return ""
 
 
 def _child_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -458,13 +546,44 @@ def _via_exec(
     wake: WR.Wake,
     runner: Runner,
     sleep: Callable[[float], None] = time.sleep,
+    *,
+    riders: tuple[WR.Wake, ...] = (),
+    turn_id: str = "",
+    echo: dict[str, Any] | None = None,
 ) -> WR.Delivery:
-    """One headless prompt in an unheld chat, in that same session."""
+    """One headless prompt in an unheld chat, in that same session.  With riders it is the
+    router's turn text, run for the resume limit once per wake it carries, and `echo` records
+    what the prompt carried and what the chat recorded:  every rider once the run may have
+    started, none when it never did."""
     try:
         resume_timeout = int(config["resume_timeout_seconds"])
         confirm_seconds = int(config["confirm_seconds"])
     except (KeyError, TypeError, ValueError):
         return WR.Delivery("failed", "exec", code="settings-unreadable")
+    transcript = os.path.join(session_dir, "session.jsonl")
+    if _wake_seen(transcript, wake.wake_id) and not riders:
+        # Singles only:  a turn's prompt also carries the head's id, so a turn request
+        # must reach the turn-id check below, which is the one that reports the riders.
+        return WR.Delivery("sent", "exec", ack="confirmed")
+    if riders and echo is not None:
+        # A rider the hook already handed over must not run again inside this prompt.
+        # Drop a trailing consumed run (carried stays a prefix of the offer);  when a
+        # consumed rider is not trailing, drop them all and run the head alone, so no
+        # rider's text runs twice.  Dropped riders go back to pending:  the consumed
+        # one closes through the hook path on its own retry.
+        try:
+            state = WP.state_dir(_pending_home(env))
+            bad = {r.wake_id for r in riders if WP.is_consumed(state, r.wake_id)}
+        except (OSError, ValueError):
+            bad = set()
+        if bad:
+            kept = list(riders)
+            while kept and kept[-1].wake_id in bad:
+                kept.pop()
+            if any(r.wake_id in bad for r in kept):
+                kept = []
+            if len(kept) != len(riders):
+                riders = tuple(kept)
     binary = _binary(env, config)
     if not binary:
         return WR.Delivery("failed", "exec", code="muse-not-found")
@@ -482,12 +601,31 @@ def _via_exec(
         return WR.Delivery("failed", "exec", code="store-unreadable")
     if not stat.S_ISDIR(info.st_mode):
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
-    argv = [binary, "exec", "--session-id", session_id, wake_text(wake)]
+    text = WR.turn_text(PREFIX, wake, riders, turn_id) if riders else wake_text(wake)
+    argv = [binary, "exec", "--session-id", session_id, text]
     transcript = os.path.join(session_dir, "session.jsonl")
+    # A retry must not run a turn the transcript already recorded:  the turn id for a batched turn,
+    # the wake id for a single wake.  Either way the earlier run is the hand-over.
+    needle = turn_id if riders else wake.wake_id
+    if needle and _wake_seen(transcript, needle):
+        if riders and echo is not None:
+            # The transcript already holds this turn's prompt, which names every rider:  say
+            # so, or the router reads the echo as carrying nobody and delivers them again.
+            echo["carried"] = tuple(rider.wake_id for rider in riders)
+            echo["confirmed"] = echo["carried"]
+            try:
+                state = WP.state_dir(_pending_home(env))
+                for rider in riders:
+                    WP.mark_delivered(state, session_id, rider.wake_id)
+            except OSError:
+                pass
+        return WR.Delivery("sent", "exec", ack="confirmed")
     try:
         offset = os.path.getsize(transcript)
     except OSError:
         offset = 0
+    if echo is not None:
+        echo["carried"] = tuple(rider.wake_id for rider in riders)
     try:
         proc = runner(
             argv,
@@ -496,7 +634,7 @@ def _via_exec(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=resume_timeout,
+            timeout=resume_timeout * (1 + len(riders)),
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -504,20 +642,66 @@ def _via_exec(
         return WR.Delivery("refused", "exec", code="exec-timeout")
     except OSError as exc:
         # It never started:  the one failure here that is safe to try again.
+        if echo is not None:
+            echo["carried"] = ()
         return WR.Delivery("failed", "exec", code="exec-%s" % type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return WR.Delivery("refused", "exec", code="exec-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
-        if _seen_appended(transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep):
+        # The turn already ran:  a ledger failure must not turn this handoff into a retryable `failed`
+        # (the router would run the turn twice), so the mark is best-effort and the transcript stays
+        # the hand-over record.  Every carried wake is marked, so neither the head nor a rider is
+        # injected again afterwards.
+        try:
+            state = WP.state_dir(_pending_home(env))
+            WP.mark_delivered(state, session_id, wake.wake_id)
+            for rider in riders:
+                WP.mark_delivered(state, session_id, rider.wake_id)
+        except OSError:
+            pass
+        # A turn's text carries the turn id, as a single wake's carries its wake id.
+        needle = turn_id if riders else wake.wake_id
+        if _seen_appended(transcript, offset, needle, confirm_seconds, sleep=sleep):
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
             # `completed` would claim the turn finished, so this is `sent`, confirmed.
+            if riders and echo is not None:
+                echo["confirmed"] = echo["carried"]
             return WR.Delivery("sent", "exec", ack="confirmed")
         # It ran and may have done the work, but nothing in the chat proves it:  handed over,
         # never counted as delivered, and never retried.
         return WR.Delivery("sent", "exec", ack="unknown")
     # It started, so it may have run the turn before it exited:  never retried.
     return WR.Delivery("refused", "exec", code="exec-exit-%d" % proc.returncode)
+
+
+def _pending_home(env: Mapping[str, str]) -> str:
+    """The home directory the parked-wake spool resolves under:  this host user's own home only, never an
+    environment override, so the hook (which runs with a cleared environment) resolves the identical spool."""
+    return str(env.get("HOME") or os.path.expanduser("~"))
+
+
+def _wake_seen(transcript: str, wake_id: str) -> bool:
+    """Whether the wake id is already recorded in the transcript's tail:  one bounded,
+    non-waiting read.  The hook hands a parked wake over as prompt context, so a retry
+    that finds the id here must not run the turn again."""
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - _SCAN_CHUNK))
+            return wake_id.encode("utf-8") in fh.read()
+    except (OSError, ValueError):
+        return False
+
+
+def _handed_over(state: str, transcript: str, wake: WR.Wake) -> WR.Delivery | None:
+    """`sent` when this wake already reached the chat through the hook (its id consumed,
+    and confirmed when the transcript itself carries it), or None when it did not."""
+    if not WP.is_consumed(state, wake.wake_id):
+        return None
+    if _wake_seen(transcript, wake.wake_id):
+        return WR.Delivery("sent", "hook", ack="confirmed")
+    return WR.Delivery("sent", "hook", ack="unknown")
 
 
 def deliver_local(
@@ -529,11 +713,15 @@ def deliver_local(
     runner: Runner = subprocess.run,
     sleep: Callable[[float], None] = time.sleep,
     _locked: bool = False,
+    _turn: Mapping[str, Any] | None = None,
 ) -> WR.Delivery:
     """Deliver one wake to a Muse chat on this host.  Not knowing whether a process
-    holds it is `busy`, and a sub-agent's session is never a target.  `_locked` is for
+    holds it is `busy`, and a sub-agent's session is never a target.  A held chat gets
+    the wake parked for its next prompt and the same `busy`, and an already-handed-over
+    wake is `sent` without running anything twice.  `_locked` is for
     `deliver_request`, which already holds this session's lock:  taking it again on a
-    second file description would refuse itself."""
+    second file description would refuse itself.  `_turn` is a turn's, for `_via_exec`."""
+    turn = dict(_turn or {})
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
     chat_env = _chat_env(env, session_id)
@@ -546,13 +734,25 @@ def deliver_local(
         return WR.Delivery("failed", code="store-unreadable")
     if session_dir is None:
         return WR.Delivery("refused", code="no-such-session")
+    state = WP.state_dir(_pending_home(env))
+    transcript = os.path.join(session_dir, "session.jsonl")
+    if (handed := _handed_over(state, transcript, wake)) is not None:
+        return handed
     held = _holder(session_dir)
     if held is None:
         return WR.Delivery("busy", code="holder-unknown")
     if held:
-        return WR.Delivery("busy", code="chat-live")
+        if WP.park(state, session_id, wake.wake_id, wake_text(wake)):
+            return WR.Delivery("busy", code="chat-live-parked")
+        # Park refused:  the wake id is already consumed, so the hook handed it over.
+        # The transcript check inside confirms it;  without the record the ledger is
+        # still proof the hook emitted it into a prompt.
+        handed = _handed_over(state, transcript, wake)
+        if handed is not None:
+            return handed
+        return WR.Delivery("sent", "hook", ack="unknown")
     if _locked:
-        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep, **turn)
     try:
         folder = state_dir(env) / "locks"
         WR.private_dir(folder)
@@ -570,7 +770,7 @@ def deliver_local(
             return WR.Delivery("busy", code="holder-unknown")
         if held:
             return WR.Delivery("busy", code="chat-live")
-        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep, **turn)
 
 
 def deliver_request(
@@ -590,6 +790,13 @@ def deliver_request(
         wake = _wake_from(request["wake"])
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
+    # A turn (wake_router, Turns) only when the dispatcher marked it, and only its valid riders.
+    riders: tuple[WR.Wake, ...] = ()
+    if request.get("turn_dispatch") == WR.TURN_CONTRACT:
+        riders = WR.turn_riders_from(request.get("turn"), wake.wake_id)
+    turn_id = request["turn"]["id"] if riders else ""
+    echo: dict[str, Any] = {"carried": (), "confirmed": ()}
+    turn = {"riders": riders, "turn_id": turn_id, "echo": echo}
     config = _config(settings)
     if settings is None:
         # This entry point is the Mac-side handler (`wake-deliver`); a server router passes
@@ -616,11 +823,21 @@ def deliver_request(
             return _answer(request, stale)
         try:
             delivery = deliver_local(
-                here, config, target.session_id, wake, runner=runner, sleep=sleep, _locked=True
+                here,
+                config,
+                target.session_id,
+                wake,
+                runner=runner,
+                sleep=sleep,
+                _locked=True,
+                _turn=turn,
             )
         except OSError as exc:
             delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)
-    return _answer(request, delivery)
+    answer = _answer(request, delivery)
+    if riders:
+        answer["turn"] = WR.turn_echo(turn_id, echo["carried"], echo["confirmed"])
+    return answer
 
 
 def router_platform(
@@ -665,6 +882,37 @@ def router_platform(
             code=_short(delivery.get("code")),
             note=_short(delivery.get("note")),
         )
+
+    def turn(
+        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
+    ) -> WR.Turn:
+        """One idle turn (wake_router, Turns), by the same routes as `deliver`.  Once the local
+        delivery may have started, an error in it cannot say what the turn carried."""
+        if target.host == "mac" and local_host != "mac":
+            return CW.deliver_remote_turn(
+                here, config, target, head, riders, turn_id, platform=PLATFORM, runner=runner
+            )
+        if target.host != local_host:
+            return WR.Turn(WR.Delivery("refused", code="unknown-host"))
+        request = {
+            "platform": PLATFORM,
+            "target": {
+                "session_id": target.session_id,
+                "letter": target.letter,
+                "host": target.host,
+                "generation": target.generation,
+            },
+            "wake": asdict(head),
+            "turn": WR.turn_offer(turn_id, riders),
+            "turn_dispatch": WR.TURN_CONTRACT,
+        }
+        try:
+            answer = deliver_request(request, env=here, settings=config, runner=runner, sleep=sleep)
+        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+            error = WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+            return WR.Turn(error, unreadable=True)
+        echo = answer.get("turn") if isinstance(answer, Mapping) else None
+        return WR.turn_result(_read_answer(answer), echo, turn_id, riders)
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         # One walk per distinct store root (glob hides its own errors, and delivery
@@ -711,6 +959,21 @@ def router_platform(
         target_re=SESSION_RE,
         deliver=deliver,
         exclude=exclude,
+        deliver_turn=turn,
+    )
+
+
+def _read_answer(answer: object) -> WR.Delivery:
+    """The Delivery a `deliver_request` answer carries, its codes kept only if code-shaped."""
+    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
+        return WR.Delivery("refused", code="platform-bad-answer")
+    return WR.Delivery(
+        str(delivery["outcome"]),
+        _short(delivery.get("route")),
+        ack=_short(delivery.get("ack")) or "unknown",
+        code=_short(delivery.get("code")),
+        note=_short(delivery.get("note")),
     )
 
 

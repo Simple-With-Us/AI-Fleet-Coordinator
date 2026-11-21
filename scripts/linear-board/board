@@ -6303,6 +6303,55 @@ def _remote_error_object(result: dict, sc) -> dict:
     return cand if isinstance(cand, dict) else (sc if isinstance(sc, dict) else {})
 
 
+def _remote_content_ok(content) -> bool:
+    """Whether a hosted content list is a list of parts this board can read.
+
+    The hosted's answer is untrusted, and the board reads text parts and nothing else:  every
+    part must be an object whose `type` is `text` and whose `text` is a string, because that
+    is the part the board puts in front of a reader.  A part of another type is a shape this
+    board does not accept, and it is refused here at the boundary, so no downstream code reads
+    a field of a part it never checked."""
+    if content is None:
+        return True
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            return False
+        if part.get("type") != "text" or not isinstance(part.get("text"), str):
+            return False
+    return True
+
+
+def _remote_error_content_ok(content) -> bool:
+    """Whether the hosted's error answer is a list of parts this board can read.
+
+    The error object is read from the parts that carry text, and the hosted may name no type
+    on them, so a part with no text at all is one this board does not read:  only a part whose
+    text is of the wrong type is refused, so the error code is never read out of a shape that
+    was not checked."""
+    if content is None:
+        return True
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            return False
+        if "text" in part and not isinstance(part.get("text"), str):
+            return False
+    return True
+
+
+def _remote_text_parts(content) -> list:
+    """The text of every text part of a content list that was checked at the boundary."""
+    parts = []
+    for part in content or []:
+        text = part.get("text")
+        if part.get("type") == "text" and isinstance(text, str):
+            parts.append(text)
+    return parts
+
+
 def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     """The tools/call result of one answer, or (None, message).  Returns (result, "") on success.  Only an
     allow-listed code and a bounded retry-after leave this function:  the server's own message text is
@@ -6311,7 +6360,7 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     msg = None
     for text in _remote_events(ctype, raw):
         if not _remote_depth_ok(text):
-            return None, "the hosted endpoint sent an answer that nests too deeply" + unknown
+            return None, [], "the hosted endpoint sent an answer that nests too deeply" + unknown
         try:
             candidate = json.loads(text)
         except (ValueError, RecursionError):
@@ -6326,31 +6375,29 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
             msg = candidate
             break
     if msg is None:
-        return None, "the hosted endpoint sent no readable answer to the call" + unknown
+        return None, [], "the hosted endpoint sent no readable answer to the call" + unknown
     if not _remote_nodes_ok(msg):
-        return None, "the hosted endpoint sent an oversized answer" + unknown
+        return None, [], "the hosted endpoint sent an oversized answer" + unknown
     if "error" in msg:
         err = msg["error"]
         code = _remote_code(err.get("code")) if isinstance(err, dict) else "error"
-        return None, "the hosted endpoint refused the call" + (
+        return None, [], "the hosted endpoint refused the call" + (
             "" if code == "error" else f" ({code})"
         )
     result = msg.get("result")
     if not isinstance(result, dict):
-        return None, "the hosted endpoint sent no result" + unknown
+        return None, [], "the hosted endpoint sent no result" + unknown
     content = result.get("content")
     sc = result.get("structuredContent")
-    if (
-        (content is not None and not isinstance(content, list))
-        or any(
-            not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str))
-            for p in content or []
-        )
-        or (sc is not None and not isinstance(sc, dict))
-        or not isinstance(result.get("isError", False), bool)
+    if (sc is not None and not isinstance(sc, dict)) or not isinstance(
+        result.get("isError", False), bool
     ):
-        return None, "the hosted endpoint sent a result in an unexpected shape" + unknown
+        return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
     if result.get("isError"):
+        # The hosted's own error:  the error object is read from the parts that carry text, and
+        # the hosted may name no type on them, so the type is not required on this path.
+        if not _remote_error_content_ok(content):
+            return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
         eo = _remote_error_object(result, sc)
         code = _remote_code(eo.get("code"))
         retry = eo.get("retry_after_s", eo.get("retry_after"))
@@ -6363,10 +6410,12 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
         )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
         hint = _REMOTE_HINTS.get(code)
-        return None, f"{tool} failed on the hosted server: {code}{after}{note}" + (
+        return None, [], f"{tool} failed on the hosted server: {code}{after}{note}" + (
             f"; {hint}" if hint else ""
         )
-    return result, ""
+    if not _remote_content_ok(content):
+        return None, [], "the hosted endpoint sent a result in an unexpected shape" + unknown
+    return result, _remote_text_parts(content), ""
 
 
 def _remote_failure(exc: "_TransportError", write: bool) -> str:
@@ -6550,6 +6599,15 @@ def _remote_write_identity() -> str:
     return who
 
 
+def _remote_refused(message: str, code: int) -> "NoReturn":
+    """A proven pre-send or definitive HTTP rejection, still a CLI SystemExit."""
+    try:
+        die(message, code)
+    except SystemExit as exc:
+        exc.remote_definitive = True
+        raise
+
+
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent.
 
@@ -6560,7 +6618,7 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
-        die(f"refused before sending: {hit}", EXIT_USAGE)
+        _remote_refused(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -6587,25 +6645,99 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
             )
         )
     except _TransportError as exc:
+        if not exc.sent:
+            _remote_refused(_remote_failure(exc, write), EXIT_ERROR)
         die(_remote_failure(exc, write), EXIT_ERROR)
     if status in (401, 403):
-        die(_remote_status_message(status, write), EXIT_AUTH)
+        _remote_refused(_remote_status_message(status, write), EXIT_AUTH)
     if status != 200:
         die(_remote_status_message(status, write), EXIT_ERROR)
-    result, problem = _remote_answer(ctype, raw, tool, write)
+    result, parts, problem = _remote_answer(ctype, raw, tool, write)
     if problem:
         die(problem, EXIT_ERROR)
     sc = result.get("structuredContent")
-    if not isinstance(sc, dict):
+    if sc is None:
+        # A fenced read answers with the text envelope only:  the hosted drops the summary object for
+        # those tools (AFC-637), because the envelope may not carry it (it holds integers only) and the
+        # text is the result.  An absent summary is that shape;  a summary of the wrong type is not.
+        # Every other tool needs its summary:  whoami has to name the seat, and a write has to say
+        # what the hosted did with it, so a missing summary there is a failure and never a quiet
+        # success with nothing in it.
+        # Only the fenced reads may answer with the envelope alone, and only when the envelope
+        # carries text:  an answer with neither a summary nor text is a failure, never a quiet
+        # success that reads as zero issues.
+        if tool in ("linear_list", "linear_show") and any(parts):
+            sc = {}
+        else:
+            die("the hosted endpoint sent no structured result", EXIT_ERROR)
+    elif not isinstance(sc, dict):
         die("the hosted endpoint sent no structured result", EXIT_ERROR)
     # The hosted list/show keep the issue rows, comment bodies, labels and duplicate relations in the text
-    # content (a fenced envelope); structuredContent carries only a summary.  Keep both.
-    parts = [
-        c.get("text")
-        for c in result.get("content") or []
-        if isinstance(c, dict) and c.get("type") == "text"
-    ]
-    return {"structured": sc, "text": "\n".join(t for t in parts if isinstance(t, str))}
+    # content (a fenced envelope); structuredContent carries only a summary when the hosted sends one.
+    # Keep both.
+    return {"structured": sc, "text": "\n".join(parts)}
+
+
+REMOTE_COMMENT_LIMIT = 10000
+
+
+class RemoteResolutionStore(IdemStore):
+    """Per-stage receipts, scoped to the verified identity and transport binding.
+
+    Only request hashes and outcomes are saved, never resolution text or credentials.
+    For the existing 24-hour receipt window, unknown outcomes are not replayed
+    and identical retries reuse completed stages. After that, inspect the issue
+    and use comment alone for a missing resolution, not the compound command.
+    """
+
+    def __init__(self, identity: str, binding: str, request: dict, stage: str):
+        self.path = cache_dir() / "remote-resolution.json"
+        self.ref = hashlib.sha256(
+            stable_json([identity, binding, request, stage]).encode()
+        ).hexdigest()
+
+
+def remote_resolution(args: dict, comment: dict, binding: str) -> dict:
+    request = {"status": args, "comment": comment}
+    result = None
+    for stage, tool, payload in (
+        ("state", "linear_status", args),
+        ("resolution comment", "linear_comment", comment),
+    ):
+        store = RemoteResolutionStore(args["identity"], binding, request, stage)
+        digest = hashlib.sha256(stable_json(payload).encode()).hexdigest()
+        verdict, row = store.begin(digest, tool)
+        if verdict == "duplicate":
+            result = row["data"]
+            continue
+        if verdict == "busy":
+            die(
+                f"resolution {stage} is in flight; retry the identical command shortly",
+                EXIT_RATE_LIMIT,
+            )
+        if verdict != "send":
+            die(
+                f"resolution {stage} outcome is unknown; inspect the issue before retrying. "
+                "The prior stage may or may not have applied; no write was replayed.",
+                EXIT_ERROR,
+            )
+        try:
+            result = remote_call(tool, payload, write=True)
+        except BaseException as exc:
+            if getattr(exc, "remote_definitive", False):
+                store.drop()
+            else:
+                store.unknown()
+            if stage == "resolution comment":
+                warn(
+                    "state change completed; resolution comment failed or is unknown. "
+                    "Inspect comments before posting only the missing resolution; do not repeat the state change. "
+                    "Receipts last 24 hours; after expiry inspect before running this compound command again."
+                )
+            raise
+        # Keep only minimal success markers: hosted text may echo user content.
+        store.finish({"structured": {"completed": True, "stage": stage}, "text": ""})
+    return result
 
 
 def remote_write(a) -> dict:
@@ -6620,9 +6752,9 @@ def remote_write(a) -> dict:
             EXIT_USAGE,
         )
     unsupported = {
-        "claim": ("steal", "reason", "location", "env"),
-        "comment": ("location", "env", "text_file"),
-        "status": ("resolution",),
+        "claim": ("location", "env"),
+        "comment": ("location", "env"),
+        "status": (),
         "file": (
             "fix",
             "fix_file",
@@ -6636,6 +6768,21 @@ def remote_write(a) -> dict:
     for dest in unsupported[a.cmd]:
         if getattr(a, dest, None):
             die(f"`--{dest.replace('_', '-')}` has no hosted equivalent in remote mode", EXIT_USAGE)
+    if a.cmd == "comment":
+        prepare_inputs(a)
+        if len(a.text or "") > REMOTE_COMMENT_LIMIT:
+            die("remote comment exceeds the hosted 10000-character body limit", EXIT_USAGE)
+    resolution = None
+    if a.cmd == "status" and a.resolution:
+        if a.value == "duplicate":
+            a.of = a.of or duplicate_target(a.resolution)
+            if not a.of:
+                die("status duplicate needs --of or one unambiguous duplicate target in --resolution", EXIT_USAGE)
+            resolution = f"Resolution (duplicate of {a.of}): {a.resolution.strip()}"
+        else:
+            resolution = f"Resolution ({a.value}): {a.resolution.strip()}"
+        if len(resolution) > REMOTE_COMMENT_LIMIT:
+            die("resolution exceeds the hosted 10000-character body limit", EXIT_USAGE)
     sessions = getattr(a, "session_ids", None) or []
     if len(sessions) > 1:
         die("remote mode accepts at most one --session", EXIT_USAGE)
@@ -6653,6 +6800,9 @@ def remote_write(a) -> dict:
         args = {"id": a.id}
         if a.comment:
             args["comment"] = a.comment
+        if a.steal:
+            args["steal"] = True
+            args["reason"] = (a.reason or "").strip()
         tool = "linear_claim"
     elif a.cmd == "comment":
         if not a.text:
@@ -6680,6 +6830,10 @@ def remote_write(a) -> dict:
     hit = _remote_scan_arguments(_remote_scanner(), args, scan_bearer)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
+    if resolution:
+        hit = _remote_scan_arguments(_remote_scanner(), {"body": resolution}, scan_bearer)
+        if hit:
+            die(f"refused before sending: {hit}", EXIT_USAGE)
     identity = _remote_write_identity()
     if claimed and str(claimed).lower() != identity.lower():
         die(
@@ -6688,6 +6842,12 @@ def remote_write(a) -> dict:
             EXIT_USAGE,
         )
     args["identity"] = identity
+    if resolution:
+        comment = {"id": a.id, "body": resolution, "identity": identity}
+        if sessions:
+            comment["session"] = sessions[0]
+        binding = "native-echo" if native_echo_selected() else hashlib.sha256(scan_bearer.encode()).hexdigest()
+        return remote_resolution(args, comment, binding)
     return remote_call(tool, args, write=True)
 
 

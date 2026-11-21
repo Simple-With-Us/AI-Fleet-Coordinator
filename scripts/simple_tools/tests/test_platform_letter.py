@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -390,6 +391,55 @@ class ContractTests(unittest.TestCase):
             return reg.lookup("codex", "server", "default", sid)["record_id"]
         finally:
             reg.close_db()
+
+
+class RowContractTests(unittest.TestCase):
+    """The rows of the one table agree with the library about what a hook has, and nobody names a
+    field the row no longer has."""
+
+    def test_every_row_states_a_budget_its_own_hook_timeout_carries(self) -> None:
+        # A row's budget is what its hook has before its runtime stops it, so it may not be larger
+        # than the row's own tightest hook timeout, and a row whose runtime caps the timeout may not
+        # declare more than the cap.
+        # A row that installs hook entries has its timeouts somewhere:  its own module-level
+        # HOOK_TIMEOUTS, or the shared ones.  A row that names neither is not a row this test may
+        # skip, so the test fails on it instead of passing over it.
+        installing = set()
+        for name in PL.adapter_platforms():
+            module = PL.load_adapter(name)
+            if module is None:
+                continue
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            if "HOOK_TIMEOUTS" in source:
+                installing.add(name)
+        checked = set()
+        for name in sorted(installing):
+            spec = PL.load_spec(name)
+            module = PL.load_adapter(name)
+            self.assertIsNotNone(spec, name)
+            self.assertIsNotNone(module, name)
+            timeouts = getattr(module, "HOOK_TIMEOUTS", None) or PL.HOOK_TIMEOUTS
+            self.assertTrue(timeouts, "%s has no hook timeouts" % name)
+            checked.add(name)
+            budget = spec.hook_budget or PL.SHARED_HOOK_BUDGET
+            self.assertLessEqual(budget, min(timeouts.values()), name)
+            cap = getattr(module, "HOOK_TIMEOUT_CAP", 0)
+            if cap:
+                self.assertLessEqual(budget, cap, name)
+                self.assertLessEqual(max(timeouts.values()), cap, name)
+        self.assertEqual(checked, installing, "a row that installs hook entries was not checked")
+        self.assertGreater(len(checked), 3, "the table's rows were not all read")
+
+    def test_no_shipped_module_still_names_the_retired_depth_field(self) -> None:
+        # The row's parent depth is gone:  a module that still names it describes a field the row no
+        # longer has, and a caller that passed it would be giving seconds where generations were
+        # meant.  The names are assembled here so that this test does not name them itself.
+        retired = ("parent" + "_depth", "effective_parent" + "_depth")
+        root = Path(PL.__file__).resolve().parent
+        for path in sorted(root.rglob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for gone in retired:
+                self.assertNotIn(gone, text, "%s still names %s" % (path.name, gone))
 
 
 class RegistrySideTests(Base):
@@ -1155,6 +1205,106 @@ class HookTests(Base):
             json.dumps({"type": {"nested": True}, "text": "CTS-12"}),
         ]
         self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-11", "CTS-12"})
+
+    def test_issue_ids_in_lines_skips_runtime_context_but_keeps_chat_content(self) -> None:
+        bootstrap = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>"
+        )
+        lines = [
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": (
+                        "Injected UM-902; old receipt: posted id 8 to #WIP › AFC-906 example"
+                    )}]}}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "system", "content": (
+                    "Injected CT-903; simple-chat post --topic 'OPS-907 old example'"
+                )}}),
+            json.dumps({"type": "world_state", "text": "Startup AFC-904"}),
+            json.dumps({"type": "message", "role": "user", "content": bootstrap}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": bootstrap.replace("AFC-900", "AFC-905")}}),
+            json.dumps({"type": "message", "role": "user", "content": "Please fix AFC-1"}),
+            json.dumps({"type": "message", "role": "user", "content": (
+                "Please preserve this quoted context: > # AGENTS.md instructions for /repo "
+                "<INSTRUCTIONS>Example AFC-910</INSTRUCTIONS> "
+                "<environment_context>Example CTS-911</environment_context>"
+            )}),
+            json.dumps({"type": "message", "role": "assistant", "content": "I fixed CTS-2"}),
+            json.dumps({"type": "tool_use", "input": {"command": "run --issue OPS-3"}}),
+            json.dumps({"type": "tool_result", "content": "posted id 4 to #WIP › CC-5 rollout"}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {
+            "AFC-1", "AFC-910", "CC-5", "CTS-2", "CTS-911", "OPS-3",
+        })
+
+    def test_issue_ids_in_lines_keeps_a_request_after_a_quoted_bootstrap(self) -> None:
+        request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease fix AFC-912 in this request."
+        )
+        event = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-900 rules"
+            "</INSTRUCTIONS>\n<environment_context>Example CTS-901 path"
+            "</environment_context>\nPlease also fix OPS-913."
+        )
+        lines = [
+            json.dumps({"type": "message", "role": "user", "content": request}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message", "message": event,
+            }}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-912", "OPS-913"})
+
+    def test_issue_ids_in_lines_keeps_text_blocks_after_an_injected_bootstrap(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": [
+            {"type": "text", "text": (
+                "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-920 rules"
+                "</INSTRUCTIONS>\n<environment_context>Example CTS-921 path</environment_context>"
+            )},
+            {"type": "text", "text": "Please link the actual request UM-922."},
+        ]})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"UM-922"})
+
+    def test_issue_ids_in_lines_skips_standalone_agents_bootstrap_and_keeps_suffix(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-930 rules"
+            "</INSTRUCTIONS>\nPlease link actual work CT-931."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-931"})
+
+    def test_issue_ids_in_lines_ignores_environment_example_inside_instructions(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-940; literal "
+            "<environment_context>Example OPS-941</environment_context></INSTRUCTIONS>\n"
+            "<environment_context>Startup CTS-942</environment_context>\n"
+            "Please link actual work CT-943."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"CT-943"})
+
+    def test_issue_ids_in_lines_keeps_bootstrap_suffix_quoted_inside_tool_result(self) -> None:
+        bootstrap_request = (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-950"
+            "</INSTRUCTIONS>\nPlease fix quoted AFC-951."
+        )
+        lines = [
+            json.dumps({"type": "tool_result", "content": {
+                "type": "message", "role": "user", "content": bootstrap_request,
+            }}),
+            json.dumps({"type": "message", "role": "user", "content": "Fix actual AFC-952."}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-952"})
+
+    def test_issue_ids_in_lines_keeps_user_text_before_inline_environment_example(self) -> None:
+        line = json.dumps({"type": "message", "role": "user", "content": (
+            "# AGENTS.md instructions for /repo\n<INSTRUCTIONS>Example AFC-960 rules"
+            "</INSTRUCTIONS>\nFix AFC-961 and consider "
+            "<environment_context>an inline example</environment_context>."
+        )})
+        self.assertEqual(PL.issue_ids_in_lines([line]), {"AFC-961"})
 
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
@@ -2388,10 +2538,10 @@ class HookTests(Base):
             self.start("s-0001")
             code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0001"))
             self.assertEqual((code, line), (0, "letter %s: Codex chat s-0001\n" % self.label("s-0001")))
-            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0404"))  # no note:  never registered
-            self.assertEqual(code, 1)
-            self.assertIn("pass --session-id", line)
-        self.assertIsNone(self.lookup("s-0404"))
+            # No note yet:  the platform's own session id names the chat, and its start runs now (AFC-694).
+            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0404"))
+            self.assertEqual((code, line), (0, "letter %s: Codex chat s-0404\n" % self.label("s-0404")))
+        self.assertIsNotNone(self.lookup("s-0404"))
         code, line = self.request("--session-id", "s-0999")
         self.assertEqual(code, 1)
         self.assertIn("no chat with the session id s-0999", line)
@@ -2400,8 +2550,8 @@ class HookTests(Base):
 
 class UnletteredRepairTests(Base):
     """Chats that still show "??: " (an app-driven chat's hook never runs, so a letter lost between the assigner
-    and the note would stay lost):  the hosts' scheduled carriers replay the start of each, at most once a
-    window, and a chat's own start never pays for the pass."""
+    and the note would stay lost):  a detached run that a chat's start sets off replays the start of each, at
+    most once a window, and a chat's own start never pays for the pass."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -2722,8 +2872,11 @@ class RepairCliTests(Base):
         self.assertEqual(code, 0)
         code, out = self.repair("--platform", "faux", "--location", "server", now=1001.0)
         self.assertIn("not due", out)
+        self.unlettered.append("s-0203")
         code, out = self.repair("--platform", "faux", "--location", "server", "--force", now=1001.0)
-        self.assertIn("s-0201", out)
+        self.assertIn("s-0203", out)
+        # The first pass lettered s-0201:  a chat holding a letter is never replayed, forced or not.
+        self.assertNotIn("s-0201", out)
 
     def test_a_platform_with_no_surface_is_a_bad_argument(self) -> None:
         plain = make_spec(platform="faux", source="faux-hook", display="Faux")
@@ -2807,6 +2960,30 @@ class GoneReportTests(Base):
 
         with mock.patch.object(registry_api, "_open", capture):
             yield seen
+
+    def test_the_gone_report_honours_the_platforms_own_deadline(self) -> None:
+        # A row whose runtime stops its hook sooner declares its own deadline, and the gone report is one
+        # of that hook's calls:  it must not wait for the shared one.
+        spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            gone_sessions=lambda env, sids: {"s-0001"},
+            call_timeout=2,
+        )
+        seen: list[int] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(timeout)
+            return real(request, timeout)
+
+        self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name
+        self.start("s-0003", self.t0, spec=spec)
+        with mock.patch.object(registry_api, "_open", capture):
+            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due
+        self.assertEqual(seen, [2])
 
     def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
         with self.reports() as sent:
@@ -4292,6 +4469,46 @@ class InstallTests(Base):
             json.dump(doc, fh)
         os.chmod(self.hooks_path(), mode)
 
+
+    def test_the_installer_refuses_a_timeout_the_runtime_would_reject(self) -> None:
+        # A runtime that refuses the timeout never runs the hook, so the installer writes nothing at all.
+        code, out = self.run_install(self.installer(events={"SessionStart": 20}, timeout_cap=10))
+        self.assertEqual(code, 1)
+        self.assertEqual(out["refused"], "timeout_over_cap")
+        self.assertEqual((out["cap"], out["timeouts"]), (10, {"SessionStart": 20}))
+        self.assertFalse(os.path.exists(self.hooks_path()))
+
+    def test_check_names_a_longer_installed_timeout_and_the_entry_is_not_current(self) -> None:
+        # The entry is installed and reads as right, and the runtime refuses its timeout:  it is not current, and the
+        # answer says which timeout the runtime would not take.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer, check=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(out["over_cap"], {"SessionStart": [20]})
+        self.assertFalse(out["current"]["SessionStart"])
+
+    def test_an_install_replaces_a_longer_installed_timeout(self) -> None:
+        # The entry the runtime refuses is replaced in place by one it runs.
+        installer = self.installer(events={"SessionStart": 10}, timeout_cap=10)
+        self.assertEqual(self.run_install(installer)[0], 0)
+        doc = self.load()
+        for group in doc["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                hook["timeout"] = 20
+        self.seed(doc)
+        code, out = self.run_install(installer)
+        self.assertEqual((code, out["changed"]), (0, ["SessionStart"]))
+        self.assertEqual(self.run_install(installer, check=True)[0], 0)
+        for group in self.load()["hooks"]["SessionStart"]:
+            for hook in group["hooks"]:
+                self.assertEqual(hook["timeout"], 10)
+
     def test_install_is_idempotent_keeps_other_hooks_and_removes_cleanly(self) -> None:
         other = {"hooks": [{"type": "command", "command": "/x/guard.py", "timeout": 5}]}
         self.seed({"features": {"hooks": True}, "hooks": {"SessionStart": [other]}})
@@ -4907,3 +5124,504 @@ class LetterlessSeenTests(Base):
         # A name a chat started with (`seen`, set at its start) is untouched by the letter.
         kept = PL._apply(chat, answer, {"state": "failed", "label": "", "seen": "Inherited"})
         self.assertEqual(kept["seen"], "Inherited")
+
+
+class EnglishTitleTests(HookTests):
+    """The words a chat carries under its letter are the ones the whole fleet reads, so they are English (owner,
+    Nov 18, 2026:  a Chinese title in the app is the same violation as a Chinese chat name, and a title with no
+    letter prefix is invisible to the owner's scan).  A chat with no letter keeps its own name in whatever script
+    its owner wrote it in, and the client stays script-neutral there."""
+
+    # A title in a script that is not Latin, mixed with the Latin words a real chat title carries.
+    FOREIGN = "排查 Zulip 到 Linear 转发内容截断"
+
+    def titled_spec(self) -> PL.PlatformSpec:
+        """A spec whose chat carries the title in the payload, the way a platform hands it over."""
+        return make_spec(current_title=PL.from_payload("session_title"))
+
+    def start_foreign(self, spec: PL.PlatformSpec, sid: str = "s-0001") -> dict | None:
+        return self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": sid,
+                "source": "startup",
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+
+    def test_the_words_under_a_letter_are_english(self) -> None:
+        self.assertEqual(PL.lettered_topic("Fix Relay Truncation"), "Fix Relay Truncation")
+        self.assertEqual(PL.lettered_topic(self.FOREIGN), "")
+        self.assertEqual(PL.lettered_topic("Исправь страницу входа"), "")
+        self.assertEqual(PL.lettered_topic(""), "")
+        # A title with no letters at all carries no language, and passes.
+        self.assertEqual(PL.lettered_topic("AFC-564"), "AFC-564")
+
+    def test_a_name_in_another_language_is_never_adopted_as_the_topic(self) -> None:
+        note = {"label": "SS", "title": "Fix Relay Truncation", "shown": "SS: Fix Relay Truncation"}
+        self.assertEqual(PL._renamed(note, self.FOREIGN), ("", "SS: Fix Relay Truncation"))
+        # A chat with no words of its own keeps its letter over the placeholder, and waits to be named, in
+        # English, rather than take the foreign name.
+        waiting = {"label": "SS", "title": "", "shown": "SS: New Chat"}
+        self.assertEqual(PL._renamed(waiting, self.FOREIGN), ("", "SS: New Chat"))
+
+    def test_a_chat_that_started_in_another_language_carries_no_such_topic(self) -> None:
+        spec = self.titled_spec()
+        out = self.start_foreign(spec)
+        label = self.label("s-0001")
+        self.assertNotIn(self.FOREIGN, out["sessionTitle"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(self.note("s-0001").get("title") or "", "")
+        # The registry carries no foreign title either:  it is the sheet the owner reads.
+        self.assertEqual(self.lookup("s-0001").get("title") or "", "")
+
+    def test_a_prompt_in_another_language_never_names_the_chat(self) -> None:
+        spec = self.titled_spec()
+        self.start_foreign(spec)
+        out = self.hook(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s-0001",
+                "prompt": self.FOREIGN,
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+        label = self.label("s-0001")
+        self.assertNotIn(self.FOREIGN, out["sessionTitle"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(self.note("s-0001").get("title") or "", "")
+        # An English prompt names the chat, under the same letter.
+        out = self.hook(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s-0001",
+                "prompt": "fix the zulip relay truncation",
+                "session_title": self.FOREIGN,
+            },
+            spec=spec,
+        )
+        self.assertEqual(out["sessionTitle"], "%s: Fix the Zulip Relay Truncation" % label)
+
+    def test_a_chat_with_no_letter_keeps_its_own_name_in_its_own_script(self) -> None:
+        # The client stays script-neutral for a chat that holds no letter:  the words are the owner's own.
+        self.assertEqual(PL.title_from_prompt(self.FOREIGN), self.FOREIGN)
+
+    def test_a_letterless_chat_keeps_its_own_name_on_the_chat_and_out_of_the_registry(self) -> None:
+        # The hook itself, not the helper:  a chat that gets no letter shows its own name in its own
+        # script, and the registry holds no title for it.
+        spec = self.titled_spec()
+        sent = []
+
+        def capture(chat_self, op, title="", parent="", issues="", timeout=0):
+            sent.append(list(chat_self.argv(op, title, parent, issues)))
+            return {"outcome": "failed", "state": "failed", "error": "no letter"}
+
+        with mock.patch.object(PL.Chat, "registry", capture):
+            out = self.start_foreign(spec)
+        # The chat keeps its own name in its own script, under the mark a chat with no letter carries.
+        self.assertEqual(out["sessionTitle"], "??: " + self.FOREIGN)
+        # The registry was asked to register the chat, and every title it was given is English:  a name in
+        # another script is never registered.
+        self.assertTrue(sent)
+        for argv in sent:
+            title = next((a.split("=", 1)[1] for a in argv if a.startswith("--title=")), "")
+            self.assertNotEqual(title, self.FOREIGN)
+            self.assertTrue(PL.english_words(title))
+
+
+class SecretTitleTests(HookTests):
+    """A chat's own name is the owner's, and the app shows it;  the client keeps it in its private note and
+    relays it to the registry, and neither may hold a credential (owner rule:  user-supplied text is
+    secret-scanned before it is persisted or relayed)."""
+
+    def test_a_credential_in_a_chats_own_name_is_neither_kept_nor_relayed(self) -> None:
+        secret = secret_word()  # built at run time, so the source holds no key-looking literal
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        sent = []
+
+        def capture(chat_self, op, title="", parent="", issues="", timeout=0):
+            sent.append(list(chat_self.argv(op, title, parent, issues)))
+            return {"outcome": "failed", "state": "failed", "error": "no letter"}
+
+        with mock.patch.object(PL.Chat, "registry", capture):
+            out = self.hook(
+                {
+                    "hook_event_name": "SessionStart",
+                    "session_id": "s-0001",
+                    "source": "startup",
+                    "session_title": secret,
+                },
+                spec=spec,
+            )
+        # The registry was asked to register the chat, and no title it was given carries the credential.
+        self.assertTrue(sent)
+        for argv in sent:
+            self.assertNotIn(secret, json.dumps(argv))
+            title = next((a.split("=", 1)[1] for a in argv if a.startswith("--title=")), "")
+            self.assertTrue(PL.english_words(title))
+        # The private note holds no credential either:  the chat waits to be named.
+        note = self.note("s-0001")
+        self.assertNotIn(secret, json.dumps(note))
+        self.assertEqual(note.get("title") or "", "")
+        # And the chat is not named after the credential.
+        self.assertNotIn(secret, out["sessionTitle"])
+
+    def test_a_stored_credential_is_refused_with_a_code(self) -> None:
+        # A note that carries a credential (written before the scan, or by a path that missed it) is refused
+        # at the registry write:  the registry holds no title, and the note keeps the code and not the words.
+        secret = secret_word()
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        with mock.patch.object(PL, "_enroll", return_value={"outcome": "failed", "state": "failed"}):
+            self.hook(
+                {
+                    "hook_event_name": "SessionStart",
+                    "session_id": "s-0001",
+                    "source": "startup",
+                    "session_title": "Fix the relay",
+                },
+                spec=spec,
+            )
+        note = self.note("s-0001")
+        note["title"] = secret
+        with open(os.path.join(self.state, "CODEX", "letters", "s-0001.json"), "w") as fh:
+            json.dump(note, fh)
+        with mock.patch.dict(PL.SPECS, {"codex": self.spec}):
+            out = io.StringIO()
+            code = PL.request_main(
+                ["--session-id", "s-0001"], self.server_env(), out, now=1000.0, platform="linux"
+            )
+        self.assertEqual(code, 0)
+        note = self.note("s-0001")
+        # The code names the field and says nothing about the value.
+        self.assertEqual(note.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(note))
+        row = self.lookup("s-0001")
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("title") or "", "")
+
+    def test_a_chat_name_with_a_control_character_is_scrubbed(self) -> None:
+        # The live title is compared with what the platform shows and its words are derived from it, so it is
+        # scrubbed of the control characters and lone surrogates a title cannot carry.
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "s-0001",
+                "source": "startup",
+                "session_title": "Fix the relay\x00 now",
+            },
+            spec=spec,
+        )
+        note = self.note("s-0001")
+        self.assertNotIn("\x00", json.dumps(note))
+        self.assertEqual(note.get("title"), "Fix the relay now")
+
+    def test_a_refusal_names_the_field_it_came_from(self) -> None:
+        # A field that holds a credential is dropped whole, and the refusal says which field it was, so a
+        # consumer can tell `title` from `want`, `shown` or `inherited`.
+        secret = secret_word()
+        note = {"title": "Fix the relay", "want": "AA: " + secret, "shown": "AA: Fix the relay", "inherited": ""}
+        safe = PL._safe_note(note)
+        # The credential word goes and the rest of the field stays.
+        self.assertEqual(safe.get("want"), "AA:")
+        self.assertEqual(safe.get("title"), "Fix the relay")
+        self.assertEqual(safe.get("title_refused"), "want_secret")
+        self.assertNotIn(secret, json.dumps(safe))
+        # A field that is one credential whole is recorded and cleared too.
+        whole = PL._safe_note({"title": secret, "want": "", "shown": "", "inherited": ""})
+        self.assertEqual(whole.get("title"), "")
+        self.assertEqual(whole.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(whole))
+        # A field that holds a credential among other words keeps the rest of its words.
+        mixed = PL._safe_note({"title": "Fix deploy: " + secret, "want": "", "shown": "", "inherited": ""})
+        self.assertEqual(mixed.get("title"), "Fix deploy:")
+        self.assertEqual(mixed.get("title_refused"), "title_secret")
+        self.assertNotIn(secret, json.dumps(mixed))
+
+    def test_a_chats_own_name_is_not_cut_short(self) -> None:
+        # The live title is compared with what the platform shows, so a name cut at the title limit would
+        # rename the chat back to the cut name.  The name survives whole.
+        name = "Fix " + " ".join(["Relay"] * 30)
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        self.hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "s-0001",
+                "source": "startup",
+                "session_title": name,
+            },
+            spec=spec,
+        )
+        self.assertEqual(self.note("s-0001").get("title"), name)
+
+
+class EnglishRegistryTests(HookTests):
+    """The registry is the sheet the whole fleet reads, so a name in another script never reaches it (owner,
+    Nov 18, 2026:  every title this fleet writes is English).  Which path asks for the letter does not matter:
+    the prompt, the rename, the turn end, an explicit ask, or a parent's own registration."""
+
+    # A title in a script that is not Latin, mixed with the Latin words a real chat title carries.
+    FOREIGN = "排查 Zulip 到 Linear 转发内容截断"
+
+    def letterless_chat(self) -> None:
+        """A chat that holds no letter, keeping its own name in its own script, the way a chat named by its
+        owner in that script does."""
+        spec = make_spec(current_title=PL.from_payload("session_title"))
+        with mock.patch.object(PL, "_enroll", return_value={"outcome": "failed", "state": "failed"}):
+            self.hook(
+                {
+                    "hook_event_name": "SessionStart",
+                    "session_id": "s-0001",
+                    "source": "startup",
+                    "session_title": self.FOREIGN,
+                },
+                spec=spec,
+            )
+        self.assertEqual(self.note("s-0001").get("title"), self.FOREIGN)
+
+    def test_the_explicit_ask_never_registers_a_name_in_another_script(self) -> None:
+        # `simple-chat letter request` asks now, whatever the stamp says, and registers the chat's words.
+        self.letterless_chat()
+        with mock.patch.dict(PL.SPECS, {"codex": self.spec}):
+            out = io.StringIO()
+            code = PL.request_main(
+                ["--session-id", "s-0001"], self.server_env(), out, now=1000.0, platform="linux"
+            )
+        self.assertEqual(code, 0)
+        row = self.lookup("s-0001")
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row.get("title"), self.FOREIGN)
+        self.assertEqual(row.get("title") or "", "")
+        # The chat holds a letter now, and its topic is English.
+        note = self.note("s-0001")
+        self.assertEqual(note.get("label"), row["label"])
+        self.assertNotEqual(note.get("title"), self.FOREIGN)
+
+    def test_a_turn_end_never_registers_a_name_in_another_script(self) -> None:
+        # The end of a turn asks again for a letter, with the words the note holds.
+        self.letterless_chat()
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"})
+        later = time.time() + PL.RETRY_SECONDS + 5  # past the stamp the failed start left
+        self.hook(
+            {"hook_event_name": "Stop", "session_id": "s-0001", "reason": "end_turn"},
+            spec=spec,
+            now=later,
+        )
+        row = self.lookup("s-0001")
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row.get("title"), self.FOREIGN)
+        self.assertEqual(row.get("title") or "", "")
+
+    def test_a_parent_is_never_registered_with_a_name_in_another_script(self) -> None:
+        # The parent is registered before its sub-thread, on the same sheet, with the words its note holds.
+        spec = self.parent_spec()
+        chat = PL.Chat(spec, self.server_env(), "server", "p-0001", now=0.0)
+        self.assertTrue(chat.write({"state": "failed", "label": "", "title": self.FOREIGN}))
+        self.child_start("c-0001", "p-0001", spec)
+        row = self.lookup("p-0001")
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row.get("title"), self.FOREIGN)
+        self.assertEqual(row.get("title") or "", "")
+
+    def test_a_chat_that_takes_a_letter_carries_an_english_topic(self) -> None:
+        # A chat that held no letter keeps its own name in its own script;  once it holds a letter, the topic
+        # it carries under that letter is English.
+        self.letterless_chat()
+        with mock.patch.dict(PL.SPECS, {"codex": self.spec}):
+            out = io.StringIO()
+            PL.request_main(["--session-id", "s-0001"], self.server_env(), out, now=1000.0, platform="linux")
+        note = self.note("s-0001")
+        self.assertTrue(note.get("label"))
+        self.assertNotEqual(note.get("title"), self.FOREIGN)
+        self.assertEqual(note.get("title") or "", "")
+        # The next prompt names it, in English, under that letter.
+        label = note["label"]
+        out = self.hook(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s-0001",
+                "prompt": "fix the zulip relay truncation",
+                "session_title": "%s: New Chat" % label,
+            }
+        )
+        self.assertEqual(out["sessionTitle"], "%s: Fix the Zulip Relay Truncation" % label)
+
+
+class ReconcileHookFileTests(Base):
+    """A row that gains an event leaves the host's hook file stale, and a stale file is a chat the hook never
+    hears about:  the MiniMax Code host ran no UserPromptSubmit hook, so no chat was ever named under its letter
+    and no sub-thread ever took a letter of its own.  The hook brings the file current itself."""
+
+    def seed(self, events: list[str]) -> str:
+        path = os.path.join(self.home, ".minimax", "hooks.json")
+        folder = os.path.dirname(path)
+        # The hooks directory is private:  it is made owner-only, and a parent that is a link never
+        # redirects the file out of it.
+        if os.path.islink(folder):
+            raise AssertionError("the hooks directory is a link")
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        self.assertFalse(os.path.islink(folder))
+        self.assertEqual(os.stat(folder).st_mode & 0o777, 0o700)
+        command = "%s hook --platform minimax" % os.path.join(self.home, ".local", "bin", "platform-letter")
+        doc = {
+            "enabled": True,
+            "hooks": {
+                ev: [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}] for ev in events
+            },
+        }
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def load(self, path: str) -> dict:
+        with open(path) as fh:
+            return json.load(fh)
+
+    def test_a_missing_event_is_added_to_the_hosts_hook_file(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertEqual(
+            sorted(answer["missing"]), ["SubagentStart", "SubagentStop", "UserPromptSubmit"]
+        )
+        doc = self.load(path)
+        for ev in ("SessionStart", "Stop", "UserPromptSubmit", "SubagentStart", "SubagentStop"):
+            self.assertIn(ev, doc["hooks"], ev)
+        # The entries that were there keep their own timeout.
+        self.assertEqual(doc["hooks"]["SessionStart"][0]["hooks"][0]["timeout"], 10)
+        # A second pass finds nothing missing and leaves the file exactly as it is.
+        with open(path) as fh:
+            before = fh.read()
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        with open(path) as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_a_host_that_never_installed_the_platform_is_left_alone(self) -> None:
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".minimax", "hooks.json")))
+
+    def test_a_file_that_is_not_the_installers_is_left_alone(self) -> None:
+        path = os.path.join(self.home, ".minimax", "hooks.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("not json at all")
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        with open(path) as fh:
+            self.assertEqual(fh.read(), "not json at all")
+
+    def test_the_hook_brings_the_hosts_file_current_itself(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        PL.main(
+            ["hook", "--platform", "minimax"],
+            env={"HOME": self.home},
+            stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001"})),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertIn("UserPromptSubmit", self.load(path)["hooks"])
+
+    def test_a_stale_entry_is_brought_current_as_well(self) -> None:
+        # An entry that is there but points at an old command looks installed and does nothing:  the
+        # reconcile brings it current, the way an install does.
+        path = self.seed(["SessionStart", "Stop"])
+        doc = self.load(path)
+        doc["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+            "/old/path/platform-letter hook --platform minimax"
+        )
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertEqual(answer["stale"], ["SessionStart"])
+        # The events the file never had are missing as well, and they are added in the same pass.
+        self.assertEqual(
+            sorted(answer["missing"]), ["SubagentStart", "SubagentStop", "UserPromptSubmit"]
+        )
+        doc = self.load(path)
+        self.assertEqual(
+            doc["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "%s hook --platform minimax" % os.path.join(self.home, ".local", "bin", "platform-letter"),
+        )
+        # Nothing is left to do, and a second pass leaves the file exactly as it is.
+        with open(path) as fh:
+            before = fh.read()
+        self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+        with open(path) as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_a_symlinked_hooks_folder_is_refused(self) -> None:
+        # A host whose hooks folder is a link must not have the file written through it:  the reconcile
+        # refuses the symlinked path, and the file the link points at is left exactly as it is.
+        real = tempfile.mkdtemp(dir=self.tmp.name)
+        self.addCleanup(shutil.rmtree, real, True)
+        link = os.path.join(self.home, ".minimax")
+        os.symlink(real, link)
+        path = os.path.join(real, "hooks.json")
+        command = "%s hook --platform minimax" % os.path.join(self.home, ".local", "bin", "platform-letter")
+        doc = {
+            "enabled": True,
+            "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}]},
+        }
+        with open(path, "w") as fh:
+            json.dump(doc, fh)
+        answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertEqual(answer.get("refused"), "the hooks folder is a link")
+        self.assertEqual(self.load(path), doc)
+        # The installer refuses it as well, so a person running it by hand is told why.
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "minimax"], {"HOME": self.home}, out)
+        self.assertEqual(code, 2)
+        self.assertIn("link", out.getvalue())
+        self.assertEqual(self.load(path), doc)
+
+    def test_the_reconcile_keeps_only_a_few_backups(self) -> None:
+        # The reconcile runs on every hook event, and every pass that rewrites the file leaves a backup of it
+        # beside it, so the copies would grow without bound.  The newest few are kept.
+        path = self.seed(["SessionStart"])
+        folder = os.path.dirname(path)
+        for n in range(6):
+            with open(os.path.join(folder, "hooks.json.bak-letter-2026111%s000000Z" % n), "w") as fh:
+                fh.write("{}")
+        PL.reconcile_hooks("minimax", {"HOME": self.home})
+        left = sorted(n for n in os.listdir(folder) if n.startswith("hooks.json.bak-letter-"))
+        self.assertLessEqual(len(left), 3)
+        self.assertIn("UserPromptSubmit", self.load(path)["hooks"])
+
+    def test_the_trust_step_is_pending_from_the_first_pass_that_writes_it(self) -> None:
+        # A platform whose runtime trusts an entry by hash:  the step is the owner's, and the answer says
+        # it is still pending from the first pass that wrote the marker.
+        path = self.seed(["SessionStart"])
+        adapter = types.SimpleNamespace(
+            INSTALL=PL.JsonHookInstaller(
+                path=os.path.join(".minimax", "hooks.json"),
+                events={"SessionStart": 20},
+                trust="run the trust step",
+            )
+        )
+        with mock.patch.object(PL, "load_adapter", return_value=adapter):
+            answer = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertTrue(answer["trust_pending"])
+        self.assertEqual(answer["trust"], "run the trust step")
+        marker = path + ".letter-trust"
+        self.assertTrue(os.path.exists(marker))
+        # The marker keeps the step visible:  the reconcile keeps running, and keeps saying it is pending.
+        with mock.patch.object(PL, "load_adapter", return_value=adapter):
+            again = PL.reconcile_hooks("minimax", {"HOME": self.home})
+        self.assertTrue(again["trust_pending"])
+        # The owner removes the marker when the step is done, and the reconcile stops asking.
+        os.remove(marker)
+        with mock.patch.object(PL, "load_adapter", return_value=adapter):
+            self.assertEqual(PL.reconcile_hooks("minimax", {"HOME": self.home}), {})
+
+    def test_the_reconcile_can_be_turned_off(self) -> None:
+        path = self.seed(["SessionStart", "Stop"])
+        with mock.patch.object(PL, "reconcile_hooks") as reconcile:
+            PL.main(
+                ["hook", "--platform", "minimax"],
+                env={"HOME": self.home, PL.ENV_RECONCILE: "0"},
+                stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001"})),
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+        self.assertEqual(reconcile.call_count, 0)
+        self.assertNotIn("UserPromptSubmit", self.load(path)["hooks"])
