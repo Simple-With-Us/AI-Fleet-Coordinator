@@ -997,11 +997,17 @@ export async function diagnosticTail(store, limit = 40, now = Date.now()) {
   if (max === 0) return [];
   const cutoff = now - CALL_RETENTION_DAYS * DAY_MS;
   const live = (rows) => (rows ?? []).filter((row) => row && Number.isFinite(row.ts) && row.ts > cutoff);
+  const [diagnostics, grDiagnostics, grBearer, grAssert] = await Promise.all([
+    store.get("diagnostics"),
+    store.get("gr_diagnostics"),
+    store.get("gr_diagnostics_bearer"),
+    store.get("gr_diagnostics_assert"),
+  ]);
   const rows = [
-    ...live(await store.get("diagnostics")),
-    ...live(await store.get("gr_diagnostics")),
-    ...live(await store.get("gr_diagnostics_bearer")),
-    ...live(await store.get("gr_diagnostics_assert")),
+    ...live(diagnostics),
+    ...live(grDiagnostics),
+    ...live(grBearer),
+    ...live(grAssert),
   ];
   const byKind = new Map();
   // Walk newest first (each store is already in update order), so rows whose
