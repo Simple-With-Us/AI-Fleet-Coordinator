@@ -16,6 +16,11 @@ How it fits together.
   a `subagent_child` row is a sub-thread of the row its `parent_id` names, and takes the pair after its parent's
   in the parent's row (parent CC, child CD), exactly as every other platform places them.  A session the store
   does not know yet registers as a chat and is named at its next prompt.
+- ZCode runs no hook inside a sub-agent session, so no child of its own ever registers itself:  a lettered
+  parent's own turn end enrolls the children the store names for it (`platform_letter.enroll_children`, on the
+  Stop pass), and the repair pass lists a lettered parent's children too (`zcode_unlettered_sessions`).  A
+  child whose parent holds no letter waits for its parent's own letter, and a refusal (the parent's row is
+  full) is the child's failed note, retried no sooner than the library's own retry window.
 - The title is written straight into the store (`zcode_rename`), and never over a name a person gave:  a title is
   the hook's own when it is what the hook last put on the chat (`TitleRequest.shown`), carries the "??" mark, or
   starts with a letter the chat holds or held.
@@ -210,13 +215,24 @@ UNLETTERED_SCAN = 20
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
 
+# The parent-side enrollment pass (`platform_letter.enroll_children`) asks the store for the sub-agent children
+# of one lettered chat:  at most CHILD_SCAN rows leave the store, newest first (the pass replays fewer of them
+# per turn end), and none older than CHILD_MAX_AGE_SECONDS - a child that old is a thread long over, one the
+# repair pass's own window already covers for whatever straggler a live parent's pass misses.
+CHILD_SCAN = 24
+CHILD_MAX_AGE_SECONDS = 7 * 86400
+
 
 def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
-    """This host's interactive sessions whose title still carries the "??: " placeholder, newest first, for the
-    repair a session's start sets off (`platform_letter.repair_after_start`).  Read only, a short wait for a lock,
-    and any doubt (no store, a locked one, a store without the columns this reads) answers None:  no pass this
-    time.  An id that is not a well-formed session id is left out.  Each session's title is read again in its own
-    replayed start before anything changes."""
+    """This host's sessions whose own start never landed a letter, newest first, for the repair a session's
+    start sets off (`platform_letter.repair_after_start`).  Two kinds belong:  an interactive session whose
+    title still carries the "?": " placeholder, and a sub-agent child whose parent's own note holds a letter -
+    ZCode runs no hook inside a sub-agent, so no start of a child's own ever comes, and its parent's row is
+    where its letter belongs.  A child whose parent holds no letter is left out (its replay would register the
+    long-gone parent first), and so is one whose own note already holds a letter, an archived or deleted
+    session of either kind, and an id that is not a well-formed session id.  Read only, a short wait for a
+    lock, and any doubt (no store, a locked one, a store without the columns this reads) answers None:  no pass
+    this time.  Each session's title is read again in its own replayed start before anything changes."""
     path = store_file(env)
     if not os.path.isfile(path):
         return None
@@ -250,20 +266,113 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         # Stream candidates until the eligible result cap, rather than truncating before
         # normalized age checks.  Recent starts must not starve older repair candidates.
         now = time.time()
-        found: list[str] = []
+        found: list[tuple[float, str]] = []
         for row in rows:
             try:
                 sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
             except ValueError:
                 continue
-            if time_col:
-                stamp = _stored_seconds(row[1] if len(row) > 1 else None)
-                if stamp is None or not (
-                    UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
-                ):
-                    continue
-            found.append(sid)
+            stamp = _stored_seconds(row[1] if len(row) > 1 else None)
+            if stamp is None or not (
+                UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
+            ):
+                continue
+            found.append((stamp, sid))
             if len(found) >= UNLETTERED_SCAN:
+                break
+        found.extend(_unlettered_children(conn, cols, time_col, env, now))
+        found.sort(key=lambda found_row: found_row[0], reverse=True)
+        return [sid for _stamp, sid in found[:UNLETTERED_SCAN]]
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _unlettered_children(
+    conn: sqlite3.Connection, cols: set[str], time_col: str, env: Mapping[str, str], now: float
+) -> list[tuple[float, str]]:
+    """The sub-agent children a repair pass may enroll, as (age stamp, id), newest first:  young enough for
+    the pass's own window, not archived or deleted, and their parent's note holds a letter
+    (`platform_letter.note_holds_letter`), so the replay registers the child in its parent's row and never
+    a parent nobody ever lettered.  A child whose own note already holds a letter is left out:  the replay
+    would only mark a dormant child seen again.  At most UNLETTERED_SCAN of them;  a store without the
+    columns this reads answers none."""
+    if "parent_id" not in cols or "task_type" not in cols:
+        return []
+    where = ["task_type = 'subagent_child'"]
+    if "time_archived" in cols:
+        where.append("time_archived IS NULL")
+    if "time_deleted" in cols:
+        where.append("time_deleted IS NULL")
+    found: list[tuple[float, str]] = []
+    try:
+        rows = conn.execute(
+            "SELECT id, parent_id, %s FROM session WHERE %s ORDER BY %s DESC"
+            % (time_col, " AND ".join(where), time_col)
+        )
+        for row in rows:
+            try:
+                sid = SI.check(row[0] if isinstance(row[0], str) else "", "a stored session id")
+                parent = SI.check(row[1] if isinstance(row[1], str) else "", "a stored parent id")
+            except ValueError:
+                continue  # neither id may name a note path, so neither is read unchecked
+            stamp = _stored_seconds(row[2] if len(row) > 2 else None)
+            if stamp is None or not (
+                UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
+            ):
+                continue
+            if not parent or not PL.note_holds_letter(env, SEAT, parent):
+                continue  # no lettered parent here:  the replay would register the parent first
+            if PL.note_holds_letter(env, SEAT, sid):
+                continue  # already lettered:  a replay would only mark a dormant child seen
+            found.append((stamp, sid))
+            if len(found) >= UNLETTERED_SCAN:
+                break
+    except sqlite3.Error:
+        return found
+    return found
+
+
+def zcode_child_sessions(env: Mapping[str, str], parent: str) -> list[str] | None:
+    """The sub-agent children the store names for `parent`, newest first, for the enrollment a parent's
+    turn end makes (`platform_letter.enroll_children`).  Read only, a short wait for a lock, and any doubt
+    (no store, a store without the `parent_id`, `task_type` or time columns this reads) answers None:  no
+    enrollment this turn.  A row whose age cannot be read is left out - unknown age is not evidence a child
+    is young - and so is one older than CHILD_MAX_AGE_SECONDS:  a child that old is a thread long over, one
+    the repair pass's own window already covers."""
+    if not parent:
+        return None
+    path = store_file(env)
+    if not os.path.isfile(path):
+        return None
+    try:
+        conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=0.5)
+    except (sqlite3.Error, ValueError):
+        return None
+    try:
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(session)").fetchall()}
+        if "parent_id" not in cols or "task_type" not in cols:
+            return None
+        time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
+        if not time_col:
+            return None
+        rows = conn.execute(
+            "SELECT id, %s FROM session WHERE task_type = 'subagent_child' AND parent_id = ?"
+            " ORDER BY %s DESC" % (time_col, time_col),
+            (parent,),
+        )
+        now = time.time()
+        found: list[str] = []
+        for row in rows:
+            sid = row[0] if isinstance(row[0], str) else ""
+            if not sid:
+                continue
+            stamp = _stored_seconds(row[1] if len(row) > 1 else None)
+            if stamp is None or not (0 <= now - stamp <= CHILD_MAX_AGE_SECONDS):
+                continue
+            found.append(sid)
+            if len(found) >= CHILD_SCAN:
                 break
         return found
     except sqlite3.Error:
@@ -410,6 +519,7 @@ SPEC = PL.PlatformSpec(
     quiet_events=("Stop",),
     chat_payload=zcode_chat_payload,
     unlettered_sessions=zcode_unlettered_sessions,
+    child_sessions=zcode_child_sessions,
     title_writer=zcode_rename,
     locations=("mac", "server"),
     # The wrapper the retired ZCode client left on a host:  `install --check` names it while it is there.
