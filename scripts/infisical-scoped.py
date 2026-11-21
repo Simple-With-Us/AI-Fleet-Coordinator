@@ -255,7 +255,11 @@ def _doctor(args: argparse.Namespace) -> int:
             report["project_id_resolvable"] = True
         except FI.SecretsError as exc:
             reason = reason or _reason_token(exc.message)
-        token, status = _store_token(account, env, home)
+        try:
+            token, status = _store_token(account, env, home)
+        except ReaderError as exc:
+            # Keep the doctor's JSON contract on store refusal, including timeout.
+            token, status = "", "keychain-timeout" if exc.code == 124 else "store-refused"
         if not token:
             reason = reason or status
         else:

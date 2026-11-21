@@ -232,6 +232,17 @@ class DoctorTests(ReaderTestCase):
         self.assertEqual(report["failure_reason"], "no-token")
         self.assertNotIn(synthetic_token(), out)
 
+    def test_hung_store_keeps_the_diagnostic_json_contract(self) -> None:
+        fi.token_from_store.side_effect = fi.SecretsError("private-provider-error", 124)
+        code, out, err = self.run_reader("doctor")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        report = json.loads(out)
+        self.assertEqual(report["failure_reason"], "keychain-timeout")
+        self.assertEqual(report["reader_configured"], False)
+        self.assertEqual(report["ok"], False)
+        self.assertNotIn("private-provider-error", out)
+
 
 class AccountTableTests(unittest.TestCase):
     """The account is picked by (project, folder):  a token covers one folder only."""
