@@ -51,6 +51,12 @@ class BoundedReadTests(unittest.TestCase):
                 if case.mode == "slow-headers":
                     time.sleep(1.2)
                 metadata = self.path.endswith("/service-token")
+                if metadata and case.mode == "redirect":
+                    self.send_response(302)
+                    self.send_header("Location", case.env[core.ENV_API] + "/redirect-target")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if metadata:
                     payload = {
                         "workspace": case.project,
@@ -205,6 +211,23 @@ class BoundedReadTests(unittest.TestCase):
     def test_real_worker_verifies_grant_and_exact_named_values(self):
         self.assertEqual(self.fetch(), {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
         self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(self.children), 1)
+
+    def test_real_worker_never_follows_redirect_from_validated_loopback_provider(self):
+        self.mode = "redirect"
+        with self.assertRaises(core.SecretsError) as caught:
+            self.fetch()
+        self.assertEqual(caught.exception.failure_kind, "refused")
+        self.assertEqual(self.calls, ["/api/v2/service-token"])
+        self.assertEqual(len(self.children), 1)
+
+    def test_real_worker_rejects_malformed_loopback_base_before_http(self):
+        self.env[core.ENV_API] += "?untrusted-marker"
+        with self.assertRaises(core.SecretsError) as caught:
+            self.fetch()
+        self.assertEqual(caught.exception.failure_kind, "refused")
+        self.assertEqual(str(caught.exception), "bounded-read-failed")
+        self.assertEqual(self.calls, [])
         self.assertEqual(len(self.children), 1)
 
     def test_real_worker_finite_expiry_policy_refuses_null_before_values(self):
