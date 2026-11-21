@@ -600,6 +600,13 @@ export async function runOnce({
   return { threads: threadResult, totals };
 }
 
+// The timer's process status reports Sessions and Events drain failures only.
+// Thread sync is a separately logged best-effort export and does not alter this
+// contract. Preserve an earlier nonzero status when --interval runs again.
+export function drainExitCode(totals, currentExitCode = 0) {
+  return totals?.failed > 0 || totals?.error ? 1 : currentExitCode;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const intervalArg = args.indexOf("--interval");
@@ -628,9 +635,9 @@ async function main() {
       // stays the Sessions and Events drain's alone.
       const { totals } = await runOnce({ shouldStop: () => stopRequested });
       console.log(JSON.stringify({ done: true, ...totals }));
-      // A pass that failed outside the row loop (a wedged registry call, a header
-      // mismatch) is an operational failure: report it to systemd as one.
-      if (totals.error) process.exitCode = 1;
+      // Both failed rows and failures outside the row loop are operational
+      // failures: report them to systemd while keeping the next timer interval.
+      process.exitCode = drainExitCode(totals, process.exitCode);
       if (!intervalSec || stopRequested) break;
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, intervalSec * 1000);

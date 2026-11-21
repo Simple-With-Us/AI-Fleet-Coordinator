@@ -183,6 +183,9 @@ def cmd_search(a: argparse.Namespace) -> int:
         )
         if k in search_args
     }
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to the user-supplied fields before anything reaches the API.
+    _local_scan_arguments({"query": a.query, "app": a.app, "category": a.category, "seat": a.seat})
     res = public_fallback.call_with_fallback(
         "recall_search",
         fallback_args,
@@ -286,6 +289,9 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     if not text.strip():
         raise FleetRagError("contribute needs non-empty text")
     kwargs = dict(text=text, category=a.category, app=a.app, seat=a.seat, title=a.title, url=a.url)
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     guard = None
     in_range = recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX
     if (
@@ -358,6 +364,9 @@ def cmd_correct(a: argparse.Namespace) -> int:
         url=a.url,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_correct", kwargs, lambda: recall_api.recall_correct(**kwargs)
     )
@@ -381,6 +390,9 @@ def cmd_retract(a: argparse.Namespace) -> int:
         seat=a.seat,
         expected_revision=a.expected_revision,
     )
+    # The pre-transmission gate the recall policy mandates:  the same scan the remote
+    # route runs, applied to every field before anything reaches the API.
+    _local_scan_arguments(kwargs)
     res = public_fallback.call_mutation(
         "recall_retract", kwargs, lambda: recall_api.recall_retract(**kwargs)
     )
@@ -574,13 +586,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "text",
         nargs="?",
-        help="the text, or - to read it from stdin (prefer --file / - for anything "
-        "that might contain a credential)",
+        help="the text, or - to read it from stdin (prefer --file / - for long "
+        "text, so it stays out of the shell history)",
     )
     c.add_argument(
         "--file",
-        help="read the text from PATH (- for stdin); safest for log excerpts, "
-        "command lines, or config snippets that might hold a credential",
+        help="read the text from PATH (- for stdin); keeps long text out of the "
+        "shell history.  Credential-shaped content is refused before transmission "
+        "on every route:  redact secrets from the excerpt first",
     )
     c.add_argument("--category", required=True, choices=recall_api.CONTRIB_CATEGORIES)
     c.add_argument("--app", default="fleet")
@@ -1070,6 +1083,20 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
         elif isinstance(value, (list, tuple)):
             stack.extend((f"{path}[{i}]", v) for i, v in enumerate(value))
     return None
+
+
+def _local_scan_arguments(arguments) -> None:
+    """The same gate on the direct (non-remote) route, before anything reaches the API:  a
+    credential-shaped value in any argument field refuses the call naming the field, never the
+    value or a prefix.  The scanner is the fleet's own;  if it cannot be loaded the call is
+    refused, because the local route has no unscanned path either."""
+    scanner = _remote_scanner()
+    hit = _remote_scan_arguments(scanner, arguments, bearer="")
+    if hit:
+        raise FleetRagError(
+            f"{hit} looks like it holds a credential;  nothing was sent.  "
+            "Remove the secret and retry."
+        )
 
 
 def _remote_scanner():
