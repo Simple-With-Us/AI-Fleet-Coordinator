@@ -1613,7 +1613,13 @@ def _validate_json_limits(value, *, max_depth=BOOTSTRAP_MAX_DEPTH, max_nodes=BOO
 def bootstrap_request(raw):
     """Private host-to-editor envelope only; the original request owns the transaction."""
     envelope, bootstrap = None, None
-    refused = {"tool": TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}
+    refused = {
+        "tool": TOOL,
+        "ok": False,
+        "result": "refused",
+        "errorCode": "bootstrap_unavailable",
+        "unavailableSource": "operator_settings_bootstrap",
+    }
 
     def pairs(items):
         result = {}
@@ -1639,6 +1645,10 @@ def bootstrap_request(raw):
         ):
             return refused, 2
         bootstrap = envelope["bootstrap"]
+        if isinstance(bootstrap, dict):
+            for name in (BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER):
+                if not bootstrap.get(name):
+                    return dict(refused, requiredBinding=name, unavailableSource=name), 2
         if (
             not isinstance(bootstrap, dict)
             or set(bootstrap) != {BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER}
@@ -1681,6 +1691,7 @@ def main(argv=None, stdin=None, out=None):
                     "ok": False,
                     "result": "refused",
                     "errorCode": "bootstrap_unavailable",
+                    "unavailableSource": "operator_settings_bootstrap",
                 },
                 2,
             )

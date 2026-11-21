@@ -48,7 +48,7 @@ REPO="$(cd -P -- "$SCRIPTS/.." && pwd)"
 SERVICE=operator-sheets-drain.service
 TIMER=operator-sheets-drain.timer
 MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_drain.mjs
-  thread_registry_export.mjs)
+  thread_registry_export.mjs registry_export_reader.mjs)
 PREFLIGHT_TIMEOUT=120
 
 DRY=0

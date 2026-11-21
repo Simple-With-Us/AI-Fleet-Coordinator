@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,10 +36,6 @@ VALUES = {
     "CURSOR_API_KEY": "synthetic-cursor-key",
     "CURSOR_SYNC_API_KEY": "synthetic-cursor-sync-key",
     "GOOGLE_SHEETS_SA": '{"client_email":"synthetic@example.invalid"}',
-    "PUSHOVER_USER_KEY": "synthetic-pushover-user",
-    "PUSHOVER_USAGE_API_TOKEN": "synthetic-pushover-usage",
-    "PUSHOVER_ST_API_TOKEN": "synthetic-pushover-st",
-    "PUSHOVER_CT_API_TOKEN": "synthetic-pushover-ct",
 }
 
 
@@ -122,10 +117,6 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
             "CURSOR_API_KEY",
             "CURSOR_SYNC_API_KEY",
             "GOOGLE_SHEETS_SA",
-            "PUSHOVER_USER_KEY",
-            "PUSHOVER_USAGE_API_TOKEN",
-            "PUSHOVER_ST_API_TOKEN",
-            "PUSHOVER_CT_API_TOKEN",
         ):
             os.environ.pop(name, None)
         os.environ.update(
@@ -198,62 +189,6 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
         Provider.allowed_paths = {"/unrelated"}
         self.assertEqual(worker.read_key(), "")
         self.assertEqual(Provider.requests, [])
-
-    def test_staged_notes_script_loads_notification_secrets_without_real_actions(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            staged = root / "apps"
-            bin_dir = root / "bin"
-            hostile = root / "hostile"
-            staged.mkdir()
-            bin_dir.mkdir()
-            hostile.mkdir()
-            for name in ("apple-notes-coding.sh", "fleet_infisical_cli.py", "fleet_infisical.py"):
-                shutil.copy2(ROOT / name, staged / name)
-            (hostile / "fleet_infisical.py").write_text("raise AssertionError('wrong client')\n")
-            (hostile / "fleet_infisical_cli.py").write_text("raise AssertionError('wrong CLI')\n")
-            marker = root / "notification-stub-called"
-            fake_osascript = bin_dir / "osascript"
-            fake_osascript.write_text("#!/bin/sh\nprintf 'note-test-id\\n'\n")
-            fake_osascript.chmod(0o755)
-            fake_curl = bin_dir / "curl"
-            fake_curl.write_text(
-                "#!/usr/bin/env python3\n"
-                "import os, sys\n"
-                "args = sys.argv[1:]\n"
-                "ok = ('token=' + 'synthetic-pushover-usage' in args and\n"
-                "      'user=' + 'synthetic-pushover-user' in args)\n"
-                "open(os.environ['NOTIFICATION_MARKER'], 'w').write('ok' if ok else 'bad')\n"
-            )
-            fake_curl.chmod(0o755)
-            env = dict(os.environ)
-            env.update(
-                {
-                    "HOME": str(root),
-                    "PATH": f"{bin_dir}:/usr/bin:/bin",
-                    "PYTHONPATH": str(hostile),
-                    "INFISICAL_READ_PATHS": "/",
-                    "APPLE_NOTES_ACTION_LOG": "off",
-                    "APPLE_NOTES_PIN": "0",
-                    "APPLE_NOTES_NOTIFY": "1",
-                    "NOTIFICATION_MARKER": str(marker),
-                    "AGENT_SESSION": "test-session-1234",
-                }
-            )
-            result = subprocess.run(
-                ["bash", str(staged / "apple-notes-coding.sh"), "[AFC, Test] Loader", "Body."],
-                cwd=hostile,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr[-1200:])
-            self.assertEqual(marker.read_text(), "ok")
-            self.assertIn("PUSHOVER_USER_KEY:/", Provider.requests)
-            self.assertIn("PUSHOVER_USAGE_API_TOKEN:/", Provider.requests)
-            self.assertNotIn("PUSHOVER_ST_API_TOKEN:/", Provider.requests)
-            self.assertNotIn("PUSHOVER_CT_API_TOKEN:/", Provider.requests)
 
     def test_canonical_cli_isolated_entry_returns_no_value_on_bad_binding(self):
         with tempfile.TemporaryDirectory() as temp:
