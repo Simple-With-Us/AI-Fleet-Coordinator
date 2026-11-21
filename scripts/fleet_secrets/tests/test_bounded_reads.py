@@ -1,17 +1,21 @@
 """Actual isolated reader, provider trickle and bounded private IPC regressions."""
 
+import datetime
 import errno
 import io
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 from urllib.parse import unquote
 
@@ -27,6 +31,8 @@ class BoundedReadTests(unittest.TestCase):
         self.children = []
         self.omitted_fields = ()
         self.record_changes = {}
+        self.expiry = "2099-01-01T00:00:00Z"
+        self.permissions = ["read"]
         self.mixed = threading.Barrier(2)
         case = self
 
@@ -45,9 +51,9 @@ class BoundedReadTests(unittest.TestCase):
                 if metadata:
                     payload = {
                         "workspace": case.project,
-                        "permissions": ["read"],
+                        "permissions": case.permissions,
                         "scopes": [{"environment": "prod", "secretPath": "/operator-registry"}],
-                        "expiresAt": "2099-01-01T00:00:00Z",
+                        "expiresAt": case.expiry,
                     }
                     if case.mode == "wrong-scope":
                         payload["scopes"] = [{"environment": "prod", "secretPath": "/"}]
@@ -469,3 +475,342 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
         with self.assertRaises(core.UsageError):
             self.fetch()
         self.assertEqual(self.children, [])
+
+
+class FileNamedReadTests(unittest.TestCase):
+    stop = BoundedReadTests.stop
+
+    def setUp(self):
+        BoundedReadTests.setUp(self)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        self.binding = self.home / "own-reader"
+        self.binding.write_text(self.sample)
+        self.binding.chmod(0o600)
+
+    def request(self):
+        return dict(
+            schema=1,
+            operation="file-named-fetch",
+            project_slug="fleet-ops",
+            path="/operator-registry",
+            token_file=str(self.binding),
+            names=["A_KEY"],
+            timeout=1.0,
+            max_output_bytes=4096,
+            env={
+                "HOME": str(self.home),
+                core.ENV_PROJECT: self.project,
+                core.ENV_API: self.env[core.ENV_API],
+                "INFISICAL_ENVIRONMENT": "prod",
+            },
+        )
+
+    def test_legacy_four_positional_receiver_wrapper_preserves_real_grant_validation(self):
+        original = core.validate_service_metadata
+        calls = []
+
+        def finite_grant(metadata, project, paths, permissions):
+            # Same four-positional call contract as the settings bootstrap receiver.
+            calls.append((project, paths, permissions))
+            original(metadata, project, paths, permissions)
+            expiry = datetime.datetime.fromisoformat(metadata["expiresAt"].replace("Z", "+00:00"))
+            if expiry > datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=90):
+                raise core.SecretsError("receiver-expiry-refused")
+
+        self.permissions = ["read", "write"]
+        self.expiry = (
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+        ).isoformat()
+        with mock.patch.object(core, "validate_service_metadata", new=finite_grant):
+            self.assertEqual(
+                core.verify_service_token(
+                    self.sample,
+                    self.project,
+                    "/operator-registry",
+                    self.env,
+                    writer=True,
+                ),
+                ("/operator-registry",),
+            )
+            self.expiry = "2099-01-01T00:00:00Z"
+            with self.assertRaisesRegex(core.SecretsError, "receiver-expiry-refused"):
+                core.verify_service_token(
+                    self.sample, self.project, "/operator-registry", self.env, writer=True
+                )
+            self.mode = "wrong-scope"
+            with self.assertRaisesRegex(core.SecretsError, "token-scope-mismatch"):
+                core.verify_service_token(
+                    self.sample, self.project, "/operator-registry", self.env, writer=True
+                )
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            len(self.calls), 3, "every attempt uses the actual provider metadata verifier"
+        )
+
+    def test_fetch_preserves_legacy_verifier_call_shape_and_real_named_read(self):
+        original = core.verify_service_token
+        calls = []
+
+        def legacy_verifier(token, project, path, env, *, writer=False, deadline=None):
+            calls.append((project, path, writer))
+            return original(token, project, path, env, writer=writer, deadline=deadline)
+
+        with mock.patch.object(core, "verify_service_token", new=legacy_verifier):
+            self.assertEqual(
+                core.fetch_project(
+                    self.project,
+                    "/operator-registry",
+                    self.env,
+                    token=self.sample,
+                    names=["A_KEY"],
+                    strict_records=True,
+                    require_finite_expiry=False,
+                ),
+                {"A_KEY": "value-A_KEY"},
+            )
+        self.assertEqual(calls, [(self.project, "/operator-registry", False)])
+        self.assertEqual(len(self.calls), 2)
+
+    def run_worker(self, request=None, command=None):
+        child = core.subprocess.Popen(
+            command or core._bounded_read_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
+        )
+        try:
+            output = core._read_worker_pipes(
+                child,
+                json.dumps(request or self.request()).encode(),
+                65536,
+                time.monotonic() + 2,
+            )
+            self.assertNotIn(self.sample, output.decode())
+            self.assertNotIn(str(self.binding), output.decode())
+            return json.loads(output), child.returncode
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=1)
+            for stream in (child.stdin, child.stdout):
+                if not stream.closed:
+                    stream.close()
+
+    def test_actual_file_worker_reads_one_value_without_an_app_or_grandchild(self):
+        reply, code = self.run_worker()
+        self.assertEqual(
+            (reply, code), ({"schema": 1, "ok": True, "values": {"A_KEY": "value-A_KEY"}}, 0)
+        )
+        self.assertEqual(len(self.children), 1)
+        self.assertEqual(len(self.calls), 2)
+        # A copied canonical file has no package, CLI, bootstrap-module or RAG dependency.
+        copied = self.home / "copied-client.py"
+        shutil.copyfile(core.__file__, copied)
+        self.assertEqual(
+            self.run_worker(
+                command=[sys.executable, "-I", "-B", str(copied), "--bounded-read-worker"]
+            )[1],
+            0,
+        )
+
+    def test_file_worker_requires_finite_expiry_but_raw_reader_retains_null_compatibility(self):
+        self.expiry = None
+        reply, code = self.run_worker()
+        self.assertEqual((reply["reason"], code), ("token-expired-or-invalid", 4))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(
+            core.bounded_fetch_project(
+                self.project,
+                "/operator-registry",
+                self.env,
+                token=self.sample,
+                names=["A_KEY"],
+                timeout=1,
+                strict_records=True,
+            ),
+            {"A_KEY": "value-A_KEY"},
+        )
+
+    def test_file_worker_rejects_expired_wrong_scope_and_hidden_rows(self):
+        for mode, expiry, changes in (
+            ("wrong-scope", "2099-01-01T00:00:00Z", {}),
+            ("normal", "2000-01-01T00:00:00Z", {}),
+            ("normal", "2099-01-01T00:00:00Z", {"secretValueHidden": True}),
+            ("normal", "2099-01-01T00:00:00Z", {"secretPath": "/foreign"}),
+        ):
+            with self.subTest(mode=mode, expiry=expiry, changes=changes):
+                self.mode, self.expiry, self.record_changes = mode, expiry, changes
+                reply, code = self.run_worker()
+                self.assertEqual(code, 4)
+                self.assertFalse(reply["ok"])
+
+    def test_metadata_env_precedes_file_and_existing_first_line_format_is_preserved(self):
+        directory = self.home / ".simple-tools"
+        directory.mkdir(mode=0o700)
+        metadata = directory / "fleet-ops-project-id"
+        metadata.write_text("\n  " + self.project + "  \nignored second line\n")
+        request = self.request()
+        del request["env"][core.ENV_PROJECT]
+        self.assertTrue(self.run_worker(request)[0]["ok"])
+        metadata.unlink()
+        metadata.symlink_to(self.binding)
+        # A configured ID wins without inspecting the unsafe metadata file.
+        self.assertTrue(self.run_worker()[0]["ok"])
+        before = len(self.calls)
+        reply, code = self.run_worker(request)
+        self.assertEqual((reply["reason"], code), ("project-binding-required", 4))
+        self.assertEqual(len(self.calls), before)
+        request["env"][core.ENV_PROJECT] = "malformed-explicit-id"
+        self.assertEqual(self.run_worker(request)[0]["reason"], "project-binding-required")
+        self.assertEqual(len(self.calls), before)
+
+    def test_metadata_fifo_oversize_and_bad_uuid_refuse_before_bootstrap_content(self):
+        directory = self.home / ".simple-tools"
+        directory.mkdir(mode=0o700)
+        metadata = directory / "fleet-ops-project-id"
+        request = self.request()
+        del request["env"][core.ENV_PROJECT]
+        for kind in ("fifo", "oversize", "malformed"):
+            with self.subTest(kind=kind):
+                if kind == "fifo":
+                    os.mkfifo(metadata, 0o600)
+                else:
+                    metadata.write_text("x" * (4097 if kind == "oversize" else 20))
+                with mock.patch.object(core, "_protected_read", wraps=core._protected_read) as read:
+                    with self.assertRaisesRegex(core.SecretsError, "project-binding-required"):
+                        core._file_named_fetch(request, time.monotonic())
+                    self.assertEqual(len(read.call_args_list), 1)
+                    self.assertFalse(read.call_args.kwargs["private"])
+                metadata.unlink()
+        self.assertEqual(self.calls, [])
+
+    def test_schema_and_ambient_auth_refuse_before_file_or_provider(self):
+        requests = []
+        for key, value in (
+            ("token", self.sample),
+            ("writer", True),
+            ("strict_records", False),
+            ("require_finite_expiry", False),
+        ):
+            requests.append(dict(self.request(), **{key: value}))
+        request = self.request()
+        request["env"]["INFISICAL_TOKEN"] = self.sample
+        requests.append(request)
+        for value in (True, "29", float("inf")):
+            requests.append(dict(self.request(), timeout=value))
+        for request in requests:
+            with (
+                self.subTest(keys=list(request)),
+                mock.patch.object(core, "_protected_read") as read,
+            ):
+                with self.assertRaises(core.UsageError):
+                    core._file_named_fetch(request, time.monotonic())
+                read.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_unsafe_bootstraps_refuse_without_content_read(self):
+        unsafe = self.home / "unsafe"
+        cases = (
+            "symlink",
+            "fifo",
+            "hardlink",
+            "mode",
+            "oversize",
+            "shared-parent",
+            "sticky-parent",
+            "retired",
+        )
+        for kind in cases:
+            with self.subTest(kind=kind):
+                selected = unsafe
+                if kind == "symlink":
+                    unsafe.symlink_to(self.binding)
+                elif kind == "fifo":
+                    os.mkfifo(unsafe, 0o600)
+                elif kind == "hardlink":
+                    os.link(self.binding, unsafe)
+                elif kind in ("shared-parent", "sticky-parent", "retired"):
+                    parent = self.home / (".secrets" if kind == "retired" else kind)
+                    parent.mkdir()
+                    selected = parent / "token"
+                    selected.write_text(self.sample)
+                    selected.chmod(0o600)
+                    parent.chmod(
+                        0o700
+                        if kind == "retired"
+                        else (0o1777 if kind == "sticky-parent" else 0o777)
+                    )
+                else:
+                    unsafe.write_text("x" * 8193 if kind == "oversize" else self.sample)
+                    unsafe.chmod(0o644 if kind == "mode" else 0o600)
+                with (
+                    mock.patch.object(
+                        core.os, "read", side_effect=AssertionError("content must not be read")
+                    ),
+                    self.assertRaisesRegex(core.SecretsError, "bootstrap-file-refused"),
+                ):
+                    core._protected_read(str(selected), 8192, private=True)
+                if unsafe.exists() or unsafe.is_symlink():
+                    unsafe.unlink()
+        self.assertEqual(self.calls, [])
+
+    def test_read_only_file_and_retired_parent_alias(self):
+        self.binding.chmod(0o400)
+        self.assertTrue(self.run_worker()[0]["ok"])
+        retired = self.home / ".secrets"
+        retired.mkdir(mode=0o700)
+        alias = self.home / "alias"
+        alias.symlink_to(retired, target_is_directory=True)
+        token = retired / "own-token"
+        token.write_text(self.sample)
+        token.chmod(0o600)
+        with mock.patch.object(core.os, "read", side_effect=AssertionError("no retired content")):
+            with self.assertRaisesRegex(core.SecretsError, "bootstrap-file-refused"):
+                core._protected_read(str(alias / token.name), 8192, private=True)
+
+    def test_changed_file_and_replaced_name_refuse_after_real_read(self):
+        for replacement in (False, True):
+            self.binding.write_text(self.sample)
+            original = os.read
+            changed = False
+
+            def mutate(fd, size):
+                nonlocal changed
+                value = original(fd, size)
+                if value and not changed:
+                    changed = True
+                    if replacement:
+                        self.binding.unlink()
+                    self.binding.write_text(self.sample + "changed")
+                    self.binding.chmod(0o600)
+                return value
+
+            with mock.patch.object(core.os, "read", side_effect=mutate):
+                with self.assertRaisesRegex(core.SecretsError, "bootstrap-file-refused"):
+                    core._protected_read(str(self.binding), 8192, private=True)
+
+    def test_raw_token_format_has_no_assignment_or_other_source_fallback(self):
+        for text in (
+            "export INFISICAL_TOKEN=" + self.sample,
+            "'" + self.sample + "'",
+            self.sample + "\nextra",
+        ):
+            self.binding.write_text(text)
+            reply, code = self.run_worker()
+            self.assertEqual((reply["reason"], code), ("bootstrap-file-refused", 4))
+        self.assertEqual(self.calls, [])
+
+    def test_file_operation_keeps_parent_deadline_and_reaps_trickling_worker(self):
+        self.mode = "slow-body"
+        request = self.request()
+        request["timeout"] = 0.2
+        started = time.monotonic()
+        with self.assertRaises(core.SecretsError):
+            core._bounded_read_request(request, started + 0.2)
+        self.assertLess(time.monotonic() - started, 0.8)
+        self.assertIsNotNone(self.children[-1].poll())
