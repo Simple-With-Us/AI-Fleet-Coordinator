@@ -409,7 +409,7 @@ def _expected_token_identity(expected: object) -> dict | None:
         ):
             raise ValueError
         expiry = datetime.fromisoformat(expected["expiresAt"].replace("Z", "+00:00"))
-        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise UsageError("expected-token-identity-invalid") from None
