@@ -960,13 +960,13 @@ class Tools:
             )
         return text
 
-    def _scan(self, **fields: str) -> None:
+    def _scan(self, verb: str = "post", **fields: str) -> None:
         for field, value in fields.items():
             kind = secretscan.scan(value, self.known)
             if kind:
                 raise ToolError(
                     "refused_secret",
-                    "refusing to post:  the %s looks like it contains %s" % (field, kind),
+                    "refusing to %s:  the %s looks like it contains %s" % (verb, field, kind),
                 )
 
     def _resolve_to(self, names: list[str]) -> tuple[list[str], list[str]]:
@@ -2642,7 +2642,13 @@ class Tools:
         return self.ok(text, structured)
 
     def _tool_recall_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        return self._recall(lambda: RECALL.search(args, env=self.agent.rt.env))
+        return self._recall(
+            lambda: RECALL.search(
+                args,
+                env=self.agent.rt.env,
+                scan=lambda field, value: self._scan("search", **{field: value}),
+            )
+        )
 
     def _tool_recall_stats(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall(lambda: RECALL.stats(env=self.agent.rt.env))

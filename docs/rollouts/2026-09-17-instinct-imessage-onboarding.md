@@ -1,5 +1,16 @@
 # 2026-09-17 — Onboarding prompt for INSTINCT, the iMessage interface seat
 
+## Current Scoped Reader Delivery
+
+The historical installation record below predates AFC-800.  The current outbox read path needs exactly two public code files in the same directory: the bridge and the canonical Infisical reader.  Prepare both from the same reviewed source:
+
+```sh
+cp ~/Code/AI-Fleet-Coordinator/scripts/github-outbox-bridge.py ~/apps/github-outbox-bridge.py
+cp ~/Code/AI-Fleet-Coordinator/scripts/fleet_infisical.py ~/apps/fleet_infisical.py
+```
+
+The reader uses only the caller's explicit Fleet-OPS project declaration and its own scoped service-token transport, requesting the selected bot's names from prod /zulip.  An explicit rc file retains its existing route.  Missing canonical code refuses before the token is consulted; no installed secrets application supplies a fallback.  Preparing these code files proves no live grant, installation, launchd activation or runtime acceptance.  Qualify those separately before changing the working installation.
+
 PR #251.  Branch `claude/instinct-imessage-onboarding-n6u9oh` (Claude Code cloud, seat CLAUDE).
 
 ## Context
