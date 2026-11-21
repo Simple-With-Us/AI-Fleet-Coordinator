@@ -2102,7 +2102,7 @@ def token_from_store(
     """Return one consumer token and a status, without exposing the token on failure."""
     env = os.environ if env is None else env
     home = Path.home() if home is None else home
-    if not account or account.strip() != account or "/" in account or account.startswith("."):
+    if not isinstance(account, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account):
         return "", "no-token"
     if _is_macos():
         return _token_from_keychain(account)

@@ -15,6 +15,7 @@ import io
 import json
 import sys
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -26,8 +27,8 @@ SCRIPTS = Path(__file__).resolve().parent
 # A value that must never show up in any output.  It is not a credential:  it is the
 # marker a fake read would have returned.
 SENTINEL = "VALUE-SHOULD-NEVER-APPEAR"
-# The synthetic project id the repo's own tests use, never the production one.
-PROJECT_ID = "00000000-0000-4000-8000-000000000001"
+# Construct a deterministic synthetic ID at test runtime; no project ID is committed.
+PROJECT_ID = str(uuid.UUID(int=1, version=4))
 
 
 def synthetic_token() -> str:
@@ -76,6 +77,16 @@ class ReaderTestCase(unittest.TestCase):
 
 
 class GetVerbTests(ReaderTestCase):
+    def test_explicit_empty_account_never_uses_table_account(self) -> None:
+        fi.token_from_store.side_effect = lambda account, *_: (
+            ("", "no-token") if account == "" else (synthetic_token(), "ok")
+        )
+        code, out, _err = self.run_reader("get", "A_KEY", "--folder", "/", "--account", "")
+        self.assertEqual(code, 4)
+        self.assertEqual(out, "")
+        self.assertEqual(fi.token_from_store.call_args.args[0], "")
+        self.fetch_verified.assert_not_called()
+
     def test_hung_store_is_exit_124_without_provider_text(self) -> None:
         fi.token_from_store.side_effect = fi.SecretsError("private-provider-error", 124)
         code, out, err = self.run_reader("get", "A_KEY", "--folder", "/")

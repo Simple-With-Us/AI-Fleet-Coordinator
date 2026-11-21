@@ -119,6 +119,8 @@ class FileStoreTests(unittest.TestCase):
     def test_invalid_account_refuses_traversal(self):
         with mock.patch.object(fi, "_is_macos", return_value=False):
             self.assertEqual(fi.token_from_store("../escape", {}, self.home), ("", "no-token"))
+            self.assertEqual(fi.token_from_store("bad\x00account", {}, self.home), ("", "no-token"))
+            self.assertEqual(fi.token_from_store("bad\naccount", {}, self.home), ("", "no-token"))
 
 
 class KeychainStoreTests(unittest.TestCase):

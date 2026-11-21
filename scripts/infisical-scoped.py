@@ -110,7 +110,7 @@ def _account_for(project: str, folder: str, named: str | None = None) -> str:
     answers, and a folder it does not carry is refused rather than read with somebody
     else's token.
     """
-    if named:
+    if named is not None:
         return named
     account = ACCOUNTS.get((project, folder))
     if not account:
