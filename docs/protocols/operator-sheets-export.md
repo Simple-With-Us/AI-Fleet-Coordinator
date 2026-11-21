@@ -144,5 +144,13 @@ The app redeploy (Eavesdropper image) must land before the first fenced drain: t
   `operator-sheets-drain.timer` and let a running drain finish first.  Rows with credential-shaped cells are refused and counted before anything is written, and only the refusal count is logged.
 - Inspect the fence in the store: `docker exec -w /app/scripts eavesdropper python3 -m simple_tools.operator_registry export-attempts --db /data/operator/registry.sqlite3 --limit 20`.
 - Pending backlog: same CLI, `pending-outbox --limit 5`.
+- Recover a missing session snapshot only from the registry-owning container's local DB custody.  Run the plan first and retain its digest; then enqueue against that exact plan:
+
+  ```sh
+  python3 -m simple_tools.operator_registry plan-session-snapshot --record-id 'RECORD_ID'
+  python3 -m simple_tools.operator_registry enqueue-session-snapshot --record-id 'RECORD_ID' --expected-sha256 'PLAN_SHA256'
+  ```
+
+  The plan is read-only and prints only a digest, pending-match count and action.  The write rechecks the digest under the registry writer transaction, refuses unknown or changed records, and appends one canonical `session_upsert` only when the same snapshot is not already pending.  It leaves session fields, last-seen time, aliases, events, issues and existing outbox acknowledgements unchanged.  The ordinary drain then reconciles the sheet and records the normal export fence and acknowledgement.  These are local CLI operations, not registry API routes; do not use them against another store.
 - An `ambiguous` fence row names the duplicated ID and its sheet rows; resolve by hand in the sheet (delete the wrong duplicate), then let the next timer run reconcile.
 - A `failed` row with a credential-shaped-cell detail is a registry data problem, not a transport problem: fix the source record; the row stays pending by design.
