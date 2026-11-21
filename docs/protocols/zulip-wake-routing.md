@@ -123,6 +123,70 @@ These never address a chat:  a silent mention in the body (`@_**Claude** AA`, th
   sure.  It never answers;  the woken chat answers.
 - No secrets in the router's answer, none in its logs;  the signing key never leaves it.
 
+### Turns (Several Wakes In One Idle Turn)
+
+A chat that was busy while it was tagged may have many wakes waiting when it goes idle.  The
+router may then deliver several of them as one idle turn (AFC-831):  a head and up to seven
+riders, all for the same exact chat.  Each wake still keeps its own wake id, receipt id, done
+file, ledger row and final status, and nothing is dropped or merged, not even two wakes for one
+message.
+
+- Opt-in, off by default:  a platform takes part only by declaring `Platform.deliver_turn` (and,
+  for its Mac handler, the module constant `TURNS`), and only while the knob
+  `WAKE_ROUTER_TURN_MAX_WAKES` is 2 or more.  Its default is 1, which is off, and the router
+  never carries more than 8, whatever it says.  Every other seat runs exactly as before.  Muse
+  Code is the only platform that declares turns today.
+- Exact addresses only:  a wake rides only when its pick is a letter, a reply or a session id,
+  with the router's own note for it, for the same session, letter, generation and host as the
+  head.  A pick the router is not sure of (`sole-live-chat`, `most-recent`, `consultant-pick`)
+  and any it inferred (a Linear issue, a topic, a tie) is delivered alone, as before, and a turn
+  never makes it certain.  The pick is the router's own, made on the addressing without the
+  sender's own quoted tags, so a sender quoting itself never makes a wake ride.
+- Order:  the run is contiguous.  The walk from the head stops at the first wake of that chat
+  that cannot ride or is not picked yet, so one chat's wakes still run in the order they came;
+  another chat's wake is passed over.
+- A busy chat:  a head whose chat has answered it `busy` goes alone from then on (`busy_seen` in
+  its pending file, so a restart keeps it).  Riders are not marked again for every try at a chat
+  that is in a live turn, where a lost answer or a crash would close them;  the wakes behind that
+  head ride the next turn.
+- A registry outage:  a turn answers it exactly as a wake alone does.  The check before delivery
+  runs before any rider is marked, and an outage there, or a turn whose answer is the outage
+  (`registry-unavailable`), sends the head back with none of its attempts spent and no
+  `busy_seen`, and every rider back with nothing used.  A host with no registry address or key
+  spends one of the head's attempts, as it would alone, and the riders still go back untouched.
+- Before any effect:  each rider's pending file is marked first (an attempt, the in-flight mark
+  and `ride`), then the head's pending file takes the manifest (`turn`:  its id, the riders and
+  every message id) with its in-flight mark, as the last write before `deliver_turn`.  The
+  ledger gets no row before the effect.
+- The echo:  a rider counts as carried only when the far side names it, in order, in a readable
+  echo of the offer.  The Mac dispatcher hands a turn only to a module that declares `TURNS`,
+  marked `turn_dispatch`, and only then puts an echo in its answer, so a missing echo always
+  means only the head was carried.  A rider not carried goes back to pending with nothing used,
+  and leads or rides a later turn.  An echo that cannot be read after the turn ran closes the
+  riders `unknown` with `turn-unconfirmed`, and one that claims riders for a turn that ran
+  nothing closes them `unknown` with `turn-answer-conflict`.
+- Receipts:  each member's receipt is the usual one plus a `turn` object, `{id, role: "head",
+  members, message_ids, carried}` for the head and `{id, role: "rider", head, index}` for a
+  rider.  The head's `carried` lists the riders the turn carried:  `[]` when it carried none and
+  they went back, and null only when the answer could not say and they were closed.  A rider is
+  `delivered` only when it was carried, and its `delivered` is true only with the chat's own
+  confirmation or a completed turn.  A wake outside a turn has no `turn` object.
+- Crashes:  every member a committed turn may have carried is closed by the replay as `unknown`,
+  with `delivered` null and the code `interrupted-during-delivery`, and none is ever run again;
+  a wake outside a turn keeps `dead`.  A rider whose head holds no committed manifest of its
+  turn, or whose settled head says the turn did not carry it, ran nothing:  the replay takes its
+  marks back with nothing used, and it is delivered later.
+- Time:  a platform gives a turn its one-wake limit (`WAKE_ROUTER_RESUME_TIMEOUT_SECONDS`) once
+  per member, and the ssh route waits that long plus its margin, so each wake keeps the time it
+  would have had alone.  A turn can therefore outlast `WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS`:  a
+  restart during one closes its members as above and never runs one twice.
+- Caps:  at most 8 wakes per turn, and a prompt of at most 3,500 characters (one fixed core
+  text, pointer-only:  ids and the router's own notes, never a topic, a sender or the message).
+  Over the ssh route the whole request stays 1 KiB under the Mac's 16 KiB stdin limit, or the
+  head goes alone.  The woken chat reads each message with `zulip_get_message`, at the default
+  length first and in full only when it needs the rest, so a turn asks it to read at most 8
+  messages, each at most twice.  Whatever does not fit waits, untouched, for the next turn.
+
 The reference implementation is `scripts/simple_tools/wake_router.py` and its tests;  `scripts/simple_tools/claude_wake.py` is its current registered plugin.  The standalone `scripts/zc-wake-bridge` and `scripts/ag-wake-bridge` still run their own picks during the cutover, and their link and refusal semantics are not guaranteed to match the shared router's until each migrates.
 
 The decider's OpenRouter model is declared in the live Mac listener's `listener.toml`, in `[decider.consult_backup]` — the one server listener carries no such table today.  It is the only record of the owner's preset for the decider, so it is kept even while Consult sits unarmed and no deployment arms it:

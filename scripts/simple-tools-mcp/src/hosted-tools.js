@@ -1746,6 +1746,13 @@ export class HostedTools {
     const recall = this.requireRecall();
     const query = args.query.trim();
     if (!query) throw new ToolError("invalid_argument", "argument 'query' must not be blank");
+    // The same pre-upstream gate the recall writes run:  a query, app or category that
+    // looks like it holds a secret is refused here, before anything is sent anywhere,
+    // and the refusal names the field and kind, never the value.
+    for (const [field, value] of Object.entries({ query, app: args.app?.trim() ?? "", category: args.category?.trim() ?? "" })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to search:  the ${field} looks like it contains ${kind}`);
+    }
     await this.reserve("read");
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;

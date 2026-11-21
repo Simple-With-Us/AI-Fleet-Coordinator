@@ -478,7 +478,11 @@ class NotesToolTests(McpHarness):
         self.assertEqual(sent["markdown"], "body")
         self.assertEqual(sent["session"], SESSION)
         self.assertEqual(sent["summary"], "short")
-        self.assertNotIn("identity", sent, "the gateway derives the seat from this bot's own bearer")
+        self.assertEqual(
+            sent.get("identity"),
+            "CLAUDE",
+            "a write names the bot it acts as;  the gateway checks it against this bot's own bearer",
+        )
         self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")
     def test_the_wait_is_25_seconds_by_default_capped_at_ninety_and_zero_answers_queued(self):
@@ -635,18 +639,32 @@ class RecallToolTests(FakePrograms):
         self.assertNotIn("BEGIN_UNTRUSTED_RECALL injected", result["content"][0]["text"])
         call = self.calls(self.recall_out)[0]
         self.assertEqual(
-            call["argv"], ["search", "pm2 env", "--limit", "3", "--json", "--app", "fleet"]
+            call["argv"],
+            ["search", "--limit=3", "--json", "--app=fleet", "--", "pm2 env"],
         )
         audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
             "recall_search", {"query": "pm2 env", "include_retracted": True}
         )
         self.assertEqual(audit["structuredContent"]["doc_ids"], ["doc-1"])
-        self.assertEqual(
-            self.calls(self.recall_out)[-1]["argv"][-1], "--include-retracted"
+        self.assertIn(
+            "--include-retracted", self.calls(self.recall_out)[-1]["argv"]
         )
         self.assertFalse(
             [k for k in call["env"] if k.startswith("ZULIP")], "no Zulip variable reaches recall"
         )
+
+    def test_search_refuses_a_secret_shaped_query_before_anything_is_sent(self):
+        reply = json.dumps({"hits": []})
+        session = self.session(self.env(RECALL_TEST_REPLY=reply))
+        leak = "deploy notes token ghp_" + "EXAMPLE0" * 5
+        refused = session.call("recall_search", {"query": leak})
+        self.assert_tool_error(refused, "refused_secret")
+        self.assertNotIn("EXAMPLE0", refused["content"][0]["text"])
+        self.assertEqual(self.calls(self.recall_out), [], "the refusal sent nothing to recall")
+        # A clean search on the same shape still goes through.
+        ok = session.call("recall_search", {"query": "deploy notes"})
+        self.assert_structured("recall_search", ok)
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
 
     def test_contribute_sends_the_text_on_stdin_attributed_to_the_claimed_identity(self):
         text = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."

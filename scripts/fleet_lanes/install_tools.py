@@ -1576,14 +1576,17 @@ def render_zcode_bashrc_block() -> str:
         "# Drop every occurrence of the shim dir already in PATH, then put it at the front\n"
         "# unconditionally:  a prepend that runs later in the dotfiles must not leave the dir\n"
         "# behind another entry that also holds a fleet tool, and re-sourcing must never stack\n"
-        "# a second copy.  Other entries keep their order, duplicates included.\n"
+        "# a second copy.  Empty elements are dropped too:  a trailing or doubled colon leaves an\n"
+        "# empty PATH element, and an empty element means the current directory, which turns a\n"
+        "# shell's executable lookup into a search of wherever the shell happens to be.  The other\n"
+        "# entries keep their order, duplicates included.\n"
         '_zc_old="${PATH:-}:"\n'
         '_zc_kept=""\n'
         '_zc_sep=""\n'
         'while [ -n "$_zc_old" ]; do\n'
         '  _zc_one="${_zc_old%%:*}"\n'
         '  _zc_old="${_zc_old#*:}"\n'
-        '  if [ "$_zc_one" != "$_zc_seat_bin" ]; then\n'
+        '  if [ -n "$_zc_one" ] && [ "$_zc_one" != "$_zc_seat_bin" ]; then\n'
         '    _zc_kept="$_zc_kept$_zc_sep$_zc_one"\n'
         '    _zc_sep=":"\n'
         "  fi\n"
@@ -8264,7 +8267,7 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
         dir_state = "foreign"
     elif not os.path.isdir(d):
         dir_state = "absent"
-    elif stat.S_IMODE(os.stat(d).st_mode) != 0o755:
+    elif stat.S_IMODE(os.stat(d).st_mode) != 0o700:
         dir_state = "wrong-mode"
     else:
         dir_state = "ok"
@@ -8321,6 +8324,19 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
                 bashrc_action, hand_line, stray = _zcode_bashrc_classify(text)
             except Refused as exc:
                 bashrc_reason = str(exc)
+            else:
+                # The writability check mirrors apply's refusal exactly, but only when a write is
+                # actually owed:  a read-only profile whose marked block is already current needs
+                # nothing from apply, and calling that refused while the doctor passes it would
+                # make plan and the doctor disagree about a healthy host.  A read-only profile
+                # that still needs the block is one apply will refuse, so plan reports refused
+                # here and never promises a write that cannot happen.
+                if bashrc_action != "none" and not stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200:
+                    bashrc_action = "refused"
+                    bashrc_reason = (
+                        f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
+                        "apply does not override the owner's write protection"
+                    )
     current = (
         not blocked
         and dir_state == "ok"
@@ -8361,13 +8377,13 @@ def plan_zcode_seat_default(paths: Paths) -> ZcodeSeatPlan:
 def _emit_zcode_seat_plan(sp: ZcodeSeatPlan, emit: Callable[[str], None]) -> None:
     """The seat-default section of `plan zcode`, under the hooks-config plan of the same platform."""
     if sp.state == "stale":
-        # "a re-apply replaces what differs" is only true when apply may write at all;  point at the
-        # line that actually names the blocker (the REFUSED line for a refused profile, the WARNING
-        # line above for a foreign shim dir), never at a line the emit does not print.
+        # "a re-apply replaces what differs" is only true when apply may write at all;  name the line
+        # that identifies the blocker by its emit label, with no direction word, since both the
+        # REFUSED line and the WARNING lines print below this one.
         if sp.bashrc_action == "refused":
             state = "stale (apply refuses to write here; see the REFUSED line)"
         elif sp.dir_state == "foreign":
-            state = "stale (apply refuses to write here; see the warning above)"
+            state = "stale (apply refuses to write here; see the WARNING line)"
         else:
             state = "stale (a re-apply replaces what differs)"
     else:
@@ -8457,7 +8473,7 @@ def apply_zcode_seat_default(paths: Paths) -> Result:
         return Result(t, "refused", f"{exc}; nothing written")
     try:
         os.makedirs(d, exist_ok=True)
-        os.chmod(d, 0o755)
+        os.chmod(d, 0o700)
         shim_written: list[str] = []
         for tool in ZCODE_SEAT_TOOLS:
             want = render_zcode_seat_shim(tool, resolved[tool]).encode("utf-8")
@@ -8523,14 +8539,36 @@ def verify_zcode_seat_default(paths: Paths) -> list[Check]:
         ]
     out: list[Check] = []
     d = paths.zcode_seat_bin
-    if os.path.islink(d) or not os.path.isdir(d):
-        out.append(Check(t, "seat shim dir", "FAIL", f"{d} is missing or not a directory; run `apply zcode`"))
+    if os.path.islink(d):
+        # A symlinked seat dir is a state apply deliberately refuses to manage, so the doctor names
+        # the by-hand remediation as a WARN rather than a FAIL:  red-forever on a state the tool will
+        # never change proves nothing (the same honesty as the unmanageable-profile case below).
+        out.append(
+            Check(
+                t,
+                "seat shim dir",
+                "WARN",
+                f"{d} is a symlink; apply refuses to manage a symlinked seat dir — remove it by hand and re-run `apply zcode`",
+            )
+        )
+    elif not os.path.isdir(d):
+        if os.path.exists(d):
+            out.append(
+                Check(
+                    t,
+                    "seat shim dir",
+                    "WARN",
+                    f"{d} exists and is not a directory; apply refuses to manage it — remove it by hand and re-run `apply zcode`",
+                )
+            )
+        else:
+            out.append(Check(t, "seat shim dir", "FAIL", f"{d} is missing; run `apply zcode`"))
     else:
         mode = stat.S_IMODE(os.stat(d).st_mode)
-        if mode != 0o755:
-            out.append(Check(t, "seat shim dir", "FAIL", f"{d} has mode {mode:04o}, expected 0755"))
+        if mode != 0o700:
+            out.append(Check(t, "seat shim dir", "FAIL", f"{d} has mode {mode:04o}, expected 0700"))
         else:
-            out.append(Check(t, "seat shim dir", "PASS", f"{d} present, mode 0755"))
+            out.append(Check(t, "seat shim dir", "PASS", f"{d} present, mode 0700"))
         extra = sorted(set(os.listdir(d)) - set(ZCODE_SEAT_TOOLS))
         if extra:
             out.append(
@@ -8573,8 +8611,20 @@ def verify_zcode_seat_default(paths: Paths) -> list[Check]:
         except Refused as exc:
             out.append(Check(t, "bashrc block", "FAIL", str(exc)))
         else:
+            # A read-only profile is apply's refused state, not a broken install:  apply will not
+            # override the owner's write protection, so a missing or drifted block there is a WARN
+            # with the owner's two choices named, never a FAIL whose `apply zcode` remediation apply
+            # would then refuse to run.
+            writable = bool(stat.S_IMODE(os.stat(bashrc).st_mode) & 0o200)
+            readonly_note = (
+                f"{bashrc} is read-only (mode {stat.S_IMODE(os.stat(bashrc).st_mode):04o}); "
+                "apply does not override the owner's write protection — "
+                "chmod u+w and re-run `apply zcode`, or manage the marked block by hand"
+            )
             if action == "none":
                 out.append(Check(t, "bashrc block", "PASS", f"one current marked block in {bashrc}"))
+            elif not writable:
+                out.append(Check(t, "bashrc block", "WARN", readonly_note))
             elif action == "replace":
                 out.append(
                     Check(

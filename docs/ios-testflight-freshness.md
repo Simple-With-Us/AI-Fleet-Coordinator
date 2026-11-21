@@ -14,11 +14,14 @@ fleet's TestFlight guards.
 | File | What it is |
 |---|---|
 | `scripts/ios-fleet/ios_testflight_freshness.mjs` | The check, the remedy and the alerts.  Node, no dependencies. |
+| `scripts/ios-fleet/testflight_github_service.mjs` | Dedicated App adapter. Uses the isolated resolver below, not a PEM file. |
+| `scripts/ios-fleet/testflight_infisical_key.mjs` | Fixed isolated Infisical GitHub-key resolver, login-keychain reader only. |
+| `scripts/ios-fleet/testflight_dispatch_reconcile.mjs` | Exact intent inspection and explicit approved resolution audit. Never retries POST. |
 | `scripts/ios-fleet/testflight-apps.json` | The registry:  one row per App Store Connect record.  **Edit this** when an app, a repo path, a ship workflow or a compile check changes. |
 | `scripts/ios-fleet/ios_testflight_freshness.test.mjs` | Tests (`node --test`, everything stubbed, run in CI). |
 | `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series builds from 1000 upward, marketing `0.1.0` / CT `1.1.2`).  Default scope is each app's **current** train only;  `--json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
 | `scripts/ios-fleet/build_number_audit.test.mjs` | Audit tests (`node --test`, ASC stubbed). |
-| `scripts/ios-fleet/install-testflight-freshness.sh` | Copies the check and the registry into `~/apps/ios-fleet` and loads the LaunchAgent. |
+| `scripts/ios-fleet/install-testflight-freshness.sh` | Copies the check, service adapter, isolated GitHub-key resolver, reconciliation utility, scoped ASC helper and registry. Files-only by default; --activate is explicit and prohibited until release blockers clear. |
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |
 
 `~/apps/ios-fleet` stays the install target, as for the rest of the fleet's TestFlight tooling.
@@ -40,7 +43,7 @@ A missing binding, a token that is not that exact read-only grant, an expired to
 
 `--allow-legacy-asc-creds`, or `IOS_TF_ALLOW_LEGACY_ASC_CREDS=1`, is the explicit opt-in that skips this binding and lets the installed `asc-api.mjs` use its own fallback (environment `ASC_*` values, then standalone `fleet-secrets` `/asc`, then a legacy key folder).  Deploy checks and the LaunchAgent do not set it.  The build-number audit uses the same `makeDeps().asc` path, so it follows the same rule.
 
-The owner creates the token and stores it.  This repository does not mint it.  Suggested registry name: `ios-testflight-freshness-ro`.  One project, environment `prod`, folder `/asc`, access read, with an expiry.  On the Mac, the login-keychain item above is the binding the scheduled job reads.
+Token creation and storage require separately verified owner authority, not this document.  This repository does not mint it.  Suggested registry name: `ios-testflight-freshness-ro`.  One project, environment `prod`, folder `/asc`, access read, with an expiry.  On the Mac, the login-keychain item above is the binding the scheduled job reads.
 
 ## Commands
 
@@ -146,8 +149,7 @@ named under the table, so a new app cannot go unchecked.
 ## The automatic remedy (`--ship-behind`)
 
 For each app that is behind, oldest gap first, the check runs the app's **own** ship workflow
-with `gh workflow run <workflow> --repo Simple-With-Us/<Repo> --ref main` (plus the registry's
-inputs, for example `-f upload=true` for Hog Hunter).  It never runs
+with the dedicated TestFlight GitHub App installation and the workflow dispatch API on main (plus the registry's inputs, for example upload=true for Hog Hunter).  It never runs
 `xcodebuild` here, never passes `--force-ship`, never sets `IOS_TF_MIN_INTERVAL_SEC`, and never
 runs an App Store GM workflow.  Every one of these must hold, or the app is reported
 `blocked` or `deferred` with the reason:
@@ -169,8 +171,7 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
 
 ## Alerts (`--alert`)
 
-The check posts to Zulip `#Work-In-Progress`, topic `AFC testflight-freshness`, with
-`simple-chat post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
+The check posts through the dedicated TestFlight alert service binding to the fixed Zulip `#Work-In-Progress`, topic `AFC testflight-freshness`. It does not use an agent seat or user identity. Existing failure-alert deduplication applies to dispatch uncertainty and token cleanup failures as well.
 
 - an app the check has seen behind, without a break, for **more than 6 hours**:  by then the
   catch-up ship has had its chance, or the line says why it could not run (pipeline disabled,
@@ -186,13 +187,23 @@ atomically), and a lock directory beside it keeps two mutating runs apart.
 ## Where it runs, and why there
 
 A Mac LaunchAgent, `com.jay.ios-testflight-freshness`, every two hours at :20 (scheduled, not
-always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs the scoped binding described above (the login-keychain item, plus the Fleet-OPS project id the Mac already uses for other Infisical reads).  Until that binding exists the job exits 2.  It does not fall back to `fleet-secrets` `/asc`.  `gh` is signed in with the `workflow` scope that `workflow_dispatch` needs, and `simple-chat` has the CLAUDE bot's Zulip credential.  A GitHub Actions cron in
-AI-Fleet-Coordinator could read the App Store Connect key through the org's Fleet-OPS Infisical
-identity (ContactLogo's workflows already do), but it would still need a token proven to run
-`workflow_dispatch` in every app repo (AFC's `FLEET_GITHUB_TOKEN` has an unverified scope) and a
-Zulip bot credential for the alert, which AFC does not hold.  The job is a few dozen API calls
-with no build, so it adds no real load to the shared Mac;  the ships it starts run on each app's
-own runner.
+always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs the scoped binding described above (the login-keychain item, plus the Fleet-OPS project id the Mac already uses for other Infisical reads).  Until that binding exists the job exits 2.  It does not fall back to `fleet-secrets` `/asc`.  GitHub runtime calls must use App5840817, installation183854416, selected app repositories only. The GitHub key resolver uses only login-keychain service `infisical-service-token`, account `ios-testflight-github-ro`. It requires an exact read-only Fleet-OPS Production `/testflight-github` token with future finite expiry, then retrieves only `GH_APP_SWU_TESTFLIGHT_PRIVATE_KEY` into an RSA KeyObject in memory. No local PEM file, environment token, inherited agent credential or Jay GitHub CLI fallback exists. The folder must be an isolated root sibling, not nested under another token's granted folder. Do not add nested folders or imports/references. The adapter resolves once per run-scoped instance, including failed resolution, rather than issuing Infisical requests for every GitHub call. App/install validation and per-repository GitHub token mint/revoke remain per call.
+
+Source qualification is not live acceptance. Before use, verify the actual issued token metadata, exact-path behavior (the legacy single-scope API pins parent/sibling/descendant requests to the allowed returned path; the resolver must reject mismatched returned metadata), immediate registry row and GUI LaunchAgent keychain ACL, then dedicated App read/mint/revoke. A token whose name merely resembles the planned reader is not evidence. Key possession remains owner-confirmed, never regenerated or collected in chat. No activation before these conditions clear.
+
+The original key and safe native capture path were established before the isolated reader was issued. Engineering lifecycle choice: one-year finite token with actual issued expiry recorded in the Fleet Reference sheet, and a pre-expiry operational check 14 days before expiry. That checkpoint was created against the actual issued expiry, 2027-11-20T21:59:03.066Z. It must report to the owner through the normal task owner and prepare scope-preserving renewal under current grants; it must not regenerate the App key or silently accept expiry. Confirm the deployed alert binding separately. The checkpoint is an operational requirement, not a claim the current source emits pre-expiry alerts or that Jay chose one year. Existing registered non-expiring tokens are not converted by this change.
+
+Each logical GitHub read currently performs app metadata, installation metadata, one-repo token mint, data read, token revoke. Five requests, no hidden retry or broad shared token. A shared8minute GitHub budget caps new external calls; per-request cap30seconds and cleanup cap10seconds. Consumer external work has a10minute budget and remaining-time child limits. These are source-enforced external-I/O budgets, not a hard process watchdog or live timing measurement. Existing schedule is2hourly at :20 with no RunAtLoad; state-lock stale reclaim is30minutes. Qualify installed exact bytes, real request volume, worst-case cadence and lock before activation.
+
+## Dispatch evidence and reconciliation
+
+Dispatch sends return_run_details=true using documented API2026-03-10. A successful response retains an exact returned run ID when supplied; token-revoke failure is reported independently without erasing dispatch acceptance. Before any POST, a UUID intent with repo/workflow/ref/head/time is written durably. Every non-definitive HTTP status or transport outcome is never automatically retried. Explicit400/401/403/404/422 rejection is not recorded as an accepted ship.
+
+A no-ID unknown is reconciliation-required. It remains a visible serial-safety hold even if a later check is current or main advances. A workflow list or elapsed window cannot prove non-delivery, and a similar run cannot prove attribution. Use the installed reconciliation utility's inspect command with the affected app key. Exact ID inspection requires repository, workflow path, ref, event, head SHA and ID to match. Head movement or any mismatch remains explicit, never a timing heuristic.
+
+An operator may record a resolution only AFTER recovering the owner's actual explicit disposition and verifying its evidence. The record command takes a JSON decision file with app, exact nonempty intentId, disposition confirmed-rejected or confirmed-completed, nonempty evidenceRef and ownerApprovalRef. Reference strings alone are not permission. It takes the normal lock, rejects stale or legacy missing-ID intents, atomically saves full resolution history, and never dispatches/retries/cancels. Confirmed rejection clears that intent; confirmed completion retains same-head acceptance dedupe. Missing-ID legacy state requires source-reviewed recovery, not undefined identifiers or hand edits. No new reconciliation approval is inferred from engineering scope.
+
+Official response semantics: https://github.blog/changelog/2026-02-19-workflow-dispatch-api-now-returns-run-ids/ and https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event .
 
 ## Post-merge deploy check
 
@@ -209,8 +220,12 @@ From an AI-Fleet-Coordinator lane at origin/main:
 
 ```bash
 bash scripts/ios-fleet/install-testflight-freshness.sh --dry-run
-bash scripts/ios-fleet/install-testflight-freshness.sh
+bash scripts/ios-fleet/install-testflight-freshness.sh --no-launchd
 ```
+
+Preparation only: do not use --activate or load the job while service-key custody, exact installed identity and runtime gates remain unresolved. Default installation (also --no-launchd) copies code only, does not authorize creating a key or activation. Installer includes the service-auth and reconciliation modules. These commands are not deployment authorization; installation and activation require the separate installed runtime acceptance.
+
+Before any writes, the installer refuses if an existing shared service_zulip.py, simple_tools/secretscan.py or fleet-apps.json differs from source or is a symlink. The one exception is the exact already-installed scanner SHA256 c8111e98b1d897fe6b27ddf817814d7a72726271eec12245f9e6d165575380e9. Independent source and scan probes qualified it as stricter/equal for freshness scan() usage with the same signature; it is preserved unchanged, not copied over. Every other differing or symlinked scanner refuses before writes. Scanner upgrade is a separate reviewed task, never a freshness side effect.
 
 It keeps a replaced file as `<file>.bak-freshness-<stamp>`.  Logs:
 `~/Library/Logs/ios-testflight-freshness.log` and `.err.log`.
