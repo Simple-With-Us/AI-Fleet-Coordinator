@@ -511,13 +511,17 @@ def _unlettered_children(
     clause = ""
     params: list[Any] = []
     if skipped:
-        clause = " AND TRIM(session_id) NOT IN (%s)" % ",".join("?" * len(skipped))
+        # A row with no id at all is let through:  a NULL never matches the list, and a row that
+        # cannot be named must be counted below and not vanish from the count.
+        clause = " AND (TRIM(session_id) IS NULL OR TRIM(session_id) NOT IN (%s))" % ",".join(
+            "?" * len(skipped)
+        )
         params.extend(sorted(skipped))
     rows = conn.execute(
         "SELECT session_id FROM local_runtime_sessions"
         " WHERE session_kind = ?"
         " AND parent_session_id IS NOT NULL AND parent_session_id != ''"
-        " AND parent_session_id != session_id"
+        " AND (session_id IS NULL OR parent_session_id != session_id)"
         " AND (archived IS NULL OR archived = 0)"
         " AND (created_at_ms IS NULL OR (created_at_ms >= ? AND created_at_ms <= ?))"
         " AND title IS NOT NULL AND title != ''"

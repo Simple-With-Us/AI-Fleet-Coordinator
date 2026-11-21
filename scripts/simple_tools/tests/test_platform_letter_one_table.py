@@ -4,6 +4,7 @@ review asked for holds for every row.  The assigner is the registry API served i
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -264,6 +265,28 @@ class MiniMaxRepairRow(Base):
         with open(os.path.join(folder, " m-0113 .json"), "w", encoding="utf-8") as fh:
             json.dump({"state": "open", "label": "AA"}, fh)
         self.assertIn("m-0113", self.scan())
+
+    def test_a_row_with_no_session_id_is_counted_and_not_named(self) -> None:
+        # A row whose id is not there at all is a row the store has not finished writing.  It is not
+        # named, and it does not vanish either:  the count of the rows that could not be named says
+        # it, whatever the other rows hold (a NULL never matches the list of the lettered ids and
+        # never equals the parent either, so the row comes through and is counted).
+        self.add("m-0116", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0116", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (None, "Child work", "task", "m-0100", 0,
+                 int((self.now - 3600.0) * 1000), int(self.now * 1000)),
+            )
+        conn.close()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            found = self.scan()
+        self.assertIsInstance(found, list)
+        self.assertNotIn(None, found)
+        self.assertIn("1 malformed session id", err.getvalue())
 
     def test_a_row_whose_session_id_is_not_a_session_id_is_not_named(self) -> None:
         # The session id the store holds is checked with the library's own check before anything is
