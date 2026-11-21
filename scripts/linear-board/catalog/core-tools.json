@@ -321,7 +321,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused.  Writes need the server's write switch on.",
+      "description": "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused unless `steal` is set with `reason` naming why the claim is being taken — stealing with those two fields is allowed on every route. Writes need the server's write switch on.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -337,10 +337,19 @@
             "pattern": "^[A-Za-z0-9_:-]+$",
             "type": "string"
           },
+          "reason": {
+            "description": "Why the claim is being taken from another seat.  Required whenever `steal` is set.",
+            "maxLength": 500,
+            "type": "string"
+          },
           "session": {
             "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
+          },
+          "steal": {
+            "description": "Take the issue even when another seat holds the claim.  `reason` is required with this.",
+            "type": "boolean"
           }
         },
         "required": [

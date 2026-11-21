@@ -162,8 +162,8 @@ class Base(unittest.TestCase):
             core.ENV_PROJECT: PROJECT,
             core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER_PROJECT,
             core.ENV_TOKEN: "st.test-service-token-fixture",
-            core.ENV_AI_FLEET_COORDINATOR_TOKEN: "st.ai-fleet-token-fixture",
-            core.ENV_WRITE_TOKEN: "st.test-write-token-fixture",
+            core.COORDINATOR_READ_TOKEN_ENV_NAME: "st.ai-fleet-token-fixture",
+            core.WRITE_TOKEN_ENV_NAME: "st.test-write-token-fixture",
         }
         self.exec_calls = []
         patches = [
@@ -335,7 +335,7 @@ class RunTests(Base):
                 world = self.use(World())
                 env = dict(self.env)
                 env.pop(core.ENV_TOKEN)
-                env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+                env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
                 code, _out, err = self.call(*args, env=env)
                 self.assertEqual(code, 4)
                 self.assertIn(core.ENV_TOKEN, err)
@@ -346,7 +346,7 @@ class RunTests(Base):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
-        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
 
         class TTY:
             def isatty(self):
@@ -427,7 +427,7 @@ class RunTests(Base):
             "INFISICAL_TOKEN": "STORED_TOKEN_SENTINEL",
             "INFISICAL_CLIENT_ID": "STORED_ID_SENTINEL",
             "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
-            core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
+            core.UNIVERSAL_AUTH_SECRET_ENV_NAME: "STORED_UA_SENTINEL",
         }
         self.use(World(secrets=secrets))
         self.call("run", "--only", "ALPHA", "--", "mycmd")
@@ -438,8 +438,8 @@ class RunTests(Base):
             {k for k in self.env if k.startswith("INFISICAL_")}
             - {
                 core.ENV_TOKEN,
-                core.ENV_AI_FLEET_COORDINATOR_TOKEN,
-                core.ENV_WRITE_TOKEN,
+                core.COORDINATOR_READ_TOKEN_ENV_NAME,
+                core.WRITE_TOKEN_ENV_NAME,
             },
         )
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
@@ -454,12 +454,12 @@ class RunTests(Base):
         self.use(World())
         self.env[core.ENV_TOKEN] = "st.parent-token-fixture"
         self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
-        self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
+        self.env[core.UNIVERSAL_AUTH_SECRET_ENV_NAME] = "PARENT_SECRET_SENTINEL"
         self.call("run", "--only", "ALPHA,BETA", "--", "mycmd")
         self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(len(self.exec_calls), 2)
         for _, _, env in self.exec_calls:
-            for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
+            for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.UNIVERSAL_AUTH_SECRET_ENV_NAME):
                 self.assertNotIn(var, env)
             self.assertEqual(env["ALPHA"], VAL_A)
 
@@ -526,7 +526,7 @@ class ScopedServiceTokenTests(Base):
         world = self.use(World())
         code, _, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")
         self.assertEqual(code, 0)
-        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(world.fetches[0][3], self.env[core.COORDINATOR_READ_TOKEN_ENV_NAME])
 
 
 class NoValueInErrorsTests(Base):
@@ -625,7 +625,7 @@ class DoctorTests(Base):
         world = World()
         self.use(world)
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
-        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        self.env.pop(core.COORDINATOR_READ_TOKEN_ENV_NAME)
         code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
         rep = json.loads(out)
         self.assertEqual(code, 0)
@@ -648,7 +648,7 @@ class DoctorTests(Base):
         self.assertFalse(rep["writer_configured"])
         self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
         self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
-        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(world.fetches[0][3], self.env[core.COORDINATOR_READ_TOKEN_ENV_NAME])
         self.assertNoSentinel(out, err)
 
     def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
@@ -693,7 +693,7 @@ class DoctorTests(Base):
             and rep["fetch_names_ok"]
         )
         self.assertEqual(
-            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, "0.43.141")
+            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, None)
         )
         self.assertTrue(rep["reader_configured"])
         self.assertTrue(rep["writer_configured"])
@@ -803,7 +803,7 @@ class SetTests(Base):
         method, path, token, body = next(row for row in self.api if row[0] == "PATCH")
         self.assertEqual(
             (method, path, token),
-            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
+            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.WRITE_TOKEN_ENV_NAME]),
         )
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
         self.assertEqual(
@@ -981,10 +981,10 @@ class SetTests(Base):
     def test_set_requires_separate_write_token(self):
         self.use(World())
         env = dict(self.env)
-        env.pop(core.ENV_WRITE_TOKEN)
+        env.pop(core.WRITE_TOKEN_ENV_NAME)
         code, _out, err = self.run_set("CACHE_K", "--path", "/linear", env=env)
         self.assertEqual(code, 4)
-        self.assertIn(core.ENV_WRITE_TOKEN, err)
+        self.assertIn(core.WRITE_TOKEN_ENV_NAME, err)
         self.assertEqual(self.api, [])
 
     def test_an_empty_value_and_a_bad_name_are_usage_errors_before_any_call(self):
@@ -1186,6 +1186,105 @@ class TestFetchVerified(unittest.TestCase):
 
         with mock.patch.object(core, "_api_json", fake_api):
             self.assertEqual(core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value")
+
+
+class TestApiProvider(unittest.TestCase):
+    def test_invalid_reader_origins_refuse_before_request_or_opener(self):
+        providers = (
+            "http://provider.invalid/api",
+            "http://192.0.2.1/api",
+            "http://[2001:db8::1]/api",
+            "http://localhost/api",
+            "ftp://provider.invalid/api",
+            "https:///api",
+            "https://reader@provider.invalid/api",
+            "https://reader:password@provider.invalid/api",
+            "https://@provider.invalid/api",
+            "https://provider.invalid/api?query",
+            "https://provider.invalid/api?",
+            "https://provider.invalid/api#fragment",
+            "https://provider.invalid/api#",
+            "https://provider.invalid/api/%2e%2e",
+            "https://provider.invalid/api/../other",
+            "https://provider.invalid/api/./other",
+            "https://provider.invalid/api//other",
+            "https://provider.invalid/api\\other",
+            "https://provider.invalid:invalid/api",
+            "https://[::1/api",
+            "https://provider.invalid/a path",
+            "https://provider.invalid/a\tpath",
+            " https://provider.invalid/api",
+            "https://provider.invalid/api\x7f",
+            1,
+        )
+        token = "st." + str(uuid.uuid4())
+        with (
+            mock.patch.object(core.urllib.request, "Request") as request,
+            mock.patch.object(core, "_opener") as opener,
+        ):
+            for provider in providers:
+                with self.subTest(provider=provider):
+                    env = {
+                        core.ENV_API: provider,
+                        core.ENV_TOKEN: token,
+                        core.ENV_PROJECT: PROJECT,
+                    }
+                    with self.assertRaises(core.SecretsError) as caught:
+                        core.fetch_project(PROJECT, "/", env, names=("ALPHA",))
+                    self.assertEqual(str(caught.exception), "read-provider-invalid")
+                    self.assertEqual(caught.exception.failure_kind, "refused")
+                    out, err = io.StringIO(), io.StringIO()
+                    self.assertEqual(cli.main(["get", "ALPHA"], env=env, out=out, err=err), 2)
+                    self.assertEqual(out.getvalue(), "")
+                    self.assertEqual(err.getvalue(), "fleet-secrets: read-provider-invalid\n")
+                    request.assert_not_called()
+                    opener.assert_not_called()
+
+    def test_configured_https_and_loopback_reach_actual_request_with_normalized_base(self):
+        for supplied, expected in (
+            (None, core.API_BASE),
+            ("", core.API_BASE),
+            (
+                "https://INFISICAL.EXAMPLE.INVALID.:443/custom/api/",
+                "https://infisical.example.invalid/custom/api",
+            ),
+            (
+                "https://infisical.example.invalid:8443/api",
+                "https://infisical.example.invalid:8443/api",
+            ),
+            ("http://127.0.0.1:43210/api", "http://127.0.0.1:43210/api"),
+            ("http://[::1]:43210/api", "http://[::1]:43210/api"),
+        ):
+            with self.subTest(supplied=supplied):
+                env = {} if supplied is None else {core.ENV_API: supplied}
+                response = io.BytesIO(b'{"ok":true}')
+                response.status = 200
+                with mock.patch.object(core, "_opener") as opener:
+                    opener.return_value.open.return_value = response
+                    result = core._api_json("GET", "/v2/service-token", "fixture", None, env)
+                self.assertEqual(result, (200, {"ok": True}))
+                request = opener.return_value.open.call_args.args[0]
+                self.assertIsInstance(request, core.urllib.request.Request)
+                self.assertEqual(request.full_url, expected + "/v2/service-token")
+                self.assertEqual(request.get_header("Authorization"), "Bearer fixture")
+                self.assertEqual(core._write_provider(env), expected)
+
+    def test_writer_normalization_compatibility_is_separate_from_strict_reader_syntax(self):
+        for supplied, expected in (
+            ("https://@provider.invalid/api", "https://provider.invalid/api"),
+            ("https://provider.invalid/a\tpath", "https://provider.invalid/apath"),
+            ("https://provider.invalid/api?", "https://provider.invalid/api"),
+            ("https://provider.invalid/api#", "https://provider.invalid/api"),
+            ("https://provider.invalid/a path", "https://provider.invalid/a path"),
+        ):
+            with self.subTest(supplied=supplied):
+                self.assertEqual(core._write_provider({core.ENV_API: supplied}), expected)
+        with self.assertRaises(core.SecretsError) as caught:
+            core._write_provider({core.ENV_API: "http://provider.invalid/api"})
+        self.assertEqual(
+            (str(caught.exception), caught.exception.code), ("write-provider-invalid", 2)
+        )
+        self.assertIsNone(caught.exception.failure_kind)
 
 
 class TestApiJsonBoundedRead(unittest.TestCase):

@@ -97,6 +97,10 @@ SPEC = PL.PlatformSpec(
     close_reasons=(),
     output="json",
     session_env=("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
+    unlettered_feed=(
+        'hook-only:  no hook sets a Cursor title, so no chat ever shows the "??: " mark to look for, and the adapter'
+        " reads no Cursor store;  a chat with no letter asks again at its next prompt"
+    ),
 )
 
 
