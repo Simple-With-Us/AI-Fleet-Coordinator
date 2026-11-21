@@ -1,8 +1,10 @@
 """Scoped Infisical service-token reads and allowlisted writes.
 
-Only explicit process bindings are consumed: INFISICAL_TOKEN is read-only and
-INFISICAL_WRITE_TOKEN is a separate writer.  No Keychain, Automation identity,
-CLI login session or credential-file fallback runs.  Values stay in memory.
+The core read and write commands consume explicit process bindings: INFISICAL_TOKEN
+is read-only and INFISICAL_WRITE_TOKEN is a separate writer.  The dedicated
+token_from_store API reads a consumer's existing scoped token from its own host
+store.  No Automation identity, CLI login or shared credential fallback runs.
+Values stay in memory.
 """
 
 from __future__ import annotations
@@ -2070,6 +2072,93 @@ def clear_unsettled_write(
         raise
     except Exception:
         raise WriteError("state_unavailable", intent) from None
+
+
+# A consumer outside the repository can use the same shared client's grant and
+# response checks without a shared token.  This dedicated API reads only that
+# consumer's existing scoped token: the owner's login keychain on the Mac, or a
+# private file on a server.  It never falls back to an ambient token binding.
+SCOPED_KEYCHAIN_SERVICE = "infisical-service-token"
+TOKEN_STORE_DIR = ".config/infisical/tokens"
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+
+
+def _is_macos() -> bool:
+    return sys.platform.startswith("darwin")
+
+
+def _token_file(home: Path, account: str) -> Path:
+    return home / TOKEN_STORE_DIR / (account + ".token")
+
+
+def token_from_store(
+    account: str,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> tuple[str, str]:
+    """Return one consumer token and a status, without exposing the token on failure."""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if not account or account.strip() != account or "/" in account or account.startswith("."):
+        return "", "no-token"
+    if _is_macos():
+        return _token_from_keychain(account)
+    return _token_from_file(home, account)
+
+
+def _token_from_keychain(account: str) -> tuple[str, str]:
+    command = [SECURITY_BIN, "find-generic-password", "-s", SCOPED_KEYCHAIN_SERVICE,
+               "-a", account, "-w"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise SecretsError("keychain-timeout", 124) from None
+    except FileNotFoundError:
+        return "", "keychain-missing"
+    except (OSError, subprocess.SubprocessError):
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = (result.stdout or "").strip()
+        if not token:
+            return "", "no-token"
+        try:
+            return check_service_token(token), "ok"
+        except SecretsError:
+            return "", "token-unreadable"
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _token_from_file(home: Path, account: str) -> tuple[str, str]:
+    path = _token_file(home, account)
+    try:
+        file_info = path.lstat()
+        parent_info = path.parent.lstat()
+    except OSError:
+        return "", "no-token"
+    if not path.is_file() or path.is_symlink() or not path.parent.is_dir() or path.parent.is_symlink():
+        return "", "token-unreadable"
+    uid = os.getuid()
+    if parent_info.st_uid != uid or file_info.st_uid != uid:
+        return "", "token-unreadable"
+    if (parent_info.st_mode & 0o777) != 0o700 or (file_info.st_mode & 0o777) != 0o600:
+        return "", "token-unreadable"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "", "token-unreadable"
+    token = raw.strip()
+    if not token:
+        return "", "no-token"
+    try:
+        return check_service_token(token), "ok"
+    except SecretsError:
+        return "", "token-unreadable"
 
 
 if __name__ == "__main__":
