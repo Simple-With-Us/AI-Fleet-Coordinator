@@ -196,6 +196,28 @@ def _read_token(project):
     return token
 
 
+def _refusal_reason(exc):
+    """The reason word of a client failure, its kind, and the provider's status.
+
+    The failure's own message is not forwarded:  an external API error can carry a response
+    body, and only named scalars belong in a log.  The reason word is the client's own
+    normalized token (the word before the first colon),  the kind and the status are the two
+    scalars the failure carries,  and the name that was read is in the caller's own message
+    already."""
+    message = str(getattr(exc, "message", "") or "")
+    word = (message.split(":", 1)[0] if ":" in message else message).strip()
+    if not word or " " in word:
+        word = "name-absent" if getattr(exc, "code", None) == 3 else "refused"
+    parts = [word]
+    kind = getattr(exc, "failure_kind", None)
+    if kind in ("unavailable", "refused"):
+        parts.append(kind)
+    status = getattr(exc, "provider_status", None)
+    if isinstance(status, int) and 0 <= status <= 599:
+        parts.append("status-%d" % status)
+    return ", ".join(parts)
+
+
 def scoped_values(names, project, path):
     """Every requested name in ONE scoped read.
 
@@ -224,7 +246,9 @@ def scoped_values(names, project, path):
                 env, scoped_secrets.home_dir(env), project
             )
         except scoped_secrets.SecretsError as exc:
-            raise ReadError(f"the Infisical project id is unusable ({exc.message})") from None
+            raise ReadError(
+                "the Infisical project id is unusable (%s)" % _refusal_reason(exc)
+            ) from None
     try:
         # The strict contract the replaced reader enforced:  every row carries its own
         # workspace, environment and secretPath,  and its value is not hidden.
@@ -244,7 +268,9 @@ def scoped_values(names, project, path):
         # a hung read is a timeout,  not a broken credential.
         raise ReadError("the scoped Infisical read timed out", EXIT_TIMEOUT) from None
     except scoped_secrets.SecretsError as exc:
-        raise ReadError(f"the scoped Infisical read failed ({exc.message})") from None
+        raise ReadError(
+            "the scoped Infisical read failed (%s)" % _refusal_reason(exc)
+        ) from None
 
 
 def batch_values(names, project, path):

@@ -23,7 +23,8 @@ class ScopedReaderError(RuntimeError):
 
     The message names the reader and the account,  never a value.  `exit_code` is the
     code the process ends with:  124 for a timeout,  127 for an interpreter that is not
-    there,  and 2 for anything else.
+    there,  3 for a name the folder holds no value for,  4 for a grant the reader refused,
+    and 2 for anything else.
     """
 
     def __init__(self, message: str, exit_code: int = 2) -> None:
@@ -84,6 +85,18 @@ def _read_through_scoped_reader() -> str:
             "the scoped reader at %s could not run (%s)" % (reader, type(exc).__name__),
             2,
         ) from None
+    if proc.returncode == 3:
+        raise ScopedReaderError(
+            "%s missing in Infisical %s:  the scoped reader at %s read the folder and the "
+            "name holds no value (exit 3)" % (TOKEN_NAME, TOKEN_FOLDER, reader),
+            3,
+        )
+    if proc.returncode == 4:
+        raise ScopedReaderError(
+            "%s in Infisical %s:  the scoped reader at %s refused the %s scoped service "
+            "token (exit 4)" % (TOKEN_NAME, TOKEN_FOLDER, reader, READER_ACCOUNT),
+            4,
+        )
     if proc.returncode != 0:
         raise ScopedReaderError(
             "%s missing in Infisical %s:  the scoped reader at %s refused the %s scoped "

@@ -1238,7 +1238,7 @@ class TestApiProvider(unittest.TestCase):
                     out, err = io.StringIO(), io.StringIO()
                     self.assertEqual(cli.main(["get", "ALPHA"], env=env, out=out, err=err), 2)
                     self.assertEqual(out.getvalue(), "")
-                    self.assertEqual(err.getvalue(), "fleet-secrets: read-provider-invalid\n")
+                    self.assertEqual(err.getvalue(), "fleet-infisical: read-provider-invalid\n")
                     request.assert_not_called()
                     opener.assert_not_called()
 

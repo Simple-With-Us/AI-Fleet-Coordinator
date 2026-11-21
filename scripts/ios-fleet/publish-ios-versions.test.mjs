@@ -8,6 +8,9 @@ import test from "node:test";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(ROOT, "scripts/ios-fleet/publish-ios-versions.sh");
+// A token-shaped value, assembled at run time from synthetic parts:  a literal like that in
+// the source is a committed secret to every scanner.  It is never a credential.
+const SYNTHETIC_GH_TOKEN = "ghp_" + "notarealtoken";
 
 const FLEET = {
   schemaVersion: 1,
@@ -581,14 +584,14 @@ test("the local cache is written only after the publish, never before a failed o
   const bad = stubDir({ branch: { doc: thin } });
   const failed = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: SYNTHETIC_GH_TOKEN, GITHUB_TOKEN: "" },
   });
   assert.notEqual(failed.status, 0);
   assert.ok(!existsSync(cache), "a failed publish must not write the local cache");
   const good = stubDir();
   const done = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: SYNTHETIC_GH_TOKEN, GITHUB_TOKEN: "" },
   });
   assert.equal(done.status, 0, done.stderr);
   assert.equal(JSON.parse(readFileSync(cache, "utf8")).apps["com.socratictrade.ios"].marketingVersion, "1.0.69");

@@ -2551,6 +2551,7 @@ def fetch_scoped(
     env: Mapping[str, str] | None = None,
     *,
     require_finite_expiry: bool = False,
+    timeout: float | None = None,
 ) -> tuple[str, str]:
     """One secret, through the consumer's own scoped token, and the status.
 
@@ -2567,6 +2568,9 @@ def fetch_scoped(
     A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
     retry says so instead of reading a hung lookup as a broken credential.
 
+    `timeout`, when set, bounds the whole read:  the grant check and the fetch share one
+    deadline,  so a caller's own limit is never stretched by a slow provider.
+
     The value never appears in a message, a log or an exception.
     """
     env = os.environ if env is None else env
@@ -2580,6 +2584,7 @@ def fetch_scoped(
                 folder,
                 env,
                 token,
+                timeout,
                 require_finite_expiry=require_finite_expiry,
             ),
             "ok",

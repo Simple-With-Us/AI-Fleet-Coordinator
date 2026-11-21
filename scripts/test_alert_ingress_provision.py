@@ -71,7 +71,7 @@ class ServiceTokenTestCase(unittest.TestCase):
     def read(self, answers, absent=()):
         """Patch the scoped read and return the fake."""
         fake = FakeRead(answers, absent)
-        patcher = mock.patch.object(provision.scoped_secrets, "fetch_project", fake)
+        patcher = mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", fake)
         patcher.start()
         self.addCleanup(patcher.stop)
         return fake
@@ -132,28 +132,29 @@ class ScopedReadContract(ServiceTokenTestCase):
     """
 
     def test_the_read_asks_for_strict_records(self):
+        # The strict read, with the bounds the contract carries:  a deadline,  a cap on the
+        # answer,  and no writer.
         read = self.read({"ONLY_ONE": "the-value"})
         provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
-        self.assertEqual(read.calls[0][3], {"strict_records": True})
+        asked = read.calls[0][3]
+        self.assertIs(asked["strict_records"], True)
+        self.assertIs(asked["writer"], False)
+        self.assertGreater(asked["timeout"], 0)
+        self.assertGreater(asked["max_output_bytes"], 0)
 
     def test_a_row_without_its_provenance_is_refused(self):
-        # The real client,  with an answer that omits its workspace:  the strict read
-        # refuses it,  because the row cannot be tied to the folder it came from.
-        project = str(uuid.uuid4())
-        record = {
-            "type": "shared",
-            "secretKey": "ONLY_ONE",
-            "secretValue": "the-value",
-            "secretValueHidden": False,
-            "environment": "prod",
-            "secretPath": "/",
-        }
+        # The strict read refuses a row that cannot be tied to the folder it came from:
+        # the client raises the refusal,  and the provisioner names it.  The client's own
+        # suite proves the refusal against the real worker
+        # (fleet_infisical_cli_tests.test_bounded_reads).
+        def without_provenance(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsError(
+                "unverified-source:  no secret row for ONLY_ONE at /", 4
+            )
+
         with (
             mock.patch.object(
-                provision.scoped_secrets, "verify_service_token", return_value=("/",)
-            ),
-            mock.patch.object(
-                provision.scoped_secrets, "_api_json", return_value=(200, {"secret": record})
+                provision.scoped_secrets, "bounded_fetch_project", without_provenance
             ),
             self.assertRaises(provision.ReadError) as caught,
         ):
@@ -169,7 +170,7 @@ class ScopedReadContract(ServiceTokenTestCase):
         def hung(project, path, env, *, token=None, names=None, **kwargs):
             raise provision.scoped_secrets.SecretsTimeout()
 
-        with mock.patch.object(provision.scoped_secrets, "fetch_project", hung):
+        with mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", hung):
             with self.assertRaises(provision.ReadError) as caught:
                 provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
         self.assertEqual(caught.exception.code, provision.EXIT_TIMEOUT)
@@ -179,7 +180,7 @@ class ScopedReadContract(ServiceTokenTestCase):
         def broken(project, path, env, *, token=None, names=None, **kwargs):
             raise provision.scoped_secrets.SecretsError("token-expired-or-invalid", 3)
 
-        with mock.patch.object(provision.scoped_secrets, "fetch_project", broken):
+        with mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", broken):
             with self.assertRaises(provision.ReadError) as caught:
                 provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
         self.assertEqual(caught.exception.code, 1)

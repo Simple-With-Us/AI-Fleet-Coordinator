@@ -1585,7 +1585,7 @@ def infisical_names(
                 names = None
                 reason = "the scoped read was refused"
             finally:
-                token = ""
+                read_token = ""
         elif account:
             reason = "the %s service-token store is unavailable or refused (%s)" % (account, status)
         else:
