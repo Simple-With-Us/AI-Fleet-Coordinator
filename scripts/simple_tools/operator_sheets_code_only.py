@@ -385,6 +385,8 @@ def _verify_prior_snapshot(source_dir: Path, lib_dir: Path, *, uid: int, gid: in
         modules = json.loads(prior_manifest_path.read_text())["modules"]
     except (OSError, ValueError, KeyError, TypeError):
         raise InstallError("the prior module snapshot is missing or invalid") from None
+    if not isinstance(modules, dict):
+        raise InstallError("the prior module snapshot is incomplete")
     for name in MODULES:
         record = modules.get(name)
         if not isinstance(record, dict) or not isinstance(record.get("present"), bool):

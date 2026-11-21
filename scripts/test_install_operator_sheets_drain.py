@@ -899,7 +899,14 @@ class CodeOnlyHelperTests(unittest.TestCase):
         lib.mkdir(mode=0o755)
         lib.chmod(0o755)
         modules = {}
+        new_hashes = {}
         for name in MODULES:
+            new_path = source / name
+            new_data = f"new {name}\n".encode()
+            new_path.write_bytes(new_data)
+            new_path.chmod(0o600)
+            new_hashes[name] = self.helper.hashlib.sha256(new_data).hexdigest()
+
             data = f"prior {name}\n".encode()
             path = prior / name
             path.write_bytes(data)
@@ -917,7 +924,12 @@ class CodeOnlyHelperTests(unittest.TestCase):
         manifest = source / "prior-manifest.json"
         manifest.write_text(json.dumps({"modules": modules}, sort_keys=True))
         manifest.chmod(0o600)
-        return source, prior, manifest, lib
+        (source / "manifest.json").write_text(json.dumps(new_hashes, sort_keys=True))
+        (source / "manifest.json").chmod(0o600)
+        timer = source / "operator-sheets-drain.timer"
+        timer.write_text("OnCalendar=synthetic\n")
+        timer.chmod(0o644)
+        return source, prior, manifest, lib, timer
 
     def test_source_syntax_timeout_is_bounded_and_reported(self):
         source = self.source_bundle()
@@ -969,7 +981,7 @@ class CodeOnlyHelperTests(unittest.TestCase):
     def test_prior_snapshot_manifest_requires_private_plain_file_before_read(self):
         for case in ("mode", "symlink"):
             with self.subTest(case=case):
-                source, _prior, manifest, lib = self.prior_snapshot()
+                source, _prior, manifest, lib, _timer = self.prior_snapshot()
                 self.helper._verify_prior_snapshot(
                     source, lib, uid=os.getuid(), gid=os.getgid()
                 )  # Positive control: this snapshot and installed set are coherent.
@@ -991,7 +1003,7 @@ class CodeOnlyHelperTests(unittest.TestCase):
     def test_prior_module_snapshot_requires_private_plain_file_before_read(self):
         for case in ("mode", "symlink"):
             with self.subTest(case=case):
-                source, prior, _manifest, lib = self.prior_snapshot()
+                source, prior, _manifest, lib, _timer = self.prior_snapshot()
                 self.helper._verify_prior_snapshot(
                     source, lib, uid=os.getuid(), gid=os.getgid()
                 )  # Positive control: this snapshot and installed set are coherent.
@@ -1009,6 +1021,57 @@ class CodeOnlyHelperTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.helper.InstallError, reason):
                     self.helper._verify_prior_snapshot(
                         source, lib, uid=os.getuid(), gid=os.getgid()
+                    )
+
+    def test_prior_manifest_requires_a_mapping_for_modules(self):
+        source, _prior, manifest, lib, _timer = self.prior_snapshot()
+        self.helper._verify_prior_snapshot(
+            source, lib, uid=os.getuid(), gid=os.getgid()
+        )  # Positive control: this snapshot and installed set are coherent.
+        manifest.write_text(json.dumps({"modules": []}))
+        manifest.chmod(0o600)
+        with self.assertRaisesRegex(self.helper.InstallError, "prior module snapshot is incomplete"):
+            self.helper._verify_prior_snapshot(
+                source, lib, uid=os.getuid(), gid=os.getgid()
+            )
+
+    def test_prior_snapshot_refusal_does_not_change_installed_modules_or_timer(self):
+        for target_kind in ("manifest", "module"):
+            for failure in ("mode", "symlink"):
+                with self.subTest(target=target_kind, failure=failure):
+                    source, prior, manifest, lib, timer = self.prior_snapshot()
+                    before_modules = {
+                        name: ((lib / name).read_bytes(), stat.S_IMODE((lib / name).stat().st_mode))
+                        for name in MODULES
+                    }
+                    before_timer = (timer.read_bytes(), stat.S_IMODE(timer.stat().st_mode))
+                    path = manifest if target_kind == "manifest" else prior / MODULES[0]
+                    if failure == "mode":
+                        path.chmod(0o644)
+                    else:
+                        target = self.tmp / f"{target_kind}-target"
+                        target.write_bytes(path.read_bytes())
+                        target.chmod(0o600)
+                        path.unlink()
+                        path.symlink_to(target)
+
+                    with self.assertRaisesRegex(self.helper.InstallError, "mixed or unverifiable"):
+                        self.helper.verify_installed_state(
+                            source_dir=source,
+                            lib_dir=lib,
+                            uid=os.getuid(),
+                            gid=os.getgid(),
+                            node=shutil.which("node") or "node",
+                        )
+                    self.assertEqual(
+                        {
+                            name: ((lib / name).read_bytes(), stat.S_IMODE((lib / name).stat().st_mode))
+                            for name in MODULES
+                        },
+                        before_modules,
+                    )
+                    self.assertEqual(
+                        (timer.read_bytes(), stat.S_IMODE(timer.stat().st_mode)), before_timer
                     )
 
 
