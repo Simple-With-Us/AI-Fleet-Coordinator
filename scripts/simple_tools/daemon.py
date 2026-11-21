@@ -1541,6 +1541,8 @@ class Daemon:
                 self.registry_sweeper = old_sweeper
                 service.sweeper = old_sweeper
             else:
+                from . import operator_platform_feeds as feeds
+
                 self.registry_sweeper = LREG.Sweeper(
                     service,
                     interval_minutes=interval,
@@ -1548,6 +1550,7 @@ class Daemon:
                     max_share=max_share,
                     log=self.log.write,
                     feed_runner=self._run_platform_feeds,
+                    feed_scopes=feeds.feed_scopes(),
                 )
         return service
 
