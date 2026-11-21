@@ -18,6 +18,7 @@ import os
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ import uuid
 from collections import namedtuple
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2136,20 +2138,69 @@ def _token_from_keychain(account: str) -> tuple[str, str]:
 
 def _token_from_file(home: Path, account: str) -> tuple[str, str]:
     path = _token_file(home, account)
-    try:
-        file_info = path.lstat()
-        parent_info = path.parent.lstat()
-    except OSError:
-        return "", "no-token"
-    if not path.is_file() or path.is_symlink() or not path.parent.is_dir() or path.parent.is_symlink():
+    if not path.is_absolute():
         return "", "token-unreadable"
     uid = os.getuid()
-    if parent_info.st_uid != uid or file_info.st_uid != uid:
-        return "", "token-unreadable"
-    if (parent_info.st_mode & 0o777) != 0o700 or (file_info.st_mode & 0o777) != 0o600:
-        return "", "token-unreadable"
+    opened_file = False
     try:
-        raw = path.read_text(encoding="utf-8")
+        with ExitStack() as opened:
+            root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            opened.callback(os.close, root_fd)
+            parent_fd = root_fd
+            # Walk from / so even a symlink in HOME's ancestors is refused.
+            # Keep every descriptor open; the final identity check sees renames.
+            directories = []
+            home_depth = len(home.parts) - 1
+            for depth, component in enumerate(path.parts[1:-1], start=1):
+                child_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
+                )
+                opened.callback(os.close, child_fd)
+                info = os.fstat(child_fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    return "", "token-unreadable"
+                if depth >= home_depth and (info.st_uid != uid or info.st_mode & 0o022):
+                    return "", "token-unreadable"
+                if depth == len(path.parts) - 2 and (info.st_mode & 0o777) != 0o700:
+                    return "", "token-unreadable"
+                directories.append((parent_fd, component, info))
+                parent_fd = child_fd
+            leaf = path.name
+            file_fd = os.open(
+                leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            opened_file = True
+            opened.callback(os.close, file_fd)
+            before = os.fstat(file_fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid
+                    or (before.st_mode & 0o777) != 0o600 or before.st_size > 65536):
+                return "", "token-unreadable"
+            data = os.read(file_fd, 65537)
+            after = os.fstat(file_fd)
+            if (len(data) != before.st_size or os.read(file_fd, 1)
+                    or (before.st_dev, before.st_ino, before.st_size,
+                        before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size,
+                        after.st_mtime_ns, after.st_ctime_ns)):
+                return "", "token-unreadable"
+            leaf_now = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if (leaf_now.st_dev, leaf_now.st_ino, leaf_now.st_mode, leaf_now.st_uid,
+                    leaf_now.st_size, leaf_now.st_mtime_ns, leaf_now.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                return "", "token-unreadable"
+            for parent, component, info in directories:
+                current = os.stat(component, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino, current.st_mode, current.st_uid,
+                        current.st_ctime_ns) != (
+                        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_ctime_ns):
+                    return "", "token-unreadable"
+            raw = data.decode("utf-8")
+    except FileNotFoundError:
+        return "", "token-unreadable" if opened_file else "no-token"
     except (OSError, UnicodeDecodeError):
         return "", "token-unreadable"
     token = raw.strip()

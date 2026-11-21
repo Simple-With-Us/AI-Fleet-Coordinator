@@ -47,6 +47,75 @@ class FileStoreTests(unittest.TestCase):
         os.symlink(other, self.path)
         self.assertEqual(self.read(), ("", "token-unreadable"))
 
+    def test_leaf_replacement_before_open_cannot_follow_a_symlink(self):
+        self.path.write_text(synthetic_token(), encoding="utf-8")
+        self.path.chmod(0o600)
+        target = self.home / "other.token"
+        target.write_text(synthetic_token(), encoding="utf-8")
+        target.chmod(0o600)
+        real_open = os.open
+        replaced = False
+
+        def replace_then_open(name, flags, *args, **kwargs):
+            nonlocal replaced
+            if name == self.path.name and not replaced:
+                replaced = True
+                self.path.unlink()
+                os.symlink(target, self.path)
+            return real_open(name, flags, *args, **kwargs)
+
+        with mock.patch.object(fi.os, "open", side_effect=replace_then_open):
+            self.assertEqual(self.read({fi.ENV_TOKEN: synthetic_token()}), ("", "token-unreadable"))
+        self.assertTrue(replaced)
+
+    def test_leaf_replacement_after_open_fails_path_identity(self):
+        self.path.write_text(synthetic_token(), encoding="utf-8")
+        self.path.chmod(0o600)
+        real_read = os.read
+        replaced = False
+
+        def replace_then_read(fd, count):
+            nonlocal replaced
+            if not replaced:
+                replaced = True
+                self.path.rename(self.folder / "old.token")
+                self.path.write_text(synthetic_token(), encoding="utf-8")
+                self.path.chmod(0o600)
+            return real_read(fd, count)
+
+        with mock.patch.object(fi.os, "read", side_effect=replace_then_read):
+            self.assertEqual(self.read(), ("", "token-unreadable"))
+        self.assertTrue(replaced)
+
+    def test_symlinked_parent_is_refused_before_file_open(self):
+        self.path.write_text(synthetic_token(), encoding="utf-8")
+        self.path.chmod(0o600)
+        original = self.home / ".config" / "infisical"
+        moved = self.home / "moved-infisical"
+        original.rename(moved)
+        os.symlink(moved, original)
+        self.assertEqual(self.read(), ("", "token-unreadable"))
+
+    def test_parent_replacement_after_open_fails_path_identity(self):
+        self.path.write_text(synthetic_token(), encoding="utf-8")
+        self.path.chmod(0o600)
+        original = self.home / ".config" / "infisical"
+        moved = self.home / "moved-infisical"
+        real_read = os.read
+        replaced = False
+
+        def replace_parent_then_read(fd, count):
+            nonlocal replaced
+            if not replaced:
+                replaced = True
+                original.rename(moved)
+                os.symlink(moved, original)
+            return real_read(fd, count)
+
+        with mock.patch.object(fi.os, "read", side_effect=replace_parent_then_read):
+            self.assertEqual(self.read(), ("", "token-unreadable"))
+        self.assertTrue(replaced)
+
     def test_invalid_account_refuses_traversal(self):
         with mock.patch.object(fi, "_is_macos", return_value=False):
             self.assertEqual(fi.token_from_store("../escape", {}, self.home), ("", "no-token"))
