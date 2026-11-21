@@ -1,4 +1,4 @@
-"""Run selection uses the actual verifier and JSON transport against synthetic HTTP responses."""
+"""Named CLI selections use the actual verifier and JSON transport against synthetic HTTP responses."""
 
 import io
 import json
@@ -143,6 +143,47 @@ class RunNamedReadTests(unittest.TestCase):
         self.assertCountEqual(self.requests[1:], ["/v3/secrets/raw/" + n for n in names])
         self.assertNotIn("/v3/secrets/raw", self.requests)
         self.assertEqual(len(self.executions), 1)
+
+    def test_get_selection_limit_refuses_before_resolvers_or_provider_access(self):
+        names = [f"SELECTED_{i}" for i in range(cli.MAX_RUN_NAMES + 1)]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(core, "infisical_project_id") as project_resolver,
+            mock.patch.object(core, "resolve_token") as token_resolver,
+        ):
+            code = cli.main(["get", *names], self.env, out, err)
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn(f"at most {cli.MAX_RUN_NAMES} distinct key names", err.getvalue())
+        project_resolver.assert_not_called()
+        token_resolver.assert_not_called()
+        self.assertFalse(self.requests)
+        self.assertFalse(self.executions)
+
+    def test_get_selection_limit_accepts_exact_bound_and_deduplicates_before_counting(self):
+        names = [f"SELECTED_{i}" for i in range(cli.MAX_RUN_NAMES)]
+        self.values.update({name: secrets.token_urlsafe(24) for name in names})
+        out, err = io.StringIO(), io.StringIO()
+        self.assertEqual(cli.main(["get", *(names * 2)], self.env, out, err), 0)
+        self.assertEqual(err.getvalue(), "")
+        self.assertTrue(
+            json.loads(out.getvalue()) == {name: self.values[name] for name in names},
+            "get did not return exactly the selected keys",
+        )
+        self.assertEqual(self.requests[0], "/v2/service-token")
+        self.assertCountEqual(self.requests[1:], ["/v3/secrets/raw/" + name for name in names])
+        self.assertNotIn("/v3/secrets/raw", self.requests)
+        self.assertFalse(self.executions)
+
+    def test_get_duplicate_single_name_preserves_json_output(self):
+        out, err = io.StringIO(), io.StringIO()
+        self.assertEqual(cli.main(["get", "ALPHA", "ALPHA"], self.env, out, err), 0)
+        self.assertTrue(
+            json.loads(out.getvalue()) == {"ALPHA": self.values["ALPHA"]},
+            "get changed duplicate-argument JSON output",
+        )
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(self.requests, ["/v2/service-token", "/v3/secrets/raw/ALPHA"])
+        self.assertFalse(self.executions)
 
     def test_only_missing_name_fails_before_exec(self):
         code, out, err = self.run_cli("--only", "ALPHA,MISSING")

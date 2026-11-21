@@ -66,6 +66,7 @@ def read_key():
                 "/",
                 "--project",
                 "fleet-ops",
+                "--require-finite-expiry",
             ],
             capture_output=True,
             text=True,

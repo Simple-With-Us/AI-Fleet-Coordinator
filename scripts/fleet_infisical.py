@@ -313,21 +313,11 @@ def session_valid(cli: str, env: Mapping[str, str]) -> bool:
 
 
 def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
-    try:
-        proc = subprocess.run(
-            [cli, "--version"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=KEYCHAIN_TIMEOUT,
-            cwd="/",
-            env=_base_env(env),
-            check=False,
-        )
-        text = proc.stdout.decode("utf-8", "replace")
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    m = re.search(r"\d+\.\d+\.\d+", text)
-    return m.group(0) if m else None
+    """Nullable compatibility stub; direct HTTP readers never execute the issuer CLI.
+
+    Doctor retains this optional field, but version discovery is retired and performs no I/O.
+    """
+    return None
 
 
 # --------------------------------------------------------------------------- fetch
@@ -388,6 +378,35 @@ def declared_paths(env: Mapping[str, str], path: str, *, writer: bool = False) -
     return paths
 
 
+def _expected_token_identity(expected: object) -> dict | None:
+    """Validate nonsecret expected grant metadata with closed diagnostics."""
+    if expected is None:
+        return None
+    try:
+        if not isinstance(expected, dict) or set(expected) != {"id", "name", "expiresAt"}:
+            raise ValueError
+        if (
+            not isinstance(expected["id"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", expected["id"])
+            or not isinstance(expected["name"], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", expected["name"])
+            or expected["name"].startswith("st.")
+            or not isinstance(expected["expiresAt"], str)
+            or not re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})",
+                expected["expiresAt"],
+            )
+        ):
+            raise ValueError
+        expiry = datetime.fromisoformat(expected["expiresAt"].replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise UsageError("expected-token-identity-invalid") from None
+    return dict(expected)
+
+
 def validate_service_metadata(
     metadata: object,
     project: str,
@@ -395,10 +414,21 @@ def validate_service_metadata(
     permissions: Iterable[str],
     *,
     require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> None:
     """Validate the token's own grant, never a successful secret query."""
     if type(require_finite_expiry) is not bool:
         raise UsageError("finite-expiry-option-invalid")
+    expected_identity = _expected_token_identity(expected_identity)
+    if expected_identity is not None:
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("id") != expected_identity["id"]
+            or metadata.get("name") != expected_identity["name"]
+            or ("_id" in metadata and metadata["_id"] != expected_identity["id"])
+        ):
+            raise SecretsError("token-identity-mismatch")
+        require_finite_expiry = True
     if (
         not isinstance(metadata, dict)
         or metadata.get("workspace") != project
@@ -441,6 +471,10 @@ def validate_service_metadata(
         if not isinstance(expiry, str):
             raise ValueError()
         parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if expected_identity is not None and parsed != datetime.fromisoformat(
+            expected_identity["expiresAt"].replace("Z", "+00:00")
+        ):
+            raise SecretsError("token-identity-mismatch")
         if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
             raise ValueError()
     except (ValueError, TypeError, AttributeError):
@@ -467,9 +501,11 @@ def verify_service_token(
     writer: bool = False,
     deadline: float | None = None,
     require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> tuple[str, ...]:
     if type(require_finite_expiry) is not bool:
         raise UsageError("finite-expiry-option-invalid")
+    expected_identity = _expected_token_identity(expected_identity)
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2, failure_kind="refused")
@@ -491,7 +527,16 @@ def verify_service_token(
         )
     try:
         permissions = ("read", "write") if writer else ("read",)
-        if require_finite_expiry:
+        if expected_identity is not None:
+            validate_service_metadata(
+                metadata,
+                project,
+                paths,
+                permissions,
+                require_finite_expiry=True,
+                expected_identity=expected_identity,
+            )
+        elif require_finite_expiry:
             validate_service_metadata(
                 metadata, project, paths, permissions, require_finite_expiry=True
             )
@@ -562,6 +607,7 @@ def fetch_project(
     timeout: float = EXPORT_TIMEOUT,
     strict_records: bool = False,
     require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> dict[str, str]:
     """Explicit project route; strict_records preserves folder-proven row checks."""
     if type(strict_records) is not bool:
@@ -573,7 +619,18 @@ def fetch_project(
     deadline = time.monotonic() + timeout
     if type(require_finite_expiry) is not bool:
         raise UsageError("finite-expiry-option-invalid")
-    if require_finite_expiry:
+    if expected_identity is not None:
+        paths = verify_service_token(
+            token,
+            project,
+            path,
+            env,
+            writer=writer,
+            deadline=deadline,
+            require_finite_expiry=True,
+            expected_identity=expected_identity,
+        )
+    elif require_finite_expiry:
         paths = verify_service_token(
             token,
             project,
@@ -816,6 +873,7 @@ def bounded_fetch_project(
     max_output_bytes: int | None = None,
     strict_records: bool = False,
     require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -825,6 +883,7 @@ def bounded_fetch_project(
     Process launch/OS scheduling must be healthy; provider, DNS, body and worker
     cleanup waits do not extend the caller's remaining budget.
     """
+    expected_identity = _expected_token_identity(expected_identity)
     if type(require_finite_expiry) is not bool:
         raise UsageError("finite-expiry-option-invalid")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
@@ -868,6 +927,9 @@ def bounded_fetch_project(
     )
     if require_finite_expiry:
         request["require_finite_expiry"] = True
+    if expected_identity is not None:
+        request["require_finite_expiry"] = True
+        request["expected_identity"] = expected_identity
     deadline = time.monotonic() + timeout
     values = _bounded_read_request(request, deadline)
     if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
@@ -882,7 +944,7 @@ class _FileReadRefused(SecretsError):
     """Closed file-operation reasons; never retain an OS error or selected path."""
 
 
-def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
+def _protected_read(path: str, limit: int, *, private: bool, strict_custody: bool = False) -> bytes:
     """Read one explicit regular file through held, rechecked directory descriptors."""
     directories = []
     leaf = None
@@ -902,7 +964,8 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
         ):
             raise ValueError
         selected = Path(path)
-        selected = selected.parent.resolve(strict=True) / selected.name
+        if not strict_custody:
+            selected = selected.parent.resolve(strict=True) / selected.name
         if private and any(p.casefold() == ".secrets" for p in selected.parts):
             raise ValueError
         uid = os.getuid()
@@ -945,6 +1008,10 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
             location /= part
             directories.append((fd, parent, part, location, None))
             directories[-1] = (fd, parent, part, location, directory_info(fd, location))
+        if strict_custody:
+            parent_info = os.fstat(fd)
+            if parent_info.st_uid != uid or stat.S_IMODE(parent_info.st_mode) != 0o700:
+                raise ValueError
         leaf = os.open(
             selected.name,
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -956,6 +1023,7 @@ def _protected_read(path: str, limit: int, *, private: bool) -> bytes:
             or before.st_uid not in ((uid,) if private else (0, uid))
             or before.st_nlink != 1
             or before.st_size > limit
+            or (strict_custody and stat.S_IMODE(before.st_mode) != 0o600)
             or (private and stat.S_IMODE(before.st_mode) not in (0o400, 0o600))
             or (not private and before.st_mode & 0o022)
         ):
@@ -1128,7 +1196,12 @@ def _bounded_read_worker() -> int:
         }
         if (
             not isinstance(request, dict)
-            or set(request) not in (fields, fields | {"require_finite_expiry"})
+            or set(request)
+            not in (
+                fields,
+                fields | {"require_finite_expiry"},
+                fields | {"require_finite_expiry", "expected_identity"},
+            )
             or type(request["schema"]) is not int
             or request["schema"] != 1
         ):
@@ -1169,6 +1242,8 @@ def _bounded_read_worker() -> int:
             if type(request["require_finite_expiry"]) is not bool:
                 raise UsageError("bounded-read-invalid")
             policy["require_finite_expiry"] = request["require_finite_expiry"]
+            if "expected_identity" in request:
+                policy["expected_identity"] = _expected_token_identity(request["expected_identity"])
         values = fetch_project(
             request["project"],
             request["path"],
@@ -1218,6 +1293,9 @@ def list_project_names(
     *,
     token: str | None = None,
     timeout: float = EXPORT_TIMEOUT,
+    require_finite_expiry: bool = False,
+    expected_identity: dict | None = None,
+    strict_records: bool = False,
 ) -> tuple[str, ...]:
     """List one folder's names without requesting or retaining secret values.
 
@@ -1225,6 +1303,8 @@ def list_project_names(
     exactly this prod folder and read-only permission; ambient folder declarations
     cannot widen the grant accepted here.
     """
+    if type(require_finite_expiry) is not bool or type(strict_records) is not bool:
+        raise UsageError("name-policy-invalid")
     check_path(path)
     scoped_env = dict(env)
     scoped_env[ENV_READ_PATHS] = path
@@ -1232,7 +1312,18 @@ def list_project_names(
         project_name = project_name_for_id(project, scoped_env)
         token = resolve_token(scoped_env, project_name=project_name)
     deadline = time.monotonic() + timeout
-    verify_service_token(token, project, path, scoped_env, deadline=deadline)
+    if require_finite_expiry or expected_identity is not None:
+        verify_service_token(
+            token,
+            project,
+            path,
+            scoped_env,
+            deadline=deadline,
+            require_finite_expiry=require_finite_expiry,
+            expected_identity=expected_identity,
+        )
+    else:
+        verify_service_token(token, project, path, scoped_env, deadline=deadline)
     status, payload = _api_json(
         "GET",
         "/v3/secrets/raw?" + secret_query(project, path, values=False),
@@ -1249,7 +1340,7 @@ def list_project_names(
         raise SecretsError("fetch-failed: bad-output")
     found: set[str] = set()
     for record in records:
-        key = validate_secret_name_record(record, project, path)
+        key = validate_secret_name_record(record, project, path, single_scope=not strict_records)
         value = record.get("secretValue")
         hidden_mask = record.get("secretValueHidden") is True and value in (
             None,
@@ -2366,6 +2457,8 @@ def token_from_store(
     account: str,
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
+    *,
+    bounded_keychain: bool = False,
 ) -> tuple[str, str]:
     """Return one consumer token and a status, without exposing the token on failure."""
     env = os.environ if env is None else env
@@ -2374,9 +2467,67 @@ def token_from_store(
         r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account
     ):
         return "", "no-token"
+    if bounded_keychain:
+        if not _is_macos():
+            return "", "keychain-unavailable"
+        return _bounded_keychain_token(account, home)
     if _is_macos():
         return _token_from_keychain(account)
     return _token_from_file(home, account)
+
+
+def _bounded_keychain_token(account: str, home: Path) -> tuple[str, str]:
+    """Read the same exact item with bounded capture, without another store attempt."""
+    if not home.is_absolute() or "\0" in str(home):
+        return "", "token-unreadable"
+    keychain = home / "Library" / "Keychains" / "login.keychain-db"
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        SCOPED_KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        str(keychain),
+    ]
+    deadline = time.monotonic() + 5.0
+    child = None
+    try:
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
+        )
+        raw = _read_worker_pipes(child, b"", 8192, deadline - 0.1)
+        if child.returncode != 0:
+            if child.returncode == SECURITY_ITEM_NOT_FOUND:
+                return "", "no-token"
+            if child.returncode == SECURITY_INTERACTION_NOT_ALLOWED:
+                return "", "keychain-locked"
+            return "", "token-unreadable"
+        token = raw.decode("utf-8").strip()
+        return (check_service_token(token), "ok") if token else ("", "no-token")
+    except subprocess.TimeoutExpired:
+        raise SecretsError("keychain-timeout", 124) from None
+    except (OSError, UnicodeError, SecretsError):
+        return "", "token-unreadable"
+    finally:
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except (OSError, subprocess.TimeoutExpired):
+                raise SecretsError("keychain-cleanup-failed") from None
+            finally:
+                for stream in (child.stdin, child.stdout):
+                    if stream is not None:
+                        stream.close()
 
 
 def _token_from_keychain(account: str) -> tuple[str, str]:
