@@ -52,8 +52,9 @@ What it promises:
     the adjacent shared Infisical reader into memory, sent in one request header and never
     printed, logged or passed in an argv.  The reader accepts only the control consumer's
     scoped token from `ops-control.env` (0600) or its existing explicit process binding.
-    `--check-token` reads the token the same way and asks
-    Coolify for its version, which proves the whole path and changes nothing.
+    `--check-token` reads the token the same way and asks Coolify whether it accepts
+    that token for a deploy, naming a uuid that can match no resource, so it proves the
+    whole path and deploys nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
@@ -804,14 +805,26 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
-COOLIFY_TOKEN_PATH = "/coolify"
+# The Coolify token this control consumer reads:  the deploy-only token, in its own
+# Infisical folder in the Fleet-OPS prod project.  The consumer's scoped service
+# token is bound to that one folder, so the grant never reaches the project root and
+# the token this consumer can never reach is the full-admin one.
+COOLIFY_TOKEN_NAME = "COOLIFY_DEPLOY_ONLY"
+COOLIFY_TOKEN_PATH = "/coolify-deploy-only-token"
 COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
 INFISICAL_READER_NAME = "fleet_infisical.py"
 INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
+# Coolify 4.x answers the deploy route with POST only, and a deploy-scoped token has no
+# `read` permission, so the install check cannot ask Coolify for its version.  It asks
+# the deploy route about the nil uuid, which can name no resource:  the answer is a
+# not-found when the token is accepted for a deploy, and nothing is deployed.
+COOLIFY_CHECK_UUID = "00000000-0000-4000-8000-000000000000"
+# Coolify's own answer when the route answered and no resource carries the uuid.
+COOLIFY_NO_RESOURCE = "No resources found"
+COOLIFY_DEPLOY_PATH = "/api/v1/deploy?uuid=%s"
 # The control consumer's Infisical binding, and nothing else from its credential file.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
@@ -1319,8 +1332,11 @@ class NoAnswer(int):
     sent = True
 
 
-def http_get(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded.
+def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
+    """(status, body) of one request, or (0, "") when there was no answer.
+
+    The body is bounded and returned because the install check has to tell a refused
+    token from a route that no longer answers.  The caller never logs it.
 
     A `NoAnswer` (it is 0 too) means the request may have been sent.  `urllib.request` is imported
     here and not at the top of the file so that `ssl`, the proxy variables and the opener are set up
@@ -1340,22 +1356,38 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
 
     opener = urllib.request.build_opener(NoRedirect)
     try:
-        request = urllib.request.Request(url, method="GET", headers=headers)
+        request = urllib.request.Request(
+            url,
+            data=b"" if method == "POST" else None,
+            method=method,
+            headers=headers,
+        )
     except ValueError:
-        return 0
+        return 0, ""
     try:
         with opener.open(request, timeout=timeout) as response:
-            response.read(64 * 1024)
-            return response.status
+            raw = response.read(64 * 1024)
+            return response.status, raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return exc.code
+        raw = exc.read(64 * 1024)
+        return exc.code, raw.decode("utf-8", "replace")
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(exc, ValueError) or isinstance(
             reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError, PermissionError)
         ):
-            return 0
-        return NoAnswer(0)
+            return 0, ""
+        return NoAnswer(0), ""
+
+
+def http_get(url, headers, timeout=HTTP_TIMEOUT):
+    """(status, body) of one GET, or (0, "") when there was no answer."""
+    return http_request(url, headers, "GET", timeout)
+
+
+def http_post_request(url, headers, timeout=HTTP_TIMEOUT):
+    """(status, body) of one POST with no body, or (0, "") when there was no answer."""
+    return http_request(url, headers, "POST", timeout)
 
 
 def _declared_length(response):
@@ -1486,6 +1518,7 @@ class Context:
         environ=None,
         runner=None,
         http=None,
+        http_post=None,
         now=None,
         config_path=CONFIG_PATH,
         status_path=None,
@@ -1504,7 +1537,10 @@ class Context:
         self.home = Path(home) if home else Path.home()
         self.environ = dict(os.environ if environ is None else environ)
         self.runner = runner or run_command
-        self.http = http or http_get
+        # One injectable HTTP path:  a POST goes through the same seam, so a test that
+        # replaces `http` replaces every request the script makes.
+        self.http = http or http_request
+        self.http_post = http_post or (lambda url, headers: self.http(url, headers, method="POST"))
         self.now = now or time.time
         self.config_path = config_path
         self.status_path = status_path or (
@@ -4226,7 +4262,10 @@ def read_coolify_token(ctx):
     env = secrets_env(ctx)
     binding = env.pop("INFISICAL_TOKEN", "")
     if not binding:
-        raise Failed("the Coolify token is not available")
+        raise Failed(
+            "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+            "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+        )
     try:
         project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
         scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
@@ -4243,12 +4282,37 @@ def read_coolify_token(ctx):
             strict_records=True,
         )
         token = values.get(COOLIFY_TOKEN_NAME, "").strip()
-    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
+    except Exception as exc:  # noqa: BLE001 - provider/source text and values never become diagnostics
         # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
-        raise Failed("the Coolify token is not available") from None
+        raise Failed(_infisical_coolify_read_reason(exc)) from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
-        raise Failed("the Coolify token is not available")
+        raise Failed(
+            "the Infisical read returned no usable Coolify token; "
+            "check the /coolify-deploy-only-token folder grant"
+        )
     return token
+
+
+def _infisical_coolify_read_reason(exc: BaseException) -> str:
+    """Allow-listed reason only; never the provider's raw message."""
+    code = (
+        getattr(exc, "code", None)
+        or getattr(exc, "status", None)
+        or getattr(exc, "status_code", None)
+    )
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if code == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
+        return (
+            "the Infisical reader refused the token (scope or 403); issue a "
+            "token for /coolify-deploy-only-token and write it to ops-control.env"
+        )
+    if "timeout" in name or "timeout" in text:
+        return "the Infisical read of the Coolify token timed out"
+    return (
+        "the Infisical read of the Coolify token failed; check "
+        "FLEET_OPS_CONTROL_INFISICAL_TOKEN and the folder grant"
+    )
 
 
 def secrets_env(ctx):
@@ -4324,7 +4388,8 @@ def secrets_env(ctx):
 
 def check_token(ctx):
     """(answer, exit status) for `--check-token`: read the token as a redeploy would, then
-    ask Coolify for its version with it.  Nothing is changed and the token is not shown."""
+    ask Coolify whether it accepts that token for a deploy.   The probe names the nil
+    uuid, which matches no resource, so nothing is deployed and the token is not shown."""
     answer = _refusal("")
     answer["verb"] = "check-token"
     try:
@@ -4332,13 +4397,17 @@ def check_token(ctx):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http(
-                base + "/api/v1/version",
+            status, body = ctx.http_post(
+                base + (COOLIFY_DEPLOY_PATH % COOLIFY_CHECK_UUID),
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
             coolify_token = ""
-        if not 200 <= status < 300:
+        # The nil uuid names no resource, so a route that answers it proves the token is
+        # accepted for a deploy.  A not-found from another cause (a route that moved, a
+        # proxy) answers differently, and only Coolify's own answer counts as accepted.
+        accepted = status == 200 or (status == 404 and COOLIFY_NO_RESOURCE in body)
+        if not accepted:
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
     except Refused as exc:
         answer.update(detail=str(exc))
@@ -4389,7 +4458,7 @@ def plan_request(ctx, config, scope, action, target):
         service = row.get("service")
         if isinstance(service, str) and name.endswith(f" ({service})"):
             name = name[: -len(f" ({service})")]
-        return [["coolify", "GET", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
+        return [["coolify", "POST", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
     raise Refused("unknown server verb")
 
 
@@ -4399,7 +4468,7 @@ def execute(ctx, scope, action, target, commands):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http(
+            status, _body = ctx.http_post(
                 base + commands[0][2],
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )

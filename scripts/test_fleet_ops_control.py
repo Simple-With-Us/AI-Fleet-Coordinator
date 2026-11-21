@@ -141,17 +141,26 @@ class Base(unittest.TestCase):
         for directory in (self.home / ".local", self.home / ".local/state"):
             directory.chmod(0o700)
         self.http_calls = []
+        self.http_methods = []
+        self.http_body = ""
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def http(self, url, headers):
+    def http(self, url, headers, method="GET"):
         self.http_calls.append((url, dict(headers)))
-        return self.http_status
+        self.http_methods.append(method)
+        return self.http_status, self.http_body
 
-    def ctx(self, platform="linux", runner=None, environ=None, http_status=200):
+    def http_post(self, url, headers):
+        self.http_calls.append((url, dict(headers)))
+        self.http_methods.append("POST")
+        return self.http_status, self.http_body
+
+    def ctx(self, platform="linux", runner=None, environ=None, http_status=200, http_body=""):
         self.runner = runner or FakeRunner()
         self.http_status = http_status
+        self.http_body = http_body
         return foc.Context(
             platform=platform,
             uid=os.getuid(),
@@ -159,6 +168,7 @@ class Base(unittest.TestCase):
             environ=environ or {"PATH": "/usr/bin:/bin", "SECRET_THING": "x" * 20},
             runner=self.runner,
             http=self.http,
+            http_post=self.http_post,
             now=lambda: NOW,
             config_path=self.config_path,
             pm2_node="/fake/bin/node",
@@ -172,7 +182,9 @@ class Base(unittest.TestCase):
         def fixture_token(_ctx):
             value = getattr(_ctx.runner, "secret", TOKEN)
             if not value:
-                raise foc.Failed("the Coolify token is not available")
+                raise foc.Failed(
+                    "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+                )
             return value
 
         # Pure control-flow tests retain their explicit synthetic credential seam.  The
@@ -2354,7 +2366,7 @@ class RedeployTests(Base):
         self.write_status(self.ROWS)
         code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        self.assertEqual(ans["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(ans["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
         self.assertEqual(self.http_calls, [])
         self.assertEqual(self.runner.calls, [])
 
@@ -2366,6 +2378,7 @@ class RedeployTests(Base):
         ((url, headers),) = self.http_calls
         self.assertEqual(url, f"http://127.0.0.1:8000/api/v1/deploy?uuid={UUID}")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+        self.assertEqual(self.http_methods, ["POST"])
         for argv, _env in self.runner.calls:
             self.assertNotIn(TOKEN, " ".join(argv))
         self.assertNotIn(TOKEN, json.dumps(ans))
@@ -2709,7 +2722,7 @@ class RedeployResourceNameTests(Base):
     def test_the_name_never_carries_the_uuid(self):
         code, answer = self.redeploy("fleet-recall")
         self.assertNotIn(UUID, answer["resourceName"])
-        self.assertEqual(answer["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(answer["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
 
     def test_a_refused_redeploy_has_no_resource_name(self):
         self.write_status([self.row("fleet-recall", status="absent")])
@@ -2793,7 +2806,7 @@ class CredentialTests(Base):
         self.enterContext(mock.patch.object(foc, "HELPER_DIR", reader_dir))
         self.project = str(uuid.uuid4())
         self.api = ScopedReadAPI(
-            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify"
+            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path=foc.COOLIFY_TOKEN_PATH
         )
         self.api.record_override = {"secretValueHidden": False}
         self.api.__enter__()
@@ -2850,24 +2863,24 @@ class CredentialTests(Base):
         self.credentials(self.pair_text())
         inherited = self.env(**self.SHARED_AUTH)
         inherited[self.TOKEN_NAME] = "st.different-process-reader-token"
-        inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
+        inherited["INFISICAL_READ_PATHS"] = "/,%s,/other" % foc.COOLIFY_TOKEN_PATH
         code, ans = self.redeploy(inherited)
         self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
         ((project, folder, env, kwargs),) = self.read_calls
-        self.assertEqual((project, folder), (self.project, "/coolify"))
+        self.assertEqual((project, folder), (self.project, foc.COOLIFY_TOKEN_PATH))
         self.assertEqual(
             env,
             {
                 "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
                 "INFISICAL_ENVIRONMENT": "prod",
-                "INFISICAL_READ_PATHS": "/coolify",
+                "INFISICAL_READ_PATHS": foc.COOLIFY_TOKEN_PATH,
             },
         )
         self.assertEqual(
             kwargs,
             {
                 "token": self.VALUE,
-                "names": ("COOLIFY_API_TOKEN",),
+                "names": (foc.COOLIFY_TOKEN_NAME,),
                 "timeout": 30,
                 "writer": False,
                 "max_output_bytes": 8192,
@@ -2876,7 +2889,9 @@ class CredentialTests(Base):
         )
         self.assertEqual(len(self.api.requests), 2)
         self.assertEqual(self.api.requests[0], "/api/v2/service-token")
-        self.assertTrue(self.api.requests[1].startswith("/api/v3/secrets/raw/COOLIFY_API_TOKEN?"))
+        self.assertTrue(
+            self.api.requests[1].startswith("/api/v3/secrets/raw/%s?" % foc.COOLIFY_TOKEN_NAME)
+        )
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
         self.assertNotIn(self.VALUE, text)
         self.assertNotIn(TOKEN, text)
@@ -2909,7 +2924,11 @@ class CredentialTests(Base):
         code, ans = self.redeploy(env)
         self.assertEqual(
             (code, ans["result"], ans["detail"]),
-            (1, "failed", "the Coolify token is not available"),
+            (
+                1,
+                "failed",
+                "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env",
+            ),
         )
         self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
@@ -2938,10 +2957,10 @@ class CredentialTests(Base):
         cases = (
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/"}]},
-            {"scopes": [{"environment": "dev", "secretPath": "/coolify"}]},
+            {"scopes": [{"environment": "dev", "secretPath": foc.COOLIFY_TOKEN_PATH}]},
             {
                 "scopes": [
-                    {"environment": "prod", "secretPath": "/coolify"},
+                    {"environment": "prod", "secretPath": foc.COOLIFY_TOKEN_PATH},
                     {"environment": "prod", "secretPath": "/other"},
                 ]
             },
@@ -2957,7 +2976,15 @@ class CredentialTests(Base):
                 self.api.metadata_override = metadata
                 self.api.requests.clear()
                 code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(code, 1)
+                self.assertTrue(
+                    ans["detail"].startswith("the Infisical reader refused the token")
+                    or ans["detail"].startswith("the Infisical read of the Coolify token failed")
+                    or ans["detail"].startswith(
+                        "the Infisical read returned no usable Coolify token"
+                    ),
+                    ans["detail"],
+                )
                 self.assertEqual(self.api.requests, ["/api/v2/service-token"])
                 self.assertEqual(self.http_calls, [])
 
@@ -2983,7 +3010,15 @@ class CredentialTests(Base):
                 self.http_calls.clear()
                 self.assertEqual((self.api.requests, self.http_calls), ([], []))
                 code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(code, 1)
+                self.assertTrue(
+                    ans["detail"].startswith("the Infisical reader refused the token")
+                    or ans["detail"].startswith("the Infisical read of the Coolify token failed")
+                    or ans["detail"].startswith(
+                        "the Infisical read returned no usable Coolify token"
+                    ),
+                    ans["detail"],
+                )
                 self.assertEqual(len(self.api.requests), 2)
                 self.assertEqual(self.http_calls, [])
 
@@ -3059,7 +3094,7 @@ class CredentialTests(Base):
 
     def test_read_timeout_is_known_failure_but_sent_coolify_failure_stays_uncertain(self):
         ctx = self.ctx(environ=self.env())
-        commands = [["coolify", "GET", "/api/v1/deploy?uuid=" + UUID]]
+        commands = [["coolify", "POST", "/api/v1/deploy?uuid=" + UUID]]
         with mock.patch.object(foc, "SECRET_TIMEOUT", 0.001):
             with self.assertRaises(foc.Failed) as caught:
                 foc.execute(ctx, "server", "redeploy", UUID, commands)
@@ -3075,15 +3110,25 @@ class CredentialTests(Base):
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
-        self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
+        self.assertEqual(
+            url,
+            "http://127.0.0.1:8000/api/v1/deploy?uuid=%s" % foc.COOLIFY_CHECK_UUID,
+        )
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+        self.assertEqual(self.http_methods, ["POST"])
         self.assertNotIn(TOKEN, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
 
     def test_check_token_failures_keep_fixed_diagnostics_and_host_gate(self):
         self.api.values.clear()
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
-        self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                "the Infisical read returned no usable Coolify token; check the /coolify-deploy-only-token folder grant",
+            ),
+        )
         self.assertEqual(self.http_calls, [])
         self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))
