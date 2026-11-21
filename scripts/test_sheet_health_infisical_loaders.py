@@ -14,6 +14,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -30,7 +31,7 @@ WORKER_SPEC.loader.exec_module(worker)
 
 FIXTURE_CREDENTIAL = "st.test-only-grok-key"
 BAD_INPUT = "st.invalid-test-binding"
-PROJECT = "12345678-1234-1234-1234-123456789abc"
+PROJECT = str(uuid4())
 VALUES = {
     "HEALTH_HMAC_KEY": "synthetic-health-key",
     "CURSOR_API_KEY": "synthetic-cursor-key",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
@@ -8,7 +9,7 @@ import test from "node:test";
 import { loadServiceAccount } from "./fleet-apps-sheet-sync.mjs";
 
 const fixtureCredential = "st.test-only-grok-key";
-const project = "12345678-1234-1234-1234-123456789abc";
+const project = randomUUID();
 const serviceAccount = '{"client_email":"synthetic@example.invalid"}';
 let server;
 let api;
