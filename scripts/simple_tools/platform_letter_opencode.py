@@ -216,10 +216,17 @@ def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     Ids only, bounded by the count and by the age, and any doubt leaves a chat out:  a chat
     marked for no letter takes none, an archived chat is over, a chat that already carries a
     letter is lettered, and a chat whose title is the runtime's own default name is not a chat
-    anybody is looking at.  A store that is not there answers None:  no pass this time."""
+    anybody is looking at.  A store that is not there answers None:  no pass this time.
+
+    A chat another chat started is left out when that parent takes no letter.  The plugin
+    silences such a chat ("a sweep worker's sub-agents are not chats of anyone's"), so the
+    repair must not letter it either:  a parent that takes no letter is never registered, so the
+    child would be registered with no parent and would take a doubled main-chat pair, and the
+    pool of those is twenty-six pairs for the whole fleet."""
     rows = _chat_rows(env)
     if rows is None:
         return None
+    titles = {row["id"]: row["title"] for row in rows}
     now = time.time()
     found: list[str] = []
     for row in rows:
@@ -234,6 +241,11 @@ def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             continue  # it holds a letter already
         if _archived(row["archived"]):
             continue
+        parent = row["parent_id"]
+        if parent:
+            parent_title = titles.get(parent)
+            if parent_title is not None and no_letter(parent_title):
+                continue  # its parent takes no letter, so this chat is silenced with it
         created = row["created"]
         try:
             age = now - (int(created) / 1000.0)

@@ -111,6 +111,8 @@ class UnletteredTests(unittest.TestCase):
     SID_MARKED = "ses_dddddddddddddddddddddddddd"
     SID_ARCHIVED = "ses_eeeeeeeeeeeeeeeeeeeeeeeeee"
     SID_OLD = "ses_ffffffffffffffffffffffffff"
+    SID_MARKED_PARENT = "ses_gggggggggggggggggggggggggg"
+    SID_MARKED_CHILD = "ses_hhhhhhhhhhhhhhhhhhhhhhhhhh"
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -133,6 +135,10 @@ class UnletteredTests(unittest.TestCase):
             (self.SID_MARKED, None, "[no-letter] a sweep worker", None, now),
             (self.SID_ARCHIVED, None, "an archived chat", now, now),
             (self.SID_OLD, None, "a chat from last month", None, old),
+            # A sweep worker and the sub-agent it started:  the plugin silences the child with
+            # its parent, so the repair must leave it alone too.
+            (self.SID_MARKED_PARENT, None, "[no-letter] another sweep worker", None, now),
+            (self.SID_MARKED_CHILD, self.SID_MARKED_PARENT, "a sub-agent of a worker", None, now),
         )
         for sid, parent, title, archived, created in rows:
             con.execute(
@@ -154,6 +160,18 @@ class UnletteredTests(unittest.TestCase):
     def test_a_chat_marked_for_no_letter_is_not_named(self) -> None:
         found = OC.opencode_unlettered_sessions(self.env)
         self.assertNotIn(self.SID_MARKED, found)
+
+    def test_a_sub_agent_of_a_marked_parent_is_not_named(self) -> None:
+        # The plugin silences a chat whose parent takes no letter ("a sweep worker's sub-agents
+        # are not chats of anyone's"), so the repair must not letter it either:  its parent is
+        # never registered, so the child would take a doubled main-chat pair, and the pool of
+        # those is twenty-six pairs for the whole fleet.
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertNotIn(self.SID_MARKED_CHILD, found)
+
+    def test_a_sub_agent_of_a_lettered_parent_is_named(self) -> None:
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIn(self.SID_CHILD, found)
 
     def test_an_archived_chat_is_not_named(self) -> None:
         found = OC.opencode_unlettered_sessions(self.env)
