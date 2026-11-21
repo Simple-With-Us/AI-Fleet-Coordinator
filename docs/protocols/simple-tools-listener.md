@@ -418,16 +418,14 @@ The pick is in [zulip-wake-routing.md](zulip-wake-routing.md).  What follows th
 
 ## 9. Not Yet In The Code
 
-These are the owner's rulings that the code on `main` does not do yet.
+These are the owner's rulings that the code on `main` does not do yet.  Landed since Nov 12, verified Nov 20:  the per-platform delivery modules (`codex_wake`, `muse_wake`, `zcode_wake`) are on `main` and the one router serves and delivers for every registered seat (AG, CLAUDE, CODEX, GROK, MC, MM, ZC read healthy with delivery on);  Muster writes the Eavesdropper's settings through the `fleet-ops-ctl` save/plan/apply route (#2179, with the notes_queue seat lists from #2341);  Muster's Test Wake is live (AFC-825);  the Operator's escalation note and the peer `@all` reminder are Side-Chats posts that mention the owner, no longer direct messages.
 
-- **One way for every multithreaded platform.**  The router is one service for every platform, and Claude, Codex, Muse Code and ZCode are registered in it.  Only Claude's module is on `main`;  the others show as `not-installed` until their delivery modules (`codex_wake`, `muse_wake`, `zcode_wake`) land, and ZCode and Antigravity keep their own bridges (`scripts/zc-wake-bridge` and `scripts/ag-wake-bridge`) until then.  The other platforms have no router.
-- **Deliver on every path.**  Delivery is off until `WAKE_ROUTER_DELIVERY_ENABLED` is true and `WAKE_ROUTER_DELIVERY_SEATS` names the seat.  Until then the router picks and writes `held` receipts.
-- **A routine on its own.**  The listener still needs `wake = "http"` beside a `routine`.
-- **The Operator never DMs.**  The escalation note, the `@all` reminder and the status message are still direct messages.  They belong in Side-Chats.
-- **Muster writes the Eavesdropper's settings.**  The owner ruled it on Nov 11, through the `fleet-ops-ctl` forced-command route.  `scripts/fleet-ops-control.py` has only the read verb `server eavesdropper-status`, so no write verb exists.
-- **Test Wake in Muster.**  `simple-chat daemon test-wake` sends the router's dry run (section 8).  Muster's Operator panel runs it through the control helper's `server test-wake SEAT.LETTER.GEN.HOST` (AFC-825):  a Test Wake button on one live chat of a seat the router serves, then Show Plan and Touch ID.  The helper confirms that exact chat in the letter registry before anything is sent, passes `--letter`, and fails the test when the router picks any other chat.  A seat that only captures has no dry run, and nothing in Muster sends a test wake without the owner's press.
+Still open:
 
-## Decisions
+- **Retire the per-seat bridges.**  `scripts/zc-wake-bridge` and `scripts/ag-wake-bridge` are superseded by the router (the ZC bridge's system unit still runs but receives nothing);  the ZC retirement waits on the first delivered-and-executed wake (the headless zai coding-plan mint is a zcode-app-side defect under report), the AG one on Antigravity's own lane.
+- **Muster's write access to the router's delivery knobs.**  `WAKE_ROUTER_DELIVERY_ENABLED` and `WAKE_ROUTER_DELIVERY_SEATS` are Infisical knobs under `prod:/wake-router`;  Muster can read them through the `afc-wake-router-ro` token but has no write-scoped token yet, so a delivery toggle is still a hand step.
+
+## Decisions## Decisions
 
 Decided by the owner, Wed, Oct 7 (2026-10-07).
 
