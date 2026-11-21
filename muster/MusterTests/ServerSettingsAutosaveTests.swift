@@ -380,12 +380,82 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         }
     }
 
+    func test_plain_seat_names_round_trip_to_typed_drafts_without_hiding_incomplete_names() throws {
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(), editable: true)
+            .flatMap(\.rows)
+        let row = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
+        let draft = ServerSeatNames.draft(from: "CODEX, GROK-WEB")
+        XCTAssertEqual(ServerSeatNames.text(from: draft), "CODEX, GROK-WEB")
+        XCTAssertEqual(try ServerSettingsBuilder.value(draft, for: row).get(), .list([.text("CODEX"), .text("GROK-WEB")]))
+        XCTAssertEqual(try ServerSettingsBuilder.value(ServerSeatNames.draft(from: ""), for: row).get(), .list([]))
+        let unfinished = ServerSeatNames.draft(from: "CODEX,")
+        XCTAssertEqual(ServerSeatNames.text(from: unfinished), "CODEX, ")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(unfinished, for: row).get())
+        let mixedCase = ServerSeatNames.draft(from: "Codex")
+        XCTAssertEqual(ServerSeatNames.text(from: mixedCase), "Codex")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(mixedCase, for: row).get())
+    }
+
+    func test_nontext_seat_entries_remain_visible_and_block_an_implicit_conversion() throws {
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(), editable: true)
+            .flatMap(\.rows)
+        let row = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
+        let mixed = #"["CODEX",42,true,null,{"name":"JET"}]"#
+        let shown = ServerSeatNames.text(from: mixed)
+        XCTAssertEqual(shown, "CODEX, [Invalid Entry], [Invalid Entry], [Invalid Entry], [Invalid Entry]")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(mixed, for: row).get())
+        let edited = ServerSeatNames.draft(from: shown + ", JET")
+        XCTAssertThrowsError(try ServerSettingsBuilder.value(edited, for: row).get())
+        XCTAssertEqual(ServerSeatNames.text(from: "[]"), "")
+        XCTAssertEqual(ServerSeatNames.text(from: #"{"name":"CODEX"}"#), "")
+    }
+
+    func test_seat_list_controls_are_typed_bounded_and_preserve_read_only_mode() throws {
+        let schema = try settingsSchema()
+        let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true)
+        let rows = groups.flatMap(\.rows)
+        for key in ["notes_queue.worker_seats", "notes_queue.server_seats"] {
+            let row = try XCTUnwrap(rows.first { $0.id == key })
+            XCTAssertEqual(row.control, .seats(maxItems: 64, maxLength: 32))
+            XCTAssertEqual(try ServerSettingsBuilder.value(#"["JET","CODEX","7-CUSTOM_1"]"#, for: row).get(),
+                           .list([.text("JET"), .text("CODEX"), .text("7-CUSTOM_1")]))
+            XCTAssertEqual(try ServerSettingsBuilder.value("[]", for: row).get(), .list([]))
+            for invalid in [#"["lower"]"#, #"[17]"#, #"[["JET"]]"#, #"["BAD NAME"]"#,
+                            #"[""]"#, ServerSettingValue.list(Array(repeating: .text("JET"), count: 65)).json!] {
+                XCTAssertThrowsError(try ServerSettingsBuilder.value(invalid, for: row).get(), invalid)
+            }
+            let values = ServerSettingValue.list(Array(repeating: .text("JET"), count: 64))
+            XCTAssertEqual(try ServerSettingsBuilder.value(values.json!, for: row).get(), values)
+            let request = try ServerSettingsBuilder.request(edits: [key: values.json!], rows: rows, forAutosave: true).get()
+            XCTAssertEqual(request.set[key], values)
+            XCTAssertNotNil(request.standardInput)
+            let oldRows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema).flatMap(\.rows)
+            let old = try XCTUnwrap(oldRows.first { $0.id == key })
+            XCTAssertFalse(old.isEditable)
+            XCTAssertEqual(old.readOnlyReason, ServerSettingsCopy.seats)
+        }
+    }
+
     func test_typed_controls_cover_all_exposed_config_and_preserve_presence_case() throws {
         let schema = try settingsSchema()
         let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true,
                                                   channelNames: ["Work-In-Progress", "Builds", "Custom Team"])
         let rows = groups.flatMap(\.rows)
         XCTAssertTrue(rows.allSatisfy(\.isEditable))
+        for name in ["worker_seats", "server_seats"] {
+            let row = try XCTUnwrap(rows.first { $0.id == "notes_queue." + name })
+            XCTAssertEqual(row.control, .seats(maxItems: 64, maxLength: 32))
+            XCTAssertEqual(try ServerSettingsBuilder.value(#"["CODEX","GROK-WEB"]"#, for: row).get(),
+                           .list([.text("CODEX"), .text("GROK-WEB")]))
+            XCTAssertEqual(try ServerSettingsBuilder.value("[]", for: row).get(), .list([]))
+            for invalid in [#"["codex"]"#, #"["CODEX",42]"#, #"["bad seat"]"#,
+                            #"{"seat":"CODEX"}"#, "[" + Array(repeating: "\"CODEX\"", count: 65).joined(separator: ",") + "]",
+                            "[\"" + String(repeating: "A", count: 33) + "\"]"] {
+                XCTAssertThrowsError(try ServerSettingsBuilder.value(invalid, for: row).get())
+            }
+            let request = try ServerSettingsBuilder.request(edits: [row.id: #"["CODEX"]"#], rows: rows, forAutosave: true).get()
+            XCTAssertEqual(request.set[row.settingKey], .list([.text("CODEX")]))
+        }
         for key in ["daemon.presence_topics", "daemon.coalesce_seconds", "linear_projects.enabled",
                     "seat.CODEX.routine.url_env", "seat.CODEX.routine.key_env", "seat.CODEX.routine.auth",
                     "seat.CODEX.routine.method", "seat.CODEX.routine.header", "seat.CODEX.routine.signature_prefix",

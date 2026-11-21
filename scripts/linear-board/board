@@ -6752,7 +6752,7 @@ def remote_write(a) -> dict:
             EXIT_USAGE,
         )
     unsupported = {
-        "claim": ("steal", "reason", "location", "env"),
+        "claim": ("location", "env"),
         "comment": ("location", "env"),
         "status": (),
         "file": (
@@ -6800,6 +6800,9 @@ def remote_write(a) -> dict:
         args = {"id": a.id}
         if a.comment:
             args["comment"] = a.comment
+        if a.steal:
+            args["steal"] = True
+            args["reason"] = (a.reason or "").strip()
         tool = "linear_claim"
     elif a.cmd == "comment":
         if not a.text:

@@ -2926,6 +2926,14 @@ class CredentialTests(Base):
                     (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
                 )
 
+    def test_explicit_null_expiry_read_only_binding_redeploys_via_named_value(self):
+        self.api.metadata_override = {"expiresAt": None}
+        code, ans = self.redeploy()
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(self.http_calls)
+
     def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
         cases = (
             {"workspace": str(uuid.uuid4())},
@@ -2938,7 +2946,9 @@ class CredentialTests(Base):
                 ]
             },
             {"permissions": ["read", "write"]},
-            {"expiresAt": None},
+            {"expiresAt": None, "permissions": ["read", "write"]},
+            {"expiresAt": None, "workspace": str(uuid.uuid4())},
+            {"expiresAt": "invalid"},
             {"expiresAt": "2000-01-01T00:00:00Z"},
             {"expiresAt": "2099-01-01T00:00:00"},
         )
@@ -7205,7 +7215,34 @@ class SettingsBootstrapTests(unittest.TestCase):
             self.ctx.stdin = lambda: raw
             answer, code = self.install()
             self.assertEqual(code, 2)
-            self.assertEqual(set(answer), {"ok", "result", "errorCode"})
+            self.assertEqual(set(answer), {"ok", "result", "errorCode", "unavailableSource"})
+
+    def test_bootstrap_json_depth_nodes_and_bytes_are_bounded(self):
+        for value in ([[]], [0] * 1001, "x" * (foc.SETTINGS_BOOTSTRAP_MAX + 1)):
+            if value == [[]]:
+                for _ in range(17):
+                    value = [value]
+            with self.subTest(kind=type(value).__name__), self.assertRaises(foc.Refused):
+                foc._settings_json(json.dumps(value).encode())
+
+    def test_missing_bindings_and_unavailable_grant_report_only_fixed_sources(self):
+        for name in (foc.SETTINGS_PROJECT, foc.SETTINGS_WRITER):
+            bootstrap = self.envelope["bootstrap"]
+            value = bootstrap.pop(name)
+            try:
+                answer, code = self.install()
+                self.assertEqual(code, 2)
+                self.assertEqual(answer["requiredBinding"], name)
+                self.assertEqual(answer["unavailableSource"], name)
+                self.assertEqual(self.api.requests, [])
+                self.assertFalse(self.store.exists())
+            finally:
+                bootstrap[name] = value
+        with mock.patch.object(foc, "_load_infisical_reader", side_effect=OSError(self.api.token)):
+            answer, code = self.install()
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["unavailableSource"], "fleet_infisical.py")
+        self.assertNotIn(self.api.token, json.dumps(answer))
 
 
 if __name__ == "__main__":

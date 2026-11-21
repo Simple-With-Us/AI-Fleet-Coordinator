@@ -72,7 +72,8 @@ ruling Nov 10, 2026) and the one stale sweeper (Sweeper, below), which the Eaves
 sweeps or closes rows itself;  it names the chats it knows are gone with an OPERATOR-signed
 report-gone call, and that call refuses to close more than a set share of the host's live
 rows within a window, so one broken host report, or many small ones, cannot end every letter
-of a platform.  The sweeper has the same kind of guard per platform and host.
+of a platform.  The sweeper has the same kind of guard per platform and host:  a pass ends at most that share of a
+host's open rows, the quietest first, and the rest wait for a later pass (AFC-855).
 
 Python 3.11+, standard library only.
 """
@@ -876,10 +877,12 @@ class Sweeper:
     new chat on one host never ends the chats of another.  The `sweep` API op runs the same pass
     for one platform and seat, with the same window, so there is one sweep and one window.
 
-    The guard:  a pass that would end more than `max_share` of a (platform, host)'s open rows
-    ends none of them and records the refusal (an outage, a weekend, or rows arriving with old
-    stamps make every chat look stale at once;  that is not a reason to end them all).  The
-    pass reads, guards and closes in one write transaction.
+    The guard:  a pass that would end more than `max_share` of a (platform, host)'s open rows ends
+    a bounded part of them, the quietest first, and leaves the rest for a later pass (an outage, a
+    weekend, or rows arriving with old stamps make every chat look stale at once;  that is not a
+    reason to end them all, and it is no reason to end none of them either:  a backlog above the
+    share could never drain).  The group it held back is recorded in `refused`, with what it ended
+    and what it deferred.  The pass reads, guards and closes in one write transaction.
 
     The daemon's tick asks `claim(now)` and runs a due pass on a short-lived thread of its own
     (one at a time), so a pass waiting on the store's lock never stalls routing, and no pass
@@ -995,23 +998,34 @@ class Sweeper:
                     now = OR._utcnow()
                     for (pf, host), members in sorted(doomed.items()):
                         open_count = hosts.get((pf, host), 0)
-                        if len(members) > 1 and len(members) > self.max_share * open_count:
+                        share = self.max_share * open_count
+                        if len(members) > 1 and len(members) > share:
+                            # A backlog above the share ends a bounded part of it, not none of it:  the
+                            # rows a host has been away from longest go first, and the rest wait for a
+                            # later pass.  A pass that ended none of them could never drain a backlog at
+                            # all, so the share was a lock and not a bound (AFC-855).
+                            ordered = _quietest_first(members)
+                            allowed = max(1, int(math.floor(share)))
+                            members = ordered[:allowed]
                             refused.append(
                                 {
                                     "platform": pf,
                                     "host": host,
-                                    "would_end": len(members),
+                                    "would_end": len(ordered),
                                     "open": open_count,
+                                    "ended": len(members),
+                                    "deferred": len(ordered) - len(members),
                                 }
                             )
                             self.log(
-                                "registry-sweep-refused",
+                                "registry-sweep-deferred",
                                 platform=pf,
                                 host=host,
-                                would_end=len(members),
+                                would_end=len(ordered),
+                                ended=len(members),
+                                deferred=len(ordered) - len(members),
                                 open=open_count,
                             )
-                            continue
                         for row in members:
                             done = _close_row_in_txn(
                                 registry,
@@ -1040,6 +1054,18 @@ class Sweeper:
             finally:
                 registry.close_db()
         return {"ended": ended, "refused": refused}
+
+
+def _quietest_first(rows: list[Any]) -> list[Any]:
+    """The rows ordered by the time they were last seen, the oldest first:  a row a host has been away
+    from longest is the one a pass ends first, so the rows that are left are the most recent of the
+    backlog."""
+
+    def key(row: Any) -> datetime:
+        seen = OR._parse_instant(row["last_seen_at"])
+        return seen if seen is not None else datetime.min.replace(tzinfo=UTC)
+
+    return sorted(rows, key=key)
 
 
 def _stale_and_replaced(members: list[Any], cutoff: datetime) -> list[Any]:
