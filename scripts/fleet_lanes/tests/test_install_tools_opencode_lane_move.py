@@ -73,5 +73,99 @@ class LaneMoveUnchangedGuard(unittest.TestCase):
             self.assertIn(marker, TEXT)
 
 
+def render_slice(start_marker: str, end_marker: str) -> str:
+    """The rendered text between two markers, so an assertion reads the function it names."""
+    start = TEXT.index(start_marker)
+    end = TEXT.index(end_marker, start)
+    return TEXT[start:end]
+
+
+class LaneMoveRemoteParsing(unittest.TestCase):
+    """Cluster 1:  the origin URL parser must not fold an owner, a port or a
+    credential into the repo name, and must refuse names that cannot be a lane."""
+
+    def test_the_parser_cuts_the_scheme_and_the_scp_colon_not_the_last_colon(self):
+        body = render_slice("function repoFromRemoteUrl", "function runBounded")
+        self.assertNotIn('lastIndexOf(":")', body)
+        self.assertIn("body.slice(scheme + 3)", body)
+        self.assertIn("scpColon", body)
+        self.assertIn("segments[segments.length - 1]", body)
+        self.assertIn("segments.length < 2", body)
+
+    def test_a_repo_name_that_cannot_be_a_lane_directory_is_refused(self):
+        body = render_slice("function repoFromRemoteUrl", "function runBounded")
+        self.assertIn('name === "." || name === ".."', body)
+        self.assertIn('name.startsWith("-")', body)
+
+    def test_a_lane_path_is_accepted_only_inside_a_vouched_lanes_root(self):
+        body = render_slice("function lanePathAccepted", "function ensureLane")
+        self.assertIn("expectedTail", body)
+        self.assertIn("lanesRoots()", body)
+        self.assertIn("realOf(", body)
+        self.assertIn('startsWith(under + sep)', body)
+
+
+class LaneMoveHandles(unittest.TestCase):
+    """Cluster 2:  a copy that misses, errors or hangs hands the work to the
+    next copy instead of ending the fallback."""
+
+    def test_a_get_miss_throws_instead_of_returning_null(self):
+        self.assertIn("is not known to this copy", TEXT)
+        self.assertNotIn("catch {\n          return null;", TEXT)
+
+    def test_any_handle_treats_a_miss_and_a_hang_as_reasons_to_move_on(self):
+        body = render_slice("const LANE_MOVE_TIMED_OUT", "// Create the lane when it is not there yet")
+        self.assertIn("lane-move handle had no answer", body)
+        self.assertIn("lane-move handle timed out", body)
+        self.assertIn("LANE_MOVE_HANDLE_TIMEOUT_MS", body)
+        self.assertIn("continue;", body)
+
+
+class LaneMoveSchedule(unittest.TestCase):
+    """Cluster 3:  events are never dropped behind a slower timer, one pass runs
+    per session at a time, and a deferral spends no attempt."""
+
+    def test_a_higher_priority_nudge_supersedes_a_pending_slower_timer(self):
+        body = render_slice("nudge(sid: string, delayMs: number, priority: number)", "private schedule(")
+        self.assertIn("(state.priority ?? LANE_MOVE_PRIORITY_FALLBACK) >= priority) return", body)
+        self.assertIn("clearTimeout(state.timer)", body)
+
+    def test_one_pass_per_session_with_a_single_rerun(self):
+        body = render_slice("private async pass(", "async consider(")
+        self.assertIn("state.inFlight = true", body)
+        self.assertIn("state.inFlight = false", body)
+        self.assertIn("state.rerun = true", body)
+
+    def test_a_deferral_spends_no_attempt(self):
+        body = render_slice("async consider(", "// Join the one engine")
+        self.assertLess(body.index('return "deferred"'), body.index("state.attempts += 1"))
+        self.assertIn("gave-up", body)
+
+
+class LaneMoveArgumentSafety(unittest.TestCase):
+    """Cluster 4:  nothing session-controlled reaches a child in a position where
+    it reads as a flag."""
+
+    def test_a_dash_leading_directory_never_reaches_git_c(self):
+        body = render_slice("async function repoOfWorktree", "// Create the lane when it is not there yet")
+        self.assertIn('directory.startsWith("-")', body)
+
+    def test_lane_arguments_are_validated_before_the_child(self):
+        body = render_slice("function laneShapeOk", "function lanePathAccepted")
+        self.assertIn("/^[A-Za-z0-9][A-Za-z0-9._-]*$/", body)
+        self.assertIn("/^[a-z0-9][a-z0-9-]*$/", body)
+        self.assertIn("laneShapeOk(repo, slug)", TEXT)
+
+
+class LaneCreationBound(unittest.TestCase):
+    """Cluster 5:  lane children are bounded and deduplicated per repo/slug."""
+
+    def test_lane_children_are_bounded_and_share_one_creation_per_key(self):
+        self.assertIn("LANE_CREATE_CONCURRENT = 2", TEXT)
+        self.assertIn("laneGate.running < LANE_CREATE_CONCURRENT", TEXT)
+        self.assertIn("laneGate.inflight.get(key)", TEXT)
+
+
 if __name__ == "__main__":
     unittest.main()
+

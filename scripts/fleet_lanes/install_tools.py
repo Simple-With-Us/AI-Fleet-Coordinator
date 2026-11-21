@@ -1615,7 +1615,10 @@ def render_opencode_plugin() -> str:
     session starts:  the repo comes from the worktree's origin remote, the slug comes from the session title
     (the session's own OpenCode slug as fallback), the lane is created or reused through the seat's lane tool
     with AGENT_SEAT=OPENCODE (`lane new` refuses nothing and is idempotent for an existing lane), and the move
-    itself is the same session.move call the session_move tool performs.  A session anywhere else, and a mover
+    itself is the same session.move call the session_move tool performs.  Lane creation is bounded to two children
+    at once and one creation per repo/slug key, the returned lane path is accepted only under a lanes root this
+    host vouches for with the expected lane tail, and a session is considered one pass at a time, with an
+    attempts budget that only a pass doing real work spends.  A session anywhere else, and a mover
     that cannot answer, are left alone:  the mover never blocks a chat, and every failure lands in its log.
     Both halves derive paths from the plugin's own file and the home directory, so the text holds no home path
     and no credential, and this function takes no home to embed: the same text is right in every stable dir."""
@@ -1625,7 +1628,7 @@ def render_opencode_plugin() -> str:
 // worktree root into its repo's fleet lane shortly after the session starts.  The guard registers tool
 // execute.before and throws to refuse a call; OpenCode surfaces the throw to the model and does not run the
 // tool.  A guard that cannot answer is a denial, never an allow.  The mover never blocks a chat.
-import { appendFileSync, statSync, truncateSync } from "node:fs";
+import { appendFileSync, realpathSync, statSync, truncateSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -1886,10 +1889,11 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
 // serves and tells every copy the events of every session, so the copies share
 // one engine through globalThis (the letter plugin's pattern), each copy hands
 // the engine its own session handle, and every call tries each handle until one
-// answers:  a copy whose directory has been shut down answers with an error.
+// answers:  a miss, an error or a hang on one copy moves on to the next, and a
+// call that hangs cannot hold the loop.
 const LANE_MOVE_SLOT = Symbol.for("fleet-lane-guard.lane-move");
 type LaneMoveHandle = {
-  get: (sid: string) => Promise<AnyRecord | null>;
+  get: (sid: string) => Promise<AnyRecord>;
   move: (sid: string, directory: string) => Promise<unknown>;
 };
 type LaneMoveEngine = { handles: LaneMoveHandle[] };
@@ -1901,7 +1905,12 @@ type LaneMoveEngine = { handles: LaneMoveHandle[] };
 // one named from OpenCode's random slug, and a chat that has not prompted yet
 // has not started working where it sits.  A session that never prompts is moved
 // anyway after LANE_MOVE_FALLBACK_MS, so every session in the worktree root
-// lands in a lane whether it prompts or not.
+// lands in a lane whether it prompts or not.  Nudges carry a priority so a
+// prompt or rename that arrives while a slower timer is pending supersedes it
+// instead of being dropped by it, and the one consider of a session at a time
+// takes one rerun for whatever arrived while it was in flight.  Only a pass
+// that does real work spends one of LANE_MOVE_ATTEMPTS;  an untitled deferral
+// is free.
 const LANE_MOVE_SETTLE_MS = 1500;
 const LANE_MOVE_PROMPT_POLL_MS = 400;
 const LANE_MOVE_PROMPT_POLLS = 5;
@@ -1909,6 +1918,15 @@ const LANE_MOVE_ATTEMPTS = 3;
 const LANE_MOVE_FALLBACK_MS = 90_000;
 const LANE_MOVE_SESSIONS = 2000;
 const LANE_MOVE_LOG_BYTES = 512 * 1024;
+const LANE_MOVE_HANDLE_TIMEOUT_MS = 5000;
+const LANE_MOVE_PRIORITY_FALLBACK = 0;
+const LANE_MOVE_PRIORITY_SETTLE = 1;
+const LANE_MOVE_PRIORITY_PROMPT = 2;
+
+// Lane creation is bounded:  at most two lane children at once, and one
+// creation per repo/slug key, so a burst of session.created events cannot fan
+// out into a burst of three-minute children.
+const LANE_CREATE_CONCURRENT = 2;
 
 // The fallback wait, overridable for a test the way the lane command is.
 const fallbackWait = Number(process.env.OPENCODE_LANE_MOVE_FALLBACK_MS);
@@ -1945,20 +1963,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-// The first handle that answers wins:  one broken copy must not stop the move.
+// The first handle that answers wins:  a miss, an error or a hang on one copy
+// is a reason to try the next, and a hang cannot hold the loop — each attempt
+// is raced against a short timeout and read as a miss.  A null answer is a miss
+// too (the session is not known to that copy), not an answer to return.
+const LANE_MOVE_TIMED_OUT = Symbol("lane-move-handle-timeout");
+
 async function anyHandle(
   handles: LaneMoveHandle[],
   call: (handle: LaneMoveHandle) => Promise<unknown>,
 ): Promise<unknown> {
-  let last: unknown;
+  let last = "no lane-move handle answered";
   for (const handle of handles) {
     try {
-      return await call(handle);
+      const answer = await Promise.race([
+        call(handle),
+        sleep(LANE_MOVE_HANDLE_TIMEOUT_MS).then((): typeof LANE_MOVE_TIMED_OUT => LANE_MOVE_TIMED_OUT),
+      ]);
+      if (answer === LANE_MOVE_TIMED_OUT) {
+        last = "lane-move handle timed out";
+        continue;
+      }
+      if (answer === null || answer === undefined) {
+        last = "lane-move handle had no answer";
+        continue;
+      }
+      return answer;
     } catch (error) {
-      last = error;
+      last = error instanceof Error ? error.message : String(error);
     }
   }
-  throw last ?? new Error("no lane-move handle answered");
+  throw new Error(last);
 }
 
 // `true` only for a directory inside OpenCode's own worktree root:  the one
@@ -1971,19 +2006,27 @@ function inInternalWorktree(directory: string): boolean {
   return resolve(directory).startsWith(root);
 }
 
-// The repo name from a worktree's origin URL:  the last path segment without
-// `.git`, whether the remote is an https URL or an scp-style `host:owner/repo`.
-// Only the name comes back — a URL can carry a credential, so the URL itself is
-// never logged.
+// The repo name from a worktree's origin URL, for the three shapes remotes
+// take:  https://host[:port]/Owner/Repo.git, ssh://git@host[:port]/Owner/Repo.git,
+// and the scp-style git@host:Owner/Repo.git, where the colon separates host
+// from path instead of naming a port.  The scheme and any credentials are cut
+// with it;  a colon is treated as a path separator only in the scp shape, and
+// the name is the last path segment after `.git` is stripped, so an owner is
+// never folded into it.  Only the name comes back — a URL can carry a
+// credential, so the URL itself is never logged.
 function repoFromRemoteUrl(url: string): string | null {
   let body = String(url).trim().replace(/\\.git$/i, "");
   const scheme = body.indexOf("://");
-  const colon = body.lastIndexOf(":");
-  const slash = body.lastIndexOf("/");
-  const cut = colon > scheme ? colon : slash;
-  if (cut >= 0) body = body.slice(cut + 1);
-  const name = body.replace(/[^A-Za-z0-9._-]/g, "");
-  return name ? name : null;
+  if (scheme >= 0) body = body.slice(scheme + 3);
+  else {
+    const scpColon = body.indexOf(":");
+    if (scpColon >= 0) body = body.slice(scpColon + 1);
+  }
+  const segments = body.split("/").filter((segment) => segment.length > 0);
+  if (segments.length < 2) return null;
+  const name = segments[segments.length - 1].replace(/[^A-Za-z0-9._-]/g, "");
+  if (!name || name === "." || name === ".." || name.startsWith("-")) return null;
+  return name;
 }
 
 function runBounded(
@@ -2034,6 +2077,9 @@ function runBounded(
 }
 
 async function repoOfWorktree(directory: string): Promise<string | null> {
+  // `-C` takes the directory as its own argument, so a value that reads as a
+  // flag would be re-parsed by git;  a worktree directory is always absolute.
+  if (typeof directory !== "string" || !directory || directory.startsWith("-")) return null;
   const { code, out } = await runBounded("git", ["-C", directory, "remote", "get-url", "origin"], 5000);
   if (code !== 0) return null;
   return repoFromRemoteUrl(out.split("\\n")[0] ?? "");
@@ -2045,18 +2091,98 @@ async function repoOfWorktree(directory: string): Promise<string | null> {
 // with AGENT_SEAT=OPENCODE — the seat whose lane prefix `opencode-` is — and the
 // environment's own roots pass through, so a host that names its lanes volume in
 // FLEET_LANES_ROOT is followed and a host that relies on the home default works.
-async function ensureLane(repo: string, slug: string): Promise<string | null> {
-  const childEnv = { ...process.env, AGENT_SEAT: "OPENCODE" } as Record<string, string>;
-  const { code, out } = await runBounded(laneCommand(), ["new", repo, slug], 180000, childEnv);
-  if (code !== 0) return null;
-  const lines = out.split("\\n").map((line) => line.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (line.startsWith("/")) return line;
-    const after = /[: ](\\/\\S+)$/.exec(line);
-    if (after) return after[1];
+// Creations are bounded (LANE_CREATE_CONCURRENT children at once) and one
+// creation runs per repo/slug key, so a burst of sessions shares one lane
+// child.  The answer is accepted only when it is the lane this call asked for
+// under a lanes root this plugin vouches for, so a crafted remote cannot steer
+// session.move outside the lanes root.
+const laneGate = {
+  running: 0,
+  queue: [] as Array<() => void>,
+  inflight: new Map<string, Promise<string | null>>(),
+};
+
+function lanesRoots(): string[] {
+  const roots: string[] = [];
+  const fromEnv = process.env.FLEET_LANES_ROOT;
+  if (typeof fromEnv === "string" && fromEnv.trim()) roots.push(resolve(fromEnv.trim()));
+  roots.push(resolve(homedir(), "apps", "lanes"));
+  return roots;
+}
+
+function realOf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
-  return null;
+}
+
+function laneShapeOk(repo: string, slug: string): boolean {
+  const safe = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) || /^[a-z0-9][a-z0-9-]*$/.test(value);
+  return safe(repo) && safe(slug);
+}
+
+function lanePathAccepted(lanePath: string, repo: string, slug: string): boolean {
+  const expectedTail = [repo, "opencode-" + slug].join(sep);
+  const where = resolve(lanePath);
+  if (!where.endsWith(expectedTail)) return false;
+  for (const root of lanesRoots()) {
+    for (const [spelling, under] of [[where, root], [realOf(where), realOf(root)]] as const) {
+      if (spelling === under) continue;
+      if (spelling.startsWith(under + sep)) return true;
+    }
+  }
+  return false;
+}
+
+function ensureLane(repo: string, slug: string): Promise<string | null> {
+  if (!laneShapeOk(repo, slug)) return Promise.resolve(null);
+  const key = repo + "/" + slug;
+  const existing = laneGate.inflight.get(key);
+  if (existing) return existing;
+  const childEnv = { ...process.env, AGENT_SEAT: "OPENCODE" } as Record<string, string>;
+  const creation = new Promise<string | null>((resolveCreation) => {
+    const start = () => {
+      laneGate.running += 1;
+      runBounded(laneCommand(), ["new", repo, slug], 180000, childEnv).then(
+        ({ code, out }) => {
+          laneGate.running -= 1;
+          const next = laneGate.queue.shift();
+          if (next !== undefined) next();
+          if (code !== 0) {
+            resolveCreation(null);
+            return;
+          }
+          const lines = out.split("\\n").map((line) => line.trim()).filter(Boolean);
+          let path: string | null = null;
+          for (let i = lines.length - 1; i >= 0 && path === null; i--) {
+            const line = lines[i];
+            if (line.startsWith("/")) path = line;
+            else {
+              const after = /[: ](\\/\\S+)$/.exec(line);
+              if (after) path = after[1];
+            }
+          }
+          resolveCreation(path !== null && lanePathAccepted(path, repo, slug) ? path : null);
+        },
+        () => {
+          laneGate.running -= 1;
+          const next = laneGate.queue.shift();
+          if (next !== undefined) next();
+          resolveCreation(null);
+        },
+      );
+    };
+    if (laneGate.running < LANE_CREATE_CONCURRENT) start();
+    else laneGate.queue.push(start);
+  });
+  laneGate.inflight.set(key, creation);
+  const forget = () => {
+    laneGate.inflight.delete(key);
+  };
+  creation.then(forget, forget);
+  return creation;
 }
 
 // The lane slug from the session title:  a fleet letter prefix ("AB: ") is
@@ -2079,7 +2205,14 @@ function laneSlug(title: string, fallback: string): string {
   return base || "session";
 }
 
-type MoveState = { attempts: number; fallback?: boolean; timer?: ReturnType<typeof setTimeout> };
+type MoveState = {
+  attempts: number; // passes that did (or tried) real work
+  fallback?: boolean; // the pending pass is the untitled fallback
+  priority?: number; // the pending timer's priority
+  inFlight?: boolean; // a consider is running for this session
+  rerun?: boolean; // an event arrived while a pass was in flight
+  timer?: ReturnType<typeof setTimeout>;
+};
 
 class LaneMover {
   readonly handles: LaneMoveHandle[];
@@ -2099,9 +2232,12 @@ class LaneMover {
     }
   }
 
-  // A nudge from an event (or the settle or fallback timer):  consider the
-  // session once, at most LANE_MOVE_ATTEMPTS times, and never twice at once.
-  nudge(sid: string, delayMs: number, fallback = false): void {
+  // A nudge from an event:  a prompt or rename supersedes whatever slower timer
+  // is pending (a session that just earned its title moves now, not at the
+  // fallback tick), a lower-priority nudge never displaces a pending higher
+  // one, and a nudge for a session already being considered marks one rerun
+  // instead of dropping.
+  nudge(sid: string, delayMs: number, priority: number): void {
     if (!sid) return;
     this.forgetOldest();
     let state = this.states.get(sid);
@@ -2109,67 +2245,118 @@ class LaneMover {
       state = { attempts: 0 };
       this.states.set(sid, state);
     }
-    if (state.attempts >= LANE_MOVE_ATTEMPTS) return;
-    if (state.timer !== undefined) return;
-    if (fallback) state.fallback = true;
+    if (state.inFlight) {
+      state.rerun = true;
+      return;
+    }
+    if (state.timer !== undefined) {
+      if ((state.priority ?? LANE_MOVE_PRIORITY_FALLBACK) >= priority) return;
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
+    this.schedule(state, sid, delayMs, priority);
+  }
+
+  private schedule(state: MoveState, sid: string, delayMs: number, priority: number): void {
+    if (state.timer !== undefined) clearTimeout(state.timer);
+    state.priority = priority;
+    state.fallback = priority === LANE_MOVE_PRIORITY_FALLBACK;
     const bound = state;
     bound.timer = setTimeout(() => {
-      if (bound.timer !== undefined) clearTimeout(bound.timer);
       bound.timer = undefined;
-      bound.attempts += 1;
-      void this.consider(sid, bound.fallback === true).catch((error: unknown) => {
+      bound.priority = undefined;
+      const fallback = bound.fallback === true;
+      void this.pass(sid, fallback).catch((error: unknown) => {
         laneMoveLog("error", { session: sid, error: error instanceof Error ? error.message : String(error) });
       });
     }, delayMs);
   }
 
-  async consider(sid: string, fallback: boolean): Promise<void> {
-    const info = (await anyHandle(this.handles, (h) => h.get(sid))) as AnyRecord | null;
-    if (!info || typeof info !== "object") return;
+  // One consideration of one session, serialized per session id:  a nudge that
+  // arrives while a pass is in flight marks one rerun instead of starting a
+  // second concurrent pass, so a lane is never created or a session never moved
+  // twice at once.
+  private async pass(sid: string, fallback: boolean): Promise<void> {
+    const state = this.states.get(sid);
+    if (state === undefined) return;
+    if (state.inFlight) {
+      state.rerun = true;
+      return;
+    }
+    state.inFlight = true;
+    let deferred = false;
+    try {
+      deferred = (await this.consider(sid, fallback, state)) === "deferred";
+    } catch (error) {
+      laneMoveLog("error", { session: sid, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      state.inFlight = false;
+    }
+    if (deferred) {
+      // The fallback pass answers if no prompt ever comes;  a rerun marked
+      // while this pass ran then supersedes it, because its priority is higher
+      // and only one timer is left pending.
+      this.nudge(sid, LANE_MOVE_FALLBACK_WAIT_MS, LANE_MOVE_PRIORITY_FALLBACK);
+      if (state.rerun) this.nudge(sid, LANE_MOVE_PROMPT_POLL_MS, LANE_MOVE_PRIORITY_PROMPT);
+    } else if (state.rerun) {
+      state.rerun = false;
+      this.nudge(sid, LANE_MOVE_PROMPT_POLL_MS, LANE_MOVE_PRIORITY_PROMPT);
+    }
+  }
+
+  async consider(sid: string, fallback: boolean, state: MoveState): Promise<"moved" | "deferred" | "done"> {
+    const info = (await anyHandle(this.handles, (h) => h.get(sid))) as AnyRecord;
     const directory = typeof info.directory === "string" ? info.directory : "";
-    if (!inInternalWorktree(directory)) return;
+    if (!inInternalWorktree(directory)) return "done";
     const archived = info.time_archived;
-    if (typeof archived === "number" && archived > 0) return;
+    if (typeof archived === "number" && archived > 0) return "done";
     // A short poll for the title:  OpenCode names a chat from its first prompt,
     // so the name may be a moment behind the nudge that carried it.
     let title = typeof info.title === "string" ? info.title : "";
     for (let i = 0; !title && i < LANE_MOVE_PROMPT_POLLS; i++) {
       await sleep(LANE_MOVE_PROMPT_POLL_MS);
-      const fresh = (await anyHandle(this.handles, (h) => h.get(sid))) as AnyRecord | null;
+      const fresh = (await anyHandle(this.handles, (h) => h.get(sid))) as AnyRecord;
       title = fresh && typeof fresh.title === "string" ? fresh.title : "";
     }
     if (!title && !fallback) {
       // Still unnamed:  wait for the first prompt (the fallback pass answers if
       // it never comes), so the lane is named from the chat's own words rather
-      // than OpenCode's random slug.
+      // than OpenCode's random slug.  A deferral is free:  it spends no
+      // attempt, so events that arrive untitled cannot use the budget up.
       laneMoveLog("deferred", { session: sid, directory });
-      this.nudge(sid, LANE_MOVE_FALLBACK_WAIT_MS, true);
-      return;
+      return "deferred";
     }
+    if (state.attempts >= LANE_MOVE_ATTEMPTS) {
+      laneMoveLog("gave-up", { session: sid });
+      return "done";
+    }
+    state.attempts += 1;
     const slug = laneSlug(title, typeof info.slug === "string" ? info.slug : "");
     const repo = await repoOfWorktree(directory);
     if (!repo) {
       laneMoveLog("no-repo", { session: sid, directory });
-      return;
+      return "done";
     }
     const lanePath = await ensureLane(repo, slug);
     if (!lanePath) {
       laneMoveLog("no-lane", { session: sid, repo, slug });
-      return;
+      return "done";
     }
     if (resolve(lanePath) === resolve(directory)) {
       laneMoveLog("already-there", { session: sid, lane: lanePath });
-      return;
+      return "done";
     }
     try {
       await anyHandle(this.handles, (h) => h.move(sid, lanePath));
       laneMoveLog("moved", { session: sid, repo, slug, from: directory, to: lanePath });
+      return "moved";
     } catch (error) {
       laneMoveLog("move-refused", {
         session: sid,
         lane: lanePath,
         error: error instanceof Error ? error.message : String(error),
       });
+      return "done";
     }
   }
 }
@@ -2194,11 +2381,13 @@ function startLaneMove(ctx: AnyRecord): void {
     }
     const handle: LaneMoveHandle = {
       get: async (sid) => {
-        try {
-          return (await ctx.session.get({ sessionID: sid })) as AnyRecord | null;
-        } catch {
-          return null;
+        // A miss throws so anyHandle tries the next copy;  swallowing it here
+        // would end the fallback at the first handle.
+        const info = (await ctx.session.get({ sessionID: sid })) as AnyRecord | null;
+        if (info === null || info === undefined) {
+          throw new Error("session " + sid + " is not known to this copy");
         }
+        return info;
       },
       move: (sid, directory) => ctx.session.move({ sessionID: sid, directory }),
     };
@@ -2214,10 +2403,14 @@ function startLaneMove(ctx: AnyRecord): void {
               const sid = typeof event?.data?.sessionID === "string" ? event.data.sessionID : "";
               if (!sid) continue;
               // A new session, a first prompt (and the title it earns), and a
-              // rename all nudge the same consideration;  the mover's own
-              // attempts and dedupe keep it to one move.
-              if (type === "session.created") mover.nudge(sid, LANE_MOVE_SETTLE_MS);
-              else if (type === "session.inbox.enqueued" || type === "session.renamed") mover.nudge(sid, 200);
+              // rename all nudge the same consideration;  the prompt's priority
+              // supersedes a pending settle or fallback timer, the mover
+              // serializes per session, and the attempts budget is only spent
+              // by passes that do real work.
+              if (type === "session.created") mover.nudge(sid, LANE_MOVE_SETTLE_MS, LANE_MOVE_PRIORITY_SETTLE);
+              else if (type === "session.inbox.enqueued" || type === "session.renamed") {
+                mover.nudge(sid, 200, LANE_MOVE_PRIORITY_PROMPT);
+              }
             } catch {
               // one bad event is not a broken stream
             }

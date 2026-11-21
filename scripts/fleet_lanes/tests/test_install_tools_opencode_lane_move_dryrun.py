@@ -53,6 +53,9 @@ writeFileSync(fakeLane, [
 chmodSync(fakeLane, 0o755);
 process.env.OPENCODE_LANE_CMD = fakeLane;
 process.env.OPENCODE_LANE_MOVE_FALLBACK_MS = "1500";
+// The containment check only accepts a lane path under a lanes root;  the fake
+// tool answers under this one, so the env names it for the plugin.
+process.env.FLEET_LANES_ROOT = work + "/fake-lanes";
 
 // The fixture directory the python side prepared:  a real git repo under the worktree root of
 // the temp HOME, named with spaces and mixed case the way the runtime names its own worktrees.
