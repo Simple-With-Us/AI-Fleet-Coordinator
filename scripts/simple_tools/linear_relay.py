@@ -210,7 +210,7 @@ MAX_ENTRY_TEXT = 60000
 LABEL_CHARS = 280
 # The render format of an entry's quotes.  An entry written by an older build carries no
 # version, and its quotes are read from Zulip again before its comment is edited.
-RENDER_VERSION = 2
+RENDER_VERSION = 3
 # How many standing comments are re-rendered from Zulip in one cycle, and how long an
 # entry whose topic could not be read waits before it is tried again.
 REFRESH_PER_CYCLE = 1
@@ -332,8 +332,17 @@ def _mask_commit_ids(text: str) -> str:
     whole field, as it always did, because that run is credential material (AFC-834)."""
 
     def replace(match: re.Match[str]) -> str:
-        before = text[: match.start()]
+        start, end = match.start(), match.end()
+        before = text[:start]
         if _ASSIGNED_TO_CREDENTIAL.search(before) or _URL_QUERY_VALUE.search(before):
+            return match.group(0)
+        # A 40/64 lowercase-hex prefix inside a longer token (base64, a mixed
+        # credential) must stay unmasked so has_secret can withhold the field.
+        # Hex neighbours are already excluded by _COMMIT_ID_WORD.
+        prev = text[start - 1] if start else ""
+        nxt = text[end] if end < len(text) else ""
+        tokenish = lambda ch: ch.isalnum() or ch in "_+/=-"
+        if (prev and tokenish(prev)) or (nxt and tokenish(nxt)):
             return match.group(0)
         return "(a hex run of %d characters, masked)" % len(match.group(0))
 

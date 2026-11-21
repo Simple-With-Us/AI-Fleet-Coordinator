@@ -832,6 +832,17 @@ class RelayTests(unittest.TestCase):
                 self.assertIn("masked", masked, text)
                 self.assertFalse(lr.has_secret(masked), text)
 
+
+    def test_an_embedded_hex_prefix_is_left_unmasked_for_the_scanner(self) -> None:
+        # A lowercase-hex prefix inside a longer opaque token must not be
+        # partly masked: the suffix would otherwise leak (kody, PR 2360).
+        run = "a" * 40
+        text = "pasted %sZx+/=" % run
+        masked = lr._mask_commit_ids(text)
+        self.assertIn(run, masked, text)
+        self.assertNotIn("masked", masked, text)
+        self.assertTrue(lr.has_secret(text), text)
+
     def test_a_commit_id_that_is_a_credential_is_still_a_secret(self) -> None:
         run = "c" * 40
         cases = (
