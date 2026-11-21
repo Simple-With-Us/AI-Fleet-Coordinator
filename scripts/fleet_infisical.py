@@ -1473,7 +1473,10 @@ def _api_json(
     check):  an oversized answer fails closed as (0, None) without the body being
     buffered whole.  Calls without a narrower cap use MAX_OUTPUT_BYTES.
     """
-    base = (env.get(ENV_API) or API_BASE).rstrip("/")
+    try:
+        base = _provider_base(env, strict=True)
+    except ValueError:
+        raise SecretsError("read-provider-invalid", 2, failure_kind="refused") from None
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         base + path,
@@ -1725,12 +1728,26 @@ def _write_ledger(directory: Path):
         raise SecretsError("write-state-unavailable") from None
 
 
-def _write_provider(env):
+def _provider_base(env, *, strict=False):
+    """Normalize a configured provider; syntax validation grants no endpoint authority.
+
+    Writers retain their historical normalization for durable ledger identities.  Reads also
+    reject ambiguous raw syntax before constructing an authenticated request.
+    """
     try:
         provider = (env.get(ENV_API) or API_BASE).rstrip("/")
         parsed = urllib.parse.urlsplit(provider)
         if (
             len(provider) > 2048
+            or (
+                strict
+                and (
+                    any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in provider)
+                    or "@" in parsed.netloc
+                    or "?" in provider
+                    or "#" in provider
+                )
+            )
             or parsed.scheme not in ("https", "http")
             or not parsed.netloc
             or parsed.username
@@ -1761,6 +1778,13 @@ def _write_provider(env):
             host += ":" + str(port)
         return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except (ValueError, TypeError, AttributeError, UnicodeError):
+        raise ValueError() from None
+
+
+def _write_provider(env):
+    try:
+        return _provider_base(env)
+    except ValueError:
         raise SecretsError("write-provider-invalid", 2) from None
 
 
