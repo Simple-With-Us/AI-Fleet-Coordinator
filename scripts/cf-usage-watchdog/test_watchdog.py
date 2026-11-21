@@ -1272,9 +1272,7 @@ class DirectCredentialTests(unittest.TestCase):
         self.reader_calls = []
         self.reader_failure = None
         self.helper.bounded_fetch_project = self.loopback_fetch
-        self.addCleanup(
-            setattr, self.helper, "bounded_fetch_project", self.actual_bounded
-        )
+        self.addCleanup(setattr, self.helper, "bounded_fetch_project", self.actual_bounded)
 
         self.cfg = json.loads(wd.CONFIG_PATH.read_text())
         self.env = {
@@ -1425,9 +1423,7 @@ class DirectCredentialTests(unittest.TestCase):
         self.no_application.assert_not_called()
 
     def test_canonical_bounded_timeout_keeps_its_fixed_classification(self):
-        failure = self.helper.SecretsError(
-            "bounded-read-timeout", failure_kind="unavailable"
-        )
+        failure = self.helper.SecretsError("bounded-read-timeout", failure_kind="unavailable")
         self.reader_failure = failure
         with self.assertRaisesRegex(wd.PollError, "^credential-fetch-timeout$"):
             self.conn._secret("EXAMPLE")
