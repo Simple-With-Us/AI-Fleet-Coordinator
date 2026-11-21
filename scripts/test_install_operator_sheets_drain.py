@@ -445,6 +445,20 @@ class StubbedInstallTests(unittest.TestCase):
             self.assertTrue(manifest["modules"][name]["present"])
         self.assertFalse(any(call.startswith("systemctl enable") for call in calls))
 
+    def test_code_only_staging_failure_removes_the_source_stage(self):
+        self.seed_existing_install()
+        git(self.repo, "rm", "-q", "scripts/simple_tools/operator_sheets_google.mjs")
+        git(self.repo, "commit", "-q", "-m", "missing source")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not stage reviewed source operator_sheets_google.mjs", result.stderr)
+        backup_root = self.root / "var/backups/operator-sheets-drain-code-only"
+        self.assertFalse(any(path.name.startswith("source-") for path in backup_root.iterdir()))
+        self.assertNotIn("systemctl stop operator-sheets-drain.timer", self.calls())
+
     def test_code_only_waits_for_running_service_and_restores_timer(self):
         self.seed_existing_install()
         result = self.run_install(

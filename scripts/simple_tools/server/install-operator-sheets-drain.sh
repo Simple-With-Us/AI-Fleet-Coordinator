@@ -147,6 +147,37 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
       die "could not create $BACKUP_ROOT"
   fi
   command -v mktemp >/dev/null || die "mktemp is missing"
+  SOURCE_STAGE=""
+  CODE_HELPER_STAGE=""
+  STAGE_DIR=""
+  timer_stopped=0
+  timer_restored=0
+  cleanup_code_only() {
+    local status=$?
+    trap - EXIT INT TERM
+    if [[ "$timer_stopped" -eq 1 && "$timer_restored" -eq 0 ]]; then
+      if [[ -x "$PYTHON" ]] && "$PYTHON" -I "$CODE_HELPER_STAGE" \
+        --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+        --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null &&
+        systemctl start "$TIMER"; then
+        timer_restored=1
+        say "restored the previously active $TIMER"
+      else
+        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
+      fi
+    fi
+    if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]]; then
+      rm -rf -- "$STAGE_DIR"
+    fi
+    if [[ -n "$SOURCE_STAGE" && -d "$SOURCE_STAGE" && ! -L "$SOURCE_STAGE" ]]; then
+      rm -rf -- "$SOURCE_STAGE"
+    fi
+    return "$status"
+  }
+  trap cleanup_code_only EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   umask 077
   SOURCE_STAGE="$(mktemp -d "$BACKUP_ROOT/source-XXXXXXXX")" || die "could not create a private source stage"
   CODE_HELPER_STAGE="$SOURCE_STAGE/operator_sheets_code_only.py"
@@ -161,8 +192,6 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
   [[ -n "$STAGE_DIR" && "$STAGE_DIR" == "$BACKUP_ROOT"/staged-* && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]] ||
     die "the immutable source stage is unavailable"
 
-  timer_stopped=0
-  timer_restored=0
   unit_busy() {
     local output key value active_state="" sub_state="" job="" main_pid="" no_job=0
     output="$(systemctl show --property=ActiveState --property=SubState --property=Job \
@@ -191,32 +220,6 @@ if [[ "$CODE_ONLY" -eq 1 ]]; then
     fi
     die "systemd state for $1 is not safely inactive (ActiveState=$active_state, SubState=$sub_state)"
   }
-  cleanup_code_only() {
-    local status=$?
-    trap - EXIT INT TERM
-    if [[ "$timer_stopped" -eq 1 && "$timer_restored" -eq 0 ]]; then
-      if [[ -x "$PYTHON" ]] && "$PYTHON" -I "$CODE_HELPER_STAGE" \
-        --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
-        --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
-        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null &&
-        systemctl start "$TIMER"; then
-        timer_restored=1
-        say "restored the previously active $TIMER"
-      else
-        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
-      fi
-    fi
-    if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]]; then
-      rm -rf -- "$STAGE_DIR"
-    fi
-    if [[ -n "$SOURCE_STAGE" && -d "$SOURCE_STAGE" && ! -L "$SOURCE_STAGE" ]]; then
-      rm -rf -- "$SOURCE_STAGE"
-    fi
-    return "$status"
-  }
-  trap cleanup_code_only EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
   if unit_busy "$TIMER"; then
     timer_stopped=1
     systemctl stop "$TIMER" || die "could not stop $TIMER before code-only update"
