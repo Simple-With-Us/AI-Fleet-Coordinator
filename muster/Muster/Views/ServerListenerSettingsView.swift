@@ -132,6 +132,10 @@ private struct ServerSettingRowView: View {
                 .font(.system(size: 11, design: .monospaced)).frame(width: 190)
         case .pairs?:
             ServerPresencePairsEditor(draft: $draft, channelNames: row.channelNames)
+        case .seats?:
+            TextField("[\"CODEX\", \"CLAUDE\"]", text: $draft).textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced)).frame(width: 240)
+                .accessibilityLabel(row.title)
         case nil:
             // Identity pins and unknown fields are status, rather than disabled controls.
             VStack(alignment: .leading, spacing: 2) {

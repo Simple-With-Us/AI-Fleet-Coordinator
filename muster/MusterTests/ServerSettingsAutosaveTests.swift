@@ -386,6 +386,20 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
                                                   channelNames: ["Work-In-Progress", "Builds", "Custom Team"])
         let rows = groups.flatMap(\.rows)
         XCTAssertTrue(rows.allSatisfy(\.isEditable))
+        for name in ["worker_seats", "server_seats"] {
+            let row = try XCTUnwrap(rows.first { $0.id == "notes_queue." + name })
+            XCTAssertEqual(row.control, .seats(maxItems: 64, maxLength: 32))
+            XCTAssertEqual(try ServerSettingsBuilder.value(#"["CODEX","GROK-WEB"]"#, for: row).get(),
+                           .list([.text("CODEX"), .text("GROK-WEB")]))
+            XCTAssertEqual(try ServerSettingsBuilder.value("[]", for: row).get(), .list([]))
+            for invalid in [#"["codex"]"#, #"["CODEX",42]"#, #"["bad seat"]"#,
+                            #"{"seat":"CODEX"}"#, "[" + Array(repeating: "\"CODEX\"", count: 65).joined(separator: ",") + "]",
+                            "[\"" + String(repeating: "A", count: 33) + "\"]"] {
+                XCTAssertThrowsError(try ServerSettingsBuilder.value(invalid, for: row).get())
+            }
+            let request = try ServerSettingsBuilder.request(edits: [row.id: #"["CODEX"]"#], rows: rows, forAutosave: true).get()
+            XCTAssertEqual(request.set[row.settingKey], .list([.text("CODEX")]))
+        }
         for key in ["daemon.presence_topics", "daemon.coalesce_seconds", "linear_projects.enabled",
                     "seat.CODEX.routine.url_env", "seat.CODEX.routine.key_env", "seat.CODEX.routine.auth",
                     "seat.CODEX.routine.method", "seat.CODEX.routine.header", "seat.CODEX.routine.signature_prefix",

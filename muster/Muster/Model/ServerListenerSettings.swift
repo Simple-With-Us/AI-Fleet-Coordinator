@@ -315,7 +315,7 @@ indirect enum ServerSettingSpec: Equatable {
     case choice([String])
     case text(pattern: String, maxLength: Int)
     case pairs
-    case seats
+    case seats(maxItems: Int, maxLength: Int)
     case seatEnv
     case table([String: ServerSettingSpec])
 }
@@ -414,7 +414,10 @@ struct ServerSettingsAllowlist: Equatable {
                   (0.0...256.0).contains(length) else { return nil }
             return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
-        case "seats": return .seats
+        case "seats":
+            guard let items = bound(object["maxItems"]), items == items.rounded(), (1...64).contains(items),
+                  let length = bound(object["maxLength"]), length == length.rounded(), (1...32).contains(length) else { return nil }
+            return .seats(maxItems: Int(items), maxLength: Int(length))
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
             guard !nested, let keys = object["keys"] as? [String: Any], !keys.isEmpty else { return nil }
@@ -857,6 +860,7 @@ enum ServerSettingControl: Equatable {
     case number(min: Double, max: Double)
     case text(pattern: String, maxLength: Int)
     case pairs
+    case seats(maxItems: Int, maxLength: Int)
 }
 
 /// One setting on screen.
@@ -1084,6 +1088,7 @@ enum ServerSettingsBuilder {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
                 case .pairs: return .pairs
+                case .seats(let items, let length): return .seats(maxItems: items, maxLength: length)
                 case .seatEnv:
                     guard let sub else { return nil }
                     let existing: String?
@@ -1111,7 +1116,9 @@ enum ServerSettingsBuilder {
         guard case .table(let keys) = spec else {
             var control = control(spec)
             var reason: String?
-            if control == nil { reason = spec == .seats ? ServerSettingsCopy.seats : ServerSettingsCopy.pairs }
+            if control == nil {
+                if case .seats = spec { reason = ServerSettingsCopy.seats } else { reason = ServerSettingsCopy.pairs }
+            }
             if reason == nil, !isStructure {
                 reason = ServerSettingsCopy.knobHome
                 control = nil
@@ -1183,9 +1190,9 @@ enum ServerSettingsBuilder {
         if !ServerSettingsReferences.names(path: row.id).isEmpty, case .choice(let names) = control {
             reference = ServerSettingsReferences.isName(trimmed) && names.contains(trimmed)
         } else { reference = false }
-        let structuredPairs: Bool
-        if case .pairs = control { structuredPairs = true } else { structuredPairs = false }
-        guard reference || structuredPairs || !looksLikeCredential(trimmed) else {
+        let structured: Bool
+        switch control { case .pairs, .seats: structured = true; default: structured = false }
+        guard reference || structured || !looksLikeCredential(trimmed) else {
             return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id, verifiedFields: verified)))
         }
         switch control {
@@ -1212,6 +1219,18 @@ enum ServerSettingsBuilder {
             let isWhole = !trimmed.contains(".") && !trimmed.lowercased().contains("e")
             if isWhole, let whole = Int(trimmed) { return .success(.int(whole)) }
             return .success(.number(number))
+        case .seats(let maxItems, let maxLength):
+            guard case .list(let seats)? = ServerSettingJSON.parse(trimmed), seats.count <= maxItems else {
+                return invalid("needs at most \(maxItems) seat names.")
+            }
+            for seat in seats {
+                guard case .text(let name) = seat, !name.isEmpty, name.count <= maxLength,
+                      name.range(of: "^[A-Z0-9][A-Z0-9_-]*$", options: .regularExpression) != nil,
+                      !looksLikeCredential(name) else {
+                    return invalid("needs nonsecret uppercase seat names.")
+                }
+            }
+            return .success(.list(seats))
         case .pairs:
             guard case .list(let pairs)? = ServerSettingJSON.parse(trimmed), pairs.count <= 32 else {
                 return invalid("needs at most 32 channel and topic pairs.")
