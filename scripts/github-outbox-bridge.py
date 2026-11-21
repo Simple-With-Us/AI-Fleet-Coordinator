@@ -19,9 +19,8 @@ bridge runs on the Mac, and every tick:
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
 
-No token is read into this process: the simple-chat CLI resolves each seat's own
-Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
-the fleet reader bot's key from Infisical Fleet-OPS /zulip (`fleet-secrets get`, AFC-359).
+The simple-chat CLI resolves each posting seat's own credential.  The read side takes
+either an explicit --rc file or the selected bot's names from Infisical Fleet-OPS /zulip (`canonical bounded named reader`, AFC-800).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -38,6 +37,10 @@ Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import stat
+import threading
 import argparse
 import base64
 import fcntl
@@ -61,9 +64,6 @@ except ImportError:  # pragma: no cover
 CHANNEL_DEFAULT = "work-in-progress"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
-FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -71,7 +71,7 @@ URGENT = ("OBJECTION", "HALT", "PROD DOWN", "URGENT", "HEADS-UP", "DEPLOY CLAIM"
 MAX_OUTBOUND_CHARS = 12000  # keep the post well inside Zulip's message limit
 MAX_MIRROR_CHARS = 4000
 POST_DOWN_AFTER = 3
-# Credentials are never read into this process.  See ZulipPoster and ZulipChannel.
+# Posting credentials stay inside simple-chat; read credentials stay in process memory.
 TOKEN_NAMES = ()
 
 
@@ -453,27 +453,104 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _fleet_secret(name, folder):
-    """One Infisical value via `fleet-secrets get`, or None.  Never logged."""
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_github_outbox_bridge_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
+
+
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parent / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
     try:
-        proc = subprocess.run(
-            [FLEET_SECRETS_BIN, "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            stdin=subprocess.DEVNULL,
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    out = proc.stdout.strip() if proc.returncode == 0 else ""
-    return out or None
+        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project, folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token, names=tuple(names), timeout=30,
+            max_output_bytes=65536, strict_records=True,
+        )
+    except Exception:
+        return {}
+
+def _fleet_secrets(names, folder):
+    """One bounded named batch, using only this caller's explicit read binding."""
+    return _read_infisical_names(names, folder)
+
 
 
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
     Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
-    Infisical through `fleet-secrets get`, so the key never appears on a command line and
+    Infisical through `canonical bounded named reader`, so the key never appears on a command line and
     never in an exception message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
@@ -483,10 +560,10 @@ class ZulipClient:
     def __init__(self, rc_path=None, *, bot=READ_AS_DEFAULT):
         self.email = self.key = self.site = None
         if rc_path is None:
-            self.email, self.key, self.site = (
-                _fleet_secret("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part), "/zulip")
-                for part in ("EMAIL", "KEY", "SITE")
-            )
+            names = tuple("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
+                          for part in ("EMAIL", "KEY", "SITE"))
+            values = _fleet_secrets(names, "/zulip")
+            self.email, self.key, self.site = (values.get(name) for name in names)
             text = ""
             if not (self.email and self.key and self.site):
                 self.email = self.key = self.site = None
