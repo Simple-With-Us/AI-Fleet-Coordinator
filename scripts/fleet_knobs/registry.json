@@ -1624,6 +1624,43 @@
    "folder": "/wake-router"
   },
   {
+   "name": "WAKE_ROUTER_TURN_MAX_WAKES",
+   "label": "Most Wakes In One Turn",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 8",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 8,
+   "unit": "wakes",
+   "step": 1,
+   "secret": false,
+   "default": "1",
+   "default_text": "1",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": true,
+   "note": "most wakes one idle turn may carry for one chat;  1 is off, and unset counts as not set;  only a platform that declares turns uses more;  a turn may run the resume limit once per wake it carries, so it can outlast the shutdown wait",
+   "folder": "/wake-router"
+  },
+  {
    "name": "WAKE_ROUTER_MAX_ATTEMPTS",
    "label": "Most Wake Delivery Tries",
    "group": "Wake Router",

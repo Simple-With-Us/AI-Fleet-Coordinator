@@ -1638,6 +1638,7 @@ def _refuse_shared_env(cfg: Config) -> None:
 def load(root: str, path: str | None = None, *, environ=None) -> Config:
     path = path or os.path.join(root, L.CONFIG_NAME)
     raw, error = L.load_config(root, path)
+    runtime_raw = raw
     settings_metadata = None
     settings_error = False
     env = os.environ if environ is None else environ
@@ -1646,8 +1647,15 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
 
         try:
             raw, settings_metadata = operator_settings.load_runtime(raw, path, environ=env)
-        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError) as exc:
             error = "canonical Operator settings unavailable; no verified configuration was loaded"
+            required = (
+                exc.required_binding if isinstance(exc, operator_settings.SettingsError) else None
+            )
+            if not env.get(operator_settings.PROJECT):
+                required = operator_settings.PROJECT
+            if required:
+                error += ": " + required
             settings_error = True
     cfg = from_dict(raw)
     cfg.operator_settings_error = settings_error
@@ -1672,7 +1680,9 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
         from .server import operator_settings
 
         try:
-            snapshot = operator_settings.accepted_snapshot(raw, operator_settings._manifest())
+            snapshot = operator_settings.accepted_snapshot(
+                runtime_raw, operator_settings._manifest()
+            )
             cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
         except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
             # Existing listeners remain usable before migration; initialization

@@ -129,6 +129,7 @@ TEMPLATE_FILES = {
 # Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
 PART_FILES = {
+    "{{FLEET_RECALL}}": "fleet-recall.md",
     "{{FLEET_INTRO}}": "fleet-intro.md",
     "{{FLEET_COMMON}}": "fleet-common.md",
 }

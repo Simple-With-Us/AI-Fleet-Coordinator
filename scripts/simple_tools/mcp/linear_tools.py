@@ -287,6 +287,11 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str, uid: str | None
             argv.append(
                 "--comment=" + str(comment)
             )  # one token, so text such as "--help" is never re-parsed as a flag
+        if args.get("steal") is True:
+            argv.append("--steal")
+            # The board refuses --steal without --reason, so the reason always rides
+            # along as one token, like --comment.
+            argv.append("--reason=" + str(args.get("reason") or "").strip())
         _flag(argv, "--session", session)
         return Plan(argv, b"", extra)
     if name == "linear_comment":

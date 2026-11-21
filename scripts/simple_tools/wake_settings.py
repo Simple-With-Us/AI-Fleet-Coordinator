@@ -115,6 +115,8 @@ INT_KNOBS = {
     "shutdown_wait_seconds": "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
     "resume_timeout_seconds": "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
     "confirm_seconds": "WAKE_ROUTER_CONFIRM_SECONDS",
+    # AFC-831:  most wakes one idle turn may carry for one chat;  1 is off (wake_router, Turns).
+    "turn_max_wakes": "WAKE_ROUTER_TURN_MAX_WAKES",
 }
 NARROWABLE = {"delivery_enabled": DELIVERY_ENABLED, **INT_KNOBS}
 NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
@@ -128,6 +130,7 @@ HOST_FACTS = (
     "mcode_bin",
     "mcode_model",
     "muse_bin",
+    "opencode_bin",
     "zcode_bin",
     "pinned_profile",
     "pinned_owner_account",

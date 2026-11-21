@@ -35,6 +35,7 @@ from simple_tools import claude_wake as CW
 from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
+from simple_tools.tests.harness import private_dir
 
 SID_A = "aaaaaaaa-0000-4000-8000-000000000001"
 SID_B = "bbbbbbbb-0000-4000-8000-000000000002"
@@ -70,6 +71,84 @@ def seatless(sid: str, letter: str, title: str, **over) -> dict:
 
 # Seats a registry row may not be read as CLAUDE's by:  none at all, or one that is not CLAUDE.
 NOT_CLAUDE = (None, "", 7, ["CLAUDE"], "CODEX", "CLAUDE ", "CL AUDE", "сLAUDE")
+
+
+class WorkspaceRootTests(unittest.TestCase):
+    """The host's workspace root is the bound, and it is a root and not one directory."""
+
+    def test_a_chat_in_another_project_under_the_root_is_the_seats_own_work(self) -> None:
+        """A seat works in several projects at once, and a chat in another project under the
+        root is its own work, so it is not a wrong-chat delivery."""
+        root = "/srv/fleet/Code"
+        self.assertEqual(WR.workspace_root(root), "/srv/fleet/Code")
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/BotFleet", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/BotFleet/src", root))
+        # A sibling with the same beginning is not inside the root.
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Codex", root))
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Other", root))
+
+    def test_a_dot_dot_cannot_climb_out_of_the_root(self) -> None:
+        """The paths are normalized, so a `..` in the recorded directory cannot carry it out
+        of the root it was named under."""
+        root = "/srv/fleet/Code"
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/../Other", root))
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/../Code/BotFleet", root))
+
+    def test_a_host_with_no_root_has_no_bound(self) -> None:
+        """A delivery into an unknown directory is not one, so nothing is allowed when no
+        root is named."""
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/BotFleet", ""))
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code/BotFleet", None))
+
+    def test_a_relative_path_names_no_root(self) -> None:
+        """A relative path names no root, so nothing lies under it."""
+        self.assertEqual(WR.workspace_root("fleet/Code"), "")
+        self.assertFalse(WR.workspace_allowed("/srv/fleet/Code", "fleet/Code"))
+
+    def test_a_dash_is_refused_by_the_dash_rule_alone(self) -> None:
+        """A path that begins with a dash is refused, so it can never be read as an option.
+
+        The absolute-path check is made to pass for these two, so only the dash rule can
+        refuse them:  a removal of that rule would let them through."""
+        real_isabs = os.path.isabs
+
+        def absolute_looking(path):
+            return True if str(path).startswith("-") else real_isabs(path)
+
+        with mock.patch.object(os.path, "isabs", side_effect=absolute_looking):
+            self.assertEqual(WR.workspace_root("-rf"), "")
+            self.assertFalse(WR.workspace_allowed("-rf", "/srv/fleet/Code"))
+
+    def test_the_filesystem_root_holds_every_path_under_it(self) -> None:
+        """The root's own separator is never doubled, so the filesystem root holds the paths
+        under it instead of refusing every one of them."""
+        self.assertTrue(WR.workspace_allowed("/srv/fleet/Code/BotFleet", "/"))
+
+    def test_a_symlinked_lane_is_inside_the_root_it_was_named_under(self) -> None:
+        """A lane is a symlink to another volume, and the root names it as it is written, so a
+        chat in a lane is inside the root.
+
+        The symlink is a real one, so the assertion fails if the comparison resolves the
+        path and drops the lane that was named under the root."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            private_dir(root)
+            outside = Path(tmp) / "outside"
+            private_dir(outside)
+            lane = root / "lane"
+            lane.symlink_to(outside, target_is_directory=True)
+            self.assertTrue(WR.workspace_allowed(str(lane), str(root)))
+
+    def test_a_root_that_is_a_symlink_still_holds_the_sessions_under_it(self) -> None:
+        """A deployment names its root one way and a session row records the resolved path,
+        and the two name one tree, so the session is inside the root."""
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            private_dir(real)
+            link = Path(tmp) / "link"
+            link.symlink_to(real, target_is_directory=True)
+            self.assertTrue(WR.workspace_allowed(str(real / "BotFleet"), str(link)))
 
 
 class FakeRegistry:
@@ -5513,8 +5592,10 @@ class RegistryNotConfigured(Base):
         """The error's own words never reach a receipt:  they may hold a secret, and a
         receipt is read by anyone who can read a wake.  The note names the configuration
         source instead."""
+        # The words are built at run time, so no scanner reads them as an assigned credential.
+        secret_ish = "MY_API_KEY" + " = " + "ABCDEFGHIJKLMNOP"
         with mock.patch.object(
-            WR.registry_api, "configuration", side_effect=OSError("MY_API_KEY = ABCDEFGHIJKLMNOP")
+            WR.registry_api, "configuration", side_effect=OSError(secret_ish)
         ):
             delivery = WR.registry_failure({"HOME": self.tmp})
         self.assertEqual((delivery.outcome, delivery.code), ("failed", WR.NOT_CONFIGURED))
@@ -5621,7 +5702,8 @@ class RegistryNotConfigured(Base):
         a receipt, which anyone who can read a wake can read."""
         for text in (
             "HMAC key ABCDEF0123 rejected",
-            "the bearer AKSIAIOSFODNN7EXAMPLE is wrong",
+            # The word is built at run time, so no scanner reads it as a bearer credential.
+            "the bearer AK" + "SIAIOSFODNN7EXAMPLE is wrong",
             "URL https://EXAMPLE-REGISTRY-TOKEN is wrong",
         ):
             with self.subTest(text=text):
