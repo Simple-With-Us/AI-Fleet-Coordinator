@@ -37,7 +37,7 @@ STALE_STAMP = "2026-11-17T11:50:00Z"  # 10 minutes before NOW:  stale
 
 
 def st_payload(**overrides):
-    """A healthy ST /api/live body, with any field replaced per test."""
+    """A healthy ST /api/proxy-use body, with any field replaced per test."""
     body = {
         "ok": True,
         "mango": {"reachable": True, "checkedAt": FRESH_STAMP},
@@ -284,6 +284,31 @@ class FailClosedTests(unittest.TestCase):
         )
         self.assertIn(socket.timeout, api_health.TIMEOUTS)
 
+    def test_deeply_nested_json_is_unparseable_not_a_crash(self):
+        # A body under the size cap can still nest past the interpreter
+        # recursion limit.  That is an unparseable answer, not a reason
+        # to abort the run before the store file is written.
+        class NestedResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, size):
+                return b"[" * 2000 + b"]" * 2000
+
+        class Opener:
+            def open(self, request, timeout=None):
+                return NestedResponse()
+
+        self.assertEqual(
+            api_health.fetch_json(api_health.ST_LIVE_URL, 5, opener=Opener()),
+            (200, None, "unparseable"),
+        )
+
     def test_one_app_failing_does_not_hide_the_other(self):
         doc = collect_with((0, None, "unreachable"), (200, ct_payload(), None))
         self.assertEqual(app_row(doc, "ST")["state"], "unknown")
@@ -355,7 +380,10 @@ class ActualPipelineMappingTests(unittest.TestCase):
         now = api_health.parse_iso("2026-11-18T17:23:23Z")
         row = api_health.map_st_live(payload, 200, now)
         self.assertEqual(row["state"], "ok")
-        self.assertEqual(row["observationAgeSeconds"], 37)
+        # The fixture's checkedAt carries .512s, so the true age is
+        # 37.488s and the stored age is the ceiled 38 the freshness
+        # gate compares (see the rounds-once test below).
+        self.assertEqual(row["observationAgeSeconds"], 38)
         payload["mango"]["checkedAt"] = "2026-11-18T17:00:00Z"
         self.assertEqual(api_health.map_st_live(payload, 200, now)["state"], "unknown")
 
@@ -528,6 +556,76 @@ class ActualPipelineMappingTests(unittest.TestCase):
         row = api_health.map_ct_health(payload, 200, NOW)
         self.assertEqual(row["state"], "fail")
         self.assertEqual(row["reason"], "upstream_aggregate_not_ok")
+
+    def test_cold_cache_probe_judged_against_post_fetch_clock(self):
+        # ST stamps checkedAt while answering when its probe cache is
+        # cold, so the stamp lands after a pre-request clock reading.
+        # Judged against that reading the healthy probe is an
+        # observation from the future;  judged against the clock read
+        # when the answer arrived, it is fresh.
+        payload = json.loads((_HERE / "fixtures/api-health/st-actual-20261118.json").read_text())
+        checked = api_health.parse_iso(payload["mango"]["checkedAt"])
+        fetcher = fetcher_for((200, payload, None), (200, ct_payload(), None))
+        row = api_health._app_row(
+            api_health.map_st_live, api_health.ST_LIVE_URL, 5, checked - 0.8, fetcher
+        )
+        self.assertEqual(row["state"], "unknown")
+        self.assertEqual(row["reason"], "observation_in_future")
+        row = api_health._app_row(
+            api_health.map_st_live,
+            api_health.ST_LIVE_URL,
+            5,
+            checked - 0.8,
+            fetcher,
+            clock=lambda: checked + 0.2,
+        )
+        self.assertEqual(row["state"], "ok")
+        self.assertEqual(row["observationAgeSeconds"], 1)
+
+    def test_native_aggregate_uses_the_exact_enum_not_legacy_aliases(self):
+        payload = self.native()
+        for check in payload["pipeline"]["checks"]:
+            check["status"] = "ok"
+        for alias in ("Healthy", "UP", "pass", "operational"):
+            payload["status"] = alias
+            row = api_health.map_ct_health(payload, 200, NOW)
+            self.assertEqual(row["state"], "unknown", alias)
+            self.assertEqual(row["reason"], "upstream_aggregate_not_ok", alias)
+        payload["status"] = "down"
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "fail")
+
+    def test_no_poll_data_shape_leaves_ingestion_unreported(self):
+        # CT's no-poll-data shape carries a single polling_liveness
+        # marker and no polling_* checks:  ingestion was not reported,
+        # so it cannot sit in the row as reported-but-unknown.
+        payload = {
+            "status": "unknown",
+            "pipeline": {"checks": [{"id": "polling_liveness", "status": "unknown"}]},
+        }
+        row = api_health.map_ct_health(payload, 200, NOW)
+        ingestion = next(c for c in row["components"] if c["name"] == "ingestion")
+        self.assertFalse(ingestion["reported"])
+        self.assertIsNone(row["ingestionAlive"])
+        self.assertEqual(row["state"], "unknown")
+
+    def test_critical_poll_is_ingestion_failure(self):
+        payload = self.native()
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "polling_senate")[
+            "status"
+        ] = "critical"
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "fail")
+        self.assertFalse(row["ingestionAlive"])
+
+    def test_canary_unknown_is_a_warning_not_ingestion_failure(self):
+        payload = self.native()
+        next(c for c in payload["pipeline"]["checks"] if c["id"] == "senate_efd")["status"] = (
+            "unknown"
+        )
+        row = api_health.map_ct_health(payload, 200, NOW)
+        self.assertEqual(row["state"], "warn")
+        self.assertTrue(row["ingestionAlive"])
 
 
 if __name__ == "__main__":
