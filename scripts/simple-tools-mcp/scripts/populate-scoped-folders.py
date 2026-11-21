@@ -489,7 +489,9 @@ def check_scoped_tokens(read_tokens, write_token):
 
 def main():
     if not FLEET_INFISICAL_CLI.is_file():
-        print("GATE: shared Infisical get is not installed.  Aborting before credential/provider access.")
+        print(
+            "GATE: shared Infisical get is not installed.  Aborting before credential/provider access."
+        )
         sys.exit(MISSING_EXECUTABLE)
     dry = "--apply" not in sys.argv
     print(f"{'DRY RUN - no writes' if dry else 'APPLYING'}: {len(MAPPING)} copies")

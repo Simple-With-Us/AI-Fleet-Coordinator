@@ -5,13 +5,11 @@ import importlib.util
 import json
 import os
 import pathlib
-import sys
 import tempfile
 import threading
 import unittest
 import urllib.parse
 from unittest import mock
-
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[2]
 SOURCE = SCRIPTS / "simple-tools-mcp" / "infra_phase0.py"
@@ -35,9 +33,7 @@ class FixtureInfisical(http.server.BaseHTTPRequestHandler):
     requests = []
 
     def do_GET(self):
-        type(self).requests.append(
-            (self.path, self.headers.get("Authorization"), self.command)
-        )
+        type(self).requests.append((self.path, self.headers.get("Authorization"), self.command))
         if self.path == "/api/v2/service-token":
             payload = {
                 "id": "fixture-only",

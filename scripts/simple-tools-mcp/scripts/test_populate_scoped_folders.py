@@ -103,7 +103,12 @@ class FakeInfisical:
     def run(self, argv, env=None, **kwargs):
         """A fake isolated shared CLI `get NAME --path P --project SLUG` run."""
         self.reads.append((list(argv), dict(env or {})))
-        if argv[1:3] != ["-I", str(psf.FLEET_INFISICAL_CLI)] or argv[3] != "get" or argv[5] != "--path" or argv[7] != "--project":
+        if (
+            argv[1:3] != ["-I", str(psf.FLEET_INFISICAL_CLI)]
+            or argv[3] != "get"
+            or argv[5] != "--path"
+            or argv[7] != "--project"
+        ):
             raise AssertionError("unexpected Infisical CLI call")
         name, path, slug = argv[4], argv[6], argv[8]
         id_var = {
