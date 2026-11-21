@@ -582,9 +582,7 @@ class SessionRegistry:
         native_session_id: str,
     ) -> sqlite3.Row | None:
         """The session row for one identity, or None when this registry has never seen it."""
-        return self._get_by_identity(
-            platform, verified_host, profile_scope, native_session_id
-        )
+        return self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
 
     def session_rows_for_id(self, native_session_id: str) -> list[dict[str, Any]]:
         """The live identities a native session id holds rows under (OPS-1048):  the note-link
@@ -608,9 +606,7 @@ class SessionRegistry:
             for row in rows
         ]
 
-    def _active_alias(
-        self, conn: sqlite3.Connection, record_id: str
-    ) -> tuple[str, int]:
+    def _active_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         row = conn.execute(
             "SELECT letter, generation FROM alias_assignments"
             " WHERE record_id = ? AND retired_at IS NULL"
@@ -827,9 +823,7 @@ class SessionRegistry:
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        main = sorted(
-            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p)
-        )
+        main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
         if main:
             return issue(main[0])
         # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
@@ -876,12 +870,8 @@ class SessionRegistry:
         )
         return event_id
 
-    def _enqueue_session_upsert(
-        self, conn: sqlite3.Connection, record_id: str, now: str
-    ) -> None:
-        row = conn.execute(
-            "SELECT * FROM sessions WHERE record_id = ?", (record_id,)
-        ).fetchone()
+    def _enqueue_session_upsert(self, conn: sqlite3.Connection, record_id: str, now: str) -> None:
+        row = conn.execute("SELECT * FROM sessions WHERE record_id = ?", (record_id,)).fetchone()
         letter, _ = self._active_alias(conn, record_id)
         conn.execute(
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
@@ -893,9 +883,7 @@ class SessionRegistry:
             ),
         )
 
-    def enqueue_session_snapshot(
-        self, record_id: str, expected_sha256: str
-    ) -> dict[str, Any]:
+    def enqueue_session_snapshot(self, record_id: str, expected_sha256: str) -> dict[str, Any]:
         """Queue the current snapshot without changing session, alias, event, or issue state.
 
         The caller first obtains a read-only plan.  BEGIN IMMEDIATE then binds the
@@ -942,9 +930,7 @@ class SessionRegistry:
         record, its letter and generation, its state and its closed time stay as they were, so a
         closed row is re-seated and left closed.
         """
-        conn.execute(
-            "UPDATE sessions SET seat = ? WHERE record_id = ?", (seat, row["record_id"])
-        )
+        conn.execute("UPDATE sessions SET seat = ? WHERE record_id = ?", (seat, row["record_id"]))
         self._insert_event(
             conn,
             row["record_id"],
@@ -1017,9 +1003,7 @@ class SessionRegistry:
                     # The caller names its platform's own seat and the row is filed under another:  the
                     # AFC-772 rows.  Re-seat it here, in this transaction, then carry on as the platform's
                     # own row (a live one resumes with its letter, a closed one stays closed).
-                    self._reseat(
-                        conn, row, identity["seat"], letter, identity["source"], now
-                    )
+                    self._reseat(conn, row, identity["seat"], letter, identity["source"], now)
                 elif row["seat"] != identity["seat"]:
                     self._insert_event(
                         conn,
@@ -1060,12 +1044,8 @@ class SessionRegistry:
                     # Real claims stay verbatim (any case is a claim).
                     # This is not a batch migration:  rows change only when their own
                     # session next registers, and closed rows keep their history.
-                    stored_capability = (
-                        str(row["wake_capability"] or "unknown").strip().lower()
-                    )
-                    incoming_capability = str(
-                        identity.get("wake_capability") or "unknown"
-                    )
+                    stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
+                    incoming_capability = str(identity.get("wake_capability") or "unknown")
                     if (
                         stored_capability == "unknown"
                         and incoming_capability.strip().lower() != "unknown"
@@ -1358,9 +1338,7 @@ class SessionRegistry:
             # A closed-to-open transition never revives an old PR claim,
             # including rows closed by listener SQL or predating this feature.
             # Explicit binding after reopen rechecks current ownership.
-            conn.execute(
-                "DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,)
-            )
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -1409,9 +1387,7 @@ class SessionRegistry:
         assignment or changes its issue count.
         """
         if space not in LETTER_SPACES:
-            raise ValueError(
-                "letter_space must be one of %s" % ", ".join(LETTER_SPACES)
-            )
+            raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
         if pick not in LETTER_PICKS:
             raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
         with self._write_txn() as conn:
@@ -1432,11 +1408,7 @@ class SessionRegistry:
             # Every chat holds a pair now, so a single letter is the only one that moves on its own, and the space a
             # caller names does not change that.  Force only places a pair holder again when it names a live parent
             # whose row it belongs in:  a forced relabel with no parent would retire an assignment for nothing.
-            if (
-                current
-                and letter_space_of(current) == "double"
-                and not (force and parent_pair)
-            ):
+            if current and letter_space_of(current) == "double" and not (force and parent_pair):
                 return {
                     "record_id": record_id,
                     "label": current,
@@ -1453,9 +1425,7 @@ class SessionRegistry:
                     " WHERE record_id = ? AND retired_at IS NULL",
                     (now, record_id),
                 )
-            conn.execute(
-                "DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,)
-            )
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             letter, new_generation = self._allocate(
                 conn, row["platform"], record_id, now, after=parent_pair
             )
@@ -1596,9 +1566,7 @@ def fixed_seat(platform: object) -> str:
     pattern, so no one seat is right), for an app with several tags, and while the table cannot be
     read:  resolve_or_register re-seats a row only toward a seat this returns."""
     try:
-        owners = I.platform_seats(
-            normalize_platform(platform if isinstance(platform, str) else "")
-        )
+        owners = I.platform_seats(normalize_platform(platform if isinstance(platform, str) else ""))
     except I.SeatRegistryError:
         return ""
     return owners.sole_seat if owners is not None else ""
@@ -1656,9 +1624,7 @@ def register_session(
     before anything is written.
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
-        raise ValueError(
-            "only the Operator may issue a letter (issuer %r)" % (issuer or "")
-        )
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
     if letter_pick is not None and letter_pick not in LETTER_PICKS:
         raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
     _scan_fields(
@@ -1718,9 +1684,7 @@ def register_session(
                 "letter_space": space,
                 "letter_pick": pick,
                 "parent_session_id": parent,
-                "parent_letter": parent_letter
-                if isinstance(parent_letter, str)
-                else "",
+                "parent_letter": parent_letter if isinstance(parent_letter, str) else "",
             }
         )
     finally:
@@ -1759,9 +1723,7 @@ def relabel_session(
     known platform's seat is then compared as its tag (filed_seat), the way it was stored.
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
-        raise ValueError(
-            "only the Operator may issue a letter (issuer %r)" % (issuer or "")
-        )
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
     if letter_space not in LETTER_SPACES:
         raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
     if letter_pick not in LETTER_PICKS:
@@ -1783,9 +1745,7 @@ def relabel_session(
                 f"session {native} is not registered on {platform} at {verified_host}/{profile_scope}"
             )
         if str(row["seat"]) != str(seat):
-            raise ValueError(
-                f"session {native} belongs to seat {row['seat']}, not {seat}"
-            )
+            raise ValueError(f"session {native} belongs to seat {row['seat']}, not {seat}")
         out = registry.relabel(
             str(row["record_id"]),
             space=letter_space,
@@ -1798,9 +1758,7 @@ def relabel_session(
         )
     finally:
         registry.close_db()
-    out["title_display"] = display_title(
-        str(out.get("label") or ""), str(row["title"] or "")
-    )
+    out["title_display"] = display_title(str(out.get("label") or ""), str(row["title"] or ""))
     return out
 
 
@@ -1954,21 +1912,14 @@ def normalize_issues(value: object, now: float | None = None) -> list[dict[str, 
         if ident not in newest or seen > newest[ident]:
             newest[ident] = seen
     ordered = sorted(newest.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)
-    return [
-        {"id": ident, "seen_at": issue_instant(seen)}
-        for ident, seen in ordered[:MAX_ISSUES]
-    ]
+    return [{"id": ident, "seen_at": issue_instant(seen)} for ident, seen in ordered[:MAX_ISSUES]]
 
 
 def issue_ids(issues: object) -> list[str]:
     """The ids of an issues list, in its order;  anything malformed is left out."""
     if not isinstance(issues, list):
         return []
-    return [
-        i["id"]
-        for i in issues
-        if isinstance(i, Mapping) and valid_issue_id(i.get("id"))
-    ]
+    return [i["id"] for i in issues if isinstance(i, Mapping) and valid_issue_id(i.get("id"))]
 
 
 def merge_issues(old: object, seen: Any, now: float) -> list[dict[str, str]]:
@@ -2132,9 +2083,7 @@ def update_session(
                     "registry",
                     "updated",
                     "registry",
-                    ", ".join(
-                        sorted([*changed, *(["issues"] if issues_moved else [])])
-                    ),
+                    ", ".join(sorted([*changed, *(["issues"] if issues_moved else [])])),
                     now,
                 )
                 outcome = "updated"
@@ -2315,12 +2264,8 @@ def sweep_stale(
                 (namespace, seat),
             ).fetchall()
             open_rows = list(rows)
-            seen_at = {
-                r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows
-            }
-            registered_at = {
-                r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows
-            }
+            seen_at = {r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows}
+            registered_at = {r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows}
             for row in open_rows:
                 last_seen = seen_at.get(row["record_id"])
                 if last_seen is None or last_seen >= cutoff:
@@ -2379,9 +2324,7 @@ def sweep_stale(
     return ended
 
 
-def letter_history(
-    db_path: str, platform: str, limit: int = 50
-) -> list[dict[str, Any]]:
+def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[str, Any]]:
     """Every letter the platform has issued, with the window it was used in.
 
     A live letter has no end time;  a retired one carries the moment its use ended
@@ -2424,17 +2367,11 @@ def letter_history(
             item = dict(row)
             item["bound_prs"] = _bound_prs(registry._conn, row["record_id"])
             item["end_reason"] = (event["details"] if event else "") or ""
-            item["ended_at"] = (event["recorded_at"] if event else None) or row[
-                "retired_at"
-            ]
-            item["title_display"] = display_title(
-                row["letter"], str(row["title"] or "")
-            )
+            item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
+            item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
             item["live"] = row["retired_at"] is None
             if row["record_id"] in issues_by_id:
-                item["issues"] = issues_by_id[
-                    row["record_id"]
-                ]  # AFC-694, when the session has any
+                item["issues"] = issues_by_id[row["record_id"]]  # AFC-694, when the session has any
             out.append(item)
         return out
     finally:
@@ -2456,11 +2393,7 @@ class RegistryUnavailable(RuntimeError):
 def _check_generation(generation: int | None) -> None:
     if generation is None:
         return
-    if (
-        isinstance(generation, bool)
-        or not isinstance(generation, int)
-        or generation < 1
-    ):
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
         raise ValueError("generation must be a positive integer")
 
 
@@ -2516,8 +2449,7 @@ def resolve_label(
         if generation is None:
             row = registry._conn.execute(
                 "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
-                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
-                % columns,
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL" % columns,
                 (namespace, want),
             ).fetchone()
         else:
@@ -2526,12 +2458,8 @@ def resolve_label(
                 " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?" % columns,
                 (namespace, want, int(generation)),
             ).fetchone()
-        held_issues = (
-            _stored_issues(registry._conn, row["record_id"]) if row is not None else []
-        )
-        held_prs = (
-            _bound_prs(registry._conn, row["record_id"]) if row is not None else []
-        )
+        held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
+        held_prs = _bound_prs(registry._conn, row["record_id"]) if row is not None else []
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
@@ -2589,9 +2517,7 @@ def registrations_for_native_id(
             "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
         ) from exc
     try:
-        rows = registry.live_registration_rows_for_native_id(
-            platform, native_session_id
-        )
+        rows = registry.live_registration_rows_for_native_id(platform, native_session_id)
     except Exception as exc:
         raise RegistryUnavailable(
             "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
@@ -2720,12 +2646,7 @@ def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
     query that finds them.
     """
     want = str(letter or "").strip().upper()
-    if (
-        not want
-        or want not in ALL_LETTERS
-        or not db_path
-        or not os.path.isfile(str(db_path))
-    ):
+    if not want or want not in ALL_LETTERS or not db_path or not os.path.isfile(str(db_path)):
         return []
     try:
         registry = SessionRegistry(str(db_path), read_only=True)
@@ -2862,9 +2783,9 @@ def lookup_label(
 ) -> str:
     """The live letter for one identity, or "" when it is not registered."""
     return str(
-        lookup_entry(
-            db_path, platform, verified_host, profile_scope, native_session_id
-        ).get("label")
+        lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get(
+            "label"
+        )
         or ""
     )
 
@@ -2891,9 +2812,7 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _pending_identical_session_snapshots(
-    conn: sqlite3.Connection, cells: Sequence[str]
-) -> int:
+def _pending_identical_session_snapshots(conn: sqlite3.Connection, cells: Sequence[str]) -> int:
     if not cells:
         return 0
     count = 0
@@ -2939,9 +2858,7 @@ def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
         registry.close_db()
 
 
-def enqueue_session_snapshot(
-    db_path: str, record_id: str, expected_sha256: str
-) -> dict[str, Any]:
+def enqueue_session_snapshot(db_path: str, record_id: str, expected_sha256: str) -> dict[str, Any]:
     """Enqueue through the registry's existing local writer and transaction."""
     registry = SessionRegistry(db_path, initialize=False)
     try:
@@ -2950,9 +2867,7 @@ def enqueue_session_snapshot(
         registry.close_db()
 
 
-def mark_exported(
-    db_path: str, outbox_ids: list[str], exported_at: str | None = None
-) -> int:
+def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None = None) -> int:
     """Mark outbox rows exported only after the Sheets write is confirmed.  Re-running after a
     crash simply re-exports unmarked rows;  the exporter reconciles by id so that is safe."""
     if not outbox_ids:
@@ -3192,49 +3107,33 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
-    p.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
+    p.add_argument("--db", default="", help="the registry file (default: the shared path)")
     p.add_argument("--limit", type=int, default=50)
     plan = sub.add_parser(
         "plan-session-snapshot",
         help="plan a local canonical session snapshot enqueue without changing the registry",
     )
-    plan.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    plan.add_argument(
-        "--record-id", required=True, help="the stable Operator record id"
-    )
+    plan.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    plan.add_argument("--record-id", required=True, help="the stable Operator record id")
     enqueue = sub.add_parser(
         "enqueue-session-snapshot",
         help="enqueue a canonical session snapshot if its planned digest is still current",
     )
-    enqueue.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    enqueue.add_argument(
-        "--record-id", required=True, help="the stable Operator record id"
-    )
+    enqueue.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    enqueue.add_argument("--record-id", required=True, help="the stable Operator record id")
     enqueue.add_argument(
         "--expected-sha256", required=True, help="digest from plan-session-snapshot"
     )
     m = sub.add_parser("mark-exported")
-    m.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
+    m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
     ra = sub.add_parser(
         "record-export-attempt",
         help="record one export attempt in the store-side fence (OPS-1037)",
     )
-    ra.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
+    ra.add_argument("--db", default="", help="the registry file (default: the shared path)")
     ra.add_argument("--outbox-id", required=True)
-    ra.add_argument(
-        "--destination", required=True, help="the export target, such as a workbook id"
-    )
+    ra.add_argument("--destination", required=True, help="the export target, such as a workbook id")
     ra.add_argument("--tab", required=True)
     ra.add_argument("--kind", required=True)
     ra.add_argument("--outcome", required=True, choices=list(EXPORT_OUTCOMES))
@@ -3243,9 +3142,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "record-export-attempts",
         help="record a batch of export attempts in the store-side fence (OPS-1037)",
     )
-    rb.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
+    rb.add_argument("--db", default="", help="the registry file (default: the shared path)")
     rb.add_argument(
         "--record",
         action="append",
@@ -3253,21 +3150,15 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         help="one JSON object per attempt: outbox_id, destination, tab, kind, outcome, detail",
     )
     ea = sub.add_parser("export-attempts", help="read the export fence (OPS-1037)")
-    ea.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
+    ea.add_argument("--db", default="", help="the registry file (default: the shared path)")
     ea.add_argument("--outbox-id", default="")
     ea.add_argument("--limit", type=int, default=100)
     r = sub.add_parser(
         "register",
         help="register one session and print its letter, generation and title form",
     )
-    r.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    r.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    r.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    r.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     r.add_argument(
         "--location",
         required=True,
@@ -3309,15 +3200,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "relabel",
         help="move a session that still holds a single letter onto a pair, in place",
     )
-    rl.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    rl.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
-    rl.add_argument(
-        "--location", required=True, help="the fleet location (mac, server, cloud)"
-    )
+    rl.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rl.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rl.add_argument("--location", required=True, help="the fleet location (mac, server, cloud)")
     rl.add_argument("--scope", required=True, help="the profile scope")
     rl.add_argument("--session-id", required=True, help="the native session id")
     rl.add_argument("--seat", required=True)
@@ -3350,12 +3235,8 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         help="place the letter again even when the session already holds one in that space",
     )
     rs = sub.add_parser("resolve", help="name the session a letter points at")
-    rs.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    rs.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     rs.add_argument("--letter", required=True, help="the letter, such as A")
     rs.add_argument(
         "--generation",
@@ -3367,12 +3248,8 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "update",
         help="update the mutable fields of one registered session, found by its session id",
     )
-    u.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    u.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    u.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    u.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     u.add_argument(
         "--location",
         required=True,
@@ -3391,12 +3268,8 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         help='the Linear issues, as a JSON list of {"id", "seen_at"};  replaces the stored list',
     )
     c = sub.add_parser("close", help="end one session's letter and keep its history")
-    c.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    c.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    c.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     c.add_argument(
         "--location",
         required=True,
@@ -3411,31 +3284,17 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "sweep",
         help="end the letters of sessions that are stale and have been replaced",
     )
-    w.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    w.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    w.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    w.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     w.add_argument("--seat", required=True)
     w.add_argument("--stale-after-minutes", type=int, default=120)
-    h = sub.add_parser(
-        "history", help="every letter the platform has issued, with its window"
-    )
-    h.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    h.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    h = sub.add_parser("history", help="every letter the platform has issued, with its window")
+    h.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    h.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     h.add_argument("--limit", type=int, default=50)
     t = sub.add_parser("touch", help="stamp last_seen_at for one live session")
-    t.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    t.add_argument(
-        "--platform", required=True, help="the platform namespace, such as minimax"
-    )
+    t.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    t.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     t.add_argument(
         "--location",
         required=True,
@@ -3447,12 +3306,8 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "reopen",
         help="give a closed session its letter again",
     )
-    rp.add_argument(
-        "--db", default="", help="the registry file (default: the shared path)"
-    )
-    rp.add_argument(
-        "--record-id", required=True, help="the registry record of the closed session"
-    )
+    rp.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rp.add_argument("--record-id", required=True, help="the registry record of the closed session")
     rp.add_argument("--actor", default="registry")
     rp.add_argument("--source", default="registry")
     rp.add_argument(
@@ -3511,9 +3366,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             return 0
         if args.command == "enqueue-session-snapshot":
             try:
-                answer = enqueue_session_snapshot(
-                    db, args.record_id, args.expected_sha256
-                )
+                answer = enqueue_session_snapshot(db, args.record_id, args.expected_sha256)
             except UnknownRecord:
                 print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
                 return 2
@@ -3721,9 +3574,7 @@ def bind_pr(
                 (repo, number, rid),
             ).fetchall()
             if conflicts:
-                raise ValueError(
-                    "PR is bound to another live session; explicit transfer required"
-                )
+                raise ValueError("PR is bound to another live session; explicit transfer required")
             existing = conn.execute(
                 "SELECT generation FROM session_pr_bindings WHERE record_id=? AND repo=? AND number=?",
                 (rid, repo, number),
@@ -3771,11 +3622,7 @@ def bind_pr(
                 )
                 registry._enqueue_session_upsert(conn, rid, at)
             return {
-                "outcome": "renewed"
-                if renewed
-                else "unchanged"
-                if existing
-                else "bound",
+                "outcome": "renewed" if renewed else "unchanged" if existing else "bound",
                 "native_session_id": native_session_id,
                 "label": letter,
                 "generation": generation,
