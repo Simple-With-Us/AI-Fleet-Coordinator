@@ -359,10 +359,15 @@ function recordGrRefusal(env, ctx, entry) {
   if (count === 0) return undefined;
   // A write that does not land hands its occurrences back (Sentry, PR 2331), and the next
   // write of that cause carries them;  the window stays closed, so a log outage cannot
-  // turn every refusal into another spent budget unit (Kody, PR 2331).
-  const write = recordDiagnostic(env, { ...entry, count }).then((written) => {
-    if (!written) GR_REFUSALS.giveBack(entry, count);
-  });
+  // turn every refusal into another spent budget unit (Kody, PR 2331).  A rejected write
+  // (`gate()` throws, no `waitUntil`) hands back on the rejection side too, so the floated
+  // promise never stays unhandled (Kody, PR 2331).
+  const write = recordDiagnostic(env, { ...entry, count }).then(
+    (written) => {
+      if (!written) GR_REFUSALS.giveBack(entry, count);
+    },
+    () => GR_REFUSALS.giveBack(entry, count),
+  ).catch(() => {});
   // Never awaited by the route:  a refusal answer must not wait on the log (Kody, PR 2331).
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(write);
   return undefined;

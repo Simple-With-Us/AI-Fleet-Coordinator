@@ -61,6 +61,9 @@ export class DiagnosticCoalescer {
     const key = `${kind}\0${reason}\0${seat ?? ""}`;
     const state = this.keys.get(key) ?? { writtenAt: this.now(), pending: 0 };
     state.pending = Math.min(DIAGNOSTIC_MAX_COUNT, state.pending + count);
+    // A brand-new key goes to the end;  the same bound `take` enforces holds here too,
+    // so sustained write failures over distinct causes cannot grow the map past maxKeys.
     this.keys.set(key, state);
+    while (this.keys.size > this.maxKeys) this.keys.delete(this.keys.keys().next().value);
   }
 }

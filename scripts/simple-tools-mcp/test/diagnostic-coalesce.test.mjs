@@ -85,6 +85,15 @@ test("the coalescer's memory is bounded, oldest key first", () => {
   assert.equal(c.take({ kind: "gr_bearer", reason: "c" }), 0);
 });
 
+test("a give-back obeys the same bound, so failed writes over distinct causes cannot grow the map", () => {
+  const c = new DiagnosticCoalescer({ now: () => NOW, maxKeys: 2 });
+  // Every write fails and hands back:  three distinct causes, each once.
+  for (const reason of ["a", "b", "c"]) c.giveBack({ kind: "gr_bearer", reason }, 1);
+  // "a", the oldest, was evicted by "c", so it writes again at once;  "c" holds its count.
+  assert.equal(c.take({ kind: "gr_bearer", reason: "a" }), 1);
+  assert.equal(c.take({ kind: "gr_bearer", reason: "c" }), 0);
+});
+
 test("the real writer stores the relay check rows, their `:` reasons and a carried count", async () => {
   const store = S.memoryStore();
   await S.recordDiagnostic(store, { kind: "gr_assert", reason: "grant_invalid:stale_epoch", seat: "CODEX", status: 200 }, NOW);
