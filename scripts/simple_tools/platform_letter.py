@@ -2046,16 +2046,17 @@ def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
     if not recognized:
         return None
     instructions_close = text.find("</INSTRUCTIONS>", text.find("<INSTRUCTIONS>"))
-    environment = text.find("<environment_context>", instructions_close + len("</INSTRUCTIONS>"))
-    if environment >= 0:
+    suffix_start = instructions_close + len("</INSTRUCTIONS>")
+    suffix = text[suffix_start:]
+    environment_prefix = suffix.lstrip()
+    if environment_prefix.startswith("<environment_context>"):
         closing_tag = "</environment_context>"
-        closing = text.find(closing_tag, environment)
-    else:
-        closing_tag = "</INSTRUCTIONS>"
-        closing = instructions_close
-    if closing < 0:
-        return None
-    return text[closing + len(closing_tag) :].strip()
+        environment = suffix.find("<environment_context>")
+        closing = suffix.find(closing_tag, environment)
+        if closing < 0:
+            return None
+        return suffix[closing + len(closing_tag) :].strip()
+    return suffix.strip()
 
 
 def _topic_issue_ids(text: str) -> set[str]:
