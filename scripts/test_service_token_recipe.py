@@ -284,9 +284,7 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         first = fixture.run()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(fixture.state()["rows"], [expected_row(fixture.metadata)])
-        self.assertEqual(
-            fixture.state()["rows"][0][HEADERS.index("Expires (UTC)")], "Never"
-        )
+        self.assertEqual(fixture.state()["rows"][0][HEADERS.index("Expires (UTC)")], "Never")
         self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "ok")
         second = fixture.run()
         self.assertEqual(second.returncode, 0, second.stderr)
