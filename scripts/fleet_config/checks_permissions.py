@@ -374,17 +374,30 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
 
     The command is the ``names`` verb, which prints names and never values, so a
     secret cannot reach this module, a result, a reason or a log.  The listing is
-    cached on the context, so one status run asks the secret store once per folder
-    rather than once per rule.
+    cached on the context, including failures, so one status run asks the secret
+    store once per folder rather than once per rule.
 
     The command runs through the one allowlisted runner,  so it has an explicit
     timeout and a command that is not on the allowlist is refused before it starts.
     """
     cache_key = "canonical-infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
+    if isinstance(cached, CheckError):
+        raise CheckError(str(cached), cached.reason_code) from None
     if cached is not None:
         return cached
+    try:
+        names = _probe_secret_store_names(ctx, folder)
+    except CheckError as exc:
+        # Keep the diagnostic, without retaining a traceback or treating failure as absence.
+        ctx.cache[cache_key] = CheckError(str(exc), exc.reason_code)
+        raise
+    ctx.cache[cache_key] = names
+    return names
 
+
+def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
+    """One uncached, bounded names-only probe."""
     if not os.path.isfile(INFISICAL_CLI):
         raise CheckError(
             "the canonical Infisical command source is missing",
@@ -434,9 +447,7 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
                 ReasonCode.UNPARSEABLE,
             )
         names.add(text)
-    frozen = frozenset(names)
-    ctx.cache[cache_key] = frozen
-    return frozen
+    return frozenset(names)
 
 
 def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:

@@ -24,6 +24,7 @@ from fleet_config.checks import (
     CheckContext,
     CliResult,
     default_registry,
+    run_cli,
     sha256_text,
 )
 from fleet_config.checks_hooks import (
@@ -1147,6 +1148,73 @@ class SecretStoreCredentialTests(TempHome):
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_failed_folder_probes_run_once_and_a_new_run_can_recover(self):
+        source = self.write(
+            "probe/fleet_infisical_cli.py",
+            "import os, sys, time\n"
+            "with open(os.environ['PROBE_LOG'], 'a') as log:\n"
+            "    log.write(sys.argv[sys.argv.index('--path') + 1] + '\\n')\n"
+            "mode = os.environ['PROBE_MODE']\n"
+            "if mode == 'timeout': time.sleep(30)\n"
+            "if mode == 'nonzero':\n"
+            "    sys.stderr.write('sentinel-secret-value-do-not-leak')\n"
+            "    sys.exit(4)\n"
+            "if mode == 'truncated': print('CLAUDE_ZULIP_KEY\\n' + 'X' * 128)\n"
+            "elif mode == 'unparseable': print('not a key name!')\n"
+            "else: print('CLAUDE_ZULIP_KEY\\nOTHER_KEY')\n",
+        )
+        first_rule = replace(self.rule(), id="first-key")
+        second_rule = replace(self.rule(names=("OTHER_KEY",)), id="second-key")
+        other_folder = replace(
+            first_rule,
+            check=replace(first_rule.check, target="/other"),
+        )
+        cases = (
+            ("timeout", ReasonCode.TIMEOUT),
+            ("truncated", ReasonCode.UNPARSEABLE),
+            ("nonzero", ReasonCode.ERROR),
+            ("unparseable", ReasonCode.UNPARSEABLE),
+        )
+        for mode, reason_code in cases:
+            with self.subTest(mode=mode):
+                calls = os.path.join(self.home, mode + ".calls")
+                ctx = replace(
+                    self.ctx,
+                    timeout=1,
+                    env={"PROBE_LOG": calls, "PROBE_MODE": mode},
+                    cache={},
+                )
+
+                def bounded(argv, **options):
+                    return run_cli(argv, max_output_bytes=64, **options)
+
+                with (
+                    mock.patch("fleet_config.checks_permissions.INFISICAL_CLI", source),
+                    mock.patch("fleet_config.checks.INFISICAL_CLI", source),
+                    mock.patch(
+                        "fleet_config.checks_permissions.run_cli", side_effect=bounded
+                    ) as runner,
+                ):
+                    first = check_credential_key_present(first_rule, "claude", ctx)
+                    second = check_credential_key_present(second_rule, "claude", ctx)
+                    for result in (first, second):
+                        self.assertIs(result.state, CheckState.UNKNOWN)
+                        self.assertIs(result.reason_code, reason_code)
+                        self.assertIsNone(result.observed.present)
+                        self.assertTrue(contract.is_failing(result))
+                        self.assertNotIn(self.SENTINEL, json.dumps(result_to_dict(result)))
+                    self.assertEqual(first.reason, second.reason)
+                    self.assertEqual(runner.call_count, 1)
+                    check_credential_key_present(other_folder, "claude", ctx)
+                    self.assertEqual(runner.call_count, 2)
+                    recovered_ctx = replace(ctx, env={**ctx.env, "PROBE_MODE": "ok"}, cache={})
+                    for rule in (first_rule, second_rule):
+                        recovered = check_credential_key_present(rule, "claude", recovered_ctx)
+                        self.assertIs(recovered.state, CheckState.PASS)
+                    self.assertEqual(runner.call_count, 3)
+                with open(calls, encoding="utf-8") as log:
+                    self.assertEqual(log.read().splitlines(), ["/zulip", "/other", "/zulip"])
 
 
 class RegistryTests(unittest.TestCase):
