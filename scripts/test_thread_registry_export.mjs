@@ -8,8 +8,7 @@
 // Run: node --test scripts/test_thread_registry_export.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { mkdtemp, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -594,21 +593,34 @@ test("CLI: --write shares the drain's real lock file and releases it after", asy
   const lock = join(dir, "drain.lock");
   const quiet = { out: () => {}, err: () => {}, readText: () => cliPayload };
   const holder = await acquireLease(lock); // a drain run holds it
-  const refused = await runCli(["rows.json", "--write"], {
-    ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
-    getToken: async () => { throw new Error("no Google call while the drain writes"); },
-  });
-  assert.equal(refused, 3);
-  await holder.close();
-  await unlink(lock);
-  const { adapter, state } = memorySheet();
-  const done = await runCli(["rows.json", "--write"], {
-    ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
-    getToken: async () => "tok", makeAdapter: () => adapter,
-  });
-  assert.equal(done, 0);
-  assert.deepEqual(state.writes, ["append"]);
-  assert.equal(existsSync(lock), false); // released for the next drain run
+  let holderOpen = true;
+  try {
+    const refused = await runCli(["rows.json", "--write"], {
+      ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
+      getToken: async () => { throw new Error("no Google call while the drain writes"); },
+    });
+    assert.equal(refused, 3);
+    const inodeBefore = await stat(lock);
+    await holder.close();
+    holderOpen = false;
+    const { adapter, state } = memorySheet();
+    const done = await runCli(["rows.json", "--write"], {
+      ...quiet, env: { OPERATOR_SHEETS_LOCK: lock },
+      getToken: async () => "tok", makeAdapter: () => adapter,
+    });
+    assert.equal(done, 0);
+    assert.deepEqual(state.writes, ["append"]);
+    const inodeAfter = await stat(lock);
+    assert.equal(inodeAfter.dev, inodeBefore.dev);
+    assert.equal(inodeAfter.ino, inodeBefore.ino);
+    assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+    const next = await acquireLease(lock);
+    assert.ok(next); // the persistent inode is released for the next drain run
+    await next.close();
+  } finally {
+    if (holderOpen) await holder.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- the upsert plan and the payload contract ----
