@@ -775,7 +775,8 @@ def title_from_prompt(prompt: object) -> str:
                 break
             context = " ".join([*kept[-SECRET_WINDOW:], token])
             opaque = any(
-                any(ch.isalpha() for ch in match.group()) for match in PROMPT_OPAQUE_RUN.finditer(token)
+                any(ch.isalpha() for ch in match.group())
+                for match in PROMPT_OPAQUE_RUN.finditer(token)
             )
             # A quoted JSON/Markdown label must carry the same context as an unquoted assignment.  Scan both
             # forms before splitting words, while preserving the original spelling of ordinary title words.
