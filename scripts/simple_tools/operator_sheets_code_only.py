@@ -376,8 +376,13 @@ def stage_source_bundle(
 
 
 def _verify_prior_snapshot(source_dir: Path, lib_dir: Path, *, uid: int, gid: int) -> None:
+    _check_path(source_dir, uid=uid, gid=gid, mode=0o700, directory=True)
+    prior_dir = source_dir / "prior"
+    _check_path(prior_dir, uid=uid, gid=gid, mode=0o700, directory=True)
+    prior_manifest_path = source_dir / "prior-manifest.json"
+    _check_path(prior_manifest_path, uid=uid, gid=gid, mode=0o600, directory=False)
     try:
-        modules = json.loads((source_dir / "prior-manifest.json").read_text())["modules"]
+        modules = json.loads(prior_manifest_path.read_text())["modules"]
     except (OSError, ValueError, KeyError, TypeError):
         raise InstallError("the prior module snapshot is missing or invalid") from None
     for name in MODULES:
@@ -390,7 +395,9 @@ def _verify_prior_snapshot(source_dir: Path, lib_dir: Path, *, uid: int, gid: in
                 raise InstallError(f"installed module set changed after staging: {name}")
             continue
         try:
-            expected = (source_dir / "prior" / name).read_bytes()
+            snapshot_path = prior_dir / name
+            _check_path(snapshot_path, uid=uid, gid=gid, mode=0o600, directory=False)
+            expected = snapshot_path.read_bytes()
         except OSError:
             raise InstallError("the prior module snapshot is incomplete") from None
         if hashlib.sha256(expected).hexdigest() != record.get("sha256"):
@@ -435,11 +442,14 @@ def verify_installed_state(
 def _validated_new_snapshot(
     source_dir: Path, *, node: str, uid: int, gid: int
 ) -> dict[str, bytes]:
+    _check_path(source_dir, uid=uid, gid=gid, mode=0o700, directory=True)
     source_bytes = validate_source_bundle(
         source_dir=source_dir, node=node, uid=uid, gid=gid
     )
+    manifest_path = source_dir / "manifest.json"
+    _check_path(manifest_path, uid=uid, gid=gid, mode=0o600, directory=False)
     try:
-        manifest = json.loads((source_dir / "manifest.json").read_text())
+        manifest = json.loads(manifest_path.read_text())
     except (OSError, ValueError):
         raise InstallError("the new module snapshot manifest is missing or invalid") from None
     expected = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}

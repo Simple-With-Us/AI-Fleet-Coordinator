@@ -870,12 +870,54 @@ class CodeOnlyHelperTests(unittest.TestCase):
 
     def source_bundle(self):
         source = self.tmp / "source"
-        source.mkdir()
+        source.mkdir(mode=0o700)
+        source.chmod(0o700)
         for name in MODULES:
             path = source / name
             path.write_text("export {};\n")
             path.chmod(0o600)
         return source
+
+    def source_snapshot(self):
+        source = self.source_bundle()
+        hashes = {
+            name: self.helper.hashlib.sha256((source / name).read_bytes()).hexdigest()
+            for name in MODULES
+        }
+        manifest = source / "manifest.json"
+        manifest.write_text(json.dumps(hashes, sort_keys=True))
+        manifest.chmod(0o600)
+        return source, manifest
+
+    def prior_snapshot(self):
+        source = Path(tempfile.mkdtemp(dir=self.tmp, prefix="prior-stage-"))
+        source.chmod(0o700)
+        prior = source / "prior"
+        prior.mkdir(mode=0o700)
+        prior.chmod(0o700)
+        lib = source / "installed-lib"
+        lib.mkdir(mode=0o755)
+        lib.chmod(0o755)
+        modules = {}
+        for name in MODULES:
+            data = f"prior {name}\n".encode()
+            path = prior / name
+            path.write_bytes(data)
+            path.chmod(0o600)
+            installed = lib / name
+            installed.write_bytes(data)
+            installed.chmod(0o644)
+            modules[name] = {
+                "present": True,
+                "sha256": self.helper.hashlib.sha256(data).hexdigest(),
+                "uid": os.getuid(),
+                "gid": os.getgid(),
+                "mode": 0o644,
+            }
+        manifest = source / "prior-manifest.json"
+        manifest.write_text(json.dumps({"modules": modules}, sort_keys=True))
+        manifest.chmod(0o600)
+        return source, prior, manifest, lib
 
     def test_source_syntax_timeout_is_bounded_and_reported(self):
         source = self.source_bundle()
@@ -903,6 +945,71 @@ class CodeOnlyHelperTests(unittest.TestCase):
                 uid=os.getuid(),
                 gid=os.getgid(),
             )
+
+    def test_new_snapshot_manifest_must_be_root_private_before_read(self):
+        source, manifest = self.source_snapshot()
+        manifest.chmod(0o644)
+        with self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"):
+            self.helper._validated_new_snapshot(
+                source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
+            )
+
+    def test_new_snapshot_manifest_symlink_is_refused_before_read(self):
+        source, manifest = self.source_snapshot()
+        target = self.tmp / "manifest-target"
+        target.write_bytes(manifest.read_bytes())
+        target.chmod(0o600)
+        manifest.unlink()
+        manifest.symlink_to(target)
+        with self.assertRaisesRegex(self.helper.InstallError, "refusing symlink path component"):
+            self.helper._validated_new_snapshot(
+                source, node=shutil.which("node") or "node", uid=os.getuid(), gid=os.getgid()
+            )
+
+    def test_prior_snapshot_manifest_requires_private_plain_file_before_read(self):
+        for case in ("mode", "symlink"):
+            with self.subTest(case=case):
+                source, _prior, manifest, lib = self.prior_snapshot()
+                self.helper._verify_prior_snapshot(
+                    source, lib, uid=os.getuid(), gid=os.getgid()
+                )  # Positive control: this snapshot and installed set are coherent.
+                if case == "mode":
+                    manifest.chmod(0o644)
+                    reason = "unexpected owner or mode"
+                else:
+                    target = self.tmp / "prior-manifest-target"
+                    target.write_bytes(manifest.read_bytes())
+                    target.chmod(0o600)
+                    manifest.unlink()
+                    manifest.symlink_to(target)
+                    reason = "refusing symlink path component"
+                with self.assertRaisesRegex(self.helper.InstallError, reason):
+                    self.helper._verify_prior_snapshot(
+                        source, lib, uid=os.getuid(), gid=os.getgid()
+                    )
+
+    def test_prior_module_snapshot_requires_private_plain_file_before_read(self):
+        for case in ("mode", "symlink"):
+            with self.subTest(case=case):
+                source, prior, _manifest, lib = self.prior_snapshot()
+                self.helper._verify_prior_snapshot(
+                    source, lib, uid=os.getuid(), gid=os.getgid()
+                )  # Positive control: this snapshot and installed set are coherent.
+                snapshot = prior / MODULES[0]
+                if case == "mode":
+                    snapshot.chmod(0o644)
+                    reason = "unexpected owner or mode"
+                else:
+                    target = self.tmp / "prior-module-target"
+                    target.write_bytes(snapshot.read_bytes())
+                    target.chmod(0o600)
+                    snapshot.unlink()
+                    snapshot.symlink_to(target)
+                    reason = "refusing symlink path component"
+                with self.assertRaisesRegex(self.helper.InstallError, reason):
+                    self.helper._verify_prior_snapshot(
+                        source, lib, uid=os.getuid(), gid=os.getgid()
+                    )
 
 
 class PythonBlockTests(unittest.TestCase):
