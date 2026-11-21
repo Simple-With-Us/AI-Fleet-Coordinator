@@ -2641,9 +2641,8 @@ def enroll_children(chat: Chat, started: float | None = None) -> int:
         try:
             sid = SI.check(_text(item), "a listed child session id")
             payload = dict(spec.chat_payload(sid))
-            if (
-                _text(spec.kind(payload, chat.env)) != "subagent"
-                or not in_scope(spec, chat.env, payload)
+            if _text(spec.kind(payload, chat.env)) != "subagent" or not in_scope(
+                spec, chat.env, payload
             ):
                 continue  # the store no longer calls it this chat's sub-thread child
             child = Chat(
@@ -2675,7 +2674,9 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
     lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
     that retitled the chat itself, dropping the letter, gets it back)."""
-    started = time.monotonic()  # the enrollment tail shares this pass's whole budget, not a fresh one
+    started = (
+        time.monotonic()
+    )  # the enrollment tail shares this pass's whole budget, not a fresh one
     note = chat.read()
     if not note:
         return 0
