@@ -681,7 +681,7 @@ test("thread sync: one log line of counts, never topic or header text", async ()
 test("thread sync: a payload for another tab or layout is refused unsent", async () => {
   const good = [threadRow(1)];
   const cases = [
-    [null, "payload_destination_mismatch"],
+    [null, "payload_invalid"],
     [threadPayload(good, { tab: "Sessions" }), "payload_destination_mismatch"],
     [threadPayload(good, { spreadsheetId: "another_workbook" }), "payload_destination_mismatch"],
     [threadPayload(good, { headers: [...THREAD_HEADERS].reverse() }), "payload_headers_mismatch"],
@@ -696,6 +696,38 @@ test("thread sync: a payload for another tab or layout is refused unsent", async
     assert.equal(result.error, code);
     assert.deepEqual(state.calls, [], `${code}: no sheet call`);
   }
+});
+
+test("thread sync: payload validation runs before destination and header fields are read", async () => {
+  const reads = [];
+  const malformed = new Proxy({}, {
+    get(_target, key) {
+      if (key === "then") return undefined;
+      reads.push(String(key));
+      throw new Error("invalid payload must be rejected before field access");
+    },
+  });
+  const bridge = {
+    threads: { exportRows: async () => malformed },
+    outbox: {}, attempts: {},
+  };
+  const { adapter, state } = threadSheet();
+  const { result } = await syncThreads({
+    bridge, adapter,
+    loadModule: async () => ({
+      SPREADSHEET_ID: SPREADSHEET_ID,
+      SHEET_TAB,
+      THREAD_HEADERS,
+      validatePayload: (payload) => {
+        reads.push("validatePayload");
+        assert.equal(payload, malformed);
+        throw new Error("synthetic malformed payload");
+      },
+    }),
+  });
+  assert.equal(result.error, "payload_invalid");
+  assert.deepEqual(reads, ["validatePayload"]);
+  assert.deepEqual(state.calls, []);
 });
 
 test("thread sync: a registry read failure is one fixed code and touches no sheet", async () => {

@@ -5,6 +5,7 @@
 #     INFISICAL_FLEET_OPS_PROJECT_ID=<uuid> \
 #     bash scripts/simple_tools/server/install-operator-sheets-drain.sh --dry-run   # show the plan
 #   (the same without --dry-run)                                                 # install or update
+#   bash scripts/simple_tools/server/install-operator-sheets-drain.sh --code-only # reviewed code bundle only
 #
 # Run it as root from a clean AI-Fleet-Coordinator checkout at origin/main; it refuses any other
 # checkout.  Safe to run again: an unchanged file is left alone.  In order, it:
@@ -52,25 +53,23 @@ MODULES=(operator_sheets_export.mjs operator_sheets_google.mjs operator_sheets_d
 PREFLIGHT_TIMEOUT=120
 
 DRY=0
+CODE_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
+    --code-only) CODE_ONLY=1 ;;
     -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
     *) echo "install-operator-sheets-drain: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+[[ "$CODE_ONLY" -eq 0 || "$DRY" -eq 0 ]] || {
+  echo "install-operator-sheets-drain: --code-only cannot be combined with --dry-run" >&2
+  exit 2
+}
 
 say() { printf 'install-operator-sheets-drain: %s\n' "$*"; }
 die() { say "$1" >&2; exit "${2:-1}"; }
 
-WORKBOOK_ID="${OPERATOR_SHEETS_WORKBOOK_ID:-}"
-TOKEN_FILE="${OPERATOR_SHEETS_TOKEN_FILE:-}"
-SESSIONS_SHEET_ID="${OPERATOR_SHEETS_SESSIONS_SHEET_ID:-20964676}"
-EVENTS_SHEET_ID="${OPERATOR_SHEETS_EVENTS_SHEET_ID:-1449318075}"
-CONTAINER="${OPERATOR_REGISTRY_CONTAINER:-eavesdropper}"
-REGISTRY_DB="${OPERATOR_REGISTRY_DB:-/data/operator/registry.sqlite3}"
-PAGE_LIMIT="${OPERATOR_SHEETS_PAGE_LIMIT:-}"
-LOCK_PATH="${OPERATOR_SHEETS_LOCK:-}"
 TEST_ROOT="${OPERATOR_SHEETS_INSTALL_TEST_ROOT:-}"
 
 # --- where things go: the real host, or a stubbed test root ---------------------------------
@@ -87,8 +86,12 @@ if [[ -n "$TEST_ROOT" ]]; then
   PREFIX="$TEST_ROOT"
   OWNER_UID="$(id -u)"
   OWNER_GID="$(id -g)"
-  NODE=""
+  NODE="$(command -v node || true)"
   PYTHON="$(command -v python3 || true)"
+  if [[ -n "$TEST_ROOT" ]]; then
+    OPERATOR_SHEETS_TEST_INSTALLER_PID="$$"
+    export OPERATOR_SHEETS_TEST_INSTALLER_PID
+  fi
 else
   PREFIX=""
   OWNER_UID=0
@@ -99,6 +102,163 @@ fi
 LIB_DIR="$PREFIX/usr/local/lib/operator-sheets-drain"
 ETC_DIR="$PREFIX/etc/operator-sheets"
 UNIT_DIR="$PREFIX/etc/systemd/system"
+
+# Serialize both live installer modes. Dry-run remains read-only.
+if [[ "$DRY" -eq 0 ]]; then
+  if [[ -n "$TEST_ROOT" ]]; then
+    mkdir -p -m 0755 -- "$PREFIX/run/lock" || die "could not create the test lock directory"
+  else
+    [[ -d /run/lock && ! -L /run/lock ]] || die "/run/lock must be an existing plain directory"
+  fi
+  LOCK_FILE="$PREFIX/run/lock/operator-sheets-drain-installer.lock"
+  [[ ! -L "$LOCK_FILE" ]] || die "$LOCK_FILE is a symlink"
+  command -v flock >/dev/null || die "flock is missing"
+  exec 9>"$LOCK_FILE" || die "could not open the installer lock"
+  flock -x 9 || die "could not acquire the installer lock"
+fi
+
+if [[ "$CODE_ONLY" -eq 1 ]]; then
+  BACKUP_ROOT="$PREFIX/var/backups/operator-sheets-drain-code-only"
+  [[ -f "$HERE/$SERVICE" && ! -L "$HERE/$SERVICE" && -f "$HERE/$TIMER" && ! -L "$HERE/$TIMER" ]] ||
+    die "service and timer source files must exist as plain files"
+  [[ -n "$PYTHON" && -x "$PYTHON" ]] || die "python3 is missing"
+  [[ -n "$NODE" && -x "$NODE" ]] || die "node is missing"
+  command -v systemctl >/dev/null || die "systemctl is missing"
+  command -v timeout >/dev/null || die "timeout (coreutils) is missing"
+  [[ "$DRY" -eq 0 && -z "$TEST_ROOT" && "$(id -u)" -eq 0 ]] ||
+    [[ -n "$TEST_ROOT" && "$DRY" -eq 0 ]] || die "--code-only requires root (or the isolated test root)"
+
+  repo_git() { git -c safe.directory="$REPO" -C "$REPO" "$@"; }
+  repo_git rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
+  [[ -z "$(repo_git status --porcelain --untracked-files=all 2>/dev/null)" ]] ||
+    die "the checkout $REPO has uncommitted or untracked changes; install only reviewed code"
+  head="$(repo_git rev-parse HEAD)"
+  main="$(repo_git rev-parse --verify -q refs/remotes/origin/main || true)"
+  [[ -n "$main" && "$head" == "$main" ]] || die "the checkout must be exactly at origin/main"
+
+  backup_parent="$PREFIX/var/backups"
+  [[ -d "$backup_parent" && ! -L "$backup_parent" ]] || die "$backup_parent must be an existing plain directory"
+  if [[ -e "$BACKUP_ROOT" || -L "$BACKUP_ROOT" ]]; then
+    [[ -d "$BACKUP_ROOT" && ! -L "$BACKUP_ROOT" &&
+       "$(stat -c '%a %u %g' -- "$BACKUP_ROOT")" == "700 $OWNER_UID $OWNER_GID" ]] ||
+      die "$BACKUP_ROOT must be a root-private plain directory"
+  else
+    install -d -m 0700 -o "$OWNER_UID" -g "$OWNER_GID" -- "$BACKUP_ROOT" ||
+      die "could not create $BACKUP_ROOT"
+  fi
+  command -v mktemp >/dev/null || die "mktemp is missing"
+  umask 077
+  SOURCE_STAGE="$(mktemp -d "$BACKUP_ROOT/source-XXXXXXXX")" || die "could not create a private source stage"
+  CODE_HELPER_STAGE="$SOURCE_STAGE/operator_sheets_code_only.py"
+  for name in "${MODULES[@]}" operator_sheets_code_only.py; do
+    repo_git show "$head:scripts/simple_tools/$name" > "$SOURCE_STAGE/$name" || die "could not stage reviewed source $name"
+    chmod 0600 "$SOURCE_STAGE/$name"
+  done
+  STAGE_DIR="$("$PYTHON" -I "$CODE_HELPER_STAGE" \
+    --source-dir "$SOURCE_STAGE" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+    --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+    --uid "$OWNER_UID" --gid "$OWNER_GID" --stage-only)" || die "existing install or source bundle staging failed"
+  [[ -n "$STAGE_DIR" && "$STAGE_DIR" == "$BACKUP_ROOT"/staged-* && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]] ||
+    die "the immutable source stage is unavailable"
+
+  timer_stopped=0
+  timer_restored=0
+  unit_busy() {
+    local output key value active_state="" sub_state="" job="" main_pid="" no_job=0
+    output="$(systemctl show --property=ActiveState --property=SubState --property=Job \
+      --property=MainPID "$1" 2>/dev/null)" || die "could not inspect systemd state for $1"
+    while IFS='=' read -r key value; do
+      case "$key" in
+        ActiveState) active_state="$value" ;;
+        SubState) sub_state="$value" ;;
+        Job) job="$value" ;;
+        MainPID) main_pid="$value" ;;
+      esac
+    done <<< "$output"
+    [[ -n "$active_state" && -n "$sub_state" && "$main_pid" =~ ^[0-9]+$ ]] ||
+      die "systemd returned incomplete state for $1"
+    if [[ -z "$job" || "$job" == 0 || "$job" == / ]]; then no_job=1; fi
+    if [[ "$active_state" == active || "$active_state" == activating ||
+          "$active_state" == deactivating || "$active_state" == reloading ]]; then
+      return 0
+    fi
+    if [[ "$active_state" == inactive && "$sub_state" == dead &&
+          "$no_job" -eq 1 && "$main_pid" == 0 ]]; then
+      return 1
+    fi
+    if [[ "$active_state" == failed && "$no_job" -eq 1 && "$main_pid" == 0 ]]; then
+      return 1
+    fi
+    die "systemd state for $1 is not safely inactive (ActiveState=$active_state, SubState=$sub_state)"
+  }
+  cleanup_code_only() {
+    local status=$?
+    trap - EXIT INT TERM
+    if [[ "$timer_stopped" -eq 1 && "$timer_restored" -eq 0 ]]; then
+      if [[ -x "$PYTHON" ]] && "$PYTHON" -I "$CODE_HELPER_STAGE" \
+        --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+        --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+        --uid "$OWNER_UID" --gid "$OWNER_GID" --verify-state >/dev/null &&
+        systemctl start "$TIMER"; then
+        timer_restored=1
+        say "restored the previously active $TIMER"
+      else
+        say "left the previously active $TIMER stopped because the installed module set could not be verified coherent; inspect the backup before restarting it" >&2
+      fi
+    fi
+    if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" && ! -L "$STAGE_DIR" ]]; then
+      rm -rf -- "$STAGE_DIR"
+    fi
+    if [[ -n "$SOURCE_STAGE" && -d "$SOURCE_STAGE" && ! -L "$SOURCE_STAGE" ]]; then
+      rm -rf -- "$SOURCE_STAGE"
+    fi
+    return "$status"
+  }
+  trap cleanup_code_only EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if unit_busy "$TIMER"; then
+    timer_stopped=1
+    systemctl stop "$TIMER" || die "could not stop $TIMER before code-only update"
+    say "stopped $TIMER to prevent a new run during code-only update"
+  fi
+
+  wait_seconds=1560
+  if [[ -n "$TEST_ROOT" ]]; then
+    wait_seconds="${OPERATOR_SHEETS_TEST_CODE_ONLY_WAIT_SECONDS:-1560}"
+  fi
+  [[ "$wait_seconds" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid code-only bounded wait setting"
+  elapsed=0
+  while unit_busy "$SERVICE"; do
+    if (( elapsed >= wait_seconds )); then
+      die "$SERVICE is still active after the bounded wait; no module files were changed"
+    fi
+    sleep 1
+    ((elapsed += 1))
+  done
+  say "$SERVICE is inactive; installing the immutable reviewed module bundle"
+  set +e
+  "$PYTHON" -I "$CODE_HELPER_STAGE" \
+    --source-dir "$STAGE_DIR" --lib-dir "$LIB_DIR" --etc-dir "$ETC_DIR" \
+    --unit-dir "$UNIT_DIR" --backup-root "$BACKUP_ROOT" --node "$NODE" \
+    --uid "$OWNER_UID" --gid "$OWNER_GID"
+  helper_status=$?
+  set -e
+  if [[ "$helper_status" -ne 0 ]]; then
+    die "code-only module update failed (helper status $helper_status)"
+  fi
+  say "code-only update complete; consumer credentials, settings and systemd units were not read or changed"
+  exit 0
+fi
+
+WORKBOOK_ID="${OPERATOR_SHEETS_WORKBOOK_ID:-}"
+TOKEN_FILE="${OPERATOR_SHEETS_TOKEN_FILE:-}"
+SESSIONS_SHEET_ID="${OPERATOR_SHEETS_SESSIONS_SHEET_ID:-20964676}"
+EVENTS_SHEET_ID="${OPERATOR_SHEETS_EVENTS_SHEET_ID:-1449318075}"
+CONTAINER="${OPERATOR_REGISTRY_CONTAINER:-eavesdropper}"
+REGISTRY_DB="${OPERATOR_REGISTRY_DB:-/data/operator/registry.sqlite3}"
+PAGE_LIMIT="${OPERATOR_SHEETS_PAGE_LIMIT:-}"
+LOCK_PATH="${OPERATOR_SHEETS_LOCK:-}"
 
 # --- inputs: checked before anything is read or changed ------------------------------------
 

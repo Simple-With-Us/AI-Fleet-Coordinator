@@ -495,19 +495,18 @@ export async function syncThreadsOnce({
     });
     const payload = await registry.threads.exportRows();
     stage = "payload";
-    if (!payload || typeof payload !== "object" ||
-        payload.spreadsheetId !== mod.SPREADSHEET_ID || payload.tab !== mod.SHEET_TAB) {
+    try {
+      mod.validatePayload(payload);
+    } catch {
+      throw coded("invalid");
+    }
+    if (payload.spreadsheetId !== mod.SPREADSHEET_ID || payload.tab !== mod.SHEET_TAB) {
       throw coded("destination_mismatch");
     }
     // An image whose projection is not this module's column order is refused, not
     // written under the wrong headers.
     if (JSON.stringify(payload.headers) !== JSON.stringify(mod.THREAD_HEADERS)) {
       throw coded("headers_mismatch");
-    }
-    try {
-      mod.validatePayload(payload);
-    } catch {
-      throw coded("invalid");
     }
     // Credential-shaped cell text never leaves the host, and a cell over Google's
     // 50,000-character limit would be refused on every run and stop every write after
