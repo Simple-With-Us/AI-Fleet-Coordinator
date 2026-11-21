@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from simple_tools import wake_router as WR
 from simple_tools import zcode_wake
+from simple_tools.tests.harness import private_dir
 
 SID = "sess_1a2b3c4d-1111-2222-3333-444455556666"
 SID_OTHER = "sess_9999ffff-1111-2222-3333-444455556666"
@@ -77,29 +78,6 @@ class StubbornChild(FakeChild):
 
     def kill(self):
         self.killed = True
-
-
-def private_dir(path) -> str:
-    """A private directory, built one level at a time with owner-only permissions.
-
-    Every missing level is created explicitly, a symlinked level is refused, and nothing
-    outside the test's own home is ever followed."""
-    missing = []
-    probe = os.path.abspath(str(path))
-    while not os.path.exists(probe):
-        missing.append(probe)
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            break
-        probe = parent
-    if os.path.islink(str(path)):
-        raise OSError("refusing a symlinked directory: %s" % path)
-    for level in reversed(missing):
-        if os.path.islink(level):
-            raise OSError("refusing a symlinked directory: %s" % level)
-        os.mkdir(level, mode=0o700)
-        os.chmod(level, 0o700)
-    return str(path)
 
 
 def _holding_row(session_id: str = SID):
@@ -326,6 +304,17 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "session-cwd-gone")
 
+    def test_a_chat_in_another_project_under_the_root_is_delivered(self):
+        """The bound is the host's workspace root, so a seat that works in several projects is
+        woken in the project its chat is in."""
+        project = self.workspace / "BotFleet"
+        private_dir(project)
+        self._session_directory(SID, str(project))
+        delivery = self._deliver_local(config={"workspace": str(self.workspace)})
+        self.assertEqual(delivery.outcome, "sent")
+        argv = self.calls[0]
+        self.assertEqual(argv[argv.index("--cwd") + 1], str(project))
+
     def test_workspace_mismatch_refuses(self):
         self._session_directory(SID, "/elsewhere")
         delivery = self._deliver_local(config={"workspace": str(self.workspace)})
@@ -474,6 +463,17 @@ class DeliverLocalTests(Base):
         os.symlink(str(elsewhere), str(link))
         with self.assertRaises(OSError):
             zcode_wake._private_dir(link)
+
+    def test_the_shared_private_dir_refuses_a_symlinked_ancestor(self):
+        """A parent that is a symlink would put the new level in the tree that symlink names
+        and not in the tree this path names, so the shared helper refuses it."""
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        link = self.tmp / "link"
+        os.symlink(str(elsewhere), str(link))
+        with self.assertRaises(OSError):
+            private_dir(link / "below")
+        self.assertFalse((elsewhere / "below").exists())
 
     def test_an_exception_after_the_child_started_is_unknown(self):
         def runner(argv, **kwargs):

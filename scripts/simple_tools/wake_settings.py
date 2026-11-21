@@ -130,6 +130,7 @@ HOST_FACTS = (
     "mcode_bin",
     "mcode_model",
     "muse_bin",
+    "opencode_bin",
     "zcode_bin",
     "pinned_profile",
     "pinned_owner_account",
