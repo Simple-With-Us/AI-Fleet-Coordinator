@@ -4017,10 +4017,23 @@ def _save_json(path: str, data: Mapping[str, Any]) -> bool:
 
 
 def _seconds(value: object) -> float:
-    """A time from a note or a stamp, or 0 when it is not a number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    """A time from a note or a stamp, or 0 when it is not a number.
+
+    A time written as digits in a string is a time as well:  a stamp that holds a time holds a time,
+    whichever way it was written, so a retry stamp written as a string still waits out its backoff.
+    A time that is not finite is no time at all."""
+    if isinstance(value, bool):
         return 0.0
-    return float(value)
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return 0.0
+    else:
+        return 0.0
+    return seconds if math.isfinite(seconds) else 0.0
 
 
 def adopted_note(

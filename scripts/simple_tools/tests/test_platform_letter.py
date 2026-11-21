@@ -3120,6 +3120,24 @@ class RestoreLetterTests(Base):
         self.assertEqual(done["repaired"], ["s-0307"])
         self.assertEqual(self.written[-1].title, label + ": Fix login")
 
+    def test_a_retry_stamp_written_as_a_string_still_waits_out_its_backoff(self) -> None:
+        # A stamp that holds a time holds a time, whichever way it was written:  a retry stamp in a
+        # string still keeps the restore off the writer until the backoff is over.
+        self.start("s-0308")
+        label = self.note("s-0308")["label"]
+        note = self.note("s-0308")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "4000"
+        self.write_note("s-0308", note)
+        self.titles["s-0308"] = "Fix login"
+        before = len(self.written)
+        calls = Calls(self)
+        done = self.repair("s-0308", calls)
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(len(self.written), before)
+
     def test_a_stored_title_that_carries_the_letter_is_not_prefixed_twice(self) -> None:
         # A stored title that already carries the letter is the chat's own words, so the letter goes back
         # once:  "AA: Fix login" and never "AA: AA: Fix login".
