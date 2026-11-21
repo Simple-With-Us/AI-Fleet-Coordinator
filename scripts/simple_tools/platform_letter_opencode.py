@@ -107,6 +107,9 @@ LETTERED_TITLE = re.compile(r"^[A-Z]{2}: ")
 #: chat that is weeks old is not this pass's business:  the owner is looking at today's chats.
 UNLETTERED_SCAN = 50
 UNLETTERED_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
+#: How many parents one pass reads beside its candidates, for the rule that a child of a chat
+#: which takes no letter takes none either.
+UNLETTERED_PARENT_SCAN = 200
 
 #: The store OpenCode keeps its chats in on this host, and the table the live rows are in.
 STORE_REL = os.path.join(".local", "share", "opencode", "opencode.db")
@@ -160,12 +163,14 @@ def store_path(env: Mapping[str, str]) -> Path:
     return Path(home) / STORE_REL
 
 
-def _chat_rows(env: Mapping[str, str]) -> list[dict[str, Any]] | None:
-    """Every chat on this host, newest first, read only.  None when the store is not there.
+def _chat_rows(env: Mapping[str, str], since_ms: int, limit: int) -> list[dict[str, Any]] | None:
+    """The chats this host has that a repair pass may name, newest first, read only.
 
-    The live table is `session_v2`:  `id`, the title the chat shows, the chat that started it,
-    the archive stamp and the time it was created.  A store this old cannot say what it holds
-    answers None, and a pass that cannot say is no pass."""
+    The bounds are in the query and not in Python:  the store grows with every chat on the
+    host, and a pass that read the whole table would cost the whole history every hour.  The
+    live table is `session_v2`:  `id`, the title the chat shows, the chat that started it, the
+    archive stamp and the time it was created.  A store that is not there, or that cannot say
+    what it holds, answers None:  a pass that cannot say is no pass."""
     db = store_path(env)
     if not db.is_file():
         return None
@@ -176,7 +181,9 @@ def _chat_rows(env: Mapping[str, str]) -> list[dict[str, Any]] | None:
     try:
         rows = conn.execute(
             "SELECT id, title, parent_id, time_archived, time_created FROM session_v2 "
-            "ORDER BY time_created DESC"
+            "WHERE time_created >= ? AND (time_archived IS NULL OR time_archived <= 0) "
+            "ORDER BY time_created DESC LIMIT ?",
+            (int(since_ms), int(limit)),
         ).fetchall()
     except sqlite3.Error:
         return None
@@ -193,6 +200,72 @@ def _chat_rows(env: Mapping[str, str]) -> list[dict[str, Any]] | None:
         for row in rows
         if row and row[0]
     ]
+
+
+def _chat_row(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
+    """One chat's own row, read only.  None when the store does not hold it.
+
+    A single row, so it costs nothing however many chats the store holds:  the library asks
+    about one chat at a time (a chat's own start, and the parent a sub-thread registers
+    after), and that chat may be older than any pass's age bound."""
+    db = store_path(env)
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        row = conn.execute(
+            "SELECT id, title, parent_id, time_archived, time_created FROM session_v2 WHERE id = ?",
+            (sid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return None
+    return {
+        "id": str(row[0] or ""),
+        "title": str(row[1] or ""),
+        "parent_id": str(row[2] or ""),
+        "archived": row[3],
+        "created": row[4],
+    }
+
+
+def _parent_titles(env: Mapping[str, str], parent_ids: list[str]) -> dict[str, str]:
+    """The titles of the parents the candidates name, read only.
+
+    A parent may be older than the candidates, or archived, so it is asked for by id rather
+    than taken from the candidate list.  The list is bounded by the number of candidates."""
+    ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+    if not ids:
+        return {}
+    db = store_path(env)
+    if not db.is_file():
+        return {}
+    titles: dict[str, str] = {}
+    try:
+        conn = sqlite3.connect("file:" + quote(str(db)) + "?mode=ro", uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return {}
+    try:
+        for start in range(0, len(ids), UNLETTERED_PARENT_SCAN):
+            chunk = ids[start : start + UNLETTERED_PARENT_SCAN]
+            rows = conn.execute(
+                "SELECT id, title FROM session_v2 WHERE id IN (%s)" % ",".join("?" * len(chunk)),
+                chunk,
+            ).fetchall()
+            for row in rows:
+                if row and row[0]:
+                    titles[str(row[0])] = str(row[1] or "")
+    except sqlite3.Error:
+        return titles
+    finally:
+        conn.close()
+    return titles
 
 
 def _archived(value: object) -> bool:
@@ -223,11 +296,13 @@ def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     repair must not letter it either:  a parent that takes no letter is never registered, so the
     child would be registered with no parent and would take a doubled main-chat pair, and the
     pool of those is twenty-six pairs for the whole fleet."""
-    rows = _chat_rows(env)
+    now = time.time()
+    since_ms = int((now - UNLETTERED_MAX_AGE_SECONDS) * 1000)
+    rows = _chat_rows(env, since_ms, UNLETTERED_SCAN)
     if rows is None:
         return None
     titles = {row["id"]: row["title"] for row in rows}
-    now = time.time()
+    titles.update(_parent_titles(env, [row["parent_id"] for row in rows]))
     found: list[str] = []
     for row in rows:
         if len(found) >= UNLETTERED_SCAN:
@@ -246,13 +321,6 @@ def opencode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             parent_title = titles.get(parent)
             if parent_title is not None and no_letter(parent_title):
                 continue  # its parent takes no letter, so this chat is silenced with it
-        created = row["created"]
-        try:
-            age = now - (int(created) / 1000.0)
-        except (TypeError, ValueError):
-            age = 0.0
-        if age > UNLETTERED_MAX_AGE_SECONDS:
-            continue
         found.append(row["id"])
     return found
 
@@ -263,21 +331,18 @@ def opencode_chat_payload(sid: str) -> Mapping[str, Any]:
 
     The parent is in the payload, so a chat another chat started registers after that parent and
     takes the pair after the parent's, the way a chat the plugin saw takes it."""
-    env = os.environ
-    rows = _chat_rows(env) or []
-    for row in rows:
-        if row["id"] != sid:
-            continue
-        payload: dict[str, Any] = {
-            "event": "start",
-            "session_id": sid,
-            "source": "startup",
-            "title": row["title"],
-        }
-        if row["parent_id"]:
-            payload["parent_session_id"] = row["parent_id"]
-        return payload
-    return {"event": "start", "session_id": sid, "source": "startup"}
+    row = _chat_row(os.environ, sid)
+    if row is None:
+        return {"event": "start", "session_id": sid, "source": "startup"}
+    payload: dict[str, Any] = {
+        "event": "start",
+        "session_id": sid,
+        "source": "startup",
+        "title": row["title"],
+    }
+    if row["parent_id"]:
+        payload["parent_session_id"] = row["parent_id"]
+    return payload
 
 
 def _opencode_binary(env: Mapping[str, str]) -> str | None:

@@ -189,6 +189,22 @@ class UnletteredTests(unittest.TestCase):
         self.env["OPENCODE_WAKE_STORE"] = str(self.home / "gone" / "opencode.db")
         self.assertIsNone(OC.opencode_unlettered_sessions(self.env))
 
+    def test_the_pass_reads_a_bounded_number_of_chats(self) -> None:
+        # The store grows with every chat on the host, so the bounds are in the query and not
+        # in Python:  a pass that read the whole table would cost the whole history every hour.
+        con = sqlite3.connect(self.store)
+        now = int(time.time() * 1000)
+        for index in range(OC.UNLETTERED_SCAN * 2):
+            con.execute(
+                "INSERT INTO session_v2 VALUES (?, NULL, NULL, '/tmp', ?, NULL, ?, ?)",
+                ("ses_%026d" % index, "chat %d" % index, now, now),
+            )
+        con.commit()
+        con.close()
+        found = OC.opencode_unlettered_sessions(self.env)
+        self.assertIsNotNone(found)
+        self.assertLessEqual(len(found), OC.UNLETTERED_SCAN)
+
     def test_the_payload_carries_the_chat_and_the_parent_that_started_it(self) -> None:
         with mock.patch.dict(os.environ, self.env, clear=False):
             payload = OC.opencode_chat_payload(self.SID_CHILD)

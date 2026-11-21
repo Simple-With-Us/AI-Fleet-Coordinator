@@ -342,11 +342,15 @@ def _busy_ids(env: Mapping[str, str], session_ids: Sequence[str]) -> set[str]:
         busy: set[str] = set()
         for start in range(0, len(ids), STORE_CHUNK):
             chunk = ids[start : start + STORE_CHUNK]
+            # Each session is judged on its own newest row:  the subquery is correlated to the
+            # outer row's session, so a chat whose own latest message is older than another
+            # chat's is still judged on its own turn.
             rows = conn.execute(
-                "SELECT session_id, type FROM session_message WHERE session_id IN (%s) "
-                "AND seq = (SELECT MAX(seq) FROM session_message WHERE session_id IN (%s))"
-                % (",".join("?" * len(chunk)), ",".join("?" * len(chunk))),
-                chunk + chunk,
+                "SELECT m.session_id, m.type FROM session_message AS m "
+                "WHERE m.session_id IN (%s) AND m.seq = ("
+                "SELECT MAX(seq) FROM session_message WHERE session_id = m.session_id)"
+                % ",".join("?" * len(chunk)),
+                chunk,
             ).fetchall()
             for session_id, kind in rows:
                 if str(kind or "") in BUSY_MESSAGE_TYPES:
@@ -552,6 +556,19 @@ def wake_text(wake: WR.Wake) -> str:
     )
 
 
+def _timeout_seconds(config: Mapping[str, Any]) -> int:
+    """How long one turn may run, from the deployment's own setting.
+
+    A setting that is not a number is the deployment's mistake and not the chat's:  the turn
+    falls back to the default rather than raising out of the delivery, so a bad value is one
+    bounded failure and not a crashed pick."""
+    try:
+        value = int(config.get("resume_timeout_seconds") or 900)
+    except (TypeError, ValueError):
+        return 900
+    return value if value > 0 else 900
+
+
 def deliver_local(
     env: Mapping[str, str],
     config: Mapping[str, Any],
@@ -634,7 +651,7 @@ def deliver_local(
             # is on the child's stdin, so it never shows up in a process listing, and the session
             # id has its own shape, so it cannot be read as an option.
             argv = [binary, "run", "--session", session_id]
-            timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
+            timeout_seconds = _timeout_seconds(config)
             try:
                 # The one seam:  an injected runner replaces the whole run, and the default
                 # runner stops and reaps the child before it raises, so no wake keeps running

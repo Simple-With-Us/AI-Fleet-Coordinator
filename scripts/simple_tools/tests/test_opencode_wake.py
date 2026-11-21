@@ -156,11 +156,11 @@ class Base(unittest.TestCase):
         con.commit()
         con.close()
 
-    def _last_message(self, sid, kind: str) -> None:
+    def _last_message(self, sid, kind: str, seq: int = 9) -> None:
         con = sqlite3.connect(self.store)
         con.execute(
-            "INSERT INTO session_message VALUES (?, ?, ?, 9, 9, 9, '{}')",
-            ("msg-%s-%s" % (sid, kind), sid, kind),
+            "INSERT INTO session_message VALUES (?, ?, ?, ?, 9, 9, '{}')",
+            ("msg-%s-%s" % (sid, kind), sid, kind, seq),
         )
         con.commit()
         con.close()
@@ -261,8 +261,23 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "busy")
         self.assertEqual(delivery.code, "session-busy")
 
+    def test_a_running_chat_is_busy_when_another_chat_is_newer(self):
+        # Each chat is judged on its own newest row:  a chat whose own latest message is older
+        # than another chat's is still judged on its own turn, so a wake never lands in a
+        # running turn because some other chat has a newer message.
+        self._last_message(SID, "assistant", seq=9)
+        self._last_message(SID_OTHER, "idle", seq=10)
+        busy = opencode_wake._busy_ids(self.env, [SID, SID_OTHER])
+        self.assertEqual(busy, {SID})
+
     def test_a_settled_chat_is_not_busy(self):
         delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_a_timeout_setting_that_is_not_a_number_does_not_crash_the_delivery(self):
+        # A bad setting is the deployment's mistake, not the chat's:  the turn falls back to
+        # the default rather than raising out of the delivery.
+        delivery = self._deliver_local(config={"resume_timeout_seconds": "soon"})
         self.assertEqual(delivery.outcome, "sent")
 
     def test_directory_gone_refuses(self):
