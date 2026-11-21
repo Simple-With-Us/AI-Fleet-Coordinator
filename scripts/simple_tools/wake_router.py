@@ -104,7 +104,8 @@ It returns a `Delivery` whose `outcome` is one of:
     busy         the chat cannot take it yet;  the wake waits, and this uses up no attempt
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
     failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
-    refused      it can never work, or a retry could run the turn twice;  no retry
+    refused      it can never work, or a retry could run the turn twice;  no retry except for a
+                 classified target-ineligible never-run refusal on an unaddressed pick
     unknown      it may have run the wake and nobody can tell;  it is not retried (a retry could
                  run the turn twice) and not recorded as delivered;  the receipt keeps it visible
 
@@ -113,7 +114,10 @@ its own errors from that point on and return `refused`.  `route`, `code` and `no
 codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
 for a refusal only when its code is in `NEVER_RAN` or in the seat's own module's `NEVER_RAN` (the
 Router's `never_ran`):  any other refusal may follow a turn that started, so it says
-`delivered: null`, because nobody knows.
+`delivered: null`, because nobody knows.  One classified never-run refusal, `session-subagent`,
+means the selected binding cannot receive a chat wake.  An unaddressed pick may exclude that exact
+binding and pick again within the same attempt and age caps; an addressed pick and every other
+refusal stay final.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -281,6 +285,10 @@ FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
 FRAGMENT_MAX_PLAIN = 12
 MAX_FRAGMENTS = 8
+# Durable per-wake exclusions are bounded even if a pending file is malformed or edited.
+MAX_REJECTED_TARGETS = 64
+REJECTED_TARGET_CODES = frozenset({"session-subagent"})
+REJECTED_TARGET_PICK_KINDS = frozenset({"linear-issue", "topic-match", "consultant", "most-recent"})
 # The registry's times for a row, best first.  letter_history returns only `assigned_at` today.
 RECENCY_FIELDS = ("last_seen_at", "assigned_at")
 HISTORY_LIMIT = 200
@@ -477,6 +485,68 @@ class Wake:
     session_fragments: tuple[str, ...] = ()
     sender_fragment: str = ""
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
+
+
+def workspace_root(configured: object) -> str:
+    """The host's workspace root, as a normalized absolute path, or "" when there is none.
+
+    The deployment names the root where this seat's chats live.  It is a root and not one
+    directory, because a seat works in several projects at once:  a chat in another project
+    under the root is the seat's own work, and a chat outside the root is not.
+
+    The path is normalized, so a `..` cannot climb out of the root it was named under."""
+    if not isinstance(configured, str):
+        return ""
+    text = configured.strip()
+    if not text or text.startswith("-"):
+        return ""
+    if not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def _under(root: str, path: str) -> bool:
+    """Whether the path is the root itself or lies inside it.
+
+    The root's own separator is never doubled, so the filesystem root ("/") holds every
+    path under it instead of holding none of them."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def workspace_allowed(recorded: object, configured: object) -> bool:
+    """Whether the selected session's own workspace is inside the host's workspace root.
+
+    The delivery runs in the session's own directory, so the session's own row is the
+    binding and the configured root is the bound:  a chat under the root is the seat's own
+    work, and a chat outside it is a wrong-chat delivery, so it is refused before anything
+    runs.
+
+    The two are compared as they are named and as they resolve, because a deployment names
+    its root one way and a session records its directory another:  a root that is itself a
+    symlink and a session row that holds the resolved path name one tree two ways, and a
+    lane that is a symlink to another volume is inside the root it was named under.
+
+    A host that has named no root has no bound, so nothing is allowed:  a delivery into an
+    unknown directory is not one."""
+    root = workspace_root(configured)
+    if not root:
+        return False
+    if not isinstance(recorded, str):
+        return False
+    path = recorded.strip()
+    if not path or path.startswith("-"):
+        return False
+    if not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if _under(root, path):
+        return True
+    resolved_root = os.path.realpath(root)
+    resolved_path = os.path.realpath(path)
+    if resolved_root == resolved_path:
+        return True
+    return _under(resolved_root, resolved_path)
 
 
 @dataclass(frozen=True)
@@ -1358,7 +1428,14 @@ class Router:
         stop = STOP_WORDS | self.platform.stop_words | {self.platform.platform}
         return {w.lower() for w in WORD_RE.findall(text or "") if w.lower() not in stop}
 
-    def pick(self, wake: Wake, *, consult: bool = True, timeout: int = REGISTRY_TIMEOUT) -> Pick:
+    def pick(
+        self,
+        wake: Wake,
+        *,
+        consult: bool = True,
+        timeout: int = REGISTRY_TIMEOUT,
+        rejected_targets: Sequence[Mapping[str, Any]] = (),
+    ) -> Pick:
         """The rules, in order:  an addressed letter;  a session-id fragment;  a Linear issue;  the
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
@@ -1448,7 +1525,11 @@ class Router:
         self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
-            t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
+            t
+            for sid, t in live.items()
+            if sid not in excluded
+            and not _is_sender(t, wake)
+            and not any(_same_target_binding(t, rejected) for rejected in rejected_targets)
         ]
         if not candidates:
             return Pick(
@@ -1558,6 +1639,7 @@ class Router:
                 "attempts": 0,
                 "failures": 0,
                 "pick": None,
+                "rejected_targets": [],
             }
             try:
                 atomic_write(self._pending(wake.wake_id), entry)
@@ -1842,7 +1924,8 @@ class Router:
             return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
-            pick = self.pick(wake)
+            rejected = entry.get("rejected_targets", [])
+            pick = self.pick(wake, consult=not rejected, rejected_targets=rejected)
             if pick.retry:
                 if pick.reason == REGISTRY_UNAVAILABLE:
                     # A registry that cannot be read is an outage, not a failed delivery.
@@ -1968,6 +2051,7 @@ class Router:
             self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
+        wake = Wake(**entry["wake"])
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
         if result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused"):
             # A registry that cannot be read is an outage, not a failed delivery, whichever
@@ -1981,6 +2065,8 @@ class Router:
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
             delivered = False if result.code in self.never_ran else None
+            if delivered is False and self._repick_ineligible_target(entry, pick, wake, result):
+                return
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
@@ -1999,6 +2085,51 @@ class Router:
                 # later turn would run it again.
                 entry["busy_seen"] = True
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
+
+    def _repick_ineligible_target(
+        self, entry: dict[str, Any], pick: Pick, wake: Wake, result: Delivery
+    ) -> bool:
+        """Durably exclude one proven never-run, ineligible binding and repick an unaddressed wake.
+
+        The current and next deliveries both consume the existing attempt budget.  The rejection
+        is written before clearing the pick or in-flight mark, so replay cannot select the same
+        target after a crash.  A failed write settles this refusal instead of risking a repeat.
+        """
+        if (
+            result.outcome != "refused"
+            or result.code not in REJECTED_TARGET_CODES
+            or result.code not in self.never_ran
+            or pick.target is None
+            or wake.letter
+            or wake.linked_by == "reply"
+            or wake.session_fragments
+            or pick.picked not in REJECTED_TARGET_PICK_KINDS
+        ):
+            return False
+
+        rejected = entry.setdefault("rejected_targets", [])
+        if not isinstance(rejected, list) or len(rejected) >= MAX_REJECTED_TARGETS:
+            return False
+        binding = _target_binding(pick.target, result.code)
+        if any(_same_target_binding(pick.target, prior) for prior in rejected):
+            return False
+        if not _valid_rejected_binding(binding):
+            return False
+
+        repicks = int(entry.get("repicks", 0)) + 1
+        entry["rejected_targets"] = [*rejected, binding]
+        entry["repicks"] = repicks
+        entry["pick"] = None
+        entry.pop("in_flight", None)
+        self._retry(
+            entry,
+            counted=True,
+            code=result.code,
+            pick=pick,
+            result=result,
+            ineligible_target=True,
+        )
+        return True
 
     def _retry_outage(
         self,
@@ -2039,6 +2170,7 @@ class Router:
         pick: Pick | None = None,
         result: Delivery | None = None,
         wait: float | None = None,
+        ineligible_target: bool = False,
     ) -> None:
         """Requeue a wake.
 
@@ -2070,7 +2202,17 @@ class Router:
         entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
         # finish it, and a late save would bring its pending file back.
-        self._save(entry)
+        if not self._save(entry) and ineligible_target:
+            # The old pending file still has the in-flight mark.  Settle visibly rather than
+            # replaying with no durable rejection or failure charge.
+            self._finish(
+                entry,
+                pick or Pick(reason=code),
+                status="dead",
+                delivered=False,
+                result=result,
+            )
+            return
         with self._cond:
             entry["running"] = False
             self._cond.notify_all()
@@ -2406,6 +2548,8 @@ class Router:
         turn = _turn_record(entry)  # only a member of a turn has one (module docstring, Turns)
         if turn is not None:
             receipt["turn"] = turn
+        if entry.get("rejected_targets"):
+            receipt["rejected_targets"] = list(entry["rejected_targets"])
         return receipt
 
     def _finish(
@@ -2713,6 +2857,56 @@ def _session_of(entry: Mapping[str, Any]) -> str:
     return str(target.get("session_id") or "")
 
 
+def _target_binding(target: Target, code: str) -> dict[str, Any]:
+    """The exact registry binding a platform proved ineligible before starting a turn."""
+    return {
+        "host": target.host,
+        "session_id": target.session_id,
+        "letter": target.letter,
+        "generation": target.generation,
+        "code": code,
+    }
+
+
+def _valid_rejected_binding(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "host",
+        "session_id",
+        "letter",
+        "generation",
+        "code",
+    }:
+        return False
+    host, session_id, letter, generation, code = (
+        value["host"],
+        value["session_id"],
+        value["letter"],
+        value["generation"],
+        value["code"],
+    )
+    safe_host = isinstance(host, str) and (
+        host == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", host) is not None
+    )
+    return (
+        safe_host
+        and isinstance(session_id, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}", session_id) is not None
+        and isinstance(letter, str)
+        and re.fullmatch(r"[A-Z]{2}", letter) is not None
+        and type(generation) is int
+        and 1 <= generation <= 2**31 - 1
+        and isinstance(code, str)
+        and code in REJECTED_TARGET_CODES
+    )
+
+
+def _same_target_binding(target: Target, value: object) -> bool:
+    return _valid_rejected_binding(value) and all(
+        getattr(target, name) == value[name]
+        for name in ("host", "session_id", "letter", "generation")
+    )
+
+
 def _order(entry: Mapping[str, Any]) -> tuple[float, str]:
     """Arrival order, with the id breaking a tie so every check agrees on who is first."""
     return entry["accepted_at"], entry["wake"]["wake_id"]
@@ -2728,6 +2922,7 @@ def _loadable(entry: object, wake_id: str) -> bool:
         Wake(**entry["wake"])
         if entry["pick"] is not None:
             _pick_from(entry["pick"])
+        rejected = entry.get("rejected_targets", [])
         return (
             isinstance(entry["receipt_id"], str)
             and type(entry["accepted_at"]) in (int, float)
@@ -2735,6 +2930,9 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["attempts"]) is int
             and type(entry["failures"]) is int
             and type(entry.get("repicks", 0)) is int
+            and isinstance(rejected, list)
+            and len(rejected) <= MAX_REJECTED_TARGETS
+            and all(_valid_rejected_binding(binding) for binding in rejected)
             and isinstance(entry.get("receipt"), (dict, type(None)))
             and _turn_marks_ok(entry)
         )

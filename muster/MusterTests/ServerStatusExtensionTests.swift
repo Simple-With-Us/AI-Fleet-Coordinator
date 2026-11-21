@@ -563,7 +563,7 @@ final class ServerStatusExtensionTests: XCTestCase {
     func test_only_a_container_that_stopped_says_stopped() throws {
         // The collector writes the start time as `updatedAt` for every state but a stopped one,
         // so a crash loop's time is its last start.
-        let at = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-7200))
+        let at = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-9000))
         for (status, verb) in [
             ("running", "started"),
             ("unhealthy", "started"),

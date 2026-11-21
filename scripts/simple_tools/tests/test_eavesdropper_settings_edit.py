@@ -1211,6 +1211,18 @@ class RequestProtocolTests(Case):
         self.assertEqual(observed[0][0], envelope["request"]["expectBaseSHA256"])
         self.assertNotIn("bootstrap", observed[0][1])
 
+    def test_private_missing_bindings_name_only_the_required_source(self):
+        for name in (M.BOOTSTRAP_PROJECT, M.BOOTSTRAP_WRITER):
+            envelope = self.bootstrap()
+            envelope["bootstrap"].pop(name)
+            with mock.patch.object(M, "run_request") as run:
+                answer, code = M.bootstrap_request(json.dumps(envelope).encode())
+            self.assertEqual(code, 2)
+            self.assertEqual(answer["requiredBinding"], name)
+            self.assertEqual(answer["unavailableSource"], name)
+            self.assertNotIn(self.writer, json.dumps(answer))
+            run.assert_not_called()
+
     def test_private_failures_are_fixed_and_scrub_even_if_input_read_or_request_raises(self):
         envelope = self.bootstrap()
         deep_val: object = 1
@@ -1232,7 +1244,8 @@ class RequestProtocolTests(Case):
                 out = io.StringIO()
                 self.assertEqual(M.main(["--bootstrap-request-stdin"], io.BytesIO(raw), out), 2)
                 self.assertEqual(json.loads(out.getvalue()), {"tool": M.TOOL, "ok": False, "result": "refused",
-                                                             "errorCode": "bootstrap_unavailable"})
+                                                             "errorCode": "bootstrap_unavailable",
+                                                             "unavailableSource": "operator_settings_bootstrap"})
                 self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
                 self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
@@ -1241,7 +1254,8 @@ class RequestProtocolTests(Case):
             for limited in (deep_envelope, dense_envelope):
                 answer, code = M.bootstrap_request(json.dumps(limited).encode())
                 self.assertEqual((answer, code), (
-                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable",
+                     "unavailableSource": "operator_settings_bootstrap"}, 2
                 ))
             mocked_run.assert_not_called()
         with mock.patch.dict(os.environ, {}, clear=True):

@@ -13,9 +13,9 @@ Run it in your own terminal:
 Credentials (AFC-359:  the owner's key is not needed, nothing prompts, no credential folder is read):
 it signs in only as the realm-admin bot (role 200, administrator).  Each of
 ZULIP_OPERATOR_EMAIL and ZULIP_OPERATOR_API_KEY is read from the environment first, then
-from Infisical Fleet-OPS folder /zulip_operator through `fleet-secrets get NAME --path /zulip_operator`
-(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  ZULIP_OPERATOR_SITE is
-read the same way and defaults to the realm when absent.  A fleet-secrets failure stops the
+from Infisical Fleet-OPS folder /zulip_operator through the canonical bounded named reader
+with the caller's explicit INFISICAL_TOKEN and Fleet-OPS project declaration.  ZULIP_OPERATOR_SITE is
+read the same way and defaults to the realm when absent.  A scoped-reader failure stops the
 run with a message naming the folder and the key, never the value.
 
 The caller must be an administrator or the owner (role <= 200);  anyone else is refused.
@@ -50,13 +50,17 @@ never uses it.  Grok Bot (GB-*) bots are out of scope.
 
 import argparse
 import base64
+import hashlib
+import importlib.util
 import json
 import os
-import subprocess
+import stat
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 # The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
 # subscribed to the channel the seats actually use, and a name written here goes stale the day
@@ -69,45 +73,108 @@ DEFAULT_OUT_DIR = "~/.simple-tools/provisioned"
 ROLE_OWNER, ROLE_ADMIN = 100, 200
 
 
-def fleet_secrets_bin():
-    return os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_zulip_provision_bots_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
+
+
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parent / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
+    try:
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
+        )
+    except Exception:
+        return {}
 
 
 def admin_secret(name, required=True):
-    """A realm-admin value:  env var of that name first, then fleet-secrets /zulip_operator.
-
-    Never prints a value or the tool's stderr.  Returns "" for a missing optional value and
-    exits with a message naming the folder and key for a missing required one.
-    """
+    """Use the existing synced value or this caller's exact admin-folder read."""
     value = os.environ.get(name, "").strip()
-    if value:
+    if not value:
+        value = _read_infisical_names((name,), ADMIN_FOLDER).get(name, "").strip()
+    if value or not required:
         return value
-    problem = ""
-    try:
-        proc = subprocess.run(
-            [fleet_secrets_bin(), "get", name, "--path", ADMIN_FOLDER],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            stdin=subprocess.DEVNULL,
-        )
-        if proc.returncode != 0:
-            problem = f"fleet-secrets exited {proc.returncode}"
-        else:
-            value = proc.stdout.rstrip("\n").strip()
-            if not value:
-                problem = "fleet-secrets returned an empty value"
-    except (OSError, ValueError, subprocess.SubprocessError) as err:
-        problem = f"fleet-secrets could not run ({type(err).__name__})"
-    if value:
-        return value
-    if not required:
-        return ""
     raise SystemExit(
-        f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER} ({problem}).  Set env {name} or "
-        f"fix `fleet-secrets get {name} --path {ADMIN_FOLDER}`."
+        f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER}; "
+        "the caller needs its own explicit project and scoped read binding."
     )
 
 
