@@ -520,7 +520,7 @@ class UnitRunTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", self.cloud), \
                 mock.patch.object(CT._surfaces, "load_api_key", side_effect=refuse), \
-                mock.patch.object(CT._surfaces, "_fleet_secrets_key", side_effect=refuse), \
+                mock.patch.object(CT._surfaces, "_infisical_api_key", side_effect=refuse), \
                 mock.patch("subprocess.run", side_effect=refuse), \
                 mock.patch.object(CCL, "send_dm", side_effect=AssertionError("a DM was sent")), \
                 mock.patch("sys.stdout", out):
