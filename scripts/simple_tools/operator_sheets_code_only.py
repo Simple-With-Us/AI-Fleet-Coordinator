@@ -51,6 +51,17 @@ def _check_path(path: Path, *, uid: int, gid: int, mode: int, directory: bool) -
             raise InstallError(f"required existing path is unavailable: {ancestor}") from None
         if stat.S_ISLNK(ancestor_info.st_mode):
             raise InstallError(f"refusing symlink path component: {ancestor}")
+        if ancestor != path:
+            if not stat.S_ISDIR(ancestor_info.st_mode):
+                raise InstallError(f"refusing non-plain path: {ancestor}")
+            root_owned = (ancestor_info.st_uid, ancestor_info.st_gid) == (0, 0)
+            expected_owned = (ancestor_info.st_uid, ancestor_info.st_gid) == (uid, gid)
+            if not (root_owned or expected_owned):
+                raise InstallError(f"refusing unexpected owner or mode: {ancestor}")
+            writable = stat.S_IMODE(ancestor_info.st_mode) & 0o022
+            trusted_sticky_root = root_owned and bool(ancestor_info.st_mode & stat.S_ISVTX)
+            if writable and not trusted_sticky_root:
+                raise InstallError(f"refusing unexpected owner or mode: {ancestor}")
     try:
         info = path.lstat()
     except OSError:
@@ -429,10 +440,11 @@ def verify_installed_state(
     *, source_dir: Path, lib_dir: Path, uid: int, gid: int, node: str
 ) -> str:
     """Return prior/new only when the complete module set matches a saved state."""
-    new_bytes = _validated_new_snapshot(source_dir, node=node, uid=uid, gid=gid)
+    _check_path(lib_dir, uid=uid, gid=gid, mode=0o755, directory=True)
     unexpected = sorted(entry.name for entry in lib_dir.iterdir() if entry.name not in MODULES)
     if unexpected:
         raise InstallError("the installed module directory contains a partial-install entry")
+    new_bytes = _validated_new_snapshot(source_dir, node=node, uid=uid, gid=gid)
     new_ok = True
     for name, expected in new_bytes.items():
         path = lib_dir / name
