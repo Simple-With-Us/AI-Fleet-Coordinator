@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -352,6 +353,88 @@ class StubbedInstallTests(unittest.TestCase):
         self.assertTrue(lock.is_symlink())
         self.assertEqual(victim.read_text(), "preserve this file\n")
         self.assertEqual(self.calls(), [])
+
+    def test_installer_lock_marker_without_inherited_descriptor_fails_closed(self):
+        result = self.run_install("--code-only", OPERATOR_SHEETS_INSTALL_LOCK_HELD="1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not securely open the installer lock", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_installer_lock_marker_rejects_a_different_inherited_file(self):
+        victim = self.tmp / "unrelated-lock"
+        victim.write_text("not the installer lock\n")
+        victim.chmod(0o600)
+        script = self.repo / "scripts" / "simple_tools" / "server" / SCRIPT.name
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(self.tmp),
+            "OPERATOR_SHEETS_WORKBOOK_ID": "workbook_FIXTURE-1",
+            "OPERATOR_SHEETS_TOKEN_FILE": str(self.token),
+            "OPERATOR_SHEETS_INSTALL_TEST_ROOT": str(self.root),
+            "OPERATOR_SHEETS_INSTALL_LOCK_HELD": "1",
+            "STUB_LOG": str(self.log),
+        }
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'exec 9<"$1"; exec bash "$2" --code-only',
+                "installer-lock-test",
+                str(victim),
+                str(script),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not securely open the installer lock", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_two_installers_cannot_hold_the_same_installer_lock(self):
+        self.seed_existing_install()
+        first_env = {
+            "PATH": f"{self.root / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+            "HOME": str(self.tmp),
+            "OPERATOR_SHEETS_WORKBOOK_ID": "workbook_FIXTURE-1",
+            "OPERATOR_SHEETS_TOKEN_FILE": str(self.token),
+            "OPERATOR_SHEETS_INSTALL_TEST_ROOT": str(self.root),
+            "STUB_LOG": str(self.log),
+            "STUB_TIMER_ACTIVE": "1",
+            "STUB_SERVICE_ACTIVE_POLLS": "1",
+        }
+        script = self.repo / "scripts" / "simple_tools" / "server" / SCRIPT.name
+        first = subprocess.Popen(
+            ["bash", str(script), "--code-only"],
+            env=first_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if self.log.exists() and any(
+                    "systemctl show --property=ActiveState" in call
+                    for call in self.calls()
+                ):
+                    break
+                if first.poll() is not None:
+                    self.fail("first installer exited before reaching the service wait")
+                time.sleep(0.02)
+            else:
+                self.fail("first installer did not reach the service wait in time")
+
+            second = self.run_install("--code-only", STUB_TIMER_ACTIVE="1")
+            self.assertEqual(second.returncode, 75, second.stderr)
+            self.assertIn("installer lock is already held", second.stderr)
+        finally:
+            stdout, stderr = first.communicate(timeout=30)
+
+        self.assertEqual(first.returncode, 0, stderr + stdout)
 
     def seed_existing_install(self, *, include_thread=False):
         self.lib.mkdir(parents=True, mode=0o755)

@@ -71,7 +71,7 @@ say() { printf 'install-operator-sheets-drain: %s\n' "$*"; }
 die() { say "$1" >&2; exit "${2:-1}"; }
 
 TEST_ROOT="${OPERATOR_SHEETS_INSTALL_TEST_ROOT:-}"
-HOST_PYTHON="$(command -v python3 || true)"
+HOST_PYTHON=/usr/bin/python3
 
 # --- where things go: the real host, or a stubbed test root ---------------------------------
 
@@ -113,34 +113,58 @@ if [[ "$DRY" -eq 0 ]]; then
   fi
   LOCK_FILE="$PREFIX/run/lock/operator-sheets-drain-installer.lock"
   [[ -n "$HOST_PYTHON" && -x "$HOST_PYTHON" ]] || die "python3 is missing for the installer lock"
-  if [[ "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" != 1 ]]; then
-    "$HOST_PYTHON" -I - "$LOCK_FILE" "$OWNER_UID" "$OWNER_GID" "$0" "$@" <<'PYLOCK'
+  "$HOST_PYTHON" -I - "$LOCK_FILE" "$OWNER_UID" "$OWNER_GID" \
+    "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" "$0" "$@" <<'PYLOCK'
 import fcntl
 import os
 import stat
 import sys
 
-lock_path, expected_uid, expected_gid, script, *script_args = sys.argv[1:]
-try:
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+lock_path, expected_uid, expected_gid, lock_held, script, *script_args = sys.argv[1:]
+expected_uid, expected_gid = int(expected_uid), int(expected_gid)
+
+def verify_fd(fd):
     info = os.fstat(fd)
+    path_info = os.lstat(lock_path)
     if (
         not stat.S_ISREG(info.st_mode)
-        or info.st_uid != int(expected_uid)
-        or info.st_gid != int(expected_gid)
+        or stat.S_ISLNK(path_info.st_mode)
+        or not stat.S_ISREG(path_info.st_mode)
+        or (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)
+        or info.st_uid != expected_uid
+        or info.st_gid != expected_gid
+        or stat.S_IMODE(info.st_mode) != 0o600
         or info.st_nlink != 1
     ):
-        raise OSError("installer lock is not an owned plain file")
+        raise OSError("installer lock descriptor does not match the private lock file")
+
+try:
+    if lock_held == "1":
+        fd = 9
+        verify_fd(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        verify_fd(fd)
+        raise SystemExit(0)
+
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    verify_fd(fd)
     os.fchmod(fd, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    verify_fd(fd)
     os.dup2(fd, 9, inheritable=True)
     env = os.environ.copy()
     env["OPERATOR_SHEETS_INSTALL_LOCK_HELD"] = "1"
-    os.execvpe("bash", ["bash", script, *script_args], env)
+    os.execvpe("bash", ["bash", "--", script, *script_args], env)
+except BlockingIOError:
+    print("install-operator-sheets-drain: installer lock is already held", file=sys.stderr)
+    raise SystemExit(75)
 except OSError:
     print("install-operator-sheets-drain: could not securely open the installer lock", file=sys.stderr)
     raise SystemExit(1)
 PYLOCK
+  # The first invocation delegates the complete install to a Bash process that inherits fd 9;
+  # once it returns, propagate its status instead of running the install a second time unlocked.
+  if [[ "${OPERATOR_SHEETS_INSTALL_LOCK_HELD:-0}" != "1" ]]; then
     exit "$?"
   fi
 fi
