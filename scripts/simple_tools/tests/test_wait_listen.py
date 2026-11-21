@@ -335,6 +335,22 @@ class ListenTests(Harness):
         self.assertIn("other session here", result.out)
         self.assertIn("(sibling)", result.out)
 
+    def test_delayed_untagged_post_receipt_is_not_mistaken_for_a_sibling(self) -> None:
+        from unittest import mock
+        from simple_tools.state import State
+
+        original = State.record_posted
+
+        def delayed_receipt(state, message_id):
+            time.sleep(
+                0.8
+            )  # longer than SELF_GRACE, without changing the listener's bound
+            original(state, message_id)
+
+        with mock.patch.object(State, "record_posted", delayed_receipt):
+            self.test_own_posts_are_not_echoed_but_siblings_are()
+
+
     def test_mentions_anywhere_are_printed_once_and_marked(self) -> None:
         run = self.start_listen("--topic", "a", "--mentions", "--max-messages", "2")
         self.wait_for_queues(2, scopes=2)

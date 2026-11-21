@@ -14,7 +14,13 @@ spec.loader.exec_module(export)
 
 class ExportCatalogTests(unittest.TestCase):
     def test_installation_metadata_and_binary_are_reviewed_reads(self):
-        for name in ["gr_wf_installation_metadata", "gr_wf_git_blob_binary_get"]:
+        for name in [
+            "gr_wf_installation_metadata",
+            "gr_wf_git_blob_binary_get",
+            "gr_wf_collaborator_permission",
+            "gr_wf_repo_collaborators",
+            "gr_wf_repo_teams",
+        ]:
             self.assertIn(name, export.READ_TOOLS)
         self.assertNotIn("gr_wf_repo_variable_create", export.READ_TOOLS)
         self.assertNotIn("gr_wf_unknown_future", export.READ_TOOLS)
@@ -34,6 +40,9 @@ class ExportCatalogTests(unittest.TestCase):
             for n in [
                 "gr_wf_installation_metadata",
                 "gr_wf_git_blob_binary_get",
+                "gr_wf_collaborator_permission",
+                "gr_wf_repo_collaborators",
+                "gr_wf_repo_teams",
                 "gr_workflow_dispatch",
                 "gr_wf_unknown_future",
             ]
@@ -45,7 +54,13 @@ class ExportCatalogTests(unittest.TestCase):
                 [sys.executable, str(HERE / "export_catalog.py"), str(capture)]
             )
         rows = {x["name"]: x for x in json.loads(out)["tools"]}
-        for name in ["gr_wf_installation_metadata", "gr_wf_git_blob_binary_get"]:
+        for name in [
+            "gr_wf_installation_metadata",
+            "gr_wf_git_blob_binary_get",
+            "gr_wf_collaborator_permission",
+            "gr_wf_repo_collaborators",
+            "gr_wf_repo_teams",
+        ]:
             self.assertTrue(rows[name]["read"])
         for name in ["gr_workflow_dispatch", "gr_wf_unknown_future"]:
             self.assertFalse(rows[name]["read"])

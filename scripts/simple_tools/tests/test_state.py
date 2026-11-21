@@ -22,6 +22,106 @@ class StateTests(unittest.TestCase):
     def mode(self, path: Path) -> int:
         return stat.S_IMODE(os.stat(path).st_mode)
 
+    @unittest.skipIf(S.fcntl is None, "POSIX advisory locks required")
+    def test_stream_publication_lock_is_session_scoped_and_released(self) -> None:
+        import subprocess
+        import sys
+
+        state = S.State(self.root, "CLAUDE", "abcd1234")
+        sibling = S.State(self.root, "CLAUDE", "different")
+        probe = (
+            "import fcntl,os,sys; f=os.open(sys.argv[1],os.O_RDWR); "
+            "fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+        )
+        path = state.session_dir / "stream-post.lock"
+        with self.assertRaisesRegex(RuntimeError, "fixture stop"):
+            with state.stream_post_guard():
+                with sibling.stream_post_guard():
+                    state.record_posted(42)
+                blocked = subprocess.run(
+                    [sys.executable, "-c", probe, str(path)], capture_output=True
+                )
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn(b"BlockingIOError", blocked.stderr)
+                raise RuntimeError("fixture stop")
+        released = subprocess.run(
+            [sys.executable, "-c", probe, str(path)], capture_output=True
+        )
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertEqual(state.posted(), {42})
+        self.assertEqual(self.mode(path), 0o600)
+
+
+    def test_stream_guard_reentry_uses_one_advisory_lock(self) -> None:
+        state = S.State(self.root, "CLAUDE", "abcd1234")
+        other_handle = S.State(self.root, "CLAUDE", "abcd1234")
+        with state.stream_post_guard(timeout=0.1):
+            with other_handle.stream_post_guard(timeout=0.1):
+                state.record_posted(43)
+        self.assertEqual(state.posted(), {43})
+
+    def test_stream_guard_thread_wait_is_bounded_and_releases(self) -> None:
+        state = S.State(self.root, "CLAUDE", "abcd1234")
+        entered = threading.Event()
+        release = threading.Event()
+        def hold():
+            with state.stream_post_guard():
+                entered.set()
+                release.wait(2)
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        try:
+            with self.assertRaises(TimeoutError):
+                with state.stream_post_guard(timeout=0.03):
+                    self.fail("entered stalled guard")
+        finally:
+            release.set()
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        with state.stream_post_guard(timeout=0.1):
+            pass
+
+    @unittest.skipIf(S.fcntl is None, "POSIX advisory locks required")
+    def test_stream_guard_process_wait_is_bounded(self) -> None:
+        import subprocess
+        import sys
+        state = S.State(self.root, "CLAUDE", "abcd1234")
+        with state.stream_post_guard():
+            pass
+        path = state.session_dir / "stream-post.lock"
+        code = (
+            "import fcntl,os,sys; f=os.open(sys.argv[1],os.O_RDWR); "
+            "fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code, str(path)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            self.assertEqual(proc.stdout.readline().strip(), b"ready")
+            with self.assertRaises(TimeoutError):
+                with state.stream_post_guard(timeout=0.03):
+                    self.fail("entered other process guard")
+        finally:
+            proc.communicate(timeout=2)
+        with state.stream_post_guard(timeout=0.1):
+            pass
+
+    def test_stream_guard_rejects_session_and_ancestor_symlinks_before_creation(self) -> None:
+        target = self.tmp / "outside"
+        target.mkdir()
+        for part in ("session", "seat", "root"):
+            with self.subTest(part=part):
+                root = self.tmp / part
+                state = S.State(root, "CLAUDE", "abcd1234")
+                link = {"session": state.session_dir, "seat": state.seat_dir,
+                        "root": root}[part]
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(target, target_is_directory=True)
+                with self.assertRaises(PermissionError):
+                    with state.stream_post_guard():
+                        self.fail("entered redirected guard")
+                self.assertEqual(list(target.iterdir()), [])
+
     def test_layout_and_modes_even_with_a_permissive_umask(self) -> None:
         old = os.umask(0)
         try:
