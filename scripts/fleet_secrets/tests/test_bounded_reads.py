@@ -1,10 +1,10 @@
 """Actual isolated reader, provider trickle and bounded private IPC regressions."""
 
+import contextlib
 import datetime
 import errno
-import io
-import contextlib
 import importlib.util
+import io
 import json
 import os
 import secrets
@@ -62,10 +62,17 @@ class BoundedReadTests(unittest.TestCase):
                         payload["scopes"] = [{"environment": "prod", "secretPath": "/"}]
                     payload.update(case.metadata_changes)
                 elif "/raw?" in self.path:
-                    payload = {"secrets": [{
-                        "secretKey": "A_KEY", "type": "shared", "workspace": case.project,
-                        "environment": "prod", "secretPath": "/operator-registry",
-                    }]}
+                    payload = {
+                        "secrets": [
+                            {
+                                "secretKey": "A_KEY",
+                                "type": "shared",
+                                "workspace": case.project,
+                                "environment": "prod",
+                                "secretPath": "/operator-registry",
+                            }
+                        ]
+                    }
                     for field in case.omitted_fields:
                         payload["secrets"][0].pop(field, None)
                     payload["secrets"][0].update(case.record_changes)
@@ -165,15 +172,23 @@ class BoundedReadTests(unittest.TestCase):
     def test_expected_identity_is_checked_inside_the_real_worker_metadata_request(self):
         expected = {"id": "fixture-record", "name": "consumer-ro", "expiresAt": self.expiry}
         self.metadata_changes = dict(expected)
-        self.assertEqual(self.fetch(expected_identity=expected, require_finite_expiry=True),
-                         {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
+        self.assertEqual(
+            self.fetch(expected_identity=expected, require_finite_expiry=True),
+            {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"},
+        )
         self.assertEqual(sum(path.endswith("/service-token") for path in self.calls), 1)
         for changes in (
-            {"id": "other"}, {"name": "other"}, {"_id": "other"}, {"id": None},
-            {"name": None}, {"expiresAt": None}, {"expiresAt": "2098-01-01T00:00:00Z"},
+            {"id": "other"},
+            {"name": "other"},
+            {"_id": "other"},
+            {"id": None},
+            {"name": None},
+            {"expiresAt": None},
+            {"expiresAt": "2098-01-01T00:00:00Z"},
             {"expiresAt": "2000-01-01T00:00:00Z"},
             {"scopes": [{"environment": "prod", "secretPath": "/"}]},
-            {"permissions": ["read", "write"]}, {"workspace": str(uuid.uuid4())},
+            {"permissions": ["read", "write"]},
+            {"workspace": str(uuid.uuid4())},
         ):
             with self.subTest(changes=changes):
                 self.calls.clear()
@@ -899,12 +914,21 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         self.alternate_keychain.write_text(self.sample)
         self.alternate_keychain.chmod(0o600)
         self.selection = {
-            "schemaVersion": 1, "consumer": "fixture-reader", "project": "fleet-ops",
-            "projectId": self.project, "environment": "prod", "secretPath": "/operator-registry",
-            "permissions": ["read"], "expiresAt": self.expiry,
-            "tokenName": "consumer-ro", "tokenId": "fixture-record",
-            "storage": {"kind": "mac-login-keychain", "service": "infisical-service-token",
-                        "account": "consumer-ro"},
+            "schemaVersion": 1,
+            "consumer": "fixture-reader",
+            "project": "fleet-ops",
+            "projectId": self.project,
+            "environment": "prod",
+            "secretPath": "/operator-registry",
+            "permissions": ["read"],
+            "expiresAt": self.expiry,
+            "tokenName": "consumer-ro",
+            "tokenId": "fixture-record",
+            "storage": {
+                "kind": "mac-login-keychain",
+                "service": "infisical-service-token",
+                "account": "consumer-ro",
+            },
         }
         self.write_declaration()
         metadata_dir = self.home / ".simple-tools"
@@ -913,7 +937,9 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         self.project_file.write_text(self.project)
         self.metadata_changes = {"id": "fixture-record", "name": "consumer-ro"}
         scripts = Path(core.__file__).parent
-        spec = importlib.util.spec_from_file_location("declared_scoped_reader", scripts / "infisical-scoped.py")
+        spec = importlib.util.spec_from_file_location(
+            "declared_scoped_reader", scripts / "infisical-scoped.py"
+        )
         self.reader = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.reader)
         # Change only the provider origin in a private source fixture so the isolated
@@ -921,8 +947,12 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         worker = self.home / "fleet_infisical.py"
         source = Path(core.__file__).read_text()
         origin_needle = 'API_BASE = "https://app.infisical.com/api"'
-        self.assertEqual(source.count(origin_needle), 1, "loopback fixture must replace exactly one origin")
-        worker.write_text(source.replace(origin_needle, 'API_BASE = ' + repr(self.env[core.ENV_API])))
+        self.assertEqual(
+            source.count(origin_needle), 1, "loopback fixture must replace exactly one origin"
+        )
+        worker.write_text(
+            source.replace(origin_needle, "API_BASE = " + repr(self.env[core.ENV_API]))
+        )
         security = self.home / "security"
         security.write_text(
             "#!" + sys.executable + "\nimport sys\nfrom pathlib import Path\n"
@@ -939,8 +969,11 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
             mock.patch.object(core, "_is_macos", return_value=True),
             mock.patch.object(core, "SECURITY_BIN", str(security)),
             mock.patch.object(core, "API_BASE", self.env[core.ENV_API]),
-            mock.patch.object(core, "_bounded_read_command", return_value=[
-                sys.executable, "-I", "-B", str(worker), "--bounded-read-worker"]),
+            mock.patch.object(
+                core,
+                "_bounded_read_command",
+                return_value=[sys.executable, "-I", "-B", str(worker), "--bounded-read-worker"],
+            ),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -953,8 +986,15 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         argv = ["infisical-scoped.py", verb]
         if verb == "get":
             argv.append("A_KEY")
-        argv += ["--folder", "/operator-registry", "--consumer-binding", str(self.declaration),
-                 "--consumer", "fixture-reader", *extra]
+        argv += [
+            "--folder",
+            "/operator-registry",
+            "--consumer-binding",
+            str(self.declaration),
+            "--consumer",
+            "fixture-reader",
+            *extra,
+        ]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = self.reader.main(argv)
@@ -972,12 +1012,23 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_login_keychain_is_pinned_and_alternate_search_item_cannot_satisfy_it(self):
-        prefix = [str(self.home / "security"), "find-generic-password", "-s",
-                  "infisical-service-token", "-a", "consumer-ro", "-w"]
+        prefix = [
+            str(self.home / "security"),
+            "find-generic-password",
+            "-s",
+            "infisical-service-token",
+            "-a",
+            "consumer-ro",
+            "-w",
+        ]
         # The synthetic search list really has a usable alternate item.  An
         # unpinned call would succeed, which makes the refusal below meaningful.
         unpinned = subprocess.run(
-            prefix, capture_output=True, text=True, check=True, env={"PATH": os.defpath},
+            prefix,
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PATH": os.defpath},
         )
         self.assertEqual(unpinned.stdout, self.sample)
         with mock.patch.object(core.subprocess, "Popen", wraps=core.subprocess.Popen) as calls:
@@ -1021,9 +1072,15 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
 
     def test_live_metadata_identity_scope_expiry_refuse_before_values(self):
         for verb in ("get", "names", "doctor"):
-            for changes in ({"id": "different"}, {"name": "different"}, {"_id": "different"},
-                            {"expiresAt": None}, {"expiresAt": "2098-01-01T00:00:00Z"},
-                            {"workspace": str(uuid.uuid4())}, {"permissions": ["read", "write"]}):
+            for changes in (
+                {"id": "different"},
+                {"name": "different"},
+                {"_id": "different"},
+                {"expiresAt": None},
+                {"expiresAt": "2098-01-01T00:00:00Z"},
+                {"workspace": str(uuid.uuid4())},
+                {"permissions": ["read", "write"]},
+            ):
                 with self.subTest(verb=verb, changes=changes):
                     self.calls.clear()
                     self.metadata_changes = dict(id="fixture-record", name="consumer-ro")
@@ -1037,21 +1094,36 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
 
     def test_declaration_and_resolver_mismatches_precede_store_and_provider(self):
         for field, value in (
-            ("consumer", "another-reader"), ("project", "ai-fleet-coordinator"),
-            ("projectId", str(uuid.uuid4())), ("environment", "staging"),
-            ("secretPath", "/"), ("permissions", ["read", "write"]),
-            ("expiresAt", None), ("expiresAt", "2000-01-01T00:00:00Z"),
-            ("tokenName", "../consumer-ro"), ("tokenId", "bad\nidentifier"),
-            ("tokenName", self.sample), ("expiresAt", "2099-01-01\n00:00:00Z"),
-            ("schemaVersion", True), ("secretValue", "synthetic-value"),
-            ("storage", {"kind": "mac-login-keychain", "service": "infisical-service-token",
-                         "account": "other"}),
+            ("consumer", "another-reader"),
+            ("project", "ai-fleet-coordinator"),
+            ("projectId", str(uuid.uuid4())),
+            ("environment", "staging"),
+            ("secretPath", "/"),
+            ("permissions", ["read", "write"]),
+            ("expiresAt", None),
+            ("expiresAt", "2000-01-01T00:00:00Z"),
+            ("tokenName", "../consumer-ro"),
+            ("tokenId", "bad\nidentifier"),
+            ("tokenName", self.sample),
+            ("expiresAt", "2099-01-01\n00:00:00Z"),
+            ("schemaVersion", True),
+            ("secretValue", "synthetic-value"),
+            (
+                "storage",
+                {
+                    "kind": "mac-login-keychain",
+                    "service": "infisical-service-token",
+                    "account": "other",
+                },
+            ),
         ):
             with self.subTest(field=field):
                 original = dict(self.selection)
                 self.selection[field] = value
                 self.write_declaration()
-                with mock.patch.object(core, "token_from_store", side_effect=AssertionError("no store")):
+                with mock.patch.object(
+                    core, "token_from_store", side_effect=AssertionError("no store")
+                ):
                     self.assertEqual(self.run_reader()[0], 4)
                 self.selection = original
         self.write_declaration()
@@ -1063,15 +1135,26 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
     def test_conflicts_including_empty_markers_precede_custody(self):
         for key in (*core.AUTH_ENV_VARS, core.ENV_API, "INFISICAL_API_URL", core.ENV_READ_PATHS):
             with self.subTest(key=key), mock.patch.dict(os.environ, {key: ""}):
-                with mock.patch.object(core, "_protected_read", side_effect=AssertionError("no file")):
+                with mock.patch.object(
+                    core, "_protected_read", side_effect=AssertionError("no file")
+                ):
                     self.assertEqual(self.run_reader()[0], 4)
         self.assertEqual(self.run_reader(extra=("--account", ""))[0], 4)
         self.assertEqual(self.calls, [])
 
     def test_unsafe_custody_duplicate_keys_and_unknown_storage_refuse_without_store(self):
         original = self.declaration.read_text()
-        for kind in ("mode", "parent-mode", "hardlink", "oversize", "duplicate", "unknown-storage",
-                     "symlink", "symlink-parent", "fifo"):
+        for kind in (
+            "mode",
+            "parent-mode",
+            "hardlink",
+            "oversize",
+            "duplicate",
+            "unknown-storage",
+            "symlink",
+            "symlink-parent",
+            "fifo",
+        ):
             with self.subTest(kind=kind):
                 self.declaration.unlink()
                 self.declaration.write_text(original)
@@ -1101,7 +1184,9 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
                 elif kind == "fifo":
                     self.declaration.unlink()
                     os.mkfifo(self.declaration, 0o600)
-                with mock.patch.object(core, "token_from_store", side_effect=AssertionError("no store")):
+                with mock.patch.object(
+                    core, "token_from_store", side_effect=AssertionError("no store")
+                ):
                     saved = self.declaration
                     self.declaration = selected
                     self.assertEqual(self.run_reader()[0], 4)
@@ -1118,9 +1203,14 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_declared_named_read_refuses_wrong_row_before_output(self):
-        for changes in ({"workspace": str(uuid.uuid4())}, {"environment": "staging"},
-                        {"secretPath": "/"}, {"type": "personal"},
-                        {"secretValueHidden": True}, {"secretValue": ""}):
+        for changes in (
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "staging"},
+            {"secretPath": "/"},
+            {"type": "personal"},
+            {"secretValueHidden": True},
+            {"secretValue": ""},
+        ):
             with self.subTest(changes=changes):
                 self.record_changes = changes
                 self.assertEqual(self.run_reader()[:2], (4, ""))

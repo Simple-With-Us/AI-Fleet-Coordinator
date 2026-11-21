@@ -170,18 +170,32 @@ def _declared_context(args, folder: str):
     """Select one protected declaration and its exact existing Keychain account."""
     env, home = _environment()
     conflicts = FI.AUTH_ENV_VARS | {
-        FI.ENV_API, "INFISICAL_API_URL", FI.ENV_READ_PATHS, FI.ENV_WRITE_PATHS,
+        FI.ENV_API,
+        "INFISICAL_API_URL",
+        FI.ENV_READ_PATHS,
+        FI.ENV_WRITE_PATHS,
     }
     if getattr(args, "account", None) is not None or any(key in env for key in conflicts):
         raise ReaderError("consumer-binding-conflict")
     if FI.environment_refusal(env):
         raise ReaderError("consumer-binding-environment-refused")
     try:
-        declaration = FI._decode_json(FI._protected_read(
-            args.consumer_binding, 16 * 1024, private=True, strict_custody=True
-        ))
-        keys = {"schemaVersion", "consumer", "project", "projectId", "environment",
-                "secretPath", "permissions", "expiresAt", "tokenName", "tokenId", "storage"}
+        declaration = FI._decode_json(
+            FI._protected_read(args.consumer_binding, 16 * 1024, private=True, strict_custody=True)
+        )
+        keys = {
+            "schemaVersion",
+            "consumer",
+            "project",
+            "projectId",
+            "environment",
+            "secretPath",
+            "permissions",
+            "expiresAt",
+            "tokenName",
+            "tokenId",
+            "storage",
+        }
         if not isinstance(declaration, dict) or set(declaration) != keys:
             raise ValueError
         if (
@@ -198,12 +212,16 @@ def _declared_context(args, folder: str):
             or declaration["permissions"] != ["read"]
         ):
             raise ValueError
-        expected = FI._expected_token_identity({
-            "id": declaration["tokenId"], "name": declaration["tokenName"],
-            "expiresAt": declaration["expiresAt"],
-        })
+        expected = FI._expected_token_identity(
+            {
+                "id": declaration["tokenId"],
+                "name": declaration["tokenName"],
+                "expiresAt": declaration["expiresAt"],
+            }
+        )
         if declaration["storage"] != {
-            "kind": "mac-login-keychain", "service": FI.SCOPED_KEYCHAIN_SERVICE,
+            "kind": "mac-login-keychain",
+            "service": FI.SCOPED_KEYCHAIN_SERVICE,
             "account": declaration["tokenName"],
         }:
             raise ValueError
@@ -211,8 +229,15 @@ def _declared_context(args, folder: str):
         project_id = FI.infisical_project_id(env, home, args.project)
         if project_id != declaration["projectId"]:
             raise ValueError
-    except (ValueError, TypeError, KeyError, RecursionError, UnicodeError,
-            FI.SecretsError, FI.UsageError):
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        RecursionError,
+        UnicodeError,
+        FI.SecretsError,
+        FI.UsageError,
+    ):
         raise ReaderError("consumer-binding-refused") from None
     try:
         token, _status = FI.token_from_store(
@@ -232,23 +257,38 @@ def _declared_read(args, folder: str) -> int:
     try:
         if args.verb == "get":
             values = FI.bounded_fetch_project(
-                project_id, folder, env, token=token, names=(args.name,), timeout=30.0,
-                max_output_bytes=8192, strict_records=True,
-                require_finite_expiry=True, expected_identity=expected,
+                project_id,
+                folder,
+                env,
+                token=token,
+                names=(args.name,),
+                timeout=30.0,
+                max_output_bytes=8192,
+                strict_records=True,
+                require_finite_expiry=True,
+                expected_identity=expected,
             )
             if args.name not in values:
                 raise ReaderError("that name is absent", EXIT_ABSENT)
             sys.stdout.write(values[args.name] + "\n")
         else:
             found = FI.list_project_names(
-                project_id, folder, env, token=token, timeout=30.0,
-                require_finite_expiry=True, expected_identity=expected, strict_records=True,
+                project_id,
+                folder,
+                env,
+                token=token,
+                timeout=30.0,
+                require_finite_expiry=True,
+                expected_identity=expected,
+                strict_records=True,
             )
             if not found:
                 raise ReaderError("that folder holds no name", EXIT_ABSENT)
             sys.stdout.write("".join(name + "\n" for name in found))
     except FI.SecretsError as exc:
-        raise ReaderError("consumer-binding-read-refused", EXIT_ABSENT if exc.code == 3 else 4) from None
+        raise ReaderError(
+            "consumer-binding-read-refused", EXIT_ABSENT if exc.code == 3 else 4
+        ) from None
     except FI.UsageError:
         raise ReaderError("consumer-binding-read-refused") from None
     return EXIT_OK
@@ -257,8 +297,12 @@ def _declared_read(args, folder: str) -> int:
 def _declared_doctor(args) -> int:
     """Mask diagnostics while applying the same identity and metadata-only policy."""
     report = {
-        "ok": False, "environment_ok": False, "project_id_resolvable": False,
-        "reader_configured": False, "fetch_names_ok": False, "names_count": 0,
+        "ok": False,
+        "environment_ok": False,
+        "project_id_resolvable": False,
+        "reader_configured": False,
+        "fetch_names_ok": False,
+        "names_count": 0,
         "failure_reason": "",
     }
     try:
@@ -266,8 +310,14 @@ def _declared_doctor(args) -> int:
         project_id, token, env, expected = _declared_context(args, args.folder)
         report.update(environment_ok=True, project_id_resolvable=True, reader_configured=True)
         found = FI.list_project_names(
-            project_id, args.folder, env, token=token, timeout=30.0,
-            require_finite_expiry=True, expected_identity=expected, strict_records=True,
+            project_id,
+            args.folder,
+            env,
+            token=token,
+            timeout=30.0,
+            require_finite_expiry=True,
+            expected_identity=expected,
+            strict_records=True,
         )
         report.update(ok=True, fetch_names_ok=True, names_count=len(found))
     except (ReaderError, FI.SecretsError, FI.UsageError):

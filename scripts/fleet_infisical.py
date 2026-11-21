@@ -404,7 +404,8 @@ def _expected_token_identity(expected: object) -> dict | None:
             or not isinstance(expected["expiresAt"], str)
             or not re.fullmatch(
                 r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-                r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})", expected["expiresAt"]
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})",
+                expected["expiresAt"],
             )
         ):
             raise ValueError
@@ -538,8 +539,12 @@ def verify_service_token(
         permissions = ("read", "write") if writer else ("read",)
         if expected_identity is not None:
             validate_service_metadata(
-                metadata, project, paths, permissions,
-                require_finite_expiry=True, expected_identity=expected_identity,
+                metadata,
+                project,
+                paths,
+                permissions,
+                require_finite_expiry=True,
+                expected_identity=expected_identity,
             )
         elif require_finite_expiry:
             validate_service_metadata(
@@ -626,8 +631,14 @@ def fetch_project(
         raise UsageError("finite-expiry-option-invalid")
     if expected_identity is not None:
         paths = verify_service_token(
-            token, project, path, env, writer=writer, deadline=deadline,
-            require_finite_expiry=True, expected_identity=expected_identity,
+            token,
+            project,
+            path,
+            env,
+            writer=writer,
+            deadline=deadline,
+            require_finite_expiry=True,
+            expected_identity=expected_identity,
         )
     elif require_finite_expiry:
         paths = verify_service_token(
@@ -943,9 +954,7 @@ class _FileReadRefused(SecretsError):
     """Closed file-operation reasons; never retain an OS error or selected path."""
 
 
-def _protected_read(
-    path: str, limit: int, *, private: bool, strict_custody: bool = False
-) -> bytes:
+def _protected_read(path: str, limit: int, *, private: bool, strict_custody: bool = False) -> bytes:
     """Read one explicit regular file through held, rechecked directory descriptors."""
     directories = []
     leaf = None
@@ -1197,8 +1206,10 @@ def _bounded_read_worker() -> int:
         }
         if (
             not isinstance(request, dict)
-            or set(request) not in (
-                fields, fields | {"require_finite_expiry"},
+            or set(request)
+            not in (
+                fields,
+                fields | {"require_finite_expiry"},
                 fields | {"require_finite_expiry", "expected_identity"},
             )
             or type(request["schema"]) is not int
@@ -1313,8 +1324,13 @@ def list_project_names(
     deadline = time.monotonic() + timeout
     if require_finite_expiry or expected_identity is not None:
         verify_service_token(
-            token, project, path, scoped_env, deadline=deadline,
-            require_finite_expiry=require_finite_expiry, expected_identity=expected_identity,
+            token,
+            project,
+            path,
+            scoped_env,
+            deadline=deadline,
+            require_finite_expiry=require_finite_expiry,
+            expected_identity=expected_identity,
         )
     else:
         verify_service_token(token, project, path, scoped_env, deadline=deadline)
@@ -2457,7 +2473,9 @@ def token_from_store(
     """Return one consumer token and a status, without exposing the token on failure."""
     env = os.environ if env is None else env
     home = Path.home() if home is None else home
-    if not isinstance(account, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account):
+    if not isinstance(account, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account
+    ):
         return "", "no-token"
     if bounded_keychain:
         if not _is_macos():
@@ -2473,15 +2491,27 @@ def _bounded_keychain_token(account: str, home: Path) -> tuple[str, str]:
     if not home.is_absolute() or "\0" in str(home):
         return "", "token-unreadable"
     keychain = home / "Library" / "Keychains" / "login.keychain-db"
-    command = [SECURITY_BIN, "find-generic-password", "-s", SCOPED_KEYCHAIN_SERVICE,
-               "-a", account, "-w", str(keychain)]
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        SCOPED_KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        str(keychain),
+    ]
     deadline = time.monotonic() + 5.0
     child = None
     try:
         child = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, env={"PATH": os.defpath},
-            shell=False, close_fds=True,
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
         )
         raw = _read_worker_pipes(child, b"", 8192, deadline - 0.1)
         if child.returncode != 0:
@@ -2511,8 +2541,15 @@ def _bounded_keychain_token(account: str, home: Path) -> tuple[str, str]:
 
 
 def _token_from_keychain(account: str) -> tuple[str, str]:
-    command = [SECURITY_BIN, "find-generic-password", "-s", SCOPED_KEYCHAIN_SERVICE,
-               "-a", account, "-w"]
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        SCOPED_KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+    ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
@@ -2532,7 +2569,10 @@ def _token_from_keychain(account: str) -> tuple[str, str]:
     detail = (result.stderr or "").lower()
     if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
         return "", "no-token"
-    if result.returncode == SECURITY_INTERACTION_NOT_ALLOWED or "interaction is not allowed" in detail:
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
         return "", "keychain-locked"
     return "", "token-unreadable"
 
@@ -2570,34 +2610,63 @@ def _token_from_file(home: Path, account: str) -> tuple[str, str]:
                 parent_fd = child_fd
             leaf = path.name
             file_fd = os.open(
-                leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                leaf,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                 dir_fd=parent_fd,
             )
             opened_file = True
             opened.callback(os.close, file_fd)
             before = os.fstat(file_fd)
-            if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid
-                    or (before.st_mode & 0o777) != 0o600 or before.st_size > 65536):
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != uid
+                or (before.st_mode & 0o777) != 0o600
+                or before.st_size > 65536
+            ):
                 return "", "token-unreadable"
             data = os.read(file_fd, 65537)
             after = os.fstat(file_fd)
-            if (len(data) != before.st_size or os.read(file_fd, 1)
-                    or (before.st_dev, before.st_ino, before.st_size,
-                        before.st_mtime_ns, before.st_ctime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size,
-                        after.st_mtime_ns, after.st_ctime_ns)):
+            if (
+                len(data) != before.st_size
+                or os.read(file_fd, 1)
+                or (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                )
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            ):
                 return "", "token-unreadable"
             leaf_now = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
-            if (leaf_now.st_dev, leaf_now.st_ino, leaf_now.st_mode, leaf_now.st_uid,
-                    leaf_now.st_size, leaf_now.st_mtime_ns, leaf_now.st_ctime_ns) != (
-                    after.st_dev, after.st_ino, after.st_mode, after.st_uid,
-                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            if (
+                leaf_now.st_dev,
+                leaf_now.st_ino,
+                leaf_now.st_mode,
+                leaf_now.st_uid,
+                leaf_now.st_size,
+                leaf_now.st_mtime_ns,
+                leaf_now.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
                 return "", "token-unreadable"
             for parent, component, info in directories:
                 current = os.stat(component, dir_fd=parent, follow_symlinks=False)
-                if (current.st_dev, current.st_ino, current.st_mode, current.st_uid,
-                        current.st_ctime_ns) != (
-                        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_ctime_ns):
+                if (
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_mode,
+                    current.st_uid,
+                    current.st_ctime_ns,
+                ) != (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_ctime_ns):
                     return "", "token-unreadable"
             raw = data.decode("utf-8")
     except FileNotFoundError:

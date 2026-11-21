@@ -1252,7 +1252,11 @@ class ReleaseTests(unittest.TestCase):
             for args in (("--help",), ("get", "--help")):
                 result = subprocess.run(
                     [sys.executable, "-I", "-B", str(stage / "scripts/infisical-scoped.py"), *args],
-                    cwd=empty_home, env=env, capture_output=True, text=True, timeout=12,
+                    cwd=empty_home,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=12,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stderr, "")
@@ -1276,7 +1280,9 @@ class ReleaseTests(unittest.TestCase):
         retained = self.base / "releases" / old["bundle_sha256"]
         self.assertFalse((retained / path).exists())
         self.assertEqual(release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"])
-        self.assertEqual(release.control(self.home, "rollback")["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(
+            release.control(self.home, "rollback")["bundle_sha256"], old["bundle_sha256"]
+        )
 
     def test_retained_release_without_consumer_bootstrap_remains_a_rollback_target(self):
         path = "scripts/fleet_infisical_bootstrap.py"
