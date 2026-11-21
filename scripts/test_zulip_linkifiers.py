@@ -8,6 +8,8 @@ Python's `re`, which agrees with re2 on these patterns (no backreferences or loo
 import contextlib
 import io
 import json
+import os
+import uuid
 import re
 import sys
 import unittest
@@ -289,20 +291,27 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(site, L.REALM)
         fs.assert_called_once_with("ZULIP_OPERATOR_SITE")
 
-    def test_admin_falls_back_to_zulipadmin_folder_first(self):
-        calls = []
+    def test_admin_reads_only_its_exact_folder_with_the_real_bounded_worker(self):
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        values = {"ZULIP_OPERATOR_EMAIL": "admin@example.test", "ZULIP_OPERATOR_API_KEY": "public fixture"}
+        client = L._infisical_reader()
+        original = client.bounded_fetch_project
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip_operator") as api:
+            def read(project, folder, env, **options):
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual(L.credentials(None, admin=True)[:2], (values["ZULIP_OPERATOR_EMAIL"], values["ZULIP_OPERATOR_API_KEY"]))
+                self.assertTrue(all("secretPath=%2Fzulip_operator" in path for path in api.requests if "/raw/" in path))
+                api.metadata_override = {"scopes": [{"environment": "prod", "secretPath": "/"}]}
+                api.requests.clear()
+                self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
+                self.assertEqual(api.requests, ["/api/v2/service-token"])
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            return mock.Mock(returncode=0, stdout="v\n")
-
-        env = {
-            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
-        }
-        with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
-            L.credentials(None, admin=True)
-        self.assertTrue(calls)
-        self.assertTrue(all(c[3:5] == ["--path", "/zulip_operator"] for c in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {
