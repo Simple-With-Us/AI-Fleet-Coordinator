@@ -2280,6 +2280,7 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
         for row in rows:
             event = close_by_id.get(row["record_id"])
             item = dict(row)
+            item["bound_prs"] = _bound_prs(registry._conn, row["record_id"])
             item["end_reason"] = (event["details"] if event else "") or ""
             item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
             item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
@@ -2373,6 +2374,7 @@ def resolve_label(
                 (namespace, want, int(generation)),
             ).fetchone()
         held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
+        held_prs = _bound_prs(registry._conn, row["record_id"]) if row is not None else []
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
@@ -2383,6 +2385,7 @@ def resolve_label(
     if row is None:
         return None
     found = dict(row)
+    found["bound_prs"] = held_prs
     label = str(found.get("label") or "")
     found["ref"] = cross_seat_ref(
         str(found.get("seat") or ""),
@@ -3374,6 +3377,77 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 0
     print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
     return 0
+
+
+
+
+# Explicit allowlist of repositories qualified for the review-alert read lane.
+PR_BIND_REPOS = frozenset({
+    "Simple-With-Us/AI-Fleet-Coordinator", "Simple-With-Us/BotFleet",
+    "Simple-With-Us/Clutch", "Simple-With-Us/CodeCaps", "Simple-With-Us/Congress.Trade",
+    "Simple-With-Us/HogHunter", "Simple-With-Us/Kodus-Config",
+    "Simple-With-Us/Socratic-Trade", "Simple-With-Us/Usage-Monitor",
+})
+MAX_BOUND_PRS = 32
+
+
+def _bound_prs(conn, record_id: str) -> list[dict[str, Any]]:
+    try:
+        rows = conn.execute("SELECT repo, number, generation, bound_at FROM session_pr_bindings WHERE record_id = ? ORDER BY bound_at, repo, number", (record_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return []  # Old read-only registry: absence never invents binding.
+    return [{"repo": r["repo"], "number": r["number"], "generation": r["generation"], "ts": r["bound_at"]} for r in rows]
+
+
+def bind_pr(db_path: str, *, platform: str, verified_host: str, profile_scope: str,
+            native_session_id: str, repo: str, number: int, generation: int) -> dict[str, Any]:
+    """Seat-authenticated self-registration, not cryptographic creator proof.
+
+    Generation is checked inside the same write transaction as the binding.
+    Another live row already holding this PR makes a conflict, never a transfer.
+    A letter re-issue invalidates an old binding without rewriting history.
+    """
+    if repo not in PR_BIND_REPOS:
+        raise ValueError("repository is not qualified for PR binding")
+    if type(number) is not int or not 1 <= number <= 10**12:
+        raise ValueError("PR number out of range")
+    if type(generation) is not int or not 1 <= generation <= 2147483647:
+        raise ValueError("generation required")
+    registry = SessionRegistry(db_path)
+    try:
+        with registry._write_txn() as conn:
+            row = _session_row_for_update(conn, platform=platform, verified_host=verified_host,
+                    profile_scope=profile_scope, native_session_id=native_session_id)
+            rid = row["record_id"]
+            letter, actual = registry._active_alias(conn, rid)
+            if row["closed_at"] or not letter or actual != generation:
+                raise ValueError("session is not live at required generation")
+            conflicts = conn.execute(
+                "SELECT b.record_id FROM session_pr_bindings b JOIN sessions s ON s.record_id=b.record_id "
+                "JOIN alias_assignments a ON a.record_id=b.record_id AND a.retired_at IS NULL "
+                "WHERE b.repo=? AND b.number=? AND s.closed_at IS NULL AND b.generation=a.generation AND b.record_id<>?",
+                (repo, number, rid)).fetchall()
+            if conflicts:
+                raise ValueError("PR is bound to another live session; explicit transfer required")
+            existing = conn.execute("SELECT generation FROM session_pr_bindings WHERE record_id=? AND repo=? AND number=?", (rid,repo,number)).fetchone()
+            renewed = bool(existing and existing["generation"] != generation)
+            if renewed:
+                at = _utcnow()
+                conn.execute("UPDATE session_pr_bindings SET generation=?,bound_at=? WHERE record_id=? AND repo=? AND number=?", (generation,at,rid,repo,number))
+                registry._insert_event(conn,rid,letter,"bind-pr-renew","registry","renewed","registry",repo+"#"+str(number),at)
+                registry._enqueue_session_upsert(conn,rid,at)
+            if not existing:
+                count = conn.execute("SELECT count(*) FROM session_pr_bindings WHERE record_id=?", (rid,)).fetchone()[0]
+                if count >= MAX_BOUND_PRS:
+                    raise ValueError("session PR binding limit reached")
+                at = _utcnow()
+                conn.execute("INSERT INTO session_pr_bindings(record_id,repo,number,generation,bound_at) VALUES(?,?,?,?,?)", (rid,repo,number,generation,at))
+                registry._insert_event(conn,rid,letter,"bind-pr","registry","bound","registry",repo+"#"+str(number),at)
+                registry._enqueue_session_upsert(conn,rid,at)
+            return {"outcome": "renewed" if renewed else "unchanged" if existing else "bound", "native_session_id": native_session_id,
+                    "label": letter, "generation": generation, "bound_prs": _bound_prs(conn,rid)}
+    finally:
+        registry.close_db()
 
 
 if __name__ == "__main__":
