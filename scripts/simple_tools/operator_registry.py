@@ -785,9 +785,7 @@ class SessionRegistry:
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        main = sorted(
-            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p)
-        )
+        main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
         if main:
             return issue(main[0])
         # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
