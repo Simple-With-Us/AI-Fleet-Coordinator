@@ -1008,23 +1008,31 @@ class CodeOnlyHelperTests(unittest.TestCase):
             path.chmod(0o600)
         units = self.tmp / "units"
         units.mkdir(mode=0o755)
+        units.chmod(0o755)
         for name in ("operator-sheets-drain.service", "operator-sheets-drain.timer"):
             path = units / name
             path.write_text("unit fixture\n")
             path.chmod(0o644)
         backup_parent = self.tmp / "backups"
         backup_parent.mkdir(mode=0o755)
+        backup_parent.chmod(0o755)
         backup_root = backup_parent / "operator-sheets-drain-code-only"
         backup_root.mkdir(mode=0o700)
         original = {name: (lib / name).read_bytes() for name in MODULES}
-        source.chmod(0o770)
+        unsafe_parent = source.parent / "group-writable-parent"
+        unsafe_parent.mkdir(mode=0o770)
+        unsafe_parent.chmod(0o770)
+        moved_source = unsafe_parent / source.name
+        source.rename(moved_source)
+        source = moved_source
+        lib = source / "installed-lib"
 
         with (
             mock.patch.object(
                 Path, "read_bytes", side_effect=AssertionError("must not read files")
             ) as read_bytes,
             mock.patch("subprocess.run") as run,
-            self.assertRaisesRegex(self.helper.InstallError, "unexpected owner or mode"),
+            self.assertRaisesRegex(self.helper.InstallError, "group-writable-parent"),
         ):
             self.helper.install_modules(
                 source_dir=source,
