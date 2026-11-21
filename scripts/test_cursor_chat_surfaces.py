@@ -133,11 +133,11 @@ class LoadApiKeyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_api = os.environ.pop("CURSOR_API_KEY", None)
         self.old_sync = os.environ.pop("CURSOR_SYNC_API_KEY", None)
-        self.old_fleet_secrets = ccs._fleet_secrets_key
-        ccs._fleet_secrets_key = lambda: None  # never shell out to a real fleet-secrets
+        self.old_infisical = ccs._infisical_api_key
+        ccs._infisical_api_key = lambda: None
 
     def tearDown(self) -> None:
-        ccs._fleet_secrets_key = self.old_fleet_secrets
+        ccs._infisical_api_key = self.old_infisical
         for name, old in (
             ("CURSOR_API_KEY", self.old_api),
             ("CURSOR_SYNC_API_KEY", self.old_sync),
@@ -155,34 +155,30 @@ class LoadApiKeyTests(unittest.TestCase):
         os.environ["CURSOR_SYNC_API_KEY"] = "cursor_sync_test_key"
         self.assertEqual(ccs.load_api_key(), "cursor_sync_test_key")
 
-    def test_fleet_secrets_fallback(self) -> None:
-        ccs._fleet_secrets_key = lambda: "from_fleet_secrets"
-        self.assertEqual(ccs.load_api_key(), "from_fleet_secrets")
+    def test_infisical_cli_fallback(self) -> None:
+        ccs._infisical_api_key = lambda: "from_infisical_cli"
+        self.assertEqual(ccs.load_api_key(), "from_infisical_cli")
 
-    def test_fleet_secrets_command(self) -> None:
+    def test_fallback_fails_closed_when_canonical_cli_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fleet-secrets"
-            fake.write_text(
-                '#!/bin/sh\n[ "$1" = get ] && [ "$2" = CURSOR_SYNC_API_KEY ] && printf from_command && exit 0\nexit 3\n',
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            old_bin = ccs.FLEET_SECRETS_BIN
-            ccs.FLEET_SECRETS_BIN = fake
+            old_cli = ccs.INFISICAL_CLI
+            ccs.INFISICAL_CLI = Path(tmp) / "fleet_infisical_cli.py"
             try:
-                with mock.patch.object(ccs.shutil, "which", return_value=None):
-                    self.assertEqual(self.old_fleet_secrets(), "from_command")
+                self.assertIsNone(ccs._infisical_api_key())
             finally:
-                ccs.FLEET_SECRETS_BIN = old_bin
+                ccs.INFISICAL_CLI = old_cli
 
-    def test_fleet_secrets_missing_command(self) -> None:
-        old_bin = ccs.FLEET_SECRETS_BIN
-        ccs.FLEET_SECRETS_BIN = Path("/nonexistent/fleet-secrets")
-        try:
-            with mock.patch.object(ccs.shutil, "which", return_value=None):
-                self.assertIsNone(self.old_fleet_secrets())
-        finally:
-            ccs.FLEET_SECRETS_BIN = old_bin
+    def test_existing_copy_includes_shared_cli_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_live_dir = ccs.LIVE_DIR
+            ccs.LIVE_DIR = Path(tmp) / "cursor-chat-surfaces"
+            try:
+                ccs.copy_live_files()
+                self.assertTrue((ccs.LIVE_DIR / "fleet_infisical_cli.py").is_file())
+                self.assertTrue((ccs.LIVE_DIR / "fleet_infisical.py").is_file())
+                self.assertTrue((ccs.LIVE_DIR / "cursor_chat_surfaces.py").is_file())
+            finally:
+                ccs.LIVE_DIR = old_live_dir
 
 
 class SaveJsonTests(unittest.TestCase):
