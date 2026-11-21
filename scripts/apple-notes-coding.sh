@@ -2349,11 +2349,11 @@ fi
 # The installed Mac helper uses the shared scoped reader with this consumer's
 # own service token and grant. It receives one value on stdout and never reads
 # through the retired fleet-secrets CLI or a flat credential file.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-/Users/jay/apps/infisical-scoped/infisical-scoped.py}"
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
 
 _scoped_secret() {
   local name="$1" folder="$2" account="$3"
-  [[ -x "$INFISICAL_SCOPED_READER" ]] || {
+  [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
     echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
     return 4
   }
@@ -2365,7 +2365,7 @@ _scoped_secret() {
 _pushover_secret() {
   local name="$1" value="${!1:-}"
   if [[ -z "$value" ]]; then
-    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>/dev/null || true)"
+    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" || true)"
   fi
   printf '%s' "$value"
 }
