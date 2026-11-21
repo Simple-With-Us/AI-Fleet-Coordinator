@@ -100,7 +100,9 @@ class ReviewedPreservationTests(unittest.TestCase):
         repo = "Simple-With-Us/AI-Fleet-Coordinator"
         path = "scripts/fleet_rag/tests/test_recall.py"
         records = [
-            self.record(self.base, self.result, repo=repo, path="scripts/fleet_rag/tests/test_ingest.py"),
+            self.record(
+                self.base, self.result, repo=repo, path="scripts/fleet_rag/tests/test_ingest.py"
+            ),
             self.record(self.base, self.result + b"x", repo=repo, path=path),
         ]
         for record in records:

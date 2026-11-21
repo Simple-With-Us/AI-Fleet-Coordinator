@@ -222,8 +222,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = observed_digest(args.config_sha256, "config digest")
     policy = observed_digest(args.policy_sha256, "policy digest")
-    print(
-        json.dumps(
-            build(args.repo, args.before, args.output, config, policy), sort_keys=True
-        )
-    )
+    print(json.dumps(build(args.repo, args.before, args.output, config, policy), sort_keys=True))
