@@ -39,6 +39,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -289,15 +290,29 @@ def zcode_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
         conn.close()
 
 
+def _note_dict(env: Mapping[str, str], sid: str) -> dict:
+    """The chat's own letter note as a dict, or {} when it cannot be read:  a note the hook cannot read holds
+    nothing - no letter, no failure, no throttle - so its chat is treated as one that never had one."""
+    try:
+        with open(PL.note_path(env, SEAT, sid)) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - a note that cannot be read is one that holds nothing
+        return {}
+
+
 def _unlettered_children(
     conn: sqlite3.Connection, cols: set[str], time_col: str, env: Mapping[str, str], now: float
 ) -> list[tuple[float, str]]:
     """The sub-agent children a repair pass may enroll, as (age stamp, id), newest first:  young enough for
     the pass's own window, not archived or deleted, and their parent's note holds a letter
-    (`platform_letter.note_holds_letter`), so the replay registers the child in its parent's row and never
-    a parent nobody ever lettered.  A child whose own note already holds a letter is left out:  the replay
-    would only mark a dormant child seen again.  At most UNLETTERED_SCAN of them;  a store without the
-    columns this reads answers none."""
+    (`platform_letter.note_holds_letter`, read once per parent), so the replay registers the child in its
+    parent's row and never a parent nobody ever lettered.  A child whose own note already holds a letter is
+    left out (the replay would only mark a dormant child seen again), and so is one whose note holds a
+    refusal or failure inside `RETRY_SECONDS`:  a throttled child may not take a replay slot a healthy
+    candidate could use.  The scan stops at the first row older than the window (rows come newest first),
+    so a store full of long-over children costs no walk and no note read.  At most UNLETTERED_SCAN of them;
+    a store without the columns this reads answers none."""
     if "parent_id" not in cols or "task_type" not in cols:
         return []
     where = ["task_type = 'subagent_child'"]
@@ -306,6 +321,7 @@ def _unlettered_children(
     if "time_deleted" in cols:
         where.append("time_deleted IS NULL")
     found: list[tuple[float, str]] = []
+    lettered_parents: dict[str, bool] = {}  # one note read per parent, not one per child
     try:
         rows = conn.execute(
             "SELECT id, parent_id, %s FROM session WHERE %s ORDER BY %s DESC"
@@ -318,14 +334,24 @@ def _unlettered_children(
             except ValueError:
                 continue  # neither id may name a note path, so neither is read unchecked
             stamp = _stored_seconds(row[2] if len(row) > 2 else None)
-            if stamp is None or not (
-                UNLETTERED_MIN_AGE_SECONDS <= now - stamp <= UNLETTERED_MAX_AGE_SECONDS
-            ):
+            if stamp is None:
+                continue  # unknown age is not evidence a child is young
+            age = now - stamp
+            if age > UNLETTERED_MAX_AGE_SECONDS:
+                break  # newest first:  every later row is older still, the scan stops here
+            if age < UNLETTERED_MIN_AGE_SECONDS:
                 continue
-            if not parent or not PL.note_holds_letter(env, SEAT, parent):
+            if not parent:
+                continue
+            if parent not in lettered_parents:
+                lettered_parents[parent] = PL.note_holds_letter(env, SEAT, parent)
+            if not lettered_parents[parent]:
                 continue  # no lettered parent here:  the replay would register the parent first
-            if PL.note_holds_letter(env, SEAT, sid):
+            note = _note_dict(env, sid)
+            if PL.lettered(note):
                 continue  # already lettered:  a replay would only mark a dormant child seen
+            if now - float(note.get("failed_at") or 0) < PL.RETRY_SECONDS:
+                continue  # refused or failed this window:  no replay slot until the window passes
             found.append((stamp, sid))
             if len(found) >= UNLETTERED_SCAN:
                 break
@@ -339,8 +365,11 @@ def zcode_child_sessions(env: Mapping[str, str], parent: str) -> list[str] | Non
     turn end makes (`platform_letter.enroll_children`).  Read only, a short wait for a lock, and any doubt
     (no store, a store without the `parent_id`, `task_type` or time columns this reads) answers None:  no
     enrollment this turn.  A row whose age cannot be read is left out - unknown age is not evidence a child
-    is young - and so is one older than CHILD_MAX_AGE_SECONDS:  a child that old is a thread long over, one
-    the repair pass's own window already covers."""
+    is young - and the listing stops at the first row older than CHILD_MAX_AGE_SECONDS (rows come newest
+    first):  a child that old is a thread long over, one the repair pass's own window already covers.  A
+    child whose own note already holds a letter, or holds a refusal or failure inside `RETRY_SECONDS`, is
+    read but takes no listing slot:  a lettered or throttled child never crowds an unlettered one out of
+    CHILD_SCAN, whatever their ages."""
     if not parent:
         return None
     path = store_file(env)
@@ -369,8 +398,14 @@ def zcode_child_sessions(env: Mapping[str, str], parent: str) -> list[str] | Non
             if not sid:
                 continue
             stamp = _stored_seconds(row[1] if len(row) > 1 else None)
-            if stamp is None or not (0 <= now - stamp <= CHILD_MAX_AGE_SECONDS):
-                continue
+            if stamp is None:
+                continue  # unknown age is not evidence a child is young
+            if now - stamp > CHILD_MAX_AGE_SECONDS:
+                break  # newest first:  every later row is older still, the listing stops here
+            note = _note_dict(env, sid)
+            if PL.lettered(note) or now - float(note.get("failed_at") or 0) < PL.RETRY_SECONDS:
+                continue  # costs its one note read, but no listing slot (the enrollment pass
+                # re-reads the note inside its own guard, so this is a filter, not the check)
             found.append(sid)
             if len(found) >= CHILD_SCAN:
                 break

@@ -502,6 +502,29 @@ class UnletteredListingTests(unittest.TestCase):
         self.assertEqual(ZC.zcode_child_sessions(self.where, "nobody"), [])
         self.assertIsNone(ZC.zcode_child_sessions(self.where, ""))
 
+    def test_zcode_lettered_children_take_no_listing_slot(self) -> None:
+        conn = self.zcode_store_with_parents()
+
+        def ms(seconds: float) -> int:
+            return int(_ago(seconds) * 1000)
+
+        for i in range(ZC.CHILD_SCAN):
+            sid = "k-done-%02d" % i
+            self.lettered_note_for(sid)
+            conn.execute(
+                "INSERT INTO session VALUES (?, '', 'subagent_child', 'p-mine', NULL, NULL, ?)",
+                (sid, ms(3600 + i)),
+            )
+        conn.execute(
+            "INSERT INTO session VALUES ('k-open', '', 'subagent_child', 'p-mine', NULL, NULL, ?)",
+            (ms(40 * 3600),),
+        )
+        conn.commit()
+        conn.close()
+        # The lettered children cost their one note read each but no listing slot, so the
+        # older unlettered child is still listed however many lettered ones sit before it.
+        self.assertEqual(ZC.zcode_child_sessions(self.where, "p-mine"), ["k-open"])
+
     def test_zcode_child_sessions_need_the_parent_columns(self) -> None:
         path = os.path.join(self.home, ZC.STORE_SUBPATH)
         os.makedirs(os.path.dirname(path))

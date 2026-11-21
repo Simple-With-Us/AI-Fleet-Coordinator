@@ -338,6 +338,26 @@ class ChildEnrollment(Base):
         self.assertTrue(registry.lookup("zcode", "mac", "default", child))
         self.assertIsNone(registry.lookup("zcode", "mac", "default", grand))
 
+    def test_an_unreadable_child_note_does_not_stop_the_pass(self) -> None:
+        parent, corrupt, healthy = sess(100), sess(101), sess(102)
+        self.add_session(parent, title="Two children")
+        self.add_session(corrupt, parent=parent, task="subagent_child",
+                         title="Corrupt note", age=7200)
+        self.add_session(healthy, parent=parent, task="subagent_child",
+                         title="Healthy child", age=7100)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        with open(os.path.join(self.state, "ZC", "letters", corrupt + ".json"), "w") as fh:
+            fh.write("{ not json")  # a note no reader can parse:  one child's problem
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)  # the corrupt note neither fails the hook nor starves the sibling
+        registry = OR.SessionRegistry(self.db)
+        # A note no reader can parse holds nothing, so the child is treated as one that never had
+        # a note:  its start is replayed, it takes a letter, and a fresh note replaces the corrupt
+        # file.  The failure stays inside that one child's own try, never the pass or the chat.
+        self.assertTrue(registry.lookup("zcode", "mac", "default", corrupt))
+        self.assertTrue(registry.lookup("zcode", "mac", "default", healthy))
+        self.assertTrue(self.note(corrupt).get("label"))
+
 
 class RepairChildren(Base):
     """The repair pass enrolls a sub-agent child whose parent's note holds a letter, and leaves a child of a
@@ -376,6 +396,19 @@ class RepairChildren(Base):
         registry = OR.SessionRegistry(self.db)
         self.assertIsNone(registry.lookup("zcode", "mac", "default", present))
         self.assertIsNone(registry.lookup("zcode", "mac", "default", ancient))
+
+    def test_a_throttled_child_takes_no_repair_slot(self) -> None:
+        parent, refused, quiet = sess(103), sess(104), sess(105)
+        self.add_session(parent, title="Throttled parent")
+        self.add_session(refused, parent=parent, task="subagent_child", title="Refused child")
+        self.add_session(quiet, title="??: Quiet work")  # a healthy candidate for the same slot
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        with open(os.path.join(self.state, "ZC", "letters", refused + ".json"), "w") as fh:
+            json.dump({"state": "failed", "failed_at": time.time() - 60}, fh)
+        done = PL.repair_unlettered(Z.SPEC, self.env(), "ZC", "mac", now=time.time(), force=True)
+        self.assertNotIn(refused, done["asked"], done)  # inside its retry window:  no replay slot
+        self.assertIn(quiet, done["asked"], done)  # the slot goes to the healthy candidate
+        self.assertIsNone(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", refused))
 
 
 class ServerLocation(Base):
