@@ -33,6 +33,7 @@ Standard library only, Python 3.11+.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -259,6 +260,12 @@ class UnknownRecord(KeyError):
     """No session with this record_id."""
 
 
+class StaleSessionSnapshot(ValueError):
+    def __init__(self, current_sha256: str):
+        super().__init__("the session snapshot changed after planning")
+        self.current_sha256 = current_sha256
+
+
 SEAT_PLATFORM_MISMATCH = "seat_platform_mismatch"
 
 
@@ -443,6 +450,12 @@ def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
     ]
 
 
+def _session_snapshot_digest(cells: Sequence[str]) -> str:
+    """Bind a local snapshot plan to the exact canonical session-upsert cells."""
+    payload = json.dumps({"cells": list(cells)})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class SessionRegistry:
     """The one writer of the registry database."""
 
@@ -451,20 +464,21 @@ class SessionRegistry:
         db_path: str,
         *,
         read_only: bool = False,
+        initialize: bool = True,
     ):
         self.db_path = str(db_path)
         self.read_only = bool(read_only)
         parent = os.path.dirname(self.db_path)
-        if parent and not self.read_only:
+        if parent and not self.read_only and initialize:
             os.makedirs(parent, exist_ok=True)
-        if self.read_only:
-            # Read-only by behaviour, not by mode.  A mode=ro handle cannot roll back a
-            # hot journal left by a crashed writer, and SQLite then refuses every read
-            # with SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
-            # A read-write handle can recover that journal, and it takes no write lock
-            # for a plain SELECT, so the wake path never contends with the Operator's
-            # registration writes.  This handle runs no DDL and inserts no migration row:
-            # it never writes.
+        if self.read_only or not initialize:
+            # Open the existing file without schema initialization.  A mode=ro handle
+            # cannot roll back a hot journal left by a crashed writer, and SQLite then
+            # refuses every read with SQLITE_READONLY_ROLLBACK.  The read_only path uses
+            # this read-write connection only for selects; plain SELECT takes no write
+            # lock, so the wake path does not contend with Operator registration writes.
+            # initialize=False uses the same no-DDL connection for outbox operations
+            # that must not migrate.
             #
             # mode=rw and not a plain connect:  the handle is read-write, and it still
             # never creates the file, so a lookup can never bring a registry into being.
@@ -481,6 +495,8 @@ class SessionRegistry:
                 uri=True,
             )
             self._conn.row_factory = sqlite3.Row
+            if not self.read_only:
+                self._conn.execute("PRAGMA foreign_keys = ON")
             return
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
@@ -831,6 +847,36 @@ class SessionRegistry:
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
             (_ulid(), "session_upsert", json.dumps({"cells": _session_cells(row, letter)}), now),
         )
+
+    def enqueue_session_snapshot(self, record_id: str, expected_sha256: str) -> dict[str, Any]:
+        """Queue the current snapshot without changing session, alias, event, or issue state.
+
+        The caller first obtains a read-only plan.  BEGIN IMMEDIATE then binds the
+        write to the same current row and alias, and an identical pending snapshot
+        makes retries idempotent.
+        """
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
+            raise ValueError("invalid snapshot digest")
+        with self._write_txn() as conn:
+            row = self._get(record_id)
+            label, _ = self._active_alias(conn, record_id)
+            cells = _session_cells(row, label)
+            digest = _session_snapshot_digest(cells)
+            if not secrets.compare_digest(digest, expected_sha256):
+                raise StaleSessionSnapshot(digest)
+            pending = _pending_identical_session_snapshots(conn, cells)
+            if pending:
+                return {
+                    "snapshot_sha256": digest,
+                    "outcome": "already_pending",
+                    "pending_identical": pending,
+                }
+            self._enqueue_session_upsert(conn, record_id, _utcnow())
+            return {
+                "snapshot_sha256": digest,
+                "outcome": "queued",
+                "pending_identical": 1,
+            }
 
     def _reseat(
         self,
@@ -2676,6 +2722,56 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _pending_identical_session_snapshots(
+    conn: sqlite3.Connection, cells: Sequence[str]
+) -> int:
+    count = 0
+    for row in conn.execute(
+        "SELECT payload FROM export_outbox"
+        " WHERE kind = 'session_upsert' AND exported_at IS NULL"
+    ):
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("cells") == list(cells):
+            count += 1
+    return count
+
+
+def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
+    """Read-only plan for an Operator-local canonical session snapshot enqueue."""
+    registry = SessionRegistry(db_path, read_only=True)
+    try:
+        registry._conn.execute("BEGIN")
+        try:
+            row = registry._get(record_id)
+            label, _ = registry._active_alias(registry._conn, record_id)
+            cells = _session_cells(row, label)
+            digest = _session_snapshot_digest(cells)
+            pending = _pending_identical_session_snapshots(registry._conn, cells)
+            return {
+                "snapshot_sha256": digest,
+                "pending_identical": pending,
+                "action": "already_pending" if pending else "enqueue",
+            }
+        finally:
+            registry._conn.rollback()
+    finally:
+        registry.close_db()
+
+
+def enqueue_session_snapshot(
+    db_path: str, record_id: str, expected_sha256: str
+) -> dict[str, Any]:
+    """Enqueue through the registry's existing local writer and transaction."""
+    registry = SessionRegistry(db_path, initialize=False)
+    try:
+        return registry.enqueue_session_snapshot(record_id, expected_sha256)
+    finally:
+        registry.close_db()
+
+
 def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None = None) -> int:
     """Mark outbox rows exported only after the Sheets write is confirmed.  Re-running after a
     crash simply re-exports unmarked rows;  the exporter reconciles by id so that is safe."""
@@ -2909,6 +3005,19 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     p = sub.add_parser("pending-outbox")
     p.add_argument("--db", default="", help="the registry file (default: the shared path)")
     p.add_argument("--limit", type=int, default=50)
+    plan = sub.add_parser(
+        "plan-session-snapshot",
+        help="plan a local canonical session snapshot enqueue without changing the registry",
+    )
+    plan.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    plan.add_argument("--record-id", required=True, help="the stable Operator record id")
+    enqueue = sub.add_parser(
+        "enqueue-session-snapshot",
+        help="enqueue a canonical session snapshot if its planned digest is still current",
+    )
+    enqueue.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    enqueue.add_argument("--record-id", required=True, help="the stable Operator record id")
+    enqueue.add_argument("--expected-sha256", required=True, help="digest from plan-session-snapshot")
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
@@ -3105,17 +3214,51 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     args = parser.parse_args(argv)
     from . import registry_api
 
-    if args.command in ("record-export-attempt", "record-export-attempts", "export-attempts"):
+    if args.command in (
+        "record-export-attempt",
+        "record-export-attempts",
+        "export-attempts",
+        "plan-session-snapshot",
+        "enqueue-session-snapshot",
+    ):
         # The export fence is the store's own bookkeeping (OPS-1037):  it is handled
         # locally, before the registry-API cutover below, because the API carries no
         # fence ops and the fence's only caller (the Sheets drain) runs on the store's
-        # host against the store file.  Routing these through the API would reject
-        # them as unknown ops and wedge the drain.  The no-registry guard still
+        # host against the store file.  Snapshot planning and enqueue are also local:
+        # enqueue changes only the export outbox under the store writer transaction,
+        # and the existing drain handles its fence and acknowledgement.  No session
+        # state operation or registry RPC is added.  The no-registry guard still
         # applies, so a stray local file is never brought into being for them either.
         db = getattr(args, "db", "") or default_db(env)
         if not os.path.isfile(db):
             print(json.dumps({"error": "no Operator registry on this host"}))
             return 3
+        if args.command == "plan-session-snapshot":
+            try:
+                answer = plan_session_snapshot(db, args.record_id)
+            except UnknownRecord:
+                print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
+                return 2
+            print(json.dumps(answer))
+            return 0
+        if args.command == "enqueue-session-snapshot":
+            try:
+                answer = enqueue_session_snapshot(db, args.record_id, args.expected_sha256)
+            except UnknownRecord:
+                print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
+                return 2
+            except StaleSessionSnapshot as exc:
+                print(json.dumps({
+                    "error": "stale_snapshot",
+                    "code": "stale_snapshot",
+                    "snapshot_sha256": exc.current_sha256,
+                }))
+                return 2
+            except ValueError:
+                print(json.dumps({"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}))
+                return 2
+            print(json.dumps(answer))
+            return 0
         if args.command == "record-export-attempt":
             attempt_id = record_export_attempt(
                 db,
