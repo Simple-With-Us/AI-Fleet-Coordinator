@@ -380,6 +380,13 @@ class SessionSnapshotEnqueueTests(unittest.TestCase):
                         "2026-11-21T12:04:00.000Z",
                     )
                     for index in range(128)
+                ]
+                + [
+                    (
+                        "malformed-unrelated-pending",
+                        "{not-json",
+                        "2026-11-21T12:04:00.000Z",
+                    )
                 ],
             )
             conn.commit()
@@ -388,10 +395,82 @@ class SessionSnapshotEnqueueTests(unittest.TestCase):
 
         with mock.patch.object(
             OR.json, "loads", side_effect=AssertionError("unexpected JSON decode")
-        ):
+        ) as json_loads:
             plan = OR.plan_session_snapshot(self.db, record_id)
+        json_loads.assert_not_called()
         self.assertEqual(plan["pending_identical"], 0)
         self.assertEqual(plan["action"], "enqueue")
+
+    def test_semantically_equal_unicode_payload_dedupes_but_different_cells_do_not(self) -> None:
+        record_id, native_id = self._record(closed=False)
+        OR.update_session(
+            self.db,
+            platform="minimax",
+            verified_host="server",
+            profile_scope="fixture-profile",
+            native_session_id=native_id,
+            title="Café 雪",
+        )
+        OR.mark_exported(
+            self.db,
+            [row[0] for row in self._table_snapshot()["export_outbox"] if row[4] is None],
+            exported_at="2026-11-21T12:05:00.000Z",
+        )
+        cells = self._snapshot_cells(record_id)
+        self.assertIn("Café 雪", cells)
+        digest = OR._session_snapshot_digest(cells)
+        equivalent_payload = json.dumps(
+            {"cells": cells, "extra": "café 雪"}, ensure_ascii=False, indent=2
+        )
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO export_outbox(outbox_id, kind, payload, created_at)"
+                " VALUES (?, 'session_upsert', ?, ?)",
+                (
+                    "semantically-equivalent-pending",
+                    equivalent_payload,
+                    "2026-11-21T12:06:00.000Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        plan, _ = self._plan(record_id)
+        self.assertEqual(plan["pending_identical"], 1)
+        self.assertEqual(plan["action"], "already_pending")
+        code, result, _ = self._enqueue(record_id, digest)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["outcome"], "already_pending")
+
+        different_cells = list(cells)
+        different_cells[-1] = "same record, different snapshot"
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "UPDATE export_outbox SET exported_at = ? WHERE outbox_id = ?",
+                ("2026-11-21T12:07:00.000Z", "semantically-equivalent-pending"),
+            )
+            conn.execute(
+                "INSERT INTO export_outbox(outbox_id, kind, payload, created_at)"
+                " VALUES (?, 'session_upsert', ?, ?)",
+                (
+                    "different-cells-pending",
+                    json.dumps({"cells": different_cells}),
+                    "2026-11-21T12:08:00.000Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        plan, _ = self._plan(record_id)
+        self.assertEqual(plan["pending_identical"], 0)
+        self.assertEqual(plan["action"], "enqueue")
+        code, result, _ = self._enqueue(record_id, digest)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["outcome"], "queued")
 
     def test_local_snapshot_commands_do_not_add_or_use_registry_api_operations(self) -> None:
         record_id, _ = self._record(closed=True)
