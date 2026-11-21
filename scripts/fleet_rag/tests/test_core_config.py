@@ -327,7 +327,7 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
     def test_explicit_null_expiry_read_only_binding_reads_named_value(self):
         self.api.metadata_override = {"expiresAt": None}
         with mock.patch.dict(os.environ, self.env, clear=True):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"})
+            self.assertEqual(core.infisical_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"})
         self.assertEqual(len(self.api.requests), 2)
         self.assertEqual(self.api.requests[0], "/api/v2/service-token")
 
