@@ -352,7 +352,8 @@ class MiniMaxRepairRow(Base):
 
 class MiniMaxRow(Base):
     DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
-           " parent_session_id TEXT, archived INTEGER DEFAULT 0, created_at_ms INTEGER)")
+           " parent_session_id TEXT, archived INTEGER DEFAULT 0, created_at_ms INTEGER,"
+           " updated_at_ms INTEGER)")
 
     def setUp(self) -> None:
         super().setUp()
@@ -369,8 +370,9 @@ class MiniMaxRow(Base):
         with conn:
             conn.execute(
                 "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
-                " archived, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
-                (sid, title, kind, parent or None, archived, int((time.time() - age) * 1000)),
+                " archived, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, title, kind, parent or None, archived, int((time.time() - age) * 1000),
+                 int((time.time() - age) * 1000)),
             )
         conn.close()
 
@@ -778,10 +780,12 @@ class UnletteredSessionsTests(MiniMaxRow):
         self.add("m-0006", "Newer", age=3600)
         self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0006", "m-0005"])
 
-    def test_a_sub_thread_is_not_a_candidate(self) -> None:
+    def test_a_sub_thread_that_holds_no_letter_is_a_candidate(self) -> None:
+        """A sub-thread is a lettered chat in its own right:  it takes the pair after its parent's,
+        so one whose title carries no letter is repaired too, and the sub-threads come first."""
         self.add("m-0007", "A Chat", kind="conversation")
         self.add("m-0008", "Its Sub-Thread", kind="task", parent="m-0007")
-        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0007"])
+        self.assertEqual(PM.minimax_unlettered_sessions(self.env()), ["m-0008", "m-0007"])
 
     def test_an_archived_chat_is_not_a_candidate(self) -> None:
         self.add("m-0009", "Put Away", archived=1)
@@ -806,6 +810,24 @@ class UnletteredSessionsTests(MiniMaxRow):
             conn.execute(
                 "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?)",
                 ("m-0011", "Old Store", "conversation", None),
+            )
+        conn.close()
+        self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
+
+    def test_a_partial_scan_answers_nothing(self) -> None:
+        """One half of the scan that cannot be read is not a complete inventory:  the pass answers
+        None, so the half that failed is repaired on the next pass instead of being hidden."""
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("DROP TABLE local_runtime_sessions")
+            conn.execute(
+                "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT,"
+                " session_kind TEXT, parent_session_id TEXT, archived INTEGER DEFAULT 0,"
+                " created_at_ms INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?)",
+                ("m-7001", "Needs A Letter", "conversation", None, 0, int((time.time() - 7200) * 1000)),
             )
         conn.close()
         self.assertIsNone(PM.minimax_unlettered_sessions(self.env()))
@@ -932,7 +954,7 @@ class UnletteredSessionsTests(MiniMaxRow):
             conn.execute(
                 "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT,"
                 " session_kind TEXT, parent_session_id TEXT, archived INTEGER DEFAULT 0,"
-                " created_at_ms INTEGER)"
+                " created_at_ms INTEGER, updated_at_ms INTEGER)"
             )
             conn.execute(
                 "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
