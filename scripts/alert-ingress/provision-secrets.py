@@ -228,8 +228,16 @@ def scoped_values(names, project, path):
     try:
         # The strict contract the replaced reader enforced:  every row carries its own
         # workspace, environment and secretPath,  and its value is not hidden.
-        return scoped_secrets.fetch_project(
-            project_id, path, env, token=token, names=wanted, strict_records=True
+        return scoped_secrets.bounded_fetch_project(
+            project_id,
+            path,
+            env,
+            token=token,
+            names=wanted,
+            timeout=READ_TIMEOUT,
+            writer=False,
+            max_output_bytes=READ_MAX_OUTPUT_BYTES,
+            strict_records=True,
         )
     except TimeoutError:
         # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first:
@@ -312,23 +320,23 @@ def require_service_token(token, name):
     return token
 
 
-def infisical_upsert(token, name, value):
+def infisical_upsert(service_token, name, value):
     """One secret written into AFC prod /zulip.
 
     Infisical creates the path when it is new, so the four generated secrets
     land beside the bot pairs.
     """
-    token = require_service_token(token, WRITE_TOKEN_AFC)
+    service_token = require_service_token(service_token, WRITE_TOKEN_AFC)
     env = {key: item for key, item in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS}
     env[scoped_secrets.ENV_WRITE_PATHS] = SECRET_PATH
     try:
-        scoped_secrets.verify_service_token(token, AFC, SECRET_PATH, env, writer=True)
+        scoped_secrets.verify_service_token(service_token, AFC, SECRET_PATH, env, writer=True)
     except scoped_secrets.SecretsError:
         raise ReadError(f"{WRITE_TOKEN_AFC} scope verification failed") from None
     api(
         "POST",
         f"{INFISICAL_BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}",
-        token,
+        service_token,
         {
             "workspaceId": AFC,
             "environment": ENV,

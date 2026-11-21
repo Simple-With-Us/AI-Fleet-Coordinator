@@ -2350,15 +2350,20 @@ fi
 # the owner's shared client, the consumer's own service token, and the grant that
 # token actually holds.  It pins the API base,  checks the grant against the
 # folder asked for,  and checks the answer's own provenance,  so no token ever
-# reaches an argument list and no inherited API base can redirect it.
-INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+# reaches an argument list and no inherited API base can redirect it.  The
+# installed Mac helper receives one value on stdout and never reads through the
+# retired fleet-secrets CLI or a flat credential file.
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+if [[ -z "$INFISICAL_SCOPED_READER" && -n "${HOME:-}" ]]; then
+  INFISICAL_SCOPED_READER="${HOME}/apps/infisical-scoped/infisical-scoped.py"
+fi
 
 # One value on standard output.  The reader's own reason goes to standard error
 # and its exit code says whether the name was absent (3), the grant refused the
 # read (4) or the usage was wrong (2).
 _scoped_secret() {
   local name="$1" folder="$2" account="$3"
-  [[ -x "$INFISICAL_SCOPED_READER" ]] || {
+  [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
     echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
     return 4
   }
@@ -2386,8 +2391,9 @@ _pushover_secret() {
 
 _send_pushover_notification() {
   local user_key token
-  # Environment first, then this consumer's own scoped token against Infisical Fleet-OPS
-  # prod root (OPS-818;  the old flat secrets file is retired, AFC-359).
+  # Environment value first, then this consumer's own scoped token against Infisical
+  # Fleet-OPS prod /global-api-keys through the shared scoped reader (OPS-818;  the old
+  # flat secrets file is retired, AFC-359).
   user_key=$(_pushover_secret PUSHOVER_USER_KEY)
   token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
   [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)

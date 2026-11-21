@@ -75,8 +75,9 @@ final class PanelSnapshotTests: XCTestCase {
         let output = ProcessInfo.processInfo.environment["MUSTER_PANEL_SNAPSHOT_DIR"]
             .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let draft = #"["JET","CODEX","7-CUSTOM_1"]"#
         for dark in [false, true] {
-            let control = ServerSeatListEditor(draft: .constant(#"["JET","CODEX","7-CUSTOM_1"]"#),
+            let control = ServerSeatListEditor(draft: .constant(draft),
                                                maxItems: 64, maxLength: 32)
                 .padding(20).frame(width: 420, height: 260, alignment: .topLeading)
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -102,7 +103,9 @@ final class PanelSnapshotTests: XCTestCase {
             hosting.displayIfNeeded()
             let fields = Self.descendants(of: hosting).compactMap { $0 as? NSTextField }
                 .filter { $0.isEditable }
-            XCTAssertEqual(fields.map(\.stringValue), ["JET", "CODEX", "7-CUSTOM_1"])
+            XCTAssertEqual(fields.map(\.stringValue), ["JET, CODEX, 7-CUSTOM_1"])
+            let shown = try XCTUnwrap(fields.first).stringValue
+            XCTAssertEqual(ServerSeatNames.draft(from: shown), draft)
             let bitmap = try XCTUnwrap(Self.capture(hosting, in: window, appearance: window.appearance))
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             XCTAssertGreaterThan(png.count, 5000)

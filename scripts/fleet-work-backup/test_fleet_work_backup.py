@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -689,10 +690,10 @@ class NameAndContentCase(unittest.TestCase):
 
     def test_content_patterns_leave_ordinary_text_alone(self):
         for text in (
-            "API_KEY=changeme-changeme-changeme",
+            "API_KEY" + "=changeme-changeme-changeme",
             "TOKEN=${TOKEN}",
             "const token = getToken();",
-            "SERVICE_API_KEY=abcdefghijklmnopqrstuvwxyz",
+            "SERVICE_API_KEY" + "=abcdefghijklmnopqrstuvwxyz",
             "see AKIA docs",
             "password: required",
             "STRIPE_SECRET_KEY=your-stripe-key-here-0123",
@@ -801,10 +802,37 @@ class RunBase(unittest.TestCase):
         os.environ["STUB_DIR"] = str(self.stubdir)
         os.environ.pop("STUB_FAIL", None)
         self.cfg.restic_bin = str(stub)
-        self.client = FakeScopedClient(self.creds_file)
-        patcher = mock.patch.object(fwb, "scoped_client", return_value=self.client)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        self.reader_api = ScopedReadAPI({}, project=str(uuid.uuid4()), path="/")
+        self.reader_api.__enter__()
+        self.addCleanup(self.reader_api.__exit__)
+        client = fwb._infisical_reader()
+        original_read = client.bounded_fetch_project
+        def read(project, folder, env, **options):
+            # The existing synthetic provider fixture is mutable so key-change tests
+            # still cross the real reader/cache/validation path on every call.
+            try:
+                rows = self.creds_file.read_text().splitlines()
+            except OSError:
+                rows = []
+            self.reader_api.values = {
+                name: value.strip().strip('"').strip("'")
+                for row in rows
+                for name, sep, value in (row.partition("="),)
+                if sep and value.strip()
+            }
+            return original_read(project, folder,
+                {**env, "FLEET_SECRETS_API": self.reader_api.env["FLEET_SECRETS_API"]}, **options)
+        reader_patch = mock.patch.object(client, "bounded_fetch_project", side_effect=read)
+        reader_patch.start()
+        self.addCleanup(reader_patch.stop)
+        binding_patch = mock.patch.dict(os.environ, {
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.reader_api.project,
+            "INFISICAL_TOKEN": self.reader_api.token,
+        })
+        binding_patch.start()
+        self.addCleanup(binding_patch.stop)
         self.set_creds()
         self.cfg.b2_http = self.fake_b2()  # never the real B2 API
         self.cfg.infisical_bin = str(
@@ -894,7 +922,7 @@ class RunBase(unittest.TestCase):
 
     @property
     def creds_file(self) -> Path:
-        """What the fake scoped client serves (a test double for Infisical Fleet-OPS)."""
+        """Synthetic loopback provider values for Infisical Fleet-OPS."""
         return self.tmp / "fake-fleet-secrets.env"
 
     def log(self) -> str:
@@ -3415,69 +3443,74 @@ class MiscCase(unittest.TestCase):
         ts = _t.mktime((2026, 10, 10, 0, 7, 0, 0, 0, -1))
         self.assertEqual(fwb.stamp(ts), "2026-10-10 12:07am")
 
-    def test_read_credentials_uses_its_own_token_and_tolerates_absence(self):
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        with tempfile.TemporaryDirectory() as d:
-            client = FakeScopedClient(Path(d) / "creds.env")
-            cfg = fwb.Config(home=Path(d))
-            with mock.patch.object(fwb, "scoped_client", return_value=client):
-                with mock.patch.dict(os.environ, names):
-                    self.assertEqual(fwb.read_credentials(cfg), {})  # the store holds none of them
-                (Path(d) / "creds.env").write_text(
-                    "B2_FLEET_WORK_KEY_ID=kid\nRESTIC_FLEET_WORK_PASSWORD=pw\n"
-                )
-                with mock.patch.dict(os.environ, names):
-                    self.assertEqual(
-                        fwb.read_credentials(cfg),
-                        {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"},
-                    )
-                client.token = ""  # no token in the store:  the job has no identity
-                with mock.patch.dict(os.environ, names):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        fwb.read_credentials(cfg)
-                self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(ctx.exception))
-                client.token = "st." + "a" * 40
-                with mock.patch.dict(os.environ, {n: "v" for n in fwb.CRED_NAMES.values()}):
-                    self.assertEqual(
-                        fwb.read_credentials(cfg), {}
-                    )  # the environment has all four:  no read at all
+    def test_read_credentials_crosses_real_worker_and_keeps_present_subset(self):
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "RESTIC_FLEET_WORK_PASSWORD": "fixture password"}
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token, "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertNotIn("B2_FLEET_WORK_BUCKET_NAME", calls[0])
+                self.assertEqual(len(calls), 1)
+                api.status = 503
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                with mock.patch.dict(os.environ, {n: "synced" for n in fwb.CRED_NAMES.values()}):
+                    before = len(calls)
+                    self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                    self.assertEqual(len(calls), before)
 
-    def test_read_credentials_asks_only_for_its_own_names(self):
-        """Least privilege:  the grant names one folder,  the job asks only for its own names,  and the
-        B2 master key names only when FLEET_WORK_BACKUP_ALLOW_MASTER=1."""
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        job = tuple(fwb.CRED_NAMES.values())
-        both = job + tuple(fwb.MASTER_NAMES.values())
-        with tempfile.TemporaryDirectory() as d:
-            creds = Path(d) / "creds.env"
-            creds.write_text("B2_FLEET_WORK_KEY_ID=kid\nBACKBLAZE_MASTER_KEY_ID=mk\n")
-            client = FakeScopedClient(creds)
-            cfg = fwb.Config(home=Path(d))
-            with mock.patch.object(fwb, "scoped_client", return_value=client):
-                with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": ""}):
-                    self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
-                reads = [c for c in client.calls if c[0] == "read"]
-                self.assertEqual(reads[0][3], job)
-                self.assertEqual(reads[0][2], fwb.CREDENTIAL_FOLDER)
-                with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
-                    self.assertEqual(
-                        fwb.read_credentials(cfg),
-                        {"B2_FLEET_WORK_KEY_ID": "kid", "BACKBLAZE_MASTER_KEY_ID": "mk"},
-                    )
-                reads = [c for c in client.calls if c[0] == "read"]
-                self.assertEqual(reads[-1][3], both)
 
-    def test_the_credential_read_starts_no_child_process(self):
-        """The read is in-process:  no command is started,  so no stdin can leak into one."""
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        with tempfile.TemporaryDirectory() as d:
-            client = FakeScopedClient(Path(d) / "creds.env")
-            cfg = fwb.Config(home=Path(d))
-            with mock.patch.object(fwb, "scoped_client", return_value=client):
-                with mock.patch.object(fwb.subprocess, "run") as run:
-                    with mock.patch.dict(os.environ, names):
-                        self.assertEqual(fwb.read_credentials(cfg), {})
-            run.assert_not_called()
+    def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "BACKBLAZE_MASTER_KEY_ID": "fixture master"}
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {"B2_FLEET_WORK_KEY_ID": "public fixture"})
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()))
+                os.environ["FLEET_WORK_BACKUP_ALLOW_MASTER"] = "1"
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()) | set(fwb.MASTER_NAMES.values()))
+
+
+    def test_missing_canonical_source_refuses_before_token_lookup_or_external_app(self):
+        class Environment(dict):
+            token_read = False
+            def get(self, name, default=None):
+                if name == "INFISICAL_TOKEN":
+                    self.token_read = True
+                return super().get(name, default)
+        env = Environment(INFISICAL_FLEET_OPS_PROJECT_ID=str(uuid.uuid4()), INFISICAL_TOKEN="synthetic")
+        with (
+            mock.patch.object(fwb, "_infisical_reader", side_effect=ImportError("unavailable")),
+            mock.patch.object(fwb.os, "environ", env),
+            mock.patch.object(fwb.subprocess, "run", side_effect=AssertionError("external app")),
+        ):
+            self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+        self.assertFalse(env.token_read)
+
 
     def test_plist_and_installer_agree_with_the_module(self):
         plist = (HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist").read_text()

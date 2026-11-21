@@ -52,7 +52,7 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
             mock.patch.object(server, "_owner_token_from_cli", return_value=uuid.uuid4().hex)
         )
         discovered = stack.enter_context(
-            mock.patch.object(server, "_require_infisical_client", return_value=object())
+            mock.patch.object(server.shutil, "which", return_value="synthetic-cli")
         )
         constructor = stack.enter_context(
             mock.patch.object(app_tokens, "InfisicalSource", return_value=source)
@@ -183,18 +183,15 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
 
 
 class OutcomeCapacityRealSourceTests(unittest.TestCase):
-    """The main-branch Source, the real shared client and the real verifier
-    read only loopback fixtures."""
+    """The direct Source and real bounded verifier read only loopback fixtures."""
 
     def setUp(self):
         scripts = str(Path(__file__).resolve().parents[3] / "scripts")
         sys.path.insert(0, scripts)
         try:
-            import fleet_infisical
             from fleet_knobs.tests._fake import ScopedReadAPI
         finally:
             sys.path.remove(scripts)
-        self.client = fleet_infisical
         self.api = ScopedReadAPI(
             {server.OUTCOMES_CAPACITY_KEY: "20000"}, project=str(uuid.uuid4()), path="/github-apps"
         )
@@ -207,23 +204,58 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
         token = root / "token"
         token.write_text(self.api.token)
         token.chmod(0o600)
+        self.calls = []
+        client = app_tokens._shared_client()
+
+        def reader(project, path, env, **options):
+            self.calls.append((project, path, dict(env), dict(options)))
+            # Only this test callback adds its synthetic loopback endpoint; the
+            # actual Source still supplies its minimal prod/folder environment.
+            return client.bounded_fetch_project(
+                project,
+                path,
+                {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+                **options,
+            )
 
         self.source = app_tokens.InfisicalSource(
+            reader=reader,
             path="/github-apps",
             credential_file=str(token),
             environ={
                 "PATH": os.defpath,
                 "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
-                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+                "INFISICAL_TOKEN": uuid.uuid4().hex,
                 "HOME": str(root),
             },
-            client=fleet_infisical,
         )
 
-    def test_the_real_client_reads_the_single_folder_proven_setting(self):
+    def test_real_bounded_reader_reads_the_single_folder_proven_setting(self):
         self.assertEqual(server._outcome_capacity_from_source(self.source), 20000)
+        self.assertEqual(len(self.calls), 1)
+        project, path, env, options = self.calls[0]
+        self.assertEqual(project, self.api.project)
+        self.assertEqual(path, "/github-apps")
+        self.assertEqual(
+            env,
+            {
+                "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_READ_PATHS": "/github-apps",
+            },
+        )
+        self.assertEqual(
+            options,
+            {
+                "token": self.api.token,
+                "names": (server.OUTCOMES_CAPACITY_KEY,),
+                "timeout": 30,
+                "max_output_bytes": 1048576,
+                "strict_records": True,
+            },
+        )
+        self.assertEqual(len(self.api.requests), 2)
         self.assertEqual(self.api.requests[0], "/api/v2/service-token")
-        self.assertIn("/raw/" + server.OUTCOMES_CAPACITY_KEY + "?", self.api.requests[-1])
+        self.assertIn("/raw/" + server.OUTCOMES_CAPACITY_KEY + "?", self.api.requests[1])
 
     def test_wrong_scope_or_provider_failure_refuses_without_a_value_read(self):
         for metadata, status in (
@@ -240,8 +272,7 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
                 self.assertRaises(app_tokens.AppTokenError),
             ):
                 server._outcome_capacity_from_source(self.source)
-            # No value is read once the grant refuses:  only the grant is asked.
-            self.assertEqual([request for request in self.api.requests if "/raw/" in request], [])
+            self.assertEqual(self.api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":

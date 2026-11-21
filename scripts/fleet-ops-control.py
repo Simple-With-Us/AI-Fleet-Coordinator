@@ -316,6 +316,8 @@ SETTINGS_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
 SETTINGS_STORE = "operator-settings.env"
 SETTINGS_IMAGE = "operator-settings-image.json"
 SETTINGS_BOOTSTRAP_MAX = 64 * 1024
+SETTINGS_BOOTSTRAP_DEPTH = 16
+SETTINGS_BOOTSTRAP_NODES = 1000
 SETTINGS_IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
 SETTINGS_CID_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
@@ -1914,8 +1916,22 @@ def _load_eavesdropper_settings_editor(ctx):
     return module
 
 
-def _settings_refusal():
-    return Refused("the settings bootstrap is unavailable", error_code="bootstrap_unavailable")
+def _settings_refusal(source="operator_settings_bootstrap"):
+    sources = {
+        SETTINGS_PROJECT,
+        SETTINGS_WRITER,
+        "operator_settings_bootstrap",
+        "operator_settings_store",
+        "operator_settings_image",
+        "operator_settings_grant",
+        "fleet_infisical.py",
+    }
+    source = source if source in sources else "operator_settings_bootstrap"
+    refusal = Refused(
+        "the settings bootstrap is unavailable: " + source, error_code="bootstrap_unavailable"
+    )
+    refusal.settings_source = source
+    return refusal
 
 
 def _settings_json(raw):
@@ -1928,7 +1944,21 @@ def _settings_json(raw):
         return result
 
     try:
-        return json.loads(raw, object_pairs_hook=pairs)
+        if len(raw) > SETTINGS_BOOTSTRAP_MAX:
+            raise _settings_refusal()
+        value = json.loads(raw, object_pairs_hook=pairs)
+        pending = [(value, 0)]
+        count = 0
+        while pending:
+            item, depth = pending.pop()
+            count += 1
+            if depth > SETTINGS_BOOTSTRAP_DEPTH or count > SETTINGS_BOOTSTRAP_NODES:
+                raise _settings_refusal()
+            if isinstance(item, dict):
+                pending.extend((child, depth + 1) for pair in item.items() for child in pair)
+            elif isinstance(item, list):
+                pending.extend((child, depth + 1) for child in item)
+        return value
     except (ValueError, UnicodeError, RecursionError):
         raise _settings_refusal() from None
 
@@ -2031,11 +2061,15 @@ def _settings_values(raw):
                 not separator
                 or key not in (SETTINGS_PROJECT, SETTINGS_WRITER)
                 or key in values
-                or not value
                 or any(c.isspace() or c in "\"'" for c in value)
             ):
                 raise _settings_refusal()
+            if not value:
+                raise _settings_refusal(key)
             values[key] = value
+        for name in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            if not values.get(name):
+                raise _settings_refusal(name)
         if (
             set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
             or not re.fullmatch(
@@ -2076,8 +2110,10 @@ def _settings_container(ctx, target=EAVESDROPPER_CONTAINER):
 def _settings_writer_request(ctx, request):
     """Image/CID qualification precedes the only writer-store open."""
     values = {}
+    source = "operator_settings_store"
     try:
         with _settings_directory(ctx) as parent:
+            source = "operator_settings_image"
             raw, _ = _settings_read(parent, SETTINGS_IMAGE, ctx.uid)
             image = _settings_json(raw)
             if (
@@ -2089,13 +2125,14 @@ def _settings_writer_request(ctx, request):
                 or type(image["storeInode"]) is not int
                 or image["storeInode"] <= 0
             ):
-                raise _settings_refusal()
+                raise _settings_refusal(source)
             cid, actual_image = _settings_container(ctx)
             if actual_image != image["imageID"]:
-                raise _settings_refusal()
+                raise _settings_refusal(source)
+            source = "operator_settings_store"
             raw, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
             if inode != image["storeInode"]:
-                raise _settings_refusal()
+                raise _settings_refusal(source)
             values = _settings_values(raw)
             if _settings_container(ctx, cid) != (cid, actual_image):
                 raise _settings_refusal()
@@ -2106,8 +2143,11 @@ def _settings_writer_request(ctx, request):
             if len(envelope) > SETTINGS_BOOTSTRAP_MAX:
                 raise _settings_refusal()
             return cid, envelope
-    except OSError:
-        raise _settings_refusal() from None
+    except (OSError, Refused) as exc:
+        reported = getattr(exc, "settings_source", source)
+        raise _settings_refusal(
+            source if reported == "operator_settings_bootstrap" else reported
+        ) from None
     finally:
         values.clear()
         raw = envelope = b""
@@ -2117,6 +2157,7 @@ def receive_settings_bootstrap(ctx):
     """Local installer only; credentials remain unusable until grant/image checks pass."""
     values = {}
     raw = None
+    source = "operator_settings_bootstrap"
     try:
         raw = ctx.stdin()
         if not ctx.platform.startswith("linux") or ctx.uid == 0:
@@ -2131,19 +2172,26 @@ def receive_settings_bootstrap(ctx):
             or not isinstance(envelope["imageID"], str)
             or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
             or not isinstance(envelope["bootstrap"], dict)
-            or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
             or any(not isinstance(value, str) for value in envelope["bootstrap"].values())
         ):
+            raise _settings_refusal()
+        for name in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            if not envelope["bootstrap"].get(name):
+                raise _settings_refusal(name)
+        if set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}:
             raise _settings_refusal()
         payload = "".join(
             key + "=" + envelope["bootstrap"][key] + "\n"
             for key in (SETTINGS_PROJECT, SETTINGS_WRITER)
         ).encode("ascii")
         values = _settings_values(payload)
+        source = "operator_settings_image"
         cid, image = _settings_container(ctx)
         if image != envelope["imageID"]:
             raise _settings_refusal()
+        source = "fleet_infisical.py"
         reader = _load_infisical_reader(ctx)
+        source = "operator_settings_store"
         with _settings_directory(ctx, create=True) as parent:
             # Do not overwrite either half of an existing or incomplete handoff.
             for name in (SETTINGS_STORE, SETTINGS_IMAGE):
@@ -2168,6 +2216,7 @@ def receive_settings_bootstrap(ctx):
                 ):
                     raise _settings_refusal()
 
+            source = "operator_settings_grant"
             reader.validate_service_metadata = finite_grant
             try:
                 reader.verify_service_token(
@@ -2180,13 +2229,26 @@ def receive_settings_bootstrap(ctx):
                 )
             finally:
                 reader.validate_service_metadata = original
+            source = "operator_settings_image"
             if _settings_container(ctx, cid) != (cid, image):
                 raise _settings_refusal()
             metadata = dict(protocol="operator-settings-image/1", imageID=image, storeInode=inode)
             _settings_publish(parent, SETTINGS_IMAGE, json.dumps(metadata).encode())
         return {"ok": True, "result": "installed"}, 0
-    except Exception:  # noqa: BLE001 - no input, provider prose or credential can become an answer
-        return {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+    except Exception as exc:  # noqa: BLE001 - only fixed source names become an answer
+        reported = getattr(exc, "settings_source", source)
+        refusal = _settings_refusal(
+            source if reported == "operator_settings_bootstrap" else reported
+        )
+        answer = {
+            "ok": False,
+            "result": "refused",
+            "errorCode": "bootstrap_unavailable",
+            "unavailableSource": refusal.settings_source,
+        }
+        if refusal.settings_source in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            answer["requiredBinding"] = refusal.settings_source
+        return answer, 2
     finally:
         values.clear()
         raw = payload = stored = b""
@@ -4176,7 +4238,9 @@ def read_coolify_token(ctx):
     env["HOME"] = str(ctx.home)
     env[client.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
     try:
-        value = client.fetch_verified(COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token)
+        value = client.fetch_verified(
+            COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token, timeout=SECRET_TIMEOUT
+        )
     except client.SecretsError:
         raise Failed("the Coolify token is not available") from None
     if not value or any(c.isspace() or ord(c) < 33 for c in value):
@@ -5525,7 +5589,17 @@ def main(argv=None, ctx=None, out=None, muster=None):
         out = out or sys.stdout
         environment = os.environ if ctx is None else ctx.environ
         if argv != [SETTINGS_RECEIVE] or "SSH_ORIGINAL_COMMAND" in environment:
-            out.write('{"ok":false,"result":"refused","errorCode":"bootstrap_unavailable"}\n')
+            out.write(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "result": "refused",
+                        "errorCode": "bootstrap_unavailable",
+                        "unavailableSource": "operator_settings_bootstrap",
+                    }
+                )
+                + "\n"
+            )
             return 2
         if ctx is None:
             import pwd
@@ -5541,7 +5615,12 @@ def main(argv=None, ctx=None, out=None, muster=None):
             answer, code = receive_settings_bootstrap(ctx)
         except Exception:  # noqa: BLE001 - the local receiver never emits input or provider text
             answer, code = (
-                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                {
+                    "ok": False,
+                    "result": "refused",
+                    "errorCode": "bootstrap_unavailable",
+                    "unavailableSource": "operator_settings_bootstrap",
+                },
                 2,
             )
         finally:

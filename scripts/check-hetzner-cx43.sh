@@ -6,35 +6,32 @@
 # HIT only when an 8-vCPU type cheaper than the current monthly price is
 # available for migration in nbg1.  cx43 itself being listed is not a HIT
 # -- we already run that.  Never echoes the token.
-# Live cron runs ~/apps/check-hetzner-cx43.sh -- keep that copy in sync.
+# The historical cron was retired 2026-08-28 (docs/MAC-LOCAL-PROCESSES.md).
+# An on-demand copy requires this checker, fleet_infisical_cli.py and
+# fleet_infisical.py together in one reviewed bundle; no cron is installed here.
 
 set -uo pipefail
 
-# Cron's PATH is minimal, so the reader's full path;  override with INFISICAL_SCOPED_READER.
-READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+# Resolve the shared reader beside this checker in the reviewed on-demand bundle.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FLEET_INFISICAL_CLI="${SCRIPT_DIR}/fleet_infisical_cli.py"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# Environment first, then the shared scoped reader with this watcher's own service token
-# (OPS-1096;  the old flat secrets file is retired, AFC-359).
+# Environment first, then the shared direct Infisical reader (the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
-READER_REASON=""
-if [ -z "$TOKEN" ] && [ ! -x "$READER" ]; then
-  READER_REASON="the shared scoped reader is not installed at ${READER}"
-fi
-if [ -z "$TOKEN" ] && [ -x "$READER" ]; then
-  # The folder is the one the token's own grant covers:  hetzner-cx43-watch-ro is scoped to
-  # Fleet-OPS prod /global-api-keys, and a grant covers exactly its own folder.
-  READER_ERR="$(mktemp)"
-  TOKEN="$(python3 "$READER" get HCLOUD_TOKEN --folder /global-api-keys --project fleet-ops --account hetzner-cx43-watch-ro 2>"$READER_ERR")" || TOKEN=""
-  READER_REASON="$(tr '\n' ' ' <"$READER_ERR" 2>/dev/null || true)"
-  rm -f "$READER_ERR"
+if [ -z "$TOKEN" ]; then
+  if [ ! -f "$FLEET_INFISICAL_CLI" ] || [ ! -f "${SCRIPT_DIR}/fleet_infisical.py" ]; then
+    echo "$STAMP  ERROR: shared Infisical reader pair missing" >> "$LOG"
+    exit 1
+  fi
+  TOKEN="$(/usr/bin/python3 -I "$FLEET_INFISICAL_CLI" get HCLOUD_TOKEN --path / --project fleet-ops 2>/dev/null || true)"
 fi
 if [ -z "$TOKEN" ]; then
-  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty:  the hetzner-cx43-watch-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${READER}${READER_REASON:+ (${READER_REASON})}" >> "$LOG"
+  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty:  the shared Infisical reader could not return it from Infisical Fleet-OPS prod root through ${FLEET_INFISICAL_CLI}" >> "$LOG"
   exit 1
 fi
 

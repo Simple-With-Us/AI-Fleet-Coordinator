@@ -133,7 +133,7 @@ def fs_get(name, project, path):
     # resolves the project from there, and the grant check, the query and the
     # provenance check then all use one workspace.
     scoped[FI.ENV_PROJECT] = project_id
-    token = (env.get(FI.ENV_AI_FLEET_COORDINATOR_TOKEN) or "").strip()
+    token = (env.get(FI.COORDINATOR_READ_TOKEN_ENV_NAME) or "").strip()
     if not token:
         token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
     if not token:
@@ -223,13 +223,13 @@ def post_json(url, body, headers=None, timeout=40):
 
 def zulip(path, email, api_key, form=None, method="GET"):
     """One Zulip API call.  Returns (status, the parsed body or None)."""
-    token = base64.b64encode(f"{email}:{api_key}".encode()).decode()
+    basic = base64.b64encode(f"{email}:{api_key}".encode()).decode()
     body = urllib.parse.urlencode(form).encode() if form is not None else None
     request = urllib.request.Request(
         f"{ZULIP_API}{path}",
         data=body,
         headers={
-            "Authorization": f"Basic {token}",
+            "Authorization": f"Basic {basic}",
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": USER_AGENT,
         },

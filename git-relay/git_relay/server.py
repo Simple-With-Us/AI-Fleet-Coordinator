@@ -1072,16 +1072,16 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         account = SeatPolicy.create_repo_account(owner)
         if account is None:
             raise ValueError("repository owner is not allowed")
-        token = None
+        app_token = None
         try:
-            token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
+            app_token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
             try:
                 return self.client.create_repo(
                     repo,
                     args["visibility"],
                     description=args.get("description"),
                     license_template=args.get("license_template"),
-                    bearer=token,
+                    bearer=app_token,
                     kind=account[1],
                 )
             except RelayGitHubError as exc:
@@ -1089,8 +1089,8 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
                     raise PreReadUnavailable() from None
                 raise
         finally:
-            if token is not None:
-                self.app_minter.revoke_installation_token(token)
+            if app_token is not None:
+                self.app_minter.revoke_installation_token(app_token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
     if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
@@ -1448,7 +1448,7 @@ def _build_shared_verifier():
     """The ST-MCP shared-bearer verifier, or None when not configured.
 
     Set GIT_RELAY_VERIFY_URL to resolve admin-minted per-identity bearers
-    through the Worker's verify route.  The route key is a scoped store read
+    through the Worker's verify route.  The route key is a scoped Infisical read
     like every other credential here;  a configured URL with an unreadable or
     short key is a startup error, never silent unauthenticated operation.
 
@@ -1459,7 +1459,6 @@ def _build_shared_verifier():
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
         return None
-    _require_infisical_client()
     from .app_tokens import AppTokenError, InfisicalSource
     from .shared_bearer import SharedBearerVerifier
 
@@ -1468,12 +1467,9 @@ def _build_shared_verifier():
         return SharedBearerVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            # The host plan provisions TWO scoped service tokens:  the
-            # owner-only /git-relay-owner token, and the existing App
-            # reader whose scope already covers /github-apps and /tools.
-            # The verify-key source therefore binds the App credential
-            # file by default;  GIT_RELAY_TOOLS_CREDENTIAL_FILE exists
-            # only for a future split.
+            # Preserve the existing file selector, without claiming its grant covers /tools.
+            # The canonical verifier requires exactly this one folder; the legacy two-folder
+            # grant cannot satisfy it.  Activation needs the verified dedicated tools binding.
             key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
@@ -1516,7 +1512,6 @@ def _build_assertion_verifier():
         raise SystemExit(
             "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
         )
-    _require_infisical_client()
     from .app_tokens import AppTokenError, InfisicalSource
     from .assertion import GrAssertionVerifier
 
@@ -1525,9 +1520,8 @@ def _build_assertion_verifier():
         return GrAssertionVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            # Same source binding rules as the bearer verify key (see
-            # _build_shared_verifier):  the App credential file's scope covers
-            # /tools;  GIT_RELAY_TOOLS_CREDENTIAL_FILE is the future split.
+            # Same existing file selector and dedicated-binding activation gate as the bearer
+            # verify key above; this source change neither widens nor proves a grant.
             key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
@@ -1592,11 +1586,7 @@ def from_env() -> Relay:
     app_source = None
     outcome_capacity = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
-        # App-credential reads go through the shared Infisical client and the
-        # relay's own scoped service token (owner decision 2026-10-21:  no env
-        # secrets, one shared client).  That client must be installed on this
-        # host or App actions stay unavailable.
-        _require_infisical_client()
+        # The existing source uses the canonical bounded reader with its own token file.
         from .app_tokens import AppTokenError, AppTokenMinter, InfisicalSource
 
         # The Fleet-OPS prod folder the App keys are read from.  Defaults to
@@ -1613,11 +1603,6 @@ def from_env() -> Relay:
         try:
             app_source = InfisicalSource(
                 path=(raw_secrets_path or "/github-apps").strip(),
-                # The relay's own store is the authority for the token:  the credential
-                # file the unit binds,  else this folder's registered account in the
-                # relay's own store,  which the source derives from its own table.
-                # A token in the process environment is only a copy of that same grant,
-                # and it is used when the store has none.
                 credential_file=_credential_file_for(
                     "the App-credentials source",
                     "GIT_RELAY_APPS_CREDENTIAL_FILE",
@@ -1664,31 +1649,15 @@ def from_env() -> Relay:
     )
 
 
-def _require_infisical_client():
-    """The shared Infisical client this host must carry, or refuse to start.
-
-    The relay reads every credential through the one shared client the fleet
-    uses.  A host without that client has no approved credential path, so it
-    refuses to start rather than falling back to an ambient token.
-    """
-    from .app_tokens import AppTokenError, load_infisical_client
-
-    try:
-        return load_infisical_client()
-    except AppTokenError as exc:
-        raise SystemExit(f"git-relay config: {exc}") from exc
-
-
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
-    """The protected Infisical-token file one store source runs under.
+    """The protected Infisical-token file one scoped source reads.
 
     Production resolves it from systemd's CREDENTIALS_DIRECTORY (the unit's
     LoadCredential keys are the default file names) or an explicit
     GIT_RELAY_*_CREDENTIAL_FILE override;  a set-but-empty override is a
     config error like any other.  With neither, startup REFUSES - the
-    process environment is never a secret source, and a CLI child that
-    inherits it would pick up co-located secrets (seat tokens, another
-    scope's token).  There is no inheritance escape:  tests and local
+    process environment is never a secret source.  No co-located secret
+    (seat tokens or another scope's token) supplies a missing binding.  Tests and local
     runs point the variables at their own files.  Names scopes and
     variables only, never file contents.
     """
@@ -1708,8 +1677,8 @@ def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | N
 
 
 def _owner_token_from_cli() -> str:
-    """The owner PAT for open_pr, read once at startup through the shared
-    client at its fixed folder (/git-relay-owner):  the client proves the
+    """Compatibility-named owner PAT factory, read once through the shared named reader
+    at its fixed folder (/git-relay-owner): the canonical reader proves the
     value came from that exact folder before answering.  Never the process
     environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
     fallback source (owner direction 2026-10-21 + the /git-relay-owner

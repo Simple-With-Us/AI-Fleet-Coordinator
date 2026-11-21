@@ -51,13 +51,11 @@ INVENTORY_WANTED_RETRY_SECONDS = 60
 INVENTORY_MAX_AGE_SECONDS = 86400
 ACCOUNT_ID_ENV = "CF_USAGE_WATCHDOG_ACCOUNT_ID"
 ACCOUNT_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
-# The token lives in the consumer's own store (the owner's login keychain on the Mac, a private
-# file on a server);  the shared Infisical client checks the token's own grant and the answer's
-# own provenance before a value is used.
-TOKEN_ACCOUNT = "cf-usage-watchdog-ro"
 MINUTE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z")
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+MAX_CREDENTIAL_BYTES = 8192
+CREDENTIAL_READ_TIMEOUT = 30
 ROW_LIMIT = 2000
 STORAGE_ROW_LIMIT = 500
 
@@ -626,43 +624,67 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """Named direct read using only this service's own scoped token.
+        """Named direct read using only this service's explicit scoped token.
 
-        The service's own registered account is the source:  its grant covers exactly the
-        one folder this read declares,  and the client refuses a read whose declared
-        folders are not the grant's folders.  The environment may carry a copy of that
-        same token and is the fallback when the store holds no usable one.  An ambient
-        token with a wider grant is never the first choice,  and there is no PATH helper,
+        The read runs under the one token this service's own store holds for it:  its grant
+        covers exactly the one folder this read declares,  and the client refuses a read
+        whose declared folders are not the grant's folders.  There is no PATH helper,
         CLI login or machine identity in this path.
         """
         conf = self.cfg["infisical"]
+        fi = None
         try:
             if self.secret_reader is not None:
                 return self.secret_reader(name)
-            # Import from this installation, never a PATH helper or implicit login.
+            # Use the checked, cached sibling-client loader; never a PATH helper.
             if str(HERE.parent) not in sys.path:
                 sys.path.insert(0, str(HERE.parent))
-            import fleet_infisical as fi
+            from fleet_knobs import source as knob_source
 
-            account = conf.get("token_account", TOKEN_ACCOUNT)
-            token, status = fi.token_from_store(account, self.env)
-            if not token:
-                token = (self.env.get("INFISICAL_TOKEN") or "").strip()
-                if not token:
-                    raise PollError(
-                        "credential-binding-missing:  the shared Infisical client "
-                        f"(fleet_infisical.py) and the {account} service-token store are "
-                        f"unavailable or refused ({status})"
-                    )
+            expected_source = (HERE.parent / "fleet_knobs" / "source.py").resolve()
+            if Path(getattr(knob_source, "__file__", "")).resolve() != expected_source:
+                raise ImportError("foreign checked reader loader")
+            fi = knob_source.HELPER_LOADER()
+            if fi is None:
+                raise ImportError("shared reader unavailable")
+        except PollError:
+            raise
+        except Exception:
+            # Do not pass a binding to a module that did not come from the checked loader.
+            raise PollError("credential-fetch-reader-unavailable") from None
+
+        token = (self.env.get("INFISICAL_TOKEN") or "").strip()
+        if not token:
+            raise PollError("credential-binding-missing-INFISICAL_TOKEN")
+        try:
             project = fi.infisical_project_id(self.env, fi.home_dir(self.env), conf["project"])
-            values = fi.fetch_project(
-                project, conf["path"], self.env, token=token, names=[name], timeout=30
+            values = fi.bounded_fetch_project(
+                project,
+                conf["path"],
+                {
+                    "INFISICAL_ENVIRONMENT": "prod",
+                    "INFISICAL_READ_PATHS": conf["path"],
+                },
+                token=token,
+                names=(name,),
+                timeout=CREDENTIAL_READ_TIMEOUT,
+                max_output_bytes=MAX_CREDENTIAL_BYTES,
+                strict_records=True,
+                require_finite_expiry=True,
             )
         except PollError:
             raise
         except Exception as exc:
+            error_type = getattr(fi, "SecretsError", ())
+            if (
+                isinstance(error_type, type)
+                and isinstance(exc, error_type)
+                and getattr(exc, "failure_kind", None) == "unavailable"
+                and str(exc) == "bounded-read-timeout"
+            ):
+                raise PollError("credential-fetch-timeout") from None
             # No provider error, response body, credential or URL reaches logs.
-            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
+            raise PollError("credential-fetch-failed") from None
         return values.get(name) or None
 
     def token(self) -> str:

@@ -41,6 +41,9 @@ Docs:  scripts/fleet-work-backup/README.md and RESTORE.md.
 
 from __future__ import annotations
 
+import importlib.util
+import stat
+import threading
 import argparse
 import base64
 import concurrent.futures as cf
@@ -2784,81 +2787,141 @@ MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTE
 
 # The job's own scoped token:  one read-only grant on the one folder that holds this job's
 # credentials.  The account is the token's registry name in the host's approved store (the
-# owner's keychain on the Mac, a private file on a server).  The folder is the one that
-# really holds the names:  the project root holds the same values as literals, and the
-# root is a wider grant than this job needs.
+# owner's keychain on the Mac, a private file on a server).  The store is the authority:  a
+# token bound in the environment is only a copy of that same grant,  and it is used when the
+# store has none.
 CREDENTIAL_TOKEN_ACCOUNT = "fleet-work-backup-ro"
-CREDENTIAL_FOLDER = "/global-api-keys"
+# The folder the job's own names live in.
+CREDENTIAL_FOLDER = "/"
+
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_fleet_work_backup_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
 
 
-def scoped_client():
-    """The shared scoped Infisical client, imported from beside this module."""
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parents[1] / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _own_token(client):
+    """The job's own scoped token:  its own store first,  the host's bound copy second.
+
+    The store is the authority:  it is the home the process was given,  so a process
+    with no home has no store and falls back to the copy the host bound.  The client
+    still checks the token's own grant,  so a copy is only ever used for the folder
+    that grant names."""
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        try:
+            token, _status = client.token_from_store(
+                CREDENTIAL_TOKEN_ACCOUNT, dict(os.environ), Path(home)
+            )
+        except Exception:
+            token = ""
+        if token:
+            return token
+    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
     try:
-        import fleet_infisical
-    except ImportError:
-        return None
-    return fleet_infisical
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = _own_token(client)
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
+        )
+    except Exception:
+        return {}
 
 
 def read_credentials(cfg: Config) -> dict[str, str]:
-    """The credentials this job uses, read through its own scoped token.
-
-    The values a host already bound in the environment are the job's own binding and are
-    never second-guessed;  the token is this job's own scoped service token, read from its
-    own store, and it is the only credential the read runs under.  There is no other
-    credential source:  no retired reader command,  no shared reader and no credential file.
-    Without that token the job has no identity at all,  so the run stops there and says so;
-    a read that fails leaves the missing NAMES for the caller to report.  Values stay in
-    this process.
-
-    Least privilege:  the token's grant names exactly the one folder,  and only the job's own
-    names are asked for;  the B2 master key names are asked for only when
-    FLEET_WORK_BACKUP_ALLOW_MASTER=1,  the same gate ``restic_env`` applies before it uses them.
-    One read covers every name,  and a name that is absent or unreadable does not hide the
-    names that are there."""
-    if all(os.environ.get(n) for n in CRED_NAMES.values()):
+    """Read only missing job names; master names retain the explicit restore gate."""
+    if all(os.environ.get(name) for name in CRED_NAMES.values()):
         return {}
-    client = scoped_client()
-    if client is None:
-        raise RuntimeError(
-            f"fleet-work-backup: the shared Infisical client is not importable,  so the "
-            f"{CREDENTIAL_TOKEN_ACCOUNT} scoped service token cannot be read"
-        )
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    token, status = client.token_from_store(CREDENTIAL_TOKEN_ACCOUNT, os.environ, cfg.home)
-    if not token:
-        raise RuntimeError(
-            f"fleet-work-backup: the {CREDENTIAL_TOKEN_ACCOUNT} service-token store is "
-            f"unavailable or refused ({status}),  so this job has no identity"
-        )
-    env = dict(os.environ)
-    env[client.ENV_READ_PATHS] = CREDENTIAL_FOLDER
-    try:
-        project = client.infisical_project_id(env, cfg.home)
-    except client.SecretsError as exc:
-        # The reason is the failure's own code,  never its message:  a message from the
-        # provider can carry a response body,  and that never reaches a log.
-        raise RuntimeError(
-            f"fleet-work-backup: the Fleet-OPS project id is unavailable:  the shared "
-            f"Infisical client refused it (code {exc.code})"
-        ) from None
-    try:
-        found = client.fetch_project(
-            project, CREDENTIAL_FOLDER, env, token=token, names=wanted
-        )
-    except client.SecretsError as exc:
-        raise RuntimeError(
-            f"fleet-work-backup: the scoped read failed:  the {CREDENTIAL_TOKEN_ACCOUNT} scoped "
-            f"service token could not read {CREDENTIAL_FOLDER} (code {exc.code})"
-        ) from None
-    out: dict[str, str] = {}
-    for name in wanted:
-        value = found.get(name)
-        if isinstance(value, str) and value:
-            out[name] = value
-    return out
+    wanted = tuple(name for name in wanted if not os.environ.get(name))
+    if not wanted:
+        return {}
+    values = _read_infisical_names(wanted, CREDENTIAL_FOLDER)
+    return {
+        name: value
+        for name, value in values.items()
+        if name in wanted and isinstance(value, str) and value
+    }
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:

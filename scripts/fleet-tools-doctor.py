@@ -149,6 +149,7 @@ SHIPPED = (
     "scripts/fleet-ops-eavesdropper-settings.json",
     "scripts/fleet_infisical_bootstrap.py",
     "scripts/fleet_infisical_cli.py",
+    "scripts/infisical-scoped.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
@@ -183,6 +184,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/service_zulip.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -200,6 +202,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-412 PR2:  mirrors the release EXACT entry for the Operator chat-thread registry drain.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
         # OPS-1048:  mirror the release EXACT entries for the wake bridges (the receivers the seats' http
@@ -218,6 +221,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
+        "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",
         "scripts/fleet_rag/infisical_settings.py",
         "scripts/fleet_rag/public_fallback.py",
@@ -539,6 +543,7 @@ SHIPPED_REPO_ONLY = frozenset(
         # The thread-registry exporter node test: mirrors the release REPO_ONLY
         # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
         "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 
@@ -1562,19 +1567,19 @@ def infisical_names(
         scoped[client.ENV_READ_PATHS] = folder
         account = DOCTOR_TOKEN_ACCOUNTS.get((project, folder), "")
         status = "no-token"
-        token = ""
+        read_token = ""
         if account:
-            token, status = client.token_from_store(account, scoped, HOME)
-        if not token:
+            read_token, status = client.token_from_store(account, scoped, HOME)
+        if not read_token:
             try:
-                token = client.resolve_token(scoped, project_name=project)
+                read_token = client.resolve_token(scoped, project_name=project)
             except client.SecretsError:
-                token = ""
-        if token:
+                read_token = ""
+        if read_token:
             try:
                 project_id = client.infisical_project_id(scoped, HOME, project)
                 names = frozenset(
-                    client.list_project_names(project_id, folder, scoped, token=token, timeout=60)
+                    client.list_project_names(project_id, folder, scoped, token=read_token, timeout=60)
                 )
             except (client.SecretsError, OSError, ValueError):
                 names = None

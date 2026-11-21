@@ -176,7 +176,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 Read by the job from the environment, else one scoped Infisical fetch (OPS-818;  the flat file `global-api-keys` is no longer read), into the restic
 subprocess environment only.  The fetch runs under the job's own scoped service token, read from the job's own store, and that store is the authority
-for the token:  the environment may carry only a copy of that same token, used when the store holds no usable token.  A value the host bound in the
+for the token:  the environment may carry only a copy of that same token, used when the scoped read populated it.  A value the host bound in the
 environment is the job's own binding and is never second-guessed.  Names, never values:
 
 | Name | Use |
