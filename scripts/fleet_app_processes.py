@@ -83,8 +83,9 @@ STATE_FOR_CODE = {
 # The identities this repository ships, by app.  Each is (app, kind, value, exact):  `kind` is
 # launchd, pm2, systemd or executable, and `exact` False means the value is a prefix.  These
 # come first;  every other app is matched by its own name below (see slug_rules).
-# test_fleet_app_processes.py holds the AI-Fleet-Coordinator rows to the templates in
-# scripts/launchd, scripts/systemd, scripts/host, scripts/hetzner and scripts/fleet_lanes.
+# test_fleet_app_processes.py holds the AI-Fleet-Coordinator rows to shipped templates in
+# scripts/launchd, scripts/systemd, scripts/host, scripts/hetzner and scripts/fleet_lanes;
+# intentional legacy runtime rows remain until the separate retirement gate confirms removal.
 EXPLICIT_RULES = (
     # BotFleet:  its own LaunchAgents, the Mac's launcher for BotFleet Server, and the MCP
     # adapter pm2 runs (docs/MAC-LOCAL-PROCESSES.md).
@@ -140,8 +141,7 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "afc-wake-router.service", True),
     # Its TLS front on the tailnet address (install-wake-router.sh), also a systemd --user unit.
     ("AFC", "systemd", "afc-wake-tls.service", True),
-    # The shared Cursor Cloud letter sweep (AFC-694, install-cursor-cloud-letters.sh), a
-    # systemd --user unit named for no seat.
+    # Legacy install tracked until the runtime retirement gate confirms the old unit is stopped.
     ("AFC", "systemd", "afc-cursor-cloud-letters.service", True),
     # Clutch's browser UI, and Congress.Trade's scanned-PTR worker (docs/MAC-LOCAL-PROCESSES.md).
     ("C", "pm2", "clutch-web", True),

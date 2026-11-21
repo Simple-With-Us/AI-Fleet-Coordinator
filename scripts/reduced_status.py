@@ -65,7 +65,11 @@ The document:
      "disabled": [name],
      "registry_sweep": {"ran_at": ISO | null, "ok": bool | null, "ended": int | null,
                         "error": code | null, "stale_after_minutes": int | null,
-                        "refused": int | null, "refused_platforms": [token]}}
+                        "refused": int | null, "refused_platforms": [token],
+                        "feeds": [{"name": token, "ok": bool | null, "credential_configured": bool | null,
+                                   "complete": bool | null, "error": code | null, "agents": int | null,
+                                   "stale": int | null, "invalid": int | null, "errors": int | null,
+                                   "refused": int | null, "cleanup_protected": bool | null}]}}
 
 `registry_sweep` was added after v1 shipped.  It is additive:  a reader that does not know the key
 ignores it, so `schema` stays 1.  Each seat's `routine` came later still, in the same way:  a
@@ -134,6 +138,8 @@ changes):
     source as an exception's class name and message, so the class picks a fixed code
     (`registry_unavailable`, or `registry_error` for any other class whose name ends in Error)
     and the message is dropped;  anything else is null.  A
+    `feeds` contains provider configuration and health counts only; provider rows, host names,
+    native session IDs, titles and credential fields are never copied.  A
     block that is absent (the Mac, a listener from before AFC-721, or a server before its first
     pass, all of which write null) or is not an object reads as all null with no platforms, as
     `operator_voice` does.
@@ -210,6 +216,7 @@ MAX_LEASES = 16
 MAX_NAMES = 96
 MAX_SKIPPED = 64
 MAX_SWEEP_PLATFORMS = 16
+MAX_SWEEP_FEEDS = 16
 COUNT_MAX = 1_000_000_000
 TOKEN_MAX = 24
 CODE_MAX = 48
@@ -649,8 +656,10 @@ def _disabled(raw: Any) -> list[str]:
 def _sweep_error(value: Any) -> str | None:
     """The sweep's error as a code:  already one, or picked by the exception class it names."""
     code = _code(value)
-    if code is not None or not isinstance(value, str):
+    if code in {"platform_feed_failed", "sweep_share_exceeded"}:
         return code
+    if code is not None or not isinstance(value, str):
+        return None
     found = _SWEEP_ERROR_CLASS_RE.match(value[:80])
     if found is None:
         return None
@@ -658,6 +667,14 @@ def _sweep_error(value: Any) -> str | None:
     if name in _SWEEP_ERROR_CLASSES:
         return _SWEEP_ERROR_CLASSES[name]
     return "registry_error" if name.endswith("Error") else None
+
+
+def _feed_error(value: Any) -> str | None:
+    if value == "credential-binding-missing":
+        return "credential_binding_missing"
+    if value == "registry_unavailable":
+        return "registry_unavailable"
+    return "provider_error" if value else None
 
 
 def _registry_sweep(raw: Any) -> dict[str, Any]:
@@ -671,6 +688,7 @@ def _registry_sweep(raw: Any) -> dict[str, Any]:
         "stale_after_minutes": None,
         "refused": None,
         "refused_platforms": [],
+        "feeds": [],
     }
     if not isinstance(raw, dict):
         return out
@@ -686,6 +704,31 @@ def _registry_sweep(raw: Any) -> dict[str, Any]:
         # Every valid platform, once, and only then the cap, as in `_disabled`.
         platforms = {name for name in (_token(row.get("platform")) for row in rows) if name}
         out["refused_platforms"] = sorted(platforms)[:MAX_SWEEP_PLATFORMS]
+    feeds = raw.get("feeds")
+    if isinstance(feeds, dict):
+        rows = []
+        for name, value in sorted(feeds.items()):
+            safe_name = _token(name)
+            if safe_name is None or not isinstance(value, dict):
+                continue
+            rows.append(
+                {
+                    "name": safe_name,
+                    "ok": _bool(value.get("ok")),
+                    "credential_configured": _bool(value.get("credential_configured")),
+                    "complete": _bool(value.get("complete")),
+                    "error": _feed_error(value.get("error")),
+                    "agents": _count(value.get("agents")),
+                    "stale": _count(value.get("stale")),
+                    "invalid": _count(value.get("invalid")),
+                    "errors": _count(value.get("errors")),
+                    "refused": _count(value.get("refused")),
+                    "cleanup_protected": _bool(value.get("protect_stale_cleanup")),
+                }
+            )
+            if len(rows) >= MAX_SWEEP_FEEDS:
+                break
+        out["feeds"] = rows
     return out
 
 

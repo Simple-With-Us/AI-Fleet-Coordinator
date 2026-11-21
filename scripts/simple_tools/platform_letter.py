@@ -133,7 +133,7 @@ ENTRY = "platform-letter"
 SCOPE = "default"
 LOCATIONS = ("mac", "server")
 # The locations the registry side takes:  a hook runs on the Mac or the server, and a chat no hook runs in (a Cursor
-# Cloud agent, which `cursor_cloud_letters` registers from the Cursor API) is in the cloud.
+# Cloud agent, which the shared Operator feed registers from the Cursor API) is in the cloud.
 REGISTRY_LOCATIONS = LOCATIONS + ("cloud",)
 PLATFORM_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
 LABEL_RE = re.compile(r"[A-Z]{1,2}")
@@ -952,11 +952,13 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _call_api(
-    env: Mapping[str, str], op: str, params: Mapping[str, Any], timeout: int = 0
+    env: Mapping[str, str], op: str, params: Mapping[str, Any], timeout: int = 0,
+    api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from . import registry_api
 
-    return registry_api.call(env, op, params, timeout=timeout or _API_TIMEOUT)
+    call = api_call or registry_api.call
+    return call(env, op, params, timeout=timeout or _API_TIMEOUT)
 
 
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -994,7 +996,8 @@ def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
 
 
 def _register_api(
-    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0
+    OR: Any, env: Mapping[str, str], args: Any, sid: str, timeout: int = 0,
+    api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
 
@@ -1021,7 +1024,7 @@ def _register_api(
     }
     if parent:
         params["parent_session_id"] = parent
-    out = _call_api(env, "register", params, timeout=timeout)
+    out = _call_api(env, "register", params, timeout=timeout, api_call=api_call)
     if out.get("code") == "labels_exhausted":
         return {"error": refused_text(OR, args.platform), "code": "labels_exhausted", "swept": 0}
     error = _api_error(out)
@@ -1036,7 +1039,7 @@ def _register_api(
         }
         if parent:
             reopen_params["parent_session_id"] = parent
-        reopened = _call_api(env, "reopen", reopen_params, timeout=timeout)
+        reopened = _call_api(env, "reopen", reopen_params, timeout=timeout, api_call=api_call)
         if reopened.get("code") == "labels_exhausted":
             return {
                 "error": refused_text(OR, args.platform),
@@ -1062,7 +1065,8 @@ def _register_api(
         }
     if title and out.get("outcome") in ("resumed", "reopened"):
         updated = _call_api(
-            env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout
+            env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout,
+            api_call=api_call,
         )
         error = _api_error(updated)
         if error is not None:
@@ -1280,6 +1284,7 @@ def registry_main(
     stdout: TextIO,
     now: float | None = None,
     call_timeout: int = 0,
+    api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> int:
     """`registry OP --platform P --location L --session-id S [--seat SEAT] [--title T] [--source SRC]
     [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.  The
@@ -1312,7 +1317,7 @@ def registry_main(
         else:
             sid = SI.check(args.session_id, "the session id")
             if args.op == "register":
-                out = _register_api(OR, env, args, sid, timeout=call_timeout)
+                out = _register_api(OR, env, args, sid, timeout=call_timeout, api_call=api_call)
             else:
                 out = _on_record_api(OR, env, args, sid, timeout=call_timeout)
     except ValueError as exc:
@@ -1435,9 +1440,10 @@ class Chat:
         now: float,
         transport: Transport | None = None,
         seat: str = "",
+        api_call: Callable[..., dict[str, Any]] | None = None,
     ):
         self.spec, self.env, self.location, self.session_id = spec, env, where, sid
-        self.now, self.transport = now, transport
+        self.now, self.transport, self.api_call = now, transport, api_call
         self.seat = seat or spec.seat_for({}, env)
         self.path = note_path(env, self.seat, sid)
 
@@ -1554,18 +1560,20 @@ class Chat:
             self.env,
             self.transport,
             timeout or self.spec.call_timeout,
+            api_call=self.api_call,
         )
 
 
 def _registry_side(
-    argv: list[str], env: Mapping[str, str], transport: Transport | None, call_timeout: int = 0
+    argv: list[str], env: Mapping[str, str], transport: Transport | None, call_timeout: int = 0,
+    *, api_call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The registry side's answer to one command line:  through the test's transport when there is one, else in
     process, where it makes its one API call."""
     if transport is not None:
         return _answer(dict(transport(argv)))
     out = io.StringIO()
-    registry_main(argv, env=env, stdout=out, call_timeout=call_timeout)
+    registry_main(argv, env=env, stdout=out, call_timeout=call_timeout, api_call=api_call)
     return _answer(_last_json(out.getvalue()))
 
 

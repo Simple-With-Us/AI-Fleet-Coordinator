@@ -53,7 +53,7 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
 # env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
-# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# simple_tools/operator_platform_feeds.py (the shared Operator's external-platform data feeds).
 # The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
 # unit template stays repo-only under simple_tools/server/).
 # The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is

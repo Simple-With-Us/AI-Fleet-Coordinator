@@ -1,12 +1,12 @@
-"""Operator session letters for Cursor Cloud agents, and the letter in each chat's title (owner request,
-Nov 7, 2026; titles set by the sweep, Nov 9, 2026).
+"""Shared external-platform data feeds for the Operator's one registry sweep.
 
-    python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run] [--api-only] [--no-dm]
-    python3 -m simple_tools.cursor_cloud_letters check < tokens
+Cursor Cloud is currently the only provider feed.  Its workers do not run a usable registry hook, so the shared
+platform-letter table supplies their native metadata and last-mile title steer to this shared scheduler.  The one
+Eavesdropper registry sweeper runs this feed before its stale-row pass; this module has no CLI, unit or timer.
 
-A Cloud agent runs its hooks on Cursor's own workers, which cannot reach the Operator's registry and drop the context a
-hook gives at the start, so `platform_letter_cursor` leaves Cloud agents alone and this sweep gives them their letters
-instead.  Each run:
+The Cursor API credential is read only through the already configured `CURSOR_LETTERS_INFISICAL_TOKEN` binding and
+is held in memory.  The common registry is the Eavesdropper's in-process RegistryService; this feed does not load a
+second registry credential or contact a second assigner.
 
 1.  Reads the open Cloud agents (IDLE or ACTIVE) from the Cursor API (`CursorCloudTransport.discover`), with the key
     that module already uses (CURSOR_SYNC_API_KEY from Infisical Fleet-OPS, or CURSOR_API_KEY).  Only an agent updated
@@ -22,36 +22,16 @@ instead.  Each run:
     When the account refuses a steer, a title that names a Grok Bot still gets the Zulip DM (owner, Nov 7, 2026).
     A DM whose outcome is unknown counts as sent, so a bot is never told twice.
 
-The registry is reached the way the hooks reach it:  one registry API call per op (`platform_letter.Chat`).  The DM goes
-out from the seat this runs as (AGENT_SEAT), through `simple-chat dm`.  What it told each bot is kept in
-`<state>/CURSOR/cloud-letters.json`.
-
-Every row registers under the seat CURSOR (`platform_letter_cursor.SEAT`), whoever runs the sweep:  AGENT_SEAT only
-names the sender of a DM.
-
-The shared Operator unit (`server/afc-cursor-cloud-letters.service`;  owner ruling Nov 12, 2026, one Operator unit
-and no seat's own copy) runs `sweep --api-only --no-dm`.  `--api-only` reaches the registry only through its HTTPS
-API (`registry_api`, whose URL and key are the fleet knobs in AI Fleet Coordinator prod `/wake-router`, read with the
-token in FLEET_KNOBS_INFISICAL_TOKEN), never over ssh and never from `operator-registry-env`.  `--no-dm` sends no
-Zulip message, because the Operator sends none (owner ruling);  the steer through the Cursor API still goes out.
-Under `--api-only`, or whenever CURSOR_LETTERS_INFISICAL_TOKEN is set, the Cursor key is read with that token alone,
-from Fleet-OPS prod `/cursor-cloud-letters` (CURSOR_SYNC_API_KEY) through `fleet_infisical`, and held in memory,
-never in the environment.  Under `--api-only` a missing token stops the run with service-token-required before any
-Cursor call, so no other key source is tried.  `check` is the installer's preflight:  it reads both tokens from standard input and answers, by name
-only, whether the registry URL, the registry key and the Cursor key can be read.
-
 Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -61,10 +41,10 @@ from . import live as L
 from . import platform_letter as PL
 from . import platform_letter_cursor as PC
 
-SOURCE = "cursor-cloud-letters"
+SOURCE = "operator-platform-feed"
 LOCATION = "cloud"
 SPEC = dataclasses.replace(PC.SPEC, source=SOURCE)
-STATE_FILE = "cloud-letters.json"
+STATE_FILE = "platform-feed-state.json"
 DM_TIMEOUT = 30
 # The registry's refusals by design (platform_letter's register answers):  every main-chat pair live, or a closed chat
 # that cannot have a pair again yet.  A row with one of these is refused, not an error.
@@ -98,7 +78,6 @@ API_TIMEOUT = 30
 # The Cursor key's own read:  a read-only service token scoped to Fleet-OPS prod /cursor-cloud-letters, named for its
 # use and for no seat.  The Infisical folder and name are where the hand-installed per-seat wrapper read it before.
 CURSOR_TOKEN_ENV = "CURSOR_LETTERS_INFISICAL_TOKEN"
-KNOBS_TOKEN_ENV = "FLEET_KNOBS_INFISICAL_TOKEN"
 CURSOR_KEY_FOLDER = "/cursor-cloud-letters"
 CURSOR_KEY_NAME = "CURSOR_SYNC_API_KEY"
 # A reason from fleet_secrets is a short hyphenated token such as token-scope-mismatch;  only that token is ever
@@ -143,42 +122,40 @@ class StateUnsaved(RuntimeError):
 
 
 def state_path(env: Mapping[str, str]) -> str:
-    return os.path.join(L.state_root(env), PC.SEAT, STATE_FILE)
+    return os.path.join(L.state_root(env), "operator", STATE_FILE)
 
 
 def read_state(env: Mapping[str, str]) -> dict[str, Any]:
+    path = state_path(env)
+    if os.path.islink(os.path.dirname(path)) or os.path.islink(path):
+        raise ValueError("the platform-feed state path is a symlink")
     try:
-        with open(state_path(env), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        raise ValueError("the platform-feed state is unreadable") from None
+    if not isinstance(data, dict) or not isinstance(data.get("feeds"), dict):
+        raise ValueError("the platform-feed state is malformed")
+    feeds = data["feeds"]
+    if "cursor-cloud" not in feeds:
+        return {}
+    if not isinstance(feeds["cursor-cloud"], dict):
+        raise ValueError("the Cursor Cloud feed state is malformed")
+    return dict(feeds["cursor-cloud"])
 
 
 def write_state(env: Mapping[str, str], state: Mapping[str, Any]) -> None:
     path = state_path(env)
     folder = os.path.dirname(path)
-    if os.path.islink(folder):
-        raise ValueError("the state folder is a symlink")  # a link could put private state anywhere
-    os.makedirs(folder, mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".cloud-letters-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-        dir_fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(dir_fd)  # the rename itself survives a crash
-        finally:
-            os.close(dir_fd)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    if os.path.islink(folder) or os.path.islink(path):
+        raise ValueError("the platform-feed state path is a symlink")
+    existing = L.read_json(path)
+    feeds = existing.get("feeds") if isinstance(existing.get("feeds"), dict) else {}
+    merged = dict(feeds)
+    merged["cursor-cloud"] = dict(state)
+    L.write_json(path, {**existing, "feeds": merged}, durable=True)
 
 
 def api_unconfigured(env: Mapping[str, str]) -> dict[str, Any] | None:
@@ -202,6 +179,7 @@ def register(
     now: float,
     transport: Transport | None,
     api_only: bool = False,
+    registry_service: Any = None,
 ) -> dict[str, Any]:
     """Register one Cloud agent and answer with the registry's JSON (an `error` key when it failed).
 
@@ -210,9 +188,17 @@ def register(
     setting and the knob's reason code, instead of looking for another route.  `api_only` is the shared unit's mode and
     changes nothing here:  the route is the same for every caller."""
     if transport is None:
-        unconfigured = api_unconfigured(env)
+        if registry_service is None:
+            unconfigured = api_unconfigured(env)
+        else:
+            unconfigured = None
         if unconfigured is not None:
             return unconfigured
+    api_call = None
+    if registry_service is not None:
+        api_call = lambda _env, op, params, timeout=0: registry_service.call_operator(
+            op, params, timeout=timeout
+        )
     chat = PL.Chat(
         SPEC,
         env,
@@ -221,6 +207,7 @@ def register(
         now=now,
         transport=transport,
         seat=PC.SEAT,
+        api_call=api_call,
     )
     return chat.registry("register", title=PL.bare(agent.get("title") or ""))
 
@@ -420,47 +407,6 @@ class KeyedSurfaces:
         return self._base.api_request(*args, **kwargs)
 
 
-def check(stdin: io.TextIOBase, env: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """The installer's preflight, by name only.  Standard input holds FLEET_KNOBS_INFISICAL_TOKEN=... and
-    CURSOR_LETTERS_INFISICAL_TOKEN=... lines.  The knob token goes into this process's environment, which is where
-    fleet_knobs reads it;  the registry URL and key are then read the way the sweep reads them (registry_api, from the
-    knobs, since this process's own environment setting is dropped first), and the Cursor key with its own token.
-    The answer holds "present" or a reason token for each, and never a value."""
-    from . import registry_api as RA
-
-    tokens: dict[str, str] = {}
-    for line in stdin.read(64 * 1024).splitlines():
-        name, sep, value = line.strip().partition("=")
-        if sep and name in (KNOBS_TOKEN_ENV, CURSOR_TOKEN_ENV) and value.strip():
-            tokens[name] = value.strip()
-    for name in (RA.URL_ENV, RA.KEY_VAR):
-        os.environ.pop(name, None)
-    if KNOBS_TOKEN_ENV in tokens:
-        os.environ[KNOBS_TOKEN_ENV] = tokens[KNOBS_TOKEN_ENV]
-    RA.reset_knob_cache()
-    out: dict[str, Any] = {}
-    for label, getter, knob in (
-        ("registry_url", RA.base_url, RA.URL_KNOB),
-        ("registry_key", RA.signing_key, RA.KEY_KNOB),
-    ):
-        out[label] = "present" if getter(os.environ) else RA._KNOB_REASONS.get(knob, "unset")[:80]
-    RA.reset_knob_cache()  # nothing read here outlives the check
-    os.environ.pop(KNOBS_TOKEN_ENV, None)
-    base = dict(os.environ if env is None else env)
-    base.pop(CURSOR_TOKEN_ENV, None)
-    if CURSOR_TOKEN_ENV in tokens:
-        base[CURSOR_TOKEN_ENV] = tokens[CURSOR_TOKEN_ENV]
-    tokens.clear()
-    try:
-        read_cursor_key(base)
-    except KeyUnavailable as exc:
-        out["cursor_key"] = exc.code
-    else:
-        out["cursor_key"] = "present"
-    base.pop(CURSOR_TOKEN_ENV, None)
-    return out
-
-
 def recent(agent: Mapping[str, Any], now: float, max_age_hours: float = MAX_AGE_HOURS) -> bool:
     """Whether the agent's updatedAt is within `max_age_hours` of `now`.  It is read the way the chat catalog reads the
     same field (epoch seconds, epoch milliseconds or an ISO time);  a missing or unreadable time is not recent."""
@@ -516,6 +462,7 @@ def sweep(
     budget: float = DM_BUDGET,
     send_dms: bool = True,
     api_only: bool = False,
+    registry_service: Any = None,
 ) -> dict[str, Any]:
     """One pass over the open Cloud agents.  Answers counts and one row per agent, with no secrets in it."""
     # `send_dms` False sends no Zulip DM at all (the shared Operator unit):  a row whose bot would have been asked says
@@ -572,7 +519,10 @@ def sweep(
             row["bot"] = bot
         if dry_run:
             return
-        answer = register(env, agent, now=now, transport=transport, api_only=api_only)
+        answer = register(
+            env, agent, now=now, transport=transport, api_only=api_only,
+            registry_service=registry_service,
+        )
         label = str(answer.get("label") or "")
         if answer.get("code") in REFUSAL_CODES:
             # Jay's rule:  when every main-chat pair is live the letter is refused and the chat carries on.  A closed
@@ -708,57 +658,64 @@ def sweep(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
-    sub = parser.add_subparsers(dest="command", required=True)
-    s = sub.add_parser(
-        "sweep", help="give open Cursor Cloud agents letters and put the letter in each title"
-    )
-    s.add_argument(
-        "--dry-run", action="store_true", help="read the agents and print what it would do"
-    )
-    s.add_argument(
-        "--api-only",
-        action="store_true",
-        help="the shared unit's mode:  the Cursor key is read only with its own service token and no other source is tried",
-    )
-    s.add_argument(
-        "--no-dm",
-        action="store_true",
-        help="send no Zulip DM;  the steer through the Cursor API still goes out",
-    )
-    sub.add_parser(
-        "check",
-        help="read the token lines on standard input and say, by name only, what the shared unit can read",
-    )
-    args = parser.parse_args(argv)
-    env = os.environ
-    if args.command == "check":
-        report = check(sys.stdin)
-        print(json.dumps(report, sort_keys=True))
-        return 0 if all(value == "present" for value in report.values()) else 1
-    try:
-        out = sweep(
-            env,
-            dry_run=args.dry_run,
-            send_dms=not args.no_dm,
-            api_only=args.api_only,
-        )
-    except Exception as exc:  # noqa: BLE001 - one line for the log, never a traceback with a key in it
-        # The Cursor API failure carries only an HTTP status and a code, never the response text.
-        print(
-            json.dumps(
-                {
-                    "error": type(exc).__name__,
-                    "status": getattr(exc, "status", None),
-                    "code": getattr(exc, "code", None),
-                }
+def run_platform_feeds(
+    registry_service: Any, env: Mapping[str, str], *, now: float
+) -> dict[str, Any]:
+    """One shared lifecycle pass over the platform-feed table.
+
+    The registry daemon calls this from its existing single sweeper thread.  A failed or partial provider read is
+    visible in the result and never turns absence into a close; `sweep` clears remembered steering rows only after a
+    complete discovery.
+    """
+    table = (("cursor-cloud", sweep, CURSOR_TOKEN_ENV, "cursor", LOCATION),)
+    results: dict[str, Any] = {}
+    for name, runner, credential, platform, host in table:
+        if not str(env.get(credential) or "").strip():
+            results[name] = {
+                "ok": False,
+                "error": "credential-binding-missing",
+                "credential_configured": False,
+                "complete": False,
+                "platform": platform,
+                "host": host,
+                "protect_stale_cleanup": True,
+            }
+            continue
+        try:
+            report = runner(
+                env,
+                now=now,
+                dry_run=False,
+                send_dms=False,
+                api_only=True,
+                registry_service=registry_service,
             )
-        )
-        return 1
-    print(json.dumps(out, sort_keys=True))
-    return 1 if any("error" in row for row in out["rows"]) else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        except Exception as exc:  # noqa: BLE001 - one provider cannot stop stale cleanup or another feed
+            results[name] = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "credential_configured": True,
+                "complete": False,
+                "platform": platform,
+                "host": host,
+                "protect_stale_cleanup": True,
+            }
+        else:
+            rows = report.get("rows", [])
+            errors = sum(1 for row in rows if "error" in row)
+            invalid = int(report.get("invalid") or 0)
+            complete = bool(report.get("complete"))
+            results[name] = {
+                "ok": errors == 0,
+                "credential_configured": True,
+                "complete": complete,
+                "agents": int(report.get("agents") or 0),
+                "stale": int(report.get("stale") or 0),
+                "invalid": invalid,
+                "errors": errors,
+                "refused": sum(1 for row in rows if "refused" in row),
+                "platform": platform,
+                "host": host,
+                "protect_stale_cleanup": not complete or errors > 0 or invalid > 0,
+            }
+    return results
