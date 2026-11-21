@@ -28,3 +28,20 @@ class ExtraBindings(unittest.TestCase):
   with reg._write_txn() as c:c.execute('UPDATE alias_assignments SET generation=generation+1 WHERE record_id=? AND retired_at IS NULL',(a['record_id'],))
   reg.close_db();out=self.bind('native-session-a',a['generation']+1);self.assertEqual(out['bound_prs'][0]['generation'],a['generation']+1)
   reg=OR.SessionRegistry(self.db);self.assertEqual(reg._conn.execute("SELECT count(*) FROM events WHERE event='bind-pr-renew'").fetchone()[0],1);reg.close_db()
+
+ def test_reopen_same_generation_cannot_revive_conflicting_pr(self):
+  a=self.register('native-session-a');b=self.register('native-session-b')
+  self.bind('native-session-a',a['generation'])
+  OR.close_session(self.db,platform='testbed',verified_host='mac',profile_scope='default',native_session_id='native-session-a',reason='test')
+  self.bind('native-session-b',b['generation'])
+  reg=OR.SessionRegistry(self.db)
+  letter,generation,_=reg.reopen(a['record_id']);reg.close_db()
+  self.assertEqual(generation,a['generation'])
+  self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'],[])
+  self.assertEqual(OR.resolve_label(self.db,'testbed',b['label'])['bound_prs'][0]['number'],537)
+  with self.assertRaisesRegex(ValueError,'another live'):self.bind('native-session-a',generation)
+ def test_reopen_preserves_uncontested_binding(self):
+  a=self.register('native-session-a');self.bind('native-session-a',a['generation'])
+  OR.close_session(self.db,platform='testbed',verified_host='mac',profile_scope='default',native_session_id='native-session-a',reason='test')
+  reg=OR.SessionRegistry(self.db);letter,generation,_=reg.reopen(a['record_id']);reg.close_db()
+  self.assertEqual(OR.resolve_label(self.db,'testbed',letter)['bound_prs'][0]['generation'],generation)
