@@ -68,6 +68,8 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# The 173rd is simple_tools/opencode_wake.py (AFC-865, the OpenCode seat's wake delivery:  the one wake
+# router serves it like every other seat with a platform module).
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
@@ -137,6 +139,7 @@ EXACT = frozenset(
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
@@ -259,6 +262,7 @@ TOOL_REQUIRED = frozenset(
         # Shared scoped client and direct command used by knobs, recall and other consumers.
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         # Shared protected-custody helper for declared readers and interactive launchers.
         "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.

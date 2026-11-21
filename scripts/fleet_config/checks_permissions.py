@@ -12,7 +12,7 @@ Three check types live here, all L0:
     result can carry a secret value.  ``ObservedState`` has no field that could hold
     one either, and the reason string names the credential reference, never its
     contents.
-  * ``CREDENTIAL_KEY_PRESENT``  asks the fleet's ``fleet-secrets`` CLI for the KEY
+  * ``CREDENTIAL_KEY_PRESENT``  asks the canonical isolated command for the KEY
     NAMES in one secret-store folder and reports which of the rule's names are there.
     It is how the fleet reaches a credential today (AFC-359):  the command it runs is
     fixed by this module,  the ``names`` verb only,  and that verb prints names and
@@ -35,12 +35,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat as stat_module
+import sys
 from datetime import datetime, timezone
 from typing import Any
 
 from .checks import (
+    INFISICAL_CLI,
     CheckContext,
     CheckError,
     CommandRefused,
@@ -67,22 +68,13 @@ _PERMISSION_LIST_KEYS = ("allow", "deny", "ask")
 _FLAT_PERMISSION_KEYS = ("allowPermissions", "denyPermissions", "askPermissions")
 
 # The secret-store folder a credential rule may name.  The pattern is the one the
-# fleet-secrets CLI itself accepts,  so a manifest can never turn the check into a
+# canonical CLI itself accepts, so a manifest can never turn the check into a
 # request for something else.
 _FOLDER_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 
 # The shape of a key name in a listing.  Anything else is unreadable output,  which is
 # a failing UNKNOWN and never a pass.
 _KEY_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
-
-# The CLI the check asks for key names.  The name is also the one the fleet's other
-# tools use,  so the same binary answers for the whole fleet.
-_FLEET_SECRETS = "fleet-secrets"
-
-# The environment variable that names the binary explicitly,  as the fleet's own
-# doctor does.
-_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
-
 
 def permission_names(document: dict[str, Any]) -> tuple[str, ...]:
     """The permission identifiers a config document holds, sorted.
@@ -377,66 +369,70 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
     )
 
 
-def _secret_store_binary(ctx: CheckContext) -> str | None:
-    """The ``fleet-secrets`` binary to ask, or None when there is none.
-
-    The fleet's own ``FLEET_SECRETS_BIN`` override wins, so a caller can name the
-    binary explicitly.  Otherwise the binary is looked up on the PATH the check was
-    given, not the process PATH, so a run that was pointed at a different PATH asks
-    that one and a test never reaches the real secret store by accident.
-    """
-    override = (ctx.env.get(_FLEET_SECRETS_BIN) or os.environ.get(_FLEET_SECRETS_BIN) or "").strip()
-    if override:
-        return override
-    path = ctx.env.get("PATH") or os.environ.get("PATH", "")
-    return shutil.which(_FLEET_SECRETS, path=path)
-
-
 def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     """The key NAMES in one secret-store folder, or a CheckError.
 
     The command is the ``names`` verb, which prints names and never values, so a
     secret cannot reach this module, a result, a reason or a log.  The listing is
-    cached on the context, so one status run asks the secret store once per folder
-    rather than once per rule.
+    cached on the context, including failures, so one status run asks the secret
+    store once per folder rather than once per rule.
 
     The command runs through the one allowlisted runner,  so it has an explicit
     timeout and a command that is not on the allowlist is refused before it starts.
     """
-    cache_key = "fleet-secrets:names:%s" % folder
+    cache_key = "canonical-infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
+    if isinstance(cached, CheckError):
+        raise CheckError(str(cached), cached.reason_code) from None
     if cached is not None:
         return cached
+    try:
+        names = _probe_secret_store_names(ctx, folder)
+    except CheckError as exc:
+        # Keep the diagnostic, without retaining a traceback or treating failure as absence.
+        ctx.cache[cache_key] = CheckError(str(exc), exc.reason_code)
+        raise
+    ctx.cache[cache_key] = names
+    return names
 
-    binary = _secret_store_binary(ctx)
-    if not binary:
+
+def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
+    """One uncached, bounded names-only probe."""
+    if not os.path.isfile(INFISICAL_CLI):
         raise CheckError(
-            "the fleet-secrets command is not on PATH, so the secret store cannot be reached",
+            "the canonical Infisical command source is missing",
             ReasonCode.ERROR,
         )
-    argv = [binary, "names", "--path", folder]
+    argv = [
+        sys.executable, "-I", INFISICAL_CLI, "names", "--path", folder, "--project", "fleet-ops"
+    ]
     try:
         result = run_cli(argv, timeout=ctx.timeout or 10, env=ctx.child_env())
     except CommandRefused as exc:
         raise CheckError(
-            "the fleet-secrets command is not on the allowlist:  %s" % exc,
+            "the canonical Infisical command is not on the allowlist: %s" % exc,
             ReasonCode.ERROR,
         ) from None
     if result.timed_out:
         raise CheckError(
-            "the fleet-secrets command did not answer within %ds" % (ctx.timeout or 10),
+            "the canonical Infisical command did not answer within %ds" % (ctx.timeout or 10),
             ReasonCode.TIMEOUT,
         )
     if result.error:
         raise CheckError(
-            "the fleet-secrets command could not be started:  %s" % result.error,
+            "the canonical Infisical command could not be started",
             ReasonCode.ERROR,
+        )
+    if result.truncated:
+        raise CheckError(
+            "the canonical Infisical command output exceeded its bound",
+            ReasonCode.UNPARSEABLE,
         )
     if result.returncode != 0:
         # The error text names keys and reason tokens, never values, but it is not
         # needed here, so only the exit code is reported.
         raise CheckError(
-            "the fleet-secrets command exited %d, so the secret store could not be read"
+            "the canonical Infisical command exited %d, so the secret store could not be read"
             % result.returncode,
             ReasonCode.ERROR,
         )
@@ -447,13 +443,11 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
             continue
         if not _KEY_NAME_RE.match(text):
             raise CheckError(
-                "the fleet-secrets command printed a line that is not a key name",
+                "the canonical Infisical command printed a line that is not a key name",
                 ReasonCode.UNPARSEABLE,
             )
         names.add(text)
-    frozen = frozenset(names)
-    ctx.cache[cache_key] = frozen
-    return frozen
+    return frozenset(names)
 
 
 def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
@@ -461,7 +455,7 @@ def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -
 
     This is how the fleet reaches a credential now that ``~/.secrets`` is retired
     (AFC-359):  the seat's credential lives in the secret store under a key name, and
-    the check asks the ``fleet-secrets`` CLI whether that name is there.
+    the check asks the canonical command whether that name is there.
 
     The check never sees a value.  The ``names`` verb prints names only, the observed
     state carries the names that were found, and the reason string names the rule's

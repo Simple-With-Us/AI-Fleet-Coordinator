@@ -62,7 +62,7 @@ Once a UTC day it reads the account again and compares the live Worker list, `li
 
 ## Credentials
 
-Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read directly through `fleet_infisical` with this service's explicit read-only token and held in memory only. No PATH helper, CLI login or machine identity fallback is used.
+Credentials are in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`.  The Watchdog uses its existing project-ID resolver and configured folder with its own explicit `INFISICAL_TOKEN`, requesting one named credential through the checked shared bounded reader.  The reader validates project, prod environment, folder, read-only permission and returned row scope.  The Watchdog opts into finite future expiry, so a null or expired grant is refused during the same metadata check before values are read.  Source tests do not qualify an installed grant or establish runtime acceptance.  Values stay in memory only.  No PATH helper, CLI login or machine identity fallback is used.
 
 | Key | Holds | Needed |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ The Cloudflare token needs **Account Analytics Read** and **Workers Scripts Writ
 
 The secrets deliberately have no environment path.  The unit's environment file holds only the Infisical token, and Infisical is the sole source of truth for this app, so a secret in the environment would be a second copy to leak and to go stale.
 
-The unit logs in with a read-only Infisical service token in `/etc/cf-usage-watchdog/infisical.env`, owned by root with mode 0600, holding the line `INFISICAL_TOKEN=...`.  It needs to read `/` (for the two knobs) and `/cf-usage-watchdog` in the prod environment of AI Fleet Coordinator.  Record it in the Infisical Service Tokens tab of the registry sheet.
+The unit receives its own Infisical service token through `/etc/cf-usage-watchdog/infisical.env`, owned by root with mode 0600, holding the line `INFISICAL_TOKEN=...`.  Its required credential scope is AI Fleet Coordinator prod `/cf-usage-watchdog`; the mode, profile and STOP settings use the independent `fleet_knobs` binding and its own root-folder contract.  The Watchdog token does not substitute for or widen that separate binding.  Record each token in the Infisical Service Tokens tab of the registry sheet.
 
 ## Install
 
