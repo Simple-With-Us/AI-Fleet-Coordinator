@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
-import os
 import sys
-import uuid
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -682,37 +682,62 @@ class RuleTests(unittest.TestCase):
 
     def test_zulip_client_reads_all_selected_names_and_ignores_conflicting_env_values(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
-        values = {"CODEX_ZULIP_EMAIL": "codex-bot@example.test", "CODEX_ZULIP_KEY": "public fixture",
-                  "CODEX_ZULIP_SITE": bridge.ZulipClient.REALM}
+
+        values = {
+            "CODEX_ZULIP_EMAIL": "codex-bot@example.test",
+            "CODEX_ZULIP_KEY": "public fixture",
+            "CODEX_ZULIP_SITE": bridge.ZulipClient.REALM,
+        }
         client = bridge._infisical_reader()
         original = client.bounded_fetch_project
         with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip") as api:
             calls = []
+
             def read(project, folder, env, **options):
                 calls.append((project, folder, dict(env), dict(options)))
-                return original(project, folder,
-                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+                return original(
+                    project,
+                    folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]},
+                    **options,
+                )
+
             with (
-                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token,
-                    "CODEX_ZULIP_EMAIL": "ambient-bot@example.test",
-                    "CODEX_ZULIP_KEY": "ambient fixture",
-                    "CODEX_ZULIP_SITE": "https://foreign.example.test"}, clear=True),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                        "INFISICAL_TOKEN": api.token,
+                        "CODEX_ZULIP_EMAIL": "ambient-bot@example.test",
+                        "CODEX_ZULIP_KEY": "ambient fixture",
+                        "CODEX_ZULIP_SITE": "https://foreign.example.test",
+                    },
+                    clear=True,
+                ),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 channel = bridge.ZulipClient(bot="CODEX")
-                self.assertEqual((channel.email, channel.key, channel.site),
-                    (values["CODEX_ZULIP_EMAIL"], values["CODEX_ZULIP_KEY"], values["CODEX_ZULIP_SITE"]))
-                self.assertEqual(calls[0][3]["names"],
-                    ("CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "CODEX_ZULIP_SITE"))
+                self.assertEqual(
+                    (channel.email, channel.key, channel.site),
+                    (
+                        values["CODEX_ZULIP_EMAIL"],
+                        values["CODEX_ZULIP_KEY"],
+                        values["CODEX_ZULIP_SITE"],
+                    ),
+                )
+                self.assertEqual(
+                    calls[0][3]["names"],
+                    ("CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "CODEX_ZULIP_SITE"),
+                )
                 self.assertIs(calls[0][3]["strict_records"], True)
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(len(api.requests), 4)
-                api.metadata_override = {"scopes": [{"environment": "prod", "secretPath": "/tools"}]}
+                api.metadata_override = {
+                    "scopes": [{"environment": "prod", "secretPath": "/tools"}]
+                }
                 api.requests.clear()
                 self.assertIsNone(bridge.ZulipClient(bot="CODEX").key)
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
-
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)
@@ -721,10 +746,10 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(body.startswith(bridge.BRIDGE_MARKER + "zulip id=1789679400.0 -->"))
 
 
-
 class StandaloneReaderClosureTests(unittest.TestCase):
     def test_copied_outbox_and_backup_use_only_their_two_declared_code_files(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
+
         reader = HERE / "fleet_infisical.py"
         for source, nested, folder in (
             (HERE / "github-outbox-bridge.py", False, "/zulip"),
@@ -733,14 +758,16 @@ class StandaloneReaderClosureTests(unittest.TestCase):
             with (
                 self.subTest(consumer=source.name),
                 tempfile.TemporaryDirectory() as temporary,
-                ScopedReadAPI({"WANTED": "public fixture"}, project=str(uuid.uuid4()), path=folder) as api,
+                ScopedReadAPI(
+                    {"WANTED": "public fixture"}, project=str(uuid.uuid4()), path=folder
+                ) as api,
             ):
                 root = Path(temporary)
                 target = root / "consumer" / source.name if nested else root / source.name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
                 shutil.copy2(reader, root / "fleet_infisical.py")
-                program = '''
+                program = """
 import importlib.util,json,os,pathlib,sys,types
 request=json.load(sys.stdin)
 source,project,token,endpoint,folder = (request[name] for name in ("source","project","token","endpoint","folder"))
@@ -772,12 +799,23 @@ observed=Observed(os.environ)
 os.environ=observed
 assert module._read_infisical_names(("WANTED",),folder)=={}
 assert not observed.touched
-'''
+"""
                 result = subprocess.run(
                     [sys.executable, "-I", "-B", "-c", program],
-                    input=json.dumps({"source": str(target), "project": api.project,
-                        "token": api.token, "endpoint": api.env["FLEET_SECRETS_API"], "folder": folder}),
-                    env={"PATH": "/usr/bin:/bin"}, cwd=root, capture_output=True, text=True, timeout=15,
+                    input=json.dumps(
+                        {
+                            "source": str(target),
+                            "project": api.project,
+                            "token": api.token,
+                            "endpoint": api.env["FLEET_SECRETS_API"],
+                            "folder": folder,
+                        }
+                    ),
+                    env={"PATH": "/usr/bin:/bin"},
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(len(api.requests), 2)
@@ -788,7 +826,9 @@ assert not observed.touched
         installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installer)
         self.assertEqual(Path(installer.READER_SRC).resolve(), HERE / "fleet_infisical.py")
-        self.assertEqual(Path(installer.READER_DST), Path(installer.SCRIPT_DST).parents[1] / "fleet_infisical.py")
+        self.assertEqual(
+            Path(installer.READER_DST), Path(installer.SCRIPT_DST).parents[1] / "fleet_infisical.py"
+        )
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "fleet_infisical.py"
             installer.copy(installer.READER_SRC, str(destination), 0o644, False)

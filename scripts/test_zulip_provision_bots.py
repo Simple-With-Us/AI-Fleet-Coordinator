@@ -18,12 +18,13 @@ import stat
 import tempfile
 import threading
 import unittest
-import uuid
-from fleet_knobs.tests._fake import ScopedReadAPI
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("provision_bots", HERE / "zulip_provision_bots.py")
@@ -150,8 +151,6 @@ class FakeZulip:
         return [r for r in self.requests if r[0] == "POST"]
 
 
-
-
 class ProvisionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -162,21 +161,34 @@ class ProvisionTests(unittest.TestCase):
         self.fake = FakeZulip()
         self.api = ScopedReadAPI(
             {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": self.fake.url},
-            project=str(uuid.uuid4()), path="/zulip_operator",
+            project=str(uuid.uuid4()),
+            path="/zulip_operator",
         )
         self.api.__enter__()
         self.client = prov._infisical_reader()
         self.original_read = self.client.bounded_fetch_project
 
         def read(project, folder, env, **options):
-            return self.original_read(project, folder,
-                {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]}, **options)
-        self.reader_patch = mock.patch.object(self.client, "bounded_fetch_project", side_effect=read)
+            return self.original_read(
+                project,
+                folder,
+                {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+                **options,
+            )
+
+        self.reader_patch = mock.patch.object(
+            self.client, "bounded_fetch_project", side_effect=read
+        )
         self.reader_patch.start()
-        self.env = mock.patch.dict(os.environ, {
-            "HOME": str(self.home), "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
-            "INFISICAL_TOKEN": self.api.token,
-        }, clear=True)
+        self.env = mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.home),
+                "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
+                "INFISICAL_TOKEN": self.api.token,
+            },
+            clear=True,
+        )
         self.env.start()
         self.realm = mock.patch.object(prov, "REALM", self.fake.url)
         self.realm.start()
@@ -206,9 +218,11 @@ class ProvisionTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def fs_calls(self):
-        return [urllib.parse.unquote(path.split("/raw/", 1)[1].split("?", 1)[0])
-                for path in self.api.requests if "/raw/" in path]
-
+        return [
+            urllib.parse.unquote(path.split("/raw/", 1)[1].split("?", 1)[0])
+            for path in self.api.requests
+            if "/raw/" in path
+        ]
 
     def assert_no_keys(self, *streams):
         text = "\n".join(streams)
@@ -241,7 +255,10 @@ class ProvisionTests(unittest.TestCase):
 
     def test_site_defaults_to_realm_when_absent(self):
         # fleet-secrets can not answer SITE (exit 3) but EMAIL and KEY are in env.
-        with mock.patch.dict(os.environ, ADMIN_ENV), mock.patch.dict(self.api.values, {}, clear=True):
+        with (
+            mock.patch.dict(os.environ, ADMIN_ENV),
+            mock.patch.dict(self.api.values, {}, clear=True),
+        ):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
 
@@ -421,7 +438,6 @@ class ProvisionTests(unittest.TestCase):
         self.api.record_omissions = ("secretValueHidden",)
         value = prov.admin_secret("ZULIP_OPERATOR_SITE", required=False)
         self.assertEqual(value, "")
-
 
     def test_empty_stdin_at_the_prompt_stops_cleanly(self):
         with mock.patch("builtins.input", side_effect=EOFError):

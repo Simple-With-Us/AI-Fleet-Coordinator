@@ -9,10 +9,10 @@ import contextlib
 import io
 import json
 import os
-import uuid
 import re
 import sys
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -293,25 +293,46 @@ class CredentialTests(unittest.TestCase):
 
     def test_admin_reads_only_its_exact_folder_with_the_real_bounded_worker(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
-        values = {"ZULIP_OPERATOR_EMAIL": "admin@example.test", "ZULIP_OPERATOR_API_KEY": "public fixture"}
+
+        values = {
+            "ZULIP_OPERATOR_EMAIL": "admin@example.test",
+            "ZULIP_OPERATOR_API_KEY": "public fixture",
+        }
         client = L._infisical_reader()
         original = client.bounded_fetch_project
         with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip_operator") as api:
+
             def read(project, folder, env, **options):
-                return original(project, folder,
-                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+                return original(
+                    project,
+                    folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]},
+                    **options,
+                )
+
             with (
-                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token}, clear=True),
+                mock.patch.dict(
+                    os.environ,
+                    {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project, "INFISICAL_TOKEN": api.token},
+                    clear=True,
+                ),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
-                self.assertEqual(L.credentials(None, admin=True)[:2], (values["ZULIP_OPERATOR_EMAIL"], values["ZULIP_OPERATOR_API_KEY"]))
-                self.assertTrue(all("secretPath=%2Fzulip_operator" in path for path in api.requests if "/raw/" in path))
+                self.assertEqual(
+                    L.credentials(None, admin=True)[:2],
+                    (values["ZULIP_OPERATOR_EMAIL"], values["ZULIP_OPERATOR_API_KEY"]),
+                )
+                self.assertTrue(
+                    all(
+                        "secretPath=%2Fzulip_operator" in path
+                        for path in api.requests
+                        if "/raw/" in path
+                    )
+                )
                 api.metadata_override = {"scopes": [{"environment": "prod", "secretPath": "/"}]}
                 api.requests.clear()
                 self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
-
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {

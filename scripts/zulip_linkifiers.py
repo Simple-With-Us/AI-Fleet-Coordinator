@@ -27,22 +27,22 @@ is reported and left alone unless --delete-unlisted is passed.
 
 from __future__ import annotations
 
-import hashlib
-import importlib.util
-import stat
-import threading
-from pathlib import Path
 import argparse
 import base64
 import configparser
+import hashlib
+import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 REALM = "https://simplewithus.zulipchat.com"
 GH = "https://github.com/Simple-With-Us"
@@ -288,19 +288,23 @@ def _read_infisical_names(names, folder):
         if not token:
             return {}
         return client.bounded_fetch_project(
-            project, folder,
+            project,
+            folder,
             {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
-            token=token, names=tuple(names), timeout=30,
-            max_output_bytes=65536, strict_records=True,
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
         )
     except Exception:
         return {}
+
 
 def _fleet_secret(name: str) -> str:
     """One exact-folder named read; legacy project-root retry is retired."""
     folder = "/zulip_operator" if name.startswith("ZULIP_OPERATOR_") else "/zulip"
     return _read_infisical_names((name,), folder).get(name, "").strip()
-
 
 
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:

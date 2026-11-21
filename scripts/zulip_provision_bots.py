@@ -48,19 +48,19 @@ change realm-level settings.  GET /bots answers HTTP 400 to a bot caller, so thi
 never uses it.  Grok Bot (GB-*) bots are out of scope.
 """
 
-import hashlib
-import importlib.util
-import stat
-import threading
-from pathlib import Path
 import argparse
 import base64
+import hashlib
+import importlib.util
 import json
 import os
+import stat
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 # The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
 # subscribed to the channel the seats actually use, and a name written here goes stale the day
@@ -152,15 +152,17 @@ def _read_infisical_names(names, folder):
         if not token:
             return {}
         return client.bounded_fetch_project(
-            project, folder,
+            project,
+            folder,
             {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
-            token=token, names=tuple(names), timeout=30,
-            max_output_bytes=65536, strict_records=True,
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
         )
     except Exception:
         return {}
-
-
 
 
 def admin_secret(name, required=True):
@@ -174,7 +176,6 @@ def admin_secret(name, required=True):
         f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER}; "
         "the caller needs its own explicit project and scoped read binding."
     )
-
 
 
 CHANNELS = [default_channel(os.environ), "alerts", "builds", "trading", "ideas"]

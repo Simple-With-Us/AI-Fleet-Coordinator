@@ -29,22 +29,22 @@ Standard library only.  Python 3.11+.  Run from scripts/simple-tools-mcp/.
 
 from __future__ import annotations
 
-import hashlib
-import importlib.util
-import stat
-import threading
-from pathlib import Path
 import argparse
 import base64
+import hashlib
+import importlib.util
 import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -250,26 +250,34 @@ def _read_infisical_names(names, folder):
         if not token:
             return {}
         return client.bounded_fetch_project(
-            project, folder,
+            project,
+            folder,
             {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
-            token=token, names=tuple(names), timeout=30,
-            max_output_bytes=65536, strict_records=True,
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
         )
     except Exception:
         return {}
+
 
 def handoff(name: str) -> str:
     """The existing synced value, then this caller's bounded named root read."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    if name not in ("CLOUDFLARE_JAY_ACCOUNT_EMAIL", "CLOUDFLARE_JAY_API_KEY", "ZULIP_OWNER_USER_ID"):
+    if name not in (
+        "CLOUDFLARE_JAY_ACCOUNT_EMAIL",
+        "CLOUDFLARE_JAY_API_KEY",
+        "ZULIP_OWNER_USER_ID",
+    ):
         fail("unsupported generic handoff name")
     value = _read_infisical_names((name,), "/").get(name, "").strip()
     if value:
         return value
     fail(f"{name} is not in the environment or scoped Infisical read (name only; no value printed)")
-
 
 
 def wrangler_vars() -> dict:
