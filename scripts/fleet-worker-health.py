@@ -34,9 +34,7 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
-INFISICAL_CLI = os.path.join(
-    os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py"
-)
+INFISICAL_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py")
 
 
 def sign(key, body):

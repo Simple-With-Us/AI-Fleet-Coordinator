@@ -21,7 +21,9 @@ if str(ROOT) not in sys.path:
 
 import cursor_chat_surfaces as cursor
 
-WORKER_SPEC = importlib.util.spec_from_file_location("fleet_worker_health_test", ROOT / "fleet-worker-health.py")
+WORKER_SPEC = importlib.util.spec_from_file_location(
+    "fleet_worker_health_test", ROOT / "fleet-worker-health.py"
+)
 worker = importlib.util.module_from_spec(WORKER_SPEC)
 assert WORKER_SPEC and WORKER_SPEC.loader
 WORKER_SPEC.loader.exec_module(worker)
@@ -82,7 +84,11 @@ class Provider(BaseHTTPRequestHandler):
         name = parsed.path.rsplit("/", 1)[-1]
         path = parse_qs(parsed.query).get("secretPath", [""])[0]
         self.requests.append(f"{name}:{path}")
-        if auth != "Bearer " + FIXTURE_CREDENTIAL or path not in self.allowed_paths or name not in VALUES:
+        if (
+            auth != "Bearer " + FIXTURE_CREDENTIAL
+            or path not in self.allowed_paths
+            or name not in VALUES
+        ):
             self._send(404, {})
             return
         self._send(
@@ -255,7 +261,17 @@ class IsolatedInfisicalLoaders(unittest.TestCase):
             (hostile / "fleet_infisical_cli.py").write_text("raise AssertionError('wrong CLI')\n")
             bad_env = dict(os.environ, INFISICAL_TOKEN=BAD_INPUT, PYTHONPATH=temp)
             result = subprocess.run(
-                [sys.executable, "-I", str(ROOT / "fleet_infisical_cli.py"), "get", "HEALTH_HMAC_KEY", "--path", "/", "--project", "fleet-ops"],
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "fleet_infisical_cli.py"),
+                    "get",
+                    "HEALTH_HMAC_KEY",
+                    "--path",
+                    "/",
+                    "--project",
+                    "fleet-ops",
+                ],
                 cwd=hostile,
                 env=bad_env,
                 capture_output=True,
