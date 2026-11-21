@@ -239,7 +239,10 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
           redirect: "error",
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        if (!write && error?.code === "stopped" && shouldStop()) {
+          throw sheetsError("Sheets read stopped", { code: "stopped" });
+        }
         throw sheetsError(`${where} -> no response`, {
           code: "transport_or_response_error", uncertain: write,
         });

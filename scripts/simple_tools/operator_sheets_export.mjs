@@ -187,7 +187,13 @@ export async function drainOutbox({
   let failed = 0;
   let stopped = false;
   if (!rows.length) return { exported, failed };
-  await adapter.validateHeaders(); // header check before any live write
+  if (shouldStop()) return { exported, failed, stopped: true };
+  try {
+    await adapter.validateHeaders(); // header check before any live write
+  } catch (err) {
+    if (err?.code === "stopped" && shouldStop()) return { exported, failed, stopped: true };
+    throw err;
+  }
 
   const ACK_BATCH = 100;
   let ackQueue = [];
@@ -227,6 +233,10 @@ export async function drainOutbox({
       indexes[table] = await scanTableIndex(adapter, table, bounds);
     }
   } catch (err) {
+    if (err?.code === "stopped" && shouldStop()) {
+      log("stop requested during reconciliation: no writes sent; rows stay pending");
+      return { exported: 0, failed: 0, stopped: true };
+    }
     log(`reconcile scan failed: ${err.message}`);
     return { exported: 0, failed: 1 };
   }

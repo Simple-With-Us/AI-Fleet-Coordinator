@@ -8,11 +8,11 @@
 // every attempt in the store-side fence (export_attempts), and marks rows exported
 // only after write + fence confirm. See docs/protocols/operator-sheets-export.md.
 //
-// Write pacing and quota back-off live here, on the outbox side, because the
+// Request pacing and quota back-off live here, on the outbox side, because the
 // transport never retries (OPERATOR-SHEETS-ADAPTER.md, Errors And Retries):
-// pacedAdapter spaces Sheets writes about 1.1 s apart and answers an HTTP 429
-// (a certain quota refusal, nothing written) with a bounded sleep and a retry.
-// Any other failure, and every uncertain write, is left to drainOutbox, which
+// the shared read gate spaces each Sheets GET about 1.1 s apart, and pacedAdapter
+// separately spaces writes and retries certain HTTP 429 refusals.  Any other
+// failure, and every uncertain write, is left to drainOutbox, which
 // stops and reconciles by ID on the next run.
 //
 // Why the host and not the container: the registry CLI is Python (present in the
@@ -58,6 +58,7 @@ import { promisify } from "node:util";
 import { drainOutbox, EVENTS_HEADERS, SESSIONS_HEADERS } from "./operator_sheets_export.mjs";
 import {
   createServiceAccountTokenProvider,
+  OperatorSheetsError,
   OperatorSheetsGoogle,
   scanCellText,
 } from "./operator_sheets_google.mjs";
@@ -143,11 +144,12 @@ export function makeRegistryBridge({ container, db, exec = run, timeoutMs = REGI
   };
 }
 
-// --- write pacing and quota back-off ---------------------------------------------
+// --- shared request pacing and quota back-off ------------------------------------
 //
-// Google Sheets allows about 60 write requests per minute per user; a backfill of
-// thousands of rows trips that quota without pacing. Every value is injectable
-// (sleep and now too) so tests never wait for real.
+// Google Sheets has per-user read and write request quotas; a full-grid read scan
+// or backfill can trip them without pacing.  Each read GET uses the shared request
+// gate; writes keep their existing 1.1 s gap.  Every delay/clock is injectable so
+// tests never wait for real.
 
 export const PACING_DEFAULTS = Object.freeze({
   writeIntervalMs: 1_100, // minimum gap between the end of one write and the start of the next
@@ -157,6 +159,58 @@ export const PACING_DEFAULTS = Object.freeze({
 });
 
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A single gate can wrap multiple adapters in one timer invocation, so the thread
+// export and Sessions/Events scan share one read budget.  Pacing at fetch level is
+// required because one inspect()/validateHeaders() call makes three GETs.
+export function createSheetsReadGate({
+  sleep = realSleep,
+  now = Date.now,
+  intervalMs = PACING_DEFAULTS.writeIntervalMs,
+  stopPollMs = 1_000,
+} = {}) {
+  if (typeof sleep !== "function" || typeof now !== "function") {
+    throw new Error("read gate sleep and now must be functions");
+  }
+  pacingOption({ intervalMs }, "intervalMs", 1, 60_000);
+  const pollMs = pacingOption({ stopPollMs }, "stopPollMs", 1, 60_000);
+  let lastReadAt = null;
+  let queued = Promise.resolve();
+
+  return Object.freeze({
+    wrap(fetchImpl, shouldStop = () => false) {
+      if (typeof fetchImpl !== "function" || typeof shouldStop !== "function") {
+        throw new Error("read gate fetch and shouldStop must be functions");
+      }
+      return async (input, init = {}) => {
+        const method = String(init.method ?? input?.method ?? "GET").toUpperCase();
+        if (method !== "GET") return fetchImpl(input, init);
+
+        let release;
+        const previous = queued;
+        queued = new Promise((resolve) => { release = resolve; });
+        await previous;
+        try {
+          if (shouldStop()) throw new OperatorSheetsError("stopped");
+          while (lastReadAt !== null) {
+            const remaining = lastReadAt + intervalMs - now();
+            if (remaining <= 0) break;
+            if (shouldStop()) throw new OperatorSheetsError("stopped");
+            await sleep(Math.min(remaining, pollMs));
+          }
+          if (shouldStop()) throw new OperatorSheetsError("stopped");
+          try {
+            return await fetchImpl(input, init);
+          } finally {
+            lastReadAt = now();
+          }
+        } finally {
+          release();
+        }
+      };
+    },
+  });
+}
 
 function pacingOption(options, name, min, max) {
   const value = options[name];
@@ -232,23 +286,28 @@ export function pacedAdapter(adapter, {
     return Math.min(Math.max(exponential, hinted), maxMs);
   };
   // Answers { result, retried }: the call's result and how many 429 retries it took.
-  const withQuotaRetry = async (name, call) => {
+  const withQuotaRetry = async (name, call, { stopAsError = false } = {}) => {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return { result: await call(), retried: attempt };
       } catch (err) {
-        if (!isQuotaRefusal(err) || attempt >= retries || stopping()) throw err;
+        if (!isQuotaRefusal(err) || attempt >= retries) throw err;
+        if (stopping()) {
+          if (stopAsError) throw new OperatorSheetsError("stopped");
+          throw err;
+        }
         const delay = backoffMs(attempt, err.retryAfterSeconds);
         log(`${name}: HTTP 429 quota refusal, nothing written; retry ${attempt + 1} of ${retries} in ${delay} ms`);
         if (!(await stoppableSleep(delay))) {
           log(`${name}: stop requested during the back-off; not retrying`);
+          if (stopAsError) throw new OperatorSheetsError("stopped");
           throw err; // the refusal stands: nothing was written, the row stays pending
         }
       }
     }
   };
   const read = (name) => async (...args) =>
-    (await withQuotaRetry(name, () => adapter[name](...args))).result;
+    (await withQuotaRetry(name, () => adapter[name](...args), { stopAsError: true })).result;
   const write = (name) => async (...args) => {
     const { result, retried } = await withQuotaRetry(name, async () => {
       if (writeIntervalMs > 0 && lastWriteAt !== null) {
@@ -425,6 +484,7 @@ export async function drainOnce({
   maxPasses = 100,
   bridge = null,
   adapter = null,
+  readGate = null,
   drain = drainOutbox,
 } = {}) {
   const deadline = now() + deadlineMs;
@@ -448,11 +508,13 @@ export async function drainOnce({
   const tokenSource = adapter ? null : createServiceAccountTokenProvider({
     loadServiceAccount: () => loadServiceAccount(env),
   });
+  const requestGate = readGate ?? createSheetsReadGate({ now });
   const sheets = adapter ?? pacedAdapter(new OperatorSheetsGoogle({
     spreadsheetId: profile.spreadsheetId,
     sheetIds: profile.sheetIds,
     tables: TABLES,
     token: tokenSource,
+    fetch: requestGate.wrap(globalThis.fetch, stopNow),
   }), { log, shouldStop: stopNow });
   let totals = { exported: 0, failed: 0 };
   for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -546,6 +608,7 @@ export async function syncThreadsOnce({
   maxWrites = THREAD_SYNC_MAX_WRITES,
   bridge = null,
   adapter = null,
+  readGate = null,
   tokenProvider = null,
   pacing = {},
   loadModule = () => import("./thread_registry_export.mjs"),
@@ -567,6 +630,7 @@ export async function syncThreadsOnce({
     }
     return stopReason !== null;
   };
+  const requestGate = readGate ?? createSheetsReadGate({ now });
   // Checked before every write: the signal, the budget and the write cap.
   const stopWrites = () => {
     if (timeUp()) return true;
@@ -614,6 +678,7 @@ export async function syncThreadsOnce({
       });
       const accessToken = await token();
       raw = mod.makeSheetsAdapter(accessToken, mod.SPREADSHEET_ID, mod.SHEET_TAB, {
+        fetchImpl: requestGate.wrap(globalThis.fetch, timeUp),
         shouldStop: timeUp,
       });
     }
@@ -676,15 +741,16 @@ export async function runOnce({
   sessions = drainOnce,
 } = {}) {
   const start = now();
+  const readGate = createSheetsReadGate({ now });
   let threadResult;
   try {
-    threadResult = await threads({ env, log, shouldStop, now });
+    threadResult = await threads({ env, log, shouldStop, now, readGate });
   } catch {
     threadResult = { failed: 1, error: "thread_sync_failed" };
     log(JSON.stringify({ threads: threadResult }));
   }
   const left = Math.max(0, RUN_DEADLINE_MS - Math.max(0, now() - start));
-  const totals = await sessions({ env, log, shouldStop, now, deadlineMs: left });
+  const totals = await sessions({ env, log, shouldStop, now, deadlineMs: left, readGate });
   return { threads: threadResult, totals };
 }
 
