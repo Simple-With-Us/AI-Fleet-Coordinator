@@ -260,6 +260,10 @@ class UnknownRecord(KeyError):
     """No session with this record_id."""
 
 
+class InvalidSessionSnapshotDigest(ValueError):
+    """The caller did not provide the digest format emitted by the plan command."""
+
+
 class StaleSessionSnapshot(ValueError):
     def __init__(self, current_sha256: str):
         super().__init__("the session snapshot changed after planning")
@@ -854,7 +858,7 @@ class SessionRegistry:
         makes retries idempotent.
         """
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
-            raise ValueError("invalid snapshot digest")
+            raise InvalidSessionSnapshotDigest("invalid snapshot digest")
         with self._write_txn() as conn:
             row = self._get(record_id)
             label, _ = self._active_alias(conn, record_id)
@@ -2721,17 +2725,13 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _pending_identical_session_snapshots(conn: sqlite3.Connection, cells: Sequence[str]) -> int:
-    count = 0
-    for row in conn.execute(
-        "SELECT payload FROM export_outbox WHERE kind = 'session_upsert' AND exported_at IS NULL"
-    ):
-        try:
-            payload = json.loads(row["payload"])
-        except (TypeError, ValueError):
-            continue
-        if isinstance(payload, dict) and payload.get("cells") == list(cells):
-            count += 1
-    return count
+    payload = json.dumps({"cells": list(cells)})
+    row = conn.execute(
+        "SELECT count(*) FROM export_outbox"
+        " WHERE kind = 'session_upsert' AND exported_at IS NULL AND payload = ?",
+        (payload,),
+    ).fetchone()
+    return int(row[0])
 
 
 def plan_session_snapshot(db_path: str, record_id: str) -> dict[str, Any]:
@@ -3234,6 +3234,12 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             except UnknownRecord:
                 print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
                 return 2
+            except sqlite3.Error:
+                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                return 3
+            except ValueError:
+                print(json.dumps({"error": "registry_error", "code": "registry_error"}))
+                return 2
             print(json.dumps(answer))
             return 0
         if args.command == "enqueue-session-snapshot":
@@ -3253,12 +3259,18 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
                     )
                 )
                 return 2
-            except ValueError:
+            except InvalidSessionSnapshotDigest:
                 print(
                     json.dumps(
                         {"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}
                     )
                 )
+                return 2
+            except sqlite3.Error:
+                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                return 3
+            except ValueError:
+                print(json.dumps({"error": "registry_error", "code": "registry_error"}))
                 return 2
             print(json.dumps(answer))
             return 0
