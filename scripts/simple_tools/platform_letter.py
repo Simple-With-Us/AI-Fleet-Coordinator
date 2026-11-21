@@ -2071,9 +2071,8 @@ def _transcript_strings(
     elif isinstance(value, Mapping):
         kind = value.get("type")
         role = value.get("role")
-        if (
-            (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
-            or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
+        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
+            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
         ):
             return
         bootstrap_tail = _agents_environment_bootstrap_tail(value)
