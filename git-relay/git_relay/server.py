@@ -1465,7 +1465,7 @@ class _OperatorBootstrapRelay:
         return self._relay.handle(token, action, args, proof=proof, operator_bootstrap=True)
 
 
-def make_handler(relay: Relay, operator_bootstrap: bool = False):
+def make_handler(relay: Relay, operator_bootstrap: bool = False, service_read_only: bool = False):
     # Bootstrap admission is bound to the LISTENER, never to the peer
     # address:  the tunnel and any local client reach the public listener
     # alike, so remote_addr cannot distinguish an operator from the edge.
@@ -1494,7 +1494,7 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
             elif git_read.is_git_path(self.path):
-                if operator_bootstrap:
+                if operator_bootstrap or service_read_only:
                     # The operator listener serves the v1 API only:  Git
                     # smart-HTTP needs the full Relay interface and is not
                     # part of bootstrap admission, so it is refused outright
@@ -1506,6 +1506,9 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if service_read_only and self.path != "/v1/service_read":
+                self._send(404, {"error": "not found"})
+                return
             if git_read.is_git_path(self.path):
                 if operator_bootstrap:
                     self._send(404, {"error": "not found"})
@@ -2025,6 +2028,27 @@ def _service_read_token_from_file() -> str | None:
     return value
 
 
+def _service_read_listener_address(env):
+    """Optional private bridge socket. Never wildcard, public or bootstrap-capable."""
+    import ipaddress
+
+    raw = env.get("GIT_RELAY_SERVICE_READ_BIND", "")
+    if not raw:
+        return None
+    try:
+        address = ipaddress.ip_address(raw)
+        allowed = address.is_loopback or any(
+            address in ipaddress.ip_network(net)
+            for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        )
+        port = int(env.get("GIT_RELAY_SERVICE_READ_PORT", "8473"))
+        if not allowed or not 1024 <= port <= 65535:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise SystemExit("git-relay config: invalid private service-read listener") from None
+    return str(address), port
+
+
 def main() -> None:
     relay = from_env()
     _report_pr_owner_binding(relay)
@@ -2051,9 +2075,24 @@ def main() -> None:
         )
         threading.Thread(target=operator_server.serve_forever, daemon=True).start()
         print(f"git-relay operator listener on 127.0.0.1:{operator_port}")
+    service_server = None
+    service_address = _service_read_listener_address(os.environ)
+    if service_address:
+        if not relay.service_read_token or not relay.service_read_repos:
+            raise SystemExit(
+                "git-relay config: service-read listener needs dedicated auth and repos"
+            )
+        service_server = BoundedThreadingHTTPServer(
+            service_address, make_handler(relay, service_read_only=True)
+        )
+        threading.Thread(target=service_server.serve_forever, daemon=True).start()
+        print("git-relay private service-read listener active")
     try:
         server.serve_forever()
     finally:
+        if service_server is not None:
+            service_server.shutdown()
+            service_server.server_close()
         if operator_server is not None:
             operator_server.shutdown()
             operator_server.server_close()

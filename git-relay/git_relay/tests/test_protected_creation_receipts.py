@@ -1,8 +1,6 @@
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, "/tmp/relay-assembled-1727")
 from git_relay.tests.test_review_alert_relay import (
     ARGS,
     ECHO_TOKEN,
