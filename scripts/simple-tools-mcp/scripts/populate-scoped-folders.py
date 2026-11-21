@@ -19,19 +19,19 @@ The run requires `AFC_SCOPED_FOLDERS_AFC_READ_TOKEN`,
 `AFC_SCOPED_FOLDERS_FLEETOPS_WRITE_TOKEN`; no machine identity or credential file is read.
 
 Every value READ, source and destination alike, goes through
-`fleet-secrets get NAME --path PATH --project ai-fleet-coordinator|fleet-ops`
+the shared direct Infisical CLI with `get NAME --path PATH --project ai-fleet-coordinator|fleet-ops`
 (kody 4365621961).  The child gets its project-scoped read service token as INFISICAL_TOKEN
 (one read token per project; writes use a separate Fleet-OPS token) and the project ids
 pinned to AFC and FLEETOPS below, so each read lands in exactly the workspace
-and folder MAPPING names.  fleet-secrets expands Infisical references (Fleet-OPS
+and folder MAPPING names.  The shared reader expands Infisical references (Fleet-OPS
 root holds its keys as references, INFISICAL.md) and refuses an unresolved one
 (exit 5), so a literal ${...} is never copied;  exit 3 means absent.  The values
 are deliberately NOT taken from the environment first:  the copy's source of
 truth is the named project and path, and a same-named variable in this shell
-(a seat's FLEETLINK_TOKEN_<SEAT>, say) would copy a different value.  Only the
-write uses Infisical's API, because `fleet-secrets set` writes nothing but its
-allowlisted names (core.WRITE_ALLOWLIST:  CACHE_* under /linear and the CLI
-logins under /cli-logins).
+(a seat's FLEETLINK_TOKEN_<SEAT>, say) would copy a different value.  Writes
+remain direct Infisical API calls under the explicit writer-token guards; the
+shared CLI's own writer is separately allowlisted to CACHE_* under /linear and
+CLI-login tokens under /cli-logins.
 
 Values transit this process's memory only: never printed, logged, or persisted.
 Step 0 fails safe: the read-tools token's own metadata (GET /api/v2/service-token,
@@ -45,7 +45,6 @@ value stops the run for reconciliation - no blind overwrite.
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -53,7 +52,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-import fleet_infisical as fleet_secrets_core
+import fleet_infisical as infisical_core
 
 # Pinned on purpose (kody 4365623903, 4366921599):  every copy must read from and
 # write to exactly these two projects.  The AFC id is documented in INFISICAL.md.
@@ -77,8 +76,8 @@ def resolve_fleet_ops_project_id() -> str:
         )
         sys.exit(1)
     try:
-        return fleet_secrets_core.infisical_project_id(os.environ, pathlib.Path.home(), "fleet-ops")
-    except fleet_secrets_core.SecretsError as error:
+        return infisical_core.infisical_project_id(os.environ, pathlib.Path.home(), "fleet-ops")
+    except infisical_core.SecretsError as error:
         print(f"GATE: {error.message}  Aborting (fail safe).")
         sys.exit(1)
 
@@ -176,10 +175,10 @@ BASE = "https://app.infisical.com"
 # An explicit, project-identifying User-Agent on every Infisical call:  the
 # runtime default (Python-urllib/3.x) is what protected endpoints refuse.
 USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
-# Exit status when fleet-secrets itself is not installed (the shell's "command
-# not found"), apart from 1 for every other stop (kody 4366921905).
+# Exit status when the shared CLI interpreter or script cannot be started,
+# apart from 1 for every other stop (kody 4366921905).
 MISSING_EXECUTABLE = 127
-# Exit status when a fleet-secrets read times out,
+# Exit status when a shared CLI read times out,
 # the status timeout(1) uses (kody 4367021960, 4368415894, 4368465375).  A
 # stalled write exits 1 like a write answered with a 5xx:  either may have
 # landed, and a re-run reconciles (kody 4368532647).
@@ -282,17 +281,14 @@ def service_token(name):
     return token
 
 
-def fleet_secrets_binary():
-    return shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+FLEET_INFISICAL_CLI = pathlib.Path(__file__).resolve().parents[2] / "fleet_infisical_cli.py"
 
 
-# fleet-secrets' read-only project slugs, and the variables it resolves each
-# slug's id from first (scripts/fleet_secrets/core.py PROJECT_SOURCES).  The
+# Shared reader's read-only project slugs, and the variables it resolves each
+# slug's id from first (scripts/fleet_infisical.py PROJECT_SOURCES).  The
 # child gets the ids below, so no ~/.simple-tools file can point a read elsewhere.
-FLEET_SECRETS_PROJECT = {AFC: "ai-fleet-coordinator", FLEETOPS: "fleet-ops"}
-FLEET_SECRETS_PROJECT_ID_ENV = {
+INFISICAL_PROJECT = {AFC: "ai-fleet-coordinator", FLEETOPS: "fleet-ops"}
+INFISICAL_PROJECT_ID_ENV = {
     AFC: "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
     FLEETOPS: "INFISICAL_FLEET_OPS_PROJECT_ID",
 }
@@ -311,35 +307,39 @@ CHILD_DROPPED_ENV = (
     "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
     "READ_TOOLS_SERVICE_TOKEN",
 )
-FLEET_SECRETS_ABSENT = 3  # `fleet-secrets get`:  the key is not in Infisical at that path
+INFISICAL_ABSENT = 3  # Shared CLI `get`:  the key is not in Infisical at that path
 
 
 class ReadError(Exception):
-    """`fleet-secrets get` failed.  Carries its exit code (or a reason word)
+    """Shared Infisical CLI `get` failed.  Carries its exit code (or a reason word)
     only:  its output is never kept, so no value or server text can leak."""
 
     def __init__(self, code):
-        super().__init__(f"fleet-secrets get failed ({code})")
+        super().__init__(f"Infisical get failed ({code})")
         self.code = code
 
 
-def fleet_secrets_get(token, ws, path, name):
-    """One value through `fleet-secrets get NAME --path PATH --project P`, or
+def infisical_get(token, ws, path, name):
+    """One value through the shared CLI `get NAME --path PATH --project P`, or
     None when it exits 3 (absent).  The value comes back byte for byte (stdout
     as bytes, decoded as UTF-8, never stripped).  Any other exit raises
     ReadError with the code only;  stderr is discarded unread."""
+    if not FLEET_INFISICAL_CLI.is_file():
+        raise ReadError(MISSING_EXECUTABLE)
     env = {k: v for k, v in os.environ.items() if k not in CHILD_DROPPED_ENV}
     env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN" if ws == AFC else "INFISICAL_TOKEN"] = token
-    env[FLEET_SECRETS_PROJECT_ID_ENV[ws]] = ws
+    env[INFISICAL_PROJECT_ID_ENV[ws]] = ws
     env["INFISICAL_READ_PATHS"] = ",".join(READ_PATHS_BY_PROJECT[ws])
     argv = [
-        fleet_secrets_binary(),
+        sys.executable,
+        "-I",
+        str(FLEET_INFISICAL_CLI),
         "get",
         name,
         "--path",
         path,
         "--project",
-        FLEET_SECRETS_PROJECT[ws],
+        INFISICAL_PROJECT[ws],
     ]
     try:
         proc = subprocess.run(
@@ -359,7 +359,7 @@ def fleet_secrets_get(token, ws, path, name):
         raise ReadError("unavailable") from None
     finally:
         env = {}
-    if proc.returncode == FLEET_SECRETS_ABSENT:
+    if proc.returncode == INFISICAL_ABSENT:
         return None
     if proc.returncode != 0:
         raise ReadError(proc.returncode)
@@ -371,15 +371,15 @@ def fleet_secrets_get(token, ws, path, name):
 
 def read_secret(token, ws, path, name):
     """A source value.  An absent source stops the run (exit 3 -> ReadError)."""
-    value = fleet_secrets_get(token, ws, path, name)
+    value = infisical_get(token, ws, path, name)
     if value is None:
-        raise ReadError(FLEET_SECRETS_ABSENT)
+        raise ReadError(INFISICAL_ABSENT)
     return value
 
 
 def read_secret_opt(token, ws, path, name):
     """A destination value, or None when it does not exist yet."""
-    return fleet_secrets_get(token, ws, path, name)
+    return infisical_get(token, ws, path, name)
 
 
 def upsert(token, ws, path, name, value):
@@ -488,6 +488,9 @@ def check_scoped_tokens(read_tokens, write_token):
 
 
 def main():
+    if not FLEET_INFISICAL_CLI.is_file():
+        print("GATE: shared Infisical get is not installed.  Aborting before credential/provider access.")
+        sys.exit(MISSING_EXECUTABLE)
     dry = "--apply" not in sys.argv
     print(f"{'DRY RUN - no writes' if dry else 'APPLYING'}: {len(MAPPING)} copies")
     for sws, spath, sname, dpath, dname in MAPPING:
@@ -542,8 +545,8 @@ def main():
         except ReadError as e:
             value = existing = None
             missing_tool = e.code == MISSING_EXECUTABLE
-            # Our own 90-second limit, or fleet-secrets' own 124 (its Linux entry
-            # point's Infisical timeout):  every timeout exits 124 (kody 4368415894).
+            # Our own 90-second limit, or the shared CLI's Infisical timeout:
+            # every timeout exits 124 (kody 4368415894).
             timed_out = e.code in ("timeout", TIMED_OUT)
             if missing_tool:
                 what, status = "is not installed", MISSING_EXECUTABLE
@@ -552,7 +555,7 @@ def main():
             else:
                 what, status = f"exit {e.code}", 1
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): fleet-secrets get "
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): Infisical get "
                 f"{what}, reading the {reading}.  "
                 f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )

@@ -10,18 +10,19 @@
 
 set -uo pipefail
 
-# Cron's PATH is minimal, so the absolute path;  override with FLEET_SECRETS_BIN.
-FLEET_SECRETS="${FLEET_SECRETS_BIN:-/Users/jay/.local/bin/fleet-secrets}"
+# Cron's PATH is minimal, so resolve the shared reader relative to this script.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FLEET_INFISICAL_CLI="${SCRIPT_DIR}/fleet_infisical_cli.py"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+# Environment first, then the shared direct Infisical reader (the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
-  TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"
+if [ -z "$TOKEN" ] && [ -f "$FLEET_INFISICAL_CLI" ]; then
+  TOKEN="$(/usr/bin/python3 -I "$FLEET_INFISICAL_CLI" get HCLOUD_TOKEN --path / --project fleet-ops 2>/dev/null || true)"
 fi
 if [ -z "$TOKEN" ]; then
   echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"

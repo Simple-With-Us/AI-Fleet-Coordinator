@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Mocked-API contract tests for populate-scoped-folders.py.
 
-No network and no real fleet-secrets:  urllib.request.urlopen is stubbed with a
+No network and no provider writes:  urllib.request.urlopen is stubbed with a
 fake Infisical (token metadata and the upsert write), and subprocess.run
-with a fake `fleet-secrets get` over the same values (every read).  Values are
+with a fake shared CLI `get` over the same values (every read).  Values are
 sentinel strings ("VALUE-<name>"); every test asserts they never appear in any
 printed output (names-only reporting, redacted errors)."""
 
@@ -24,7 +24,7 @@ import uuid
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from fleet_secrets import core as fleet_secrets_core
+import fleet_infisical as fleet_infisical_core
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
@@ -45,8 +45,8 @@ def fixture_service_token():
 
 
 class FakeInfisical:
-    """Routes urlopen calls and `fleet-secrets get` runs over one store.
-    values[(ws, path, name)] -> value;  a missing key is fleet-secrets' exit 3."""
+    """Routes urlopen calls and shared CLI `get` runs over one store.
+    values[(ws, path, name)] -> value;  a missing key is exit 3."""
 
     def __init__(self, scopes=None, values=None, fail=None, read_tokens=None, write_token=None):
         self.scopes = scopes
@@ -56,12 +56,12 @@ class FakeInfisical:
             psf.FLEETOPS: fixture_service_token(),
         }
         self.write_token = write_token or fixture_service_token()
-        # ("read", (ws, path, name)) -> fleet-secrets exit code;  ("upsert", name) -> HTTP code
+        # ("read", (ws, path, name)) -> CLI exit code;  ("upsert", name) -> HTTP code
         self.fail = fail or {}
         self.upserts = []
         self.agents = []  # the User-Agent of every API call
         self.authorizations = []
-        self.reads = []  # every fleet-secrets run:  (argv, child env)
+        self.reads = []  # every shared CLI run:  (argv, child env)
 
     def default_metadata(self, token):
         if token == self.read_tokens[psf.AFC]:
@@ -101,12 +101,11 @@ class FakeInfisical:
         )
 
     def run(self, argv, env=None, **kwargs):
-        """A fake `fleet-secrets get NAME --path P --project SLUG`:  the project id
-        comes from the variable fleet-secrets reads for SLUG, as the real one does."""
+        """A fake isolated shared CLI `get NAME --path P --project SLUG` run."""
         self.reads.append((list(argv), dict(env or {})))
-        if argv[1:2] != ["get"] or argv[3] != "--path" or argv[5] != "--project":
-            raise AssertionError("unexpected fleet-secrets call: " + " ".join(argv[1:]))
-        name, path, slug = argv[2], argv[4], argv[6]
+        if argv[1:3] != ["-I", str(psf.FLEET_INFISICAL_CLI)] or argv[3] != "get" or argv[5] != "--path" or argv[7] != "--project":
+            raise AssertionError("unexpected Infisical CLI call")
+        name, path, slug = argv[4], argv[6], argv[8]
         id_var = {
             "ai-fleet-coordinator": "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
             "fleet-ops": "INFISICAL_FLEET_OPS_PROJECT_ID",
@@ -327,20 +326,20 @@ class TestApply(Base):
         self.assertNotIn("VALUE-", out)
 
     def test_read_failure_visible_stop_redacted(self):
-        # fleet-secrets exit 4 (fetch or auth failure, a scope denial among them).
+        # Shared CLI exit 4 (fetch or auth failure, a scope denial among them).
         seeded(self.fake)
         sws, spath, victim, _dpath, _dname = psf.MAPPING[5]
         self.fake.fail[("read", (sws, spath, victim))] = 4
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
         self.assertIn("STOP at 6/72", out)
-        self.assertIn("fleet-secrets get exit 4", out)
+        self.assertIn("Infisical get exit 4", out)
         self.assertIn(victim, out)  # the NAME is fine
         self.assertNotIn("VALUE-", out)  # values never printed
         self.assertEqual(len(self.fake.upserts), 5)
 
     def test_unresolved_reference_stops_names_only(self):
-        # fleet-secrets exit 5:  a source still an unexpanded ${...} reference is
+        # Shared CLI exit 5:  a source still an unexpanded ${...} reference is
         # never copied as if it were the value.
         seeded(self.fake)
         sws, spath, victim, _dpath, _dname = psf.MAPPING[70]  # a Fleet-OPS root recall source
@@ -363,24 +362,24 @@ class TestApply(Base):
         self.assertIn(f"reading the destination Fleet-OPS {dpath}/{dname}", out)
         self.assertNotIn((dpath, dname), self.fake.upserts)
 
-    def test_reads_go_through_fleet_secrets_with_project_and_path(self):
-        # kody 4365621961:  every value read is `fleet-secrets get NAME --path P
-        # --project SLUG`, pinned to the MAPPING's workspace, on the login's token.
+    def test_reads_use_isolated_shared_cli_with_project_and_path(self):
+        # Every value read uses the isolated canonical CLI, pinned to the
+        # MAPPING's workspace, folder, project ID and caller-owned read token.
         seeded(self.fake)
         code, _out = self.run_main("--apply")
         self.assertIsNone(code)
         self.assertEqual(len(self.fake.reads), 144)  # 72 sources + 72 destinations
         expected = []
         for sws, spath, sname, dpath, dname in psf.MAPPING:
-            expected.append((sname, spath, psf.FLEET_SECRETS_PROJECT[sws], sws))
+            expected.append((sname, spath, psf.INFISICAL_PROJECT[sws], sws))
             expected.append((dname, dpath, "fleet-ops", psf.FLEETOPS))
         seen = []
         for argv, env in self.fake.reads:
-            slug = argv[6]
-            id_var = psf.FLEET_SECRETS_PROJECT_ID_ENV[
+            slug = argv[8]
+            id_var = psf.INFISICAL_PROJECT_ID_ENV[
                 psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
             ]
-            seen.append((argv[2], argv[4], slug, env[id_var]))
+            seen.append((argv[4], argv[6], slug, env[id_var]))
             expected_token = os.environ[
                 psf.READ_TOKEN_ENVS[psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS]
             ]
@@ -392,7 +391,7 @@ class TestApply(Base):
             self.assertEqual(env[token_var], expected_token)
             workspace = psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
             self.assertEqual(
-                fleet_secrets_core.declared_paths(env, argv[4]),
+                fleet_infisical_core.declared_paths(env, argv[6]),
                 psf.READ_PATHS_BY_PROJECT[workspace],
             )
             self.assertNotIn(
@@ -439,21 +438,21 @@ class TestApply(Base):
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-padded é\n")
 
-    def test_missing_fleet_secrets_exits_127(self):
-        # kody 4366921905:  a missing executable is the shell's 127, apart from 1.
+    def test_missing_infisical_cli_exits_127(self):
+        # Missing canonical source refuses before spawning Python or reaching the provider.
         seeded(self.fake)
-
-        def missing(argv, **kwargs):
-            raise FileNotFoundError(argv[0])
-
-        subprocess.run = missing
-        code, out = self.run_main("--apply")
+        with tempfile.TemporaryDirectory() as directory:
+            missing_cli = pathlib.Path(directory) / "missing-cli.py"
+            with mock.patch.object(psf, "FLEET_INFISICAL_CLI", missing_cli):
+                code, out = self.run_main("--apply")
         self.assertEqual(code, psf.MISSING_EXECUTABLE)
         self.assertEqual(code, 127)
-        self.assertIn("fleet-secrets get is not installed", out)
+        self.assertIn("Infisical get is not installed", out)
         self.assertEqual(self.fake.upserts, [])
+        self.assertEqual(self.fake.reads, [])
+        self.assertEqual(self.fake.authorizations, [])
 
-    def test_fleet_secrets_read_timeout_exits_124(self):
+    def test_infisical_read_timeout_exits_124(self):
         # kody 4367021960:  a timed-out read is timeout(1)'s 124, apart from 1 and 127.
         seeded(self.fake)
 
@@ -464,19 +463,18 @@ class TestApply(Base):
         code, out = self.run_main("--apply")
         self.assertEqual(code, psf.TIMED_OUT)
         self.assertEqual(code, 124)
-        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertIn("Infisical get timed out, reading the source", out)
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
 
-    def test_fleet_secrets_own_exit_124_is_a_timeout(self):
-        # kody 4368415894:  fleet-secrets' own 124 (its Linux entry point's login
-        # timeout) exits 124 too, not as a generic "exit 124" failure.
+    def test_cli_exit_124_is_a_timeout(self):
+        # Provider timeout exits 124, not as a generic "exit 124" failure.
         seeded(self.fake)
         sws, spath, sname, _dpath, _dname = psf.MAPPING[0]
         self.fake.fail[("read", (sws, spath, sname))] = 124
         code, out = self.run_main("--apply")
         self.assertEqual(code, psf.TIMED_OUT)
-        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertIn("Infisical get timed out, reading the source", out)
         self.assertNotIn("exit 124", out)
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
