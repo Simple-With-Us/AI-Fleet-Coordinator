@@ -775,9 +775,9 @@ class SessionRegistry:
             if follow:
                 return issue(follow[0])
             # Children stay in the parent's row; once its available non-doubled pairs are live, refuse the letter.
-            limit = sum(1 for p in pairs_after(after) if p in members)
+            limit = sum(1 for p in members if p[0] == after[0] and p[0] != p[1])
             exhausted = LabelExhausted(
-                f"no free child pairs remain among {limit} candidates in row {after[0]!r} on platform {platform!r}:"
+                f"no free child pairs remain in row {after[0]!r} (capacity {limit}) on platform {platform!r}:"
                 " a subthread stays in its parent's row and is refused a letter when that row is full"
             )
             exhausted.space = "double"
@@ -785,7 +785,9 @@ class SessionRegistry:
             raise exhausted
 
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-        main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
+        main = sorted(
+            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p)
+        )
         if main:
             return issue(main[0])
         # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
