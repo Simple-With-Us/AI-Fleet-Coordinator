@@ -424,7 +424,7 @@ UNLETTERED_SCAN = 20
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
 #: How many rows one query reads at a time, and how many notes one scan reads.  The query leaves out
-#: the chats that carry a letter on their title and the chats whose own note holds one, so the rows
+#: the chats that carry a letter on their title and the chats the repair pass would skip, so the rows
 #: it returns are candidates:  the bound counts candidates and not rows, and a busy host's lettered
 #: chats cannot spend it.
 UNLETTERED_BATCH = 200
@@ -438,16 +438,25 @@ LETTER_GLOB_ONE = "[A-Z]: *"
 LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
 
 
-def _lettered_sids(env: Mapping[str, str]) -> set[str]:
-    """The session ids whose own note holds a letter, read from the seat's notes folder in one batch.
+def _skipped_sids(env: Mapping[str, str]) -> set[str]:
+    """The session ids the repair pass will not touch:  the chats whose own note holds a letter, and
+    the chats whose note is settled (closed or mismatched).
+
+    The pass reads a chat's note and skips the chat when the note says closed or mismatch, or when
+    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every
+    candidate it names is a chat the pass will really replay, and no slot of the twenty is spent on
+    a chat the pass skips.
 
     The letter is in the note and the note is a file, so the lettered chats are read from the
     folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
     the listing and are used as query values only, so a name the store holds can never place a read
     outside the folder.
 
-    A note that is not open, or whose label is not a letter, says nothing:  such a chat holds no
-    letter, and the pass may name it."""
+    A name is an id only when the library's own check takes it, and only when it is the file the
+    library reads for that id:  the library reads `<id>.json` for the trimmed id, so a name with
+    spaces around it is no note of any chat and decides nothing.  The store may write the same
+    chat's id with spaces around it; the query and the check below read the id trimmed, so such a
+    chat is left out as well."""
     folder = os.path.dirname(PL.note_path(env, SEAT, ""))
     try:
         names = os.listdir(folder)
@@ -463,8 +472,14 @@ def _lettered_sids(env: Mapping[str, str]) -> set[str]:
         except OSError:
             continue
     notes.sort(reverse=True)
-    held: set[str] = set()
+    skipped: set[str] = set()
     for _, path, sid in notes[:UNLETTERED_NOTES]:
+        try:
+            ident = PL.SI.check(sid, "a listed session id")
+        except ValueError:
+            continue  # a name that is not a session id names no note
+        if ident != sid:
+            continue  # the library reads `<id>.json`:  a padded name is no note of any chat
         try:
             with open(path, encoding="utf-8") as fh:
                 note = json.load(fh)
@@ -472,29 +487,32 @@ def _lettered_sids(env: Mapping[str, str]) -> set[str]:
             continue
         if not isinstance(note, dict):
             continue
-        label = note.get("label")
-        if note.get("state") == "open" and isinstance(label, str) and PL.LABEL_RE.fullmatch(label):
-            held.add(sid)
-    return held
+        if note.get("state") in ("closed", "mismatch") or PL.lettered(note):
+            skipped.add(ident)  # the pass skips this chat:  a closed, a mismatched or a lettered note
+    return skipped
 
 
 def _unlettered_children(
-    conn: sqlite3.Connection, now: float, held: set[str]
+    conn: sqlite3.Connection, now: float, skipped: set[str]
 ) -> tuple[list[str], int]:
     """The sub-threads of this host that hold no letter, newest first, and how many rows of the
     store could not be named.
 
-    The chats whose own note holds a letter are left out in the query, so the bound counts the
+    The chats the repair pass would skip are left out in the query, so the bound counts the
     candidates and not the rows:  a host whose newest sub-threads are all lettered cannot spend the
     scan's bound on them and starve a genuinely unlettered older row.  A row that names no session
     id is skipped and counted:  a corrupt row must not read as a chat that was considered and left
     alone, and only a well-formed id is ever named (the library's own check), so a name the store
-    holds can never place anything outside the notes folder."""
+    holds can never place anything outside the notes folder.
+
+    The ids are read trimmed on both sides:  the note of a chat is the file of its trimmed id, so a
+    store that writes the id with spaces around it names the same chat, and a chat that holds a
+    letter is left out whichever way its id is written."""
     clause = ""
     params: list[Any] = []
-    if held:
-        clause = " AND session_id NOT IN (%s)" % ",".join("?" * len(held))
-        params.extend(sorted(held))
+    if skipped:
+        clause = " AND TRIM(session_id) NOT IN (%s)" % ",".join("?" * len(skipped))
+        params.extend(sorted(skipped))
     rows = conn.execute(
         "SELECT session_id FROM local_runtime_sessions"
         " WHERE session_kind = ?"
@@ -529,6 +547,8 @@ def _unlettered_children(
         except ValueError:
             malformed += 1
             continue
+        if checked in skipped:
+            continue  # a chat the pass skips, whose id the store writes with spaces around it
         found.append(checked)
     return found, malformed
 
@@ -551,7 +571,7 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     try:
         conn = _read_only(path)
         try:
-            children, broken = _unlettered_children(conn, now, _lettered_sids(env))
+            children, broken = _unlettered_children(conn, now, _skipped_sids(env))
             malformed += broken
             for sid in children:
                 if sid not in found:

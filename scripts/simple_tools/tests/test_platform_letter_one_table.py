@@ -218,20 +218,52 @@ class MiniMaxRepairRow(Base):
         self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
         self.assertNotIn("m-0109", self.scan())
 
-    def test_a_chat_whose_note_is_not_open_is_named(self) -> None:
-        # A closed or a mismatched note holds no letter, so the chat is a candidate:  the pass asks
-        # the assigner for one.  Only an open note with a letter on it holds a letter.
+    def test_a_chat_whose_note_is_closed_is_not_named(self) -> None:
+        # The pass leaves a closed note alone (replaying it would register a finished chat again), so
+        # naming it would spend a slot of the scan on a chat the pass will not touch.
         self.add("m-0110", "Child work", kind="task", parent="m-0100")
         self.write_note("m-0110", {"state": "closed", "label": "AA", "platform": "minimax", "location": "mac"})
-        self.assertIn("m-0110", self.scan())
+        self.assertNotIn("m-0110", self.scan())
 
-    def test_a_chat_whose_note_carries_a_malformed_label_is_named(self) -> None:
-        # A label that is not a letter is not a letter:  the note is broken, the chat holds none, and
-        # the pass may name it.  The letter test is the established one:  the note is open and its
-        # label is one or two capitals.
+    def test_a_chat_whose_note_is_mismatched_is_not_named(self) -> None:
+        # A mismatched note is a chat registered under another seat:  the pass leaves it alone, so the
+        # scan does not name it.
+        self.add("m-0114", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0114", {"state": "mismatch", "label": "", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0114", self.scan())
+
+    def test_a_chat_whose_note_failed_is_named(self) -> None:
+        # A failed note holds no letter and the pass replays it, so the chat is a candidate.
+        self.add("m-0115", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0115", {"state": "failed", "label": "", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0115", self.scan())
+
+    def test_a_chat_whose_note_carries_a_malformed_label_is_not_named(self) -> None:
+        # The pass skips a chat whose note holds a label, whatever the label reads:  `lettered` is the
+        # library's own test (the note is open and it names one).  A broken label is still a label
+        # the pass will not touch, so naming the chat would spend a slot of the scan on nothing.
         self.add("m-0111", "Child work", kind="task", parent="m-0100")
         self.write_note("m-0111", {"state": "open", "label": "??", "platform": "minimax", "location": "mac"})
-        self.assertIn("m-0111", self.scan())
+        self.assertNotIn("m-0111", self.scan())
+
+    def test_a_lettered_chat_whose_stored_id_is_padded_is_not_named(self) -> None:
+        # The store may write a chat's id with spaces around it, while the note of that chat is the
+        # file of the trimmed id.  The ids are read trimmed on both sides, so the chat that holds a
+        # letter is left out of the scan and does not come back as a candidate.
+        self.add(" m-0112 ", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0112", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0112", self.scan())
+
+    def test_a_note_named_with_spaces_around_it_is_no_note(self) -> None:
+        # The library reads `<id>.json` for the trimmed id, so a file whose name has spaces around the
+        # id is no note of any chat and decides nothing:  the chat its name hints at is still a
+        # candidate, and the note of that chat is the one the library reads.
+        self.add("m-0113", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0113", {"state": "failed", "label": "", "platform": "minimax", "location": "mac"})
+        folder = os.path.dirname(PL.note_path(self.env(), PM.SEAT, "m-0113"))
+        with open(os.path.join(folder, " m-0113 .json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "open", "label": "AA"}, fh)
+        self.assertIn("m-0113", self.scan())
 
     def test_a_row_whose_session_id_is_not_a_session_id_is_not_named(self) -> None:
         # The session id the store holds is checked with the library's own check before anything is
