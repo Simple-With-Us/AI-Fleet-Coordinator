@@ -991,6 +991,26 @@ enum ServerSettingsCopy {
     }
 }
 
+enum ServerSeatNames {
+    static func text(from draft: String) -> String {
+        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
+        let names = values.compactMap { value -> String? in
+            if case .text(let name) = value { return name }
+            return nil
+        }
+        guard names.count == values.count else { return "" }
+        return names.joined(separator: ", ")
+    }
+
+    static func draft(from text: String) -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "[]" }
+        let names = text.components(separatedBy: ",").map {
+            ServerSettingValue.text($0.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return ServerSettingValue.list(names).json ?? ""
+    }
+}
+
 enum ServerSettingsBuilder {
     /// Legacy plan callers offer only these routing keys.  The Operator's editable rows and
     /// autosave request use the complete nonsecret allowlist and canonical Infisical document.

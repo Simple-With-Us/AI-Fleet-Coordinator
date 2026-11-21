@@ -1,7 +1,7 @@
 {
   "synthetic": true,
   "producer": "real fleet-ops-control.main -> editor.run_request -> canonical transaction",
-  "module_sha256": "673fe7833c2c672c124e480548d5a4cc4720dbe9265f775659c12fd3edb860fb",
+  "module_sha256": "146dad4b13a5180a57db6ebf7b0c7128a4811068d60d790b99b1d764dfe0c09d",
   "cases": {
     "get": {
       "request": null,
@@ -57,7 +57,7 @@
         "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "1ee8f31a941f",
+        "auditID": "d46ef05f75a6",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -119,7 +119,7 @@
         "expectBaseSHA256": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0"
       },
       "response": {
-        "auditID": "78e48182e0b5",
+        "auditID": "b45a9c556e5e",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -181,7 +181,7 @@
         "expectBaseSHA256": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb"
       },
       "response": {
-        "auditID": "5f4dd89c0784",
+        "auditID": "27a617a14586",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Saved to Infisical; runtime acceptance remains pending",
@@ -240,7 +240,7 @@
         "action": "reconcile"
       },
       "response": {
-        "auditID": "cd50d2cb6ac0",
+        "auditID": "bb9c6ae45b15",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Canonical persistence is verified; prior runtime acceptance remains unconfirmed",
@@ -294,7 +294,7 @@
         "action": "reconcile"
       },
       "response": {
-        "auditID": "58246dac5ff3",
+        "auditID": "7be5a4663281",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -346,7 +346,7 @@
         "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "15cca5f4722a",
+        "auditID": "31a261136ea5",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Current settings differ from this request; no write was repeated",
@@ -400,7 +400,7 @@
         "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "7e0bc2f823b6",
+        "auditID": "199be4a54ee5",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "The previous outcome has no current verified runtime receipt; no write was repeated",
@@ -435,7 +435,7 @@
         "action": "reconcile"
       },
       "response": {
-        "auditID": "894c84aab077",
+        "auditID": "e667a32c8454",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "This absent request was durably cancelled; its ID cannot write",
@@ -475,7 +475,7 @@
         "expectBaseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3"
       },
       "response": {
-        "auditID": "2897e8b25619",
+        "auditID": "8eb2d66ae109",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "Configure the required binding OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
@@ -551,7 +551,7 @@
         "expectBaseSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30"
       },
       "response": {
-        "auditID": "8d9100e70018",
+        "auditID": "075dda92c67b",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "canonical settings initialized and read back; runtime source is not activated",
@@ -642,7 +642,7 @@
         "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c"
       },
       "response": {
-        "auditID": "d948c40bd625",
+        "auditID": "212f1624c499",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -701,7 +701,7 @@
         "expectBaseSHA256": "f2d991160da510082bd050d132125f3126f9e6c5aaea79dbae65e5adc57fa804"
       },
       "response": {
-        "auditID": "3d489426ac67",
+        "auditID": "1175fd79d051",
         "auditTarget": "eavesdropper settings",
         "commands": [],
         "detail": "saved to Infisical and verified by the listener",
@@ -751,9 +751,9 @@
     }
   },
   "producer_sha256": {
-    "scripts/fleet-ops-control.py": "7f9c6477868ea5f395e24ab615c97aa8ac9a3c445da31599f6041fbd0b02a994",
-    "scripts/simple_tools/server/eavesdropper_settings_edit.py": "2a1d43e1b8daf41b3e1fcf65a8a5d59c905d3219d5b4542250b057962beb37f7",
-    "scripts/simple_tools/server/operator_settings.py": "673fe7833c2c672c124e480548d5a4cc4720dbe9265f775659c12fd3edb860fb",
+    "scripts/fleet-ops-control.py": "9e9fd0e6bc36ef0d8655505c4709a6617ad53e1cf0b15ca273654a13609320b4",
+    "scripts/simple_tools/server/eavesdropper_settings_edit.py": "173736f205a36b64ae4ce10e8c0c105156e43701c274dbe41f1ce10dd6cde182",
+    "scripts/simple_tools/server/operator_settings.py": "146dad4b13a5180a57db6ebf7b0c7128a4811068d60d790b99b1d764dfe0c09d",
     "scripts/simple_tools/operator_github_state.py": "a86f230b4902252be43b918bef1768c645744b0106d3edfade5a169f97f1cf89"
   },
   "schema_path": "scripts/fleet-ops-eavesdropper-settings.json",
