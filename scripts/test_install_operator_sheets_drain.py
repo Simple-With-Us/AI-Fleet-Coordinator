@@ -703,9 +703,7 @@ if (typeof thread.drainThreadRows !== 'function' ||
         )
         python_stub.chmod(0o755)
 
-        result = self.run_install(
-            "--code-only", STUB_TIMER_ACTIVE="1", REAL_PYTHON3=sys.executable
-        )
+        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1", REAL_PYTHON3=sys.executable)
 
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("could not be verified coherent", result.stderr)
@@ -718,12 +716,12 @@ if (typeof thread.drainThreadRows !== 'function' ||
     def test_code_only_timer_start_failure_is_nonzero_when_bundle_is_coherent(self):
         self.seed_existing_install()
 
-        result = self.run_install(
-            "--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_START_EXIT="23"
-        )
+        result = self.run_install("--code-only", STUB_TIMER_ACTIVE="1", STUB_TIMER_START_EXIT="23")
 
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("could not restore the previously active operator-sheets-drain.timer", result.stderr)
+        self.assertIn(
+            "could not restore the previously active operator-sheets-drain.timer", result.stderr
+        )
         self.assertNotIn("could not be verified coherent", result.stderr)
         self.assertIn("systemctl start operator-sheets-drain.timer", self.calls())
         self.assertTrue((self.lib / MODULES[0]).is_file())
