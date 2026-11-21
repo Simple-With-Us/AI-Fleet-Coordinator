@@ -1,4 +1,9 @@
 import { test } from 'node:test';
+import { mkdtempSync, symlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { makeDeps, ascFailureText } from './ios_testflight_freshness.mjs';
@@ -50,4 +55,17 @@ test('parent uses dedicated child and one GET path, strips fallback credentials'
 });
 test('parent diagnosis emits only numeric HTTP status, not provider body', () => {
   assert.equal(ascFailureText({stderr:'scoped-asc-read-unavailable HTTP 403',stdout:'{"errors":[{"code":"sensitive-value"}]}',code:1},'/v1/apps'), 'App Store Connect /v1/apps: HTTP 403');
+});
+
+test('direct and symlink entrypoints both execute failure path, not silent success', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'scoped-asc-entry-'));
+  try {
+    const source = fileURLToPath(new URL('./testflight_asc_service.mjs', import.meta.url));
+    const link = join(directory, 'reader.mjs'); symlinkSync(source, link);
+    for (const path of [source, link]) {
+      const r = spawnSync(process.execPath, [path], { encoding: 'utf8', env: {} });
+      assert.equal(r.status, 1); assert.equal(r.stdout, '');
+      assert.equal(r.stderr, 'scoped-asc-read-unavailable\n');
+    }
+  } finally { rmSync(directory, {recursive:true,force:true}); }
 });

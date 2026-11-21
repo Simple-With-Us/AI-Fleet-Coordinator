@@ -1,6 +1,7 @@
 // Freshness-owned read-only ASC child. Only the scoped parent-provided in-memory trio is accepted.
 import { createPrivateKey, sign } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 const fail = () => new Error('scoped-asc-read-unavailable');
 export async function readScopedAsc(apiPath, { env = process.env, fetchImpl = fetch, now = Date.now } = {}) {
   try {
@@ -34,4 +35,4 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     (options.out || process.stdout).write(JSON.stringify(value) + '\n'); return 0;
   } catch (err) { (options.err || process.stderr).write('scoped-asc-read-unavailable' + (err.httpStatus ? ` HTTP ${err.httpStatus}` : '') + '\n'); return 1; }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) process.exitCode = await main();
