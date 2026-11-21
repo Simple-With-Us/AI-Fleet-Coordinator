@@ -531,8 +531,13 @@ class RegistryService:
             return refusal
         if row is None:
             return _error(404, "session_unknown", "session is not registered")
-        out = OR.bind_pr(self.db_path, **identity, repo=payload.get("repo"),
-                         number=payload.get("number"), generation=payload.get("generation"))
+        out = OR.bind_pr(
+            self.db_path,
+            **identity,
+            repo=payload.get("repo"),
+            number=payload.get("number"),
+            generation=payload.get("generation"),
+        )
         return 200, out
 
     def _op_update(self, principal: str, payload: Mapping[str, Any]) -> Answer:
