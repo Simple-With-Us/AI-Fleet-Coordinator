@@ -48,6 +48,9 @@ class ProtectedReceipts:
 
 def start(env, registry, stop, log):
     """Return no thread when not configured; active errors surface, never disable other wakes."""
+    from .config import configured
+
+    env = configured(env)
     if str(env.get("RA_ENABLED", "")).lower() not in ("1", "true", "yes"):
         return None
     if registry is None:
