@@ -129,9 +129,6 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "fleet-vm-status.service", True),
     ("AFC", "systemd", "lane-placement-watch.service", True),
     ("AFC", "systemd", "operator-sheets-drain.service", True),
-    # OPS-1048:  the ZC seat's wake bridge (the template installs as
-    # afc-zc-wake-bridge.service, but the attribution matches the shipped file name).
-    ("AFC", "systemd", "zc-wake-bridge.service", True),
     # AFC-665:  the AG seat's wake bridge (the template installs as
     # afc-ag-wake-bridge.service, but the attribution matches the shipped file name).
     ("AFC", "systemd", "ag-wake-bridge.service", True),

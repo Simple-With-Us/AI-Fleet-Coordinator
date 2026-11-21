@@ -25,12 +25,6 @@ source = "scripts/simple_tools/server/ag-wake-bridge.service"
 reason = "Seat wake bridge. Out of scope for this reconciler."
 
 [[excluded.unit]]
-id = "zc-wake-bridge.service"
-category = "wake-delivery"
-source = "scripts/simple_tools/server/zc-wake-bridge.service"
-reason = "Seat wake bridge. Out of scope for this reconciler."
-
-[[excluded.unit]]
 id = "operator-sheets-drain.service"
 category = "operator"
 source = "scripts/simple_tools/server/operator-sheets-drain.service"
