@@ -72,6 +72,8 @@ from the same scoped Infisical read).
 
 `scripts/simple_tools/server/install-operator-sheets-drain.sh` does the whole install, and is safe to run again.  Run it as root from a clean AI-Fleet-Coordinator checkout at `origin/main`, after the reviewed drain (PR 1456) has merged.  The script refuses a checkout with uncommitted changes, one not at `origin/main`, or one whose drain predates the review (no `pacedAdapter`, no run deadline, or a timer without `OnUnitInactiveSec`).  Run it with `--dry-run` first, which prints the plan, reports anything a real run would refuse, and changes nothing.
 
+Use `--code-only` for a reviewed code-bundle update when the existing consumer configuration and systemd units must remain byte-for-byte unchanged.  It requires the exact clean `origin/main` checkout, an existing root-owned installation with `sa.json`, `drain.env`, and both units in their expected modes, plus all three existing core modules.  The thread exporter, shared registry reader, and its Python worker may be absent from an older three-module install and are installed together as one reviewed closure.  The worker is stored inside this consumer's private library directory; it does not overwrite a shared `/usr/local/lib/fleet_infisical.py`.  The reader uses the colocated worker, and only falls back to the repository-relative worker when the colocated path is absent.  It does not read the consumer files, contact Infisical or Docker, or change service/timer units.  It stages the helper, five JavaScript modules, and Python worker from the exact Git commit and syntax-checks the private staged bytes before stopping an active timer, then waits up to 26 minutes for the service to reach a confirmed inactive state.  It saves a root-only backup manifest and module snapshot under `/var/backups/operator-sheets-drain-code-only`, then replaces the modules one file at a time with an atomic rename per file.  Before restoring an active timer, it verifies that all installed modules match either the complete prior snapshot or the complete new bundle; mixed or unverifiable state leaves the timer stopped for inspection.  It never enables the timer.  This mode does not qualify the thread feature for activation: complete the separate review and runtime qualification gates first.
+
 ```
 sudo OPERATOR_SHEETS_WORKBOOK_ID=<workbook id> \
   OPERATOR_SHEETS_TOKEN_FILE=<path to the token file> \
@@ -90,10 +92,11 @@ Then run the same command without `--dry-run`.  The caller supplies:
 Before step 1 the script checks that `/etc/operator-sheets`, if it exists, is root-owned with no group or other access, so a loose directory stops the install before anything changes.  Then, in order, it:
 
 1. stops `operator-sheets-drain.timer` if it is running, so no run starts on a half-copied set of
-   modules, and installs the four drain modules (`operator_sheets_export.mjs`,
-   `operator_sheets_google.mjs`, `operator_sheets_drain.mjs` and, for the Zulip Threads sync,
-   `thread_registry_export.mjs`) into `/usr/local/lib/operator-sheets-drain/` (0644, root; a file
-   whose content, mode or owner differs is replaced);
+   modules, and installs the six-file code closure (`operator_sheets_export.mjs`,
+   `operator_sheets_google.mjs`, `operator_sheets_drain.mjs`, `thread_registry_export.mjs`,
+   `registry_export_reader.mjs` and the private `fleet_infisical.py` worker) into
+   `/usr/local/lib/operator-sheets-drain/` (0644, root; a file whose content, mode or owner
+   differs is replaced);
 2. reads `GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
 3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids, the registry container and store, and the knobs, and prints the names (never the values) of settings that changed, were kept or were dropped;
 4. runs a preflight, with a 120 s limit on each read, to check that the registry's
