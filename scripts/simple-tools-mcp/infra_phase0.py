@@ -2,7 +2,7 @@
 """Cloudflare setup and checks for the ST-MCP Worker, Phase 0.
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
-read inside this process from the environment or `fleet-secrets get` and never printed, logged or
+read inside this process from the environment or the shared direct Infisical reader and never printed, logged or
 put on a command line.  Run from scripts/simple-tools-mcp/ (see DEPLOY-PHASE0.md).
 
     python3 -I infra_phase0.py status            # read-only inventory
@@ -64,22 +64,26 @@ API = "https://api.cloudflare.com/client/v4"
 
 
 def _load(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
+    """One credential:  the environment first, then the shared direct reader (OPS-818).  The flat
     handoff file is retired (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+    cli = pathlib.Path(__file__).resolve().parents[1] / "fleet_infisical_cli.py"
     try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            [sys.executable, "-I", str(cli), "get", name, "--path", "/", "--project", "fleet-ops"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
     raise SystemExit(
-        f"error: {name} is not in the environment or fleet-secrets (name only; no value printed)"
+        f"error: {name} is not in the environment or Infisical (name only; no value printed)"
     )
 
 

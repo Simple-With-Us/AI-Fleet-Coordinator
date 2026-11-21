@@ -50,6 +50,7 @@ name: Sentry CI Report
 # monitor:
 #   Backup fleet GitHub repositories        -> "0 7 * * *"  (backup-repos.yml, daily)
 #   Fleet daily digest + calendars          -> "25 1,7,13,19 * * *"  (fleet-activity-site.yml)
+#   Auto-merge PRs                          -> "*/15 * * * *"  (auto-merge-prs.yml, fleet sweep)
 #
 # Secret: repo (or org) Actions secret `SENTRY_FLEET_DSN` must be set to the
 # fleet-infra project DSN.  Name only — never commit or print the value.
@@ -67,6 +68,7 @@ on:
       - Agent Activity Calendar (manual only)
       - Backup fleet GitHub repositories
       - Fleet daily digest + calendars
+      - Auto-merge PRs
     # Both activity types,  not just "completed".  The shared reporter has two
     # phases:  the requested phase sends the in_progress check-in that OPENS the
     # Sentry Crons monitor before the observed run finishes,  and the completed
@@ -105,8 +107,8 @@ jobs:
     # than this branch's copy.
     uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/sentry-ci-report-reusable.yml@b59d85c173ae8a52acf0cab93643ca6d35d84c3e
     with:
-      observed_workflows: '["Agent Activity Calendar (manual only)", "Backup fleet GitHub repositories", "Fleet daily digest + calendars"]'
-      cron_schedules: '{"Backup fleet GitHub repositories": "0 7 * * *", "Fleet daily digest + calendars": "25 1,7,13,19 * * *"}'
+      observed_workflows: '["Agent Activity Calendar (manual only)", "Backup fleet GitHub repositories", "Fleet daily digest + calendars", "Auto-merge PRs"]'
+      cron_schedules: '{"Backup fleet GitHub repositories": "0 7 * * *", "Fleet daily digest + calendars": "25 1,7,13,19 * * *", "Auto-merge PRs": "*/15 * * * *"}'
       reusable_ref: b59d85c173ae8a52acf0cab93643ca6d35d84c3e
       app: AI-Fleet-Coordinator
     secrets:

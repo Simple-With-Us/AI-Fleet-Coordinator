@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-21T04:16:36Z",
+  "updatedAt": "2026-11-21T13:03:33Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -87,7 +87,7 @@
     },
     "com.simplewithus.codecaps.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611122138",
+      "build": "202611210543",
       "appleId": 6814623846,
       "displayName": "CodeCaps Companion"
     },
@@ -96,6 +96,12 @@
       "build": "202611202153",
       "appleId": 6820175685,
       "displayName": "BotFleet"
+    },
+    "codes.clutch.ios": {
+      "marketingVersion": "0.1.0",
+      "build": "202611210547",
+      "appleId": 6817951255,
+      "displayName": "Clutch"
     }
   }
 }

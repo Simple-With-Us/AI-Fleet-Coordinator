@@ -487,6 +487,68 @@ class Wake:
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
 
 
+def workspace_root(configured: object) -> str:
+    """The host's workspace root, as a normalized absolute path, or "" when there is none.
+
+    The deployment names the root where this seat's chats live.  It is a root and not one
+    directory, because a seat works in several projects at once:  a chat in another project
+    under the root is the seat's own work, and a chat outside the root is not.
+
+    The path is normalized, so a `..` cannot climb out of the root it was named under."""
+    if not isinstance(configured, str):
+        return ""
+    text = configured.strip()
+    if not text or text.startswith("-"):
+        return ""
+    if not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def _under(root: str, path: str) -> bool:
+    """Whether the path is the root itself or lies inside it.
+
+    The root's own separator is never doubled, so the filesystem root ("/") holds every
+    path under it instead of holding none of them."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def workspace_allowed(recorded: object, configured: object) -> bool:
+    """Whether the selected session's own workspace is inside the host's workspace root.
+
+    The delivery runs in the session's own directory, so the session's own row is the
+    binding and the configured root is the bound:  a chat under the root is the seat's own
+    work, and a chat outside it is a wrong-chat delivery, so it is refused before anything
+    runs.
+
+    The two are compared as they are named and as they resolve, because a deployment names
+    its root one way and a session records its directory another:  a root that is itself a
+    symlink and a session row that holds the resolved path name one tree two ways, and a
+    lane that is a symlink to another volume is inside the root it was named under.
+
+    A host that has named no root has no bound, so nothing is allowed:  a delivery into an
+    unknown directory is not one."""
+    root = workspace_root(configured)
+    if not root:
+        return False
+    if not isinstance(recorded, str):
+        return False
+    path = recorded.strip()
+    if not path or path.startswith("-"):
+        return False
+    if not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if _under(root, path):
+        return True
+    resolved_root = os.path.realpath(root)
+    resolved_path = os.path.realpath(path)
+    if resolved_root == resolved_path:
+        return True
+    return _under(resolved_root, resolved_path)
+
+
 @dataclass(frozen=True)
 class Delivery:
     """What a platform's `deliver` did.  See the module docstring for the outcomes."""

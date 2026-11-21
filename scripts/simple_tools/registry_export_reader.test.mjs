@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,24 +12,92 @@ import { loadRegistryServiceAccount } from "./registry_export_reader.mjs";
 const SA = { client_email: "synthetic@example.invalid", private_key: "synthetic-private-key" };
 const fixedFailure = /Registry Google service account unavailable/;
 
-async function fixture(t, program) {
+async function fixture(t, program, { installed = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "registry-reader-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const scripts = join(directory, "scripts");
-  const modules = join(scripts, "simple_tools");
+  const scripts = installed ? undefined : join(directory, "scripts");
+  const modules = installed ? join(directory, "operator-sheets-drain") : join(scripts, "simple_tools");
   await mkdir(modules, { recursive: true });
   await writeFile(join(modules, "registry_export_reader.mjs"), await readFile(new URL("./registry_export_reader.mjs", import.meta.url)));
-  const worker = join(scripts, "fleet_infisical.py");
+  const worker = installed ? join(modules, "fleet_infisical.py") : join(scripts, "fleet_infisical.py");
   if (program) await writeFile(worker, program(directory));
   const adapter = await import(pathToFileURL(join(modules, "registry_export_reader.mjs")));
   const tokenFile = join(directory, "own-bootstrap");
   const token = "st." + randomBytes(32).toString("hex") + ".synthetic";
   await writeFile(tokenFile, token, { mode: 0o600 });
   return {
-    directory, worker, adapter, token,
+    directory, scripts, modules, worker, adapter, token,
     env: { HOME: directory, OPERATOR_SHEETS_TOKEN_FILE: tokenFile, INFISICAL_FLEET_OPS_PROJECT_ID: randomUUID() },
   };
 }
+
+test("flat installed adapter resolves its private colocated worker without a shared parent helper", async (t) => {
+  const f = await fixture(t, (directory) => {
+    const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+    const marker = join(directory, "worker-path");
+    return `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(marker)}).write_text(__file__)\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`;
+  }, { installed: true });
+  assert.deepEqual(await f.adapter.loadRegistryServiceAccount({ env: f.env }), SA);
+  assert.equal(await readFile(join(f.directory, "worker-path"), "utf8"), f.worker);
+});
+
+test("flat installed six-file closure imports the drain and thread exporter and runs its private worker", async (t) => {
+  const f = await fixture(t, (directory) => {
+    const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+    return `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(join(directory, "worker-path"))}).write_text(__file__)\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`;
+  }, { installed: true });
+  const lib = f.modules;
+  for (const name of [
+    "operator_sheets_export.mjs",
+    "operator_sheets_google.mjs",
+    "operator_sheets_drain.mjs",
+    "thread_registry_export.mjs",
+  ]) {
+    await writeFile(join(lib, name), await readFile(new URL(`./${name}`, import.meta.url)));
+  }
+  await import(pathToFileURL(join(lib, "operator_sheets_drain.mjs")));
+  const threadModule = await import(pathToFileURL(join(lib, "thread_registry_export.mjs")));
+  assert.equal(threadModule.THREAD_HEADERS[0], "Thread Key");
+  assert.deepEqual(await f.adapter.loadRegistryServiceAccount({ env: f.env }), SA);
+  assert.equal(await readFile(join(f.directory, "worker-path"), "utf8"), f.worker);
+});
+
+test("a present unsafe colocated worker refuses instead of falling back to the repo helper", async (t) => {
+  const f = await fixture(t, (directory) => {
+    const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+    return `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(join(directory, "worker-path"))}).write_text(__file__)\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`;
+  });
+  await symlink(f.worker, join(f.modules, "fleet_infisical.py"));
+  await assert.rejects(f.adapter.loadRegistryServiceAccount({ env: f.env }), fixedFailure);
+  await assert.rejects(readFile(join(f.directory, "worker-path")), { code: "ENOENT" });
+});
+
+test("a loose worker file refuses before any fallback worker can execute", async (t) => {
+  const f = await fixture(t, () => "import sys\nsys.stdin.buffer.read()\n", { installed: true });
+  const marker = join(f.directory, "fallback-worker-ran");
+  const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+  await writeFile(join(f.directory, "fleet_infisical.py"),
+    `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(marker)}).touch()\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`,
+    { mode: 0o644 });
+  await chmod(f.worker, 0o666);
+
+  await assert.rejects(f.adapter.loadRegistryServiceAccount({ env: f.env }), fixedFailure);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+});
+
+test("a worker in a group-writable parent refuses without trying the repo fallback", async (t) => {
+  const f = await fixture(t, () => "import sys\nsys.stdin.buffer.read()\n", { installed: true });
+  const marker = join(f.directory, "fallback-worker-ran");
+  const reply = { schema: 1, ok: true, values: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } };
+  await writeFile(join(f.directory, "fleet_infisical.py"),
+    `import sys\nfrom pathlib import Path\nsys.stdin.buffer.read()\nPath(${JSON.stringify(marker)}).touch()\nsys.stdout.write(${JSON.stringify(JSON.stringify(reply))})\n`,
+    { mode: 0o644 });
+  await chmod(f.modules, 0o777);
+
+  await assert.rejects(f.adapter.loadRegistryServiceAccount({ env: f.env }), fixedFailure);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+  await chmod(f.modules, 0o755);
+});
 
 test("synced SA transport keeps precedence and malformed JSON never falls back or reflects content", async () => {
   assert.deepEqual(await loadRegistryServiceAccount({ env: { GOOGLE_SHEETS_SA: JSON.stringify(SA) } }), SA);

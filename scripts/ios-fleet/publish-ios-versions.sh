@@ -38,7 +38,7 @@
 #
 # THE TOKEN:  the publish needs a credential with write access to
 # AI-Fleet-Coordinator.  The ship workflow passes the fleet's GH_PAT secret
-# as GH_TOKEN; a hand run reads GH_PAT through fleet-secrets.  A bare gh login
+# as GH_TOKEN; a hand run reads GH_PAT through the shared direct Infisical reader.  A bare gh login
 # is never used.  The
 # workflow's own GITHUB_TOKEN is read-only by declaration and cannot write to
 # another repository, so it is never used for this and never arms auto-merge.
@@ -114,18 +114,20 @@ resolve_token() {
     echo "error: pass the fleet GH_PAT secret as GH_TOKEN (the ship workflow does)" >&2
     return 1
   fi
-  # No token in the environment:  read the fleet GH_PAT.  A bare gh login is
+  # No token in the environment:  read the fleet GH_PAT from the shared CLI.  A bare gh login is
   # not used, because it may be a personal or read-only credential.
   local pat=""
-  if command -v fleet-secrets >/dev/null 2>&1; then
-    pat="$(fleet-secrets get GH_PAT 2>/dev/null || true)"
+  local scripts_dir="$(cd -- "${FLEET_DIR}/.." && pwd)"
+  local infisical_cli="${scripts_dir}/fleet_infisical_cli.py"
+  if [[ -f "$infisical_cli" ]]; then
+    pat="$(/usr/bin/python3 -I "$infisical_cli" get GH_PAT --path / --project fleet-ops 2>/dev/null || true)"
   fi
   if [[ -z "$pat" ]]; then
-    echo "error: no GH_TOKEN and fleet-secrets could not return GH_PAT; cannot publish the manifest" >&2
+    echo "error: no GH_TOKEN and the shared Infisical reader could not return GH_PAT; cannot publish the manifest" >&2
     return 1
   fi
   TOKEN="$pat"
-  TOKEN_SOURCE="fleet-secrets"
+  TOKEN_SOURCE="infisical"
 }
 
 # Read the manifest at a ref (branch or commit) into a file.  Sets FETCHED_SHA
