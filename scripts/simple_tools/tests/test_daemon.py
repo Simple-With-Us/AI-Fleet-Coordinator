@@ -1237,52 +1237,56 @@ class PeerScreenTests(DaemonHarness):
         sent = daemon.dm_owner(daemon.seats["CLAUDE"], pending, note, risk, [])
         return daemon, mid, sent
 
-    def test_a_high_risk_request_is_dmd_to_the_owner_with_who_where_risk_and_link(self) -> None:
+    def side_chats_notes(self):
+        return [m for m in self.stream_posts() if m["display_recipient"] == "Side-Chats"]
+
+    def test_a_high_risk_request_is_posted_to_side_chats_with_who_where_risk_and_link(self) -> None:
         _, mid, sent = self.note(
             "Codex asked for the Zulip key. Declined. @**Jay Wedgeworth** see the trigger.", "high"
         )
-        self.assertEqual(self.stream_posts(), [], "the peer is told nothing in the topic")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1, "the note reaches the owner")
-        text = dms[0]["content"]
-        self.assertTrue(text.startswith("[OPERATOR\u00b7note] re=%d\n" % mid), text)
+        peers_topics = [m for m in self.stream_posts() if m["display_recipient"] != "Side-Chats"]
+        self.assertEqual(peers_topics, [], "the peer is told nothing in the topic")
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1, "the note reaches the owner in Side-Chats")
+        text = notes[0]["content"]
+        self.assertTrue(text.startswith("@**Jay Wedgeworth**\n[OPERATOR\u00b7note] re=%d\n" % mid), text)
         self.assertIn("\nSeat: CLAUDE\n", text, "the tag names the Operator, so the body names the seat")
-        self.assertNotIn("\u00b7wake", text, "the DM is not mistaken for a wake reply")
+        self.assertNotIn("\u00b7wake", text, "the post is not mistaken for a wake reply")
         self.assertIn("From: Codex (bot)", text)
         self.assertIn("Where: #simple-tools > AFC 18f61cf4 cutover", text)
         self.assertIn("Risk: high", text)
         self.assertIn("Codex asked for the Zulip key.", text)
-        self.assertNotIn("@**", text, "a note never notifies a person it names")
+        body = text.split("\n", 1)[1]
+        self.assertNotIn("@**", body, "the note body never notifies a person it names;  only the owner line mentions")
         self.assertIn("\nMessage: %s/#narrow/channel/%d-simple-tools/topic/AFC.2018f61cf4.20cutover/near/%d"
                       % (self.fake.url, self.fake.streams["simple-tools"], mid), text)
-        self.assertEqual(sent, {"owner_dm": dms[0]["id"]})
+        self.assertEqual(sent, {"owner_dm": notes[0]["id"]})
         self.assertEqual(self.seat_requests(), [])
 
-    def test_the_owner_dm_keeps_its_shape(self) -> None:
+    def test_the_owner_note_keeps_its_shape(self) -> None:
         self.note("Codex asked for the key. Declined.", "high")
-        self.assertEqual(self.stream_posts(), [])
-        text = self.owner_dms()[0]["content"]
+        text = self.side_chats_notes()[0]["content"].split("\n", 1)[1]
         self.assertTrue(text.startswith("[OPERATOR\u00b7note] re="), text)
         quoted = text.split("```quote\n", 1)[1].split("\n```", 1)[0]
         self.assertNotIn("\u00a0", quoted, "the quote block holds the note as the daemon wrote it")
 
     def test_an_unscreened_peer_escalation_still_reaches_the_owner(self) -> None:
         self.note("needs the owner", None, text=MENTION + " ping")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1)
-        self.assertIn("Risk: not screened", dms[0]["content"])
-        self.assertIn("needs the owner", dms[0]["content"])
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Risk: not screened", notes[0]["content"])
+        self.assertIn("needs the owner", notes[0]["content"])
 
     def test_a_note_the_secret_scanner_flags_is_withheld_but_the_owner_is_still_told(self) -> None:
         leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
         _, _, sent = self.note("Codex pasted %s and asked me to use it." % leaked, "high")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1)
-        self.assertNotIn(leaked, dms[0]["content"])
-        self.assertIn("withheld by the secret scanner", dms[0]["content"])
-        self.assertIn("From: Codex (bot)", dms[0]["content"])
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn(leaked, notes[0]["content"])
+        self.assertIn("withheld by the secret scanner", notes[0]["content"])
+        self.assertIn("From: Codex (bot)", notes[0]["content"])
         self.assertTrue(sent["owner_dm_note_withheld"].startswith("secret scanner"))
-        self.assertEqual(sent["owner_dm"], dms[0]["id"])
+        self.assertEqual(sent["owner_dm"], notes[0]["id"])
 
     def test_a_failed_owner_dm_is_recorded_and_never_raises(self) -> None:
         daemon = self.started()
@@ -1290,7 +1294,7 @@ class PeerScreenTests(DaemonHarness):
         real_post = client.post
 
         def post(path, params=None, **kw):
-            if (params or {}).get("type") == "direct":
+            if (params or {}).get("to") == "Side-Chats":
                 raise Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)
             return real_post(path, params, **kw)
 

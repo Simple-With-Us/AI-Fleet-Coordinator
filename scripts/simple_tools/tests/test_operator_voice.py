@@ -471,9 +471,12 @@ class WakeReplyTests(OperatorHarness):
         daemon = self.started()
         self.owner_note(daemon, note="asked for a key")
         posts = self.operator_posts()
-        self.assertEqual(len(posts), 1, "the owner DM, and no reply to the peer")
-        self.assertEqual(posts[0]["type"], "private")
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR\u00b7note] re="), posts[0]["content"])
+        self.assertEqual(len(posts), 1, "the owner note in Side-Chats, and no reply to the peer")
+        self.assertEqual(posts[0]["type"], "stream")
+        self.assertTrue(
+            posts[0]["content"].replace("@**Jay Wedgeworth**\n", "").startswith("[OPERATOR·note] re="),
+            posts[0]["content"],
+        )
         self.assertEqual(self.seat_requests(), [])
 
 
@@ -573,13 +576,14 @@ class NoOperatorTests(OperatorHarness):
 class SiteTests(OperatorHarness):
     """Each place the daemon speaks."""
 
-    def test_the_escalation_note_is_a_dm_from_the_operator_and_names_the_seat_in_its_body(self) -> None:
+    def test_the_escalation_note_is_a_side_chats_post_from_the_operator_and_names_the_seat_in_its_body(self) -> None:
         daemon = self.started()
         mid, sent = self.owner_note(daemon)
-        notes = [m for m in self.operator_posts() if m["type"] == "private"]
+        notes = [m for m in self.operator_posts()
+                 if m["type"] == "stream" and m["display_recipient"] == "Side-Chats"]
         self.assertEqual(len(notes), 1)
-        self.assertEqual(sorted(r["id"] for r in notes[0]["display_recipient"]), [OWNER, OPERATOR_USER_ID])
-        self.assertTrue(notes[0]["content"].startswith("[OPERATOR·note] re=%d\n" % mid), notes[0]["content"])
+        self.assertEqual(notes[0]["subject"], "Operator escalation notes")
+        self.assertTrue(notes[0]["content"].startswith("@**Jay Wedgeworth**\n[OPERATOR·note] re=%d\n" % mid), notes[0]["content"])
         self.assertIn("\nSeat: CLAUDE\n", notes[0]["content"], "the tag names the Operator, so the body names the seat")
         self.assertEqual(sent["owner_dm"], notes[0]["id"])
         self.assertEqual(self.seat_requests(), [])
