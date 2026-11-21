@@ -21,9 +21,10 @@ one decision still open.
                 and hands the wake to the seat's platform module
                     zcode --cwd <workspace> --resume <session> -p "<[ZC·wake] ... thread link ...>"
 
-The legacy bridge chain, which was the fallback and retired on Nov 21, 2026 (its script, unit
-template and tests are deleted from the repo;  the live `afc-zc-wake-bridge.service` unit on the
-server stops at the owner's hand):
+The legacy bridge chain, which was the fallback and retired on Nov 21, 2026 (its script and
+tests are deleted from the repo;  the unit template stays only until the live
+`afc-zc-wake-bridge.service` unit on the server stops at the owner's hand, and goes in the same
+follow-up):
 
     Zulip tag @ZC or DM zc-bot
       -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1, bearer-signed with ZC_ROUTINE_KEY
@@ -191,12 +192,12 @@ Step 5 is proven and the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) has retired:  it held the same per-session lock, so the two paths
 could never run one session at the same time, and its dedupe ledger is replaced by the router's
 own receipts.  The proof that released it:  wakes routed through the router's front arrived in
-the seat's open chats and their turns ran (Nov 19-21, 2026).  The files were deleted on
-Nov 21, 2026;  the live `afc-zc-wake-bridge.service` unit on the server stops at the owner's
-hand, and the rollback names stay in place until it does:  the bridge's own URL is governed in
-AFC prod `/zulip` under `ZC_BRIDGE_ROUTINE_URL`, its own key is in the loader's secondary read,
-and restoring the bridge means restoring its files from git history first.  The sample keeps
-carrying the router's binding for this seat.
+the seat's open chats and their turns ran (Nov 19-21, 2026).  The script and its suite were
+deleted on Nov 21, 2026;  the live `afc-zc-wake-bridge.service` unit on the server stops at the
+owner's hand, and the rollback names stay in place until it does:  the bridge's own URL is
+governed in AFC prod `/zulip` under `ZC_BRIDGE_ROUTINE_URL`, its own key is in the loader's
+secondary read, and restoring the bridge means restoring its deleted files from git history
+first.  The sample keeps carrying the router's binding for this seat.
 
 ## What the module guarantees
 
@@ -233,10 +234,11 @@ made explicit.
 
 ## What is built and tested (PR: OPS-1048)
 
-The bridge parts of this list retired on Nov 21, 2026:  `scripts/zc-wake-bridge`,
-`scripts/simple_tools/server/zc-wake-bridge.service` and their test file are deleted (the
-delivered-and-executed wake proof released them), and the bullets below describe what was
-removed.  The target rules live on in the router's module (`scripts/simple_tools/zcode_wake.py`).
+The bridge parts of this list retired on Nov 21, 2026:  `scripts/zc-wake-bridge` and its test
+file are deleted (the delivered-and-executed wake proof released them), and the unit template
+stays only until the live unit stops, then goes in the same follow-up.  The bullets below
+describe what was removed or is waiting for that stop.  The target rules live on in the
+router's module (`scripts/simple_tools/zcode_wake.py`).
 
 - `scripts/zc-wake-bridge`  the receiver, the dedupe, the target resolution and the delivery
   executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only

@@ -20,6 +20,7 @@ MANIFEST = REPO_ROOT / "deploy" / "hetzner" / "manifest.toml"
 EXCLUDED_IDS = {
     "afc-wake-router.service",
     "ag-wake-bridge.service",
+    "zc-wake-bridge.service",
     "operator-sheets-drain.service",
     "operator-sheets-drain.timer",
     "fleet-server-status.service",
