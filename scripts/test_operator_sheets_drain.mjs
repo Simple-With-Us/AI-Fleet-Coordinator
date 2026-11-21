@@ -13,7 +13,7 @@ import {
 } from "./simple_tools/operator_sheets_export.mjs";
 import { OperatorSheetsError, OperatorSheetsGoogle } from "./simple_tools/operator_sheets_google.mjs";
 import {
-  acquireLease, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
+  acquireLease, drainExitCode, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
   REGISTRY_CALL_TIMEOUT_MS, RUN_DEADLINE_MS, runOnce, SESSION_SURFACE, syncThreadsOnce, TABLES,
   THREAD_EXPORT_MAX_BYTES, THREAD_SURFACE, THREAD_SYNC_BUDGET_MS, THREAD_SYNC_MAX_WRITES,
   workbookProfileFromEnv,
@@ -1149,6 +1149,30 @@ test("runOnce: a Sessions and Events failure leaves the thread sync's result int
   assert.equal(out.threads.appended, 2);
   assert.equal(out.threads.failed, 0);
   assert.equal(thread.state.rows.length, 2);
+});
+
+test("exit status: failed Sessions or Events rows fail the service; thread sync stays separate", async () => {
+  const { bridge, state } = fakeRegistry(["r1"]);
+  const { adapter } = fakeSheet({
+    fail: { r1: [new OperatorSheetsError("transport_or_response_error", { uncertain: true })] },
+  });
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: () => {} });
+  assert.deepEqual(totals, { exported: 0, failed: 1 });
+  assert.deepEqual(state.marked, []); // the failed row remains pending for reconciliation
+  assert.equal(drainExitCode(totals), 1);
+
+  const successfulRegistry = fakeRegistry(["r1"]);
+  const successfulSheet = fakeSheet();
+  const threadFailure = await runOnce({
+    env: RUN_ENV, log: () => {},
+    threads: async () => ({ failed: 1, error: "sheet_header_mismatch" }),
+    sessions: sessionsOnly(successfulRegistry.bridge, successfulSheet.adapter),
+  });
+  assert.equal(threadFailure.threads.failed, 1);
+  assert.deepEqual(threadFailure.totals, { exported: 1, failed: 0 });
+  assert.equal(drainExitCode(threadFailure.totals), 0);
+  assert.equal(drainExitCode({ exported: 0, failed: 0, error: "registry timeout" }), 1);
+  assert.equal(drainExitCode({ exported: 1, failed: 0 }, 1), 1); // interval runs retain prior failure
 });
 
 test("runOnce: SIGTERM in the thread sync stops it; the drain sends nothing", async () => {
