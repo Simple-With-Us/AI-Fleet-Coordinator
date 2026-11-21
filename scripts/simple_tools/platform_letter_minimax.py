@@ -39,10 +39,8 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import re
 import sqlite3
-import sys
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -181,6 +179,7 @@ CHILD_ID_KEYS = ("childSessionId", "child_session_id")
 #: a session, and reading one as a session id points the letter at a session that does not exist.
 PARENT_ID_KEYS = ("parentSessionId", "parent_session_id")
 
+
 def _event(payload: Mapping[str, Any]) -> str:
     """The runtime event name, whichever key the payload carries it under."""
     return str(payload.get("hook_event_name") or payload.get("event") or "")
@@ -241,6 +240,7 @@ def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     # unknown here, and an unknown parent is no parent:  the chat waits for the next event, which reads the
     # row once the store has written it.  The repair scan leaves such rows out for the same reason.
     return "" if parent == sid else parent
+
 
 def minimax_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     return str(_row(env, _sid(payload, env)).get("title") or "")
@@ -317,6 +317,7 @@ def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]
     reads before it wakes a chat.  The library asks this adapter on a chat's start, and a report
     that names an archived chat has the assigner close its row and free the letter.  Ids only."""
     return archived_sessions(env, session_ids)
+
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
     """Put the title on the chat, and mark it as the hook's own.
@@ -495,13 +496,13 @@ def _skipped_sids(env: Mapping[str, str]) -> set[str]:
         if not isinstance(note, dict):
             continue
         if note.get("state") in ("closed", "mismatch") or PL.lettered(note):
-            skipped.add(ident)  # the pass skips this chat:  a closed, a mismatched or a lettered note
+            skipped.add(
+                ident
+            )  # the pass skips this chat:  a closed, a mismatched or a lettered note
     return skipped
 
 
-def _unlettered_children(
-    conn: sqlite3.Connection, now: float, skipped: set[str]
-) -> list[str]:
+def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]) -> list[str]:
     """The sub-threads of this host that hold no letter, newest first, and how many rows of the
     store holds.
 
@@ -534,8 +535,7 @@ def _unlettered_children(
         " AND title IS NOT NULL AND title != ''"
         " AND title NOT LIKE ?"
         " AND title NOT GLOB ?"
-        " AND title NOT GLOB ?" + clause +
-        " ORDER BY updated_at_ms DESC LIMIT ?",
+        " AND title NOT GLOB ?" + clause + " ORDER BY updated_at_ms DESC LIMIT ?",
         [
             "task",
             (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
@@ -550,9 +550,7 @@ def _unlettered_children(
     found: list[str] = []
     for (sid,) in rows:
         if not isinstance(sid, str) or not sid:
-            raise ValueError(
-                "session_id must be a non-empty string, got %s" % type(sid).__name__
-            )
+            raise ValueError("session_id must be a non-empty string, got %s" % type(sid).__name__)
         checked = PL.SI.check(sid, "a listed session id")
         if checked in skipped:
             continue  # a chat the pass skips, whose id the store writes with spaces around it
@@ -668,7 +666,6 @@ def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | N
 
 def minimax_chat_payload(sid: str) -> Mapping[str, Any]:
     return {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
-
 
 
 def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[str] | None:
