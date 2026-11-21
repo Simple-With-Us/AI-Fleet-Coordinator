@@ -250,7 +250,9 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")
 REQUIRE_LETTER_RE = re.compile(r"^[A-Z]{2}$")
 #: A `require_pr` wake field names one pull request:  owner/name#number.  The origin
 #: registry row must carry that binding (the session's own seat-lane write).
-REQUIRE_PR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,8}$")
+REQUIRE_PR_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,8}$"
+)
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
@@ -1381,6 +1383,8 @@ def _turn_record(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     if isinstance(ride, dict):
         return {"id": ride["turn"], "role": "rider", "head": ride["head"], "index": ride["index"]}
     return None
+
+
 REVIEW_ALERT_SCOPE = "review-alerts"
 REVIEW_ALERT_CREDENTIAL = "wake-router-review-alerts"
 
@@ -1405,7 +1409,11 @@ def review_alert_key(env: Mapping[str, str]) -> tuple[str, str]:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o077:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in (0, os.geteuid())
+            or info.st_mode & 0o077
+        ):
             return "", "credential-custody"
         raw = os.read(fd, 4097)
         if len(raw) > 4096:
@@ -1464,8 +1472,14 @@ class Router:
             key, why = self._review_key()
         except Exception:
             key, why = "", "credential-unavailable"
-        allowed = {"not-configured", "credential-path", "credential-custody", "credential-size",
-                   "credential-shape", "credential-unavailable"}
+        allowed = {
+            "not-configured",
+            "credential-path",
+            "credential-custody",
+            "credential-size",
+            "credential-shape",
+            "credential-unavailable",
+        }
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", key):
             key, why = "", why if why in allowed else "credential-unavailable"
         else:
@@ -1787,8 +1801,11 @@ class Router:
             "wake_id": entry["wake"]["wake_id"],
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
-            **({"credential_scope": entry["wake"]["credential_scope"]}
-               if entry["wake"].get("credential_scope") else {}),
+            **(
+                {"credential_scope": entry["wake"]["credential_scope"]}
+                if entry["wake"].get("credential_scope")
+                else {}
+            ),
         }
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
@@ -2146,7 +2163,7 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target, wake: "Wake | None" = None) -> tuple[str, str]:
+    def _stale(self, target: Target, wake: Wake | None = None) -> tuple[str, str]:
         """The reason this chat must not be delivered to, and the note that says why.
 
         The reason is empty when the registry still has this letter on this session at the
@@ -2168,8 +2185,10 @@ class Router:
             return UNREADABLE_ROW, ""
         if not held:
             return RELEASED, ""
-        if wake is not None and wake.require_pr and not _pr_bound(
-            answer, wake.require_pr, target.generation
+        if (
+            wake is not None
+            and wake.require_pr
+            and not _pr_bound(answer, wake.require_pr, target.generation)
         ):
             # Delivery-time recheck:  the binding present at pick is gone (or
             # its generation stamp went stale).  Do not deliver on a pick the
@@ -2399,8 +2418,13 @@ class Router:
         ride, ends the run;  one addressed to another seat or letter is passed over like any
         other chat's wake.  There is no deduplication by message id."""
         target = pick.target
-        if (entry["wake"].get("required_session") or entry["wake"].get("require_pr")
-                or not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping):
+        if (
+            entry["wake"].get("required_session")
+            or entry["wake"].get("require_pr")
+            or not certain(pick)
+            or not message_id_ok(entry["wake"]["message_id"])
+            or self._stopping
+        ):
             return []
         if target is None:  # certain() has said so already;  this only tells a type checker
             return []
@@ -2661,7 +2685,11 @@ class Router:
         target = pick.target
         receipt = {
             "receipt_id": entry["receipt_id"],
-            **({"credential_scope": wake["credential_scope"]} if wake.get("credential_scope") else {}),
+            **(
+                {"credential_scope": wake["credential_scope"]}
+                if wake.get("credential_scope")
+                else {}
+            ),
             "wake_id": wake["wake_id"],
             "seat": self.platform.seat,
             "at": self.clock(),
@@ -3423,7 +3451,14 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return REVIEW_ALERT_SCOPE
             if key and hmac.compare_digest(given, ("Bearer " + key).encode()):
                 return "routine"
-            self._answer(401 if key or service_key else 503, {"error": "bad bearer" if key or service_key else "the routine key is unavailable (%s)" % why})
+            self._answer(
+                401 if key or service_key else 503,
+                {
+                    "error": "bad bearer"
+                    if key or service_key
+                    else "the routine key is unavailable (%s)" % why
+                },
+            )
             return ""
 
         def do_GET(self) -> None:
@@ -3449,7 +3484,9 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             if not scope:
                 return
             record = router.receipt(found.group(2))
-            if scope == REVIEW_ALERT_SCOPE and (record is None or record.get("credential_scope") != REVIEW_ALERT_SCOPE):
+            if scope == REVIEW_ALERT_SCOPE and (
+                record is None or record.get("credential_scope") != REVIEW_ALERT_SCOPE
+            ):
                 self._answer(404, {"error": "no such wake"})
                 return
             if record is None:
@@ -3515,8 +3552,15 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             reserved = str(payload.get("wake_id") or "").startswith("ra-")
             if scope == REVIEW_ALERT_SCOPE:
-                if not (reserved and require_session and require_letter and type(require_generation) is int and require_generation > 0
-                        and require_pr and payload.get("channel") == REVIEW_ALERT_SCOPE):
+                if not (
+                    reserved
+                    and require_session
+                    and require_letter
+                    and type(require_generation) is int
+                    and require_generation > 0
+                    and require_pr
+                    and payload.get("channel") == REVIEW_ALERT_SCOPE
+                ):
                     self._answer(403, {"error": "service requires exact-session generation wake"})
                     return
             elif reserved:

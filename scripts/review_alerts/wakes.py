@@ -103,8 +103,17 @@ class WakeClient:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise WakeRetryable("router unreachable: %s" % type(exc).__name__) from exc
 
-    def submit(self, seat: str, wake_id: str, require_session: str, require_letter: str,
-               require_generation: int, require_pr: str, topic: str, link: str) -> dict:
+    def submit(
+        self,
+        seat: str,
+        wake_id: str,
+        require_session: str,
+        require_letter: str,
+        require_generation: int,
+        require_pr: str,
+        topic: str,
+        link: str,
+    ) -> dict:
         """One alert wake for exactly the claimed origin session.  The excerpt
         deliberately carries no session-shaped token:  fragment picking stays
         out of this path.  Session id, letter AND generation are all required
@@ -144,9 +153,14 @@ class WakeClient:
             raise WakeRetryable("wake submit: HTTP %s" % status)
         raise WakeError("wake refused: HTTP %s %s" % (status, answer.get("error") or ""))
 
-    def test_submit(self, seat: str, wake_id: str, require_session: str,
-                    require_letter: str = "ZZ",
-                    require_pr: str = "zz0probe/zz0probe#1") -> dict:
+    def test_submit(
+        self,
+        seat: str,
+        wake_id: str,
+        require_session: str,
+        require_letter: str = "ZZ",
+        require_pr: str = "zz0probe/zz0probe#1",
+    ) -> dict:
         """A `test` wake:  runs the pick, delivers nothing, reserves nothing
         (host-confirmed:  diagnostics only, no enqueue, no dedupe claim).
         Same scoped shape as a real alert wake:  the host overlay rejects the
@@ -180,8 +194,11 @@ class WakeClient:
         field and answers with a legacy pick reason;  a router without the
         require_pr change accepts a malformed require_pr probe instead of
         refusing it.  This service refuses to run against either."""
-        answer = self.test_submit(seat, wake_id_for("probe", 0, "selfcheck", probe_id),
-                                  "zz0reviewalerts0probe0noresuchsession")
+        answer = self.test_submit(
+            seat,
+            wake_id_for("probe", 0, "selfcheck", probe_id),
+            "zz0reviewalerts0probe0noresuchsession",
+        )
         reason = str(answer.get("reason") or "")
         if not reason.startswith("required-session-"):
             raise WakeError(
@@ -215,8 +232,7 @@ class WakeClient:
         error = str(answer.get("error") or "") if isinstance(answer, dict) else ""
         if status != 400 or error != "require_pr malformed":
             raise WakeError(
-                "router lacks require_pr validation (answered HTTP %s %r)"
-                % (status, error or None)
+                "router lacks require_pr validation (answered HTTP %s %r)" % (status, error or None)
             )
 
     def receipt(self, seat: str, wake_id: str) -> dict | None:
