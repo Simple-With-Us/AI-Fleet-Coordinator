@@ -55,6 +55,8 @@ def start(env, registry, stop, log):
         return None
     if registry is None:
         raise Held("canonical-operator-registry-required")
+    if not callable(getattr(registry, "_op_bind_pr", None)):
+        raise Held("canonical-pr-binding-capability-required")
     repos = {s.strip() for s in str(env.get("RA_REPOS", "")).split(",") if s.strip()}
     seat_map = service.seat_map_from(env)
     platforms = json.loads(env.get("RA_PLATFORM_MAP_JSON") or "{}")

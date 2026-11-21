@@ -243,3 +243,9 @@ class Wiring(unittest.TestCase):
             self.assertTrue(ran.is_set())
             self.assertEqual(len(attempts), 2)
             self.assertEqual(log.call_args_list[0].args[0], "review-alert-error")
+
+
+class Prerequisite(unittest.TestCase):
+    def test_old_registry_is_explicitly_held_before_credential_or_network(self):
+        with self.assertRaisesRegex(Exception, "canonical-pr-binding-capability-required"):
+            operator_loop.start({"RA_ENABLED": "true"}, object(), threading.Event(), mock.Mock())
