@@ -77,6 +77,13 @@ class ReaderTestCase(unittest.TestCase):
 
 
 class GetVerbTests(ReaderTestCase):
+    def test_declared_selection_requires_both_flags_before_store_access(self) -> None:
+        for args in (("--consumer", "fixture-reader"), ("--consumer-binding", "/not-read")):
+            code, out, err = self.run_reader("get", "A_KEY", "--folder", "/", *args)
+            self.assertEqual((code, out), (2, ""))
+            self.assertNotEqual(err, "")
+        fi.token_from_store.assert_not_called()
+
     def test_explicit_empty_account_never_uses_table_account(self) -> None:
         fi.token_from_store.side_effect = lambda account, *_: (
             ("", "no-token") if account == "" else (synthetic_token(), "ok")
