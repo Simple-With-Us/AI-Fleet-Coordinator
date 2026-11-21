@@ -15,6 +15,7 @@ import ast
 import concurrent.futures
 import contextlib
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -1210,22 +1212,130 @@ class ToolsTests(World):
         )
         self.assertEqual(T.parse_version((self.stable() / "VERSION").read_text())["sha"], SHA)
 
-    def test_swap_failure_restores_the_installed_copy(self) -> None:
+    def test_exchange_failure_after_probe_keeps_the_installed_copy(self) -> None:
         self.install(())
         before = snapshot(self.home)
         newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
-        real_rename, calls = os.rename, []
+        real_exchange, calls = T._native_exchange, []
 
         def flaky(a: str, b: str) -> None:
             calls.append((a, b))
-            if len(calls) == 2:  # the stage-to-final rename
-                raise OSError("rename failed")
-            real_rename(a, b)
+            if len(calls) == 2:  # the probe passed; the active exchange fails atomically
+                raise OSError(errno.EIO, "exchange failed")
+            real_exchange(a, b)
 
-        with mock.patch.object(T.os, "rename", side_effect=flaky):
+        with mock.patch.object(T, "_native_exchange", side_effect=flaky):
             res = T.apply_tools(newer, self.paths, probes=False)
         self.assertEqual(res.status, "failed", res)
+        self.assertIn("live=old", res.detail)
         self.assertEqual(snapshot(self.home), before)  # also proves no stage or .old dir remains
+
+    @unittest.skipUnless(sys.platform == "linux", "real renameat2 test runs on Linux")
+    def test_real_exchange_never_removes_the_active_path(self) -> None:
+        final = self.tmp / "active"
+        backup = self.tmp / "backup"
+        final.mkdir()
+        backup.mkdir()
+        (final / "payload").write_text("old")
+        (backup / "payload").write_text("new")
+        missing = []
+        stop = threading.Event()
+        started = threading.Event()
+        reads = []
+
+        def reader() -> None:
+            started.set()
+            while not stop.is_set():
+                try:
+                    value = (final / "payload").read_text()
+                except FileNotFoundError:
+                    missing.append("active path absent")
+                    break
+                if value not in {"old", "new"}:
+                    missing.append(value)
+                    break
+                reads.append(value)
+
+        worker = threading.Thread(target=reader)
+        worker.start()
+        self.assertTrue(started.wait(timeout=5))
+        try:
+            for _ in range(40):
+                T._native_exchange(str(backup), str(final))
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+        self.assertEqual(missing, [])
+        self.assertTrue(reads)
+        self.assertEqual((final / "payload").read_text(), "old")
+        self.assertEqual((backup / "payload").read_text(), "new")
+
+    def test_replacement_retains_exact_old_tree_in_private_backup(self) -> None:
+        self.install(())
+        os.chmod(self.stable(), 0o755)
+        old_fingerprint = T._directory_fingerprint(str(self.stable()))
+        old_mode = stat.S_IMODE(self.stable().stat().st_mode)
+        newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
+        res = T.apply_tools(newer, self.paths, probes=False)
+        self.assertEqual(res.status, "installed", res)
+        self.assertIsNotNone(res.backup)
+        self.assertEqual(T._directory_fingerprint(res.backup), old_fingerprint)
+        self.assertEqual(stat.S_IMODE(Path(res.backup).parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.stable().stat().st_mode), old_mode)
+        self.assertEqual(T.parse_version((self.stable() / "VERSION").read_text())["sha"], SHA2)
+        self.assertEqual(T.parse_version((Path(res.backup) / "VERSION").read_text())["sha"], SHA)
+
+    def test_backup_container_is_owner_only_under_setgid_apps_parent(self) -> None:
+        self.install(())
+        apps = self.stable().parent
+        os.chmod(apps, 0o2770)
+        newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
+        res = T.apply_tools(newer, self.paths, probes=False)
+        self.assertEqual(res.status, "installed", res)
+        self.assertEqual(stat.S_IMODE(Path(res.backup).parent.stat().st_mode), 0o700)
+
+    def test_unsupported_exchange_refuses_before_active_change_and_preserves_prior_backup(self) -> None:
+        self.install(())
+        first = T.apply_tools(
+            T.Source(self.source.scripts_dir, self.source.registry, SHA2),
+            self.paths, probes=False,
+        )
+        self.assertEqual(first.status, "installed")
+        backup_hash = T._directory_fingerprint(first.backup)
+        before = snapshot(self.home)
+        with mock.patch.object(T, "_native_exchange", side_effect=OSError(errno.EOPNOTSUPP, "unsupported")):
+            res = T.apply_tools(self.source, self.paths, probes=False)
+        self.assertEqual(res.status, "refused")
+        self.assertEqual(snapshot(self.home), before)
+        self.assertEqual(T._directory_fingerprint(first.backup), backup_hash)
+
+    def test_post_exchange_fsync_failure_reports_live_new_and_retains_old_backup(self) -> None:
+        self.install(())
+        old_fingerprint = T._directory_fingerprint(str(self.stable()))
+        newer = T.Source(self.source.scripts_dir, self.source.registry, SHA2)
+        real_exchange, real_fsync = T._native_exchange, T._fsync_directory
+        exchanged = False
+
+        def exchange(a: str, b: str) -> None:
+            nonlocal exchanged
+            real_exchange(a, b)
+            if b == str(self.stable()):
+                exchanged = True
+
+        def fsync(path: str) -> None:
+            if exchanged:
+                raise OSError(errno.EIO, "injected post-exchange fsync failure")
+            real_fsync(path)
+
+        with mock.patch.object(T, "_native_exchange", side_effect=exchange), mock.patch.object(
+            T, "_fsync_directory", side_effect=fsync
+        ):
+            res = T.apply_tools(newer, self.paths, probes=False)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("live=new", res.detail)
+        self.assertIsNotNone(res.backup)
+        self.assertEqual(T._directory_fingerprint(res.backup), old_fingerprint)
+        self.assertEqual(T.parse_version((self.stable() / "VERSION").read_text())["sha"], SHA2)
 
     def test_plan_tools_reports_state(self) -> None:
         plan = T.plan_tools(self.source, self.paths)
@@ -6186,9 +6296,15 @@ class MinimaxBundleTests(World):
             hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'),
             encoding="utf-8",
         )
-        self.assertEqual(self.apply().status, "updated")
+        updated = self.apply()
+        self.assertEqual(updated.status, "updated")
+        self.assertIsNotNone(updated.backup)
+        self.assertTrue((Path(updated.backup) / "hooks" / "hooks.json").is_file())
         self.assertEqual(self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10)
-        self.assertEqual(sorted(p.name for p in (self.home / ".minimax").iterdir()), ["plugins"])
+        self.assertEqual(
+            sorted(p.name for p in (self.home / ".minimax").iterdir()),
+            [".fleet-guard-backups", "plugins"],
+        )
         self.assertEqual(
             sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"]
         )
@@ -6274,7 +6390,7 @@ class MinimaxBundleTests(World):
         self.assertEqual(sorted(p.name for p in real_home.iterdir()), ["plugins"])
         self.assertEqual(sorted(p.name for p in (real_home / "plugins").iterdir()), ["fleet-guard"])
 
-    def test_leftovers_of_a_killed_run_are_swept_but_a_fresh_one_is_not(self) -> None:
+    def test_old_and_staged_leftovers_are_preserved_during_replacement(self) -> None:
         self.assertEqual(self.apply().status, "added")
         plugins = self.home / ".minimax" / "plugins"
         old_dead = plugins / "fleet-guard.old-99999"
@@ -6288,8 +6404,8 @@ class MinimaxBundleTests(World):
         hooks = self.bundle / "hooks" / "hooks.json"
         hooks.write_text("{}\n")
         self.assertEqual(self.apply().status, "updated")
-        self.assertFalse(old_dead.exists())
-        self.assertFalse(stage_dead.exists())
+        self.assertTrue(old_dead.exists())
+        self.assertTrue(stage_dead.exists())
         self.assertTrue(fresh.exists())
 
     def test_a_dangling_plugins_symlink_is_refused(self) -> None:
