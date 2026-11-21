@@ -280,10 +280,20 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
         import fleet_infisical as secrets
     except ImportError:
         return {}
-    try:
-        project = secrets.infisical_project_id(
-            source, secrets.home_dir(source), secrets.DEFAULT_PROJECT
+    error_type = getattr(secrets, "SecretsError", None)
+    default_project = getattr(secrets, "DEFAULT_PROJECT", None)
+    if (
+        not all(
+            callable(getattr(secrets, name, None))
+            for name in ("infisical_project_id", "home_dir", "bounded_fetch_project")
         )
+        or default_project != "fleet-ops"
+        or not isinstance(error_type, type)
+        or not issubclass(error_type, Exception)
+    ):
+        return {}
+    try:
+        project = secrets.infisical_project_id(source, secrets.home_dir(source), default_project)
         # The shared API validates and bounds the iterator before starting its read-only worker.
         # No ambient read-path declaration can widen this exact default-root consumer route.
         got = secrets.bounded_fetch_project(
@@ -294,7 +304,7 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
             names=(name for name in names if name),
             timeout=FLEET_SECRETS_TIMEOUT,
         )
-    except (secrets.SecretsError, OSError, TypeError, ValueError):
+    except (error_type, OSError, TypeError, ValueError):
         return {}
     return {key: value for key, value in got.items() if isinstance(value, str) and value}
 
@@ -522,8 +532,8 @@ def infisical_login() -> str | None:
             (env.get(name) or "").strip()
             for name in (
                 secrets.ENV_TOKEN,
-                secrets.ENV_AI_FLEET_COORDINATOR_TOKEN,
-                secrets.ENV_WRITE_TOKEN,
+                secrets.COORDINATOR_READ_TOKEN_ENV_NAME,
+                secrets.WRITE_TOKEN_ENV_NAME,
             )
         ):
             raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")

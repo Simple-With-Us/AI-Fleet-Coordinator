@@ -5,9 +5,12 @@ every interactive chat on every platform (owner request, Oct 29, 2026;  one clie
     platform-letter registry OP --platform P ...   one registry API call: register, title, touch, close or show
     platform-letter show --platform P       this chat's letter from its local note; no network
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
-    platform-letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
+    platform-letter request [--session-id S] [--platform P]   ask the assigner for this chat's letter now, a
+                                            chat with no note yet included (`request_main`)
     platform-letter gone [--platform P] [--apply]   the chats of this host that are gone for good (archived in
                                             a platform's app):  what the hooks would report, or report it now
+    platform-letter repair [--platform P] [--force]   replay the start of this host's "??" chats now (what a
+                                            chat's start sets off in the background, `repair_after_start`)
     platform-letter parent --platform P --session-id S   the chat that started a chat, from this host's own
                                             records:  what another host's hook asks this one (read only)
     platform-letter parent-ssh-gate         the forced command of the ssh key that question arrives on
@@ -54,16 +57,25 @@ What the hook does.
 Chats that are gone for good.  A platform's app can end a chat with no hook event of its own (a desktop app that
 archives one), so its letter would stay taken until the assigner's idle sweep.  An adapter that can tell names
 those chats, and a chat's start reports them:  one `report-gone` call to the assigner for the platform and a
-location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  A chat's start also replays the
-start of this host's chats still showing "??: " (an app-driven chat's hook never runs, so a letter lost between
-the assigner and the note would otherwise stay lost), at most once per REPAIR_SWEEP_SECONDS (`repair_unlettered`).
+location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  A chat's start also sets off the
+replay of the start of this host's chats still showing "??: " (an app-driven chat's hook never runs, so a letter
+lost between the assigner and the note would otherwise stay lost), at most once per REPAIR_SWEEP_SECONDS:  one
+detached `platform-letter repair` run for the platform and location, so the chat's own start never waits for it
+(`repair_after_start`, `repair_unlettered`).  A platform's row says where its "??" chats come from
+(`unlettered_sessions`) or why it has none (`unlettered_feed`).
 `gone_sessions` answers for this
 host's own chats whose hook has been quiet for an hour, however long ago that was.  `gone_elsewhere` answers for
 chats the platform's app on this host runs at another location, whose notes this host does not hold;  they go in
 a report of their own for that location.  The assigner closes the open rows named, and refuses a report that
-would close more than its share of a location's live rows.  Nothing schedules it, and nothing it does can fail a
-chat's start (`report_gone`, `report_gone_elsewhere`).  `gone` shows what would be reported, and `gone --apply`
+would close more than its share of a location's live rows.  Nothing schedules it, and nothing it does can fail a
+chat's start (`report_gone`, `report_gone_elsewhere`).  `gone` shows what would be reported, and `gone --apply`
 reports it now.
+
+No host sweeps (AGENTS.md "One Operator, No Special Seats";  the decision is written down in
+docs/protocols/operator-role.md, "Letters:  What A Host May Do").  The one stale sweep is the Eavesdropper's
+(`listener_registry.Sweeper`), on its own timer, for every platform.  A host only REPORTS what it knows (the gone
+report) and REQUESTS letters (a start, a prompt, `request`, the repair):  both ride on its chats' own hook events,
+and no host runs a timer, a LaunchAgent or a unit for letters.
 
 A parent on another host.  A platform's app can keep its record of which chat started which on one host (the
 Mac) while the chat's hook runs on another.  SESSION_LETTER_MAC_SSH (the hook's `--mac-ssh` flag, which `install
@@ -115,6 +127,7 @@ from . import identity as I
 from . import live as L
 from . import secretscan
 from . import session_ids as SI
+from . import wake_pending as WP
 
 ENTRY = "platform-letter"
 SCOPE = "default"
@@ -131,6 +144,8 @@ ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
 #: The ssh destination of the Mac, for a hook on another host whose adapter must ask the Mac something only it
 #: holds (`mac_ssh`).  The hook's `--mac-ssh DEST` flag sets it, since a hook file has no env block.
 ENV_MAC_SSH = "SESSION_LETTER_MAC_SSH"
+#: Set to "0" to stop the hook from bringing the host's hook file current (the reconcile is on by default).
+ENV_RECONCILE = "SESSION_LETTER_RECONCILE"
 #: What an ssh destination may look like:  a host or user@host, and nothing ssh could read as an option.
 MAC_SSH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 
@@ -150,20 +165,27 @@ GONE_REPORT_IDS = 500
 #: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
 GONE_JSON_BYTES = 256 * 1024
 GONE_SENT_IDS = 2000
-# The unlettered repair (`repair_unlettered`):  the hosts' scheduled carriers replay the start of this host's
+# The unlettered repair (`repair_unlettered`):  it replays the start of this host's
 # chats that still show the "??: " placeholder, at most this often (a stamp beside the notes).  An app-driven
 # chat's hook never runs, so a letter whose hook run died after the register - or an ask that never reached the
 # assigner - would otherwise keep a chat "??: " until its next CLI or Desktop event;  the pass is the way back
-# for those chats.  The pass never rides a chat's own start:  one replay can chain a register's three API
-# calls, its parents' ensures and a rename past any hook's budget, so only the carriers pay for it.
+# for those chats.  The pass never runs inside a chat's own start:  one replay can chain a register's three API
+# calls, its parents' ensures and a rename past any hook's budget, so a chat's start only sets off a detached
+# `platform-letter repair` run when the stamp says a pass is due (`repair_after_start`), and that run pays for
+# it.  No host runs a timer for it (the one-Operator rule:  only the Eavesdropper sweeps).
 REPAIR_SWEEP_SECONDS = 3600
-# The most wall-clock time one repair pass spends STARTING replays, so a carrier tick stays quick.  One replay
+# The most wall-clock time one repair pass spends STARTING replays, so a detached run stays quick.  One replay
 # in flight can outlast this gate - a register call is up to _API_TIMEOUT seconds, a parent's ensure a second
 # one, a rename up to the adapter's RPC_SECONDS - so the gate leaves room for that one replay instead of
 # pretending to bound the whole pass.  A candidate the budget cuts waits for the next pass.
 REPAIR_PASS_SECONDS = 5
 #: The most chats one pass replays:  the repair is real work on a live chat's start budget.
 REPAIR_MAX_CHATS = 5
+#: How long a claim beside the repair stamp holds:  the lock a pass takes to read and write the stamp as one step
+#: (`_claim`), and the spawn claim a chat's start takes before it sets off a run, so several chats starting in the
+#: same moment set off one run between them.  A claim older than this is a holder that died, and is taken over.
+REPAIR_LOCK_SECONDS = 30
+REPAIR_SPAWN_CLAIM_SECONDS = 300
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -432,6 +454,12 @@ class PlatformSpec:
                                session ids asked about are gone for good, for the hooks' gone report (`report_gone`)
     gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
+    unlettered_sessions        for a platform whose own session store on this host lists its chats with the titles
+                               the hook put on them:  the ids of the ones still showing "??: ", for the repair a
+                               chat's start sets off (`repair_after_start`, `repair_unlettered`)
+    unlettered_feed            for a row with no `unlettered_sessions`:  why it has none, in one line (the platform is
+                               hook-only:  no store this host can list, or titles that never carry "??: ").  Every
+                               row of the table says one or the other (test_platform_letter_feeds)
     retired_note               for a platform whose retired client kept a chat's letter somewhere of its own:
                                from the environment and a session id, what it held (label, location, title,
                                seen), so a chat that is open across the change keeps its letter (`adopted_note`)
@@ -470,6 +498,7 @@ class PlatformSpec:
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
     unlettered_sessions: UnletteredSessions | None = None
+    unlettered_feed: str = ""
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
     retired_env: Mapping[str, str] = field(default_factory=dict)
     retired_files: tuple[str, ...] = ()
@@ -585,6 +614,64 @@ def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
 # --------------------------------------------------------------------------------------------
 # Titles
 # --------------------------------------------------------------------------------------------
+
+
+def english_words(text: object) -> bool:
+    """True when every letter in the text is a Latin one, so the text can carry a chat's topic.
+
+    Every title this fleet writes is English (owner, Nov 18, 2026:  a Chinese title in the app is the same
+    violation as a Chinese chat name).  The check reads the Unicode name of every letter, so a title that
+    mixes Latin words with another script is refused as well, and a title with no letters at all passes."""
+    for ch in str(text or ""):
+        if not ch.isalpha():
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            return False
+        if not name.startswith("LATIN"):
+            return False
+    return True
+
+
+def lettered_topic(words: object) -> str:
+    """The words a chat that holds a letter carries under it:  them when they are English, and "" when they are not.
+
+    A chat with no letter keeps its own name in whatever script its owner wrote it in (the client is
+    script-neutral there), but the words under a letter are the ones the whole fleet reads, and every title
+    this fleet writes is English (owner, Nov 18, 2026:  a Chinese title in the app is the same violation as
+    a Chinese chat name, and a title with no letter prefix is invisible to the owner's scan)."""
+    text = one_line(words)
+    return text if english_words(text) else ""
+
+
+def chat_name(text: object) -> str:
+    """The name a chat carries, as the fleet may keep it:  one line, nothing in it that looks like a credential, and
+    no control character or lone surrogate.
+
+    A chat's own name is the owner's, and the app shows it;  the client keeps it in its private note and relays it
+    to the registry, and neither may hold a credential (owner rule:  user-supplied text is secret-scanned before it
+    is persisted or relayed).  A name that is only a credential is dropped whole, and the chat waits to be named.
+
+    The name is not cut short here:  it is the live title the hook compares with what the platform shows, so a
+    title cut at the limit would rename the chat back to the cut name.  The cut belongs where a title is stored
+    for the fleet, and the registry's own `clean_title` makes it there."""
+    words = [w for w in tidy(text).split(" ") if w and not secretscan.scan(w)]
+    line = " ".join(words)
+    return "" if secretscan.scan(line) else line
+
+
+def registry_words(text: object) -> tuple[str, str]:
+    """(the words to register, the refusal code or "").
+
+    The registry is the sheet the whole fleet reads, so the words it holds are English (owner, Nov 18, 2026) and
+    carry no secret:  a name in another script is never registered, and a name with a credential in it is refused.
+    The refusal names the field and the code, never the value, so the note can say what happened without saying
+    what was in the name."""
+    words = lettered_topic(text)
+    if words and secretscan.scan(words):
+        return "", "title_secret"
+    return words, ""
 
 
 def clean_title(text: object) -> str:
@@ -1299,6 +1386,37 @@ def _sync_folder(folder: str) -> None:
         os.close(dir_fd)
 
 
+def _safe_note(note: Mapping[str, Any]) -> dict[str, Any]:
+    """The note as it is written, with no credential in the words it keeps.
+
+    The note is where a chat's words are kept, so a word that looks like a credential never reaches
+    the disk:  a field that is one is dropped whole, and a field with a credential-shaped word in it
+    keeps the rest.  The refusal names the field the hit came from and never the value (owner rule:
+    user-supplied text is secret-scanned before it is persisted, logged or relayed)."""
+    safe = dict(note)
+    refused = ""
+    for field in ("title", "want", "shown", "inherited"):
+        value = safe.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        parts = [word for word in value.split(" ") if word]
+        if secretscan.scan(value) and parts and all(secretscan.scan(word) for word in parts):
+            # Every word in the field is a credential:  it goes whole, and the code says which field it was.
+            safe[field] = ""
+            refused = "%s_secret" % field
+            continue
+        cleaned = chat_name(value)
+        if cleaned == value:
+            continue
+        if any(secretscan.scan(word) for word in parts):
+            # The field holds a credential among other words:  the credential goes, the rest stays.
+            refused = "%s_secret" % field
+        safe[field] = cleaned
+    if refused:
+        safe["title_refused"] = refused
+    return safe
+
+
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
@@ -1359,7 +1477,7 @@ class Chat:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(
                     dict(
-                        note,
+                        _safe_note(note),
                         session_id=self.session_id,
                         platform=self.spec.platform,
                         updated_at=self.now,
@@ -1496,7 +1614,7 @@ def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
     # Rendered copy: a sentence gap is U+00A0 plus a space, and a colon or semicolon takes one space.
     return (
         'Operator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
-        'starts with "%s: "; keep that prefix if the chat is renamed.'
+        'starts with "%s: " in English; keep that prefix if the chat is renamed.'
         % (ref, note.get("location"), spec.display, label, label)
     )
 
@@ -1557,6 +1675,11 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
 
     A chat that holds a letter keeps it when the call merely got no answer (an Eavesdropper redeploy, a timeout):  only
     a refusal takes the letter off.  Its `sync_failed_at` stamp holds the next call back for RETRY_SECONDS."""
+    refusal = str(answer.get("title_refused") or "")
+    if refusal:
+        # A refused title keeps its code and nothing else:  the note says the field and the code, never the words
+        # that were in it.
+        note = dict(note, title_refused=refusal)
     if ("error" in answer or not answer.get("outcome")) and lettered(note) and not refused(answer):
         return dict(note, location=chat.location, sync_failed_at=chat.now)
     if "error" in answer or not answer.get("outcome"):
@@ -1757,13 +1880,23 @@ def ask_again(
     the new letter (`titled` is false, so the next title the hook sets is "<letter>: <words>")."""
     if not force and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
         return note
+    # The words a chat carries under its letter are the ones the whole fleet reads, so they are English
+    # (owner, Nov 18, 2026) and carry no secret:  a name in another script is never registered and never goes
+    # under a letter, and a name with a credential in it is refused with a code the note keeps.  The chat's own
+    # name stays in its own script, in the note, for a chat that holds no letter.
+    words, refusal = registry_words(words)
     # Stamped before the chain:  a hook killed inside it (a hung assigner) does not repeat it on the next prompt.
     chat.write(dict(note, failed_at=chat.now))
     fresh = _apply(chat, _enroll(chat, words, parent), dict(note, parent=parent))
     if lettered(fresh):
         fresh.update(announce=True, placeholder=compose(str(fresh["label"]), ""))
-        if words:
-            fresh["title"] = words
+        # The chat holds a letter now, so the topic it carries is English:  the words it asked with, or the
+        # English topic it already had, and never a name in another script.  A refused title is not taken
+        # back out of the note either:  the chat waits to be named, and the fallback is scanned too.
+        fallback, _ = registry_words(str(fresh.get("title") or ""))
+        fresh["title"] = "" if refusal else (words or fallback)
+        if refusal:
+            fresh["title_refused"] = refusal
     return fresh
 
 
@@ -2357,7 +2490,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
         if lettered(note) and note.get("announce"):
-            current = tidy(chat.spec.current_title(data, chat.env))
+            current = chat_name(chat.spec.current_title(data, chat.env))
             title = compose(str(note["label"]), str(note.get("title") or ""))
             present(chat, note, title, current, data, "retry", settable=False)
             note["titled"] = note.get("shown") == title
@@ -2505,6 +2638,11 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
     Mac that is asleep costs one hop every ten minutes, not one on every prompt.  Returns the registry's answer, or {}
     when the call was held back."""
     if op == "title" and words:
+        words, refusal = registry_words(words)
+        if refusal:
+            # A name with a credential in it is never sent:  the note keeps the code, never the value.
+            note["title_refused"] = refusal
+            return {}
         note["unsent"] = words
     if chat.now - float(note.get("sync_failed_at") or 0) < RETRY_SECONDS:
         return {}
@@ -2615,16 +2753,16 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
         cap = spec.parent_call_timeout or spec.call_timeout or _API_TIMEOUT
         mother.write(dict(note, failed_at=chat.now))
         started = time.monotonic()
-        done = _apply(
-            mother,
-            mother.registry(
-                "register",
-                title=str(note.get("title") or ""),
-                parent=grand,
-                timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
-            ),
-            dict(note, parent=grand),
+        words, refusal = registry_words(str(note.get("title") or ""))
+        answer = mother.registry(
+            "register",
+            title=words,
+            parent=grand,
+            timeout=max(1, min(cap, int(left) // REGISTER_CALLS)),
         )
+        if refusal:
+            answer["title_refused"] = refusal
+        done = _apply(mother, answer, dict(note, parent=grand))
         spent += time.monotonic() - started
         if done["state"] == "open":
             done["announce"] = True
@@ -2637,15 +2775,22 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0, allowance: float = 0
 
 
 def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
-    """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`)."""
+    """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`).
+
+    The registry is the sheet the whole fleet reads, so the words it holds are English (owner, Nov 18, 2026):
+    a name in another script is never registered, whichever path asks for the letter."""
     _ensure_parent(chat, parent, 0, walk_allowance(chat.spec))
-    return chat.registry("register", title=title, parent=parent)
+    words, refusal = registry_words(title)
+    answer = chat.registry("register", title=words, parent=parent)
+    if refusal:
+        answer["title_refused"] = refusal
+    return answer
 
 
 def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     spec = chat.spec
     source = _text(data.get("source")) or "startup"
-    current = tidy(spec.current_title(data, chat.env))
+    current = chat_name(spec.current_title(data, chat.env))
     note = chat.read()
     if source == "compact":
         if note.get("state") == "open" and note.get("label"):
@@ -2663,9 +2808,12 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     loose = named
     if not loose and source in ("resume", "fork"):
         loose = clean_title(spec.stored_title(data, chat.env))
+    # The words a chat carries under its letter are the ones the whole fleet reads, so they are English;  the
+    # chat's own name stays in whatever script its owner wrote it in.
+    words = lettered_topic(loose)
     parent = parent_of(chat, note, data)
-    answer = _enroll(chat, loose, parent)
-    start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
+    answer = _enroll(chat, words, parent)
+    start = dict(note, inherited=inherited, title=words or note.get("title", ""), parent=parent)
     if inherited:
         start["seen"] = inherited  # the name the chat started with is not a rename
     note = _apply(chat, answer, start)
@@ -2684,15 +2832,16 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         out.emit("start", context=_join(no_letter(spec, note), fix), title=shown)
         return 0
     label = note["label"]
-    text = loose
+    text = words
     if named:
         # With the letters this chat holds in hand, only those come off its title: an acronym stays.  A carried
         # title is the other chat's, and its letter is not one this chat holds, so the letter-shaped prefix goes.
         text = named if carried else bare(current, held(note, answer.get("previous")))
         if text == PLACEHOLDER:
             text = ""
+        text = lettered_topic(text)
         note["title"] = text
-        if text != loose:
+        if text != words:
             _push(chat, note, "title", text)
     placeholder = compose(label, "")
     note["titled"] = bool(text)
@@ -2722,8 +2871,22 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
         and current not in (placeholder, note.get("inherited") or "")
         and words != PLACEHOLDER
     ):
+        # The name a chat carries is the owner's own, in whatever script they wrote it in;  the caller that
+        # puts it under a letter filters it there.
         return words or ""  # someone named the chat: keep their words under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt)
+
+
+def _first_lettered_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
+    """The words a chat that holds a letter takes as its topic:  the name someone gave it when that name is
+    English, else the topic the chat already has, else its first prompt.
+
+    A name in another script is not a topic this chat carries, so it never becomes one here:  the chat keeps
+    the topic it has, or is named from what it says instead."""
+    topic = lettered_topic(_first_title(note, current, prompt))
+    if topic:
+        return topic
+    return lettered_topic(note.get("title") or "") or lettered_topic(title_from_prompt(prompt))
 
 
 def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
@@ -2735,8 +2898,46 @@ def _renamed(note: Mapping[str, Any], current: str) -> tuple[str, str]:
     words = bare(current, held(note))
     if not words or words == PLACEHOLDER:
         return "", ""
-    show = "" if current.startswith(label + ": ") else compose(label, words)
-    return (words if words != note.get("title") else ""), show
+    topic = lettered_topic(words)
+    if not topic:
+        # A name in another language is not a topic this chat holds (the words under a letter are English), so
+        # the name the platform put there is never adopted.  The letter goes back on the chat, over the words
+        # it has of its own, or over the placeholder when it has none, and the chat waits to be named, in
+        # English, by the seat that reads it.
+        known = lettered_topic(note.get("title") or "")
+        return ("", compose(label, known))
+    show = "" if current.startswith(label + ": ") else compose(label, topic)
+    return (topic if topic != note.get("title") else ""), show
+
+
+def _wake_home(chat: Chat) -> str:
+    """The home directory the parked-wake spool resolves under:  the chat user's own home, the same value the
+    delivery adapter uses, so both sides resolve the identical spool."""
+    return _text(chat.env.get("HOME")) or os.path.expanduser("~")
+
+
+def peek_wakes(chat: Chat) -> tuple[str, list[str]]:
+    """Parked wakes for this chat as prompt context, plus their ids.  Never raises and never consumes:  the
+    caller emits first, then consumes, so a crash between the two cannot lose a wake.  A helper-spawned host
+    (MUSE_LETTER_HELPER, the mark the letter helper sets on its own runs) peeks at nothing:  it is not the chat."""
+    if _text(chat.env.get("MUSE_LETTER_HELPER")):
+        return "", []
+    try:
+        pending = WP.peek(WP.state_dir(_wake_home(chat)), chat.session_id)
+    except Exception:
+        return "", []
+    return "\n\n".join(text for _, text in pending), [wake_id for wake_id, _ in pending]
+
+
+def consume_wakes(chat: Chat, wake_ids: list[str]) -> None:
+    """Consume parked wakes after they were emitted into a prompt.  Never raises:  a failure here only means
+    the next prompt shows the wake again, which is the safe direction."""
+    if not wake_ids:
+        return
+    try:
+        WP.consume(WP.state_dir(_wake_home(chat)), chat.session_id, wake_ids)
+    except Exception:
+        pass
 
 
 def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
@@ -2745,12 +2946,16 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     state = note.get("state")
     if state in ("mismatch", "closed"):
         return 0
-    current = tidy(spec.current_title(data, chat.env))
+    current = chat_name(spec.current_title(data, chat.env))
     if not lettered(note):  # a note that says open with no letter is not one to trust
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
         # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
         parent = parent_of(chat, note, data)
-        note = ask_again(chat, note, _first_title(note, current, data.get("prompt")), parent)
+        # The registry holds the words the whole fleet reads, so a name in another language is never
+        # registered;  the chat keeps its own name for itself.
+        note = ask_again(
+            chat, note, lettered_topic(_first_title(note, current, data.get("prompt"))), parent
+        )
         if not lettered(note):
             shown = unlettered(
                 chat, note, _first_title(note, current, data.get("prompt")), current, data, "prompt"
@@ -2767,7 +2972,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     announce = bool(note.pop("announce", False))
     title = None
     answer: dict[str, Any] = {}
-    text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
+    text = "" if note.get("titled") else _first_lettered_title(note, current, data.get("prompt"))
     if announce and not text and not note.get("titled"):
         # A letter that came on a prompt with no words (a bare slash command):  the "??" goes now, the words later.
         title = compose(note["label"], "")
@@ -2807,6 +3012,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         words = str(note.get("title") or "") or bare(current, held(note))
         if words == PLACEHOLDER:
             words = ""
+        words = lettered_topic(words)
         parent = str(note.get("parent") or "")
         note = _apply(chat, _enroll(chat, words, parent), note)
         if note["state"] == "open":
@@ -2835,21 +3041,23 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             lambda text: chat.registry("issues", issues=text),
         )
     fix = advice(chat, note, current, data, "prompt")
+    parked, parked_ids = peek_wakes(chat)
     chat.write(note)
-    if announce or (shown and shown != current) or fix:
+    if announce or (shown and shown != current) or fix or parked:
         out.emit(
             "prompt",
-            context=_join(moved + reminder(spec, note) if announce else "", fix),
+            context=_join(_join(moved + reminder(spec, note) if announce else "", fix), parked),
             title=shown,
             label=str(note.get("label") or ""),
         )
+        consume_wakes(chat, parked_ids)
     return 0
 
 
 def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     """A platform that says when a chat was renamed: keep the letter on its title and the Operator's words current."""
     note = chat.read()
-    current = tidy(chat.spec.current_title(data, chat.env))
+    current = chat_name(chat.spec.current_title(data, chat.env))
     if note and not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         # A chat with no letter keeps its "??" over a new name, and asks again when the stamp says it is due.
         words = bare(current, held(note))
@@ -2861,11 +3069,18 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             return 0
         note["unlettered_seen"] = current
         parent = parent_of(chat, note, data)
-        note = ask_again(chat, note, words, parent)
+        note = ask_again(chat, note, lettered_topic(words), parent)
         if lettered(note):
-            note["titled"] = True
-            note["title"] = words
-            shown = present(chat, note, compose(str(note["label"]), words), current, data, "rename")
+            topic = lettered_topic(words)
+            if topic:
+                note["titled"] = True
+                note["title"] = topic
+            else:
+                # A rename in another language is never adopted, and it never erases the topic the chat
+                # already had.
+                topic = lettered_topic(note.get("title") or "")
+                note["titled"] = bool(topic)
+            shown = present(chat, note, compose(str(note["label"]), topic), current, data, "rename")
             context = reminder(chat.spec, note)
             note.pop("announce", None)
         else:
@@ -3012,6 +3227,7 @@ def _run_hook(
         code = on_start(chat, data, out, home)
         if _text(data.get("source")) != "compact":
             _report_gone_after_start(chat, stdout)
+            repair_after_start(chat)
         return code
     if event == "prompt":
         return on_prompt(chat, data, out)
@@ -3092,13 +3308,22 @@ def note_problem(note: Mapping[str, Any]) -> str:
     return ""
 
 
-def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str, str] | str:
+class NoNote(str):
+    """`find_chat`'s answer when no letter note names the chat (as opposed to a note that is there and is wrong):
+    `request` then looks for the chat through the platforms' own session ids (`find_new_chat`)."""
+
+
+def find_chat(
+    env: Mapping[str, str], sid: str = "", only: str = ""
+) -> tuple[PlatformSpec, str, str] | str:
     """(spec, session id, seat) of the chat a `request` is about, or why there is none.
 
-    With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
+    With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
     runs in:  the first spec in the table whose own session-id reader, or whose session id variables (its
-    `session_env`, then AGENT_SESSION, the fleet's own name for it), name an id whose note exists.  The note is the proof the chat is that platform's:  a
-    stray variable from another platform's shell finds no note and is never registered."""
+    `session_env`, then AGENT_SESSION, the fleet's own name for it), name an id whose note exists.  The note is the proof the chat is that platform's:  a
+    stray variable from another platform's shell finds no note and is never registered.  `only`, the platform
+    `--platform` names, narrows every answer to that platform:  a note of another platform is a refusal, never a
+    registration under the wrong adapter (Kody, PR 2307)."""
     root = L.state_root(env)
     if sid:
         try:
@@ -3122,6 +3347,12 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
                 problem = note_problem(note) if isinstance(note, dict) else "not a JSON object"
                 return "invalid letter note for chat %s: %s" % (sid, problem)
             platform = str(note.get("platform") or "")
+            if only and platform != only:
+                return "chat %s is a %s chat, not the %s chat --platform names" % (
+                    sid,
+                    platform or "unknown",
+                    only,
+                )
             spec = load_spec(platform) if valid_platform(platform) else None
             if spec is None:
                 return "chat %s is a %s chat, which has no entry in the letter table" % (
@@ -3129,8 +3360,8 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
                     platform or "unknown",
                 )
             return spec, sid, seat
-        return "no chat with the session id %s has a letter note on this host" % sid
-    for platform in adapter_platforms():
+        return NoNote("no chat with the session id %s has a letter note on this host" % sid)
+    for platform in [only] if only else adapter_platforms():
         spec = load_spec(platform)
         if spec is None:
             continue
@@ -3141,14 +3372,165 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
             )  # the spec's own reader, for one that reads the environment
         except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
             own = ""
-        for value in (own, *(env.get(name) for name in (*spec.session_env, "AGENT_SESSION"))):
+        # AGENT_SESSION is safe here without a named platform:  the note itself proves the
+        # platform, so a shared variable finds a chat but registers nothing.
+        names = (*spec.session_env, "AGENT_SESSION")
+        for value in (own, *(env.get(name) for name in names)):
             try:
                 found = SI.check(_text(value), "the session id")
             except ValueError:
                 continue
             if seat and os.path.isfile(note_path(env, seat, found)):
                 return spec, found, seat
-    return "no chat with a letter note runs in this shell; pass --session-id S"
+    return NoNote("no chat with a letter note runs in this shell; pass --session-id S")
+
+
+def _own_session_ids(spec: PlatformSpec, env: Mapping[str, str], generic: bool) -> list[str]:
+    """The session ids this shell's environment names for `spec`'s platform:  its own reader, then its `session_env`
+    variables, then (only when `generic`, a platform the caller named) AGENT_SESSION, which every platform shares."""
+    try:
+        own = spec.session_id({}, env)
+    except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
+        own = ""
+    names = (*spec.session_env, *(("AGENT_SESSION",) if generic else ()))
+    found: list[str] = []
+    for value in (own, *(env.get(name) for name in names)):
+        try:
+            sid = SI.check(_text(value), "the session id")
+        except ValueError:
+            continue
+        if sid not in found:
+            found.append(sid)
+    return found
+
+
+def find_new_chat(
+    env: Mapping[str, str], sid: str = "", platform: str = ""
+) -> tuple[PlatformSpec, str, str] | str:
+    """(spec, session id, seat) of a chat that has no letter note yet, for `request`, or why there is none.
+
+    The platform's own session id source says which chat it is (owner, Nov 11, 2026:  a chat with no letter can
+    ask):  the spec's own reader and its `session_env` variables, which only that platform's chat shell holds.
+    With --platform P the chat is P's:  the id given, else P's own variables, else AGENT_SESSION.  Without it, the
+    one platform whose own variables name the chat (the id given, or any id);  a shell whose variables name chats
+    of two platforms (one chat run inside another's shell) is ambiguous and asks for --platform, and AGENT_SESSION
+    alone, which every platform shares, never picks one."""
+    if platform:
+        spec = load_spec(platform) if valid_platform(platform) else None
+        if spec is None:
+            return "no adapter for the platform %r" % platform
+        specs = [spec]
+    else:
+        specs = []
+        for name in adapter_platforms():
+            try:
+                spec = load_spec(name)
+            except Exception:  # noqa: BLE001 - an adapter that cannot load names no chat
+                continue
+            if spec is not None:
+                specs.append(spec)
+    if sid:
+        try:
+            sid = SI.check(sid, "the session id")
+        except ValueError as exc:
+            return str(exc)
+    matches: list[tuple[PlatformSpec, str]] = []
+    for spec in specs:
+        named = _own_session_ids(spec, env, generic=bool(platform))
+        if sid and (platform or sid in named):
+            matches.append((spec, sid))
+        elif not sid:
+            # Every id the platform names, never only the first:  a platform whose variables
+            # name two chats (Cursor's CURSOR_CONVERSATION_ID and CURSOR_AGENT_CHAT_ID) must
+            # be able to ask for either (Kody, PR 2307).
+            matches.extend((spec, one) for one in named)
+    if not matches:
+        if sid:
+            return (
+                "no chat with the session id %s has a letter note on this host, and no platform's own session id "
+                "here names it; pass --platform P" % sid
+            )
+        return "no chat runs in this shell (no platform's session id is set); pass --session-id S --platform P"
+    if len(matches) > 1:
+        platforms = sorted({spec.platform for spec, _ in matches})
+        if len(platforms) > 1:
+            return (
+                "this shell names chats of more than one platform (%s); pass --platform P"
+                % ", ".join(platforms)
+            )
+        return "this shell names more than one %s chat (%s); pass --session-id S" % (
+            matches[0][0].platform,
+            ", ".join(sid for _, sid in matches),
+        )
+    spec, found = matches[0]
+    seat = spec.seat_for({}, env)
+    if not seat:
+        return "the %s platform names no seat in this shell" % spec.platform
+    return spec, found, seat
+
+
+def _start_payload(spec: PlatformSpec, sid: str, own: bool = False) -> dict[str, Any]:
+    """The payload a chat's own start would carry on a resume:  the adapter's (`chat_payload`), else the plain one,
+    under the platform's own start event name.  `own` is a chat this shell's own variables name (the chat asking
+    for itself):  it takes the plain payload, since an adapter's `chat_payload` is the library's question about a
+    chat this hook did not fire for, and an adapter may answer that only for chats it can see on the host (Claude's
+    takes only a desktop-app chat with a record here, so a terminal chat asking for itself would be refused)."""
+    if spec.chat_payload is not None and not own:
+        return dict(spec.chat_payload(sid))
+    event = next((name for name, verb in spec.events.items() if verb == "start"), "SessionStart")
+    return {"hook_event_name": event, "session_id": sid, "source": "resume"}
+
+
+def request_new(
+    spec: PlatformSpec,
+    sid: str,
+    seat: str,
+    env: Mapping[str, str],
+    stdout: TextIO,
+    *,
+    now: float,
+    platform: str,
+    transport: Transport | None,
+    where: str | None = None,
+) -> int:
+    """`request` for a chat with no note yet:  the chat's own start flow on its resume payload, as its start hook
+    would have run it (the note is made, the chat registered, and titled through the adapter's writer when it has
+    one), so nothing about a chat that asks differs from one whose start hook ran.  The hook's own refusals hold:
+    a launcher's session, a headless run, a host that does not say where it is, a platform that does not run there.
+    `where` is the caller's `--location` (a server chat names it;  the fleet default fills the rest)."""
+    where = where or location(env, platform)
+    if where is None:
+        stdout.write("no letter: %s\n" % NO_LOCATION)
+        return 1
+    if where not in spec.locations:
+        stdout.write("no letter: %s does not run on the %s\n" % (spec.display, where))
+        return 1
+    try:
+        payload = _start_payload(spec, sid, own=sid in _own_session_ids(spec, env, generic=True))
+        sid = _text(payload.get("session_id")) or sid
+        if not in_scope(spec, env, payload):
+            stdout.write(
+                "no letter: %s chat %s does not take a letter (a launcher's session, a headless run or a "
+                "sub-agent with no parent)\n" % (spec.display, sid)
+            )
+            return 1
+        chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+        home = str(env.get("HOME") or os.path.expanduser("~"))
+        on_start(
+            chat, payload, Out(io.StringIO(), spec, _text(payload.get("hook_event_name"))), home
+        )
+        note = chat.read()
+    except Exception as exc:  # noqa: BLE001 - the verb answers in one line, whatever an adapter does
+        stdout.write(
+            "no letter: %s chat %s could not be started (%s)\n"
+            % (spec.display, sid, type(exc).__name__)
+        )
+        return 1
+    if lettered(note):
+        stdout.write("letter %s: %s chat %s\n" % (note["label"], spec.display, sid))
+        return 0
+    stdout.write("no letter: %s\n" % (note.get("error") or "no answer"))
+    return 1
 
 
 def request_main(
@@ -3160,22 +3542,55 @@ def request_main(
     platform: str = sys.platform,
     transport: Transport | None = None,
 ) -> int:
-    """`simple-chat letter request [--session-id S]`:  ask the one assigner for this chat's letter now, whatever the
-    retry stamp says, and print the letter or the reason there is none in one line (owner, Nov 11, 2026:  "enable a
-    thread to request letters after the initial thread opening").  The command is the same on every platform;  only
-    the spec's own readers (where its session id comes from) differ, and they are data in the table.
+    """`simple-chat letter request [--session-id S] [--platform P]`:  ask the one assigner for this chat's letter
+    now, whatever the retry stamp says, and print the letter or the reason there is none in one line (owner, Nov 11,
+    2026:  "enable a thread to request letters after the initial thread opening").  The command is the same on every
+    platform;  only the spec's own readers (where its session id comes from) differ, and they are data in the table.
+    A chat with no note yet (its start hook never ran, or ran before the hook was installed) is found through its
+    platform's own session id and started now (`find_new_chat`, `request_new`).
 
     A letter that comes is put in the chat's note, and on its title through the adapter's writer when it has one;  a
-    platform that takes titles only from hook output swaps "??" for it at its next prompt.  Exit 0 with a letter, 1
+    platform that takes titles only from hook output swaps "??" for it at its next prompt.  Exit 0 with a letter, 1
     without one, 2 for bad arguments."""
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
     try:
-        flags = _flags(argv, ("--session-id",))
+        flags = _flags(argv, ("--session-id", "--platform", "--location"))
     except ValueError:
-        stdout.write("usage: simple-chat letter request [--session-id S]\n")
+        stdout.write(
+            "usage: simple-chat letter request [--session-id S] [--platform P] [--location L]\n"
+        )
         return 2
-    found = find_chat(env, flags.get("session-id", ""))
+    named = flags.get("platform", "")
+    if named and (not valid_platform(named) or load_spec(named) is None):
+        # An adapter the table does not hold is a bad argument (exit 2, as `repair` answers
+        # it), not a request without a letter (Kody, PR 2307).
+        stdout.write("usage: no adapter for the platform %r\n" % named)
+        return 2
+    where_flag = flags.get("location", "")
+    if where_flag:
+        # The flag takes the same validation `location()` gives the environment's own
+        # value, so a bogus or wrong-cased host is bad arguments, not a registry error
+        # later (Kody, PR 2307 round 2).
+        where_flag = where_flag.lower()
+        if where_flag not in LOCATIONS:
+            stdout.write("usage: --location must be one of %s\n" % ", ".join(sorted(LOCATIONS)))
+            return 2
+    found = find_chat(env, flags.get("session-id", ""), only=named)
+    if isinstance(found, NoNote):
+        new = find_new_chat(env, flags.get("session-id", ""), named)
+        if isinstance(new, str):
+            stdout.write("no letter: %s\n" % new)
+            return 1
+        return request_new(
+            *new,
+            env,
+            stdout,
+            now=time.time() if now is None else now,
+            platform=platform,
+            transport=transport,
+            where=where_flag,
+        )
     if isinstance(found, str):
         stdout.write("no letter: %s\n" % found)
         return 1
@@ -3183,7 +3598,7 @@ def request_main(
     chat = Chat(
         spec,
         env,
-        location(env, platform) or "",
+        where_flag or location(env, platform) or "",
         sid,
         now=time.time() if now is None else now,
         transport=transport,
@@ -3828,6 +4243,43 @@ def report_gone_elsewhere(
     return {"gone": fresh, "closed": closed, "kept": sorted(in_use)}
 
 
+def _claim(path: str, ttl: float) -> bool:
+    """Take a claim file with an exclusive create, so two processes never both hold it.  A claim older than `ttl`
+    seconds (by the file's own time) is a holder that died:  it is removed and taken once more.  False when the
+    claim is held, or cannot be made."""
+    for _attempt in range(2):
+        try:
+            folder = os.path.dirname(path)
+            if _folder_is_link(folder):
+                return False
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(path).st_mtime
+            except OSError:
+                continue  # released meanwhile:  try once more
+            if 0 <= age < ttl:
+                return False
+            try:
+                os.unlink(path)
+            except OSError:
+                return False
+            continue
+        except OSError:
+            return False
+        os.close(fd)
+        return True
+    return False
+
+
+def _release(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def repair_unlettered(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -3844,13 +4296,17 @@ def repair_unlettered(
     window and never on every start.  A finished pass also leaves its outcome beside the time (chats found,
     replayed and lettered, and each replay that failed with its session id and exception type - or the
     listing's error):  a stamp with no outcome is a pass that never finished, which a host check can tell from a
-    healthy quiet window.  A candidate the hook itself would refuse (`in_scope`), or whose note says closed or
+    healthy quiet window.  The stamp is read and written under a short lock (`_claim`), so two runs set off in the
+    same moment never both make a pass.  A listed id that is not a well-formed session id is dropped (it would
+    name a note path), a candidate the hook itself would refuse (`in_scope`), or whose note says closed or
     mismatch, is left alone, and a pass starts no new replay once REPAIR_PASS_SECONDS have gone by.
 
     A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
-    still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
-    chat lettered meanwhile is left alone (its start reads the title fresh).  What the repaired chats' starts
-    print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
+    still knows resumes the letter it holds (nothing re-allocates), and one it does not know registers again.  A
+    chat whose note already holds a letter is never replayed, even when the app's own record still shows "??: "
+    (a row with no title writer cannot change that record):  replaying it every pass would keep a dormant chat
+    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  What the
+    repaired chats' starts print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
     if (
         spec.unlettered_sessions is None
         or spec.chat_payload is None
@@ -3859,22 +4315,33 @@ def repair_unlettered(
     ):
         return {"skipped": "this platform names no unlettered chats on this host"}
     path = repair_stamp_path(env, seat, spec.platform, where)
-    stamp = _read_json(path)
-    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
-        return {"skipped": "not due"}
-    if not _save_json(path, {"at": now}):
-        # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
-        return {"skipped": "the stamp could not be saved", "recorded": False}
+    lock = path + ".lock"
+    if not _claim(lock, REPAIR_LOCK_SECONDS):
+        return {"skipped": "another pass holds the stamp"}
     try:
-        found = [
-            sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
-        ]
+        stamp = _read_json(path)
+        if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
+            return {"skipped": "not due"}
+        if not _save_json(path, {"at": now}):
+            # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
+            return {"skipped": "the stamp could not be saved", "recorded": False}
+    finally:
+        _release(lock)
+    try:
+        found = []
+        for item in spec.unlettered_sessions(env) or []:
+            try:
+                sid = SI.check(_text(item), "a listed session id")
+            except ValueError:
+                continue  # a store's id that is no session id never becomes a note path
+            if sid not in found:
+                found.append(sid)
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
-        mark = {"at": now, "outcome": {"error": "the adapter could not list them"}}
-        recorded = _save_json(path, mark)
+        outcome = {"error": "the adapter could not list them"}
+        recorded = _record_outcome(path, now, outcome)
         if not recorded:
             # One retry:  an unsaved outcome reads as a pass that never finished.
-            recorded = _save_json(path, mark)
+            recorded = _record_outcome(path, now, outcome)
         return {"skipped": "the adapter could not list them", "recorded": recorded}
     home = str(env.get("HOME") or os.path.expanduser("~"))
     started = time.monotonic()
@@ -3891,9 +4358,13 @@ def repair_unlettered(
             sid = _text(payload.get("session_id")) or sid
             if not in_scope(spec, env, payload):
                 continue  # what the hook itself would refuse (headless, another launcher's, a bare sub-agent)
+            sid = SI.check(sid, "a listed session id")
             chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
-            if chat.read().get("state") in ("closed", "mismatch"):
+            held_note = chat.read()
+            if held_note.get("state") in ("closed", "mismatch"):
                 continue  # a settled no-letter state:  replaying it would re-register it every pass
+            if lettered(held_note):
+                continue  # it holds a letter:  a replay would only mark a dormant chat seen again
             on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
             failures.append({"sid": sid, "error": type(exc).__name__})
@@ -3911,12 +4382,10 @@ def repair_unlettered(
         "failed": len(failures),
         "failures": failures,
     }
-    recorded = _save_json(path, {"at": now, "outcome": outcome})
+    recorded = _record_outcome(path, now, outcome)
     if not recorded:
         # One retry with a bare marker:  an unsaved outcome must not read as a pass that never finished.
-        recorded = _save_json(
-            path, {"at": now, "outcome": {"error": "the outcome could not be saved"}}
-        )
+        recorded = _record_outcome(path, now, {"error": "the outcome could not be saved"})
     return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
 
 
@@ -3931,10 +4400,11 @@ def repair_main(
 ) -> int:
     """`repair [--platform P] [--location L] [--force]`:  replay the start of this host's chats still showing
     "??: ", for the platform named or for every platform whose adapter names them.  This is the verb a host's
-    own schedule ticks:  an app-driven chat's hook never runs, so only a scheduled tick reaches it.  One line
+    run detached by a chat's start when a pass is due (`repair_after_start`;  no host schedules it):  an
+    app-driven chat's hook never runs, so another chat's start is what reaches it.  One line
     per chat names the first 8 characters of its session id and whether its letter is back, never a title.  The
     stamp beside the notes throttles the pass to once per REPAIR_SWEEP_SECONDS unless --force, and keeps the
-    last pass's outcome (see repair_unlettered), so a scheduled tick's work stays visible after the fact.
+    last pass's outcome (see repair_unlettered), so a detached run's work stays visible after the fact.
     Exit 0, 2 for bad arguments."""
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
@@ -4004,6 +4474,82 @@ def repair_main(
         if done.get("recorded") is False:
             sys.stderr.write(head + "the pass's outcome could not be recorded\n")
     return 0
+
+
+def _record_outcome(path: str, now: float, outcome: Mapping[str, Any]) -> bool:
+    """Merge a pass's outcome into the repair stamp without moving its `at` backward.  Two passes may overlap
+    (the `--force` path ignores the throttle on purpose), and a stamp written with the older pass's `at` would
+    roll the throttle window back and lose the newer pass's time (Kody, PR 2307)."""
+    stamp = _read_json(path)
+    at = max(_seconds(stamp["at"]), now) if "at" in stamp else now
+    return _save_json(path, {"at": at, "outcome": outcome})
+
+
+def repair_command(platform: str, where: str) -> list[str]:
+    """The detached run a chat's start sets off:  this checkout's own `platform-letter repair` for one platform and
+    location, under the interpreter the hook itself runs on."""
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "platform-letter"
+    )
+    return [sys.executable, "-B", script, "repair", "--platform", platform, "--location", where]
+
+
+def _spawn_detached(argv: list[str], env: Mapping[str, str]) -> bool:
+    """Start `argv` in a session of its own with no standard streams, and do not wait for it.  False when it could
+    not be started."""
+    try:
+        subprocess.Popen(
+            argv,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def repair_after_start(
+    chat: Chat, spawn: Callable[[list[str], Mapping[str, str]], bool] | None = None
+) -> bool:
+    """Set off the unlettered repair for the chat's platform and location, after the chat's own answer is out, when
+    the repair stamp says one is due (REPAIR_SWEEP_SECONDS):  one detached `platform-letter repair` run, which
+    takes the stamp itself and spends its own time, never the chat's.  This is the repair's only carrier:  no host
+    runs a timer for it (the one-Operator rule:  a host requests letters on its chats' own events, and only the
+    Eavesdropper sweeps).  Nothing is started for a platform whose row names no "??" chats, for a host that does
+    not say where it is, or for a caller that brought its own registry transport or its own environment mapping
+    (a test, an embedding caller):  the child reads this process's own settings, so it could not reach the
+    registry that caller meant.  Before it spawns, the start takes a spawn claim beside the stamp (an exclusive
+    create, held REPAIR_SPAWN_CLAIM_SECONDS), so several chats starting in the same moment set off one run.  True
+    when a run was started."""
+    spec = chat.spec
+    if spec.unlettered_sessions is None or spec.chat_payload is None:
+        return False
+    if chat.transport is not None or chat.location not in LOCATIONS or not chat.seat:
+        return False
+    if spawn is None and chat.env is not os.environ:
+        return False
+    path = repair_stamp_path(chat.env, chat.seat, spec.platform, chat.location)
+    stamp = _read_json(path)
+    if "at" in stamp and 0 <= chat.now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
+        return False
+    if not _claim(path + ".spawn", REPAIR_SPAWN_CLAIM_SECONDS):
+        return False  # another chat's start set off this window's run moments ago
+    try:
+        started = bool(
+            (spawn or _spawn_detached)(repair_command(spec.platform, chat.location), chat.env)
+        )
+    except Exception:  # noqa: BLE001 - a repair never blocks a chat
+        # Nothing was started:  give the claim back, so the next start is not held off
+        # for the whole claim TTL by a run that never existed (Kody, PR 2307).
+        _release(path + ".spawn")
+        return False
+    if not started:
+        _release(path + ".spawn")
+    return started
 
 
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
@@ -4535,6 +5081,28 @@ def _write_private(path: str, data: bytes, mode: int, *, exclusive: bool = False
     os.chmod(path, mode)
 
 
+def _prune_backups(path: str, keep: int = 3) -> int:
+    """Drop the oldest `.bak-letter-` copies of the hook file beside it, keeping the newest few.
+
+    The names carry a UTC stamp, so they sort in the order they were made.  The copies are the installer's own
+    safety net, and the reconcile runs on every hook event, so the net is kept small on purpose:  a file that
+    stays stale must not grow a copy per event."""
+    folder = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + ".bak-letter-"
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.startswith(prefix))
+    except OSError:
+        return 0
+    dropped = 0
+    for name in names[: max(0, len(names) - keep)]:
+        try:
+            os.remove(os.path.join(folder, name))
+            dropped += 1
+        except OSError:
+            pass
+    return dropped
+
+
 def _backup(path: str) -> str:
     """Copy `path` to `<path>.bak-letter-<UTC stamp>` (0600) and return the new name.  The stamp has microseconds and
     a name that is taken gets a counter, so two rewrites in the same moment (an install, then a remove) never share a
@@ -4594,6 +5162,10 @@ def install_json_hooks(
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
     if opts.location and opts.location not in LOCATIONS:
         return _emit(stdout, {"error": "--location must be mac or server"}, 2)
+    if os.path.islink(os.path.dirname(path)):
+        # A hooks folder that is a link is not ours to write through:  the file would land wherever the link
+        # points, and a folder someone else owns would take the host's hooks.
+        return _emit(stdout, {"error": "the hooks folder is a link", "path": path}, 2)
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -4764,6 +5336,109 @@ def install_json_hooks(
     return _emit(stdout, answer, 0)
 
 
+def reconcile_hooks(platform: str, env: Mapping[str, str]) -> dict[str, Any]:
+    """Bring this platform's installed hook file up to what its row declares, and answer what changed.
+
+    A host's hook file is written once, by hand, and a row that gains an event later leaves that file
+    stale:  the event the row now hooks is never delivered, so the hook never runs for it.  A MiniMax Code
+    chat whose UserPromptSubmit entry was never installed kept the name the runtime gave it, in whatever
+    language that name was written, and never carried its letter;  a sub-thread whose SubagentStart entry
+    was never installed held no letter at all.  This is the one place that closes that gap, and it runs
+    from the hook itself, so a host that runs the hook at all is brought current without a person running
+    the installer.
+
+    The reconcile goes through the shared installer, so it does exactly what an install of this platform
+    does:  it adds the event that is missing, replaces an entry of this platform that is outdated, and takes
+    a retired hook of this platform out.  A file this installer does not own is left exactly as it is, and a
+    platform with no installer is left alone.  Only this platform's own entries are ever touched:  an entry
+    of another tool in the same file is left where it is, and one of this platform that another tool owns
+    is not taken out either.
+
+    A platform whose runtime trusts a hook entry by hash (Codex, Clutch) needs that step run by the owner
+    before the new event is delivered.  The installer's answer names it, and the reconcile writes it beside
+    the hook file as `<file>.letter-trust` and keeps reconciling while that marker is there, so the step
+    stays visible instead of being forgotten;  removing the marker says it is done.
+    """
+    adapter = load_adapter(platform)
+    installer = getattr(adapter, "INSTALL", None)
+    if not isinstance(installer, JsonHookInstaller):
+        return {}
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
+    if os.path.islink(os.path.dirname(path)):
+        # A hooks folder that is a link is not ours to write through:  the file would land wherever the link
+        # points, and a folder someone else owns would take the host's hooks.
+        return {"platform": platform, "path": path, "refused": "the hooks folder is a link"}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}  # no file, or a file this installer does not own:  nothing to reconcile
+    if not isinstance(doc, dict):
+        return {}
+    try:
+        events = installer.locate(doc)
+    except ValueError:
+        return {}
+    # What an install of this platform would write here, and what the file holds now:  an event with no entry
+    # of ours is missing, and an event whose entry is not the one this row declares is stale.  A stale entry
+    # looks installed and does nothing, so it is brought current as well.
+    already = [
+        installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
+    ]
+    inherited = next((w for w in already if w), [])
+    command = command_for(
+        home, platform, _flag(inherited, "--location"), _flag(inherited, "--mac-ssh")
+    )
+    missing = []
+    stale = []
+    for ev, timeout in installer.events.items():
+        entries = list(events.get(ev) or [])
+        if not any(installed_command(e, platform) for e in entries):
+            missing.append(ev)
+            continue
+        planned, _ = _plan_event(installer, events, ev, timeout, command, platform, False)
+        if planned != entries:
+            stale.append(ev)
+    marker = path + ".letter-trust"
+    pending = ""
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            pending = fh.read(4096).strip()
+    except (OSError, ValueError):
+        pending = ""
+    if not missing and not stale and not pending:
+        return {}
+    out = io.StringIO()
+    install_json_hooks(installer, InstallOptions(platform), env, out)
+    # Every pass that rewrites the file leaves a backup of it beside it, and the reconcile runs on every hook
+    # event, so a file that stays stale would grow a copy per event without bound.  The newest few are kept:  the
+    # last one is the file as it was before the last rewrite, which is what an owner needs to undo it.
+    _prune_backups(path)
+    answer = _last_json(out.getvalue()) or {}
+    trust = str(answer.get("trust") or "")
+    wrote = ""
+    if (missing or stale) and trust:
+        # The runtime needs the new entry trusted before it runs it, and that step is the owner's.  The
+        # marker keeps the requirement visible, and the reconcile keeps running while it is there.
+        wrote = trust
+        try:
+            _write_private(marker, (trust + "\n").encode("utf-8"), 0o600)
+        except OSError:
+            wrote = ""
+    return {
+        "platform": platform,
+        "path": path,
+        "missing": missing,
+        "stale": stale,
+        # The marker is there after this pass, whether it was there before or this pass wrote it:  the
+        # owner's step is still the owner's.
+        "trust_pending": bool(pending or wrote),
+        "trust": trust or pending,
+        "installed": answer,
+    }
+
+
 def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     """`install --platform P [--location server|mac] [--mac-ssh DEST] [--check | --remove]`: find the platform's
     adapter and run its installer.  `--mac-ssh` names the ssh destination of the Mac for a host that is not the Mac
@@ -4874,6 +5549,13 @@ def main(
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
                 return 0
+            if _text(env.get(ENV_RECONCILE, "1")) != "0":
+                # The host's hook file is brought current here, so a row that gained an event is delivered
+                # without a person running the installer.  A failure here is never a failure of the chat.
+                try:
+                    reconcile_hooks(flags.get("platform", ""), env)
+                except Exception:  # noqa: BLE001 - a hook never blocks a chat
+                    pass
             # A platform whose hook payload has no event name, or whose hook answers in a shape of its own
             # (Antigravity: an event inferred from the payload, an answer of injected steps), owns its entry:
             # `hook_main` takes what `hook` takes, minus the spec, and calls `hook` itself.

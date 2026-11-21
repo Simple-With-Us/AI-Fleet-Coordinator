@@ -1,4 +1,4 @@
-"""Offline routing tests; all network, subprocesses and credential stores are faked."""
+"""Offline routing tests with fake providers and one real bounded-reader worker."""
 
 import contextlib
 import io
@@ -10,6 +10,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 from fleet_knobs import source as knobs
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core as rag
 from fleet_rag import infisical_settings as settings
 
@@ -36,8 +37,8 @@ class ScopedTokens(unittest.TestCase):
     def setUp(self):
         self.env = {
             core.ENV_TOKEN: READ,
-            core.ENV_AI_FLEET_COORDINATOR_TOKEN: COORDINATOR_READ,
-            core.ENV_WRITE_TOKEN: WRITE,
+            core.COORDINATOR_READ_TOKEN_ENV_NAME: COORDINATOR_READ,
+            core.WRITE_TOKEN_ENV_NAME: WRITE,
             core.ENV_PROJECT: PROJECT,
             core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER,
         }
@@ -177,21 +178,21 @@ class ScopedTokens(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_writer_never_borrows_reader_and_readonly_writer_is_rejected(self):
-        self.env.pop(core.ENV_WRITE_TOKEN)
+        self.env.pop(core.WRITE_TOKEN_ENV_NAME)
         with (
             self.writer_journal() as intent,
             self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"),
         ):
             core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(self.calls, [])
-        self.env[core.ENV_WRITE_TOKEN] = READ
+        self.env[core.WRITE_TOKEN_ENV_NAME] = READ
         self.metadata[READ] = grant(paths=("/linear",))
         with self.writer_journal() as intent, self.assertRaises(core.SecretsError):
             core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(len(self.calls), 1)
 
     def test_bad_optional_writer_binding_does_not_disable_valid_reader(self):
-        self.env[core.ENV_WRITE_TOKEN] = "st.malformed-writer-binding"
+        self.env[core.WRITE_TOKEN_ENV_NAME] = "st.malformed-writer-binding"
         self.assertEqual(core.fetch_all("/", self.env), {"ALPHA": VALUE})
         self.assertTrue(self.calls)
         self.assertTrue(all(call[2] == READ for call in self.calls))
@@ -200,7 +201,7 @@ class ScopedTokens(unittest.TestCase):
         env = {
             core.ENV_PROJECT: PROJECT,
             core.ENV_AUTOMATION_ID: VALUE,
-            core.ENV_AUTOMATION_SECRET: VALUE,
+            core.AUTOMATION_SECRET_ENV_NAME: VALUE,
             "INFISICAL_SHARED_CLIENT_SECRET": VALUE,
         }
         with self.assertRaisesRegex(core.SecretsError, "service-token-required"):
@@ -233,14 +234,14 @@ class ScopedTokens(unittest.TestCase):
     def test_run_removes_both_bootstrap_tokens_and_rejects_reserved_injection(self):
         self.env.update(
             INFISICAL_CLIENT_ID="legacy-id-sentinel",
-            INFISICAL_CLIENT_SECRET="legacy-secret-sentinel",
+            INFISICAL_CLIENT_SECRET="test-only",
         )
         child = []
         with mock.patch.object(cli.os, "execvpe", side_effect=lambda *args: child.append(args[2])):
             cli.main(["run", "--only", "ALPHA", "--", "synthetic-command"], env=self.env)
         self.assertEqual(child[0]["ALPHA"], VALUE)
         self.assertNotIn(core.ENV_TOKEN, child[0])
-        self.assertNotIn(core.ENV_WRITE_TOKEN, child[0])
+        self.assertNotIn(core.WRITE_TOKEN_ENV_NAME, child[0])
         self.assertNotIn("INFISICAL_CLIENT_ID", child[0])
         self.assertNotIn("INFISICAL_CLIENT_SECRET", child[0])
 
@@ -259,7 +260,7 @@ class ScopedTokens(unittest.TestCase):
     def test_knobs_named_read_preserves_project_folder_names_and_budget(self):
         env = {**self.env, knobs.ENV_KNOBS_TOKEN: COORDINATOR_READ}
         env.pop(core.ENV_TOKEN, None)
-        env.pop(core.ENV_WRITE_TOKEN, None)
+        env.pop(core.WRITE_TOKEN_ENV_NAME, None)
         self.records = [dict(self.records[0], workspace=OTHER)]
         with (
             mock.patch.object(knobs, "HELPER_LOADER", return_value=core),
@@ -272,7 +273,7 @@ class ScopedTokens(unittest.TestCase):
         self.assertIsNotNone(self.calls[-1][4]["deadline"])
 
     def test_knobs_never_borrows_generic_or_writer_token(self):
-        env = {core.ENV_TOKEN: READ, core.ENV_WRITE_TOKEN: WRITE}
+        env = {core.ENV_TOKEN: READ, core.WRITE_TOKEN_ENV_NAME: WRITE}
         with (
             mock.patch.object(knobs, "HELPER_LOADER", return_value=core),
             mock.patch.dict(os.environ, env, clear=True),
@@ -280,19 +281,6 @@ class ScopedTokens(unittest.TestCase):
         ):
             knobs.fetch_named(["ALPHA"], project_id=PROJECT, path="/")
         self.assertEqual(self.calls, [])
-
-    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
-        env = dict(self.env, FLEET_RAG_INFISICAL_PROJECT=OTHER, FLEET_RECALL_INFISICAL_TOKEN=READ)
-        env.pop(core.ENV_TOKEN)
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(
-                rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
-            ),
-            self.assertRaises(rag.FleetRagError),
-        ):
-            rag.load_config()
-        self.assertEqual(len(self.calls), 1)
 
     def test_settings_default_never_reads_shared_identity_file(self):
         env = {
@@ -316,6 +304,40 @@ class ScopedTokens(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             service = settings.InfisicalSettings(project_id=PROJECT, identity_prefixes=("OWN_APP",))
             self.assertEqual(service._credential(writer=True), (None, ""))
+
+
+class RagWorkerScopedTokens(unittest.TestCase):
+    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
+        with ScopedReadAPI({}, project=PROJECT) as api:
+            env = {
+                "FLEET_RAG_INFISICAL_PROJECT": OTHER,
+                "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
+                "FLEET_RECALL_INFISICAL_TOKEN": api.token,
+                core.COORDINATOR_READ_TOKEN_ENV_NAME: COORDINATOR_READ,
+                core.WRITE_TOKEN_ENV_NAME: WRITE,
+            }
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(
+                    rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
+                ) as fallback,
+                mock.patch.object(
+                    rag, "_read_token_file", side_effect=AssertionError("file token fallback")
+                ) as token_file,
+                mock.patch("subprocess.run", side_effect=AssertionError("credential login")),
+                mock.patch.object(
+                    core, "bounded_fetch_project", wraps=core.bounded_fetch_project
+                ) as bounded,
+                self.assertRaises(rag.FleetRagError),
+            ):
+                rag.load_config()
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.args[:2], (OTHER, "/"))
+            self.assertEqual(bounded.call_args.kwargs["token"], api.token)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], 30.0)
+            fallback.assert_not_called()
+            token_file.assert_not_called()
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":

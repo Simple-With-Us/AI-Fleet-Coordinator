@@ -160,13 +160,24 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
                 self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
         self.assertEqual(self.api.requests, [])
 
-    def test_real_verifier_refuses_other_scopes_write_permissions_and_indefinite_expiry(self):
+    def test_explicit_null_expiry_read_only_binding_reads_named_value(self):
+        self.api.metadata_override = {"expiresAt": None}
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"})
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+
+    def test_real_verifier_refuses_other_scopes_write_permissions_and_invalid_expiry(self):
         for metadata in (
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/another-purpose"}]},
             {"scopes": [{"environment": "staging", "secretPath": "/"}]},
             {"permissions": ["read", "write"]},
-            {"expiresAt": None},
+            {"expiresAt": None, "permissions": ["read", "write"]},
+            {"expiresAt": None, "workspace": str(uuid.uuid4())},
+            {"expiresAt": "invalid"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
         ):
             self.api.metadata_override = metadata
             self.api.requests.clear()
@@ -193,7 +204,27 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(public_fallback.public_credentials(), expected)
-        self.assertEqual(len(self.api.requests), 6)
+        self.assertEqual(len(self.api.requests), 4)
+
+    def test_public_fallback_missing_subset_uses_one_worker_and_no_second_diagnostic_read(self):
+        from fleet_rag import public_fallback
+        import fleet_infisical as shared
+
+        self.api.values = {
+            "RECALL_API_TOKEN": "fixture-api-value",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
+        }
+        real_popen = subprocess.Popen
+        with (
+            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
+            mock.patch.object(core, "http_json", side_effect=AssertionError("public request without credentials")),
+        ):
+            with self.assertRaisesRegex(core.FleetRagError, "needs CF_ACCESS_CLIENT_SECRET --"):
+                public_fallback.call_public("recall_stats", {})
+        self.assertEqual(worker.call_count, 1)
+        self.assertEqual(self.api.requests.count("/api/v2/service-token"), 1)
+        self.assertEqual(len(self.api.requests), 4)
 
     def test_ingest_heartbeat_uses_the_real_reader_and_remains_optional(self):
         from fleet_rag import ingest
@@ -210,6 +241,44 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             del self.api.values[ingest.HEARTBEAT_KEY]
             ingest._heartbeat()
             heartbeat.assert_not_called()
+
+
+class OptionalReaderCompatibilityTests(unittest.TestCase):
+    def test_actual_import_of_partial_helpers_is_unavailable_before_any_reader_call(self):
+        scripts = pathlib.Path(__file__).resolve().parents[2]
+        helper = (
+            "from pathlib import Path\n"
+            "DEFAULT_PROJECT = 'fleet-ops'\n"
+            "class SecretsError(Exception): pass\n"
+            "def unavailable(*args, **kwargs):\n"
+            "    Path(__file__).with_name('called').touch()\n"
+            "    raise AssertionError('incompatible helper called')\n"
+            "home_dir = infisical_project_id = bounded_fetch_project = unavailable\n"
+        )
+        variants = ["del " + name for name in (
+            "DEFAULT_PROJECT", "SecretsError", "home_dir", "infisical_project_id", "bounded_fetch_project"
+        )] + [
+            "home_dir = None", "infisical_project_id = None", "bounded_fetch_project = None",
+            "SecretsError = 3", "SecretsError = BaseException", "DEFAULT_PROJECT = None",
+            "DEFAULT_PROJECT = ''",
+            "DEFAULT_PROJECT = 'wrong-project'", "DEFAULT_PROJECT = 'ai-fleet-coordinator'",
+        ]
+        program = (
+            "import json,sys;sys.path[:0]=sys.argv[1:];"
+            "from fleet_rag import core;"
+            "print(json.dumps(core.fleet_secrets_many(['TEI_URL'])))"
+        )
+        for variant in variants:
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
+                pathlib.Path(tmp, "fleet_infisical.py").write_text(helper + variant + "\n")
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", program, tmp, str(scripts)],
+                    env={"PATH": os.defpath, "HOME": tmp, "INFISICAL_TOKEN": SERVICE_TOKEN},
+                    cwd=tmp, capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {})
+                self.assertFalse(pathlib.Path(tmp, "called").exists())
 
 
 class CleanEnvironmentTests(unittest.TestCase):
@@ -354,7 +423,6 @@ class OverrideTests(unittest.TestCase):
                 self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
     def test_login_and_fetch_use_the_overridden_infisical(self) -> None:
-<<<<<<< HEAD
         project = str(uuid.uuid4())
         with ScopedReadAPI({"TEI_RERANK_URL": "https://rr"}, project=project) as api:
             env = {**BYO, "FLEET_RECALL_INFISICAL_TOKEN": api.token,
@@ -370,42 +438,6 @@ class OverrideTests(unittest.TestCase):
             self.assertTrue(all("workspaceId=" + project in url for url in values))
             self.assertTrue(all("environment=prod" in url and "secretPath=%2F" in url for url in values))
             self.assertTrue(all(core.SHARED_PROJECT not in url for url in values))
-=======
-        seen: list[str] = []
-
-        from fleet_secrets import core as secrets
-
-        def fake_api(method, path, token, body, env, **kwargs):
-            seen.append(path)
-            if path == "/v2/service-token":
-                return 200, {"workspace": "proj-1234", "permissions": ["read"],
-                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}
-            name = path.split("?", 1)[0].rsplit("/", 1)[-1]
-            if name != "TEI_RERANK_URL":
-                return 404, {}
-            record = {"secretKey": "TEI_RERANK_URL", "secretValue": "https://rr",
-                      "type": "shared", "workspace": "proj-1234",
-                      "environment": "prod", "secretPath": "/"}
-            return 200, {"secret": record}
-
-        env = {
-            **BYO,
-            "FLEET_RECALL_INFISICAL_TOKEN": SERVICE_TOKEN,
-            "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
-            "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
-            "FLEET_RAG_INFISICAL_ENV": "prod",
-        }
-        with (mock.patch.dict(os.environ, env, clear=True),
-              mock.patch.object(secrets, "_api_json", fake_api)):
-            cfg = core.load_config()
-        self.assertEqual(cfg["TEI_RERANK_URL"], "https://rr")
-        self.assertEqual(seen[0], "/v2/service-token")
-        self.assertIn("/v3/secrets/raw", seen[1])
-        self.assertIn("workspaceId=proj-1234", seen[1])
-        self.assertIn("environment=prod", seen[1])
-        # The owner's project id is never used once an override is set.
-        self.assertNotIn(core.SHARED_PROJECT, seen[1])
->>>>>>> origin/main
 
 
 @unittest.skipUnless(shutil.which("rsync"), "standalone installer requires rsync")
@@ -517,7 +549,6 @@ class ReadTokenFileTests(unittest.TestCase):
     def named_binding(self):
         return self.binding(FLEET_RECALL_INFISICAL_TOKEN_FILE=str(self.named))
 
-<<<<<<< HEAD
     def test_retired_default_is_not_probed_read_or_counted_as_a_binding(self):
         self.write(self.retired, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
         with mock.patch.object(core.os, "open", side_effect=AssertionError("implicit file probe")):
@@ -526,12 +557,6 @@ class ReadTokenFileTests(unittest.TestCase):
         with (mock.patch.dict(os.environ, {**self.env(), **BYO}, clear=True),
               mock.patch.object(core, "infisical_login", side_effect=AssertionError("offline auth"))):
             self.assertEqual(core.load_config(), BYO)
-=======
-    def test_environment_variable_wins_and_no_file_is_none(self) -> None:
-        self.assertIsNone(self.binding())
-        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={SERVICE_TOKEN}\n")
-        self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN=self.TOKEN), self.TOKEN)
->>>>>>> origin/main
 
     def test_explicit_current_raw_assignment_and_read_only_files(self):
         for content in (self.TOKEN, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n",
@@ -720,9 +745,17 @@ class PrimaryBindingTests(unittest.TestCase):
             self.assertNotIn("INFISICAL_TOKEN", args[2])
             self.assertEqual((kwargs["token"], kwargs["timeout"]), (api.token, 30.0))
             self.assertEqual(len(api.requests), 2)
+            api.metadata_override = {"expiresAt": None}
+            api.requests.clear()
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(core.infisical_fetch(("TEI_URL",)), {"TEI_URL": "https://tei.invalid"})
+            self.assertEqual(len(api.requests), 2)
             for change in (
                 {"permissions": ["read", "write"]},
-                {"expiresAt": None},
+                {"expiresAt": None, "permissions": ["read", "write"]},
+                {"expiresAt": None, "workspace": str(uuid.uuid4())},
+                {"expiresAt": "invalid"},
+                {"expiresAt": "2099-01-01T00:00:00"},
                 {"expiresAt": "2000-01-01T00:00:00Z"},
                 {"workspace": str(uuid.uuid4())},
                 {"scopes": [{"environment": "dev", "secretPath": "/"}]},

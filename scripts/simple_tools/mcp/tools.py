@@ -960,13 +960,13 @@ class Tools:
             )
         return text
 
-    def _scan(self, **fields: str) -> None:
+    def _scan(self, verb: str = "post", **fields: str) -> None:
         for field, value in fields.items():
             kind = secretscan.scan(value, self.known)
             if kind:
                 raise ToolError(
                     "refused_secret",
-                    "refusing to post:  the %s looks like it contains %s" % (field, kind),
+                    "refusing to %s:  the %s looks like it contains %s" % (verb, field, kind),
                 )
 
     def _resolve_to(self, names: list[str]) -> tuple[list[str], list[str]]:
@@ -999,7 +999,7 @@ class Tools:
             self.posted_ids.add(message_id)
 
     def _message_item(
-        self, message: Mapping[str, Any], body_limit: int = BODY_LIMIT
+        self, message: Mapping[str, Any], body_limit: int | None = BODY_LIMIT
     ) -> dict[str, Any]:
         # MCP does not expose CLI sibling/mention attribution.  Computing it
         # would reread the full native ownership ledger for every shown item.
@@ -1827,7 +1827,13 @@ class Tools:
 
     # ---- messages -------------------------------------------------------------------------
     def _tool_zulip_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, _, body_limit, _full = self._zulip_message_read_limits(args, schema_default=1)
+        work, _, body_limit, full = self._zulip_message_read_limits(args, schema_default=1)
+        if full:
+            #  A single message read with full=true is lossless (AFC-756's contract, and the
+            #  standing rule that a wake's message is read in whole):  the 4000-character
+            #  page cap exists to bound multi-row lists, not one message, and Zulip itself
+            #  bounds a message's length, so no cap here stays bounded.
+            body_limit = None
         message = OPS.get_message(self.agent, int(work["message_id"]))
         item = self._message_item(message, body_limit)
         flags = [f for f in message.get("flags") or [] if isinstance(f, str)]
@@ -2636,7 +2642,13 @@ class Tools:
         return self.ok(text, structured)
 
     def _tool_recall_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        return self._recall(lambda: RECALL.search(args, env=self.agent.rt.env))
+        return self._recall(
+            lambda: RECALL.search(
+                args,
+                env=self.agent.rt.env,
+                scan=lambda field, value: self._scan("search", **{field: value}),
+            )
+        )
 
     def _tool_recall_stats(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall(lambda: RECALL.stats(env=self.agent.rt.env))

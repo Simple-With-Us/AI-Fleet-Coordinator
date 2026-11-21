@@ -142,6 +142,17 @@ enum OpsAction: Equatable {
     /// the server Eavesdropper's live config (`--plan`,  with the changes on standard input),  and
     /// the apply of the approved plan (`--yes`,  with its hash).  `ServerListenerSettings.swift`.
     case serverListenerSettings(ServerListenerSettingsRequest)
+    /// `server test-wake SEAT.LETTER.GEN.HOST`,  run on the server:  one dry-run wake (`"test": true`)
+    /// addressed to one exact chat of the letter registry, sent by the Eavesdropper's own `simple-chat
+    /// daemon test-wake`.  The server refuses a chat that is gone or not one chat, the router picks as
+    /// for a real wake, and nothing is delivered.  Only a button the owner presses plans one.
+    /// `OperatorRouter.swift`.
+    case testWake(OperatorWakeTarget)
+    /// `server pause|pause-wakes|resume server|SEAT`,  run on the server:  the Eavesdropper's own kill
+    /// switch (AFC-832).  The server checks the seat against the Eavesdropper's status, refuses a
+    /// resume with nothing to lift, and reads the result back from the status.  Only a button the
+    /// owner presses plans one, and nothing runs it unattended.  `OperatorPause.swift`.
+    case eavesdropperPause(OperatorPauseRequest)
 
     /// The verb the helper names in its answer to `.eavesdropperStatus`.
     static let eavesdropperStatusVerb = "server eavesdropper-status"
@@ -151,6 +162,11 @@ enum OpsAction: Equatable {
     static let logsVerb = "server logs"
     /// The verb the helper names in its answer to `.serverListenerSettings`.
     static let listenerSettingsVerb = "server eavesdropper-settings"
+    /// The verb the helper names in its answer to `.testWake`.
+    static let testWakeVerb = "server test-wake"
+    /// The verb the helper names in its answer to `.eavesdropperPause`:  `server pause`,
+    /// `server pause-wakes` or `server resume`.
+    static func pauseVerb(_ request: OperatorPauseRequest) -> String { "server \(request.verbWord)" }
 
     /// The machine the action runs on.
     ///
@@ -160,7 +176,7 @@ enum OpsAction: Equatable {
     var runsOn: FleetHost {
         switch self {
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .eavesdropperStatus, .unitStatus, .serverListenerSettings, .testWake, .eavesdropperPause:
             return .server
         case .macAgent, .knobSet, .knobUnset, .pm2App:
             return .mac
@@ -172,7 +188,8 @@ enum OpsAction: Equatable {
         switch self {
         case .knobSet, .knobUnset: return .acrossFleet
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings,
+             .testWake, .eavesdropperPause:
             return .machine(runsOn)
         }
     }
@@ -186,8 +203,10 @@ enum OpsAction: Equatable {
         switch self {
         case .logs, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return true
+        // A test wake delivers nothing, and the router still logs a test receipt, so a run whose
+        // answer was lost is not known to have done nothing.
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
-             .serverResource, .serverListenerSettings:
+             .serverResource, .serverListenerSettings, .testWake, .eavesdropperPause:
             return false
         }
     }
@@ -208,6 +227,8 @@ enum OpsAction: Equatable {
         case .eavesdropperStatus: return "The Eavesdropper's Status"
         case .serverListenerSettings: return "The Server Eavesdropper's Settings"
         case .unitStatus(let unit): return OpsNames.unitTitle(unit)
+        case .testWake(let target): return target.name
+        case .eavesdropperPause(let request): return request.seat ?? "The Eavesdropper"
         }
     }
 
@@ -232,6 +253,13 @@ enum OpsAction: Equatable {
             let count = request.set.count
             return "Change \(count) eavesdropper setting\(count == 1 ? "" : "s") \(place)"
         case .unitStatus: return "Read the state of \(subjectTitle) \(place)"
+        case .testWake(let target): return "Send a test wake to \(target.name) \(place)"
+        case .eavesdropperPause(let request):
+            switch request.kind {
+            case .pause: return "Pause wakes and live interrupts for \(request.name) \(place)"
+            case .pauseWakes: return "Pause wakes for \(request.name) \(place)"
+            case .resume: return "Resume \(request.name) \(place)"
+            }
         }
     }
 
@@ -252,7 +280,7 @@ enum OpsAction: Equatable {
             guard let read = plan?.logsUnit, read != unit else { return title }
             return "Read the last logs of \(read) \(place)"
         case .macAgent, .serverUnit, .serverUpdate, .knobSet, .knobUnset, .pm2App, .serverResource,
-             .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings, .testWake, .eavesdropperPause:
             return title
         }
     }
@@ -311,6 +339,23 @@ enum OpsAction: Equatable {
         case .serverListenerSettings(let request):
             let keys = request.keys.joined(separator: ", ")
             return "Sets \(keys) in the server eavesdropper's live config \(place), then reloads it.\(gap)The server checks the change with the Eavesdropper's own rules, and applies only the plan you approve."
+        case .testWake(let target):
+            return "Sends the wake router one dry-run wake addressed to \(target.name), and to no other chat, \(place).\(gap)The server first checks that this chat is live in the letter registry and refuses it if it is gone.\(gap)The router picks as it would for a real wake and delivers nothing, and it logs one test receipt."
+        case .eavesdropperPause(let request):
+            let check = request.seat == nil
+                ? "The server reads the Eavesdropper's status first and shows the pause in force."
+                : "The server first checks that the Eavesdropper serves \(request.name), and shows the pause in force."
+            switch request.kind {
+            case .pause:
+                return "Stops wakes and live interrupts for \(request.name) \(place), until you resume.\(gap)Capture goes on, so nothing is lost.\(gap)\(check)"
+            case .pauseWakes:
+                return "Stops routine wakes for \(request.name) \(place), until you resume.\(gap)Live interrupts and capture go on.\(gap)\(check)"
+            case .resume:
+                let lifted = request.seat == nil
+                    ? "Lifts every pause \(place), the fleet-wide one and each seat's."
+                    : "Lifts \(request.name)'s own pause \(place).\(gap)A fleet-wide pause, if one is on, stays."
+                return "\(lifted)\(gap)The server refuses it when there is nothing to lift, and reads the result back from the Eavesdropper's status."
+            }
         }
     }
 
@@ -340,7 +385,7 @@ enum OpsAction: Equatable {
             }
             return "It stops right away on the server, and stays stopped until you start it again."
         case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .eavesdropperStatus, .unitStatus, .serverListenerSettings, .testWake, .eavesdropperPause:
             return nil
         }
     }
@@ -369,6 +414,8 @@ enum OpsAction: Equatable {
         case .eavesdropperStatus: return .eavesdropperStatus
         case .unitStatus: return .unitStatus
         case .serverListenerSettings: return .serverListenerSettings
+        case .testWake: return .testWake
+        case .eavesdropperPause: return .eavesdropperPause
         }
     }
 
@@ -388,6 +435,8 @@ enum OpsAction: Equatable {
         case .eavesdropperStatus: return "server eavesdropper status"
         case .serverListenerSettings: return "server eavesdropper settings"
         case .unitStatus: return "server unit status"
+        case .testWake: return "server test-wake"
+        case .eavesdropperPause(let request): return OpsAction.pauseVerb(request)
         }
     }
 
@@ -411,6 +460,8 @@ enum OpsAction: Equatable {
         case .unitStatus(let unit): return unit
         // The server's own row names no setting and no value,  and neither does this one.
         case .serverListenerSettings: return "eavesdropper settings"
+        case .testWake(let target): return target.word
+        case .eavesdropperPause(let request): return request.targetWord
         }
     }
 
@@ -434,6 +485,10 @@ enum OpsAction: Equatable {
         case .unitStatus(let unit): return ["server", "unit-status", unit]
         // The changes go on standard input,  never into a word of the command.
         case .serverListenerSettings: return ["server", "eavesdropper-settings", "server"]
+        // The chat is the one target word:  `OpsCommandBuilder.validate` checks its shape first.
+        case .testWake(let target): return ["server", "test-wake", target.word]
+        // `server` or one seat:  `OpsCommandBuilder.validate` checks the seat's shape first.
+        case .eavesdropperPause(let request): return ["server", request.verbWord, request.targetWord]
         }
     }
 }
@@ -443,7 +498,7 @@ enum OpsAction: Equatable {
 enum OpsActionCase: CaseIterable {
     case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
     case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus, unitStatus
-    case serverListenerSettings
+    case serverListenerSettings, testWake, eavesdropperPause
 
     /// One valid action of this case.
     var sample: OpsAction {
@@ -466,6 +521,10 @@ enum OpsActionCase: CaseIterable {
                 set: ["seat.CLAUDE.enabled": .bool(false)],
                 expectPlanSHA256: String(repeating: "b", count: 64)
             ))
+        case .testWake:
+            return .testWake(OperatorWakeTarget(seat: "CLAUDE", letter: "BB", generation: 2, hostCode: "S"))
+        case .eavesdropperPause:
+            return .eavesdropperPause(OperatorPauseRequest(kind: .pauseWakes, seat: "CLAUDE"))
         }
     }
 
@@ -796,8 +855,23 @@ struct OpsCommandBuilder {
             guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
         case .serverListenerSettings(let request):
             guard request.isSendable else { throw OpsControlError.invalidArgument("eavesdropper settings request") }
+        case .testWake(let target):
+            guard target.isValid else { throw OpsControlError.invalidArgument("test wake chat") }
+        case .eavesdropperPause(let request):
+            guard request.isValid else { throw OpsControlError.invalidArgument("pause seat") }
         case .resourceStatus, .eavesdropperStatus:
             break
+        }
+    }
+
+    /// A seat name in the helper's own shape (`OPERATOR_SEAT_RE`):  an upper-case letter or a
+    /// digit, then up to 31 upper-case letters, digits, `_` or `-`.  Never a flag or a path.
+    static func isSeatName(_ value: String) -> Bool {
+        guard (1...32).contains(value.count),
+              let first = value.unicodeScalars.first,
+              isUpperCaseLetter(first) || isDigit(first) else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isUpperCaseLetter($0) || isDigit($0) || $0 == "_" || $0 == "-"
         }
     }
 
@@ -816,7 +890,7 @@ struct OpsCommandBuilder {
             case .macAgent, .pm2App: return helperURL
             case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus, .unitStatus, .serverListenerSettings: return nil
+                 .eavesdropperStatus, .unitStatus, .serverListenerSettings, .testWake, .eavesdropperPause: return nil
             }
         }
     }
@@ -880,6 +954,30 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// Autosave keeps the deployed forced command and passes only typed data on stdin.
+    func listenerSettingsSaveInvocation(_ request: ServerSettingsSaveRequest) throws -> OpsInvocation {
+        guard let input = request.standardInput else {
+            throw OpsControlError.invalidArgument("settings save")
+        }
+        var invocation = serverInvocation(
+            tail: ["server", "eavesdropper-settings", "server", "--yes", "--json"],
+            timeout: OpsControlRoute.serverListenerSettingsRunTimeout
+        )
+        invocation.standardInput = input
+        return invocation
+    }
+
+    /// The same guarded route reconciles an existing attempt; it carries no setting mutation.
+    func listenerSettingsReconcileInvocation(_ attempt: ServerSettingsAttempt) throws -> OpsInvocation {
+        guard let input = attempt.reconcileInput else { throw OpsControlError.invalidArgument("settings attempt") }
+        var invocation = serverInvocation(
+            tail: ["server", "eavesdropper-settings", "server", "--yes", "--json"],
+            timeout: OpsControlRoute.serverListenerSettingsRunTimeout
+        )
+        invocation.standardInput = input
+        return invocation
+    }
+
     /// The typed, read-only route that asks the server what one platform has installed:
     /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
     /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
@@ -912,6 +1010,16 @@ struct OpsCommandBuilder {
     func operatorWakesInvocation() -> OpsInvocation {
         serverInvocation(
             tail: ["server", "operator-wakes", "server", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    /// The read-only route that asks the server's one wake router for its health:
+    /// `server router-health server --plan --json`.  Like `operatorWakesInvocation`, it changes
+    /// nothing and needs no sheet.
+    func routerHealthInvocation() -> OpsInvocation {
+        serverInvocation(
+            tail: ["server", "router-health", "server", "--plan", "--json"],
             timeout: OpsControlRoute.planTimeout
         )
     }
@@ -982,7 +1090,7 @@ struct OpsCommandBuilder {
                     timeout: timeout
                 )
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+                 .eavesdropperStatus, .unitStatus, .serverListenerSettings, .testWake, .eavesdropperPause:
                 // `runsOn` says these are the server's,  so this cannot be reached.  It
                 // refuses rather than running a server action on the Mac.
                 throw OpsControlError.invalidArgument("route")
@@ -1206,13 +1314,17 @@ struct OpsResult: Decodable, Equatable {
     /// The Coolify resource a `server redeploy` plan or run names,  the same string as its audit
     /// target.  Absent in a refusal.
     let resourceName: String?
+    /// What a `server test-wake` run came to:  the wake id and the router's answer as code words.
+    let testWake: OperatorTestWake?
+    /// The pause in force, as a `server pause|pause-wakes|resume` plan or run read it.
+    let pause: OperatorPauseState?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
         case executionState, verified, invocationID, baselineStartMonotonic, host
         case errorCode, auditID, auditTarget, completedCommands, status
         case unit, scope, activeState, subState, unitResult, lastExitAt, nextElapseAt, checkedAt
-        case lastTriggerAt, logsUnit, resourceName
+        case lastTriggerAt, logsUnit, resourceName, testWake, pause
         case oldSource = "old_source"
     }
 
@@ -1256,6 +1368,11 @@ struct OpsResult: Decodable, Equatable {
         checkedAt = try? container.decodeIfPresent(String.self, forKey: .checkedAt)
         logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
         resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)
+        testWake = try? container.decodeIfPresent(OperatorTestWake.self, forKey: .testWake)
+        // Strict:  a `pause` block in another shape makes the whole answer unreadable (a plan that
+        // cannot be read runs nothing), never one that shows no pause.  A missing or null block is
+        // still nil.
+        pause = try container.decodeIfPresent(OperatorPauseState.self, forKey: .pause)
     }
 }
 
@@ -1376,6 +1493,12 @@ struct OpsOutcome: Equatable {
     /// True when Muster itself stopped a plan the server gave,  so nothing ran:  a redeploy
     /// plan that names another resource than the one on this Mac's button.
     var stoppedOnMac: Bool = false
+    /// What a `server test-wake` run came to, for a run's answer to that verb that carried one;
+    /// nil for every other answer and for a plan.
+    var testWake: OperatorTestWake? = nil
+    /// The pause in force, for a plan or a run of `server pause|pause-wakes|resume` that answered
+    /// with one;  nil for every other answer.
+    var pause: OperatorPauseState? = nil
 
     /// The heading over a logs run's journal lines,  naming the unit read:  `Logs of
     /// fleet-server-status.service` for a timer.  Nil when the answer named no unit.
@@ -1458,6 +1581,38 @@ struct OpsOutcome: Equatable {
             if kind == .refused { return "\(who) refused this, so nothing ran." }
             return "The plan could not be read, so nothing ran."
         }
+        // A test wake is a dry run:  its result says whether the router accepted it, and never
+        // that anything was delivered.
+        if case .testWake = action {
+            switch kind {
+            case .done where isSuccess(for: .yes):
+                return "The router accepted the dry run and picked this chat.\(gap)Nothing was delivered."
+            case .failed:
+                return "The test wake did not pass.\(gap)Nothing was delivered."
+            case .refused:
+                return "\(who) refused this, so nothing was sent."
+            default:
+                break
+            }
+        }
+        // A pause or a resume is done only when the Eavesdropper's own status shows it.
+        if case .eavesdropperPause(let request) = action {
+            switch kind {
+            case .done where isSuccess(for: .yes):
+                switch request.kind {
+                case .pause, .pauseWakes:
+                    return "Paused.\(gap)The Eavesdropper's status shows it, and capture goes on."
+                case .resume:
+                    return "Resumed.\(gap)The Eavesdropper's status shows the pause lifted."
+                }
+            // The helper answers `unknown` when the change may still land:  the command ran and the
+            // status did not show it in time.
+            case .unknown where errorCode == "not_confirmed":
+                return "The command ran, but the Eavesdropper's status did not show the change in time.\(gap)Refresh the panel before you run it again."
+            default:
+                break
+            }
+        }
         switch kind {
         case .done:
             return isSuccess(for: .yes) ? "Done." : "\(who) said done but did not confirm it worked."
@@ -1501,6 +1656,67 @@ struct OpsOutcome: Equatable {
             return "This only reads, so the server takes it as a plan and never as a run."
         case "unit_status_unavailable", "unit_unavailable", "unit_status_invalid":
             return ServerUnitState.cause(errorCode: errorCode, detail: nil)
+        case "target_gone":
+            return "That chat is no longer live in the letter registry, so nothing was sent.\(gap)Refresh the panel and pick a live chat."
+        case "target_ambiguous":
+            return "More than one live chat matches that seat, letter, generation and host, so nothing was sent."
+        case "registry_unavailable":
+            return "The server could not read the letter registry, so it could not confirm the chat and sent nothing."
+        case "letter_not_picked", "wrong_target":
+            return "The router would have woken another chat than the one you picked.\(gap)Nothing was delivered."
+        case "no_pick":
+            return "The router would have woken no chat for this wake.\(gap)Nothing was delivered."
+        case "not_the_router":
+            return "That seat's routine is not the shared wake router, so nothing was sent."
+        case "router_unreachable":
+            return "The wake router gave no answer at the routine's host, so nothing was sent."
+        case "routine_not_configured", "routine_key_refused", "routine_url_refused":
+            return "The seat's routine address or key is not usable in the Eavesdropper, so nothing was sent."
+        case "seat_not_loaded":
+            return "That seat is not a loaded seat of the Eavesdropper, so nothing was sent."
+        case "no_routine":
+            return "That seat has no routine, so it has no router to test."
+        case "usage":
+            if case .eavesdropperPause = action {
+                return "The Eavesdropper refused the request, so nothing changed."
+            }
+            return "The Eavesdropper refused the test wake request, so nothing was sent."
+        case "seat_unknown":
+            return "The Eavesdropper's status lists no such seat, so nothing changed.\(gap)Refresh the panel and pick a seat it serves."
+        case "status_unavailable":
+            return "The server could not read the Eavesdropper's status, so it could not confirm the target and changed nothing."
+        case "pause_unreadable":
+            return "The server could not read the pause in force from the Eavesdropper's status, so it changed nothing.\(gap)Check the Eavesdropper on the server before you try again."
+        case "drain_active":
+            return "A drain window is in force on the Eavesdropper, so nothing changed.\(gap)Only the drain procedure's own restore lifts it (docs/protocols/listener-drain.md)."
+        case "would_loosen":
+            return "A full pause is already in force there, and a wakes-only pause would let live interrupts through again, so nothing changed."
+        case "not_paused":
+            return "There is no pause on that target to lift, so nothing changed.\(gap)A seat's resume lifts only that seat's own pause."
+        case "not_confirmed":
+            return "The Eavesdropper's status did not show the change within 30 seconds.\(gap)It may still take effect, so refresh the panel before you run it again."
+        case "pause_failed":
+            return "The pause or resume stopped without an answer the server could read.\(gap)It may have run, so refresh the panel before you run it again."
+        case "not_accepted", "not_dry_run":
+            return "The wake router did not answer the dry run as its own.\(gap)Nothing was delivered."
+        case "test_wake_failed":
+            return "The test wake stopped without an answer the server could read.\(gap)It may have reached the router, and nothing was delivered."
+        case "docker_unavailable", "container_not_running", "read_failed":
+            if case .testWake = action {
+                return "The test wake could not be run in the Eavesdropper's container, so nothing was sent."
+            }
+            if case .eavesdropperPause = action {
+                return "The pause or resume could not be run in the Eavesdropper's container, so nothing changed."
+            }
+            return nil
+        case "timeout", "too_large", "not_json":
+            if case .testWake = action {
+                return "The test wake's answer could not be read in time.\(gap)Nothing was delivered."
+            }
+            if case .eavesdropperPause = action {
+                return "The pause or resume did not finish in time.\(gap)It may have run, so refresh the panel before you run it again."
+            }
+            return nil
         default:
             return nil
         }
@@ -1675,6 +1891,20 @@ enum OpsResultParser {
                 stoppedOnMac = true
             }
         }
+        // A test wake's result is read only from a run's answer to that verb (or one that names
+        // none):  a plan sent nothing, and an answer for another verb is not this result.
+        var testWake: OperatorTestWake?
+        if case .testWake = action, mode == .yes,
+           answer.verb == nil || answer.verb == OpsAction.testWakeVerb {
+            testWake = answer.testWake
+        }
+        // The pause in force is read from a plan or a run of that one verb (or one that names
+        // none):  an answer for another verb is not this pause.
+        var pause: OperatorPauseState?
+        if case .eavesdropperPause(let request) = action,
+           answer.verb == nil || answer.verb == OpsAction.pauseVerb(request) {
+            pause = answer.pause
+        }
         return OpsOutcome(
             kind: kind,
             ok: answer.ok,
@@ -1702,7 +1932,9 @@ enum OpsResultParser {
             unitState: unitState,
             logsUnit: logsUnit,
             resourceName: resourceName,
-            stoppedOnMac: stoppedOnMac
+            stoppedOnMac: stoppedOnMac,
+            testWake: testWake,
+            pause: pause
         )
     }
 
@@ -2497,7 +2729,8 @@ final class OpsController: ObservableObject {
         case .pm2App(let verb, _), .macAgent(let verb, _):
             guard verb == .start else { return nil }
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings,
+             .testWake, .eavesdropperPause:
             return nil
         }
         guard !isBusy, !isPresenting, task == nil else { return nil }

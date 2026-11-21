@@ -585,6 +585,7 @@ class NodeTests(HookBase):
         )
         # The hook runs in a subprocess, so the assigner is served on loopback for it.
         env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"] = self.fake.serve(self.state)
+        env.update(self.fake.bootstrap_env(env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"]))
         for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(

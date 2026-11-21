@@ -396,6 +396,11 @@ class AllowlistNotesTests(Base):
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
         ),
+        "com.jay.fleet-api-health": (
+            "reporting",
+            "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
+            "of date and then read as not known.",
+        ),
         "com.jay.fleet-mac-services": (
             "reporting",
             "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "
@@ -2260,6 +2265,9 @@ GOLDEN_ACTIONS = {
     # Inert until Muster's fixture has a line for it (that line belongs to the Muster change).
     "unitStatus": "unit-status",
     "serverListenerSettings": "eavesdropper-settings",
+    "testWake": "test-wake",
+    # `server pause|pause-wakes|resume`:  the line's own verb word.
+    "eavesdropperPause": None,
 }
 
 
@@ -2750,7 +2758,7 @@ class CredentialTests(Base):
 
     fake_credential_read = False
     ROWS = RedeployTests.ROWS
-    TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+    TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2776,6 +2784,8 @@ class CredentialTests(Base):
         # Source lanes may intentionally be group-writable.  Exercise the unchanged custody
         # guard against an actual private copied reader, rather than relaxing that guard.
         reader_dir = self.home / "reader-payload"
+        if reader_dir.is_symlink():
+            raise ValueError(f"refusing symlink: {reader_dir}")
         reader_dir.mkdir(mode=0o700)
         reader_file = reader_dir / "fleet_infisical.py"
         reader_file.write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
@@ -2814,7 +2824,7 @@ class CredentialTests(Base):
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
             "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
-            self.TOKEN: self.VALUE,
+            self.TOKEN_NAME: self.VALUE,
             **extra,
         }
 
@@ -2827,7 +2837,7 @@ class CredentialTests(Base):
         return path
 
     def pair_text(self):
-        return "# fleet-ops-control\n" + f"{self.TOKEN}={self.VALUE}\n"
+        return "# fleet-ops-control\n" + f"{self.TOKEN_NAME}={self.VALUE}\n"
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
@@ -2839,7 +2849,7 @@ class CredentialTests(Base):
     def test_file_binding_wins_and_only_the_exact_named_strict_read_runs(self):
         self.credentials(self.pair_text())
         inherited = self.env(**self.SHARED_AUTH)
-        inherited[self.TOKEN] = "st.different-process-reader-token"
+        inherited[self.TOKEN_NAME] = "st.different-process-reader-token"
         inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
         code, ans = self.redeploy(inherited)
         self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
@@ -2878,12 +2888,14 @@ class CredentialTests(Base):
         )
         ((argv, child_env),) = self.runner.calls
         self.assertNotIn(self.VALUE, " ".join(argv))
-        self.assertNotIn(self.TOKEN, child_env)
+        self.assertNotIn(self.TOKEN_NAME, child_env)
         self.assertFalse(self.SHARED_AUTH.keys() & child_env.keys())
 
     def test_process_binding_and_existing_project_metadata_file_are_supported(self):
         coordinate = self.home / ".simple-tools" / "fleet-ops-project-id"
-        coordinate.parent.mkdir()
+        if coordinate.parent.is_symlink():
+            raise ValueError(f"refusing symlink: {coordinate.parent}")
+        coordinate.parent.mkdir(mode=0o700)
         coordinate.write_text(self.project + "\n")
         env = self.env()
         env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
@@ -2893,7 +2905,7 @@ class CredentialTests(Base):
 
     def test_missing_own_binding_never_uses_ambient_writer_recall_or_machine_auth(self):
         env = self.env(**self.SHARED_AUTH)
-        env.pop(self.TOKEN)
+        env.pop(self.TOKEN_NAME)
         code, ans = self.redeploy(env)
         self.assertEqual(
             (code, ans["result"], ans["detail"]),
@@ -2914,6 +2926,14 @@ class CredentialTests(Base):
                     (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
                 )
 
+    def test_explicit_null_expiry_read_only_binding_redeploys_via_named_value(self):
+        self.api.metadata_override = {"expiresAt": None}
+        code, ans = self.redeploy()
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(self.http_calls)
+
     def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
         cases = (
             {"workspace": str(uuid.uuid4())},
@@ -2926,7 +2946,9 @@ class CredentialTests(Base):
                 ]
             },
             {"permissions": ["read", "write"]},
-            {"expiresAt": None},
+            {"expiresAt": None, "permissions": ["read", "write"]},
+            {"expiresAt": None, "workspace": str(uuid.uuid4())},
+            {"expiresAt": "invalid"},
             {"expiresAt": "2000-01-01T00:00:00Z"},
             {"expiresAt": "2099-01-01T00:00:00"},
         )
@@ -2980,7 +3002,7 @@ class CredentialTests(Base):
         for change in (
             {"INFISICAL_ENVIRONMENT": "dev"},
             {"INFISICAL_ENV": "staging"},
-            {self.TOKEN: "malformed"},
+            {self.TOKEN_NAME: "malformed"},
         ):
             with self.subTest(fields=tuple(change)):
                 self.api.requests.clear()
@@ -6044,6 +6066,14 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
+                    # The real router sends a Content-Length:  http.client closes the response,
+                    # and its socket, as soon as that many bytes are read.  The reader must stop
+                    # there, not set a timeout on the closed socket (read_failed on the server).
+                    state["headers"] = {"Content-Length": str(len(state["body"]))}
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state["headers"] = {}
                     state.update(
                         status=503,
                         body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
@@ -6087,6 +6117,47 @@ class RouterHealthTests(Base):
                 srv.shutdown()
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
 
+    def test_a_known_length_body_is_complete_without_another_read(self):
+        # Python 3.9's HTTPResponse.read1 neither counts a known length down nor closes the
+        # response, so isclosed() stays false:  the reader must stop on the Content-Length
+        # instead of reading again and waiting on the kept-alive socket.
+        body = b'{"healthy": true, "seats": {}}'
+
+        class Headers(dict):
+            pass
+
+        class KeptAlive:
+            headers = Headers({"Content-Length": str(len(body))})
+
+            def __init__(self):
+                self.sent = False
+                self.reads = 0
+
+            def isclosed(self):
+                return False
+
+            def read1(self, size):
+                self.reads += 1
+                if self.sent:
+                    raise AssertionError("read again after the declared length")
+                self.sent = True
+                return body[:size]
+
+        response = KeptAlive()
+        deadline = foc.time.monotonic() + 5
+        self.assertEqual(foc._read_router_health_body(response, 1024, deadline), body)
+        self.assertEqual(response.reads, 1)
+        # A declared length above the cap still reads only the cap plus one byte, which the
+        # caller answers as too_large.
+        response = KeptAlive()
+        response.headers = Headers({"Content-Length": "999999"})
+        self.assertEqual(len(foc._read_router_health_body(response, 8, deadline)), 9)
+        # A missing or unreadable Content-Length leaves the length undeclared.
+        for headers in (Headers(), Headers({"Content-Length": "x"}), None):
+            response = KeptAlive()
+            response.headers = headers
+            self.assertIsNone(foc._declared_length(response))
+
     def test_read_router_health_http_times_out_slow_trickle_peer(self):
         import http.server
         import socketserver
@@ -6126,6 +6197,772 @@ class RouterHealthTests(Base):
                 srv.shutdown()
 
 
+class TestWakeReader:
+    """Stands in for `run_bounded_read`:  answers the registry read (the sessions program) with
+    `sessions`, and the test-wake command as the container's `simple-chat daemon test-wake --json`
+    would, after checking its fixed argv."""
+
+    def __init__(
+        self,
+        status=0,
+        report=None,
+        stderr=b"",
+        over=False,
+        raw=None,
+        sessions=None,
+        registry_status=0,
+    ):
+        self.status = status
+        self.report = report
+        self.stderr = stderr
+        self.over = over
+        self.raw = raw
+        self.sessions = sessions
+        self.registry_status = registry_status
+        self.calls = []
+        self.registry_calls = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        if "-c" in argv:
+            self.registry_calls.append(list(argv))
+            assert argv[1:6] == [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/usr/local/bin/python3",
+            ], argv
+            body = json.dumps(self.sessions).encode() if self.sessions is not None else b""
+            return self.registry_status, body, b"", False
+        self.calls.append((list(argv), dict(env or {}), timeout, max_bytes))
+        if self.raw is not None:
+            out = self.raw
+        else:
+            out = json.dumps(self.report).encode() if self.report is not None else b""
+        return self.status, (b"" if self.over else out), self.stderr, self.over
+
+
+class TestWakeTests(Base):
+    """`server test-wake SEAT.LETTER.GEN.HOST`:  one dry-run wake to one exact registry chat,
+    answered as code words, never with a fallback."""
+
+    SESSION = "-".join(["0123abcd", "4567", "89ab", "cdef", "0123456789ab"])
+    LINK = "https://" + "example.invalid/#narrow/near/1"
+    TOPIC = "a private topic name"
+    BODY = "please read this private message body"
+    HOST = "router-host.example.invalid"
+    HIDDEN = (SESSION, LINK, TOPIC, BODY, HOST, "CLAUDE_ROUTINE_URL", "WAKE_ROUTER_KEY")
+    WAKE_ID = "test-wake-20261118T053000Z-0a1b2c3d"
+    TARGET = "CLAUDE.BB.2.S"
+    ISO = "2026-11-17T18:00:00Z"
+
+    def registry(self, *rows):
+        """What the sessions program prints:  one live row per (seat, host, letter, generation)."""
+        listed = rows or (("CLAUDE", "server", "BB", 2),)
+        return {
+            "counts": [["active", len(listed)], ["closed", 0]],
+            "rows": [
+                [seat, "claude", host, "active", "none", self.ISO, self.ISO, letter, gen, "[]"]
+                for seat, host, letter, gen in listed
+            ],
+        }
+
+    def report(self, **changes):
+        report = {
+            "seat": "CLAUDE",
+            "routine": {
+                "url_env": "CLAUDE_ROUTINE_URL",
+                "key_env": "WAKE_ROUTER_KEY",
+                "auth": "bearer",
+                "method": "POST",
+                "host": self.HOST,
+            },
+            "router_health": {"healthy": True, "delivery": True, "reason": None},
+            "request": {
+                "wake_id": self.WAKE_ID,
+                "topic": self.TOPIC,
+                "content": self.BODY,
+                "test": True,
+            },
+            "http_status": 200,
+            "answer": {
+                "test": True,
+                "status": "test",
+                "wake_id": self.WAKE_ID,
+                "receipt_id": "0011223344556677",
+                "seat": "CLAUDE",
+                "letter": "BB",
+                "letter_live": True,
+                "picked": "letter",
+                "picked_letter": "BB",
+                "picked_generation": 2,
+                "session_id": self.SESSION,
+                "host": "server",
+                "thread_link": self.LINK,
+                "reason": "addressed-letter",
+                "candidates": [self.SESSION, "other"],
+                "link_note": self.BODY,
+                "delivered": False,
+            },
+            "dry_run": True,
+            "picked": True,
+            "addressed": True,
+            "passed": True,
+        }
+        report.update(changes)
+        return report
+
+    def go(self, mode="--yes", target=None, reader=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        self.reader = reader or TestWakeReader(report=self.report(), sessions=self.registry())
+        if self.reader.sessions is None and self.reader.registry_status == 0:
+            self.reader.sessions = self.registry()
+        context.reader = self.reader
+        return self.run_main(
+            ["server", "test-wake", target or self.TARGET, mode, "--json"], context
+        )
+
+    def assert_nothing_hidden(self, answer):
+        text = json.dumps(answer)
+        for hidden in self.HIDDEN:
+            self.assertNotIn(hidden, text)
+
+    def test_a_plan_confirms_the_chat_shows_the_one_command_and_sends_nothing(self):
+        code, answer = self.go(mode="--plan")
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertEqual(
+            answer["commands"],
+            [
+                [
+                    answer["commands"][0][0],
+                    "exec",
+                    "--user",
+                    "simpletools",
+                    "eavesdropper",
+                    "/app/scripts/simple_tools/server/entrypoint.sh",
+                    "daemon",
+                    "test-wake",
+                    "--seat",
+                    "CLAUDE",
+                    "--letter",
+                    "BB",
+                    "--json",
+                ]
+            ],
+        )
+        self.assertEqual(
+            answer["testWakeTarget"],
+            {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"},
+        )
+        self.assertIn("CLAUDE BB.2 (server)", answer["detail"])
+        self.assertEqual(len(self.reader.registry_calls), 1)
+        self.assertEqual(self.reader.calls, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_a_chat_that_is_gone_or_not_one_row_is_refused_and_nothing_is_sent(self):
+        cases = {
+            "target_gone": TestWakeReader(
+                report=self.report(), sessions=self.registry(("CLAUDE", "server", "BB", 3))
+            ),
+            "target_ambiguous": TestWakeReader(
+                report=self.report(),
+                sessions=self.registry(
+                    ("CLAUDE", "server", "BB", 2), ("CLAUDE", "server", "BB", 2)
+                ),
+            ),
+            "registry_unavailable": TestWakeReader(report=self.report(), registry_status=1),
+        }
+        for word, reader in cases.items():
+            for mode in ("--plan", "--yes"):
+                with self.subTest(word=word, mode=mode):
+                    code, answer = self.go(mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer.get("errorCode")), (2, "refused", word)
+                    )
+                    self.assertEqual(reader.calls, [], "nothing goes to the router")
+        # A chat on another host, or another seat's chat with the letter, is not the target.
+        for rows in ((("CLAUDE", "mac", "BB", 2),), (("CODEX", "server", "BB", 2),)):
+            with self.subTest(rows=rows):
+                code, answer = self.go(
+                    mode="--plan", reader=TestWakeReader(sessions=self.registry(*rows))
+                )
+                self.assertEqual((code, answer.get("errorCode")), (2, "target_gone"))
+
+    def test_a_passed_dry_run_is_accepted_and_never_delivered(self):
+        code, answer = self.go()
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(
+            answer["testWake"],
+            {
+                "target": {"seat": "CLAUDE", "letter": "BB", "generation": 2, "host": "server"},
+                "mode": "dry_run",
+                "passed": True,
+                "accepted": True,
+                "delivered": False,
+                "dryRun": True,
+                "picked": True,
+                "wakeId": self.WAKE_ID,
+                "httpStatus": 200,
+                "error": None,
+                "router": {"healthy": True, "delivery": True, "reason": None},
+                "answer": {
+                    "status": "test",
+                    "pick": "letter",
+                    "pickedLetter": "BB",
+                    "pickedGeneration": 2,
+                    "host": "server",
+                    "reason": "addressed_letter",
+                    "delivered": False,
+                    "letterLive": True,
+                    "candidates": 2,
+                },
+            },
+        )
+        self.assertIn("accepted the dry run for CLAUDE BB.2 (server)", answer["detail"])
+        self.assertIn("delivers nothing", answer["detail"])
+        self.assertNotIn(" delivered ", answer["detail"])
+        self.assert_nothing_hidden(answer)
+        argv, env, timeout, max_bytes = self.reader.calls[0]
+        self.assertEqual(argv, answer["commands"][0])
+        self.assertEqual(set(env), {"PATH", "DOCKER_HOST", "DOCKER_CONFIG", "HOME"})
+        self.assertEqual((timeout, max_bytes), (foc.TEST_WAKE_TIMEOUT, foc.TEST_WAKE_MAX_BYTES))
+        self.assertEqual(len(self.reader.registry_calls), 1, "confirmed again just before the run")
+        rows = self.audit_rows()
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in rows],
+            [("server test-wake", self.TARGET, "done")],
+        )
+
+    def test_a_router_answer_that_says_delivered_is_still_never_delivered(self):
+        report = self.report()
+        report["answer"]["delivered"] = True
+        code, answer = self.go(reader=TestWakeReader(status=0, report=report))
+        self.assertIs(answer["testWake"]["delivered"], False)
+
+    def test_a_pick_of_any_other_chat_fails_and_is_never_a_fallback(self):
+        other_generation = self.report()
+        other_generation["answer"]["picked_generation"] = 1
+        other_host = self.report()
+        other_host["answer"]["host"] = "mac"
+        other_letter = self.report(passed=False, addressed=False)
+        other_letter["answer"]["picked_letter"] = "CC"
+        cases = (
+            (other_generation, 0, "wrong_target"),
+            (other_host, 0, "wrong_target"),
+            (other_letter, 1, "letter_not_picked"),
+        )
+        for report, status, word in cases:
+            with self.subTest(word=word, answer=report["answer"]["picked_letter"]):
+                code, answer = self.go(reader=TestWakeReader(status=status, report=report))
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "failed", word),
+                )
+                self.assertFalse(answer["testWake"]["passed"])
+                self.assertIn("nothing was delivered", answer["detail"])
+
+    def test_a_dry_run_that_picked_no_chat_fails_with_its_word(self):
+        report = self.report(picked=False, passed=False)
+        report["answer"].update(
+            picked_letter="", picked_generation=0, session_id="", reason="no-live-session"
+        )
+        code, answer = self.go(reader=TestWakeReader(status=1, report=report))
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["errorCode"]),
+            (1, False, "failed", "no_pick"),
+        )
+        self.assertIn("reason no_live_session", answer["detail"])
+        self.assertIsNone(answer["testWake"]["answer"]["pickedLetter"])
+        self.assert_nothing_hidden(answer)
+        self.assertEqual([r["result"] for r in self.audit_rows()], ["failed"])
+
+    def test_the_commands_own_error_is_kept_only_as_a_known_word(self):
+        cases = {
+            "not_the_router": "not_the_router",
+            "router_unreachable": "router_unreachable",
+            "routine_not_configured: environment variable not set: CLAUDE_ROUTINE_URL": "routine_not_configured",
+            "HTTP 401 from %s" % self.HOST: "not_accepted",
+            "%s said no" % self.LINK: "not_accepted",
+        }
+        for error, word in cases.items():
+            with self.subTest(error=error[:30]):
+                report = {
+                    "seat": "CLAUDE",
+                    "routine": {"host": self.HOST},
+                    "error": error,
+                    "passed": False,
+                }
+                code, answer = self.go(reader=TestWakeReader(status=1, report=report))
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+                self.assertEqual(answer["testWake"]["error"], word)
+                self.assertFalse(answer["testWake"]["accepted"])
+                self.assert_nothing_hidden(answer)
+                if error != word:
+                    self.assertNotIn(error, json.dumps(answer))
+
+    def test_a_report_that_says_passed_with_a_failing_exit_is_not_done(self):
+        code, answer = self.go(reader=TestWakeReader(status=1, report=self.report()))
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "not_accepted")
+        )
+        self.assertFalse(answer["testWake"]["passed"])
+
+    def test_usage_refusals_and_container_trouble_are_words(self):
+        usage = {
+            b"simple-chat: seat CODEX is not a loaded seat in /data/listener.toml": "seat_not_loaded",
+            b"simple-chat: seat FX has no routine in /data/listener.toml (wake = inbox)": "no_routine",
+            b"something else": "usage",
+        }
+        for stderr, word in usage.items():
+            with self.subTest(stderr=stderr):
+                code, answer = self.go(reader=TestWakeReader(status=2, stderr=stderr))
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+                self.assertNotIn("listener.toml", json.dumps(answer))
+        trouble = {
+            "timeout": TestWakeReader(status=124),
+            "docker_unavailable": TestWakeReader(status=127),
+            "too_large": TestWakeReader(status=-9, over=True),
+            "container_not_running": TestWakeReader(
+                status=1, stderr=b"Error: container x is not running", raw=b""
+            ),
+            "not_json": TestWakeReader(status=0, raw=b"not json"),
+        }
+        for word, reader in trouble.items():
+            with self.subTest(word=word):
+                code, answer = self.go(reader=reader)
+                self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "failed", word))
+
+    def test_a_bad_target_a_mac_and_the_muster_route_are_refused(self):
+        for target in (
+            "CLAUDE",
+            "claude.BB.2.S",
+            "CLAUDE.BB.0.S",
+            "CLAUDE.BBB.2.S",
+            "CLAUDE.BB.2.X",
+            "CLAUDE.BB.2",
+            "A" * 40 + ".BB.2.S",
+            "CLAUDE;rm.BB.2.S",
+        ):
+            with self.subTest(target=target):
+                code, answer = self.go(mode="--plan", target=target)
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                self.assertEqual(self.reader.registry_calls, [])
+        code, answer = self.go(mode="--plan", platform="darwin")
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        answer, code = foc.handle(
+            self.ctx(),
+            "server",
+            "test-wake",
+            self.TARGET,
+            "yes",
+            require_approval=True,
+            approval={},
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        # Kody, PR 2299:  a run that raised must not leave the audit log without a row.
+        reader = TestWakeReader(report=self.report(), sessions=self.registry())
+
+        def broken(ctx, chat):
+            raise RuntimeError("unexpected")
+
+        with mock.patch.object(foc, "run_test_wake", broken):
+            code, answer = self.go(reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "failed", "test_wake_failed")
+        )
+        self.assertNotIn("unexpected", json.dumps(answer))
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in self.audit_rows()],
+            [("server test-wake", self.TARGET, "failed")],
+        )
+
+    def test_a_run_takes_the_one_action_lock(self):
+        lock = self.state / "ops-control.lock"
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, answer = self.go()
+        finally:
+            os.close(fd)
+        self.assertEqual(
+            (code, answer["result"], answer.get("errorCode")), (2, "refused", "action_busy")
+        )
+        self.assertEqual(self.reader.calls, [])
+
+    def test_ssh_forced_command_accepts_test_wake(self):
+        for mode in ("--plan", "--yes"):
+            words = foc.parse_ssh_command(f"server test-wake {self.TARGET} {mode} --json")
+            self.assertEqual(words, ["server", "test-wake", self.TARGET, mode, "--json"])
+        ctx = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": f"server test-wake {self.TARGET} --yes --json"}
+        )
+        ctx.reader = TestWakeReader(report=self.report(), sessions=self.registry())
+        out = io.StringIO()
+        code = foc.main(["--from-ssh"], ctx=ctx, out=out)
+        answer = json.loads(out.getvalue())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["testWake"]["wakeId"], self.WAKE_ID)
+
+
+class PauseReader:
+    """Stands in for `run_bounded_read`:  answers the status read (`cat` of status.json) with the
+    next of `statuses` (the last one repeats), and the pause or resume command with `status`."""
+
+    def __init__(self, statuses, status=0, stderr=b"", over=False, raise_on_run=False):
+        self.statuses = list(statuses)
+        self.status = status
+        self.stderr = stderr
+        self.over = over
+        self.raise_on_run = raise_on_run
+        self.reads = 0
+        self.runs = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        if argv[-1] == "/data/listener/status.json":
+            index = min(self.reads, len(self.statuses) - 1)
+            self.reads += 1
+            document = self.statuses[index]
+            if document is None:
+                return (
+                    1,
+                    b"",
+                    b"Error response from daemon: container eavesdropper is not running",
+                    False,
+                )
+            return 0, json.dumps(document).encode(), b"", False
+        assert argv[1:8] == [
+            "exec",
+            "--user",
+            "simpletools",
+            "eavesdropper",
+            "/app/scripts/simple_tools/server/entrypoint.sh",
+            "daemon",
+            argv[7],
+        ], argv
+        self.runs.append((list(argv), timeout, max_bytes))
+        if self.raise_on_run:
+            raise RuntimeError("the reader broke after the command may have run")
+        return self.status, b"paused CLAUDE (wakes and live interrupts)\n", self.stderr, self.over
+
+
+class PauseTests(Base):
+    """`server pause|pause-wakes|resume server|SEAT` (AFC-832):  the Eavesdropper's own kill switch,
+    a deliberate previewed gesture, read back from the status and never from the command's text."""
+
+    EMAIL = "someone@" + "example.invalid"
+
+    def status(self, pause=None):
+        # The listener publishes its pause file as read:  `{}` when nothing is paused.
+        return {
+            "updated": NOW,
+            "seats": {"CLAUDE": {"connected": True}, "CODEX": {"connected": True}},
+            "pause": {} if pause is None else pause,
+        }
+
+    def entry(self, wakes_only=False, by="cli"):
+        return {"wakes_only": wakes_only, "by": by, "ts": NOW - 30, "message_id": None}
+
+    def go(self, verb, target, mode="--yes", reader=None):
+        context = self.ctx()
+        clock = {"now": 1000.0}
+        context.monotonic = lambda: clock["now"]
+        context.sleep = lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
+        self.reader = reader
+        context.reader = reader
+        return self.run_main(["server", verb, target, mode, "--json"], context)
+
+    def test_a_plan_shows_the_one_command_and_the_pause_in_force_and_runs_nothing(self):
+        reader = PauseReader([self.status({"CODEX": self.entry(wakes_only=True)})])
+        code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        argv = answer["commands"][0]
+        self.assertEqual(
+            argv[1:],
+            [
+                "exec",
+                "--user",
+                "simpletools",
+                "eavesdropper",
+                "/app/scripts/simple_tools/server/entrypoint.sh",
+                "daemon",
+                "pause",
+            ],
+        )
+        self.assertEqual(answer["pause"]["all"], None)
+        self.assertEqual(answer["pause"]["seats"]["CODEX"]["wakesOnly"], True)
+        self.assertEqual(reader.runs, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_seat_and_wakes_only_forms_name_only_the_checked_seat(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-4:], ["pause", "--seat", "CLAUDE", "--wakes-only"])
+        reader = PauseReader([self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("resume", "CLAUDE", mode="--plan", reader=reader)
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][-3:], ["resume", "--seat", "CLAUDE"])
+
+    def test_an_unknown_seat_or_an_unreadable_status_is_refused_before_anything_runs(self):
+        for target, statuses, code_word in (
+            ("NOSUCH", [self.status()], "seat_unknown"),
+            ("claude", [self.status()], "seat_unknown"),
+            ("CLAUDE", [None], "status_unavailable"),
+            ("server", [None], "status_unavailable"),
+        ):
+            with self.subTest(target=target, code_word=code_word):
+                reader = PauseReader(statuses)
+                code, answer = self.go("pause", target, reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (2, "refused", code_word)
+                )
+                self.assertEqual(reader.runs, [])
+
+    def test_a_resume_with_nothing_to_lift_is_refused(self):
+        for target, pause in (
+            ("server", None),
+            ("CLAUDE", None),
+            # A fleet-wide pause is not CLAUDE's own:  `resume CLAUDE` has nothing to lift.
+            ("CLAUDE", {"*": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(target=target, pause=pause, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go("resume", target, mode=mode, reader=reader)
+                    self.assertEqual((code, answer["errorCode"]), (2, "not_paused"))
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_pause_runs_once_and_is_read_back_from_the_status(self):
+        reader = PauseReader(
+            [
+                self.status(),  # the plan-time read
+                self.status(),  # the read under the lock
+                self.status(),  # the first read-back:  not published yet
+                self.status({"CLAUDE": self.entry(by=self.EMAIL)}),
+            ]
+        )
+        code, answer = self.go("pause", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(len(reader.runs), 1)
+        seat = answer["pause"]["seats"]["CLAUDE"]
+        self.assertEqual((seat["wakesOnly"], seat["setBy"]), (False, None))
+        self.assertNotIn(self.EMAIL, json.dumps(answer))
+        self.assertNotIn("wakes and live interrupts)", json.dumps(answer))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            (rows[0]["verb"], rows[0]["target"], rows[0]["result"]),
+            ("server pause", "CLAUDE", "done"),
+        )
+
+    def test_a_change_the_status_never_shows_is_not_confirmed(self):
+        reader = PauseReader([self.status()])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["errorCode"]), (1, False, "not_confirmed"))
+        # It may still land, so it is not a failure:  Muster reads it as "may or may not have run".
+        self.assertEqual(answer["result"], "unknown")
+        self.assertEqual(len(reader.runs), 1)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # A pause of the other kind is not the asked-for change either.
+        reader = PauseReader([self.status(), self.status(), self.status({"*": self.entry()})])
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual(answer["errorCode"], "not_confirmed")
+
+    def test_resume_server_lifts_every_pause(self):
+        before = self.status({"*": self.entry(), "CLAUDE": self.entry(wakes_only=True)})
+        reader = PauseReader([before, before, self.status({})])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_a_failed_command_says_why_in_code_words_only(self):
+        for status, stderr, over, code_word, result in (
+            (2, b"usage: simple-chat daemon pause", False, "usage", "failed"),
+            (127, b"", False, "docker_unavailable", "failed"),
+            # A timeout stops only the docker client, so its outcome is not known.
+            (124, b"", False, "timeout", "unknown"),
+            # An answer past the size bound is cut off, so the command may have run:  not known.
+            (0, b"", True, "too_large", "unknown"),
+            (
+                1,
+                b"Error response from daemon: container eavesdropper is not running",
+                False,
+                "container_not_running",
+                "failed",
+            ),
+        ):
+            with self.subTest(code_word=code_word):
+                reader = PauseReader([self.status()], status=status, stderr=stderr, over=over)
+                code, answer = self.go("pause", "server", reader=reader)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (1, result, code_word)
+                )
+                self.assertNotIn("usage: simple-chat", json.dumps(answer))
+
+    def test_a_timeout_is_read_back_before_it_is_called_failed(self):
+        # A slow Infisical in the entrypoint can outlast the bound;  the docker client stops, the
+        # command may still finish in the container, and a change the status shows is done.
+        before = self.status()
+        reader = PauseReader(
+            [before, before, before, self.status({"*": self.entry(wakes_only=True)})], status=124
+        )
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "done"))
+        self.assertEqual(answer["pause"]["all"]["wakesOnly"], True)
+        self.assertEqual(len(self.audit_rows()), 1)
+        # The bound is the test wake's, which runs through the same entrypoint.
+        self.assertEqual(reader.runs[0][1], foc.TEST_WAKE_TIMEOUT)
+        self.assertEqual(foc.PAUSE_TIMEOUT, foc.TEST_WAKE_TIMEOUT)
+        # A timeout the status never confirms keeps its own code and keeps the pause it read.
+        reader = PauseReader([before], status=124)
+        code, answer = self.go("pause-wakes", "server", reader=reader)
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (1, "unknown", "timeout"))
+        self.assertIn("may still take effect", answer["detail"])
+        self.assertEqual(answer["pause"], {"all": None, "seats": {}})
+
+    def test_an_unexpected_error_in_the_run_still_writes_its_one_audit_row(self):
+        reader = PauseReader([self.status()], raise_on_run=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_failed")
+        )
+        self.assertNotIn("reader broke", json.dumps(answer))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_a_drain_window_refuses_every_pause_verb(self):
+        # `daemon pause` would replace the `*` marker and `daemon resume` would clear it, and the
+        # drain's restore puts back its saved bytes over any other change.
+        drain = dict(self.entry(wakes_only=True, by="drain"), defer=True)
+        for verb, target, pause in (
+            ("pause", "server", {"*": drain}),
+            ("pause-wakes", "CLAUDE", {"*": drain}),
+            ("resume", "server", {"*": drain, "CLAUDE": self.entry()}),
+            ("resume", "CLAUDE", {"*": drain, "CLAUDE": self.entry()}),
+        ):
+            for mode in ("--plan", "--yes"):
+                with self.subTest(verb=verb, target=target, mode=mode):
+                    reader = PauseReader([self.status(pause)])
+                    code, answer = self.go(verb, target, mode=mode, reader=reader)
+                    self.assertEqual(
+                        (code, answer["result"], answer["errorCode"]),
+                        (2, "refused", "drain_active"),
+                    )
+                    self.assertEqual(reader.runs, [])
+
+    def test_a_wakes_only_pause_never_loosens_a_full_one(self):
+        for target, pause in (
+            ("CLAUDE", {"CLAUDE": self.entry()}),
+            ("server", {"*": self.entry()}),
+        ):
+            with self.subTest(target=target):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause-wakes", target, mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+                self.assertEqual(reader.runs, [])
+        # Tightening, repeating a wakes-only pause, and a seat's own pause under a fleet-wide one
+        # all plan as usual.
+        for verb, target, pause in (
+            ("pause", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"CLAUDE": self.entry(wakes_only=True)}),
+            ("pause-wakes", "CLAUDE", {"*": self.entry()}),
+        ):
+            with self.subTest(verb=verb, pause=pause):
+                code, answer = self.go(
+                    verb, target, mode="--plan", reader=PauseReader([self.status(pause)])
+                )
+                self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_the_read_back_trusts_only_a_pause_it_can_read(self):
+        # A resume whose read-back shows the pause in another shape is never `done`.
+        before = self.status({"*": self.entry()})
+        after = self.status()
+        after["pause"] = "cleared"
+        reader = PauseReader([before, before, after])
+        code, answer = self.go("resume", "server", reader=reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (1, "unknown", "pause_unreadable")
+        )
+        self.assertEqual(len(reader.runs), 1)
+        # An answer past the size bound is read back too, and a change it shows is done.
+        reader = PauseReader(
+            [self.status(), self.status(), self.status({"*": self.entry()})], over=True
+        )
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+
+    def test_the_read_back_reads_a_drain_marker_as_a_pause(self):
+        # In the read-back the command has already run, and a drain-active entry is a
+        # well-formed pause the status shows:  it reads as a pause, so a change it shows
+        # is done and the operator never sees a refusal code word on a run that happened.
+        # Drain stays a refusal only in the pre-run checks (Kody, PR 2329 review round 2).
+        before = self.status()
+        drain = dict(self.entry(by="drain"), defer=True)
+        reader = PauseReader([before, before, self.status({"*": drain})], over=True)
+        code, answer = self.go("pause", "server", reader=reader)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertEqual(answer["pause"]["all"]["setBy"], "drain")
+
+    def test_the_pause_map_keeps_every_seat(self):
+        # `pause_done` decides from the reduced map, so no seat may be dropped from it.
+        raw = {"S%02d" % n: self.entry() for n in range(70)}
+        reduced = foc.reduce_pause(self.status(raw))
+        self.assertEqual(len(reduced["seats"]), 70)
+        self.assertFalse(foc.pause_done("resume", "S69", reduced))
+
+    def test_a_refused_run_writes_its_one_audit_row(self):
+        drain = dict(self.entry(by="drain"), defer=True)
+        code, answer = self.go("resume", "server", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual((code, answer["errorCode"]), (2, "drain_active"))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["verb"], rows[0]["result"]), ("server resume", "refused"))
+        # A plan writes none.
+        self.go("resume", "server", mode="--plan", reader=PauseReader([self.status({"*": drain})]))
+        self.assertEqual(len(self.audit_rows()), 1)
+
+    def test_the_checks_run_again_under_the_lock(self):
+        # The plan saw nothing paused;  by the run a full pause is in force, so nothing runs.
+        reader = PauseReader([self.status(), self.status({"CLAUDE": self.entry()})])
+        code, answer = self.go("pause-wakes", "CLAUDE", reader=reader)
+        self.assertEqual((code, answer["errorCode"]), (2, "would_loosen"))
+        self.assertEqual(reader.runs, [])
+
+    def test_a_pause_it_cannot_read_is_never_read_as_no_pause(self):
+        for pause in (
+            "paused",
+            {"*": "yes"},
+            {"*": {"wakes_only": "yes", "by": "cli", "ts": NOW}},
+            {"claude": self.entry()},
+        ):
+            with self.subTest(pause=pause):
+                reader = PauseReader([self.status(pause)])
+                code, answer = self.go("pause", "server", mode="--plan", reader=reader)
+                self.assertEqual((code, answer["errorCode"]), (2, "pause_unreadable"))
+        status = self.status()
+        status["seats"] = ["CLAUDE"]
+        code, answer = self.go("pause", "CLAUDE", mode="--plan", reader=PauseReader([status]))
+        self.assertEqual((code, answer["errorCode"]), (2, "status_unavailable"))
+
+    def test_the_ssh_gate_accepts_the_three_verbs_with_one_target_only(self):
+        for line in (
+            "server pause server --plan --json",
+            "server pause-wakes CLAUDE --yes --json",
+            "server resume server --yes",
+        ):
+            self.assertEqual(foc.parse_ssh_command(line), line.split())
+        for line in (
+            "server pause --seat CLAUDE --yes",
+            "server pause server --wakes-only --yes",
+            "server pause CLAUDE CODEX --yes",
+        ):
+            with self.assertRaises(foc.Refused, msg=line):
+                foc.parse_ssh_command(line)
+
+
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()
@@ -6150,6 +6987,235 @@ class SourceTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path.name):
                 self.assertNotIn("datetime.UTC", path.read_text())
+
+
+class SettingsBootstrapTests(unittest.TestCase):
+    """Real fd stores and canonical grant validation; Docker alone is simulated."""
+
+    def setUp(self):
+        import pwd
+        import types
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home/control"
+        self.home.mkdir(parents=True, mode=0o700)
+        (self.root / "home").chmod(0o755)
+        self.root.chmod(0o700)
+        self.uid = os.getuid()
+        self.enterContext(
+            mock.patch.object(
+                pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir="/home/control")
+            )
+        )
+        original_open = os.open
+
+        def virtual_root(path, *args, **kwargs):
+            return original_open(self.root if path == "/" else path, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(foc.os, "open", side_effect=virtual_root))
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI({}, project=self.project, path="/operator-settings")
+        self.api.metadata_override = {
+            "permissions": ["read", "write"],
+            "expiresAt": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+            ).isoformat(),
+        }
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.source = self.root / "reader"
+        self.source.mkdir(mode=0o700)
+        (self.source / "fleet_infisical.py").write_bytes(
+            Path(HERE, "fleet_infisical.py").read_bytes()
+        )
+        (self.source / "fleet_infisical.py").chmod(0o600)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", self.source))
+        original_loader = foc._load_infisical_reader
+
+        def local_verifier(ctx):
+            reader = original_loader(ctx)
+            reader.API_BASE = self.api.env["FLEET_SECRETS_API"]
+            return reader
+
+        self.enterContext(
+            mock.patch.object(foc, "_load_infisical_reader", side_effect=local_verifier)
+        )
+        self.cid, self.image = "a" * 64, "sha256:" + "b" * 64
+        self.calls = []
+        self.gone = False
+        self.envelope = dict(
+            protocol="operator-settings-install/1",
+            imageID=self.image,
+            bootstrap={foc.SETTINGS_PROJECT: self.project, foc.SETTINGS_WRITER: self.api.token},
+        )
+        self.ctx = foc.Context(
+            home=self.root / "untrusted-HOME",
+            uid=self.uid,
+            platform="linux",
+            environ={},
+            stdin=lambda: json.dumps(self.envelope).encode(),
+            reader=self.docker,
+        )
+        self.store = self.home / ".config/fleet-tools" / foc.SETTINGS_STORE
+        self.image_file = self.store.with_name(foc.SETTINGS_IMAGE)
+
+    def docker(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if argv[1] == "inspect":
+            if self.gone and argv[-1] == self.cid:
+                return 1, b"", b"not running", False
+            return 0, (self.cid + " " + self.image + " true\n").encode(), b"", False
+        return 0, b'{"tool":"eavesdropper-settings","ok":false,"result":"failed"}', b"", False
+
+    def install(self):
+        answer, code = foc.receive_settings_bootstrap(self.ctx)
+        self.assertNotIn(self.api.token, json.dumps(answer))
+        return answer, code
+
+    def test_real_grant_store_then_captured_container_pipe_and_no_foreign_module(self):
+        foreign = mock.Mock()
+        with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+            self.assertEqual(self.install()[1], 0)
+        self.assertEqual(foreign.mock_calls, [])
+        self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+        self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.store.parent.stat().st_mode), 0o700)
+        self.assertEqual(self.store.stat().st_nlink, 1)
+        metadata = json.loads(self.image_file.read_bytes())
+        self.assertEqual(metadata["storeInode"], self.store.stat().st_ino)
+        request = {
+            "action": "save",
+            "requestID": str(uuid.uuid4()),
+            "set": {"daemon.coalesce_seconds": 3},
+        }
+        foc.run_eavesdropper_settings_editor_in_container(self.ctx, request)
+        argv, kwargs = self.calls[-1]
+        self.assertIn(self.cid, argv)
+        self.assertNotIn("eavesdropper", argv)
+        self.assertEqual(argv[-1], "--bootstrap-request-stdin")
+        self.assertNotIn(self.api.token, repr(argv) + repr(kwargs["env"]))
+        wire = json.loads(kwargs["data"])
+        self.assertEqual(wire["request"], request)
+        self.assertEqual(wire["bootstrap"][foc.SETTINGS_WRITER], self.api.token)
+        self.assertNotIn("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN", wire["bootstrap"])
+
+    def test_old_image_refuses_before_writer_store_is_opened(self):
+        self.assertEqual(self.install()[1], 0)
+        self.image = "sha256:" + "c" * 64
+        actual = foc._settings_read
+        names = []
+
+        def observed(parent, name, uid):
+            names.append(name)
+            return actual(parent, name, uid)
+
+        with mock.patch.object(foc, "_settings_read", side_effect=observed):
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.assertEqual(names, [foc.SETTINGS_IMAGE])
+
+    def test_exited_captured_container_never_switches_to_replacement_name(self):
+        self.assertEqual(self.install()[1], 0)
+        self.gone = True
+        self.calls.clear()
+        with self.assertRaises(foc.Refused):
+            foc.run_eavesdropper_settings_editor_in_container(self.ctx, {"action": "save"})
+        self.assertFalse(any(argv[1] == "exec" for argv, _ in self.calls))
+        self.assertEqual([argv[-1] for argv, _ in self.calls], ["eavesdropper", self.cid])
+
+    def test_invalid_grant_or_overlong_expiry_never_publishes_ready_image(self):
+        for override in (
+            {"permissions": ["read"]},
+            {"expiresAt": "2099-01-01T00:00:00Z"},
+            {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
+            {"expiresAt": None},
+        ):
+            with self.subTest(override=override):
+                self.api.metadata_override = {
+                    "permissions": ["read", "write"],
+                    "expiresAt": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+                    ).isoformat(),
+                }
+                self.api.metadata_override.update(override)
+                self.assertEqual(self.install()[1], 2)
+                self.assertFalse(self.image_file.exists())
+                self.assertTrue(self.store.exists())
+                self.store.unlink()
+
+    def test_atomic_publish_race_preserves_existing_store_without_a_provider_call(self):
+        actual = os.link
+
+        def collision(source, target, **kwargs):
+            if target == foc.SETTINGS_STORE:
+                fd = os.open(
+                    target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=kwargs["dst_dir_fd"]
+                )
+                os.write(fd, b"pre-existing")
+                os.close(fd)
+            return actual(source, target, **kwargs)
+
+        with mock.patch.object(foc.os, "link", side_effect=collision):
+            self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), b"pre-existing")
+        self.assertFalse(self.image_file.exists())
+        self.assertEqual(self.api.requests, [])
+
+    def test_existing_store_and_inode_custody_fail_closed(self):
+        self.assertEqual(self.install()[1], 0)
+        before = self.store.read_bytes()
+        count = len(self.api.requests)
+        self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), before)
+        self.assertEqual(len(self.api.requests), count)
+        for mode in (0o644, 0o400):
+            self.store.chmod(mode)
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.store.chmod(0o600)
+        with foc._settings_directory(self.ctx) as fd, self.assertRaises(foc.Refused):
+            foc._settings_read(fd, foc.SETTINGS_STORE, self.uid + 1)
+        os.link(self.store, self.store.with_name("linked"))
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+
+    def test_symlinked_store_and_parent_are_refused(self):
+        self.assertEqual(self.install()[1], 0)
+        self.store.unlink()
+        self.store.symlink_to(self.image_file)
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+        folder = self.store.parent
+        folder.rename(folder.with_name("actual"))
+        folder.symlink_to(folder.with_name("actual"), target_is_directory=True)
+        self.assertEqual(self.install()[1], 2)
+
+    def test_remote_flags_and_json_cannot_select_local_receiver(self):
+        with mock.patch.object(foc, "receive_settings_bootstrap") as receive:
+            for argv in (
+                [foc.SETTINGS_RECEIVE, "--from-muster"],
+                ["--from-ssh", foc.SETTINGS_RECEIVE],
+            ):
+                self.assertEqual(foc.main(argv, ctx=self.ctx, out=io.StringIO()), 2)
+            self.ctx.environ["SSH_ORIGINAL_COMMAND"] = foc.SETTINGS_RECEIVE
+            self.assertEqual(foc.main([foc.SETTINGS_RECEIVE], ctx=self.ctx, out=io.StringIO()), 2)
+            receive.assert_not_called()
+        self.ctx.stdin = lambda: json.dumps({"action": "save", "bootstrap": self.envelope}).encode()
+        with self.assertRaises(foc.Refused):
+            foc.eavesdropper_settings_request_from_stdin(self.ctx, "yes")
+
+    def test_malformed_receive_and_unready_store_output_never_reflect_input(self):
+        for raw in (
+            b"not-json",
+            json.dumps({"bootstrap": self.api.token}).encode(),
+            b'{"protocol":"x","protocol":"y"}',
+        ):
+            self.ctx.stdin = lambda: raw
+            answer, code = self.install()
+            self.assertEqual(code, 2)
+            self.assertEqual(set(answer), {"ok", "result", "errorCode"})
 
 
 if __name__ == "__main__":

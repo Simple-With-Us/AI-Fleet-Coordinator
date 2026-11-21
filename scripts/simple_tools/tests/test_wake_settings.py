@@ -76,6 +76,16 @@ class Registered(Settings):
         self.assertEqual(backoff, WR.ROUTER_DEFAULTS["retry_backoff"])
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
+    def test_turn_max_wakes_is_a_registered_router_knob(self) -> None:
+        # AFC-831:  most wakes one idle turn may carry for one chat;  1 is off.
+        self.assertEqual(WS.INT_KNOBS["turn_max_wakes"], "WAKE_ROUTER_TURN_MAX_WAKES")
+        spec = BY_NAME["WAKE_ROUTER_TURN_MAX_WAKES"]
+        self.assertEqual((spec.kind, spec.default, spec.minimum, spec.maximum), ("int", 1, 1, 8))
+        self.assertTrue(spec.requires_explicit)
+        self.assertEqual((spec.narrower, spec.local, spec.folder), ("min", "narrow", WS.FOLDER))
+        self.assertEqual(spec.default, WR.ROUTER_DEFAULTS["turn_max_wakes"])
+        self.assertEqual(spec.maximum, WR.TURN_MAX_WAKES)
+
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
         import importlib
 

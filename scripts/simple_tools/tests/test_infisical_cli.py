@@ -20,8 +20,17 @@ class IsolatedCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / "coding-memory"
+            if destination.is_symlink():
+                raise ValueError(f"refusing symlink: {destination}")
+            destination.mkdir(mode=0o700)
             settings = destination / "settings"
-            (settings / "fleet_secrets").mkdir(parents=True)
+            if settings.is_symlink():
+                raise ValueError(f"refusing symlink: {settings}")
+            settings.mkdir(mode=0o700)
+            fleet_secrets_dir = settings / "fleet_secrets"
+            if fleet_secrets_dir.is_symlink():
+                raise ValueError(f"refusing symlink: {fleet_secrets_dir}")
+            fleet_secrets_dir.mkdir(mode=0o700)
             hostile = root / "hostile"
             hostile.mkdir()
             (hostile / "fleet_infisical_cli.py").write_text("raise AssertionError('foreign command')\n")

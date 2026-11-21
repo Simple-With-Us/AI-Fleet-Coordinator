@@ -117,6 +117,34 @@ print('missing-refused')
             (result.returncode, result.stdout.strip()), (0, "missing-refused"), result.stderr
         )
 
+    def test_symlinked_pinned_source_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = Path(temporary)
+            package = payload / "fleet_secrets"
+            package.mkdir()
+            for name in ("__init__.py", "core.py"):
+                shutil.copyfile(SCRIPTS / "fleet_secrets" / name, package / name)
+            target = payload / "target.py"
+            target.write_text("raise AssertionError('symlinked source executed')\n")
+            (payload / "fleet_infisical.py").symlink_to(target)
+            result = self.run_probe(
+                """
+import importlib
+try:
+    importlib.import_module('fleet_secrets.core')
+except ImportError as exc:
+    assert str(exc) == 'shared Infisical client unavailable'
+else:
+    raise AssertionError('symlinked source accepted')
+assert 'fleet_infisical' not in sys.modules
+print('symlink-refused')
+""",
+                scripts=payload,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "symlink-refused"), result.stderr
+        )
+
     def test_concurrent_direct_import_waits_for_alias_client_initialization(self):
         self.concurrent_imports(alias_first=True)
 

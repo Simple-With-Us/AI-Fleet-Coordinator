@@ -5,20 +5,25 @@ import SwiftUI
 /// holds the letters.
 ///
 /// From the top:  the header, a banner when the server cannot be reached, three cards (the
-/// Eavesdropper, the wake router and the letter registry), the chats the registry holds, the
-/// wakes of the last day, the Operator's settings, and a footer.  Every word comes from
-/// `OperatorPanelPresentation`, which is plain code with tests;  this view only draws it.
+/// Eavesdropper, the wake router and the letter registry), the seats the wake router serves, the
+/// chats the registry holds, the wakes of the last day, the held-back wakes and the owner queue,
+/// the Operator's settings, and a footer.  Every word comes from `OperatorPanelPresentation`,
+/// which is plain code with tests;  this view only draws it.
 ///
 /// It reads the server and nothing on the Mac:  `server eavesdropper-status`,
-/// `server operator-sessions` and `server operator-wakes`, together, each kept on its own so a
-/// read that fails never blanks another.  It reads when it opens, every minute while it is open
-/// and when the Mac wakes, and on Refresh.  Nothing here changes anything except the settings
-/// section, which goes Show Plan, then Touch ID, through the shared action sheet.
+/// `server operator-sessions`, `server operator-wakes` and `server router-health`, together, each
+/// kept on its own so a read that fails never blanks another.  It reads when it opens, every
+/// minute while it is open and when the Mac wakes, and on Refresh.  Two things here act: the
+/// settings section, which coalesces typed edits and authenticates automatically through the shared
+/// server command (only verified persistence, readback and runtime application appear Saved), and
+/// a live chat's Test Wake button, which goes Show Plan, then Touch ID, through the shared action
+/// sheet and sends that one chat a dry-run wake that delivers nothing.
 struct OperatorPanelView: View {
     /// Opens the Controls panel, where the Operator's knobs are.
     var openControls: () -> Void = {}
 
     @ObservedObject private var store = OperatorPanelStore.shared
+    @ObservedObject private var routerStore = OperatorRouterHealthStore.shared
     @State private var seatGrouping: OperatorSeatGrouping = .byPlatform
     @State private var seatFilter: OperatorSeatFilter = .all
     @State private var seatSearch: String = ""
@@ -65,8 +70,9 @@ struct OperatorPanelView: View {
     /// Settings section's.  A read in progress is joined, never started twice.
     static func readEverything(_ store: OperatorPanelStore) async {
         async let panel: Void = store.refresh()
+        async let router: Void = OperatorRouterHealthStore.shared.refresh()
         async let settings: Void = ServerListenerSettingsStore.shared.refresh()
-        _ = await (panel, settings)
+        _ = await (panel, router, settings)
     }
 
     // MARK: The header
@@ -104,7 +110,8 @@ struct OperatorPanelView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 OperatorCardView(card: OperatorPanelPresentation.eavesdropper(store.status, now: now))
-                OperatorCardView(card: OperatorPanelPresentation.router(wakes: store.wakes, status: store.status, now: now))
+                OperatorCardView(card: OperatorPanelPresentation.routerCard(
+                    health: routerStore.reading, wakes: store.wakes, status: store.status, now: now))
                 OperatorCardView(card: OperatorPanelPresentation.registry(sessions: store.sessions, status: store.status, now: now))
             }
             // One height for the three cards, whatever each says.
@@ -123,8 +130,11 @@ struct OperatorPanelView: View {
                     }
                 }
             }
+            OperatorRouterSeatsSection(reading: routerStore.reading)
+            OperatorPauseSection(status: store.status?.currentStatus(now: now))
             seatsAndChats(now: now)
             recentWakes(now: now)
+            OperatorQueuesSection(wakes: store.wakes, now: now)
         }
     }
 
@@ -569,6 +579,15 @@ private struct OperatorSeatHeader: View {
 private struct OperatorSeatRowView: View {
     let row: OperatorSeatRow
     let showPlatform: Bool
+    @ObservedObject private var controller = OpsController.shared
+    @ObservedObject private var router = OperatorRouterHealthStore.shared
+
+    /// The chat a Test Wake button would address:  a live chat the registry names exactly, of a
+    /// seat the router says it serves.  Nil hides the button.
+    private var testTarget: OperatorWakeTarget? {
+        guard let target = row.testTarget, router.isRouted(row.seat) else { return nil }
+        return target
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -602,6 +621,16 @@ private struct OperatorSeatRowView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let target = testTarget {
+                    // Only this press plans a test wake:  Show Plan, then Touch ID, through the
+                    // shared action sheet.  The plan names this one chat before anything is sent.
+                    Button("Test Wake") {
+                        controller.plan(.testWake(target))
+                    }
+                    .controlSize(.mini)
+                    .disabled(controller.refusesNewPlan)
+                    .help("Plan one dry-run wake addressed to \(target.name).\u{00A0} The router picks as for a real wake and delivers nothing.")
+                }
             }
             if !row.issues.isEmpty {
                 Text("Issues: " + row.issues.joined(separator: " · "))

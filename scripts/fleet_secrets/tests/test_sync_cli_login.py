@@ -28,9 +28,10 @@ class SyncTests(unittest.TestCase):
             "GH_TOKEN": self.value,
             core.ENV_PROJECT: PROJECT,
             core.ENV_TOKEN: self.reader,
-            core.ENV_WRITE_TOKEN: self.writer,
+            core.WRITE_TOKEN_ENV_NAME: self.writer,
         }
         self.intents, self.puts = [], []
+        self.settled_receipts = {}
         self.failure = None
         self.invalid_receipt = False
         self.receipt_id = self.receipt_time = None
@@ -47,51 +48,23 @@ class SyncTests(unittest.TestCase):
 
     def put(self, name, path, value, env, token=None, *, intent=None, **kwargs):
         self.assertEqual((name, path, value, env), ("GH_TOKEN", PATH, self.value, self.env))
+        if intent.request_id in self.settled_receipts:
+            return self.settled_receipts[intent.request_id]
         self.puts.append(intent)
         if self.failure:
             raise core.WriteError(self.failure, intent)
         if self.invalid_receipt:
             return "updated"
-        return core.WriteReceipt(
+        receipt = core.WriteReceipt(
             self.receipt_id or intent.request_id,
             self.receipt_time or intent.created_at_ms,
             "updated",
         )
+        if self.receipt_id is None and self.receipt_time is None:
+            self.settled_receipts[intent.request_id] = receipt
+        return receipt
 
-<<<<<<< HEAD
     def run_sync(self, args=None):
-=======
-    def fake_api_json(self, method, path, token, body, env, **kwargs):
-        self.api.append((method, path, token, dict(body or {})))
-        if path == "/v2/service-token":
-            return 200, {
-                "workspace": self.env[core.ENV_PROJECT],
-                "permissions": ["read", "write"],
-                "scopes": [{"environment": "prod", "secretPath": PATH}],
-                "expiresAt": "2099-01-01T00:00:00Z",
-            }
-        return 200, {"message": "ok"}
-
-    def _resolve_token(
-        self, env, cli=None, mode=None, *, writer=False, project_name=core.DEFAULT_PROJECT
-    ):
-        self.token_calls.append((writer, project_name))
-        return TOKEN if writer else READ_TOKEN
-
-    def fake_ensure_folder(self, path, env, token):
-        self.folder_tokens.append(token)
-
-    def fake_put(self, name, path, value, env, token=None):
-        self.write_tokens.append(token)
-        return "updated"
-
-    def fake_fetch(self, path, env, project_name=core.DEFAULT_PROJECT, token=None, writer=False):
-        self.read_tokens.append(token)
-        self.assertFalse(writer)
-        return dict(self.written)
-
-    def run_sync(self, argv=None, env=None):
->>>>>>> origin/main
         out, err = io.StringIO(), io.StringIO()
         with (
             mock.patch.object(sync.caller, "write_intent_for_cli", self.factory, create=True),
@@ -170,16 +143,40 @@ class SyncTests(unittest.TestCase):
                     "--from",
                     "fleet-secrets",
                     "--from-path",
-                    "/source",
+                    "/cli-logins/SOURCE",
                 ]
             )
         self.assertEqual((code, err), (0, ""))
         args, kwargs = read.call_args
         self.assertEqual(
             (args[0], args[1], kwargs["token"], kwargs["names"]),
-            (PROJECT, "/source", self.reader, ("GH_TOKEN",)),
+            (PROJECT, "/cli-logins/SOURCE", self.reader, ("GH_TOKEN",)),
         )
         self.assertEqual(kwargs["timeout"], core.EXPORT_TIMEOUT)
+
+    def test_source_compatibility_refuses_non_allowlisted_from_path_before_fetch(self):
+        for bad_path in ("/", "/source", "/linear", "/zulip"):
+            with (
+                self.subTest(bad_path=bad_path),
+                mock.patch.object(
+                    core, "fetch_project", side_effect=AssertionError("fetch ran outside allowlist")
+                ),
+            ):
+                code, out, err = self.run_sync(
+                    [
+                        "--name",
+                        "GH_TOKEN",
+                        "--path",
+                        PATH,
+                        "--from",
+                        "fleet-secrets",
+                        "--from-path",
+                        bad_path,
+                    ]
+                )
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("not on the built-in write allowlist", err)
+        self.assertEqual(self.puts, [])
 
     def test_source_failure_does_not_dispatch_a_write(self):
         with mock.patch.object(
@@ -219,7 +216,8 @@ class SyncTests(unittest.TestCase):
         ]
         self.assertEqual(self.run_sync(args)[0], 0)
         self.assertEqual(self.run_sync(args)[0], 0)
-        self.assertEqual(self.puts, [original, original])
+        self.assertEqual(self.intents, [original, original])
+        self.assertEqual(self.puts, [original])
 
     def test_recovery_reads_no_source_and_never_dispatches_put(self):
         original = core.new_write_intent(self.root / "writer", "cli-login-sync")

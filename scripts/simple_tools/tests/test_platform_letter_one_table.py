@@ -4,10 +4,12 @@ review asked for holds for every row.  The assigner is the registry API served i
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
 import sqlite3
+import threading
 import time
 import unittest
 
@@ -127,6 +129,223 @@ class ClaudeRow(Base):
             self.assertTrue(commands[0].endswith("platform-letter hook --platform claude"), commands[0])
 
 
+class MiniMaxRepairRow(Base):
+    """The MiniMax row names the chats a repair pass may replay (AFC-857):  the sub-threads the hook
+    never lettered.  A chat still on the hook's own "?:" mark is not named:  it holds no letter, which
+    is the state the owner defined for it, and the "?:" chats on a host are mostly the app's own runs,
+    which would take the seat's pairs."""
+
+    DDL = (
+        "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+        " parent_session_id TEXT, archived INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)"
+    )
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(self.store))
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(self.DDL)
+        conn.close()
+        self.now = time.time()
+
+    def add(self, sid: str, title: str = "", kind: str = "conversation", parent: str = "",
+            archived: int = 0, age: float = 3600.0) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, title, kind, parent or None, archived,
+                 int((self.now - age) * 1000), int(self.now * 1000)),
+            )
+        conn.close()
+
+    def note_for(self, sid: str) -> dict:
+        with open(PL.note_path(self.env(), PM.SEAT, sid), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def write_note(self, sid: str, note: dict) -> None:
+        self.assertTrue(PL._save_json(PL.note_path(self.env(), PM.SEAT, sid), note))
+
+    def title_of(self, sid: str) -> str:
+        conn = sqlite3.connect(self.store)
+        row = conn.execute("SELECT title FROM local_runtime_sessions WHERE session_id = ?", (sid,)).fetchone()
+        conn.close()
+        return str(row[0] or "")
+
+    def scan(self) -> list[str] | None:
+        return PM.minimax_unlettered_sessions(self.env())
+
+    def repair(self) -> dict:
+        return PL.repair_unlettered(PM.SPEC, self.env(), PM.SEAT, "mac", now=self.now, force=True)
+
+    def test_a_sub_thread_the_hook_never_lettered_is_named(self) -> None:
+        # The hook refused a sub-thread at its start when the store did not hold its row yet, and a
+        # sub-thread that ends never prompts again, so nothing else ever asked for its letter.  The
+        # repair pass replays its start, and the letter goes on the title.
+        self.add("m-0100", "Parent work")
+        self.add("m-0101", "Child work", kind="task", parent="m-0100")
+        self.assertIn("m-0101", self.scan())
+
+    def test_a_chat_that_carries_its_letter_is_not_named(self) -> None:
+        self.add("m-0102", "AA: Lettered work")
+        self.assertNotIn("m-0102", self.scan())
+
+    def test_a_chat_on_the_no_letter_mark_is_not_named(self) -> None:
+        # "?:" is the state the owner defined for a chat that asked for a letter and got none, and the
+        # "?:" chats on a host are mostly the app's own runs:  lettering them would take the seat's
+        # pairs from the chats the fleet addresses.
+        self.add("m-0103", "??: Waiting for a letter")
+        self.assertNotIn("m-0103", self.scan())
+
+    def test_a_chat_that_carries_its_letter_is_not_named_again(self) -> None:
+        # The letter is on the chat, so there is nothing for the pass to do for it.
+        self.add("m-0105", "AA: Work", kind="task", parent="m-0100")
+        self.assertNotIn("m-0105", self.scan())
+
+    def test_a_self_parented_row_is_not_named(self) -> None:
+        # A row that says the chat is its own parent is a row the store has not finished writing.  The
+        # repair would replay it, find no parent (the row never names one) and register it as a MAIN
+        # chat, so it would take a pair a main chat was owed.  The scan leaves it out:  the chat waits
+        # for the next event, which reads the row once the store has written it.
+        self.add("m-0108", "Child work", kind="task", parent="m-0108")
+        self.assertNotIn("m-0108", self.scan())
+
+    def test_a_chat_whose_note_holds_a_letter_is_not_named(self) -> None:
+        # The repair pass skips a chat that holds a letter, so naming one would spend a slot of the
+        # scan on a chat the pass will not touch, and starve a real candidate of the twenty.
+        self.add("m-0109", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0109", self.scan())
+
+    def test_a_chat_whose_note_is_closed_is_not_named(self) -> None:
+        # The pass leaves a closed note alone (replaying it would register a finished chat again), so
+        # naming it would spend a slot of the scan on a chat the pass will not touch.
+        self.add("m-0110", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0110", {"state": "closed", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0110", self.scan())
+
+    def test_a_chat_whose_note_is_mismatched_is_not_named(self) -> None:
+        # A mismatched note is a chat registered under another seat:  the pass leaves it alone, so the
+        # scan does not name it.
+        self.add("m-0114", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0114", {"state": "mismatch", "label": "", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0114", self.scan())
+
+    def test_a_chat_whose_note_failed_is_named(self) -> None:
+        # A failed note holds no letter and the pass replays it, so the chat is a candidate.
+        self.add("m-0115", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0115", {"state": "failed", "label": "", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0115", self.scan())
+
+    def test_a_chat_whose_note_carries_a_malformed_label_is_not_named(self) -> None:
+        # The pass skips a chat whose note holds a label, whatever the label reads:  `lettered` is the
+        # library's own test (the note is open and it names one).  A broken label is still a label
+        # the pass will not touch, so naming the chat would spend a slot of the scan on nothing.
+        self.add("m-0111", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0111", {"state": "open", "label": "??", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0111", self.scan())
+
+    def test_a_lettered_chat_whose_stored_id_is_padded_is_not_named(self) -> None:
+        # The store may write a chat's id with spaces around it, while the note of that chat is the
+        # file of the trimmed id.  The ids are read trimmed on both sides, so the chat that holds a
+        # letter is left out of the scan and does not come back as a candidate.
+        self.add(" m-0112 ", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0112", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertNotIn("m-0112", self.scan())
+
+    def test_a_note_named_with_spaces_around_it_is_no_note(self) -> None:
+        # The library reads `<id>.json` for the trimmed id, so a file whose name has spaces around the
+        # id is no note of any chat and decides nothing:  the chat its name hints at is still a
+        # candidate, and the note of that chat is the one the library reads.
+        self.add("m-0113", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0113", {"state": "failed", "label": "", "platform": "minimax", "location": "mac"})
+        folder = os.path.dirname(PL.note_path(self.env(), PM.SEAT, "m-0113"))
+        with open(os.path.join(folder, " m-0113 .json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "open", "label": "AA"}, fh)
+        self.assertIn("m-0113", self.scan())
+
+    def test_a_row_with_no_session_id_is_counted_and_not_named(self) -> None:
+        # A row whose id is not there at all is a row the store has not finished writing.  It is not
+        # named, and it does not vanish either:  the count of the rows that could not be named says
+        # it, whatever the other rows hold (a NULL never matches the list of the lettered ids and
+        # never equals the parent either, so the row comes through and is counted).
+        self.add("m-0116", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0116", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (None, "Child work", "task", "m-0100", 0,
+                 int((self.now - 3600.0) * 1000), int(self.now * 1000)),
+            )
+        conn.close()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            found = self.scan()
+        self.assertIsInstance(found, list)
+        self.assertNotIn(None, found)
+        self.assertIn("1 malformed session id", err.getvalue())
+
+    def test_a_row_whose_session_id_is_not_a_session_id_is_not_named(self) -> None:
+        # The session id the store holds is checked with the library's own check before anything is
+        # done with it:  a name that is not a session id can never become a note path, so it can
+        # never read a file outside the notes folder.  Such a row is counted, not named.
+        self.add("../escape", "Child work", kind="task", parent="m-0100")
+        found = self.scan()
+        self.assertIsInstance(found, list)
+        self.assertNotIn("../escape", found)
+
+    def test_a_lettered_row_cannot_starve_an_unlettered_one(self) -> None:
+        # The scan's bound counts the candidates, not the rows:  a host whose newest sub-threads are
+        # all lettered cannot spend the bound on them and leave a genuinely unlettered older row
+        # unreached.  The lettered chats are left out in the query, so the row below is named even
+        # though two hundred lettered rows are newer than it.
+        for index in range(200):
+            sid = "m-0200-%03d" % index
+            self.add(sid, "Work without a letter", kind="task", parent="m-0000")
+            self.write_note(sid, {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.add("m-0299", "Child work", kind="task", parent="m-0000", age=7200.0)
+        self.assertIn("m-0299", self.scan())
+
+    def test_an_archived_chat_is_not_named(self) -> None:
+        self.add("m-0106", "Child work", kind="task", parent="m-0100", archived=1)
+        self.assertNotIn("m-0106", self.scan())
+
+    def test_a_chat_older_than_the_window_is_not_named(self) -> None:
+        self.add("m-0107", "Child work", kind="task", parent="m-0100", age=30 * 86400)
+        self.assertNotIn("m-0107", self.scan())
+
+    def test_a_store_this_old_names_nothing(self) -> None:
+        # A store without the columns the scan needs answers None:  no pass this time, never a silent
+        # empty list that reads as "there is nothing to repair".
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("DROP TABLE local_runtime_sessions")
+            conn.execute("CREATE TABLE local_runtime_sessions (session_id TEXT, title TEXT)")
+        conn.close()
+        self.assertIsNone(self.scan())
+
+    def test_the_repair_letters_and_titles_a_sub_thread_the_hook_never_lettered(self) -> None:
+        self.add("m-0200", "Parent work")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        done = self.repair()
+        self.assertIn("m-0201", done.get("asked") or [])
+        child = self.note_for("m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertEqual(self.title_of("m-0201"), "%s: Child work" % child["label"])
+
+    def test_a_chat_is_never_its_own_parent(self) -> None:
+        # A row that says the chat is its own parent is a row the store has not finished writing.  A
+        # child that read it took a MAIN pair instead of the pair after its parent's, and it took a pair
+        # a main chat was owed.  An unknown parent is no parent:  the chat waits for the next event.
+        self.add("m-0300", "Child work", kind="task", parent="m-0300")
+        self.assertEqual(PM.minimax_parent({"session_id": "m-0300"}, self.env()), "")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0300", "parent_session_id": "m-0300"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "")
+
+
 class MiniMaxRow(Base):
     DDL = ("CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
            " parent_session_id TEXT)")
@@ -207,6 +426,83 @@ class MiniMaxRow(Base):
         self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStop", "session_id": "m-0200",
                                 "childSessionId": "m-0201"})
         self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
+
+    def test_a_subagent_event_carries_the_childs_own_session_id(self) -> None:
+        # The real runtime's shape:  MiniMax Code builds the user hook payload with `session_id: event.sessionId`,
+        # and a subagent event's session id is the CHILD's own id, with the agent's id under `agent_id`.  The
+        # child takes the pair after its parent's, and the parent is the store's, never the payload's.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SubagentStart", "session_id": "m-0201",
+                                "agent_id": "worker", "agent_type": "worker"})
+        child = self.note("MM", "m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertNotEqual(child["label"], parent["label"])
+        self.assertEqual(child["parent"], "m-0200")
+        self.assertEqual(self.title("m-0201"), "%s: Child work" % child["label"])
+
+    def test_the_agent_id_is_not_taken_for_the_childs_session_id(self) -> None:
+        # `agent_id` is the AGENT's id, the seat's worker name, and not a session id:  the child is the
+        # payload's own `session_id`.  Reading the agent id as the session id pointed the row at a session that
+        # does not exist, so the child was never lettered at all.
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        self.assertEqual(PM.minimax_session_id(payload, self.env()), "m-0201")
+
+    def test_a_subagent_is_never_its_own_parent(self) -> None:
+        # The parent's id is not in the payload:  MiniMax Code's user hook payload does not copy the event's
+        # `subagentContext`, so the payload's own session id is the child's.  The parent comes from the
+        # session store's row for the child.
+        self.add("m-0200")
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "m-0200")
+        self.assertNotEqual(PM.minimax_parent(payload, self.env()), "m-0201")
+
+    def test_a_child_row_that_appears_late_is_still_found(self) -> None:
+        # The session store writes a child's row a moment AFTER the event that announces it.  A hook that
+        # read the store straight away found no row, left the child with no parent, and dropped the child
+        # out of the letter's scope, so it never took a letter at all.  The hook waits a moment for the
+        # row, and the child takes the pair after its parent's.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        late = threading.Timer(0.2, self.add, args=("m-0201", "Child work", "task", "m-0200"))
+        late.start()
+        self.addCleanup(late.cancel)
+        self.run_hook(PM.SPEC, payload)
+        late.join()
+        child = self.note("MM", "m-0201")
+        self.assertRegex(child["label"], PAIR)
+        self.assertNotEqual(child["label"], parent["label"])
+        self.assertEqual(child["parent"], "m-0200")
+
+    def test_a_child_whose_row_never_appears_is_left_alone(self) -> None:
+        # A child whose row never appears has no parent to take a letter from.  The hook does not wait for
+        # one forever:  it gives up after a moment, leaves the child alone, and the parent keeps the letter
+        # it already has.
+        self.add("m-0200")
+        self.run_hook(PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0200", "source": "startup"})
+        parent = self.note("MM", "m-0200")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "agent_id": "worker"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "")
+        self.run_hook(PM.SPEC, payload)
+        self.assertEqual(self.note("MM", "m-0200")["label"], parent["label"])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "MM", "letters", "m-0201.json")))
+
+    def test_an_agent_id_is_not_taken_for_a_parent_session_id(self) -> None:
+        # `parentId` and `parent_id` name an AGENT, the seat's worker name, and not a session.  Reading one
+        # as a session id pointed the letter at a session that does not exist, so the child was dropped out
+        # of the scope.  Only the keys that name a session are read.
+        self.assertNotIn("parentId", PM.PARENT_ID_KEYS)
+        self.assertNotIn("parent_id", PM.PARENT_ID_KEYS)
+        self.assertIn("parentSessionId", PM.PARENT_ID_KEYS)
+        self.assertIn("parent_session_id", PM.PARENT_ID_KEYS)
+        self.add("m-0201", "Child work", kind="task", parent="m-0200")
+        payload = {"hook_event_name": "SubagentStart", "session_id": "m-0201", "parent_id": "worker"}
+        self.assertEqual(PM.minimax_parent(payload, self.env()), "m-0200")
 
     def test_the_hook_timeouts_stay_inside_the_runtime_cap(self) -> None:
         # MiniMax Code's runtime takes a command hook's timeout from 1 to 10 seconds and refuses anything longer with

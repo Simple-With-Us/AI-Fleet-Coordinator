@@ -1162,6 +1162,11 @@ def build_parser(
     p.add_argument(
         "--include-self", action="store_true", help="also show messages this session posted"
     )
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="full message bodies in remote mode (default is a compact preview)",
+    )
 
     p = add("wait", "block until a new message from someone else arrives in a topic")
     topic_opt(p)
@@ -3021,7 +3026,8 @@ def build_parser_for(
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
 # SIMPLE_CHAT_REMOTE=1 sends a few READ verbs (whoami, channels, topics, read, inbox) to the hosted ST-MCP
-# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server decides
+# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, or the declared seat's canonical file
+# ~/.secrets/fleet-tools/<seat> when the environment has none).  The hosted server decides
 # the seat from the bearer; this client never names one, so --as and --default-seat are refused.  The endpoint is
 # the fixed constant below (no override), no Zulip key or rc file is read, and a failure never falls back to the
 # direct path.  Every other verb and every flag with no hosted equivalent is refused.  The hosted bearer holds
@@ -3031,7 +3037,7 @@ REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
-REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read", "show")
 REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit")
 REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 
@@ -3333,13 +3339,28 @@ class RemoteError(Exception):
     pass
 
 
+def _own_bearer(env: Mapping[str, str]) -> str:
+    """The calling bot's own bearer from the declared seat's canonical file, or "" (the
+    environment had none).  The snapshot's own HOME locates the canonical file, not the
+    process home:  a caller holding an env from a hook or test gets that env's file.
+    fleet_bearer.own_bearer does the read;  its FleetError is re-raised as RemoteError,
+    never carrying the bearer."""
+    from . import fleet_bearer
+
+    try:
+        return fleet_bearer.own_bearer(env, home=env.get("HOME") or None)
+    except fleet_bearer.FleetError as exc:
+        raise RemoteError(str(exc)) from None
+
+
 def _remote_call(
     env: Mapping[str, str], tool: str, arguments: dict[str, Any], write: bool = False
 ) -> dict[str, Any]:
-    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip()
+    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip() or _own_bearer(env)
     if not bearer:
         raise RemoteError(
-            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV} or the declared seat's "
+            "canonical file (~/.secrets/fleet-tools/<seat>); there is no fallback "
             "to direct credentials"
         )
     if not REMOTE_BEARER_RE.fullmatch(bearer):
@@ -3520,6 +3541,13 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
+            if getattr(args, "full", False):
+                targs["full"] = True
+        elif cmd == "show":
+            #  One message by id with its whole body:  the hosted topic and search reads are
+            #  compact by design, and a wake's standing rule is "open the message and read all
+            #  of it", so remote show always asks the hosted read for the full lossless payload.
+            tool, targs = "zulip_get_message", {"message_id": args.id, "full": True}
         elif cmd == "search":
             targs = {"limit": args.limit}
             words = list(getattr(args, "words", None) or [])

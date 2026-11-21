@@ -8,9 +8,12 @@ retries, the "??" title, the end-of-turn report and the install;  this file is o
   title before the chat has a descriptive one:  a brand-new chat keeps the name MiniMax Code gives it, and the
   letter goes on that name at the first prompt.  A SessionStart hook's plain stdout is
   the context the model reads (`output="text"`).  A subagent takes the pair after its parent's (parent CC, child
-  CD, the next CE), and MiniMax Code sends the PARENT's session id for a subagent event, so the child's own id is
-  read from `childSessionId`.  MiniMax Code has no end event, so no hook closes a registration:  the assigner's own
+  CD, the next CE), and MiniMax Code sends the CHILD's own session id as a subagent event's session id, so the
+  parent is read from the session store's own parent column and never from the payload.  MiniMax Code has no end event, so no hook closes a registration:  the assigner's own
   sweep frees the letter of a chat nobody came back to.
+- Archiving a chat reaches no hook either, and the archive flag is in the session store's own
+  `archived` column.  This row reads it (`minimax_gone`, the spec's `gone_sessions`), so a chat's
+  start reports the archived chats and the assigner closes their rows.
 - The session id is the payload's `session_id` (__MAVIS_RUNTIME_SESSION_ID in the chat's own shell).
 - The session store is MiniMax Code's own SQLite table, `local_runtime_sessions` in
   `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`):  a `conversation` or `task` row
@@ -38,7 +41,10 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Mapping
+import sys
+import time
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from . import platform_letter as PL
@@ -101,12 +107,29 @@ def store_file(env: Mapping[str, str]) -> str:
     return os.path.join(root, "v2", "sqlite", "runtime-state.sqlite")
 
 
+def _read_only(path: str) -> sqlite3.Connection:
+    """The session store opened read-only, its path percent-encoded for the URI.
+
+    A path with a `?` or a `#` in it would otherwise end the file name early or carry
+    parameters of its own, so the URI would name another file, or none, and `mode=ro`
+    would not be the only thing in it.
+
+    A path that cannot be resolved at all is an unreadable store, which is what the callers
+    answer for, so the path's own failure (an `OSError`, a `ValueError`, a `RuntimeError`)
+    is turned into the store's own error and never out of the reader."""
+    try:
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise sqlite3.OperationalError(str(exc)) from exc
+    return sqlite3.connect(uri, uri=True, timeout=2)
+
+
 def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     path = store_file(env)
     if not sid or not os.path.isfile(path):
         return {}
     try:
-        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=2)
+        conn = _read_only(path)
         try:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -120,9 +143,42 @@ def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
     return dict(row) if row is not None else {}
 
 
-#: The payload keys the runtime may carry a subagent's OWN session id under.  MiniMax Code sends the
-#: PARENT's id in `session_id` for a subagent event, so the child's id has to come from its own key.
-CHILD_ID_KEYS = ("childSessionId", "child_session_id", "agentId", "agent_id")
+#: How long a hook waits for a subagent's own row to appear in the session store.  The runtime writes
+#: that row a moment AFTER the event that announces the child, so a hook that read the store straight
+#: away could see no row at all, leave the child with no parent, and drop the child out of the letter's
+#: scope:  it never took a letter.  The wait is short and bounded, and it is spent on the store, not on
+#: the registry's own calls, so the hook's budget for those is untouched.
+CHILD_ROW_WAIT = 1.5
+
+
+def _wait_for_parent(env: Mapping[str, str], sid: str, seconds: float) -> str:
+    """The child's parent session id, waiting briefly for the child's own row to appear.
+
+    The session store writes a child's row a moment after the event that announces it.  A hook that read
+    the row straight away found nothing, left the child with no parent, and the child never took a letter.
+    The wait is bounded:  a row that never appears is not waited for forever.
+    """
+    end = time.monotonic() + seconds
+    while True:
+        parent = str(_row(env, sid).get("parent_session_id") or "")
+        if parent or time.monotonic() >= end:
+            return parent
+        time.sleep(0.1)
+
+
+#: The payload keys the runtime may spell a subagent's OWN session id out under.  MiniMax Code builds the
+#: user hook payload with `session_id: event.sessionId`, and a subagent event's session id IS the child's own
+#: id, so the payload's `session_id` is the child's.  A runtime that spells the child out under its own key is
+#: read too.  `agent_id` is deliberately not here:  it is the AGENT's id (the seat's worker name), not a
+#: session id, and reading it as one points the row at a session that does not exist.
+CHILD_ID_KEYS = ("childSessionId", "child_session_id")
+#: The payload keys the runtime may carry a subagent's PARENT session id under.  MiniMax Code's user hook
+#: payload does not carry the parent at all today:  the parent lives in the event's `subagentContext`, which
+#: the payload builder does not copy into the payload.  The session store has the parent on the child's own
+#: row, so that is where the parent is read from; these keys are a fallback for a runtime that does carry it.
+#: `parentId` and `parent_id` are deliberately not here:  they name an AGENT (the seat's worker name), not
+#: a session, and reading one as a session id points the letter at a session that does not exist.
+PARENT_ID_KEYS = ("parentSessionId", "parent_session_id")
 
 
 def _event(payload: Mapping[str, Any]) -> str:
@@ -137,13 +193,12 @@ def _is_subagent_event(payload: Mapping[str, Any]) -> bool:
 
 def minimax_session_id(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The chat's own session id:  the payload's for an ordinary chat, and the CHILD's for a subagent
-    event, because MiniMax Code sends the parent's id there."""
+    event, because MiniMax Code sends the child's own id there."""
     if _is_subagent_event(payload):
         for key in CHILD_ID_KEYS:
             value = payload.get(key)
             if isinstance(value, str) and value:
                 return value
-        return ""
     return PL.from_payload("session_id")(payload, env)
 
 
@@ -163,10 +218,29 @@ def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 def minimax_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    sid = _sid(payload, env)
     if _is_subagent_event(payload):
-        # The runtime sends the parent's id as the payload's own session id for a subagent event.
-        return str(PL.from_payload("session_id")(payload, env) or "")
-    return str(_row(env, _sid(payload, env)).get("parent_session_id") or "")
+        # The parent's id is NOT in MiniMax Code's user hook payload:  it lives in the event's
+        # `subagentContext`, which the payload builder does not copy, and the payload's own session id is the
+        # CHILD's own id.  Reading the parent's id out of the payload therefore made a subagent its own
+        # parent, and the child took a letter from the wrong place in the tree.  The session store has the
+        # parent on the child's own row, so it is read from there, after a short wait for that row:  the
+        # store writes it a moment after the event, and a child read too early had no parent at all.
+        parent = _wait_for_parent(env, sid, CHILD_ROW_WAIT)
+        if parent and parent != sid:
+            return parent
+        for key in PARENT_ID_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value and value != sid:
+                return value
+        return ""
+    parent = str(_row(env, sid).get("parent_session_id") or "")
+    # A chat is never its own parent.  A row that says so is a row the store has not finished writing, and
+    # a child that reads itself as its parent takes a MAIN pair instead of the pair after its parent's:  it
+    # takes a pair a main chat is owed, and its own family never learns of the child.  The parent is
+    # unknown here, and an unknown parent is no parent:  the chat waits for the next event, which reads the
+    # row once the store has written it.  The repair scan leaves such rows out for the same reason.
+    return "" if parent == sid else parent
 
 
 def minimax_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
@@ -188,6 +262,62 @@ def _extra(raw: object) -> dict[str, Any]:
     except ValueError:
         value = {}
     return value if isinstance(value, dict) else {}
+
+
+# --------------------------------------------------------------------------------------------
+# Which chats the app has archived (AFC-855)
+# --------------------------------------------------------------------------------------------
+#
+# Archiving a MiniMax Code chat reaches no hook event:  the runtime's hook list has no archive
+# event, and its `SessionEnd` fires when a chat ends, not when it is filed away.  The archive is
+# in the session store's own `archived` column, the same one `minimax_wake.py` reads before it
+# wakes a chat, so that is where this row learns that a chat is gone.  The library's gone report,
+# made on a chat's start, then has the assigner close the row and free the pair.
+
+#: The most session ids one query names (SQLite's own limit on the variables of a statement is 999).
+GONE_BATCH = 200
+
+
+def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The chats of these ids the session store knows are archived, by the store's own `archived` column.
+
+    A chat the store does not know is not named:  it may be a chat of another host's store, or one
+    the store has not written yet.  A store with no `archived` column (one from before the runtime
+    wrote it) names none, and a store that cannot be read names none either.  Ids only."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return set()
+    wanted = sorted({sid for sid in session_ids if isinstance(sid, str) and sid})
+    if not wanted:
+        return set()
+    gone: set[str] = set()
+    try:
+        conn = _read_only(path)
+        try:
+            if "archived" not in _columns(conn):
+                return set()
+            for start in range(0, len(wanted), GONE_BATCH):
+                chunk = wanted[start : start + GONE_BATCH]
+                rows = conn.execute(
+                    "SELECT session_id FROM local_runtime_sessions"
+                    " WHERE archived = 1 AND session_id IN (%s)" % ",".join("?" * len(chunk)),
+                    chunk,
+                ).fetchall()
+                gone.update(str(row[0]) for row in rows)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    return gone
+
+
+def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The spec's `gone_sessions`:  which of these chats MiniMax Code has archived.
+
+    The archive flag is the session store's own `archived` column, the same one `minimax_wake.py`
+    reads before it wakes a chat.  The library asks this adapter on a chat's start, and a report
+    that names an archived chat has the assigner close its row and free the letter.  Ids only."""
+    return archived_sessions(env, session_ids)
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
@@ -265,6 +395,202 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
             conn.close()
     except sqlite3.Error:
         return False
+
+
+# --------------------------------------------------------------------------------------------
+# The chats a repair pass may name (AFC-857)
+# --------------------------------------------------------------------------------------------
+#
+# The repair pass (`repair_unlettered`) replays the start of the chats this row names, so a chat
+# whose letter never landed is lettered and titled.  One kind of chat is named here, and one kind is
+# deliberately not.
+#
+# - A sub-thread the hook never lettered:  a task row with a parent whose title carries no letter.
+#   The hook refused it at its start when the store did not hold its row yet, and a sub-thread that
+#   ends never prompts again, so nothing else ever asks for its letter.  The pass replays its start,
+#   the store holds its row by then, and the parent is known:  the chat takes the pair after its
+#   parent's and its title carries it.
+#
+# A chat still titled "??: " is NOT named.  It holds no letter, which is the state the owner defined for
+# a chat that asked for one and got none (owner, Nov 11, 2026:  "a chat with no letter titles itself
+# '??: Title', retries later by itself"), and on a host the "?:" chats are mostly the app's own runs:
+# a wake runner, a bot session.  Lettering them would take the seat's pairs (there are twenty-six of
+# them) from the chats the fleet addresses, one run at a time, and the owner did not ask for those
+# chats to be renamed.  A chat that runs again asks for its letter itself.
+
+#: The most chats one scan names, and the age window a candidate may have:  a chat that is starting
+#: now runs its own hook, and one older than the window is history the fleet does not address.
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+#: How many rows one query reads at a time, and how many notes one scan reads.  The query leaves out
+#: the chats that carry a letter on their title and the chats the repair pass would skip, so the rows
+#: it returns are candidates:  the bound counts candidates and not rows, and a busy host's lettered
+#: chats cannot spend it.
+UNLETTERED_BATCH = 200
+UNLETTERED_NOTES = 500
+#: The hook's own no-letter mark, as a SQL pattern.  LIKE reads only % and _ as wildcards, so the two
+#: question marks are the mark itself.
+UNLETTERED_MARK = PL.UNLETTERED + ": %"
+#: The prefixes a chat that holds a letter carries:  one capital letter or two, then a colon and a
+#: space.  A GLOB pattern is case sensitive, so a lower-case word is never taken for a letter.
+LETTER_GLOB_ONE = "[A-Z]: *"
+LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
+
+
+def _skipped_sids(env: Mapping[str, str]) -> set[str]:
+    """The session ids the repair pass will not touch:  the chats whose own note holds a letter, and
+    the chats whose note is settled (closed or mismatched).
+
+    The pass reads a chat's note and skips the chat when the note says closed or mismatch, or when
+    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every
+    candidate it names is a chat the pass will really replay, and no slot of the twenty is spent on
+    a chat the pass skips.
+
+    The letter is in the note and the note is a file, so the lettered chats are read from the
+    folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
+    the listing and are used as query values only, so a name the store holds can never place a read
+    outside the folder.
+
+    A name is an id only when the library's own check takes it, and only when it is the file the
+    library reads for that id:  the library reads `<id>.json` for the trimmed id, so a name with
+    spaces around it is no note of any chat and decides nothing.  The store may write the same
+    chat's id with spaces around it; the query and the check below read the id trimmed, so such a
+    chat is left out as well."""
+    folder = os.path.dirname(PL.note_path(env, SEAT, ""))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return set()
+    notes: list[tuple[float, str, str]] = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            notes.append((os.stat(path).st_mtime, path, name[:-5]))
+        except OSError:
+            continue
+    notes.sort(reverse=True)
+    skipped: set[str] = set()
+    for _, path, sid in notes[:UNLETTERED_NOTES]:
+        try:
+            ident = PL.SI.check(sid, "a listed session id")
+        except ValueError:
+            continue  # a name that is not a session id names no note
+        if ident != sid:
+            continue  # the library reads `<id>.json`:  a padded name is no note of any chat
+        try:
+            with open(path, encoding="utf-8") as fh:
+                note = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(note, dict):
+            continue
+        if note.get("state") in ("closed", "mismatch") or PL.lettered(note):
+            skipped.add(ident)  # the pass skips this chat:  a closed, a mismatched or a lettered note
+    return skipped
+
+
+def _unlettered_children(
+    conn: sqlite3.Connection, now: float, skipped: set[str]
+) -> tuple[list[str], int]:
+    """The sub-threads of this host that hold no letter, newest first, and how many rows of the
+    store could not be named.
+
+    The chats the repair pass would skip are left out in the query, so the bound counts the
+    candidates and not the rows:  a host whose newest sub-threads are all lettered cannot spend the
+    scan's bound on them and starve a genuinely unlettered older row.  A row that names no session
+    id is skipped and counted:  a corrupt row must not read as a chat that was considered and left
+    alone, and only a well-formed id is ever named (the library's own check), so a name the store
+    holds can never place anything outside the notes folder.
+
+    The ids are read trimmed on both sides:  the note of a chat is the file of its trimmed id, so a
+    store that writes the id with spaces around it names the same chat, and a chat that holds a
+    letter is left out whichever way its id is written."""
+    clause = ""
+    params: list[Any] = []
+    if skipped:
+        # A row with no id at all is let through:  a NULL never matches the list, and a row that
+        # cannot be named must be counted below and not vanish from the count.
+        clause = " AND (TRIM(session_id) IS NULL OR TRIM(session_id) NOT IN (%s))" % ",".join(
+            "?" * len(skipped)
+        )
+        params.extend(sorted(skipped))
+    rows = conn.execute(
+        "SELECT session_id FROM local_runtime_sessions"
+        " WHERE session_kind = ?"
+        " AND parent_session_id IS NOT NULL AND parent_session_id != ''"
+        " AND (session_id IS NULL OR parent_session_id != session_id)"
+        " AND (archived IS NULL OR archived = 0)"
+        " AND (created_at_ms IS NULL OR (created_at_ms >= ? AND created_at_ms <= ?))"
+        " AND title IS NOT NULL AND title != ''"
+        " AND title NOT LIKE ?"
+        " AND title NOT GLOB ?"
+        " AND title NOT GLOB ?" + clause +
+        " ORDER BY updated_at_ms DESC LIMIT ?",
+        [
+            "task",
+            (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
+            (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+            UNLETTERED_MARK,
+            LETTER_GLOB_ONE,
+            LETTER_GLOB_TWO,
+            *params,
+            UNLETTERED_BATCH,
+        ],
+    ).fetchall()
+    found: list[str] = []
+    malformed = 0
+    for (sid,) in rows:
+        if not isinstance(sid, str) or not sid:
+            malformed += 1
+            continue
+        try:
+            checked = PL.SI.check(sid, "a listed session id")
+        except ValueError:
+            malformed += 1
+            continue
+        if checked in skipped:
+            continue  # a chat the pass skips, whose id the store writes with spaces around it
+        found.append(checked)
+    return found, malformed
+
+
+def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's MiniMax sub-threads that hold no letter on their title, for the repair pass
+    (`repair_unlettered`):  the ones the hook refused at their start because the store did not hold
+    their row yet.  Ids only, newest first, at most UNLETTERED_SCAN of them.
+
+    Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the
+    columns it needs) answers None:  no pass this time.  A row whose session id is malformed is skipped
+    and said out loud on stderr, so one corrupt row neither stops the pass nor passes unnoticed.  A
+    chat's title is read again in its own replayed start before anything changes."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return None
+    now = time.time()
+    found: list[str] = []
+    malformed = 0
+    try:
+        conn = _read_only(path)
+        try:
+            children, broken = _unlettered_children(conn, now, _skipped_sids(env))
+            malformed += broken
+            for sid in children:
+                if sid not in found:
+                    found.append(sid)
+                if len(found) >= UNLETTERED_SCAN:
+                    break
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None  # a store this old cannot say what it holds:  no pass
+    if malformed:
+        sys.stderr.write(
+            "platform-letter minimax: %d malformed session id(s) skipped\n" % malformed
+        )
+    return found[:UNLETTERED_SCAN]
 
 
 def _data_dir(env: Mapping[str, str]) -> str:
@@ -362,6 +688,8 @@ SPEC = PL.PlatformSpec(
     quiet_events=("Stop",),
     chat_payload=minimax_chat_payload,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
+    gone_sessions=minimax_gone,
+    unlettered_sessions=minimax_unlettered_sessions,
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,

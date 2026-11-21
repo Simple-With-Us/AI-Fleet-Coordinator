@@ -458,3 +458,71 @@ class VerifyCacheTests(unittest.TestCase):
         with self.assertRaises(F.FleetError):
             client.call("zulip_read", {})
         self.assertFalse(self.cache_file().exists())
+
+
+class OwnBearerTests(unittest.TestCase):
+    """own_bearer:  the environment wins, then the declared seat's canonical file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name).resolve()
+        store = self.home / ".secrets" / "fleet-tools"
+        store.mkdir(parents=True)
+        store.chmod(0o700)
+        store.parent.chmod(0o700)
+        self.token = "sbt_codex_" + "y" * 43
+        self.file = store / "codex"
+        self.file.write_text(self.token + "\n")
+        self.file.chmod(0o600)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_environment_wins_over_the_file(self):
+        other = "sbt_wise_" + "z" * 43
+        env = {"SIMPLE_TOOLS_BEARER": other, "AGENT_SEAT": "CODEX"}
+        self.assertEqual(F.own_bearer(env, home=self.home), other)
+
+    def test_declared_seat_reads_its_canonical_file(self):
+        for hints in ({"AGENT_SEAT": "codex"}, {"AGENT_TAG": "CODEX"}, {"AGENT_LAUNCH_SEAT": "Codex"}):
+            with self.subTest(hints=hints):
+                self.assertEqual(F.own_bearer(hints, home=self.home), self.token)
+
+    def test_alias_seat_names_the_same_file(self):
+        wise = "sbt_wise_" + "w" * 43
+        target = self.file.parent / "wise"
+        target.write_text(wise)
+        target.chmod(0o600)
+        self.assertEqual(F.own_bearer({"AGENT_SEAT": "INSTINCT"}, home=self.home), wise)
+
+    def test_conflicting_seat_hints_refuse(self):
+        with self.assertRaises(F.FleetError) as exc:
+            F.own_bearer({"AGENT_SEAT": "WISE", "AGENT_TAG": "ECHO"}, home=self.home)
+        self.assertEqual(exc.exception.code, "invalid_argument")
+
+    def test_no_hints_and_no_env_is_empty(self):
+        self.assertEqual(F.own_bearer({}, home=self.home), "")
+        self.assertEqual(F.own_bearer({"AGENT_SEAT": "1bad"}, home=self.home), "")
+
+    def test_missing_file_is_empty_and_malformed_refuses(self):
+        self.assertEqual(F.own_bearer({"AGENT_SEAT": "ECHO"}, home=self.home), "")
+        self.file.write_text("not a bearer")
+        with self.assertRaises(F.FleetError) as exc:
+            F.own_bearer({"AGENT_SEAT": "CODEX"}, home=self.home)
+        self.assertEqual(exc.exception.code, "not_configured")
+        self.assertNotIn("not a bearer", str(exc.exception))
+
+    def test_another_seats_file_refuses(self):
+        # The file named for the declared seat holds a different seat's bearer.
+        swapped = self.file.parent / "wise"
+        swapped.write_text(self.token)
+        swapped.chmod(0o600)
+        with self.assertRaises(F.FleetError) as exc:
+            F.own_bearer({"AGENT_SEAT": "WISE"}, home=self.home)
+        self.assertEqual(exc.exception.code, "invalid_argument")
+
+    def test_a_nonregular_file_refuses(self):
+        self.file.unlink()
+        self.file.mkdir()
+        with self.assertRaises(F.FleetError):
+            F.own_bearer({"AGENT_SEAT": "CODEX"}, home=self.home)

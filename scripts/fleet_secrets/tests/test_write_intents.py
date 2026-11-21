@@ -35,7 +35,7 @@ class WriteIntentTests(unittest.TestCase):
         self.directory = Path(self.temporary.name) / "writer"
         self.token = "st." + secrets.token_urlsafe(32)
         self.value = secrets.token_urlsafe(40)
-        self.env = {core.ENV_PROJECT: PROJECT, core.ENV_WRITE_TOKEN: self.token}
+        self.env = {core.ENV_PROJECT: PROJECT, core.WRITE_TOKEN_ENV_NAME: self.token}
         self.intent = self.new_intent()
         self.calls = []
         self.mutations = []
@@ -393,8 +393,12 @@ class WriteIntentTests(unittest.TestCase):
         self.assertEqual(self.calls, before)
 
     def test_scope_expiry_and_writer_binding_refuse_before_mutation(self):
-        for change in (
+        valid_metadata = dict(self.metadata)
+        cases = (
             {"expiresAt": None},
+            {"expiresAt": "invalid"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
             {"permissions": ["read"]},
             {"scopes": [{"environment": "prod", "secretPath": "/"}]},
             {
@@ -403,20 +407,25 @@ class WriteIntentTests(unittest.TestCase):
                     {"environment": "prod", "secretPath": "/"},
                 ]
             },
-        ):
+        )
+        for change in cases:
             with self.subTest(change=change):
-                self.metadata.update(change)
+                self.metadata = {**valid_metadata, **change}
                 self.assert_outcome("refused", lambda: self.put(self.new_intent()))
                 self.assertEqual(self.mutations, [])
+        self.metadata = dict(valid_metadata)
+        self.metadata.pop("expiresAt")
+        self.assert_outcome("refused", lambda: self.put(self.new_intent()))
+        self.assertEqual(self.mutations, [])
 
     def test_diagnostics_preserve_expiry_reason_and_exact_missing_binding_name(self):
         self.metadata["expiresAt"] = None
         error = self.assert_outcome("refused", self.put)
         self.assertEqual(error.reason, "token-expired-or-invalid")
-        self.env.pop(core.ENV_WRITE_TOKEN)
+        self.env.pop(core.WRITE_TOKEN_ENV_NAME)
         error = self.assert_outcome("refused", lambda: self.put(self.new_intent()))
-        self.assertEqual(error.required_binding, core.ENV_WRITE_TOKEN)
-        self.assertIn(core.ENV_WRITE_TOKEN, error.message)
+        self.assertEqual(error.required_binding, core.WRITE_TOKEN_ENV_NAME)
+        self.assertIn(core.WRITE_TOKEN_ENV_NAME, error.message)
 
     def test_definite_refusal_preserves_safe_status_retryability_and_terminal_id_on_restart(self):
         for status in (401, 403, 429):
@@ -628,6 +637,66 @@ class WriteIntentTests(unittest.TestCase):
                         else:
                             core.fetch_project(PROJECT, PATH, {}, token=self.token, names=(NAME,))
         self.assertFalse(self.directory.exists())
+
+    def test_clear_unsettled_write_unblocks_namespace_and_tombstones_old_intent(self):
+        self.statuses, self.no_ack = [0], True
+        self.assert_outcome("outcome_unknown", self.put)
+        self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent()))
+        cleared = core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+        self.assertEqual(
+            (cleared.outcome, cleared.result, cleared.replayed), ("cleared", "cleared", False)
+        )
+        replayed = core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+        self.assertEqual(
+            (replayed.outcome, replayed.result, replayed.replayed), ("cleared", "cleared", True)
+        )
+        self.assert_outcome("cancelled", self.reconcile)
+        self.statuses, self.no_ack = [200], False
+        self.intent = self.new_intent()
+        self.assertEqual(self.put().result, "updated")
+
+    def test_clear_unsettled_refuses_acknowledged_and_surfaces_identity_mismatch(self):
+        # Acknowledged writes must be reconciled, not tombstoned as cancelled.
+        self.read_status = 503
+        self.assert_outcome("accepted_unverified", self.put)
+        with self.assertRaisesRegex(core.SecretsError, "clear-acknowledged-requires-reconcile"):
+            core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+
+        # Mismatched writer purpose surfaces the stored recovery identity.
+        other_purpose = core.WriteIntent(
+            self.intent.state_dir,
+            "other-purpose",
+            self.intent.request_id,
+            self.intent.created_at_ms,
+        )
+        with self.assertRaisesRegex(
+            core.SecretsError,
+            f"write-identity-mismatch \\(purpose\\): request_id={self.intent.request_id} "
+            f"created_at_ms={self.intent.created_at_ms} purpose={self.intent.purpose}",
+        ):
+            core.clear_unsettled_write(NAME, PATH, self.env, intent=other_purpose)
+
+    def test_recovery_identity_check_refuses_corrupt_or_incomplete_records(self):
+        for raw in (
+            "not-json",
+            "[]",
+            "{}",
+            '{"request_id": "abc", "created_at_ms": true, "purpose": "sync"}',
+            '{"request_id": 123, "created_at_ms": 1000, "purpose": "sync"}',
+        ):
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(core.SecretsError, "write-identity-unavailable"),
+            ):
+                core._check_recovery_identity(raw, self.intent)
+
+    def test_clear_unsettled_cli_without_request_id_names_clear_unsettled(self):
+        from fleet_secrets import cli as fs_cli
+
+        with self.assertRaisesRegex(
+            fs_cli.UsageError, "clear-unsettled requires the original request identity"
+        ):
+            fs_cli._write_options(["--path", PATH, "--clear-unsettled", NAME])
 
 
 class ReadOnlyInstallTests(unittest.TestCase):

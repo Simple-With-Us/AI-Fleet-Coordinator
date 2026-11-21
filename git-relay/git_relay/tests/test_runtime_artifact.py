@@ -520,9 +520,25 @@ print(json.dumps({"ok": True, "reads": len(calls)}))
                 self.assertEqual(len(api.requests), 1 + len(values))
                 self.assertTrue(all("/raw?" not in request for request in api.requests))
 
-    def test_expiry_broader_scope_and_write_grants_fail_before_any_value_read(self):
+    def test_registered_null_expiry_read_grants_follow_the_shared_contract(self):
+        for path, name in (
+            ("/github-apps", "GH_APP_FIXTURE_ID"),
+            ("/tools", "GR_BEARER_VERIFY_KEY"),
+            ("/git-relay-owner", "GITHUB_TOKEN"),
+        ):
+            with (
+                self.subTest(path=path),
+                self.API({name: "public fixture"}, project=str(uuid.uuid4()), path=path) as api,
+            ):
+                api.metadata_override = {"expiresAt": None}
+                self.read_payload(api, path, [name])
+                self.assertEqual(len(api.requests), 2)
+
+    def test_invalid_expiry_broader_scope_and_write_grants_fail_before_any_value_read(self):
         for metadata in (
-            {"expiresAt": None},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "not-a-timestamp"},
+            {"expiresAt": "2099-01-01T00:00:00"},
             {"permissions": ["read", "write"]},
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/tools"}]},

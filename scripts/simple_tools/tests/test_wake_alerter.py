@@ -61,6 +61,13 @@ class AlerterTests(unittest.TestCase):
         self.assertEqual(self.poll(items), 0)
         self.assertEqual(len(self.ran), 1)
 
+    def test_a_wake_the_router_settled_before_the_poll_still_alerts_once(self):
+        # AFC-824:  a router wake's last row is its outcome, which can land between two polls.
+        items = [{"wake_id": "r1", "state": "delivered"}, {"wake_id": "r2", "state": "undelivered"},
+                 {"wake_id": "r3", "state": "unknown"}]
+        self.assertEqual(self.poll(items), 3)
+        self.assertEqual(self.poll(items), 0)
+
     def test_dm_without_channel_banners_dm(self):
         self.assertEqual(self.poll([{"wake_id": "w2", "state": "queued", "dm": True}]), 1)
         self.assertIn("wake in DM", self.ran[0])
@@ -289,11 +296,11 @@ class KeyLookupTests(unittest.TestCase):
         with mock.patch.object(FI, "fetch_project") as fetch:
             self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], "")
             fetch.assert_not_called()
-        os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN] = "st." + "afc-synthetic-" * 3
+        os.environ[FI.COORDINATOR_READ_TOKEN_ENV_NAME] = "st." + "afc-synthetic-" * 3
         with mock.patch.object(FI, "fetch_project", return_value={"ECHO_ROUTINE_KEY": KEY}) as fetch:
             self.assertEqual(WA._read_key("ECHO_ROUTINE_KEY")[0], KEY)
         self.assertEqual(fetch.call_args.args[0], os.environ["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"])
-        self.assertEqual(fetch.call_args.kwargs["token"], os.environ[FI.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertEqual(fetch.call_args.kwargs["token"], os.environ[FI.COORDINATOR_READ_TOKEN_ENV_NAME])
 
     def test_hook_children_receive_no_infisical_bootstrap_binding(self):
         os.environ.update({"INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "private-binding",

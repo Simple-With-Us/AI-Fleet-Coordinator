@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -69,10 +68,10 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
-# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
-# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
+# the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 180
+MAX_FILES = 190
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -91,6 +90,7 @@ RECALL_MODULES = (
     "contribute_guard",
     "core",
     "doctor",
+    "fleet_bearer",
     "health",
     "infisical_settings",
     "public_fallback",
@@ -129,8 +129,137 @@ EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
+        "scripts/service_zulip.py",
+        "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/simple_tools/mcp/tools.json",
+        # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
+        # and the enabled Grok bots).
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
+        # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
+        # through board, and the guide tool's text.
+        *AFC331_FILES,
+        "scripts/simple_tools/wake/wake-schema.json",
+        *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
+        "scripts/recall",
+        *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
+        "scripts/fleet_lanes/bin/lane",
+        *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+        "scripts/fleet_lanes/placement-exceptions.json",
+        *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
+        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
+        "scripts/fleet-mode",
+        "docs/FLEET-MODE.md",
+        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
+        # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_google.mjs",
+        # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
+        "scripts/simple_tools/operator_sheets_drain.mjs",
+        # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
+        # writer that owns the service-account auth, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/thread_registry_export.mjs",
+        # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
+        # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
+        "scripts/zc-wake-bridge",
+        # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
+        "scripts/ag-wake-bridge",
+    }
+)
+# Paths that match the allowlist pattern (or were previously named in EXACT) but that nothing runs, on any
+# host, so they stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a
+# host or an installer still runs or loads stays in the release, even when today's hosts run it from a git
+# checkout:  the release path is dormant (the server runs from git since Oct 19, 2026), and a release must
+# still be whole if it is ever used again.  Each Python module below has no importer outside this set and
+# the repo-only tests:
+#   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
+#     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
+#     review history and their repo-only tests.
+#   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
+#   - mcp/fixtures.jsonl:  golden cases the unit suites load from the checkout;  `simple-chat mcp` does not
+#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the
+#     sender cap after AFC-756 (list_presentation plus the compact/full catalog fields).
+# A new module still ships by default:  this list only ever names a path that nothing runs.
+REPO_ONLY = frozenset(
+    {
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+        # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
+        # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
+        "scripts/simple_tools/thread_registry_export.test.mjs",
+    }
+)
+# What every release ever installed contains.  verify_retained, rollback and status judge a retained
+# release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
+# The simple-* entry points are NOT here (they are in TOOL_REQUIRED):  a retained older release may not carry them,
+# so demanding them would make status and rollback refuse exactly the rollback targets they exist for.
+BASE_REQUIRED = frozenset(
+    {
+        "scripts/linear-board/board",
+        "fleet-apps.json",
+        *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
+        "scripts/simple_tools/__init__.py",
+        "scripts/simple_tools/cli.py",
+        "scripts/simple_tools/mcp/stdio.py",
+        "scripts/simple_tools/mcp/tools.json",
+        "scripts/fleet-cli-release.py",
+    }
+)
+# The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
+TOOL_REQUIRED = frozenset(
+    {
+        # New canonical settings consumers need the shared editor and its schema.
+        # Retained older code remains a valid rollback target.
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
+        # The CLI entry points:  a new bundle must carry them, but a retained older release may not and
+        # stays a valid rollback target.
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-peer-actions",
+        "scripts/simple-board",
+        # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
+        # rollback target (the smoke skips cases whose script a rollback target does not carry).
+        "scripts/simple-git",
+        "scripts/git-tools/git",
+        "scripts/recall",
+        *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
+        "scripts/fleet_lanes/bin/lane",
+        *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+        "scripts/fleet-mode",
+        "docs/FLEET-MODE.md",
+        *AFC331_FILES,
+        # The eavesdropper_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
+        *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
+        # Shared scoped client and direct command used by knobs, recall and other consumers.
+        "scripts/fleet_infisical.py",
+        "scripts/fleet_infisical_cli.py",
+        # Shared protected-custody helper for declared readers and interactive launchers.
+        "scripts/fleet_infisical_bootstrap.py",
+        # The direct command's writer requires the same retained intent ledger.
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
@@ -536,57 +665,15 @@ def root_exports(home: Path) -> str:
     )
 
 
-#: The tool whose wrapper carries the registry settings into the process it runs.  A session-letter hook is launched with no
-#: profile, so its environment holds neither the registry URL nor its key, and the host's own env script is what sets them.
-#: The settings are read in SHELL before the script is exec'd:  no Python of this repository reads that file.
-REGISTRY_ENV_SCRIPT = "scripts/platform-letter"
-#: The env scripts, under the home folder, in the order they are looked for:  the first one that is a file is the one used.
-REGISTRY_ENV_FILES = (".local/bin/platform-letter-registry-env", ".local/bin/operator-registry-env")
-REGISTRY_ENV_NAMES = (
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL",
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
-)
-#: Managed wrappers a routine update REWRITES when the host has an older managed one (it carries MARKER, it is a regular
-#: file and no link):  the registry settings of a server's hooks arrive through the wrapper, so a wrapper without them
-#: would drop them at the update.  Every other wrapper is only ever written when it is missing.
+#: Managed wrappers a routine update refreshes when an older owned regular file carries MARKER.
+#: Refresh removes legacy registry-env sourcing; the shared client owns its private bootstrap.
+#: Every other wrapper is only ever written when it is missing.
 REFRESHED_WRAPPERS = frozenset({"platform-letter"})
-
-
-def registry_env_wrapper(home: Path, script: str) -> bytes:
-    """The wrapper of REGISTRY_ENV_SCRIPT:  a bash script that sources the host's registry env script, when there is
-    one, and then runs the release's script as every other managed Python tool is run (isolated, the arguments and the
-    standard input as they came).
-
-    The first of REGISTRY_ENV_FILES that is a file is used.  It is run once in a subshell with its output thrown away,
-    and is sourced into the wrapper only when that run got to its end, so a script that exits cannot stop the hook from
-    running:  the hook runs without the settings.  A script that fails, or does not parse, is sourced as far as bash
-    goes and the hook runs all the same.  Nothing it prints is shown, and its status is not the wrapper's.  The names
-    it may set are exported, whether or not it exported them."""
-    names = " ".join(REGISTRY_ENV_NAMES)
-    files = " ".join('"$HOME/%s"' % name for name in REGISTRY_ENV_FILES)
-    target = str(home / ".local/share/fleet-cli/current" / script)
-    return (
-        f"#!/bin/bash\n{MARKER}\n"
-        "# The registry settings of a session-letter hook come from the host's env script, sourced here in shell.\n"
-        f"for f in {files}; do\n"
-        '  if [ -f "$f" ]; then\n'
-        '    if [ "$( . "$f" >/dev/null 2>&1 </dev/null; echo ok )" = ok ]; then\n'
-        '      . "$f" >/dev/null 2>&1 </dev/null\n'
-        f"      export {names}\n"
-        "    fi\n"
-        "    break\n"
-        "  fi\n"
-        "done\n"
-        f'exec /usr/bin/python3 -I -B {shlex.quote(target)} "$@"\n'
-    ).encode()
 
 
 def wrapper(
     home: Path, script: str, extra: list[str] | None = None, codex_only: bool = False
 ) -> bytes:
-    if script == REGISTRY_ENV_SCRIPT and not extra and not codex_only:
-        return registry_env_wrapper(home, script)
     guard = ""
     if codex_only:
         guard = """

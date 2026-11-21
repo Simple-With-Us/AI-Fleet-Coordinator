@@ -70,6 +70,45 @@ final class PanelSnapshotTests: XCTestCase {
     /// How much taller than asked the window may come out at the minimum size.
     static let toolbarAllowance: CGFloat = 52
 
+    func test_seat_list_control_light_and_dark() throws {
+        let output = ProcessInfo.processInfo.environment["MUSTER_PANEL_SNAPSHOT_DIR"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for dark in [false, true] {
+            let control = ServerSeatListEditor(draft: .constant(#"["JET","CODEX","7-CUSTOM_1"]"#),
+                                               maxItems: 64, maxLength: 32)
+                .padding(20).frame(width: 420, height: 260, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .environment(\.colorScheme, dark ? .dark : .light)
+            let hosting = NSHostingView(rootView: control)
+            let frame = NSRect(x: 0, y: 0, width: 420, height: 260)
+            let window = NSWindow(contentRect: frame.offsetBy(dx: Self.offscreen, dy: Self.offscreen),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+            window.hasShadow = false
+            defer { window.contentView = nil; window.orderOut(nil); window.close() }
+            window.contentView = hosting
+            window.setContentSize(frame.size)
+            hosting.frame = frame
+            window.orderBack(nil)
+            window.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(Self.settle))
+            window.layoutIfNeeded()
+            hosting.layoutSubtreeIfNeeded()
+            hosting.displayIfNeeded()
+            let fields = Self.descendants(of: hosting).compactMap { $0 as? NSTextField }
+                .filter { $0.isEditable }
+            XCTAssertEqual(fields.map(\.stringValue), ["JET", "CODEX", "7-CUSTOM_1"])
+            let bitmap = try XCTUnwrap(Self.capture(hosting, in: window, appearance: window.appearance))
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            XCTAssertGreaterThan(png.count, 5000)
+            try png.write(to: output.appendingPathComponent("seat-list-\(dark ? "dark" : "light").png"))
+        }
+    }
+
     private var savedDestination: Any?
     private var savedTheme: Any?
     private var scratch: URL!

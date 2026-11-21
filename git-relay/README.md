@@ -466,7 +466,9 @@ The source is validated before its own protected token file is opened or passed 
 
 Each uncached batch names only the requested keys and uses `bounded_fetch_project` with a
 30-second operation budget and a 1-MiB whole-batch output cap.  The shared disposable worker
-performs the actual exact-project/prod/folder/read-only/finite-expiry grant and record verification.
+performs the actual exact-project/prod/folder/read-only grant and strict record verification.
+The shared expiry contract accepts a future finite expiry or an explicitly present null expiry
+for an otherwise valid read-only grant; missing, malformed, expired and naive expiry still refuse.
 Only that explicit bootstrap token goes through private worker stdin, never argv or an inherited
 credential environment.  The source supplies only prod and its exact read path; it never discovers
 another consumer, an ambient token, a project file, a login session or a fallback application.
@@ -499,9 +501,10 @@ existing destinations and symlinked or unsafe destination parents.  The artifac
 seat policy, host configuration, environment, credential file, external app or second client implementation.
 The receipt proves prepared code bytes only; it authorizes no installation or restart.
 
-Activation remains held until the canonical writer/bounded-reader dependencies are on main, every
-existing purpose has a verified own exact-scope read binding with finite expiry, and the managed
-installed layout passes normal owner-PR/App/verification-channel acceptance.  The existing fixed
+The canonical bounded reader is on main; this source unit does not qualify a live binding.
+Activation remains held until every existing purpose has a verified own exact-scope read binding
+with finite expiry and the managed installed layout passes normal owner-PR/App/verification-channel
+acceptance.  The existing fixed
 five-file deployment transaction does not install this larger artifact.  Preserve the working release
 until a separately authorized installation and those actual acceptance checks succeed.
 
