@@ -6,6 +6,26 @@ Mac.  It re-checks the registry, then asks `grok-drive` about that one chat.  A 
 is not idle is `busy` and is not prompted.  The prompt is wake metadata, never a Zulip
 message body.  This module does not arm delivery.
 
+What "live" means here.  The registry's row for a GROK chat is open from the chat's first hook
+until the server's stale sweeper ends it, and that sweeper ends only a chat that is stale AND
+replaced by a newer chat of the same seat:  the last Grok chat the owner used stays open for
+good.  `grok-drive list` says `live: true` for a chat only while a Grok TUI has it open
+(`~/.grok/active_sessions.json`, which Grok writes while a tab is open and clears when it
+closes or Grok quits).  The two disagree for every chat that was quit and not resumed, and the
+router, which only reads the registry, keeps picking it.  Such a wake is refused before any
+prompt, with one of two precise codes (it used to be one code, `not-live`, for both):
+
+    tui-not-attached   the chat is in grok-drive's list and no Grok TUI has it open.  The
+                       owner must reopen it (`grok --resume <session id>`), or open a new Grok
+                       chat, which registers and is picked from then on.  Nothing is queued
+                       here:  the Zulip message is still in the seat's inbox.
+    chat-not-listed    the chat is in neither the leader's list nor the TUI registry, so
+                       nothing on this Mac knows it (its store was deleted, or this is
+                       another Mac's chat).
+
+Neither is retried:  nothing the router can do on its own makes a Grok TUI appear, and a
+headless resume of a quit chat is not done, because it would run tools with nobody watching.
+
 Python 3.11+, standard library only, plus the router's own modules.
 """
 
@@ -17,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -33,6 +54,9 @@ SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TURN_CODE_RE = re.compile(r"[a-z0-9-]{1,40}")
 NOT_IDLE = frozenset({"working", "needs-input"})
+# Why a chat the registry holds open cannot be prompted (module docstring, What "live" means).
+NOT_ATTACHED = "tui-not-attached"
+NOT_LISTED = "chat-not-listed"
 LIST_TIMEOUT = 30.0
 PROMPT_TIMEOUT = 40.0
 FROM_NAME = "wake-router"
@@ -44,6 +68,9 @@ NEVER_RAN = frozenset(
     {
         "unknown-host",
         "bad-request",
+        "tui-not-attached",
+        "chat-not-listed",
+        # What a Mac that has not been updated yet still answers for both of the above.
         "not-live",
         "no-cwd",
         "bad-cwd",
@@ -277,16 +304,25 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
             break
     if found is not None:
         return found
-    # An incomplete list is not proof the chat is gone.
+    # An incomplete list is not proof the chat is gone — and neither is a list whose
+    # helper never said it was whole (the plain-list fallback of an older helper answers
+    # one page and names no `complete`):  both retry, and only a list the helper called
+    # complete can refuse (Kody, PR 2306 round 3).
     if payload.get("ok") is not True or payload.get("partial") is True:
         return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
-    return WR.Delivery("refused", "grok-drive", code="not-live")
+    if payload.get("complete") is not True:
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+    return WR.Delivery("refused", "grok-drive", code=NOT_LISTED)
 
 
 def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
     """The chat's cwd when a prompt may be sent, else the outcome and no prompt."""
-    if row.get("live") is not True:
-        return WR.Delivery("refused", "grok-drive", code="not-live")
+    live = row.get("live")
+    if live is False:
+        return WR.Delivery("refused", "grok-drive", code=NOT_ATTACHED)
+    if live is not True:
+        # A missing or malformed field does not show that no TUI has the chat open.
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
     if row.get("turnState") != "idle":
         return WR.Delivery("busy", "grok-drive", code=_turn_code(row.get("turnState")))
     cwd = row.get("cwd")
@@ -366,7 +402,26 @@ def deliver_request(
         if blocked is not None:
             return _answer(request, blocked)
         try:
-            _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
+            # The whole inventory, not one page:  a chat on a later page would otherwise
+            # read as chat-not-listed, which is final, when its page was simply never
+            # fetched (Kody, PR 2306).  An incomplete list answers drive-list-unavailable.
+            # The installed helper on a host can be older than this checkout and reject the
+            # flag, so an answer without a session list falls back to the plain list the
+            # older helper speaks (Kody, PR 2306 round 2) — inside the same absolute
+            # deadline, never a second full budget (Kody, PR 2306 round 3).
+            deadline = time.monotonic() + LIST_TIMEOUT
+            _code, payload = _invoke(
+                env, ["list", "--all-pages"], max(0.001, deadline - time.monotonic()), runner
+            )
+            if payload is None or not isinstance(payload.get("sessions"), list):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # The budget is spent and the answer cannot be trusted:  that is the
+                    # timeout it was, not an unreadable inventory (Kody, PR 2306 round 3).
+                    return _answer(
+                        request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout")
+                    )
+                _code, payload = _invoke(env, ["list"], remaining, runner)
         except subprocess.TimeoutExpired:
             return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything

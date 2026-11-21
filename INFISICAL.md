@@ -196,6 +196,15 @@ The Operator's Linear project webhook keeps Zulip and the repo linkifiers equal 
 
 Each value is never printed, logged or written to a file.
 
+## Fleet activity daily digest (AFC-846)
+
+`.github/workflows/fleet-activity-site.yml` builds the public `activity.jays.services` daily digest (`scripts/build-fleet-daily-digest.py`), including Linear issues opened and closed for verified-public repositories only.  It loads `LINEAR_API_KEY` from this project, `prod`, folder `/fleet-activity`, via `scripts/infisical-fetch.mjs` and the scoped read-only service token `INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN` (kept in `/github-actions` so the `ai-fleet-coordinator-gh-actions` sync copies it into repository Actions secrets).
+
+| Name | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `LINEAR_API_KEY` | `/fleet-activity` | Secret read-only Linear API key; read by `fleet-activity-site.yml` via `scripts/infisical-fetch.mjs` |
+| `INFISICAL_FLEET_ACTIVITY_LINEAR_READ_TOKEN` | `/github-actions` | Secret read-only service token, scope `prod:/fleet-activity`, synced to GitHub Actions secrets |
+
 ## Linear living comments (the Zulip -> Linear relay, folded into the Operator)
 
 The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the owner's Linear developer token — a personal API key with Write permission — held in this project, `prod`, folder `/linear`, as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.  (Owner ruling 2026-11-03:  the lane first minted tokens from the Operator app's OAuth pair, but the app's registered scopes are `read` + `comments:create` only, so comment edits fail;  the developer token replaces the pair for this job, and the pair is no longer read by the daemon.)  The daemon reads the key through ONE scoped read-only Infisical service token, `operator-linear-read`, scoped to exactly `prod` `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens" row 61), resolved from the runtime-only variable `OPERATOR_LINEAR_INFISICAL_TOKEN` or the `[linear_comments] infisical_token_file` — never through a machine identity, and no Linear token is bound to the container.  The key is fetched at daemon start and held in memory only.  Nothing reads a seat's Linear credential for this job.
@@ -337,6 +346,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `WAKE_ROUTER_DELIVERY_SEATS` | W2 | list | empty | no | nothing | in folder `/wake-router`;  the seats the wake router may deliver for;  empty means none, whatever WAKE_ROUTER_DELIVERY_ENABLED says |
 | `WAKE_ROUTER_WORKERS` | W2 | int 1 to 64 | `4` | no | only lower it | in folder `/wake-router`;  wake router worker threads;  read when the router starts, so a new value needs a restart |
 | `WAKE_ROUTER_MAX_DELIVERIES` | W2 | int 1 to 256 | `16` | no | only lower it | in folder `/wake-router`;  deliveries that may run at once, each of which may be a whole headless turn |
+| `WAKE_ROUTER_TURN_MAX_WAKES` | W2 | int 1 to 8 | `1` | no | only lower it | in folder `/wake-router`;  most wakes one idle turn may carry for one chat;  1 is off, and unset counts as not set;  only a platform that declares turns uses more;  a turn may run the resume limit once per wake it carries, so it can outlast the shutdown wait |
 | `WAKE_ROUTER_MAX_ATTEMPTS` | W2 | int 1 to 50 | `5` | no | only lower it | in folder `/wake-router`;  failed tries before a wake ends in a dead receipt;  a busy or unreachable chat uses up none |
 | `WAKE_ROUTER_RETRY_BACKOFF` | W2 | str | `30,120,300,900` | no | nothing | in folder `/wake-router`;  seconds to wait after each failed try, in order;  the last repeats |
 | `WAKE_ROUTER_BUSY_RETRY_SECONDS` | W2 | int 1 to 3600 | `30` | no | only raise it | in folder `/wake-router`;  seconds before asking a busy chat again |
