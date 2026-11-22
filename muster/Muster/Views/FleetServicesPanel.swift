@@ -303,7 +303,7 @@ struct FleetServicesPanel: View {
                     .font(.headline)
                 Spacer()
                 Button {
-                    Task { await processModel.refresh() }
+                    Task { await processModel.checkProcesses() }
                 } label: {
                     Label("Check Processes", systemImage: "arrow.clockwise")
                 }

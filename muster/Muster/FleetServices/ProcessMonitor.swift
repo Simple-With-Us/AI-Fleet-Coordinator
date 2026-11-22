@@ -294,10 +294,25 @@ public enum FleetProcessClassifier {
     /// The fleet helper name in the command, when there is one.
     ///
     /// The helper is usually a Node script, so the process name is `node` and
-    /// only the script path says which helper it is.
+    /// only the script path says which helper it is.  The name has to stand as
+    /// a whole token of the command — the script's own file name, with a
+    /// script extension allowed — the way `namesFleetCheckout` and
+    /// `isViteProcess` match.  A looser substring match would call any
+    /// command that merely names a helper the helper itself:  a log tail, an
+    /// editor or a search over the helper's files is not the helper, and it
+    /// must never be offered a stop as one.
     public static func helperName(in command: String) -> String? {
-        let lower = command.lowercased()
-        return fleetHelperNames.first { lower.contains($0) }
+        let scriptExtensions = [".js", ".mjs", ".cjs", ".ts", ".py", ".sh"]
+        let tokens = command.lowercased().split(whereSeparator: { $0 == " " || $0 == "/" })
+        for token in tokens {
+            let name = String(token)
+            if fleetHelperNames.contains(name) { return name }
+            for ext in scriptExtensions where name.hasSuffix(ext) {
+                let stem = String(name.dropLast(ext.count))
+                if fleetHelperNames.contains(stem) { return stem }
+            }
+        }
+        return nil
     }
 
     /// The executable's own name.
