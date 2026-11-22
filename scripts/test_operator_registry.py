@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1947,11 +1948,45 @@ class RegistryTest(unittest.TestCase):
             ("2026-11-22T00:00:00.000Z", old["record_id"]),
         )
         self.reg._conn.commit()
-        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        ended = R.sweep_stale(
+            self.db,
+            platform="minimax",
+            seat="MM",
+            stale_after_minutes=120,
+            now=datetime(2026, 11, 22, 12, 0, tzinfo=UTC),
+        )
         self.assertEqual([row["record_id"] for row in ended], [old["record_id"]])
+        # An orphan retirement is reported in `ended` too, told apart by its
+        # reason, and stamped with the sweep's injected moment, not wall-clock.
+        self.assertEqual(ended[0]["reason"], "session already closed; its alias was never retired")
+        retired_at = self.reg._conn.execute(
+            "SELECT retired_at FROM alias_assignments WHERE record_id = ?", (old["record_id"],)
+        ).fetchone()[0]
+        self.assertEqual(retired_at, "2026-11-22T12:00:00.000Z")
         history = R.letter_history(self.db, "minimax")
         retired = [row for row in history if row["letter"] == old["label"]]
         self.assertFalse(retired[0]["live"])
+
+    def test_retire_closed_aliases_limit_retires_one_at_a_time(self):
+        olds = [
+            self.reg.resolve_or_register(ident(platform="minimax", native=f"native-{n}"))
+            for n in (1, 2)
+        ]
+        for old in olds:
+            self.reg._conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", old["record_id"]),
+            )
+        self.reg._conn.commit()
+        with self.reg._write_txn() as conn:
+            retired = self.reg._retire_closed_aliases(
+                conn, "minimax", "2026-11-22T12:00:00.000Z", limit=1
+            )
+        self.assertEqual([row["record_id"] for row in retired], [olds[0]["record_id"]])
+        still_live = self.reg._conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments WHERE retired_at IS NULL"
+        ).fetchone()[0]
+        self.assertEqual(still_live, 1)
 
     def test_missing_identity_fields_raise(self):
         with self.assertRaises(ValueError):
