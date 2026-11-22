@@ -2380,6 +2380,22 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
 
 _SETTINGS_UNKNOWN_TYPE_RE = re.compile(r"^([A-Za-z0-9_.*-]+) needs a type from ")
 
+# The spec types the Eavesdropper's settings editor learned after the oldest
+# image this host still runs.  An image that predates one of them refuses the
+# whole request, and only an entry of one of these types may be dropped to let
+# the rest of the request through:  the editor's own answer names the entry,
+# but the host decides from its own allowlist whether that entry may go, so a
+# wrong or hostile answer cannot weaken the allowlist entry by entry.  `seats`
+# came with the notes_queue seat lists (AFC-2341).
+_SETTINGS_NEWLY_ADDED_TYPES = frozenset({"seats"})
+
+# The actions that may ask the editor again after it refused the allowlist.
+# `get` and `plan` write nothing;  `save`, `initialize` and `reconcile` carry
+# the request identity that makes a repeat of the request a replay in the
+# canonical writer's ledger.  `apply` writes the live file and has no
+# identity, so it keeps its refusal.
+_SETTINGS_RETRY_ACTIONS = ("get", "plan", "save", "initialize", "reconcile")
+
 
 def _strip_unknown_allowlist_entry(allowlist, where):
     """Drop the allowlist entry `where` names;  return (("seat"|table, name), report) or None.
@@ -2388,20 +2404,34 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     the host allowlist now uses (for example `seats`) and refuses the whole
     request for it.  Dropping only that entry leaves it unreadable and
     unwritable through the old editor — fail closed for that one key — while
-    every known setting keeps working until the image catches up.  Only a
-    well-formed spec (a table with a string `type`) may be dropped:  a
-    corrupt entry is not an unknown type, and its refusal stands.  The
-    report is the full `where` path, so a dropped sub-key does not read as
-    its whole parent entry.  When the last sub-key of a parent entry goes,
-    the parent goes with it, so no empty parent spec reaches the editor."""
+    every known setting keeps working until the image catches up.  Only an
+    entry of a newly added type may be dropped:  the editor's answer names
+    the entry, but the host decides from its own allowlist whether that entry
+    may go.  Only the exact path shapes the editor names are handled, for the
+    same reason:  a table entry (`table.name`), a table sub-key
+    (`table.name.key`), a seat entry (`seat.*.name`) or a seat sub-key
+    (`seat.*.name.key`).  A deeper path names nothing the editor produces, so
+    it is refused rather than guessed at, and a corrupt entry is not an
+    unknown type, and its refusal stands.  The report is the full `where`
+    path, so a dropped sub-key does not read as its whole parent entry.
+    When the last sub-key of a parent entry goes, the parent goes with it,
+    so no empty parent spec reaches the editor."""
     if not isinstance(allowlist, dict) or not isinstance(where, str):
         return None
 
-    def typed(spec):
-        return isinstance(spec, dict) and isinstance(spec.get("type"), str)
+    def newly_added(spec):
+        """True for a spec whose type the editor learned after the oldest image."""
+        return (
+            isinstance(spec, dict)
+            and isinstance(spec.get("type"), str)
+            and spec["type"] in _SETTINGS_NEWLY_ADDED_TYPES
+        )
 
     parts = where.split(".")
-    if parts[0] == "seat" and len(parts) >= 3 and parts[1] == "*":
+    if parts[0] == "seat":
+        if len(parts) not in (3, 4) or parts[1] != "*":
+            # Not a path shape the editor names, so nothing is dropped.
+            return None
         seat = allowlist.get("seat")
         if not isinstance(seat, dict):
             return None
@@ -2409,13 +2439,13 @@ def _strip_unknown_allowlist_entry(allowlist, where):
             spec = seat.get(parts[2])
             return (
                 (("seat", parts[2]), where)
-                if typed(spec) and seat.pop(parts[2], None) is not None
+                if newly_added(spec) and seat.pop(parts[2], None) is not None
                 else None
             )
         spec = seat.get(parts[2])
         keys = spec.get("keys") if isinstance(spec, dict) else None
         sub = keys.get(parts[3]) if isinstance(keys, dict) else None
-        if isinstance(keys, dict) and typed(sub) and keys.pop(parts[3], None) is not None:
+        if isinstance(keys, dict) and newly_added(sub) and keys.pop(parts[3], None) is not None:
             if not keys:
                 # The parent has no sub-key left:  drop it whole, so no empty
                 # parent spec reaches the editor (it refuses "%s needs its keys").
@@ -2424,7 +2454,7 @@ def _strip_unknown_allowlist_entry(allowlist, where):
             return (("seat", parts[2]), where)
         return None
     tables = allowlist.get("tables")
-    if not isinstance(tables, dict) or len(parts) < 2:
+    if not isinstance(tables, dict) or len(parts) not in (2, 3):
         return None
     entries = tables.get(parts[0])
     if not isinstance(entries, dict):
@@ -2433,13 +2463,13 @@ def _strip_unknown_allowlist_entry(allowlist, where):
         spec = entries.get(parts[1])
         return (
             ((parts[0], parts[1]), where)
-            if typed(spec) and entries.pop(parts[1], None) is not None
+            if newly_added(spec) and entries.pop(parts[1], None) is not None
             else None
         )
     spec = entries.get(parts[1])
     keys = spec.get("keys") if isinstance(spec, dict) else None
     sub = keys.get(parts[2]) if isinstance(keys, dict) else None
-    if isinstance(keys, dict) and typed(sub) and keys.pop(parts[2], None) is not None:
+    if isinstance(keys, dict) and newly_added(sub) and keys.pop(parts[2], None) is not None:
         if not keys:
             # The parent has no sub-key left:  drop it whole, so no empty parent
             # spec reaches the editor (it refuses "%s needs its keys").
@@ -2543,6 +2573,14 @@ def eavesdropper_settings(
         # change is never silently dropped.
         for _ in range(16):
             if document.get("errorCode") != "allowlist_invalid":
+                break
+            if document.get("replaced") or document.get("rolledBack"):
+                # The editor's answer says it touched the file, so this refusal
+                # came after a side effect:  a retry would repeat it.
+                break
+            if action not in _SETTINGS_RETRY_ACTIONS:
+                # An action that can act twice does not ask again:  `apply`
+                # writes the live file and carries no request identity.
                 break
             match = _SETTINGS_UNKNOWN_TYPE_RE.match(str(document.get("detail") or ""))
             if match is None:
