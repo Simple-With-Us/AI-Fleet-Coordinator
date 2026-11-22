@@ -2527,13 +2527,24 @@ class ReadablePostTests(WorkerCase):
         self.assertNotIn(sha, body)
 
     def test_a_long_hex_run_in_the_text_is_still_withheld_whole(self) -> None:
-        # The text itself is still scanned:  this is the row AFC-834 is about, and this
-        # change does not touch it.
-        sha = "a" * 40
+        # The text itself is still scanned:  a hex run longer than a git SHA-1 is still
+        # withheld whole.  AFC-834 reclassifies a bare 40-character run as a git SHA-1 and
+        # therefore as prose, so the long-run fixture is 64 characters:  the wider row
+        # still holds it, and the text (not only the markup) is what is scanned.
+        sha = "a" * 64
         self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
         body = self.lin.created[0][1]
         self.assertIn(lr.WITHHELD, body)
         self.assertNotIn(sha, body)
+
+    def test_a_bare_git_sha_in_the_text_is_relayed_as_prose(self) -> None:
+        # AFC-834:  a bare 40-character lowercase hex run in the text is a git SHA-1, so
+        # the relay relays it as ordinary text instead of withholding the whole post.
+        sha = "4027256f4b281a9c5d3e7f608192a4b5c6d7e8f9"
+        self.w.handle_event(message(1, "AFC-1 relay", "the commit is %s" % sha))
+        body = self.lin.created[0][1]
+        self.assertNotIn(lr.WITHHELD, body)
+        self.assertIn(sha, body)
 
     def test_a_credential_inside_a_link_url_is_still_withheld_whole(self) -> None:
         token = "ghp_" + "fake" * 9
