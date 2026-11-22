@@ -182,6 +182,30 @@ class AllowlistTests(Case):
                 with self.assertRaises(M.Refusal):
                     M.validate_allowlist(doc)
 
+    def test_an_unknown_spec_type_is_left_out_not_a_whole_refusal(self) -> None:
+        # Version skew: a newer allowlist names a type this editor predates
+        # (as the shipped `seats` entries did to a pre-#2341 image).  The
+        # unknown entry is dropped — neither readable nor writable — and
+        # every known entry still works, instead of refusing the whole read.
+        doc = shipped_allowlist()
+        doc["tables"]["notes_queue"]["server_seats"] = {"type": "future-list"}
+        doc["seat"]["future_knob"] = {"type": "future-thing", "extra": 1}
+        checked = M.validate_allowlist(doc)
+        self.assertNotIn("server_seats", checked["tables"]["notes_queue"])
+        self.assertIn("worker_seats", checked["tables"]["notes_queue"])
+        self.assertNotIn("future_knob", checked["seat"])
+        self.assertIn("enabled", checked["seat"])
+        answer, code = M.run_request(
+            {"action": "get", "allowlist": doc}, path=self.live
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertNotIn("notes_queue.server_seats", answer["settings"])
+        answer, code = M.run_request(
+            {"action": "plan", "allowlist": doc, "set": {"notes_queue.server_seats": []}},
+            path=self.live,
+        )
+        self.assertEqual((code, answer["errorCode"]), (2, "key_not_allowed"))
+
     def test_a_secret_named_sub_key_cannot_be_listed_inside_a_table(self) -> None:
         doc = shipped_allowlist()
         doc["seat"]["routine"]["keys"]["token_file"] = {"type": "bool"}
@@ -199,7 +223,6 @@ class AllowlistTests(Case):
             lambda d: d.update(schemaVersion=2),
             lambda d: d.update(extra=1),
             lambda d: d["tables"].update(seat={}),
-            lambda d: d["seat"].update(enabled={"type": "anything"}),
             lambda d: d["tables"]["daemon"].update(coalesce_seconds={"type": "number", "min": 5, "max": 1}),
             lambda d: d["seat"].update(enabled={"type": "bool", "extra": 1}),
         ):
@@ -1538,6 +1561,51 @@ class ControlVerbTests(Case):
         self.assertIs(request["allowlist"]["applyEnabled"], False)
         self.assertNotIn("set", request)
         self.assertEqual(self.audit_rows(), [])
+
+    def test_a_get_retries_past_an_editor_that_predates_a_spec_type(self) -> None:
+        # The deployed image's editor predates `seats` and refuses the whole
+        # read for it (the Muster screenshot).  The helper drops only the
+        # entries the old editor names and retries, so the read succeeds and
+        # says what was left out;  the dropped keys stay unreadable there.
+        class OldEditorReader(FakeReader):
+            def __call__(self, argv, timeout, env, max_bytes, data=None):
+                self.calls.append({"argv": list(argv), "env": dict(env), "data": data, "timeout": timeout})
+                request = json.loads(data)
+                queue = request["allowlist"]["tables"].get("notes_queue", {})
+                for name, spec in queue.items():
+                    if isinstance(spec, dict) and spec.get("type") == "seats":
+                        doc = {
+                            "tool": "eavesdropper-settings", "ok": False, "result": "refused",
+                            "errorCode": "allowlist_invalid",
+                            "detail": "notes_queue.%s needs a type from bool, int, number, enum, string, table, pairs, seat-env" % name,
+                        }
+                        return 2, json.dumps(doc).encode(), b"", False
+                doc = {"tool": "eavesdropper-settings", "ok": True, "result": "read", "settings": {"notes_queue.enabled": True}}
+                return 0, json.dumps(doc).encode(), b"", False
+
+        answer, code, reader = self.server("plan", reader=OldEditorReader())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "read"))
+        self.assertEqual(len(reader.calls), 3)
+        self.assertEqual(answer["skippedAllowlist"], ["notes_queue.server_seats", "notes_queue.worker_seats"])
+        self.assertIn("left out", answer["detail"])
+        final = json.loads(reader.calls[-1]["data"])
+        self.assertNotIn("server_seats", final["allowlist"]["tables"]["notes_queue"])
+
+    def test_a_change_to_a_dropped_entry_keeps_the_original_refusal(self) -> None:
+        class OldEditorReader(FakeReader):
+            def __call__(self, argv, timeout, env, max_bytes, data=None):
+                self.calls.append({"argv": list(argv), "env": dict(env), "data": data, "timeout": timeout})
+                doc = {
+                    "tool": "eavesdropper-settings", "ok": False, "result": "refused",
+                    "errorCode": "allowlist_invalid",
+                    "detail": "notes_queue.server_seats needs a type from bool, int, number, enum, string, table, pairs, seat-env",
+                }
+                return 2, json.dumps(doc).encode(), b"", False
+
+        stdin = json.dumps({"set": {"notes_queue.server_seats": ["CLAUDE"]}}).encode()
+        answer, code, reader = self.server("plan", stdin, OldEditorReader())
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", "allowlist_invalid"))
+        self.assertEqual(len(reader.calls), 1)
 
     def test_a_plan_sends_the_changes_on_stdin_and_never_in_the_argv(self) -> None:
         document = {"tool": "eavesdropper-settings", "ok": True, "result": "planned", "changes": [{"key": "seat.ZC.enabled"}], "diff": ["+enabled = false"], "check": {"ok": True, "problems": []}}

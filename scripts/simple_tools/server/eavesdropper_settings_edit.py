@@ -198,10 +198,20 @@ class StepFailed(Exception):
 
 
 def _check_spec(spec, where, nested=False):
-    if not isinstance(spec, dict) or spec.get("type") not in SPEC_TYPES:
+    """The cleaned spec, or None for a type this editor does not know.
+
+    A spec type a newer allowlist names and this editor predates is not a
+    malformed allowlist:  the entry is left out, so it can neither be read
+    nor written here, and every known entry still works.  That is the same
+    rule Muster's parser uses, and it keeps a host/container version skew
+    from refusing the whole settings read.  A known type with a bad range
+    or shape still refuses the whole allowlist below."""
+    if not isinstance(spec, dict):
         raise Refusal(
             "allowlist_invalid", "%s needs a type from %s" % (where, ", ".join(SPEC_TYPES))
         )
+    if spec.get("type") not in SPEC_TYPES:
+        return None
     kind = spec["type"]
     known = {"type"}
     if kind in ("int", "number"):
@@ -249,18 +259,25 @@ def _check_spec(spec, where, nested=False):
         keys = spec.get("keys")
         if not isinstance(keys, dict) or not keys:
             raise Refusal("allowlist_invalid", "%s needs its keys" % where)
+        cleaned = {}
         for name, sub in keys.items():
             if not isinstance(name, str) or not NAME_RE.fullmatch(name):
                 raise Refusal(
                     "allowlist_invalid", "%s has a sub-key name that is not allowed" % where
                 )
-            _check_spec(sub, "%s.%s" % (where, name), nested=True)
+            sub = _check_spec(sub, "%s.%s" % (where, name), nested=True)
+            if sub is None:
+                continue
             if sub["type"] != "seat-env" and _DENY_NAME_RE.search(name):
                 raise Refusal(
                     "allowlist_invalid",
                     "%s.%s reads as a secret, a path or a URL and can never be allowlisted"
                     % (where, name),
                 )
+            cleaned[name] = sub
+        if not cleaned:
+            return None
+        spec = dict(spec, keys=cleaned)
     elif kind == "seat-env":
         if not nested:
             raise Refusal("allowlist_invalid", "%s:  seat-env is for a sub-key only" % where)
@@ -269,12 +286,15 @@ def _check_spec(spec, where, nested=False):
         raise Refusal(
             "allowlist_invalid", "%s has unknown field(s): %s" % (where, ", ".join(unknown))
         )
+    return spec
 
 
 def validate_allowlist(doc):
     """The allowlist as `{"applyEnabled": bool, "seat": {key: spec}, "tables": {table: {key: spec}}}`,
     or Refusal(`allowlist_invalid`).  A key HARD_DENY names, or one whose name reads as a secret,
-    refuses the whole allowlist:  a file that asks for one is wrong, and is not half trusted."""
+    refuses the whole allowlist:  a file that asks for one is wrong, and is not half trusted.  An
+    entry whose spec type this editor does not know is left out of the result instead (see
+    `_check_spec`), so it cannot be read or written and does not refuse the rest."""
     if not isinstance(doc, dict) or doc.get("schemaVersion") != SCHEMA_VERSION:
         raise Refusal("allowlist_invalid", "the allowlist needs schemaVersion %d" % SCHEMA_VERSION)
     unknown = sorted(
@@ -299,15 +319,25 @@ def validate_allowlist(doc):
         if not isinstance(table, str) or not NAME_RE.fullmatch(table) or not isinstance(keys, dict):
             raise Refusal("allowlist_invalid", "a table in the allowlist is not allowed")
         groups.append((table, keys))
+    cleaned_groups = []
     for table, keys in groups:
+        cleaned = {}
         for name, spec in keys.items():
             where = "%s.%s" % ("seat.*" if table == "seat" else table, name)
             if not isinstance(name, str) or not NAME_RE.fullmatch(name):
                 raise Refusal("allowlist_invalid", "%s is not a key name that is allowed" % where)
             if name in HARD_DENY.get(table, ()) or _DENY_NAME_RE.search(name):
                 raise Refusal("allowlist_invalid", "%s can never be allowlisted" % where)
-            _check_spec(spec, where)
-    return {"applyEnabled": doc["applyEnabled"], "seat": dict(seat), "tables": dict(tables)}
+            spec = _check_spec(spec, where)
+            if spec is not None:
+                cleaned[name] = spec
+        cleaned_groups.append((table, cleaned))
+    cleaned = dict(cleaned_groups)
+    return {
+        "applyEnabled": doc["applyEnabled"],
+        "seat": cleaned["seat"],
+        "tables": {table: keys for table, keys in cleaned_groups if table != "seat"},
+    }
 
 
 # MARK: - Keys and values
