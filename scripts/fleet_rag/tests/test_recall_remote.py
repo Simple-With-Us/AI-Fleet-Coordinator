@@ -220,6 +220,8 @@ class RemoteRecall(unittest.TestCase):
                 # A launcher that declares no seat but supplies the bearer goes hosted too.
                 ({"SIMPLE_TOOLS_BEARER": BEARER}, "search", True),
                 ({"SIMPLE_TOOLS_BEARER": BEARER}, "stats", True),
+                # A malformed bearer with no seat keeps the direct route instead of failing hosted.
+                ({"SIMPLE_TOOLS_BEARER": "not a bearer"}, "search", False),
                 ({}, "search", False),
             )
             for env, cmd, expected in cases:
