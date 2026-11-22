@@ -20,7 +20,7 @@ from git_relay.secret_scan import category_id, scan_refusal
 from git_relay.workflow_verbs import Refused
 
 # Obviously synthetic fixtures, one per scanner category exercised below.
-# The AWS and JWT fixtures are assembled from pieces so the source file does
+# The credential-shaped fixtures are assembled from pieces so the source file does
 # not itself carry a contiguous credential-shaped literal (gitleaks flags the
 # JWT shape, and the relay's own scanner refuses the AWS shape); the runtime
 # values are exactly the shapes under test.
@@ -28,7 +28,7 @@ AWS_FIXTURE = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS's published example key id
 GITHUB_FIXTURE = "ghp_" + "A" * 36
 BEARER_FIXTURE = "Bearer " + "synthetic" * 3
 JWT_FIXTURE = "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".signaturepart"
-SLACK_FIXTURE = "xoxb-1234567890ab"
+SLACK_FIXTURE = "xoxb-" + "1234567890ab"
 ASSIGNED_FIXTURE = "api_key = 'syntheticvalue123'"
 
 
