@@ -57,11 +57,33 @@ def once(text, old, new):
 
 def transform(text, source):
     start, stop = "_KNOWN_PATTERN_DIGESTS = frozenset(", "\n\n\ndef _pattern_known"
-    text = once(
-        text,
-        text[text.index(start) : text.index(stop)],
-        source[source.index(start) : source.index(stop)],
-    )
+    block = source[source.index(start) : source.index(stop)]
+    # Fail closed: the spliced block must be exactly one assignment of a frozenset of 64-hex strings.
+    tree = ast.parse(block)
+    ok = len(tree.body) == 1 and isinstance(tree.body[0], ast.Assign)
+    if ok:
+        node = tree.body[0]
+        call = node.value
+        ok = (
+            [t.id for t in node.targets if isinstance(t, ast.Name)] == ["_KNOWN_PATTERN_DIGESTS"]
+            and len(node.targets) == 1
+            and isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "frozenset"
+            and len(call.args) == 1
+            and not call.keywords
+            and isinstance(call.args[0], (ast.Tuple, ast.Set, ast.List))
+            and all(
+                isinstance(e, ast.Constant)
+                and isinstance(e.value, str)
+                and len(e.value) == 64
+                and all(c in "0123456789abcdef" for c in e.value)
+                for e in call.args[0].elts
+            )
+        )
+    if not ok:
+        raise ValueError("digest block is not a plain frozenset of digests")
+    text = once(text, text[text.index(start) : text.index(stop)], block)
     nodes = {
         n.name: n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
     }
