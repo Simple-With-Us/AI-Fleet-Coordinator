@@ -108,3 +108,13 @@ own-seat server capability without bypassing any refusal. An actual authorized
 write and readback remain separate. No held PR packet, including 2209, is approved
 for replay by this document. The separate workflow repair's historical scanner
 finding is not waived by this preparation.
+
+## Reviewed pattern digest refresh
+
+The relay now advertises the native origin fields on gr_open_pr (origin_session_claim,
+origin_letter_claim). The client only accepts regexes whose digests are in its reviewed
+`_KNOWN_PATTERN_DIGESTS` set, so a client built from the #2120 source refused the whole tool
+list. The builder now takes `scripts/git-tools/git` at the current main bytes (digest pinned in
+`INPUTS`) and replaces the baseline's `_KNOWN_PATTERN_DIGESTS` block with that file's block, so the
+output carries the same reviewed digest set as main. Everything else is unchanged: five pinned
+baseline files, two pinned inputs, pinned output digests, inactive and not installed.

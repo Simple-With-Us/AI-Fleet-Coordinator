@@ -16,13 +16,13 @@ BASE = {
     "scripts/simple_tools/secretscan.py": "cb9256fdb92f10eb834ccfeee6a87c21c6b1f11c325d46c7704950cc5f9aa9d5",
 }
 INPUTS = {
-    "git": "47e12d5c2f9cbd8f3284801849cfa09f85abbb447ba3f69e4b504ba6853da6b4",
+    "git": "6f7d2126ddd4d32b9d04e3051d72e162764d0c4d66c6359e4df1cbf51d8a35cd",
     "catalog.json": "3325eb0a1971fa3fb0b1843d9cf1f89d48e7867279576eb89535983d236f31cc",
 }
 RESULTS = dict(
     BASE,
     **{
-        "scripts/git-tools/git": "67462bec3257b5179634007658c5f9d18485055c50507f1419e80849adff29fd",
+        "scripts/git-tools/git": "9fd8feb31574c16ab9db2546ba47382debbd80bb950eb9092f0d7b1b075e9261",
         "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
     },
 )
@@ -56,6 +56,35 @@ def once(text, old, new):
 
 
 def transform(text, source):
+    start, stop = "_KNOWN_PATTERN_DIGESTS = frozenset(", "\n\n\ndef _pattern_known"
+    block = source[source.index(start) : source.index(stop)]
+    # Fail closed: the spliced block must be exactly one assignment of a frozenset of 64-hex strings.
+    tree = ast.parse(block)
+    ok = len(tree.body) == 1 and isinstance(tree.body[0], ast.Assign)
+    if ok:
+        node = tree.body[0]
+        call = node.value
+        ok = (
+            [t.id for t in node.targets if isinstance(t, ast.Name)] == ["_KNOWN_PATTERN_DIGESTS"]
+            and len(node.targets) == 1
+            and isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "frozenset"
+            and len(call.args) == 1
+            and not call.keywords
+            and isinstance(call.args[0], (ast.Tuple, ast.Set, ast.List))
+            and len(call.args[0].elts) > 0
+            and all(
+                isinstance(e, ast.Constant)
+                and isinstance(e.value, str)
+                and len(e.value) == 64
+                and all(c in "0123456789abcdef" for c in e.value)
+                for e in call.args[0].elts
+            )
+        )
+    if not ok:
+        raise ValueError("digest block is not a plain frozenset of digests")
+    text = once(text, text[text.index(start) : text.index(stop)], block)
     nodes = {
         n.name: n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
     }
