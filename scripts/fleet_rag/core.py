@@ -302,11 +302,13 @@ FLEET_OPS_ENV_NAMES = (
 def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
     """Present named values from this consumer's explicit Fleet-OPS reader.
 
-    The token is this reader's own scoped service token,  read from its own store;  a
-    token bound in the environment is only a copy of that same grant,  and it is used
-    when the store has none.  The recall reader's own scoped token is never a fallback
-    for this route.  A missing binding, an invalid name or a failed read returns an
-    empty map,  and the unavailable source is named on standard error,  never a value.
+    The token is this reader's own scoped service token,  read from its own store and
+    from nowhere else:  the store is the keychain entry or the mode-600 file under the
+    consumer's own home,  and no environment value is read as a token,  so a hand-set
+    copy can never replace the reviewed grant.  The recall reader's own scoped token is
+    never a fallback for this route.  A missing binding, an invalid name or a failed
+    read returns an empty map,  and the unavailable source is named on standard error,
+    never a value.
     """
     wanted = [name for name in names if name]
     if not wanted:

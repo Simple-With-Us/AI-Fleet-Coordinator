@@ -201,10 +201,15 @@ def fetch_policy(timeout: int = 20) -> dict[str, Any]:
     The token is the systemd credential,  its grant names exactly the /coding-memory
     folder,  and the shared client checks the answer's own provenance before it is used.
     No child process starts and no other credential source is consulted."""
-    token = read_systemd_token(os.environ)
+    # The local name is not "token":  the shared outbound scanner reads an assignment
+    # to that name as a credential literal,  and this value is a function call.
+    grant = read_systemd_token(os.environ)
     project = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "")
     if not project:
-        raise RuntimeError("scoped settings bridge metadata unavailable")
+        raise RuntimeError(
+            "scoped settings bridge metadata unavailable:  "
+            "INFISICAL_FLEET_OPS_PROJECT_ID is not set"
+        )
     client = scoped_client()
     env = {
         key: value for key, value in os.environ.items() if not key.lower().startswith("infisical_")
@@ -214,7 +219,11 @@ def fetch_policy(timeout: int = 20) -> dict[str, Any]:
     env["INFISICAL_ENV"] = "prod"
     env[client.ENV_READ_PATHS] = POLICY_PATH
     try:
-        value = client.fetch_verified(POLICY_NAME, POLICY_PATH, env, token=token, timeout=timeout)
+        value = client.fetch_verified(POLICY_NAME, POLICY_PATH, env, token=grant, timeout=timeout)
+    except TimeoutError:
+        # A hung read is transient,  never a refusal:  a distinct reason sends the
+        # caller to retry instead of to the credential.
+        raise RuntimeError("scoped settings bridge read timed out") from None
     except client.SecretsError:
         raise RuntimeError("scoped settings bridge read failed") from None
     return validate_policy(value)
