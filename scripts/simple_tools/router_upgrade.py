@@ -272,6 +272,7 @@ class ControlledUpgrade:
             os.fsync(handle.fileno())
         self.verify_old()
         compare(self.before, census(self.roots))
+        self.stop_attempted = True
         stopped(self.host, self.front, self.proc_root)
         stopped(self.host, self.router, self.proc_root)
         self.after = census(self.roots)

@@ -474,6 +474,8 @@ class InstallerRecovery(unittest.TestCase):
 
         for failure in (
             "snapshot",
+            "prestop-census",
+            "prestop-release",
             "front-stop",
             "router-stop",
             "stopped-census",
@@ -542,6 +544,11 @@ class InstallerRecovery(unittest.TestCase):
                 self.qualified = {"qualified": True}
                 self.snapshot = base / "upgrade-fixture-snapshot"
 
+            def verify_old(self):
+                if failure == "prestop-release":
+                    raise U.UpgradeRefused("injected original immutable release failure")
+                return super().verify_old()
+
             def recover_stopped(self):
                 events.append("recovery")
                 return super().recover_stopped()
@@ -566,6 +573,8 @@ class InstallerRecovery(unittest.TestCase):
                 raise U.UpgradeRefused("injected original stop failure")
 
         def census_fault(roots):
+            if failure == "prestop-census" and phase["stops"] == 0:
+                raise U.UpgradeRefused("injected original pre-stop census failure")
             if (
                 failure == "stopped-census"
                 and phase["stops"] == 2
@@ -610,8 +619,13 @@ class InstallerRecovery(unittest.TestCase):
                 os.getuid(),
             )
         self.assertEqual(result, 1, output.getvalue())
-        self.assertEqual(events, ["recovery"], output.getvalue())
-        self.assertIn("recovery outcome:", output.getvalue())
+        if failure in ("snapshot", "prestop-census", "prestop-release"):
+            self.assertEqual(events, [], output.getvalue())
+            self.assertEqual(phase["stops"], 0)
+            self.assertIn("live units left unchanged", output.getvalue())
+        else:
+            self.assertEqual(events, ["recovery"], output.getvalue())
+            self.assertIn("recovery outcome:", output.getvalue())
         if failure in ("new-unknown", "new-delivery"):
             recovered = json.loads(
                 (f.base / "upgrade-fixture-snapshot/recovery-census.json").read_text()
