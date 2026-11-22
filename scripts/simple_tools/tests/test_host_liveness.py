@@ -205,6 +205,21 @@ class SweeperLivenessTests(OneWriterTest):
             now=now,
         )
 
+    def pair_of(self, sid: str) -> str | None:
+        """The pair a chat still holds,  or None when it holds none."""
+        conn = sqlite3.connect(self.db)
+        try:
+            row = conn.execute(
+                "SELECT a.letter FROM alias_assignments a"
+                " JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE s.native_session_id = ? AND a.retired_at IS NULL",
+                (sid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+
+
     def test_a_live_chat_keeps_its_letter(self) -> None:
         self.create_store()
         self.register("CLAUDE", "old-1")
@@ -255,6 +270,45 @@ class SweeperLivenessTests(OneWriterTest):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["ended"], 1)
         self.assertNotIn("old-1", self.open_sids())
+
+    def test_a_kept_letter_is_not_handed_to_a_second_holder(self) -> None:
+        # Jet's check (AFC-878):  a live older holder keeps its pair,  so no second chat can
+        # be given that pair and no title restore can make a second visible holder.
+        self.create_store()
+        first = self.register("CLAUDE", "old-1")
+        self.age("old-1", 40)
+        self.register("CLAUDE", "new-1")
+        now = datetime.now(UTC)
+        self.report({"old-1": _iso(now)})
+        result = self.sweeper().maybe_run(self.clock.now)
+        self.assertEqual(result["ended"], 0)
+        self.assertEqual(self.pair_of("old-1"), first["label"])
+        for index in range(2, 6):
+            chat = self.register("CLAUDE", "new-%d" % index)
+            self.assertNotEqual(chat["label"], first["label"])
+            self.assertEqual(self.pair_of("old-1"), first["label"])
+
+    def test_a_pair_the_host_no_longer_holds_is_handed_on_once(self) -> None:
+        # The other side of the same check:  a chat the host no longer holds loses its pair,
+        # and the pair goes to one chat only,  so the registry holds one live holder of it.
+        self.create_store()
+        first = self.register("CLAUDE", "old-1")
+        self.age("old-1", 40)
+        self.register("CLAUDE", "new-1")
+        self.report({})
+        result = self.sweeper().maybe_run(self.clock.now)
+        self.assertEqual(result["ended"], 1)
+        self.assertIsNone(self.pair_of("old-1"))
+        # A released pair waits behind every free pair with fewer past issues,  so the freed
+        # pair is handed on last.  It goes to one chat,  and only one.
+        holders = []
+        for index in range(2, 30):
+            chat = self.register("CLAUDE", "new-%d" % index)
+            if chat["label"] == first["label"]:
+                holders.append("new-%d" % index)
+                break
+        self.assertEqual(len(holders), 1, holders)
+        self.assertEqual(self.pair_of(holders[0]), first["label"])
 
 
 #: The runtime's own table,  with the columns this row reads.
