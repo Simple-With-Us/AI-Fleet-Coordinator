@@ -40,7 +40,11 @@ def scoped_secret_get(path, name):
         raise RoutingError(name + " unavailable: no scoped token covers " + path, outcome="refused")
     try:
         import fleet_infisical as FI
-
+    except ImportError:
+        raise RoutingError(
+            name + " unavailable: Infisical reader not available", outcome="refused"
+        ) from None
+    try:
         env = dict(os.environ)
         env[FI.ENV_READ_PATHS] = path
         value, status = FI.fetch_scoped(name, path, account, env, timeout=LOOKUP_TIMEOUT_SECONDS)
