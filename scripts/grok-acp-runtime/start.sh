@@ -7,16 +7,35 @@
 set -euo pipefail
 
 # GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The shared scoped reader is the one command every consumer outside this repository
+# runs.  The account is named here,  so the read uses the grok-acp-ro service token
+# from this host's own store and never an ambient environment token.
+SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+TOKEN_ACCOUNT="grok-acp-ro"
+# The scoped read runs under the system interpreter,  the same one the other readers
+# use,  and it is checked first:  an interpreter that is not there is an interpreter
+# failure,  not a missing secret.
+PYTHON="/usr/bin/python3"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "grok-acp:  ${PYTHON} is not executable on this host,  so the scoped reader cannot run" >&2
+  exit 1
+fi
 if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
   # A reader that could not answer is not a missing secret:  the two failures name
   # different components,  so an operator repairs the one that is broken.
-  if GROK_AGENT_SECRET="$(/usr/bin/python3 -I "${SCRIPT_DIR}/../fleet_infisical_cli.py" get GROK_AGENT_SECRET --project fleet-ops --path /grok-acp 2>/dev/null)"; then
+  if GROK_AGENT_SECRET="$("$PYTHON" -I "${SCOPED_READER}" get GROK_AGENT_SECRET \
+    --folder /grok-acp --project fleet-ops --account "${TOKEN_ACCOUNT}" 2>/dev/null)"; then
     :
   else
     reader_status=$?
-    echo "the scoped reader could not return GROK_AGENT_SECRET (reader exit ${reader_status}):  the grok-acp-ro service token store is unavailable, refused the read or timed out" >&2
-    exit "${reader_status}"
+    case "$reader_status" in
+      2) reason="the command line was refused" ;;
+      3) reason="the name is not in that folder" ;;
+      4) reason="the grant refused the read or the token store was unavailable" ;;
+      *) reason="reader failed (exit ${reader_status})" ;;
+    esac
+    echo "missing GROK_AGENT_SECRET in Infisical /grok-acp:  the scoped reader at ${SCOPED_READER} could not read it with the ${TOKEN_ACCOUNT} scoped service token (${reason})" >&2
+    exit 1
   fi
 fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then

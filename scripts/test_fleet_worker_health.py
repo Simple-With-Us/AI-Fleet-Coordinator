@@ -71,9 +71,25 @@ class WorkerHealthReader(unittest.TestCase):
         old_cli = fwh.INFISICAL_CLI
         fwh.INFISICAL_CLI = "/nonexistent/fleet_infisical_cli.py"
         try:
-            self.assertEqual(fwh.read_key(), "")
+            # A reader that is not there is a broken reader,  not a missing value:
+            # the source that must be repaired is named.
+            with self.assertRaises(RuntimeError) as caught:
+                fwh.read_key()
+            self.assertIn("worker-health-ro", str(caught.exception))
         finally:
             fwh.INFISICAL_CLI = old_cli
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    def test_read_key_is_empty_when_the_folder_holds_no_such_name(self):
+        old_env = dict(os.environ)
+        os.environ.pop("HEALTH_HMAC_KEY", None)
+        try:
+            # The name is not in the folder:  that is a missing value,  and it is
+            # reported as one.
+            with mock.patch.object(fleet_infisical, "fetch_scoped", return_value=("", "absent")):
+                self.assertEqual(fwh.read_key(), "")
+        finally:
             os.environ.clear()
             os.environ.update(old_env)
 

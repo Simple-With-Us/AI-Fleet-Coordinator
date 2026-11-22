@@ -69,7 +69,14 @@ def read_key():
     if key:
         return key
     if not os.path.isfile(INFISICAL_CLI):
-        return ""
+        # A reader that is not there is a broken reader,  not a missing value:  the
+        # source that must be repaired is named,  so it stays visible.
+        raise RuntimeError(
+            "the Infisical reader (fleet_infisical_cli.py) is missing beside this script,  "
+            "so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        )
     try:
         import fleet_infisical as FI
     except ImportError:
@@ -96,6 +103,10 @@ def read_key():
             + type(exc).__name__
             + ")"
         ) from None
+    if status == "absent":
+        # The folder holds no such name:  that is a missing value,  and the caller
+        # sees it as one.
+        return ""
     if status != "ok":
         raise RuntimeError(
             "the "

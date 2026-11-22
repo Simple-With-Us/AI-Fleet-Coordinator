@@ -104,6 +104,15 @@ class FileStoreTests(unittest.TestCase):
             token, status = fi.token_from_store("../escape", home=self.home)
         self.assertEqual((token, status), ("", "no-token"))
 
+    def test_an_account_that_would_be_a_flag_is_refused(self) -> None:
+        # The account is passed to `security` as an argument,  so a name that
+        # starts with a dash would be read as a flag:  it is refused before the
+        # store is ever asked.
+        with mock.patch.object(fi, "_is_macos", return_value=False):
+            for account in ("-a", "--help", "-", ".hidden", "with space"):
+                token, status = fi.token_from_store(account, home=self.home)
+                self.assertEqual((token, status), ("", "no-token"), account)
+
 
 class KeychainStoreTests(unittest.TestCase):
     """The Mac's store: one generic-password item per token."""

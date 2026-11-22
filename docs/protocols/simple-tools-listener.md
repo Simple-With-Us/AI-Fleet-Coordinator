@@ -420,7 +420,7 @@ The pick is in [zulip-wake-routing.md](zulip-wake-routing.md).  What follows th
 
 These are the owner's rulings that the code on `main` does not do yet.
 
-- **One way for every multithreaded platform.**  The router is one service for every platform, and Claude, Codex, Muse Code and ZCode are registered in it.  Only Claude's module is on `main`;  the others show as `not-installed` until their delivery modules (`codex_wake`, `muse_wake`, `zcode_wake`) land, and ZCode and Antigravity keep their own bridges (`scripts/zc-wake-bridge` and `scripts/ag-wake-bridge`) until then.  The other platforms have no router.
+- **One way for every multithreaded platform.**  The router is one service for every platform, and Claude, Codex, Muse Code and ZCode are registered in it.  Only Claude's module is on `main`;  the others show as `not-installed` until their delivery modules (`codex_wake`, `muse_wake`, `zcode_wake`) land, and Antigravity keeps its own bridge (`scripts/ag-wake-bridge`) until then;  ZCode's bridge (`scripts/zc-wake-bridge`) retired on Nov 21, 2026, deleted after the router's delivered-and-executed wake proof.  The other platforms have no router.
 - **Deliver on every path.**  Delivery is off until `WAKE_ROUTER_DELIVERY_ENABLED` is true and `WAKE_ROUTER_DELIVERY_SEATS` names the seat.  Until then the router picks and writes `held` receipts.
 - **A routine on its own.**  The listener still needs `wake = "http"` beside a `routine`.
 - **The Operator never DMs.**  The escalation note, the `@all` reminder and the status message are still direct messages.  They belong in Side-Chats.
