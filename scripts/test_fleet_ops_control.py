@@ -7442,7 +7442,6 @@ class CommittedPlanConsumersTests(unittest.TestCase):
             self.assertIn(self.LIVE, text, relative)
 
 
-
 class StaleEditorAllowlistTests(unittest.TestCase):
     """The retry that lets a stale editor's refusal through.
 
@@ -7490,9 +7489,7 @@ class StaleEditorAllowlistTests(unittest.TestCase):
     def test_an_entry_of_a_newly_added_type_is_dropped_and_the_rest_stays(self):
         allowlist = self.allowlist()
         stripped = foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats")
-        self.assertEqual(
-            stripped, (("notes_queue", "worker_seats"), "notes_queue.worker_seats")
-        )
+        self.assertEqual(stripped, (("notes_queue", "worker_seats"), "notes_queue.worker_seats"))
         self.assertNotIn("worker_seats", allowlist["tables"]["notes_queue"])
         self.assertIn("enabled", allowlist["tables"]["notes_queue"])
 
@@ -7526,12 +7523,13 @@ class StaleEditorAllowlistTests(unittest.TestCase):
         allowlist = self.allowlist()
         calls = []
         answers = [self.refusal(), ({"ok": True, "result": "read", "settings": {}}, 0)]
-        with mock.patch.object(
-            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
-        ), mock.patch.object(
-            foc,
-            "run_eavesdropper_settings_editor_in_container",
-            side_effect=self.editor(answers, calls),
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
         ):
             fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
         self.assertEqual(len(calls), 2)
@@ -7543,12 +7541,13 @@ class StaleEditorAllowlistTests(unittest.TestCase):
         allowlist = self.allowlist()
         calls = []
         answers = [self.refusal(result="failed", replaced=True)]
-        with mock.patch.object(
-            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
-        ), mock.patch.object(
-            foc,
-            "run_eavesdropper_settings_editor_in_container",
-            side_effect=self.editor(answers, calls),
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
         ):
             fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
         self.assertEqual(len(calls), 1)
@@ -7559,12 +7558,13 @@ class StaleEditorAllowlistTests(unittest.TestCase):
         allowlist = self.allowlist()
         calls = []
         answers = [self.refusal()]
-        with mock.patch.object(
-            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
-        ), mock.patch.object(
-            foc,
-            "run_eavesdropper_settings_editor_in_container",
-            side_effect=self.editor(answers, calls),
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
         ):
             fields, code = foc.eavesdropper_settings(
                 self.ctx(), "apply", {"notes_queue.enabled": True}
@@ -7572,7 +7572,6 @@ class StaleEditorAllowlistTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertNotIn("skippedAllowlist", fields)
         self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
-
 
 
 if __name__ == "__main__":
