@@ -40,6 +40,19 @@ class Custody(unittest.TestCase):
         with self.assertRaises(UpgradeRefused):
             compare(before, census(self.roots))
 
+    def test_exact_delivered_null_ack_unknown_is_baseline_relative(self):
+        self.write(delivered=None, status="delivered", ack="unknown")
+        historical = census(self.roots)
+        compare(historical, census(self.roots))
+        self.write("b", delivered=None, status="delivered", ack="unknown")
+        with self.assertRaisesRegex(UpgradeRefused, "new delivery uncertainty"):
+            compare(historical, census(self.roots))
+        fresh = census(self.roots)
+        compare(fresh, census(self.roots))
+        self.assertIsNone(fresh["receipts"]["SEATX/b"]["delivered"])
+        self.assertEqual(fresh["receipts"]["SEATX/b"]["ack"], "unknown")
+        self.assertEqual(fresh["receipts"]["SEATX/b"]["status"], "delivered")
+
     def test_unreadable_pending_or_log_holds_before_stop(self):
         for path in (self.root / "pending" / "a.json", self.root / "wakes.jsonl"):
             path.write_text("{broken")

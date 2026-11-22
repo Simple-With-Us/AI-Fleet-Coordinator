@@ -92,6 +92,18 @@ def _record(records, key, receipt):
 
 
 def uncertainty(records):
+    """Baseline-relative evidence, never a request to rewrite a terminal receipt.
+
+    A delivered/null/unknown handover is not native confirmation. An identical
+    historical receipt is allowed in a later verified baseline; only a new or
+    changed uncertain receipt refuses the current attempt. It will not gain a
+    later acknowledgement here. After a pre-activation stopped refusal, preserve
+    custody and explicitly recover the verified old service before another
+    qualification. After activation was requested, candidate effects may exist:
+    preserve final custody and require an explicit verified recovery decision,
+    never an automatic rollback. Never replay, delete, or relabel a receipt as
+    confirmed.
+    """
     return {
         key: value
         for key, value in records["receipts"].items()
