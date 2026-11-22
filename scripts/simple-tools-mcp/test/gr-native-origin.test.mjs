@@ -1,4 +1,7 @@
 import test from "node:test";
+import { webcrypto } from "node:crypto";
+import { nativeOriginResolver } from "../src/native-origin-client.js";
+globalThis.crypto ??= webcrypto;
 import assert from "node:assert/strict";
 import { HostedTools } from "../src/hosted-tools.js";
 import { GrRelayClient } from "../src/gr-tools.js";
@@ -52,5 +55,52 @@ test("ordinary PR calls need no claims, and unrelated credential fields remain r
     const before = sent.length;
     assert.ok((await tools.call("gr_open_pr", { ...base, ...claims, ...over })).isError);
     assert.equal(sent.length, before);
+  }
+});
+
+
+test("exact and invalid metadata cannot bypass unavailable projection using explicit claims", async () => {
+  for (const invocation of [{ state: "exact", session: claims.origin_session_claim }, { state: "invalid", session: null }]) {
+    const { tools, sent } = harness();
+    assert.ok((await tools.call("gr_open_pr", { ...base, ...claims }, invocation)).isError);
+    assert.equal(sent.length, 0);
+  }
+});
+
+test("exact metadata snapshots projection and holds explicit mismatches", async () => {
+  const { tools, sent } = harness();
+  const original = globalThis.fetch;
+  let reads = 0;
+  tools.workerEnv = { REVIEW_ORIGIN_READ_URL: "https://operator.example.test/registry/v1/review-origin", REVIEW_ORIGIN_CODEX_READ_KEY: "test-only-".repeat(5) };
+  globalThis.fetch = async (url, init) => {
+    reads++;
+    assert.equal(new URL(url).searchParams.get("native_session_id"), claims.origin_session_claim);
+    assert.equal(init.redirect, "error");
+    assert.equal(init.headers["X-Simple-Tools-Signature"].length, 64);
+    return Response.json(claims);
+  };
+  try {
+    const context = { state: "exact", session: claims.origin_session_claim };
+    assert.ok(!(await tools.call("gr_open_pr", base, context)).isError);
+    for (const [key, value] of Object.entries(claims)) assert.equal(sent[0].args[key], value);
+    for (const over of [{ origin_session_claim: "019a1234-abcd-7123-8123-0123456789ac" }, { origin_letter_claim: "BB" }, { origin_generation_claim: 8 }]) {
+      assert.ok((await tools.call("gr_open_pr", { ...base, ...claims, ...over }, context)).isError);
+    }
+    assert.equal(reads, 4);
+    assert.equal(sent.length, 1);
+    globalThis.fetch = async () => new Response("held", { status: 503 });
+    assert.ok((await tools.call("gr_open_pr", { ...base, ...claims }, context)).isError);
+    assert.equal(sent.length, 1);
+  } finally { globalThis.fetch = original; }
+});
+
+test("projection client refuses unsafe endpoints, redirects, bad and large responses", async () => {
+  const env = { REVIEW_ORIGIN_READ_URL: "https://operator.example.test/registry/v1/review-origin", REVIEW_ORIGIN_CODEX_READ_KEY: "test-only-".repeat(5) };
+  for (const url of ["http://operator.example.test/registry/v1/review-origin", "https://operator.example.test/registry/v1/history", env.REVIEW_ORIGIN_READ_URL + "?key=x"]) {
+    assert.equal(nativeOriginResolver({ ...env, REVIEW_ORIGIN_READ_URL: url }), null);
+  }
+  for (const response of [new Response("redirect", { status: 302 }), new Response("x".repeat(1025)), new Response("not-json")]) {
+    const resolver = nativeOriginResolver(env, { fetcher: async () => response });
+    await assert.rejects(resolver({ seat: "CODEX", session: claims.origin_session_claim }));
   }
 });

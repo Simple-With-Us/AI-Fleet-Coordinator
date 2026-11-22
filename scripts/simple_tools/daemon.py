@@ -1532,19 +1532,40 @@ class Daemon:
         if operator_key:
             self.hide_values([operator_key])
             keys[LREG.OPERATOR] = operator_key
+        import re
+
+        from .review_origin_projection import KEY_ENV as REVIEW_ORIGIN_KEY_ENV
+
+        review_origin_key = Z._strip_quotes(self.env.get(REVIEW_ORIGIN_KEY_ENV) or "")
+        if review_origin_key:
+            self.hide_values([review_origin_key])
+            if (
+                not re.fullmatch(r"[!-~]{32,512}", review_origin_key)
+                or "${" in review_origin_key
+                or review_origin_key in keys.values()
+            ):
+                self.log.write("review-origin-projection-held", reason="invalid-or-reused-read-key")
+                review_origin_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in
         # process and need no key.  The keys decide only whether the API serves /registry/v1/.
         db_path = OR.registry_db_path(self.root, self.env)
         share = self.config.registry_gone_report_max_share
         window = self.config.registry_gone_report_window_minutes
-        spec = (db_path, share, window, tuple(sorted((name, key) for name, key in keys.items())))
+        spec = (
+            db_path,
+            share,
+            window,
+            tuple(sorted((name, key) for name, key in keys.items())),
+            review_origin_key,
+        )
         if old is not None and old_spec == spec:
             service = old
         else:
             service = LREG.RegistryService(
                 db_path,
                 keys,
+                review_origin_read_key=review_origin_key,
                 clock=self.clock.time,
                 log=self.log.write,
                 gone_report_max_share=share,
@@ -1590,7 +1611,11 @@ class Daemon:
         # The registry service and its sweeper live with the instance, not with the API
         # (AFC-721):  an API that is off or fails to bind leaves them running.
         service = self._configure_registry()
-        registry = service if service is not None and service.keys else None
+        registry = (
+            service
+            if service is not None and (service.keys or service.has_review_origin_key)
+            else None
+        )
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
