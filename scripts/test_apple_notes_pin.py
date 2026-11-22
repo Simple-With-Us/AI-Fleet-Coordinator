@@ -22,9 +22,12 @@ decision block are cut out of scripts/apple-notes-coding.sh and run in a harness
 PATH, so the assertions cover the shipped text and not a copy of it.  Nothing here touches Notes, and it
 runs anywhere bash and python3 exist.
 
-AFC-436 adds the Shortcuts-app precondition to the same harness:  `open` and `pgrep` are stubbed as well, so
-the test records that the app was asked to open in the background, and never launches the real app on the
-host.  The precondition was live-only until AFC-436, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+AFC-436 added a Shortcuts-app precondition to the same harness:  `open` and `pgrep` are stubbed as well,
+so a pre-launch would be recorded instead of launching the real app on the host.  That precondition was
+removed on 2026-11-22:  with the Shortcuts app fully quit and confirmed not running, `shortcuts run` for
+the Pin and Unpin Coding Note shortcuts each exited 0 in 3–5 seconds on the owner's Mac and the app was
+never relaunched, so the AFC-436 claim that a closed app fails every run no longer holds.  The stubs stay,
+and the tests now assert the app is never opened, in either state.
 
 There is no GUI fallback (owner 2026-10-20):  the helper used to bring Notes to the front and click its
 Pin menu item when the Shortcut did not pin, and that is what kept popping Notes open on the owner's screen.
@@ -105,15 +108,16 @@ printf x >> "$STUB_COUNTER.knob"
 printf '%s\\n' "${STUB_KNOB}"
 """
 
-#  a stand-in for `pgrep -x Shortcuts`,  which tells the script whether the Shortcuts app is up.
-#  Without this stub the test would find the real Shortcuts app on the host and skip the open.
+#  a stand-in for `pgrep -x Shortcuts`.  The script no longer asks whether the Shortcuts app is up,
+#  but the stub stays on PATH so the harness, not the host, decides what any future caller would see.
 PGREP_STUB = """#!/bin/bash
 if [ "${STUB_SHORTCUTS_RUNNING:-0}" = "1" ]; then exit 0; fi
 if [ -f "$STUB_COUNTER.running" ]; then exit 0; fi
 exit 1
 """
 
-#  a stand-in for `open -g -a Shortcuts`,  which records the request and marks the app as up
+#  a stand-in for `open`,  which records every invocation and marks the app as up,  so a test can prove
+#  the script never opens the Shortcuts app before a pin or unpin run
 OPEN_STUB = """#!/bin/bash
 printf '%s\\n' "$*" >> "$STUB_COUNTER.open"
 : > "$STUB_COUNTER.running"
@@ -147,12 +151,8 @@ def _extract(source: str) -> tuple[str, str]:
     """
     knob = re.search(r"^_PIN_RETRY=\"\"\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
-    #  the Shortcuts-app precondition is optional:  it was live-only until AFC-436 put it in the
-    #  canonical script,  so the extraction still works against a script that does not have it
-    ensure = re.search(
-        r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
-    )
-    #  the bounded Shortcut runner is optional for the same reason:  it came with AFC-436
+    #  the bounded Shortcut runner is optional:  it came with AFC-436,  so the extraction still
+    #  works against a script that does not have it
     bounded = re.search(
         r"^_run_shortcuts_bounded\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
     )
@@ -177,8 +177,6 @@ def _extract(source: str) -> tuple[str, str]:
         functions += found.group(0)
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     parts = knob.group(0)
-    if ensure:
-        parts += ensure.group(0)
     if bounded:
         parts += bounded.group(0)
     #  the pin block is the end of the script:  there is nothing after it to cut off, which is the point
@@ -214,8 +212,8 @@ class PinDecisionTests(unittest.TestCase):
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
             stub.chmod(0o700)
-            #  the script opens the Shortcuts app in the background before the run,  so `open` and
-            #  `pgrep` are stubbed too:  the test must never launch the real app on the host
+            #  `open` and `pgrep` are stubbed too:  the test must never launch the real Shortcuts
+            #  app on the host, and a pre-launch would land in the open stub's record instead
             for name, body in (("pgrep", PGREP_STUB), ("open", OPEN_STUB)):
                 side = bindir / name
                 side.write_text(body)
@@ -326,20 +324,26 @@ class PinDecisionTests(unittest.TestCase):
         self.assertIn("pinned: yes", p.stdout)
         self.assertEqual(runs, 1)
 
-    def test_the_shortcuts_app_is_opened_in_the_background_when_it_is_not_running(self):
-        """The Find Notes action is an app intent served by the Shortcuts app itself.
+    def test_the_shortcuts_app_is_not_opened_when_it_is_not_running(self):
+        """No pre-launch:  `shortcuts run` dispatches the pin with the Shortcuts app closed.
 
-        With that app closed the intent cannot be dispatched, and the shortcut fails for every
-        title, including one that does not exist.  The app is opened with `open -g`, so it does
-        not steal focus.  This precondition was live-only until AFC-436 put it in the canonical
-        script, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+        AFC-436 claimed the Find Notes action is an app intent served by the Shortcuts app itself,
+        so a closed app would fail the run for every title.  Verified live on the owner's Mac on
+        2026-11-22, that no longer holds:  with the app fully quit and confirmed not running, the
+        Pin and Unpin runs each exited 0 in 3–5 seconds and the app was never relaunched.  The
+        script therefore never opens the app, and the pin still succeeds here with the app down.
         """
         p, runs = self.run_block()
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("pinned: yes", p.stdout)
-        self.assertTrue(self.opens, "the Shortcuts app was never opened")
-        self.assertIn("-g", self.opens[0])
-        self.assertIn("Shortcuts", self.opens[0])
+        self.assertEqual(runs, 1)
+        self.assertEqual(self.opens, [], "the script opened the Shortcuts app before the run")
+
+    def test_the_script_carries_no_shortcuts_prelaunch(self):
+        """Read the source:  no `_ensure_shortcuts_running` helper and no `open` of the app remain."""
+        source = SCRIPT.read_text()
+        self.assertNotIn("_ensure_shortcuts_running", source)
+        self.assertNotIn("open -g -a Shortcuts", source)
 
     def test_the_shortcuts_app_is_not_opened_when_it_is_already_running(self):
         p, runs = self.run_block(STUB_SHORTCUTS_RUNNING="1")
