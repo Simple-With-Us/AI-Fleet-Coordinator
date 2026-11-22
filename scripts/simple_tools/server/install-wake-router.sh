@@ -734,7 +734,13 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
         prune_releases(host, proc_root, releases, sha)
         return 0
     except BaseException as original:
-        if "upgrade" in locals() and upgrade is not None and upgrade.snapshot.exists():
+        if "upgrade" in locals() and upgrade is not None:
+            if not getattr(upgrade, "stop_attempted", False):
+                say("controlled upgrade refused before any stop (%s: %s); live units left unchanged" %
+                    (type(original).__name__, original))
+                if isinstance(original, (KeyboardInterrupt, SystemExit)):
+                    raise
+                return 1
             try:
                 upgrade.recover_stopped()
                 recovery = "stop and custody verified; explicit recovery decision required"
