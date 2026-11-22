@@ -116,9 +116,7 @@ THE iMESSAGE BOUNDARY (FLEET-PROTOCOL.md Process 10, owner ruling 2026-09-02)
 
 WHERE TO LOOK, IN THIS ORDER
 - Linear (https://linear.app/simple-with-us, ids like AFC-123) is the write surface for all fleet
-  work.  Use the board CLI;  it resolves the Fleet app's credentials from the process environment
-  first and then from Infisical Fleet-OPS prod `/linear` through the consumer's own scoped service token, and never
-  puts a secret on a command line.  Writes need AGENT_SEAT=INSTINCT in
+  work.  Use the board CLI;  it resolves the Fleet app's credentials from Infisical Fleet-OPS prod `/linear` through the consumer's own scoped service token read -- a value in the process environment counts only as the copy that read populated -- and never puts a secret on a command line.  Writes need AGENT_SEAT=INSTINCT in
   the same command, and --by must be INSTINCT.  Invoke it literally:
     simple-board stats
     simple-board list --status open,in_progress --severity P0,P1
