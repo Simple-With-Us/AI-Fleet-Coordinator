@@ -1621,6 +1621,22 @@ class ControlVerbTests(Case):
         # An unrelated seat or table never touches.
         self.assertFalse(foc._set_touches({"seat.ZC.enabled": False}, stripped))
 
+    def test_a_whole_parent_removal_keeps_the_original_refusal(self) -> None:
+        # A nested sub-key drop must also block a removal of the whole parent
+        # entry:  the parent carries the dropped sub-key's stored value, so
+        # removing it through an editor that cannot see the sub-key would
+        # drop that value silently.  A sibling sub-key removal still retries.
+        foc = self.foc
+        seat_drop = (("seat", "budget"), "seat.*.budget.future_cap")
+        self.assertTrue(foc._set_touches({}, seat_drop, ["seat.ZC.budget"]))
+        table_drop = (("notes_queue", "entry"), "notes_queue.entry.future_cap")
+        self.assertTrue(foc._set_touches({}, table_drop, ["notes_queue.entry"]))
+        self.assertFalse(foc._set_touches({}, seat_drop, ["seat.ZC.budget.wakes_per_day"]))
+        self.assertFalse(foc._set_touches({}, table_drop, ["notes_queue.entry.wakes_per_day"]))
+        # A whole-entry drop still blocks a whole-parent removal too.
+        whole = (("notes_queue", "server_seats"), "notes_queue.server_seats")
+        self.assertTrue(foc._set_touches({}, whole, ["notes_queue.server_seats"]))
+
     def test_a_change_to_a_dropped_entry_keeps_the_original_refusal(self) -> None:
         class OldEditorReader(FakeReader):
             def __call__(self, argv, timeout, env, max_bytes, data=None):

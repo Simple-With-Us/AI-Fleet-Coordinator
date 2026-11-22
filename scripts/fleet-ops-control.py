@@ -2398,9 +2398,10 @@ def _set_touches(changes, stripped, remove=None):
 
     `stripped` is `_strip_unknown_allowlist_entry`'s return:  ((table, name),
     where).  A whole-entry drop blocks any set or removal under that entry.
-    A nested sub-key drop blocks only a set whose table value carries that
-    sub-key, or a removal naming it:  sibling keys in the same parent entry
-    keep working on retry."""
+    A nested sub-key drop blocks a set whose table value carries that
+    sub-key, a removal naming it, and a removal of the whole parent entry
+    (which takes the dropped sub-key's stored value with it):  sibling keys
+    in the same parent entry keep working on retry."""
     if not isinstance(stripped, (list, tuple)) or len(stripped) != 2:
         return True
     (table, name), where = stripped
@@ -2433,13 +2434,17 @@ def _set_touches(changes, stripped, remove=None):
                 len(key_parts) == 3
                 and key_parts[0] == "seat"
                 and key_parts[2] == name
-                and not nested
             ):
+                # A whole-parent removal takes the dropped sub-key's stored
+                # value with it, so it keeps the original refusal, the same
+                # way a whole-entry drop does.
                 return True
         elif len(key_parts) == 3 and key_parts[0] == table and key_parts[1] == name:
             if not nested or key_parts[2] == dropped:
                 return True
-        elif len(key_parts) == 2 and key_parts[0] == table and key_parts[1] == name and not nested:
+        elif len(key_parts) == 2 and key_parts[0] == table and key_parts[1] == name:
+            # A whole-parent removal takes the dropped sub-key's stored value
+            # with it, so it keeps the original refusal.
             return True
     return False
 
