@@ -4403,7 +4403,24 @@ def _coolify_http_failure(status) -> str:
             f"Coolify refused the {COOLIFY_TOKEN_NAME} token (HTTP {status}); "
             f"rotate it in the {COOLIFY_TOKEN_PATH} folder"
         )
+    if status in (408, 429):
+        return f"Coolify answered a retryable HTTP {status}; the deploy may be retried"
     return f"Coolify answered HTTP {status}" if status else "Coolify did not answer"
+
+
+def _coolify_failed(status) -> Failed:
+    """The failure one Coolify answer means, with the retryable and the unknown apart.
+
+    A transient answer (408, 429) refused or timed out the request before Coolify
+    applied it,  so the run is retryable and not terminal.  A server error may follow a
+    deploy that was already applied,  so the action had begun or may have,  and that is
+    `unknown`,  never `failed` (server-route-spec section 13)."""
+    if status in (408, 429):
+        return Failed(_coolify_http_failure(status), error_code="retryable")
+    return Failed(
+        _coolify_http_failure(status),
+        timed_out=bool(getattr(status, "sent", False)) or 500 <= status < 600,
+    )
 
 
 def check_token(ctx):
@@ -4428,12 +4445,14 @@ def check_token(ctx):
         # proxy) answers differently, and only Coolify's own answer counts as accepted.
         accepted = status == 200 or (status == 404 and COOLIFY_NO_RESOURCE in body)
         if not accepted:
-            raise Failed(_coolify_http_failure(status))
+            raise _coolify_failed(status)
     except Refused as exc:
         answer.update(detail=str(exc))
         return answer, 2
     except Failed as exc:
         answer.update(result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         return answer, 1
     answer.update(ok=True, result="done", detail="the Coolify token is available and accepted")
     return answer, 0
@@ -4499,10 +4518,7 @@ def execute(ctx, scope, action, target, commands):
             # applied:  the action had begun or may have, and the route reports it `unknown`,
             # never `failed` (server-route-spec section 13).  A 4xx refused the request before
             # anything began.
-            raise Failed(
-                _coolify_http_failure(status),
-                timed_out=bool(getattr(status, "sent", False)) or 500 <= status < 600,
-            )
+            raise _coolify_failed(status)
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
     finished = 0

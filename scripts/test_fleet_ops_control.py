@@ -2808,7 +2808,9 @@ class FakeInfisical:
             raise self.SecretsError("token-scope-mismatch")
         if self.refuse_status is not None:
             # The message names no scope,  so only the provider status can route this.
-            raise self.SecretsError("token-verification-failed", provider_status=self.refuse_status)
+            raise self.SecretsError(
+                "token-verification-failed", provider_status=self.refuse_status
+            )
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
@@ -2984,6 +2986,26 @@ class CredentialTests(Base):
         )
         self.assertEqual(self.http_calls, [])
 
+    def test_a_transient_coolify_answer_is_retryable_and_not_terminal(self):
+        """A 408 or a 429 refused the deploy before it was applied,  so the run may be retried."""
+        self.write_status(self.ROWS)
+        for status in (408, 429):
+            with self.subTest(status=status):
+                code, ans = self.run_main(
+                    ["server", "redeploy", UUID, "--yes", "--json"],
+                    self.ctx(
+                        environ={
+                            "PATH": "/usr/bin",
+                            **self.SHARED_AUTH,
+                            **self.COORDINATES,
+                            self.TOKEN_NAME: self.VALUE,
+                        },
+                        http_status=status,
+                    ),
+                )
+                self.assertEqual((code, ans["result"]), (1, "failed"), ans)
+                self.assertEqual(ans["errorCode"], "retryable")
+
     def test_a_provider_403_is_the_scope_remedy_and_not_the_generic_one(self):
         """The reader's exit code is not an HTTP status;  the provider status is."""
         self.client.refuse_status = 403
@@ -3102,6 +3124,9 @@ class CredentialTests(Base):
                 "rotate it in the /coolify-deploy-only-token folder",
             ),
         )
+        code, ans = self.run_main(["--check-token"], self.ctx(http_status=429))
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
         code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
         self.assertEqual((code, ans["result"]), (2, "refused"))
         code, ans = self.run_main(["--check-token", "--json"], self.ctx())
