@@ -7442,5 +7442,138 @@ class CommittedPlanConsumersTests(unittest.TestCase):
             self.assertIn(self.LIVE, text, relative)
 
 
+
+class StaleEditorAllowlistTests(unittest.TestCase):
+    """The retry that lets a stale editor's refusal through.
+
+    An editor image that predates a spec type the host allowlist now uses
+    refuses the whole request.  The host drops that one entry and asks again.
+    The entry it drops comes from the host's own allowlist and never from the
+    editor's answer alone, the path shape is one the editor names, and the
+    retry never repeats a side effect.
+    """
+
+    def allowlist(self):
+        return {
+            "applyEnabled": True,
+            "seat": {
+                "routine": {"type": "table", "keys": {"url_env": {"type": "seat-env"}}},
+            },
+            "tables": {
+                "notes_queue": {
+                    "enabled": {"type": "bool"},
+                    "worker_seats": {"type": "seats"},
+                }
+            },
+        }
+
+    def editor(self, answers, calls):
+        def run(ctx, request):
+            calls.append(json.loads(json.dumps(request)))
+            return answers[min(len(calls) - 1, len(answers) - 1)]
+
+        return run
+
+    def refusal(self, **extra):
+        answer = {
+            "ok": False,
+            "result": "refused",
+            "errorCode": "allowlist_invalid",
+            "detail": "notes_queue.worker_seats needs a type from bool, int, number",
+        }
+        answer.update(extra)
+        return (answer, 2)
+
+    def ctx(self):
+        return foc.Context(platform="linux", uid=os.getuid(), home=Path("/tmp"), environ={})
+
+    def test_an_entry_of_a_newly_added_type_is_dropped_and_the_rest_stays(self):
+        allowlist = self.allowlist()
+        stripped = foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats")
+        self.assertEqual(
+            stripped, (("notes_queue", "worker_seats"), "notes_queue.worker_seats")
+        )
+        self.assertNotIn("worker_seats", allowlist["tables"]["notes_queue"])
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+
+    def test_an_entry_of_a_known_type_is_never_dropped(self):
+        allowlist = self.allowlist()
+        self.assertIsNone(foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.enabled"))
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_a_seat_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["seat"]["routine"]["keys"]["worker_seats"] = {"type": "seats"}
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "seat.*.routine.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["seat"]["routine"]["keys"])
+        self.assertIn("routine", allowlist["seat"])
+
+    def test_a_table_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["tables"]["notes_queue"]["worker_seats"] = {
+            "type": "table",
+            "keys": {"worker_seats": {"type": "seats"}},
+        }
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"]["worker_seats"]["keys"])
+
+    def test_the_retry_drops_the_entry_and_asks_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(), ({"ok": True, "result": "read", "settings": {}}, 0)]
+        with mock.patch.object(
+            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
+        ), mock.patch.object(
+            foc,
+            "run_eavesdropper_settings_editor_in_container",
+            side_effect=self.editor(answers, calls),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("worker_seats", calls[1]["allowlist"]["tables"]["notes_queue"])
+        self.assertEqual(fields["skippedAllowlist"], ["notes_queue.worker_seats"])
+        self.assertEqual(fields["result"], "read")
+
+    def test_a_refusal_that_came_after_a_side_effect_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(result="failed", replaced=True)]
+        with mock.patch.object(
+            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
+        ), mock.patch.object(
+            foc,
+            "run_eavesdropper_settings_editor_in_container",
+            side_effect=self.editor(answers, calls),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_an_apply_that_would_write_the_live_file_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal()]
+        with mock.patch.object(
+            foc, "load_eavesdropper_settings_allowlist", return_value=allowlist
+        ), mock.patch.object(
+            foc,
+            "run_eavesdropper_settings_editor_in_container",
+            side_effect=self.editor(answers, calls),
+        ):
+            fields, code = foc.eavesdropper_settings(
+                self.ctx(), "apply", {"notes_queue.enabled": True}
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
