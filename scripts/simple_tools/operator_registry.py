@@ -860,9 +860,7 @@ class SessionRegistry:
         # confined to its parent's row, so its one inline retirement must come from that row's
         # candidate pairs, not the oldest orphan platform-wide.
         members = frozenset(LETTER_SPACES["double"])
-        wanted = (
-            tuple(p for p in pairs_after(after) if p in members) if after else None
-        )
+        wanted = tuple(p for p in pairs_after(after) if p in members) if after else None
         self._retire_closed_aliases(conn, platform, now, limit=1, letters=wanted)
         live = {
             r["letter"]
