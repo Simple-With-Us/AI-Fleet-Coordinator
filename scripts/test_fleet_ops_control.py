@@ -2808,9 +2808,7 @@ class FakeInfisical:
             raise self.SecretsError("token-scope-mismatch")
         if self.refuse_status is not None:
             # The message names no scope,  so only the provider status can route this.
-            raise self.SecretsError(
-                "token-verification-failed", provider_status=self.refuse_status
-            )
+            raise self.SecretsError("token-verification-failed", provider_status=self.refuse_status)
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
