@@ -2703,13 +2703,30 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
     titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
     lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
-    that retitled the chat itself, dropping the letter, gets it back)."""
+    that retitled the chat itself, dropping the letter, gets it back) and retries a pending title write once when
+    the start or prompt raced the store's row creation."""
     note = chat.read()
     if not note:
         return 0
     if lettered(note) and chat.spec.title_writer is not None:
         on_rename(chat, data, Out(io.StringIO(), chat.spec, ""))
         note = chat.read()
+        if note.get("pending"):
+            current = chat_name(chat.spec.current_title(data, chat.env))
+            before_pending = (
+                note.get("pending"),
+                note.get("shown"),
+                note.get("retry_at"),
+                note.get("turn_retried"),
+            )
+            _retry_pending(chat, note, current, data, force=not note.get("turn_retried"))
+            if (
+                note.get("pending"),
+                note.get("shown"),
+                note.get("retry_at"),
+                note.get("turn_retried"),
+            ) != before_pending:
+                chat.write(note)
     elif not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
@@ -2814,35 +2831,54 @@ def present(
     if title == current:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return None
     wrote = _write_title(chat, note, title, current, data, reason)
     if wrote:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return None
     if spec.title_in_output and settable:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return title
     note["pending"] = spec.title_writer is not None
     if note["pending"]:
         note["retry_at"] = (
             chat.now + RETRY_SECONDS
         )  # a writer that is down is not asked again on every prompt
+        note.pop("turn_retried", None)
     return None
 
 
-def _retry_pending(chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any]) -> None:
+def _retry_pending(
+    chat: Chat,
+    note: dict[str, Any],
+    current: str,
+    data: Mapping[str, Any],
+    *,
+    force: bool = False,
+) -> None:
     want = str(note.get("want") or "")
     if not (note.get("pending") and want and chat.spec.title_writer is not None):
         return
-    if chat.now < float(note.get("retry_at") or 0):
-        return
-    if want == current or _write_title(chat, note, want, current, data, "retry"):
+    if want == current:
         note.update(shown=want, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
+        return
+    if not force and chat.now < _seconds(note.get("retry_at")):
+        return
+    if _write_title(chat, note, want, current, data, "retry"):
+        note.update(shown=want, pending=False)
+        note.pop("retry_at", None)
+        note.pop("turn_retried", None)
     else:
         note["retry_at"] = chat.now + RETRY_SECONDS
+        if force:
+            note["turn_retried"] = True
 
 
 def _gone(answer: Mapping[str, Any]) -> bool:
