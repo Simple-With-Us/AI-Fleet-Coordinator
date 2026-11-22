@@ -121,6 +121,9 @@ def fs_get(name, project, path):
         raise Failed(f"{name} could not be read:  no scoped token covers {project}{path}")
     env = dict(os.environ)
     scoped = dict(env)
+    # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API never
+    # redirects the read,  so the bearer never travels to another origin.
+    scoped[FI.ENV_API] = FI.API_BASE
     scoped[FI.ENV_READ_PATHS] = path
     try:
         project_id = FI.infisical_project_id(scoped, FI.home_dir(scoped), project)

@@ -46,6 +46,9 @@ def scoped_secret_get(path, name):
         ) from None
     try:
         env = dict(os.environ)
+        # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API
+        # never redirects the read,  so the bearer never travels to another origin.
+        env[FI.ENV_API] = FI.API_BASE
         env[FI.ENV_READ_PATHS] = path
         value, status = FI.fetch_scoped(name, path, account, env, timeout=LOOKUP_TIMEOUT_SECONDS)
     except TimeoutError:

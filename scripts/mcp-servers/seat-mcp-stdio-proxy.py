@@ -60,6 +60,9 @@ def load_token() -> str:
         )
         sys.exit(1)
     env = dict(os.environ)
+    # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API never
+    # redirects the read,  so the bearer never travels to another origin.
+    env[FI.ENV_API] = FI.API_BASE
     env[FI.ENV_READ_PATHS] = SECRET_FOLDER
     try:
         value, status = FI.fetch_scoped("SEAT_MCP_TOKEN", SECRET_FOLDER, TOKEN_ACCOUNT, env)

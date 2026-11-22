@@ -112,6 +112,24 @@ class WorkerHealthReader(unittest.TestCase):
             os.environ.update(old_env)
         self.assertEqual(asked, [("HEALTH_HMAC_KEY", "/", "worker-health-ro")])
 
+    def test_the_read_origin_is_pinned_in_code(self):
+        old_env = dict(os.environ)
+        os.environ["FLEET_SECRETS_API"] = "https://elsewhere.invalid/api"
+        asked = []
+
+        def read(name, folder, account, env=None, **options):
+            asked.append(env)
+            return ("from-the-scoped-token", "ok")
+
+        try:
+            with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+                self.assertEqual(fwh.read_key(), "from-the-scoped-token")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+        # The origin is the approved one,  not the one the environment carried.
+        self.assertEqual(asked[0][fleet_infisical.ENV_API], fleet_infisical.API_BASE)
+
     def test_read_key_uses_the_own_scoped_token(self):
         old_env = dict(os.environ)
         os.environ.pop("HEALTH_HMAC_KEY", None)

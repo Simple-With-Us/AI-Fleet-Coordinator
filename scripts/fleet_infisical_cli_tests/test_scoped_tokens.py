@@ -344,3 +344,36 @@ class RagWorkerScopedTokens(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopedReadStatus(unittest.TestCase):
+    """The status a caller repairs by.
+
+    A grant that does not cover the folder is a refusal to repair,  not a failed
+    read that a retry would fix,  so the status says which repair it is.
+    """
+
+    def _status(self, error):
+        def read(*args, **kwargs):
+            raise error
+
+        with mock.patch.object(core, "token_from_store", lambda account, env: (READ, "ok")), \
+                mock.patch.object(core, "fetch_verified", read):
+            return core.fetch_scoped("A_KEY", "/", "consumer-ro", {})
+
+    def test_a_grant_that_does_not_cover_the_folder_is_forbidden(self):
+        value, status = self._status(core.SecretsError("token-scope-mismatch"))
+        self.assertEqual(value, "")
+        self.assertEqual(status, "forbidden")
+
+    def test_a_failed_verification_is_forbidden(self):
+        _value, status = self._status(core.SecretsError("token-verification-failed"))
+        self.assertEqual(status, "forbidden")
+
+    def test_an_absent_name_is_absent(self):
+        _value, status = self._status(core.SecretsError("key A_KEY is not in Infisical at /", 3))
+        self.assertEqual(status, "absent")
+
+    def test_an_unrelated_failure_is_still_failed(self):
+        _value, status = self._status(core.SecretsError("fetch-failed"))
+        self.assertEqual(status, "failed")

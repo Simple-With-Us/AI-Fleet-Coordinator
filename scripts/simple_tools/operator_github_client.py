@@ -58,6 +58,9 @@ def caller_key(seat):
         import fleet_infisical as FI
 
         env = dict(os.environ)
+        # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API
+        # never redirects the read,  so the bearer never travels to another origin.
+        env[FI.ENV_API] = FI.API_BASE
         env[FI.ENV_READ_PATHS] = CALLER_SECRET_FOLDER
         key, status = FI.fetch_scoped(name, CALLER_SECRET_FOLDER, CALLER_TOKEN_ACCOUNT, env)
     except ImportError:
