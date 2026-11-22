@@ -258,11 +258,25 @@ class BaseUrlTests(unittest.TestCase):
                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4,
                "INFISICAL_READ_PATHS": "/,/unrelated"}
         with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), \
+                mock.patch.object(NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")), \
                 mock.patch.object(NC.FI, "fetch_project", return_value={"OPERATOR_API_URL": "https://secrets.example.test"}) as fetch:
             self.assertEqual(NC.base_url(env, runner=mock.Mock(side_effect=AssertionError("no subprocess"))), "https://secrets.example.test")
         self.assertEqual(fetch.call_args.args[:2], (env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"], "/"))
         self.assertEqual(fetch.call_args.args[2]["INFISICAL_READ_PATHS"], "/")
         self.assertEqual(fetch.call_args.kwargs["names"], ("OPERATOR_API_URL",))
+        # The read runs under the store's grant,  never under the environment copy.
+        self.assertEqual(fetch.call_args.kwargs["token"], "st." + "synthetic-store-" * 2)
+
+    def test_the_environment_copy_never_authenticates_this_read(self):
+        # The store is the authority:  a hand-set copy never stands in for the reviewed grant.
+        env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+               "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4}
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), \
+                mock.patch.object(NC.FI, "token_from_store", return_value=("", "no-token")) as store, \
+                mock.patch.object(NC.FI, "fetch_project") as fetch:
+            self.assertIsNone(NC.base_url(env, runner=mock.Mock(side_effect=AssertionError("no subprocess"))))
+        fetch.assert_not_called()
+        self.assertEqual(store.call_args.args[0], "notes-client-ro")
 
     def test_operator_client_is_not_configured_without_an_origin(self):
         with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "scoped_read", return_value=""):
@@ -286,6 +300,12 @@ class KeySourceTests(unittest.TestCase):
         patcher = mock.patch.object(NC.FI, "fetch_project", side_effect=self.reader)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The store is the only source for this client's grant;  never the real one.
+        store = mock.patch.object(
+            NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")
+        )
+        store.start()
+        self.addCleanup(store.stop)
 
     def fake_reader(self):
         path = self.bin / "infisical-scoped"
