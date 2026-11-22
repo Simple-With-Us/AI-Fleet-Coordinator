@@ -228,8 +228,13 @@ def service_token(
         )
     try:
         stored = _strip_quotes(path.read_text("utf-8"))
-    except OSError:
-        return bound
+    except OSError as exc:
+        raise CredentialRefused(
+            "token_file_unreadable",
+            "%s could not be read (%s); a service token file that exists but "
+            "cannot be read is a broken store, not an absent one"
+            % (path, type(exc).__name__),
+        ) from None
     return stored or bound
 
 
