@@ -91,6 +91,14 @@ def read_key():
             env,
             require_finite_expiry=True,
         )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token timed out ("
+            + type(exc).__name__
+            + ")"
+        ) from None
     except Exception as exc:
         raise RuntimeError(
             "the Infisical read for the "
