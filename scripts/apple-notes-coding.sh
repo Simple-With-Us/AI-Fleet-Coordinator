@@ -2384,6 +2384,9 @@ _pushover_secret() {
     rm -f "$err_file"
     if [[ -z "$value" ]]; then
       echo "apple-notes: ${name} is not available:  the apple-notes-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})}" >&2
+      # The read failed,  so the helper does not report success:  the caller
+      # decides what a missing notification key means.
+      return 1
     fi
   fi
   printf '%s' "$value"
@@ -2394,10 +2397,13 @@ _send_pushover_notification() {
   # Environment value first, then this consumer's own scoped token against Infisical
   # Fleet-OPS prod /global-api-keys through the shared scoped reader (OPS-818;  the old
   # flat secrets file is retired, AFC-359).
-  user_key=$(_pushover_secret PUSHOVER_USER_KEY)
-  token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
-  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)
-  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_CT_API_TOKEN)
+  # A key the helper could not read is an empty key,  never a silent success:
+  # the Pushover call below is skipped and the macOS notification carries the
+  # owner instead.  The note itself never depends on a notification credential.
+  user_key=$(_pushover_secret PUSHOVER_USER_KEY) || user_key=""
+  token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN) || token=""
+  [[ -z "$token" ]] && { token=$(_pushover_secret PUSHOVER_ST_API_TOKEN) || token=""; }
+  [[ -z "$token" ]] && { token=$(_pushover_secret PUSHOVER_CT_API_TOKEN) || token=""; }
 
   local msg="${SUMMARY_TEXT:-Apple Note updated in Coding folder}"
   if [[ "$NEEDS_OWNER" == "1" ]]; then

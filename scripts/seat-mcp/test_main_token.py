@@ -50,6 +50,16 @@ class MissingTokenTests(unittest.TestCase):
             ],
         )
 
+    def test_an_empty_value_is_the_absent_case_and_carries_its_exit_code(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(auth, "_read_through_scoped_reader", return_value=""),
+        ):
+            with self.assertRaises(auth.ScopedReaderError) as caught:
+                auth.load_token()
+        self.assertEqual(caught.exception.exit_code, 3)
+
     def test_token_in_the_environment_starts_the_server(self) -> None:
         with (
             mock.patch.dict(os.environ, {"SEAT_MCP_TOKEN": "t"}),

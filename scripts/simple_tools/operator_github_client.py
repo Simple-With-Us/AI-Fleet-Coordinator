@@ -60,6 +60,12 @@ def caller_key(seat):
         env = dict(os.environ)
         env[FI.ENV_READ_PATHS] = CALLER_SECRET_FOLDER
         key, status = FI.fetch_scoped(name, CALLER_SECRET_FOLDER, CALLER_TOKEN_ACCOUNT, env)
+    except ImportError:
+        # The shared client is not importable:  that is a broken reader,  not a
+        # credential problem,  and it carries the missing-source exit code,  so
+        # the operator repairs the reader and not the grant.
+        print(name + " unavailable: Infisical reader missing", file=sys.stderr)
+        raise SystemExit(127) from None
     except TimeoutError:
         # The shared client lets a socket timeout through as a `TimeoutError`.
         # Distinct infrastructure signals:  a hung lookup is 124, a missing

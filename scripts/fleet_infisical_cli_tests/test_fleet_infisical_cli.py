@@ -230,6 +230,49 @@ class GetTests(Base):
         self.assertIn("NOPE", err)
         self.assertNoSentinel(out, err)
 
+    def test_an_explicit_account_reads_through_that_account(self):
+        seen = {}
+
+        def scoped_read(name, folder, account, env=None, **options):
+            seen["call"] = (name, folder, account)
+            seen["paths"] = env.get(core.ENV_READ_PATHS)
+            seen["project"] = env.get(core.ENV_PROJECT)
+            return (VAL_A, "ok")
+
+        with mock.patch.object(core, "fetch_scoped", scoped_read):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(seen["call"], ("ALPHA", "/", "consumer-ro"))
+        self.assertEqual(seen["paths"], "/")
+        self.assertEqual(seen["project"], PROJECT)
+
+    def test_an_account_bound_read_never_uses_the_ambient_binding(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: (VAL_A, "ok")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches, [])
+
+    def test_an_absent_name_under_an_account_exits_3(self):
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: ("", "absent")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("ALPHA", err)
+        self.assertNoSentinel(out, err)
+
+    def test_a_refused_account_read_exits_4_and_names_the_account(self):
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: ("", "forbidden")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("consumer-ro", err)
+        self.assertNoSentinel(out, err)
+
+    def test_without_an_account_the_read_still_uses_the_ambient_binding(self):
+        world = self.use(World())
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
+
     def test_path_is_passed_and_prod_is_the_only_env(self):
         w = self.use(World())
         self.call("get", "ALPHA", "--path", "/global-api-keys")

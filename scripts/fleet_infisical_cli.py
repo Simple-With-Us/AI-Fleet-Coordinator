@@ -49,7 +49,8 @@ MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
 
 USAGE = (
     "usage: fleet-infisical run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
-    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator] [--require-finite-expiry]\n"
+    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "           [--account NAME] [--require-finite-expiry]\n"
     "       fleet-infisical get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-infisical names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-infisical set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
@@ -153,7 +154,34 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     path = core.check_path(str(opts["path"]))
     project_id = core.infisical_project_id(env, core.home_dir(env), project)
     policy = {"require_finite_expiry": True} if opts.get("require_finite_expiry") else {}
-    secrets = core.fetch_project(project_id, path, env, names=tuple(names), **policy)
+    account = opts.get("account")
+    if account:
+        # An explicit account is this consumer's own scoped service token,  read from
+        # its own store:  the grant covers one folder,  and the answer's own
+        # provenance is checked against it.  No ambient token is consulted.
+        scoped = dict(env)
+        scoped[core.ENV_READ_PATHS] = path
+        scoped[core.ENV_PROJECT] = project_id
+        secrets = {}
+        for name in names:
+            value, status = core.fetch_scoped(
+                name, path, str(account), scoped, **policy
+            )
+            if status == "ok":
+                secrets[name] = value
+                continue
+            if status == "absent":
+                raise SecretsError(
+                    "key {} is not in Infisical at {}".format(name, opts["path"]), 3
+                )
+            raise SecretsError(
+                "the {} scoped service token could not read {} from Infisical at {} ({})".format(
+                    account, name, opts["path"], status
+                ),
+                4,
+            )
+    else:
+        secrets = core.fetch_project(project_id, path, env, names=tuple(names), **policy)
     # Bound token reads request only the named keys, never the rest of the folder.
     # Nothing is printed unless every requested name resolves.
     missing = [n for n in names if n not in secrets]

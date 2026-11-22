@@ -119,10 +119,14 @@ def load_token() -> str:
     if not token_value:
         token_value = _read_through_scoped_reader()
     if not token_value:
-        raise RuntimeError(
+        # The name holds no value:  that is the absent case,  and it carries the
+        # exit code the absent case carries,  so a caller that repairs by exit
+        # code is not sent after a broken credential.
+        raise ScopedReaderError(
             "%s is empty in Infisical %s:  the scoped reader read the folder with the %s "
             "scoped service token and the name holds no value"
-            % (TOKEN_NAME, TOKEN_FOLDER, READER_ACCOUNT)
+            % (TOKEN_NAME, TOKEN_FOLDER, READER_ACCOUNT),
+            3,
         )
     return token_value
 

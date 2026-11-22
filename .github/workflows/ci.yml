@@ -643,6 +643,22 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_body_size
+    # The Mac hosts' scoped-read helpers:  the Grok ACP runtime and the Senate relay each read their
+    # own secret through the shared scoped reader, with the account named,  so an ambient environment
+    # token never satisfies the read.  A fake reader records the argv;  no real reader runs,  no secret
+    # is read,  and neither runtime starts.
+    - name: Scoped reader launchers
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_grok_acp_runtime_start test_senate_relay_runtime_start
+    # The Notes helper reads a notification key through the shared scoped reader.  A read that fails is
+    # a failed read:  the helper reports it instead of handing back an empty value as a success,  and the
+    # caller keeps the macOS notification.  The two functions are read out of the shipped script,  so the
+    # test covers the code that ships.
+    - name: Notes notification secret read
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_pushover
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
