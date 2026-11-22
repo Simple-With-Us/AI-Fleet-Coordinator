@@ -289,9 +289,9 @@ FLEET_OPS_FOLDER = "/global-api-keys"
 FLEET_OPS_ENV_NAMES = (
     FLEET_OPS_TOKEN_ENV,
     FLEET_OPS_PROJECT_ENV,
-    # This reader's own API base,  so a Fleet-OPS read never inherits the recall host.
-    "INFISICAL_FLEET_OPS_API",
-    "FLEET_RAG_INFISICAL_API",
+    # No API base name is carried:  this route's API base stays pinned to the
+    # shared client's default,  so an environment value cannot redirect the
+    # bearer-token read to another origin.
     "INFISICAL_ENVIRONMENT",
     "INFISICAL_ENV",
     "HOME",
@@ -332,11 +332,8 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
             f"({status})  and {FLEET_OPS_TOKEN_ENV} binds none"
         )
         return {}
-    # This reader's own API base wins,  so a self-hosted Infisical is honoured here
-    # exactly as it is on the recall route.
-    api_base = source.get("INFISICAL_FLEET_OPS_API") or source.get("FLEET_RAG_INFISICAL_API")
-    if api_base:
-        source[secrets.ENV_API] = api_base
+    # The API base stays pinned to the shared client's default;  environment
+    # values are never honoured here so the bearer-token read cannot be redirected.
     try:
         project = secrets.infisical_project_id(source, secrets.home_dir(source), "fleet-ops")
         got = secrets.bounded_fetch_project(
