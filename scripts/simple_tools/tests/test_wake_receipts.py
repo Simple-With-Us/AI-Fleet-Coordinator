@@ -1189,6 +1189,77 @@ class ReceiptSurfacedTests(ReceiptHarness):
         self.assertEqual(self.held_ids(), [900001], "an unknown ending never surfaces")
         self.assertEqual(self.log_events("held-back-surfaced"), [])
 
+    def test_a_stale_lost_snapshot_is_never_replayed_once_another_wake_surfaced_the_items(self) -> None:
+        # Wake W1 lists the held item and carries lost=2 (two earlier evictions).  Before its
+        # receipt settles, another wake surfaces that item -- clearing the lost count with its
+        # own report -- and two newer evictions accrue.  W1's delivered receipt must then do
+        # nothing at all:  replaying its lost=2 would erase the two newer evictions' count
+        # (Kody, PR 2446).
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        # Four holds under cap 1 / overflow cap 1 leave lost=2 and two held ids (overflow first).
+        for mid in (900001, 900002, 900003, 900004):
+            HELD.hold(self.seat_paths(), self._record(mid), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 2, "two evicted entries are the lost count")
+        self.assertEqual(sorted(self.held_ids()), [900003, 900004])
+        wake_id = self.wake(daemon)
+        self.assertEqual(self.done_row(wake_id)["held_lost"], 2)
+        # Another wake surfaces the items the router wake listed, with its own lost report.
+        HELD.surface(self.seat_paths(), message_ids=[900003, 900004], lost=2)
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 0)
+        # Two newer evictions accrue afterwards, never reported to any wake yet.
+        for mid in (910001, 910002, 910003, 910004):
+            HELD.hold(self.seat_paths(), self._record(mid), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 2)
+        # The router wake's delivered receipt settles:  its items are already gone, so the
+        # replay must not touch the store.
+        self.answer(wake_id, self.receipt(wake_id))
+        self.pass_at(daemon, 31)
+        self.assertEqual(self.outcome()["state"], "delivered")
+        self.assertEqual(
+            HELD.load(self.seat_paths())["lost"], 2, "the stale lost snapshot was replayed"
+        )
+        self.assertEqual(
+            [e for e in self.log_events("held-back-surfaced") if e.get("by") == "receipt"],
+            [],
+        )
+
+    def _record(self, message_id: int) -> dict[str, Any]:
+        return {
+            "wake_ids": ["w-seed-%d" % message_id],
+            "message_id": message_id,
+            "owner": False,
+            "topic_key": L.topic_key("simple-tools", "earlier"),
+            "dm": False,
+            "channel": "simple-tools",
+            "topic": "earlier",
+            "stream_id": 3,
+            "sender_full_name": "Codex",
+            "zulip_link": "",
+            "reason": "wakes_per_hour",
+            "at": int(self.clock.time()),
+        }
+
+    def test_a_wake_that_listed_no_items_still_clears_the_lost_count_it_carried(self) -> None:
+        # A done row whose held_listed is empty (its items were all evicted before it) still
+        # clears the lost count it reported (Kody, PR 2446).
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        HELD.hold(self.seat_paths(), self._record(900001), cap=1, overflow_cap=1, now=self.clock.time())
+        HELD.hold(self.seat_paths(), self._record(900002), cap=1, overflow_cap=1, now=self.clock.time())
+        HELD.hold(self.seat_paths(), self._record(900003), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths()).get("lost", 0), 1)
+        runner = daemon.seats["CLAUDE"]
+        runner.ledger.append(
+            {
+                "ts": self.clock.time(), "wake_id": "w-empty", "seat": "CLAUDE", "state": "done",
+                "adapter": "http", "surfaced": False, "receipt_awaited": True,
+                "held_listed": [], "held_lost": 1,
+            }
+        )
+        daemon._surface_from_receipt(runner, "w-empty")
+        self.assertEqual(HELD.load(self.seat_paths()).get("lost", 0), 0, "the carried count is cleared")
+        (event,) = self.log_events("held-back-surfaced")
+        self.assertEqual((event["surfaced"], event["lost"], event["by"]), (0, 1, "receipt"))
+
     def test_a_worker_wake_keeps_surfacing_at_accept_time(self) -> None:
         # The Worker's own delivered answer still surfaces at once:  the receipt wait is the
         # router's alone, and a non-router seat's accepted wake is not held for a receipt.
