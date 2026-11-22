@@ -184,15 +184,93 @@ def _source_assignment(text: str, match: re.Match[str]) -> bool:
     return labeled_arg
 
 
-def scan(text: str, known: Iterable[str] = ()) -> str | None:
-    """The kind of secret found in `text`, or None.  `known` are exact values to refuse (and their
-    base64 Basic-auth forms are caught by the caller passing them too)."""
+# Public configuration identifiers, not credential values. Keep exact bindings:
+# an uppercase-looking string alone is not evidence that it names configuration.
+_PUBLIC_PYTHON_ENV_BINDINGS = {
+    "LISTENER_READ_TOKEN": "INFISICAL_LISTENER_READ_TOKEN",
+    "OPERATOR_VOICE_TOKEN": "INFISICAL_OPERATOR_VOICE_TOKEN",
+    "WAKE_ROUTER_TOKEN": "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN",
+}
+
+
+def _python_source_value_spans(text: str) -> frozenset[tuple[int, int]]:
+    """Only generic-detector false positives proved by complete Python syntax.
+
+    No source is executed. Quoted function names, comments, docstrings, bare
+    names and unknown string constants cannot qualify. Every other match is
+    still scanned independently, including literal arguments inside a call.
+    """
+    import ast
+
+    if len(text) > 128 * 1024:
+        return frozenset()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return frozenset()
+    lines = text.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def offset(node, end=False):
+        line = node.end_lineno if end else node.lineno
+        column = node.end_col_offset if end else node.col_offset
+        # AST columns are UTF-8 bytes; scanner spans are Unicode characters.
+        return starts[line - 1] + len(lines[line - 1].encode("utf-8")[:column].decode("utf-8"))
+
+    spans = set()
+    for visited, node in enumerate(ast.walk(tree), 1):
+        if visited > 10000:
+            return frozenset()  # Budget failure never admits a partial analysis.
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and _PUBLIC_PYTHON_ENV_BINDINGS.get(node.targets[0].id) == node.value.value
+        ):
+            value = node.value
+            left, right = offset(value), offset(value, True)
+            # Require one ordinary quoted identifier, not an encoded,
+            # concatenated or multiline expression that happens to decode alike.
+            literal = text[left:right]
+            if literal in ("'" + value.value + "'", '"' + value.value + '"'):
+                spans.add((left + 1, right - 1))
+        elif (
+            isinstance(node, ast.keyword)
+            and node.arg == "token"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_wake_router_token"
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], ast.Name)
+            and node.value.args[0].id == "env"
+            and not node.value.keywords
+            and text[offset(node.value) : offset(node.value, True)] == "_wake_router_token(env)"
+        ):
+            # Only this public validator expression is classified here.
+            # Other callable identifiers can themselves look like credentials
+            # and retain the generic detector's conservative treatment.
+            spans.add((offset(node.value.func), offset(node.value.func, True)))
+    return frozenset(spans)
+
+
+def _scan(text: str, known: Iterable[str], source_spans: frozenset[tuple[int, int]]) -> str | None:
     for value in known:
         if value and len(value) >= 8 and value in text:
             return "a loaded credential"
     for label, pattern in _PATTERNS:
         if "value" in pattern.groupindex:
-            if any(not _source_assignment(text, match) for match in pattern.finditer(text)):
+            for match in pattern.finditer(text):
+                if _source_assignment(text, match):
+                    continue
+                if (
+                    label in ("assigned credential", "assigned secret")
+                    and match.span("value") in source_spans
+                ):
+                    continue
                 return label
         elif pattern.search(text):
             return label
@@ -200,6 +278,11 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
         if _zulip_shaped(match.group()):
             return "a Zulip-shaped API key"
     return None
+
+
+def scan(text: str, known: Iterable[str] = ()) -> str | None:
+    """Raw text keeps its existing conservative policy, without source classification."""
+    return _scan(text, known, frozenset())
 
 
 # Exact generic-fixture approvals are release code, never caller input. Each
@@ -299,7 +382,11 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
 
 
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
-    """Normal scan, except the separately reviewed exact full-file subtypes.
+    """File-aware scan with exact reviewed subtypes kept as separate mechanisms.
+
+    Valid bounded Python source can classify public environment-name bindings
+    and the exact public token-validator expression, never arbitrary calls or values.
+    Raw-message scan() remains conservative. No classification executes source.
 
     Match-pinned fixtures require the exact nonempty effective match census.
     Generic fixtures waive generic assignments only.  Public-integrity reviews
@@ -319,7 +406,10 @@ def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str
         return None if kind == "a Zulip-shaped API key" else kind
     reviewed_matches = _REVIEWED_GENERIC_MATCHES.get(key)
     if key not in _REVIEWED_GENERIC_FIXTURES and reviewed_matches is None:
-        return scan(text, known)
+        # Language-aware classification, not a file/path or digest waiver.
+        # Only validated Python syntax can contribute non-secret source spans.
+        spans = _python_source_value_spans(text) if path.endswith(".py") else frozenset()
+        return _scan(text, known, spans)
     for value in known:
         if value and value in text:
             return "a loaded credential"
