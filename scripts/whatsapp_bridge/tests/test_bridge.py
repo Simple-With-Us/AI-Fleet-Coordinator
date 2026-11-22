@@ -546,14 +546,14 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(len(requests), 1, "wrong folder or expiry stops before secret values")
             self.assertEqual(children, [])
             return
-        if mode == "poll":
-            self.assertEqual(len(requests), 2)
-        else:
-            self.assertEqual(len(requests), 1 + len(source_names))
-            self.assertCountEqual(
-                [urllib.parse.urlsplit(path).path for _method, path in requests[1:]],
-                ["/v3/secrets/raw/" + name for name in source_names],
-            )
+        # Every mode reads only the names it wants,  one read each,  so the count is the
+        # service-token check plus one read per name.  The poller used to read the whole
+        # folder and pick from it;  it now reads exactly its own names.
+        self.assertEqual(len(requests), 1 + len(source_names))
+        self.assertCountEqual(
+            [urllib.parse.urlsplit(path).path for _method, path in requests[1:]],
+            ["/v3/secrets/raw/" + name for name in source_names],
+        )
         self.assertEqual(len(children), 1)
         child = children[0][2]
         self.assertTrue(set(core.AUTH_ENV_VARS).isdisjoint(child))
@@ -572,22 +572,25 @@ class LaunchTests(unittest.TestCase):
         names = {n: "synthetic" for n in launch.POLL_NAMES if n != "WHATSAPP_BRIDGE_SEND_ENABLED"}
         command = launch.arguments("poll", __import__("pathlib").Path("/release"))
         children = []
+        prepared = {
+            "PATH": "/usr/bin",
+            "INFISICAL_TOKEN": "synthetic",
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT,
+        }
         with (
-            patch.object(core, "fetch_all", return_value=names),
+            patch.object(core, "fetch_project", return_value=names),
             patch.object(launch.os, "execvpe", side_effect=lambda *a: children.append(a)),
         ):
-            launch.run_poll_with_optional_send(
-                command, {"PATH": "/usr/bin", "INFISICAL_TOKEN": "synthetic"}
-            )
+            launch.run_poll_with_optional_send(command, dict(prepared))
         self.assertEqual(children[0][2]["WHATSAPP_BRIDGE_SEND_ENABLED"], "off")
         self.assertNotIn("INFISICAL_TOKEN", children[0][2])
         del names["WHATSAPP_API_KEY"]
         with (
-            patch.object(core, "fetch_all", return_value=names),
+            patch.object(core, "fetch_project", return_value=names),
             patch.object(launch.os, "execvpe") as execute,
         ):
             with self.assertRaises(core.SecretsError):
-                launch.run_poll_with_optional_send(command, {})
+                launch.run_poll_with_optional_send(command, dict(prepared))
             execute.assert_not_called()
 
     def test_a_malformed_command_refuses_instead_of_crashing(self):
@@ -617,7 +620,7 @@ class LaunchTests(unittest.TestCase):
 
         seen = []
 
-        def fetch_all(path, prepared):
+        def fetch_project(project, path, prepared, **options):
             seen.append(path)
             return {"WHATSAPP_API_KEY": "synthetic"}
 
@@ -634,10 +637,10 @@ class LaunchTests(unittest.TestCase):
             "OTHER_SECRET",
         ]
         with (
-            patch.object(core, "fetch_all", side_effect=fetch_all),
+            patch.object(core, "fetch_project", side_effect=fetch_project),
             patch.object(launch.os, "execvpe") as execute,
         ):
-            launch.run_with_secrets(command, {})
+            launch.run_with_secrets(command, {"INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT})
         self.assertEqual(seen, ["/jet"])
         self.assertEqual(execute.call_args[0][2]["WHATSAPP_API_KEY"], "synthetic")
         self.assertNotIn("OTHER_SECRET", execute.call_args[0][2])
