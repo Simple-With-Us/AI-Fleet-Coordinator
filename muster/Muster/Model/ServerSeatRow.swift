@@ -94,7 +94,7 @@ struct ServerSeatRowPresentation: Equatable {
             note = nil
             noteIsProblem = false
             var help = "What the server's eavesdropper says about this seat"
-            if let readAt { help += ", read at \(OperatorVoiceReading.whenText(readAt, now: now))" }
+            if let readAt { help += ", read at \(EavesdropperStatusText.whenText(readAt, now: now))" }
             help += "."
             help += gap + "Wakes in the last day: \(facts.wakesLastDayText)."
             help += gap + "Held back: \(facts.heldBackText)."
@@ -283,7 +283,7 @@ struct ServerSeatRowPresentation: Equatable {
                 ? "Muster is reading the server's eavesdropper now."
                 : "Muster has not read the server's eavesdropper yet."
         }
-        let when = "Muster read the server's eavesdropper at \(OperatorVoiceReading.whenText(readAt, now: now))"
+        let when = "Muster read the server's eavesdropper at \(EavesdropperStatusText.whenText(readAt, now: now))"
         var line: String
         switch reading {
         case .read(let status):

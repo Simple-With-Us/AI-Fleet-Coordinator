@@ -157,7 +157,6 @@ targets:
       - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
-      - path: Muster/Model/ListenerStatus.swift
       # The server eavesdropper's reduced status, read over `server eavesdropper-status`
       # (ServerEavesdropperStatusTests).
       - path: Muster/Model/ServerEavesdropperStatus.swift
@@ -175,11 +174,8 @@ targets:
       # What a server seat's row shows from the server eavesdropper's reading (ServerSeatRowTests).
       - path: Muster/Model/ServerSeatRow.swift
       - path: Muster/Model/FleetViewStore.swift
-      - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
-      - path: Muster/Model/WakeSettingsStore.swift
-      - path: Muster/Model/WakeSettingsWriter.swift
       - path: Muster/FleetServices/ControlAPI.swift
       - path: Muster/FleetServices/FleetServiceControl.swift
       - path: Muster/FleetServices/FleetHost.swift
@@ -192,6 +188,10 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
+      # The fleet process and port census (AFC-879, incorporated from AFC#2084).  It needs
+      # only Foundation and StartupPolicy's command running, both compiled above, so its
+      # tests (MusterTests/FleetServices/ProcessMonitorTests.swift) compile here too.
+      - path: Muster/FleetServices/ProcessMonitor.swift
       # The window's layout sizes, the column cap (the fix for AFC-616) and the stale
       # split-view frame check.  No environment objects, so the test bundle compiles it
       # (MusterWindowLayoutTests).

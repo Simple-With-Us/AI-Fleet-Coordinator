@@ -1,4 +1,4 @@
-"""A paged GitHub list read is bounded by its page size (8 MiB), every other read by 1 MiB.
+"""Paged lists are bounded at8MiB, exact immutable recursive trees at2MiB, other reads at1MiB.
 
 GitHub's raw pull request objects run 20 to 25 KB each, so a page of 50 is 1.0 to 1.3 MB while the
 relay returns about 400 bytes per row.  The 1 MiB bound refused such pages (BotFleet page 11 at
@@ -11,6 +11,7 @@ import unittest
 from git_relay.github_client import (
     MAX_BODY,
     MAX_PAGE_BODY,
+    MAX_RECURSIVE_TREE_BODY,
     GitHubClient,
     RelayGitHubError,
     response_limit,
@@ -74,6 +75,41 @@ class ResponseLimit(unittest.TestCase):
             self.assertEqual(response_limit("GET", path), MAX_BODY, path)
         for method in ("POST", "PATCH", "PUT", "DELETE"):
             self.assertEqual(response_limit(method, "/repos/o/r/pulls?per_page=50"), MAX_BODY)
+
+
+class RecursiveTreeBound(unittest.TestCase):
+    def test_only_exact_immutable_recursive_tree_get_gets_two_mib(self):
+        route = "/repos/o/r/git/trees/" + "a" * 40
+        self.assertEqual(response_limit("GET", route + "?recursive=1"), MAX_RECURSIVE_TREE_BODY)
+        for path in [
+            route,
+            route + "?recursive=0",
+            route + "?recursive=1&x=1",
+            route + "?recursive=1#x",
+            route + "?recursive=1&recursive=1",
+            route + "/x?recursive=1",
+            route.replace("a" * 40, "main") + "?recursive=1",
+            route.replace("a" * 40, "a" * 39) + "?recursive=1",
+            "/repos/o/r/compare/main...feature?recursive=1",
+        ]:
+            self.assertEqual(response_limit("GET", path), MAX_BODY, path)
+        for method in ("POST", "PUT", "PATCH", "DELETE", "HEAD"):
+            self.assertEqual(response_limit(method, route + "?recursive=1"), MAX_BODY)
+        self.assertEqual(MAX_BODY, 1024 * 1024)
+        self.assertEqual(MAX_RECURSIVE_TREE_BODY, 2 * 1024 * 1024)
+
+    def test_real_client_accepts_bounded_tree_and_refuses_overflow(self):
+        route = "/repos/o/r/git/trees/" + "a" * 40 + "?recursive=1"
+        body = json.dumps({"padding": "x" * (MAX_BODY + 1000)}).encode()
+        self.assertEqual(len(client_for(body)._call("GET", route)["padding"]), MAX_BODY + 1000)
+        for path, size in [
+            (route, MAX_RECURSIVE_TREE_BODY + 1),
+            (route.split("?")[0], MAX_BODY + 1),
+            ("/repos/o/r/compare/a...b", MAX_BODY + 1),
+        ]:
+            with self.subTest(path=path), self.assertRaises(RelayGitHubError) as caught:
+                client_for(b" " * size)._call("GET", path)
+            self.assertEqual(caught.exception.code, "response_too_large")
 
 
 class PagedRead(unittest.TestCase):
