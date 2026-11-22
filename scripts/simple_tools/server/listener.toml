@@ -118,9 +118,10 @@ enabled = false
 # covering the whole topic.  This replaces the standalone linear_relay process and its
 # own bot.  Its writes use the owner's Linear developer token (a personal API key with
 # Write permission) in Infisical (AI Fleet Coordinator, prod, /linear), fetched at
-# daemon start through ONE scoped read-only Infisical service token — bound as the
-# runtime-only variable OPERATOR_LINEAR_INFISICAL_TOKEN, or held in the
-# infisical_token_file below (a 0600 file;  see docs/operator-linear-comments.md).
+# daemon start through ONE scoped read-only Infisical service token — held in the
+# consumer's own store, the infisical_token_file below (a 0600 file;  the environment
+# is not a source:  owner ruling, November 22, 2026;  see
+# docs/operator-linear-comments.md).
 # Server instance only.  Enable only after the service token is in place, then
 # restart the app.
 [linear_comments]
