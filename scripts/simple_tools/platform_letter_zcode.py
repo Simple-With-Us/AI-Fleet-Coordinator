@@ -398,7 +398,9 @@ def zcode_child_sessions(env: Mapping[str, str], parent: str) -> list[str] | Non
         examined = 0
         for row in rows:
             try:
-                sid = SI.check(row[0] if isinstance(row[0], str) else "", "a listed child session id")
+                sid = SI.check(
+                    row[0] if isinstance(row[0], str) else "", "a listed child session id"
+                )
             except ValueError:
                 continue  # the id names the note path, so it is never read unchecked
             stamp = _stored_seconds(row[1] if len(row) > 1 else None)
