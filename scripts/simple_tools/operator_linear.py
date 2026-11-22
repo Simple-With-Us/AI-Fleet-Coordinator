@@ -200,21 +200,18 @@ def _default_http(
         return status, {}
 
 
-def service_token(
-    env: Mapping[str, str], token_file: str | None = None, *, store_first: bool = False
-) -> str:
+def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
     """The scoped Infisical service token for the key fetch.
 
-    The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE).
-    With ``store_first`` the store is the authority and the host-bound variable is only
-    a copy of that same grant, used when the store has none;  without it the historical
-    order holds and the host-bound variable wins.  "" when neither source yields one —
-    the feature is simply unconfigured.  A file that exists but is group- or
-    other-readable raises CredentialRefused:  a service token must not sit in a file
-    other accounts can read."""
+    The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE),
+    and it is the authority:  a hand-set environment value never replaces the reviewed,
+    scope-limited grant.  The host-bound variable is this consumer's own copy of that
+    same grant — the owner's ruling on OPS-1101, Option 2, where a copy is allowed
+    only under a variable named for that consumer — and it is used when the store has
+    none.  "" when neither source yields one:  the feature is simply unconfigured.  A
+    file that exists but is group- or other-readable raises CredentialRefused:  a
+    service token must not sit in a file other accounts can read."""
     bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
-    if bound and not store_first:
-        return bound
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -340,7 +337,7 @@ def load_api_key(
     told the value the moment it is fetched, so no later log line can carry it."""
     # The store is the authority:  the host-bound variable is only a copy of that same
     # grant,  used when the store has none.  A hand-set value never replaces it.
-    token = service_token(env, token_file, store_first=True)
+    token = service_token(env, token_file)
     if not token:
         return None
     key = fetch_api_key(token, http=http)

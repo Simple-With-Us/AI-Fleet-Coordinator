@@ -826,10 +826,17 @@ class CredentialTests(unittest.TestCase):
         return path
 
     # -- where the service token comes from -------------------------------------------
-    def test_service_token_env_wins_over_file(self) -> None:
+    def test_service_token_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
         path = self.token_file()
         env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
-        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-env")
+        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-file")
+
+    def test_service_token_uses_the_bound_copy_when_the_store_has_none(self) -> None:
+        # The consumer's own named copy is the second source (the owner's ruling on
+        # OPS-1101,  Option 2):  a copy may travel,  and it is only this consumer's.
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(self.dir / "absent")), "st-" + "from-env")
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()

@@ -386,8 +386,9 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     once per folder rather than once per rule.
 
     No child process starts:  the retired reader command is gone,  and the checker's own
-    store holds the token that the read runs under;  a token bound in the environment is
-    only a copy of that same grant, and it is used when the store has none.
+    store holds the token that the read runs under.  The store is the only source:  a
+    token bound in the environment is never a fallback for it,  and a store that has no
+    usable token fails the check by naming the account and the folder.
     """
     cache_key = "infisical:names:%s" % folder
     cached = ctx.cache.get(cache_key)
