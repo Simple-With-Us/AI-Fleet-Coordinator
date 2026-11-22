@@ -5540,18 +5540,16 @@ class Daemon:
                 )
                 return {"owner_dm": None, "owner_dm_error": withheld}
         try:
-            # Any live runner's realm-users map carries the owner's display
-            # name;  prefer the map that holds the owner id, as the broadcast
-            # reminder does, so the mention survives one seat's stale map.
             users = next(
                 (
                     r.users
                     for r in self.seats.values()
                     if getattr(r, "users", None) and owner_id in r.users
                 ),
-                next(
+                getattr(runner, "users", None)
+                or next(
                     (r.users for r in self.seats.values() if getattr(r, "users", None)),
-                    getattr(runner, "users", None),
+                    None,
                 ),
             )
             result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
