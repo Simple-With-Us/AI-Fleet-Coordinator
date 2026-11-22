@@ -1606,6 +1606,21 @@ class ControlVerbTests(Case):
         self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget.future_cap"))
         self.assertEqual(nested["seat"]["budget"]["keys"], {})
 
+    def test_a_nested_drop_blocks_only_its_own_sub_key(self) -> None:
+        foc = self.foc
+        stripped = (("seat", "budget"), "seat.*.budget.future_cap")
+        # A whole-entry drop still blocks every set under it.
+        self.assertTrue(foc._set_touches({"notes_queue.server_seats": ["JET"]}, (("notes_queue", "server_seats"), "notes_queue.server_seats")))
+        # A sibling-only write to the same parent entry does not touch the drop.
+        self.assertFalse(foc._set_touches({"seat.ZC.budget": {"wakes_per_day": 6}}, stripped))
+        # A value carrying the dropped sub-key stays refused.
+        self.assertTrue(foc._set_touches({"seat.ZC.budget": {"wakes_per_day": 6, "future_cap": 1}}, stripped))
+        # A removal naming the dropped sub-key stays refused; a sibling removal does not.
+        self.assertTrue(foc._set_touches({}, stripped, ["seat.ZC.budget.future_cap"]))
+        self.assertFalse(foc._set_touches({}, stripped, ["seat.ZC.budget.wakes_per_day"]))
+        # An unrelated seat or table never touches.
+        self.assertFalse(foc._set_touches({"seat.ZC.enabled": False}, stripped))
+
     def test_a_change_to_a_dropped_entry_keeps_the_original_refusal(self) -> None:
         class OldEditorReader(FakeReader):
             def __call__(self, argv, timeout, env, max_bytes, data=None):

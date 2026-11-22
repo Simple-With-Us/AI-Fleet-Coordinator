@@ -2393,14 +2393,48 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     return None
 
 
-def _set_touches(changes, affected):
-    table, name = affected
+def _set_touches(changes, stripped, remove=None):
+    """True when the request targets the dropped allowlist entry itself.
+
+    `stripped` is `_strip_unknown_allowlist_entry`'s return:  ((table, name),
+    where).  A whole-entry drop blocks any set or removal under that entry.
+    A nested sub-key drop blocks only a set whose table value carries that
+    sub-key, or a removal naming it:  sibling keys in the same parent entry
+    keep working on retry."""
+    if not isinstance(stripped, (list, tuple)) or len(stripped) != 2:
+        return True
+    (table, name), where = stripped
+    parts = str(where).split(".") if isinstance(where, str) else []
+    nested = len(parts) == 4 if table == "seat" else len(parts) == 3
+    dropped = parts[-1] if nested else None
     for key in changes or ():
-        parts = str(key).split(".")
+        key_parts = str(key).split(".")
         if table == "seat":
-            if len(parts) >= 3 and parts[0] == "seat" and parts[2] == name:
+            if not (len(key_parts) >= 3 and key_parts[0] == "seat" and key_parts[2] == name):
+                continue
+        elif not (len(key_parts) >= 2 and key_parts[0] == table and key_parts[1] == name):
+            continue
+        if not nested:
+            return True
+        value = None
+        try:
+            value = (changes or {})[key]
+        except (TypeError, AttributeError):
+            value = None
+        if not isinstance(value, dict) or dropped in value:
+            return True
+    for key in remove or ():
+        key_parts = str(key).split(".")
+        if table == "seat":
+            if len(key_parts) == 4 and key_parts[0] == "seat" and key_parts[2] == name:
+                if not nested or key_parts[3] == dropped:
+                    return True
+            elif len(key_parts) == 3 and key_parts[0] == "seat" and key_parts[2] == name and not nested:
                 return True
-        elif len(parts) >= 2 and parts[0] == table and parts[1] == name:
+        elif len(key_parts) == 3 and key_parts[0] == table and key_parts[1] == name:
+            if not nested or key_parts[2] == dropped:
+                return True
+        elif len(key_parts) == 2 and key_parts[0] == table and key_parts[1] == name and not nested:
             return True
     return False
 
@@ -2452,7 +2486,7 @@ def eavesdropper_settings(
             if match is None:
                 break
             stripped = _strip_unknown_allowlist_entry(request["allowlist"], match.group(1))
-            if stripped is None or _set_touches(request.get("set"), stripped[0]):
+            if stripped is None or _set_touches(request.get("set"), stripped, request.get("remove")):
                 break
             skipped_allowlist.append(stripped[1])
             document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
