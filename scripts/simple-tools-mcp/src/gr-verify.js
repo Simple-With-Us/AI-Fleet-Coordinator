@@ -20,8 +20,24 @@
 //
 // Logging discipline matches serveGbBearerMcp:  fixed reason codes only, the
 // body and the hash are never echoed, and only an EXPIRED-but-matching bearer
-// writes an audit row (wrong guesses are free to send and would push real
-// rows out of the capped log).
+// writes a SeatGate audit row (wrong guesses are free to send and would push
+// real rows out of that capped log).
+//
+// Every refusal, a gate that could not answer, and a verify key that could not
+// be read also go to the Worker's diagnostics log (AFC-844) through the
+// injected `recordRefusal`:  one row of kind `gr_bearer`, the fixed reason
+// code and the HTTP status.  The seat is named only when the bearer's hash
+// matched (expired, paused, events_only), so a guess cannot spread rows across
+// identities.  That log aggregates by kind, reason and seat;  index.js also
+// coalesces each key to one write a minute per isolate (src/diagnostic-
+// coalesce.js) and hands it to waitUntil, so a flood raises a count, cannot use
+// up the shared diagnostics budget, and never delays an answer.  Any seat can
+// read it with worker_diagnostics.  The relay reports every one of these as
+// bearer_rejected or verifier_unavailable and records no reason (AFC-694,
+// Nov 18), so without this row a refusal left no cause anywhere.  A refusal the
+// relay makes itself (its 30 s refusal cache, or a check call that timed out)
+// never reaches this route and leaves no row.  Recording never changes the
+// answer, and a failing log is ignored.
 //
 // Pure module for the checker;  the route handler takes its gate factory so
 // node --test can drive it without a Worker runtime.
@@ -41,6 +57,14 @@ export const GR_VERIFY_KEY_VAR = "GR_BEARER_VERIFY_KEY";
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_RE = /^[A-Z][A-Z0-9-]{0,31}$/;
 const KNOWN = new Set([...GB_IDENTITIES, ...BEARER_SEATS]);
+
+/** The diagnostics kind of a refused bearer verify (AFC-844), read with worker_diagnostics. */
+export const GR_BEARER_DIAGNOSTIC_KIND = "gr_bearer";
+// Refusals that come only after the presented bearer's hash matched the seat's
+// own:  the one case where the row may name the seat.
+// `none` is identity-scoped (the identity comes from the channel-signed body), so its
+// row names the seat, like the other holder reasons (Kody, PR 2331 round 4).
+const HOLDER_REASONS = new Set(["expired", "paused", "events_only", "none"]);
 
 // The signed payload's strict shape.  sent_at is an epoch-seconds integer.
 const GrVerifySchema = z
@@ -115,14 +139,36 @@ export async function resolveGrVerifyKey(env) {
  * factory and `resolveKey` to the Infisical-only resolver;  both are
  * injectable for tests.
  */
-export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, eventsOnlySeats = [], identityCache = null, cacheMs = 0 } = {}) {
-  const key = await resolveKey(env);
-  if (request.method !== "POST") return jsonResponse({ ok: false, reason: "method_not_allowed" }, 405);
+export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, eventsOnlySeats = [], identityCache = null, cacheMs = 0, recordRefusal = async () => {} } = {}) {
+  // Every refusal leaves through here:  recording it never changes or delays the
+  // response (index.js hands the write to waitUntil), which is exactly the one the
+  // route always gave.
+  const record = async (reason, status, identity = null) => {
+    try {
+      await recordRefusal({ kind: GR_BEARER_DIAGNOSTIC_KIND, reason, seat: HOLDER_REASONS.has(reason) ? identity : null, status });
+    } catch {
+      // A diagnostics outage must not turn a refusal into a route error.
+    }
+  };
+  const refuse = async (reason, status, { identity = null, response = null } = {}) => {
+    await record(reason, status, identity);
+    return response ?? jsonResponse({ ok: false, reason }, status);
+  };
+  let key;
+  try {
+    key = await resolveKey(env);
+  } catch (error) {
+    // In required mode an Infisical outage throws, as it always did (the relay sees a
+    // 500 and reports verifier_unavailable);  now the row says why.
+    await record("key_unavailable", 500);
+    throw error;
+  }
+  if (request.method !== "POST") return refuse("method_not_allowed", 405);
   const declared = Number(request.headers.get("content-length") ?? "0");
   const bytes = Number.isFinite(declared) && declared > GR_VERIFY_MAX_BODY ? null : await readBodyBytes(request, GR_VERIFY_MAX_BODY);
-  if (bytes === null) return jsonResponse({ ok: false, reason: "too_large" }, 413);
+  if (bytes === null) return refuse("too_large", 413);
   const checked = await verifyGrRequest({ bytes, signature: request.headers.get(WAKE_SIGNATURE_HEADER), key });
-  if (!checked.ok) return jsonResponse({ ok: false, reason: checked.reason }, checked.status);
+  if (!checked.ok) return refuse(checked.reason, checked.status);
 
   const { identity, hash } = checked.query;
   // `cacheMs` is config.grVerifyCacheMs (an hour by default, owner ruling
@@ -152,7 +198,9 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   } catch {
     // The gate could not answer, which is not a refusal:  a plain 503 that says
     // so, never a 200 refusal.  The relay still fails closed on it.
-    return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), { status: 503, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": "30" } });
+    return refuse("unavailable", 503, {
+      response: new Response(JSON.stringify({ ok: false, reason: "unavailable" }), { status: 503, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": "30" } }),
+    });
   }
   if (!verdict.ok) {
     if (verdict.reason === "expired") {
@@ -165,19 +213,19 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
       try { await identityGate.gbBearerMismatch(identity, new Set([...GB_IDENTITIES, ...BEARER_SEATS])); } catch { /* A counter is observability, never the security path. */ }
     }
     identityCache?.evict(cacheKey);
-    return jsonResponse({ ok: false, reason: verdict.reason }, 200);
+    return refuse(verdict.reason, 200, { identity });
   }
   // The pause flag rides the bearer check's own answer (R1):  no second
   // gate RPC for the one boolean, and the refusal stays in this position.
   if (verdict.paused) {
     identityCache?.evict(cacheKey);
-    return jsonResponse({ ok: false, reason: "paused" }, 200);
+    return refuse("paused", 200, { identity });
   }
   // A wake-only (events-only) seat's bearer stays minted but verifies refused
   // here, so GR-MCP fails closed to 401 while the seat carries no tools.  The
   // refusal follows the same reviewed EVENTS_ONLY_SEATS var as the /mcp tool
   // surface;  lifting the var restores access without a re-mint.
-  if (eventsOnlySeats.includes(identity)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
+  if (eventsOnlySeats.includes(identity)) return refuse("events_only", 200, { identity });
   const expiresAt = verdict.expires_at ?? 0;
   // The window never runs past the bearer's own expiry.  One clock reading
   // (the cache's own clock, Date.now in production) both caps the window and

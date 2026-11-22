@@ -39,26 +39,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import threading
 import time
 
 CONFIRMED = "open_pr"
 BACKFILL = "audit_backfill"
 
-ROW_FIELDS = (
-    "ts",
-    "seat",
-    "repo",
-    "number",
-    "head",
-    "base",
-    "corr",
-    "confirmed",
-    "source",
-    "origin_session_claim",
-    "origin_letter_claim",
-    "origin_generation_claim",
-)
+ROW_FIELDS = ("ts", "seat", "repo", "number", "head", "base", "corr", "confirmed", "source")
 
 
 def _row(
@@ -72,11 +60,27 @@ def _row(
     confirmed: bool,
     source: str,
     ts: str | None = None,
+    origin: dict | None = None,
     origin_session_claim: str | None = None,
     origin_letter_claim: str | None = None,
     origin_generation_claim: int | None = None,
 ) -> dict:
+    from .service_read import origin_claims
+
+    claims = dict(origin_claims(origin or {}))
+    # The three creation-time native claims are the same values the shared
+    # validator produces.  A caller that already validated them (the
+    # creation path) passes them directly;  an absent claim stays absent,
+    # so a row never grows an empty claim column.
+    for name, value in (
+        ("origin_session_claim", origin_session_claim),
+        ("origin_letter_claim", origin_letter_claim),
+        ("origin_generation_claim", origin_generation_claim),
+    ):
+        if value is not None:
+            claims[name] = value
     return {
+        **claims,
         "ts": ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "seat": seat,
         "repo": repo,
@@ -86,15 +90,6 @@ def _row(
         "corr": corr,
         "confirmed": bool(confirmed),
         "source": source,
-        # Caller-supplied and UNVALIDATED:  which session says it opened this
-        # PR.  Never evidence on its own:  the binding that routes alerts is
-        # the session's own registry row (bound_prs), checked live at delivery.
-        "origin_session_claim": origin_session_claim,
-        "origin_letter_claim": origin_letter_claim,
-        # Claimed letter generation at open time;  the wake-router checks all
-        # three claims against the live registry row, so a stale or guessed
-        # generation simply holds the wake.
-        "origin_generation_claim": origin_generation_claim,
     }
 
 
@@ -120,6 +115,7 @@ class PROwnerStore:
         self.skipped_lines = 0
         self.load_error: str | None = None
         self._torn_tail = False
+        self._pending_creations: set[str] = set()
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 for raw in handle:
@@ -133,6 +129,9 @@ class PROwnerStore:
                         continue
                     try:
                         row = json.loads(line)
+                        if isinstance(row, dict) and "owner_index_event" in row:
+                            self._fold_health(row)
+                            continue
                         key = self._key_of(row)
                     except (ValueError, TypeError):
                         self.skipped_lines += 1
@@ -168,6 +167,8 @@ class PROwnerStore:
         downgrades a confirmed one;  a second confirmed row for the same PR
         (only possible after operator repair) keeps the first binding.
         """
+        if row.get("confirmed") is True and row.get("source") == CONFIRMED:
+            self._pending_creations.discard(row.get("corr"))
         existing = self._by_pr.get(key)
         if existing is None:
             self._by_pr[key] = row
@@ -185,27 +186,65 @@ class PROwnerStore:
         key = self._key_of(row)
         if key is None:
             raise ValueError("row needs a repo string and a positive integer number")
+        return self._append_entry(row, key)
+
+    def _fold_health(self, row):
+        if (
+            set(row) != {"owner_index_event", "corr"}
+            or row["owner_index_event"] not in ("creation_pending", "creation_refused")
+            or not isinstance(row["corr"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", row["corr"])
+        ):
+            raise ValueError("invalid owner index health event")
+        if row["owner_index_event"] == "creation_pending":
+            self._pending_creations.add(row["corr"])
+        else:
+            self._pending_creations.discard(row["corr"])
+
+    def begin_creation(self, corr):
+        # Fence before GitHub, not after an append failure when disk may be down.
+        row = {"owner_index_event": "creation_pending", "corr": corr}
+        if not isinstance(corr, str) or not re.fullmatch(r"[0-9a-f]{32}", corr):
+            raise ValueError("creation fence needs durable outcome correlation")
+        self._append_entry(row)
+
+    def refuse_creation(self, corr):
+        # Only a definite no-create refusal may resolve without an owner row.
+        self._append_entry({"owner_index_event": "creation_refused", "corr": corr})
+
+    def _append_entry(self, row, key=None):
         line = json.dumps(row, sort_keys=True) + "\n"
         with self._lock:
-            existed = os.path.exists(self._path)
-            fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
-                if self._torn_tail:
-                    _write_all(fd, b"\n")
-                    self._torn_tail = False
-                _write_all(fd, line.encode())
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            if not existed:
-                # First create:  fsync the directory so the entry itself
-                # survives a crash, not only the file's bytes.
-                dir_fd = os.open(os.path.dirname(self._path) or ".", os.O_RDONLY)
+                existed = os.path.exists(self._path)
+                fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                 try:
-                    os.fsync(dir_fd)
+                    if self._torn_tail:
+                        _write_all(fd, b"\n")
+                        self._torn_tail = False
+                    _write_all(fd, line.encode())
+                    os.fsync(fd)
                 finally:
-                    os.close(dir_fd)
-            self._merge(key, row)
+                    os.close(fd)
+                if not existed:
+                    # First create:  fsync the directory so the entry itself
+                    # survives a crash, not only the file's bytes.
+                    dir_fd = os.open(os.path.dirname(self._path) or ".", os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                if key is None:
+                    self._fold_health(row)
+                else:
+                    self._merge(key, row)
+                if self.load_error == "FileNotFoundError":
+                    self.load_error = None
+            except OSError:
+                # A partial append/fsync failure also invalidates this live
+                # snapshot. Restart revalidates the file and pending fences.
+                self.load_error = "IndexWriteError"
+                raise
         return row
 
     def record(
@@ -220,6 +259,7 @@ class PROwnerStore:
         confirmed: bool = True,
         source: str = CONFIRMED,
         ts: str | None = None,
+        origin: dict | None = None,
         origin_session_claim: str | None = None,
         origin_letter_claim: str | None = None,
         origin_generation_claim: int | None = None,
@@ -236,6 +276,7 @@ class PROwnerStore:
                 confirmed=confirmed,
                 source=source,
                 ts=ts,
+                origin=origin,
                 origin_session_claim=origin_session_claim,
                 origin_letter_claim=origin_letter_claim,
                 origin_generation_claim=origin_generation_claim,
@@ -255,11 +296,24 @@ class PROwnerStore:
     def for_repo(self, repo: str) -> list[dict]:
         folded = repo.casefold()
         with self._lock:
-            rows = []
-            for key in self._by_repo.get(folded, ()):
-                row = self._by_pr.get(key)
-                if row is not None:
-                    rows.append(dict(row))
+            return [dict(r) for r in self._by_pr.values() if r.get("repo", "").casefold() == folded]
+
+    def protected_for_repo(self, repo: str) -> list[dict]:
+        """Fail closed on incomplete census; never infer native claims."""
+        from .service_read import origin_claims
+
+        with self._lock:
+            if self.load_error or self.skipped_lines or self._torn_tail or self._pending_creations:
+                raise ValueError("protected creation index incomplete")
+            rows = [
+                dict(row)
+                for row in self._by_pr.values()
+                if row.get("repo", "").casefold() == repo.casefold()
+            ]
+            if len(rows) > 1000:
+                raise ValueError("protected creation census exceeds bound")
+            for row in rows:
+                origin_claims(row)
             return rows
 
     def confirmed_for_repo(self, repo: str, limit: int) -> tuple[list[dict], bool]:

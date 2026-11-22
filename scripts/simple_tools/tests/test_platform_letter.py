@@ -2571,6 +2571,39 @@ class HookTests(Base):
         self.assertEqual(out["sessionTitle"], "%s: Fix Login" % label)
         self.assertIn("Operator session letter", out["additionalContext"])
 
+    def test_a_turn_end_retries_a_pending_title_once_then_respects_backoff(self) -> None:
+        attempts: list[tuple[str, str]] = []
+        allow = {"ok": False}
+
+        def writer(request: PL.TitleRequest) -> bool:
+            attempts.append((request.reason, request.title))
+            return allow["ok"]
+
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"}, title_in_output=False, title_writer=writer)
+        t0 = time.time()
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec, now=t0)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login"},
+                  spec=spec, now=t0 + 2)
+        label = self.label("s-0001")
+        want = "%s: Fix Login" % label
+        self.assertTrue(self.note("s-0001")["pending"])
+        self.assertEqual(attempts, [("start", "%s: New Chat" % label), ("prompt", want)])
+        # First Stop retries once immediately even inside RETRY_SECONDS, then backs off on repeat failure.
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 20)
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(self.note("s-0001")["pending"])
+        self.assertTrue(self.note("s-0001").get("turn_retried"))
+        # Second Stop inside backoff does not hammer the failing writer.
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 40)
+        self.assertEqual(len(attempts), 3)
+        # Once backoff expires and the writer recovers, Stop clears pending and records shown.
+        allow["ok"] = True
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 20 + PL.RETRY_SECONDS + 5)
+        self.assertEqual(len(attempts), 4)
+        self.assertFalse(self.note("s-0001")["pending"])
+        self.assertEqual(self.note("s-0001")["shown"], want)
+        self.assertNotIn("turn_retried", self.note("s-0001"))
+
     def request(self, *argv: str, env: dict | None = None, now: float | None = None) -> tuple[int, str]:
         out = io.StringIO()
         code = PL.request_main(list(argv), env if env is not None else self.server_env(), out, now=now,

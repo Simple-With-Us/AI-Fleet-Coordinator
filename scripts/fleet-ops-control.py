@@ -2335,6 +2335,129 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
+_SETTINGS_UNKNOWN_TYPE_RE = re.compile(r"^([A-Za-z0-9_.*-]+) needs a type from ")
+
+
+def _strip_unknown_allowlist_entry(allowlist, where):
+    """Drop the allowlist entry `where` names;  return (("seat"|table, name), report) or None.
+
+    The editor in a not-yet-redeployed container image predates a spec type
+    the host allowlist now uses (for example `seats`) and refuses the whole
+    request for it.  Dropping only that entry leaves it unreadable and
+    unwritable through the old editor — fail closed for that one key — while
+    every known setting keeps working until the image catches up.  Only a
+    well-formed spec (a table with a string `type`) may be dropped:  a
+    corrupt entry is not an unknown type, and its refusal stands.  The
+    report is the full `where` path, so a dropped sub-key does not read as
+    its whole parent entry.  When the last sub-key of a parent entry goes,
+    the parent goes with it, so no empty parent spec reaches the editor."""
+    if not isinstance(allowlist, dict) or not isinstance(where, str):
+        return None
+
+    def typed(spec):
+        return isinstance(spec, dict) and isinstance(spec.get("type"), str)
+
+    parts = where.split(".")
+    if parts[0] == "seat" and len(parts) >= 3 and parts[1] == "*":
+        seat = allowlist.get("seat")
+        if not isinstance(seat, dict):
+            return None
+        if len(parts) == 3:
+            spec = seat.get(parts[2])
+            return (
+                (("seat", parts[2]), where)
+                if typed(spec) and seat.pop(parts[2], None) is not None
+                else None
+            )
+        spec = seat.get(parts[2])
+        keys = spec.get("keys") if isinstance(spec, dict) else None
+        sub = keys.get(parts[3]) if isinstance(keys, dict) else None
+        if isinstance(keys, dict) and typed(sub) and keys.pop(parts[3], None) is not None:
+            if not keys:
+                # The parent has no sub-key left:  drop it whole, so no empty
+                # parent spec reaches the editor (it refuses "%s needs its keys").
+                seat.pop(parts[2], None)
+                return (("seat", parts[2]), "seat.*.%s" % parts[2])
+            return (("seat", parts[2]), where)
+        return None
+    tables = allowlist.get("tables")
+    if not isinstance(tables, dict) or len(parts) < 2:
+        return None
+    entries = tables.get(parts[0])
+    if not isinstance(entries, dict):
+        return None
+    if len(parts) == 2:
+        spec = entries.get(parts[1])
+        return (
+            ((parts[0], parts[1]), where)
+            if typed(spec) and entries.pop(parts[1], None) is not None
+            else None
+        )
+    spec = entries.get(parts[1])
+    keys = spec.get("keys") if isinstance(spec, dict) else None
+    sub = keys.get(parts[2]) if isinstance(keys, dict) else None
+    if isinstance(keys, dict) and typed(sub) and keys.pop(parts[2], None) is not None:
+        if not keys:
+            # The parent has no sub-key left:  drop it whole, so no empty parent
+            # spec reaches the editor (it refuses "%s needs its keys").
+            entries.pop(parts[1], None)
+            return ((parts[0], parts[1]), "%s.%s" % (parts[0], parts[1]))
+        return ((parts[0], parts[1]), where)
+    return None
+
+
+def _set_touches(changes, stripped, remove=None):
+    """True when the request targets the dropped allowlist entry itself.
+
+    `stripped` is `_strip_unknown_allowlist_entry`'s return:  ((table, name),
+    where).  A whole-entry drop blocks any set or removal under that entry.
+    A nested sub-key drop blocks a set whose table value carries that
+    sub-key, a removal naming it, and a removal of the whole parent entry
+    (which takes the dropped sub-key's stored value with it):  sibling keys
+    in the same parent entry keep working on retry."""
+    if not isinstance(stripped, (list, tuple)) or len(stripped) != 2:
+        return True
+    (table, name), where = stripped
+    parts = str(where).split(".") if isinstance(where, str) else []
+    nested = len(parts) == 4 if table == "seat" else len(parts) == 3
+    dropped = parts[-1] if nested else None
+    for key in changes or ():
+        key_parts = str(key).split(".")
+        if table == "seat":
+            if not (len(key_parts) >= 3 and key_parts[0] == "seat" and key_parts[2] == name):
+                continue
+        elif not (len(key_parts) >= 2 and key_parts[0] == table and key_parts[1] == name):
+            continue
+        if not nested:
+            return True
+        value = None
+        try:
+            value = (changes or {})[key]
+        except (TypeError, AttributeError):
+            value = None
+        if not isinstance(value, dict) or dropped in value:
+            return True
+    for key in remove or ():
+        key_parts = str(key).split(".")
+        if table == "seat":
+            if len(key_parts) == 4 and key_parts[0] == "seat" and key_parts[2] == name:
+                if not nested or key_parts[3] == dropped:
+                    return True
+            elif len(key_parts) == 3 and key_parts[0] == "seat" and key_parts[2] == name:
+                # A whole-parent removal takes the dropped sub-key's stored
+                # value with it, so it keeps the original refusal, the same
+                # way a whole-entry drop does.
+                return True
+        elif len(key_parts) == 3 and key_parts[0] == table and key_parts[1] == name:
+            if not nested or key_parts[2] == dropped:
+                return True
+        elif len(key_parts) == 2 and key_parts[0] == table and key_parts[1] == name:
+            # A whole-parent removal takes the dropped sub-key's stored value
+            # with it, so it keeps the original refusal.
+            return True
+    return False
+
+
 def eavesdropper_settings(
     ctx, action, changes, expect=None, file=None, remove=None, request_id=None, created_at=None
 ):
@@ -2366,9 +2489,28 @@ def eavesdropper_settings(
             raise Failed(
                 "the eavesdropper settings editor failed", error_code="editor_failed"
             ) from None
-    else:
+    skipped_allowlist = []
+    if file is None:
         _server_only(ctx)
         document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
+        # An editor image that predates a host allowlist spec type refuses
+        # the whole request (`allowlist_invalid`, "<key> needs a type from
+        # ...").  Drop only the named entry and retry, unless the request
+        # itself wants that entry:  then the original refusal stands, so a
+        # change is never silently dropped.
+        for _ in range(16):
+            if document.get("errorCode") != "allowlist_invalid":
+                break
+            match = _SETTINGS_UNKNOWN_TYPE_RE.match(str(document.get("detail") or ""))
+            if match is None:
+                break
+            stripped = _strip_unknown_allowlist_entry(request["allowlist"], match.group(1))
+            if stripped is None or _set_touches(
+                request.get("set"), stripped, request.get("remove")
+            ):
+                break
+            skipped_allowlist.append(stripped[1])
+            document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
     result = document.get("result")
     if result not in EAVESDROPPER_SETTINGS_RESULTS or not isinstance(document.get("ok"), bool):
         raise Failed("the editor's answer is not one this helper knows", error_code="editor_failed")
@@ -2426,6 +2568,13 @@ def eavesdropper_settings(
     else:
         fields["detail"] = str(document.get("detail") or result)[:400]
     lines += ["check: " + str(problem) for problem in check.get("problems") or []]
+    if skipped_allowlist:
+        fields["skippedAllowlist"] = skipped_allowlist
+        fields["detail"] = (
+            str(fields.get("detail") or result)
+            + "; %d allowlist entr%s the server editor does not know yet left out"
+            % (len(skipped_allowlist), "y was" if len(skipped_allowlist) == 1 else "ies were")
+        )[:400]
     if lines:
         fields["output"] = "\n".join(lines) + "\n"
     return fields, code

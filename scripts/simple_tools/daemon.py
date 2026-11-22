@@ -640,6 +640,13 @@ def _inbox_row_key(row: Mapping[str, Any]) -> str:
     return "%s:%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker, edited)
 
 
+#: Notes that used to go to the owner as direct messages go here instead (owner ruling, Nov 18
+#: 2026:  anything that would be a DM belongs in Side-Chats;  the only DMs the Operator may send
+#: are wake-clarification questions to the sender or tagger).
+SIDE_CHATS_CHANNEL = "Side-Chats"
+SIDE_CHATS_ESCALATION_TOPIC = "Operator escalation notes"
+
+
 class Daemon:
     def __init__(
         self,
@@ -1332,8 +1339,9 @@ class Daemon:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
         off unless [linear_comments] enabled is true and the Operator's Linear credential
         loads — the owner's developer token in Infisical prod /linear, reached through
-        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
-        or the [linear_comments] infisical_token_file).  A reload that leaves the service
+        the scoped read-only Infisical service token (the [linear_comments]
+        infisical_token_file, the consumer's own store;  the environment is never a
+        source).  A reload that leaves the service
         token as it was keeps the same engine object, so its ledger lock and its
         (topic, issue) -> comment mapping survive — unless the engine has stopped (a
         refused Linear credential), in which case the reload rebuilds it, so a repaired
@@ -1356,10 +1364,9 @@ class Daemon:
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
-            # The consumer's own store (the configured token file) is the authority:  a
-            # host-bound variable is only a copy of that same grant,  and it is used
-            # when the store has none.
-            service = OPL.service_token(self.env, token_file)
+            # The consumer's own store (the configured token file) is the only source:
+            # the environment is never a source (owner ruling, November 22, 2026).
+            service = OPL.service_token(token_file)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.
@@ -1368,8 +1375,8 @@ class Daemon:
         if not service:
             self.log.write(
                 "linear-comments-off",
-                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
-                "is not set and no usable infisical_token_file)",
+                reason="no Infisical service token (no usable [linear_comments] "
+                "infisical_token_file in the consumer's store)",
                 hint=ENV_RESTART_HINT,
             )
             return
@@ -3519,8 +3526,17 @@ class Daemon:
 
         The sender's email is enough too, and the seat it maps to is not required:  a bot whose
         email maps to no seat of the fleet still used `@all`, and the audit has a "could not
-        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped.
+
+        The Operator's own reminder is never audited:  its text quotes the `@all` it is reminding
+        about, so without this exclusion every reminder would schedule an audit of itself (Kody,
+        #2411)."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if (
+            self.config.operator_user_id > 0
+            and message.get("sender_id") == self.config.operator_user_id
+        ):
             return False
         if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
             return False
@@ -4611,8 +4627,22 @@ class Daemon:
         # nothing proves the reminder did not reach the owner, so it is never sent twice.
         self._update_broadcast_effect_detail(mid, "audit", {"send_attempted_at": self.clock.time()})
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
-        except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
+            #  A reminder used to be a direct message;  the owner ruling of Nov 18, 2026 sends
+            #  anything DM-shaped to Side-Chats instead, mentioning the owner so it still lands.
+            #  Any live runner's realm-users map carries the owner's display name.
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
+        except Exception as exc:  # noqa: BLE001 - a failed reminder is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit driving so the
             # reminder is not lost, a permanent one fails it with its reason, and a write
             # that may have reached the server is UNKNOWN and never sent twice.  An Operator
@@ -5279,7 +5309,9 @@ class Daemon:
         webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat.
         The body carries the seat's held-back wakes as `held_back` (heldback.wake_summary), and they
         count as surfaced only once the routine took the wake and, for the hosted MCP Worker, said
-        it delivered it (adapters.routine_surfaced)."""
+        it delivered it (adapters.routine_surfaced).  A wake the one router took has surfaced
+        nothing yet (AFC-841):  its 202 only stored the wake, so the items it listed wait for the
+        terminal receipt and surface with it when that ends delivered (_receipt_settle)."""
         target, why, detail = self.routine(runner)
         if target is None:
             self.log.write(
@@ -5394,6 +5426,14 @@ class Daemon:
                     "timeout": sent.timeout,
                     "origin": target.origin,
                 }
+                # The router's 202 only stored the wake (AFC-841):  nothing it carried is surfaced
+                # yet, so the items it listed, the wake's own triggers and the lost count wait on
+                # the terminal receipt.  They surface when that ends delivered (_receipt_settle,
+                # from the ids this row carries) and stay held back on any other ending, so a dead
+                # wake's items are listed for the next wake instead of lost.
+                worker["held_listed"] = sorted(set(pending.trigger_ids) | set(listed))
+                worker["held_lost"] = int(lost)
+                surfaced = False
             runner.ledger.append(
                 pending.row(
                     "done",
@@ -5550,17 +5590,18 @@ class Daemon:
         risk: str | None,
         history: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[OPERATOR·note]` with the seat whose
-        wake wrote the note (owner ruling, Oct 30 2026: it used to go out as the seat's own bot, which
-        did not think or say it).  The owner is in the conversation, so the owner-in-the-conversation
-        guard (AFC-469) passes without any exemption.  It rides on a wake that already passed the
-        seat's budgets, so it is at most one DM per wake, and it never raises: a refusal or a
-        failure is logged and recorded in the ledger row, and the banner and owner queue still hold
-        the note.  With no Operator the DM is not sent (`operator-post-refused`, site `owner-dm`),
-        never sent as the seat.
+        """Post the escalated note to #Side-Chats from the OPERATOR bot, tagged `[OPERATOR·note]`
+        with the seat whose wake wrote the note (owner ruling, Oct 30 2026: it used to go out as
+        the seat's own bot, which did not think or say it; owner ruling, Nov 18 2026: anything that
+        would be a direct message goes to Side-Chats instead \u2014 the only DMs the Operator may send
+        are wake-clarification questions to the sender or tagger).  The post mentions the owner by
+        name so the note still reaches Jay, and it never raises: a refusal or a failure is logged
+        and recorded in the ledger row, and the banner and owner queue still hold the note.  With
+        no Operator the post is not sent (`operator-post-refused`, site `owner-dm`), never sent as
+        the seat.
 
         No production code calls it since the listener stopped starting models (owner ruling, Nov 10,
-        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
+        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
         owner rules on it, and the tests call it directly."""
         owner_id = self.config.owner_user_id
         if owner_id <= 0 or runner.fatal:
@@ -5598,7 +5639,19 @@ class Daemon:
                 )
                 return {"owner_dm": None, "owner_dm_error": withheld}
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                getattr(runner, "users", None)
+                or next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
         except OPV.OperatorUnavailable as exc:
             self._operator_refused("owner-dm", exc, seat=runner.seat, wake_id=pending.wake_id)
             return {
@@ -5618,6 +5671,23 @@ class Daemon:
         if withheld:
             sent["owner_dm_note_withheld"] = withheld
         return sent
+
+    def _side_chats_post(
+        self, owner_id: int, text: str, users: Mapping[int, Any] | None = None
+    ) -> dict[str, Any]:
+        """A Side-Chats stream post that mentions the owner by name, for a note that used to be a
+        direct message (owner ruling, Nov 18 2026).  The mention is the realm's own display name
+        for the pinned owner id, so the notification is real;  without a name the post still lands
+        in the followed topic and the owner queue."""
+        person = (users or {}).get(int(owner_id)) or {}
+        name = str(person.get("full_name") or "").strip()
+        body = ("@**%s**\n" % name) if name else ""
+        return {
+            "type": "stream",
+            "to": SIDE_CHATS_CHANNEL,
+            "topic": SIDE_CHATS_ESCALATION_TOPIC,
+            "content": body + text,
+        }
 
     # ---- held-back wakes ----------------------------------------------------------------------
     def held_tick(self, runner: SeatRunner, now: float) -> None:
@@ -6748,7 +6818,9 @@ class Daemon:
         if failed is not None:
             self.log.write("wake-receipt-error", seat=runner.seat, wake_id=wake_id, error=failed)
             return 0
-        if state != W.DELIVERED:
+        if state == W.DELIVERED:
+            self._surface_from_receipt(runner, wake_id)
+        else:
             self.log.write(
                 "wake-outcome",
                 seat=runner.seat,
@@ -6759,6 +6831,65 @@ class Daemon:
                 receipt_last=fields.get("receipt_last"),
             )
         return 1
+
+    def _surface_from_receipt(self, runner: SeatRunner, wake_id: str) -> None:
+        """A router wake whose terminal receipt says delivered (AFC-841):  the held-back items it
+        listed, and its own triggers, surface now -- at accept time the router had only stored the
+        wake, so the `done` row recorded none (its `held_listed` and `held_lost` carry what the
+        wake took).  A wake whose row carries no list surfaces nothing extra:  a non-router wake
+        surfaced at accept time, and a `done` row from before the fix had already surfaced its
+        items there under the old rule.  A wake whose items a later wake already surfaced does
+        nothing at all -- the later wake cleared the lost count with its own report, and replaying
+        this one would pull down evictions recorded after it (Kody, PR 2446);  a wake that listed
+        no items still clears the lost count it carried.  Surfacing the rest is the same operation
+        (`HELD.surface`, whose decrement clamps at the store's own zero)."""
+        try:
+            view = runner.ledger.wakes().get(wake_id) or {}
+        except Exception:  # noqa: BLE001 - an unreadable ledger is nothing to surface
+            return
+        listed = view.get("held_listed")
+        if not isinstance(listed, list):
+            return
+        # The lost count the wake reported is read before anything else:  a wake that listed no
+        # items (everything had been evicted before it) still clears the count it carried (Kody,
+        # PR 2446), and HELD.surface clamps the decrement at the store's own zero.
+        lost = view.get("held_lost")
+        lost = int(lost) if isinstance(lost, int) and not isinstance(lost, bool) else 0
+        ids = sorted({i for i in listed if isinstance(i, int) and not isinstance(i, bool)})
+        if not ids:
+            if lost:
+                HELD.surface(runner.paths, message_ids=[], lost=lost)
+                self.log.write(
+                    "held-back-surfaced",
+                    seat=runner.seat,
+                    wake_id=wake_id,
+                    surfaced=0,
+                    lost=lost,
+                    by="receipt",
+                )
+            return
+        # A wake whose items a later wake already surfaced must not replay its lost snapshot:
+        # the later wake cleared the count with its own report, and the replay would pull down
+        # evictions recorded after it (Kody, PR 2446).  Only ids still held are surfaced, with
+        # the count the wake carried.
+        try:
+            data = HELD.load(runner.paths)
+        except Exception:  # noqa: BLE001 - an unreadable store is nothing to surface
+            return
+        still = {e.get("message_id") for e in data.get("records", []) + data.get("overflow", [])}
+        if not (still & set(ids)):
+            return
+        records = HELD.surface(runner.paths, message_ids=ids, lost=lost)
+        self._held_rows(runner, records, "surfaced", self.clock.time(), by=wake_id)
+        if records or lost:
+            self.log.write(
+                "held-back-surfaced",
+                seat=runner.seat,
+                wake_id=wake_id,
+                surfaced=len(records),
+                lost=lost,
+                by="receipt",
+            )
 
     @staticmethod
     def _outcome_written(runner: SeatRunner, wake_id: str) -> bool:

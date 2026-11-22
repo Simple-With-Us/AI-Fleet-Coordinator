@@ -200,6 +200,7 @@ class SeatPolicy:
         "mint_token",
         # Read-only fetch and clone over the relay's /git/ route (git_read.py).  The token stays in the relay.
         "git_read",
+        "service_read",
         "merge_pr",
         "workflow_dispatch",
         "resolve_thread",
@@ -534,7 +535,16 @@ class SeatPolicy:
                 "auth": auth,
                 "identity": identity,
                 "oauth_assert": oauth_assert,
-                "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
+                # A bearer may carry a lone surrogate (reachable through a
+                # JSON string escape).  surrogatepass encodes it instead of
+                # raising, so the token hashes to a value that matches no
+                # seat:  a crafted bearer is a plain mismatch, never an
+                # exception that escapes the auth path.
+                "token_hash": (
+                    hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+                    if token
+                    else None
+                ),
                 "actions": set(actions),
                 "repos": repo_names,
                 "app_slug": app_slug,
@@ -658,7 +668,10 @@ class SeatPolicy:
         """
         if not token:
             return None, "unauthenticated"
-        candidate = hashlib.sha256(token.encode()).hexdigest()
+        # surrogatepass:  a bearer carrying a lone surrogate hashes to a
+        # value that matches no seat instead of raising UnicodeEncodeError
+        # out of the authentication path.
+        candidate = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
         for seat, cfg in self._seats.items():
             if cfg["token_hash"] and hmac.compare_digest(candidate, cfg["token_hash"]):
                 return seat, ""
@@ -765,7 +778,7 @@ class SeatPolicy:
         repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
         write bucket can only err toward counting.
         """
-        if action in ("mint_token", "git_read"):
+        if action in ("mint_token", "git_read", "service_read"):
             return False
         if action in cls.WORKFLOW_ACTIONS:
             # Imported here:  workflow_verbs imports server, which imports this module.

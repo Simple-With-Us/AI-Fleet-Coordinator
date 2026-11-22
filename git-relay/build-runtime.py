@@ -52,6 +52,7 @@ MODULES = (
     "seat_add_policy",
     "secret_scan",
     "server",
+    "service_read",
     "shared_bearer",
     "typed_disarm",
     "typed_gateway",

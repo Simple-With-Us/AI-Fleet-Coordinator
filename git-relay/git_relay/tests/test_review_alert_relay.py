@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 from git_relay.audit import AuditLog
+from git_relay.outcomes import OutcomeStore
 from git_relay.policy import SeatPolicy
 from git_relay.pr_owners import PROwnerStore
 from git_relay.server import (
@@ -92,6 +93,9 @@ class FakeMinter:
 
 
 def make_relay(directory, client, minter=None, service_repos=(), **kwargs):
+    # The creation fence binds every create to a durable outcome
+    # correlation, so the relay needs a real outcome store.
+    kwargs.setdefault("outcomes", OutcomeStore(str(Path(directory) / "outcomes.json")))
     return Relay(
         SeatPolicy(POLICY),
         client,
@@ -126,14 +130,29 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(row["origin_generation_claim"], 3)
 
     def test_claims_optional_and_default_unset(self):
+        # An absent claim set leaves no claim column at all:  a reader can
+        # tell "no claim was made" from "a claim was made and is empty".
         with tempfile.TemporaryDirectory() as directory:
             relay = make_relay(directory, Client())
             status, _ = open_pr(relay)
             self.assertEqual(status, 200)
             row = relay.pr_owners.lookup(ARGS["repo"], 1)
-            self.assertIsNone(row["origin_session_claim"])
-            self.assertIsNone(row["origin_letter_claim"])
-            self.assertIsNone(row["origin_generation_claim"])
+            for name in ("origin_session_claim", "origin_letter_claim", "origin_generation_claim"):
+                self.assertNotIn(name, row)
+
+    def test_partial_claim_sets_are_refused(self):
+        # The three native claims are all-or-none:  a partial set could be
+        # read as a complete attestation, so it is refused outright.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client())
+            for claims in (
+                {"origin_session_claim": SESSION},
+                {"origin_letter_claim": "AB"},
+                {"origin_generation_claim": 3},
+                {"origin_session_claim": SESSION, "origin_generation_claim": 3},
+            ):
+                status, _ = open_pr(relay, **claims)
+                self.assertEqual(status, 400, claims)
 
     def test_malformed_claims_are_refused(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -209,26 +228,97 @@ class ClaimTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             client = Client()
             relay = make_relay(directory, client)
-            status, first = open_pr(relay, origin_session_claim=SESSION, origin_generation_claim=1)
+            status, first = open_pr(
+                relay, origin_session_claim=SESSION, origin_letter_claim="AB",
+                origin_generation_claim=1,
+            )
             self.assertEqual(status, 200)
-            status, second = open_pr(relay, origin_session_claim=SESSION, origin_generation_claim=2)
+            status, second = open_pr(
+                relay, origin_session_claim=SESSION, origin_letter_claim="AB",
+                origin_generation_claim=2,
+            )
             self.assertEqual(status, 200)
             self.assertEqual(first.get("number"), second.get("number"))
             self.assertEqual(len(client.calls), 1)
 
 
 class ServiceReadTests(unittest.TestCase):
-    def test_unconfigured_lane_is_503(self):
+    def test_allowlist_membership_folds_case(self):
+        # GitHub repository names are case-insensitive, and the ownership
+        # index and the mint answer both fold case:  the allowlist must not
+        # make availability depend on the config's spelling.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), FakeMinter(), service_repos={ARGS["repo"]})
+            status, _ = relay.handle(
+                SERVICE_TOKEN,
+                "service_read",
+                {"repo": ARGS["repo"].upper(), "number": 1, "verb": "pull"},
+            )
+            self.assertEqual(status, 200)
+
+    def test_lone_surrogate_bearer_is_401_and_audited(self):
+        # A crafted bearer, including one carrying a lone surrogate, is an
+        # unauthenticated request:  it must not escape as an exception and
+        # skip the unauthenticated audit row.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), FakeMinter(), service_repos={ARGS["repo"]})
+            status, body = relay.handle(
+                "\ud800", "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            self.assertEqual(status, 401)
+            self.assertEqual(body, {"error": "unauthenticated"})
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(any(r.get("result") == "unauthenticated" for r in rows))
+
+    def test_unexpected_upstream_failure_is_audited_before_it_escapes(self):
+        # Every exit from the service-read lane writes exactly one row, so
+        # an unexpected upstream failure is recorded before it escapes
+        # instead of hiding from review.
+        class BoomClient(Client):
+            def _call(self, method, path, bearer=None, timeout=None):
+                raise OSError("socket timeout")
+
+        with tempfile.TemporaryDirectory() as directory:
+            minter = FakeMinter()
+            relay = make_relay(directory, BoomClient(), minter=minter, service_repos={ARGS["repo"]})
+            with self.assertRaises(OSError):
+                relay.handle(
+                    SERVICE_TOKEN,
+                    "service_read",
+                    {"repo": ARGS["repo"], "number": 1, "verb": "pull"},
+                )
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(
+                any(
+                    r.get("result") == "error"
+                    and r.get("at") == "github"
+                    and r.get("exception") == "OSError"
+                    for r in rows
+                )
+            )
+            self.assertEqual(minter.revokes, ["minted-token"])
+
+    def test_unconfigured_lane_leaves_the_action_to_the_normal_policy(self):
+        # A relay with no service-read lane configured has no dedicated
+        # bearer for the action, so the request follows the normal policy
+        # path and is refused as an unauthenticated call.
         with tempfile.TemporaryDirectory() as directory:
             relay = make_relay(directory, Client())
             status, _ = relay.handle(
                 SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
             )
-            self.assertEqual(status, 503)
+            self.assertEqual(status, 401)
 
     def test_unconfigured_lane_is_audited(self):
-        # An unconfigured-lane probe must leave an audit row, so it is visible
-        # in review instead of a silent 503.
+        # The refusal still leaves an audit row, so it is visible in review.
         with tempfile.TemporaryDirectory() as directory:
             relay = make_relay(directory, Client())
             relay.handle(
@@ -239,9 +329,7 @@ class ServiceReadTests(unittest.TestCase):
                 for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
                 if line.strip()
             ]
-            self.assertTrue(
-                any(r.get("result") == "error" and r.get("cause") == "not_configured" for r in rows)
-            )
+            self.assertTrue(any(r.get("result") == "unauthenticated" for r in rows))
 
     def test_wrong_bearer_is_401_and_audited(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from git_relay.audit import AuditLog
 from git_relay.github_client import RelayGitHubError
+from git_relay.outcomes import OutcomeStore
 from git_relay.policy import PolicyError, SeatPolicy
 from git_relay.pr_owners import BACKFILL, CONFIRMED, PROwnerStore, rebuild
 from git_relay.server import Relay
@@ -75,6 +76,9 @@ class FakeMinter:
 
 
 def make_relay(directory, client, minter=None, **kwargs):
+    # The creation fence binds every create to a durable outcome
+    # correlation, so the relay needs a real outcome store.
+    kwargs.setdefault("outcomes", OutcomeStore(str(Path(directory) / "outcomes.json")))
     return Relay(
         SeatPolicy(POLICY),
         client,
@@ -253,15 +257,18 @@ class RelayHookTests(unittest.TestCase):
             self.assertEqual(rows[-1].get("unconfirmed_number"), 41)
             self.assertIs(rows[-1].get("owner_recorded"), True)
 
-    def test_store_failure_never_fails_the_creation(self):
+    def test_store_failure_refuses_the_creation_before_it_reaches_github(self):
+        # The creation fence is durable BEFORE the upstream create:  an
+        # owner index that cannot be written refuses the create, so no PR is
+        # ever created that no row can bind.
         with tempfile.TemporaryDirectory() as directory:
-            relay = make_relay(directory, Client())
-            # A store whose file cannot be written:  record raises OSError.
+            client = Client()
+            relay = make_relay(directory, client)
+            # A store whose file cannot be written:  the fence raises OSError.
             relay.pr_owners = PROwnerStore(str(Path(directory) / "missing" / "owners.jsonl"))
             response = relay.handle(ECHO_TOKEN, "open_pr", ARGS)
-            self.assertEqual(response[0], 200)
-            rows = [r for r in audit_rows(directory) if r["action"] == "open_pr"]
-            self.assertIs(rows[-1].get("owner_recorded"), False)
+            self.assertEqual(response[0], 503)
+            self.assertEqual(len(client.calls), 0)
 
     def test_idempotent_replay_records_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -371,11 +378,14 @@ class StoreRobustnessTests(unittest.TestCase):
             bad.write_bytes(b'{"repo": "o/r"\xff\xfe')
             store = PROwnerStore(str(bad))
             self.assertIsNotNone(store.load_error)
-            # And the relay still creates PRs, flagging the failed index write.
-            relay = make_relay(directory, Client())
+            # And the relay still runs:  it refuses the create that the
+            # broken index cannot bind, and stays up for every other call.
+            client = Client()
+            relay = make_relay(directory, client)
             relay.pr_owners = PROwnerStore(directory)
             response = relay.handle(ECHO_TOKEN, "open_pr", ARGS)
-            self.assertEqual(response[0], 200)
+            self.assertEqual(response[0], 503)
+            self.assertEqual(len(client.calls), 0)
 
     def test_torn_tail_is_terminated_before_the_next_append(self):
         with tempfile.TemporaryDirectory() as directory:

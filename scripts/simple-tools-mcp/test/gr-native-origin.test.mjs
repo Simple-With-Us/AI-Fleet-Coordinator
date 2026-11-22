@@ -1,5 +1,6 @@
 import test from "node:test";
-import { webcrypto } from "node:crypto";
+import { webcrypto, randomBytes } from "node:crypto";
+import { _resetInfisicalForTests } from "../src/infisical.js";
 import { nativeOriginResolver } from "../src/native-origin-client.js";
 globalThis.crypto ??= webcrypto;
 import assert from "node:assert/strict";
@@ -71,10 +72,21 @@ test("exact metadata snapshots projection and holds explicit mismatches", async 
   const { tools, sent } = harness();
   const original = globalThis.fetch;
   let reads = 0;
-  tools.workerEnv = { REVIEW_ORIGIN_READ_URL: "https://operator.example.test/registry/v1/review-origin", REVIEW_ORIGIN_CODEX_READ_KEY: "test-only-".repeat(5) };
+  _resetInfisicalForTests();
+  const projectionKey = randomBytes(32).toString("hex");
+  tools.workerEnv = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "fixture-fleet-ops",
+    INFISICAL_SERVICE_TOKEN: randomBytes(24).toString("hex") };
   globalThis.fetch = async (url, init) => {
+    const parsed = new URL(url);
+    if (parsed.origin === "https://app.infisical.com") {
+      assert.equal(parsed.searchParams.get("secretPath"), "/zulip");
+      const name = decodeURIComponent(parsed.pathname.split("/").at(-1));
+      assert.ok(["REVIEW_ORIGIN_READ_URL", "REVIEW_ORIGIN_CODEX_READ_KEY"].includes(name));
+      return Response.json({ secret: { secretValue: name === "REVIEW_ORIGIN_READ_URL"
+        ? "https://operator.example.test/registry/v1/review-origin" : projectionKey } });
+    }
     reads++;
-    assert.equal(new URL(url).searchParams.get("native_session_id"), claims.origin_session_claim);
+    assert.equal(parsed.searchParams.get("native_session_id"), claims.origin_session_claim);
     assert.equal(init.redirect, "manual");
     assert.equal(init.headers["X-Simple-Tools-Signature"].length, 64);
     return Response.json(claims);
@@ -91,7 +103,7 @@ test("exact metadata snapshots projection and holds explicit mismatches", async 
     globalThis.fetch = async () => new Response("held", { status: 503 });
     assert.ok((await tools.call("gr_open_pr", { ...base, ...claims }, context)).isError);
     assert.equal(sent.length, 1);
-  } finally { globalThis.fetch = original; }
+  } finally { globalThis.fetch = original; _resetInfisicalForTests(); }
 });
 
 test("projection client refuses unsafe endpoints, redirects, bad and large responses", async () => {
