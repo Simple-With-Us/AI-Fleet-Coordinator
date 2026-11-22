@@ -73,6 +73,7 @@ def transform(text, source):
             and len(call.args) == 1
             and not call.keywords
             and isinstance(call.args[0], (ast.Tuple, ast.Set, ast.List))
+            and len(call.args[0].elts) > 0
             and all(
                 isinstance(e, ast.Constant)
                 and isinstance(e.value, str)
