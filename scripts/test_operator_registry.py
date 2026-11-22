@@ -1143,7 +1143,9 @@ class RegistryTest(unittest.TestCase):
         for _ in range(3):
             out = self._relabel("cl-1", platform="claude", force=True)
             self.assertEqual((out["outcome"], out["label"]), ("unchanged", "AA"))
-        self.assertEqual(self._register("cl-2")["label"], "BB")  # no issue was added by the no-op relabel.
+        self.assertEqual(
+            self._register("cl-2")["label"], "BB"
+        )  # no issue was added by the no-op relabel.
 
     def test_a_relabel_into_the_single_space_keeps_the_pair(self):
         self._register("cl-1")
@@ -1437,7 +1439,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again["label"], first["label"])
 
     def test_register_refuses_a_title_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1445,28 +1447,28 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
     def test_update_refuses_a_title_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
 
     def test_a_title_that_is_not_a_string_is_refused_not_coerced(self):
@@ -1501,36 +1503,36 @@ class RegistryTest(unittest.TestCase):
     def test_update_refuses_a_project_that_carries_a_credential(self):
         # Every field that is written is scanned, not only the title.
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                project="Deploy with " + secret,
+                project="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "project_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["project"], "")
 
     def test_update_refuses_a_thread_link_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                thread_link="https://example.invalid/" + secret,
+                thread_link="https://example.invalid/" + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "thread_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["thread_link"], "")
 
     def test_register_refuses_a_field_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1538,12 +1540,12 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                apple_note_link="https://example.invalid/" + secret,
+                apple_note_link="https://example.invalid/" + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "apple_note_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
@@ -2212,7 +2214,7 @@ class SessionIssuesTest(unittest.TestCase):
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(
-                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5
             )
         finally:
             conn.close()

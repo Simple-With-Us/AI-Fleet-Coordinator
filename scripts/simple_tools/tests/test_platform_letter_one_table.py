@@ -220,12 +220,57 @@ class MiniMaxRepairRow(Base):
         self.add("m-0108", "Child work", kind="task", parent="m-0108")
         self.assertNotIn("m-0108", self.scan())
 
-    def test_a_chat_whose_note_holds_a_letter_is_not_named(self) -> None:
-        # The repair pass skips a chat that holds a letter, so naming one would spend a slot of the
-        # scan on a chat the pass will not touch, and starve a real candidate of the twenty.
-        self.add("m-0109", "Child work", kind="task", parent="m-0100")
+    def test_a_lettered_chat_whose_title_carries_its_letter_is_not_named(self) -> None:
+        # The letter is on the chat, so there is nothing for the pass to do for it:  naming it would
+        # spend a slot of the scan on a chat the pass will not touch, and starve a real candidate.
+        self.add("m-0109", "AA: Child work", kind="task", parent="m-0100")
         self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
         self.assertNotIn("m-0109", self.scan())
+
+    def test_a_lettered_chat_whose_title_lost_its_letter_is_named(self) -> None:
+        # The app put its own title over the lettered one:  the note still holds the letter, so the
+        # letter goes back on the title, and the chat is named for that.
+        self.add("m-0109", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0109", self.scan())
+
+    def test_a_lettered_chat_renamed_with_another_letter_is_named(self) -> None:
+        # The chat holds one letter and the title carries another:  the title lost the letter this chat
+        # holds, so the scan names it, and the letter goes back where it was.
+        self.add("m-0117", "BB: Child work", kind="task", parent="m-0100")
+        self.write_note("m-0117", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        self.assertIn("m-0117", self.scan())
+
+    def test_the_pass_puts_the_letter_back_on_a_title_that_lost_it(self) -> None:
+        # The chat keeps the letter it holds:  no second registration, so a letter the registry has
+        # since retired is never handed out again (AFC-858).
+        self.add("m-0109", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0109", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        out = self.repair()
+        self.assertEqual(out["repaired"], ["m-0109"])
+        self.assertEqual(self.title_of("m-0109"), "AA: Child work")
+        self.assertEqual(self.note_for("m-0109")["label"], "AA")
+        # And a second pass finds nothing:  the title carries the letter now.
+        self.assertNotIn("m-0109", self.scan())
+
+    def test_a_chat_on_the_placeholder_that_lost_its_letter_is_named(self) -> None:
+        # The app's own title service puts "New Chat" on a chat before the runtime says anything:  the note
+        # still holds the letter, so the letter goes back over the words the chat has of its own.
+        self.add("m-0116", PL.PLACEHOLDER, kind="task", parent="m-0100")
+        self.write_note("m-0116", {"state": "open", "label": "AA", "platform": "minimax",
+                                   "location": "mac", "title": "Child work"})
+        self.assertIn("m-0116", self.scan())
+
+    def test_the_pass_puts_the_letter_back_over_the_chats_own_words(self) -> None:
+        # The app's own title service put "New Chat" over the lettered title:  the letter goes back over the
+        # words the chat has of its own, and the chat keeps the letter it holds (AFC-858).
+        self.add("m-0116", PL.PLACEHOLDER, kind="task", parent="m-0100")
+        self.write_note("m-0116", {"state": "open", "label": "AA", "platform": "minimax",
+                                   "location": "mac", "title": "Child work"})
+        out = self.repair()
+        self.assertEqual(out["repaired"], ["m-0116"])
+        self.assertEqual(self.title_of("m-0116"), "AA: Child work")
+        self.assertEqual(self.note_for("m-0116")["label"], "AA")
 
     def test_a_chat_whose_note_is_closed_is_not_named(self) -> None:
         # The pass leaves a closed note alone (replaying it would register a finished chat again), so
@@ -255,11 +300,18 @@ class MiniMaxRepairRow(Base):
         self.write_note("m-0111", {"state": "open", "label": "??", "platform": "minimax", "location": "mac"})
         self.assertNotIn("m-0111", self.scan())
 
-    def test_a_lettered_chat_whose_stored_id_is_padded_is_not_named(self) -> None:
+    def test_a_lettered_chat_whose_stored_id_is_padded_is_named_by_its_trimmed_id(self) -> None:
         # The store may write a chat's id with spaces around it, while the note of that chat is the
-        # file of the trimmed id.  The ids are read trimmed on both sides, so the chat that holds a
-        # letter is left out of the scan and does not come back as a candidate.
+        # file of the trimmed id.  The ids are read trimmed on both sides, so the chat whose title lost
+        # its letter is named once, under the id its note has.
         self.add(" m-0112 ", "Child work", kind="task", parent="m-0100")
+        self.write_note("m-0112", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
+        found = self.scan()
+        self.assertIn("m-0112", found)
+        self.assertNotIn(" m-0112 ", found)
+
+    def test_a_lettered_chat_whose_title_carries_its_letter_is_not_named_whatever_the_padding(self) -> None:
+        self.add(" m-0112 ", "AA: Child work", kind="task", parent="m-0100")
         self.write_note("m-0112", {"state": "open", "label": "AA", "platform": "minimax", "location": "mac"})
         self.assertNotIn("m-0112", self.scan())
 

@@ -28,7 +28,7 @@ reason = "Seat wake bridge. Out of scope for this reconciler."
 id = "zc-wake-bridge.service"
 category = "wake-delivery"
 source = "scripts/simple_tools/server/zc-wake-bridge.service"
-reason = "Seat wake bridge. Out of scope for this reconciler."
+reason = "Retired Nov 21, 2026: the one wake router serves the seat, and the bridge script and its suite are deleted from the repo. The unit keeps running until the owner stops it, so this template and this row stay until that stop and go in the same follow-up; re-arming means restoring the deleted files from git history first."
 
 [[excluded.unit]]
 id = "operator-sheets-drain.service"
