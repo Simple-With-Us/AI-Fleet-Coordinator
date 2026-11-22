@@ -5279,7 +5279,9 @@ class Daemon:
         webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat.
         The body carries the seat's held-back wakes as `held_back` (heldback.wake_summary), and they
         count as surfaced only once the routine took the wake and, for the hosted MCP Worker, said
-        it delivered it (adapters.routine_surfaced)."""
+        it delivered it (adapters.routine_surfaced).  A wake the one router took has surfaced
+        nothing yet (AFC-841):  its 202 only stored the wake, so the items it listed wait for the
+        terminal receipt and surface with it when that ends delivered (_receipt_settle)."""
         target, why, detail = self.routine(runner)
         if target is None:
             self.log.write(
@@ -5394,6 +5396,14 @@ class Daemon:
                     "timeout": sent.timeout,
                     "origin": target.origin,
                 }
+                # The router's 202 only stored the wake (AFC-841):  nothing it carried is surfaced
+                # yet, so the items it listed, the wake's own triggers and the lost count wait on
+                # the terminal receipt.  They surface when that ends delivered (_receipt_settle,
+                # from the ids this row carries) and stay held back on any other ending, so a dead
+                # wake's items are listed for the next wake instead of lost.
+                worker["held_listed"] = sorted(set(pending.trigger_ids) | set(listed))
+                worker["held_lost"] = int(lost)
+                surfaced = False
             runner.ledger.append(
                 pending.row(
                     "done",
@@ -6748,7 +6758,9 @@ class Daemon:
         if failed is not None:
             self.log.write("wake-receipt-error", seat=runner.seat, wake_id=wake_id, error=failed)
             return 0
-        if state != W.DELIVERED:
+        if state == W.DELIVERED:
+            self._surface_from_receipt(runner, wake_id)
+        else:
             self.log.write(
                 "wake-outcome",
                 seat=runner.seat,
@@ -6759,6 +6771,65 @@ class Daemon:
                 receipt_last=fields.get("receipt_last"),
             )
         return 1
+
+    def _surface_from_receipt(self, runner: SeatRunner, wake_id: str) -> None:
+        """A router wake whose terminal receipt says delivered (AFC-841):  the held-back items it
+        listed, and its own triggers, surface now -- at accept time the router had only stored the
+        wake, so the `done` row recorded none (its `held_listed` and `held_lost` carry what the
+        wake took).  A wake whose row carries no list surfaces nothing extra:  a non-router wake
+        surfaced at accept time, and a `done` row from before the fix had already surfaced its
+        items there under the old rule.  A wake whose items a later wake already surfaced does
+        nothing at all -- the later wake cleared the lost count with its own report, and replaying
+        this one would pull down evictions recorded after it (Kody, PR 2446);  a wake that listed
+        no items still clears the lost count it carried.  Surfacing the rest is the same operation
+        (`HELD.surface`, whose decrement clamps at the store's own zero)."""
+        try:
+            view = runner.ledger.wakes().get(wake_id) or {}
+        except Exception:  # noqa: BLE001 - an unreadable ledger is nothing to surface
+            return
+        listed = view.get("held_listed")
+        if not isinstance(listed, list):
+            return
+        # The lost count the wake reported is read before anything else:  a wake that listed no
+        # items (everything had been evicted before it) still clears the count it carried (Kody,
+        # PR 2446), and HELD.surface clamps the decrement at the store's own zero.
+        lost = view.get("held_lost")
+        lost = int(lost) if isinstance(lost, int) and not isinstance(lost, bool) else 0
+        ids = sorted({i for i in listed if isinstance(i, int) and not isinstance(i, bool)})
+        if not ids:
+            if lost:
+                HELD.surface(runner.paths, message_ids=[], lost=lost)
+                self.log.write(
+                    "held-back-surfaced",
+                    seat=runner.seat,
+                    wake_id=wake_id,
+                    surfaced=0,
+                    lost=lost,
+                    by="receipt",
+                )
+            return
+        # A wake whose items a later wake already surfaced must not replay its lost snapshot:
+        # the later wake cleared the count with its own report, and the replay would pull down
+        # evictions recorded after it (Kody, PR 2446).  Only ids still held are surfaced, with
+        # the count the wake carried.
+        try:
+            data = HELD.load(runner.paths)
+        except Exception:  # noqa: BLE001 - an unreadable store is nothing to surface
+            return
+        still = {e.get("message_id") for e in data.get("records", []) + data.get("overflow", [])}
+        if not (still & set(ids)):
+            return
+        records = HELD.surface(runner.paths, message_ids=ids, lost=lost)
+        self._held_rows(runner, records, "surfaced", self.clock.time(), by=wake_id)
+        if records or lost:
+            self.log.write(
+                "held-back-surfaced",
+                seat=runner.seat,
+                wake_id=wake_id,
+                surfaced=len(records),
+                lost=lost,
+                by="receipt",
+            )
 
     @staticmethod
     def _outcome_written(runner: SeatRunner, wake_id: str) -> bool:
