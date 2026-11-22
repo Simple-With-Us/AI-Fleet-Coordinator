@@ -13,7 +13,6 @@ No real reader,  no real secret,  no network,  and the runtime never starts.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import tempfile

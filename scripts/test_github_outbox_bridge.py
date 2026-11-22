@@ -23,7 +23,6 @@ spec = importlib.util.spec_from_file_location(
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
-import fleet_infisical
 
 SEAT = "INSTINCT"
 GOOD = '[INSTINCT] sync-1\nrepo: Congress.Trade\nowner-relay: "ship the scout fix"\nsaid: Thu, Sep 17, 2026 at 4:10 PM CT'
