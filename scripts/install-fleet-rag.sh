@@ -6,7 +6,6 @@
 #   1. Copies scripts/fleet_rag/ (no tests, no __pycache__), scripts/recall, scripts/recall-tunnel,
 #      scripts/fleet-recall-mcp.py and scripts/fleet-rag.py from this checkout into
 #      $FLEET_RAG_HOME (default $HOME/apps/fleet-rag/) and creates state/ cache/ logs/ there.
-#      Includes only fleet_secrets/{__init__.py,core.py} for scoped reads; no secrets CLI.
 #   2. Symlinks $HOME/.local/bin/recall -> <install root>/recall and $HOME/.local/bin/recall-tunnel
 #      -> <install root>/recall-tunnel, always.  It also links $HOME/apps/mac-collab/{recall,
 #      recall-tunnel} when that directory already exists (agent shells used to prepend
@@ -110,7 +109,7 @@ mode_word() {
 
 install_files() {
   local missing=0
-  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_infisical.py fleet_secrets/__init__.py fleet_secrets/core.py linear-board/board simple_tools/secretscan.py; do
+  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_infisical.py linear-board/board simple_tools/secretscan.py; do
     if [[ ! -e "$SRC/$f" ]]; then
       say "MISSING $SRC/$f (this checkout is incomplete; the install would fail)"
       missing=1
@@ -118,7 +117,6 @@ install_files() {
   done
   if [[ "$DRY" -eq 1 ]]; then
     say "plan: rsync --delete $SRC/fleet_rag/ -> $DST/fleet_rag/ (excluding tests, __pycache__)"
-    say "plan: copy only fleet_secrets/__init__.py and core.py -> $DST/fleet_secrets/"
     say "plan: copy recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py -> $DST/ (chmod +x recall, recall-tunnel, mcp server)"
     say "plan: mkdir -p $DST/{state,cache,logs}"
     note "$DST" "planned"
@@ -132,11 +130,8 @@ install_files() {
   rsync -a --delete --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' \
     "$SRC/fleet_rag/" "$DST/fleet_rag/"
   rm -rf "$DST/fleet_secrets"
-  mkdir -p "$DST/fleet_secrets"
-  cp "$SRC/fleet_secrets/__init__.py" "$SRC/fleet_secrets/core.py" "$DST/fleet_secrets/"
   cp "$SRC/fleet_infisical.py" "$DST/fleet_infisical.py"
   chmod 644 "$DST/fleet_infisical.py"
-  chmod 644 "$DST/fleet_secrets/__init__.py" "$DST/fleet_secrets/core.py"
   # fleet_rag.linear_board loads the board CLI from ../linear-board, and recall's remote mode loads
   # ../simple_tools/secretscan.py;  both are code the installed copy needs (AFC-677).
   rsync -a --delete --exclude 'test_*.py' --exclude '__pycache__' --exclude 'testdata' \
@@ -149,7 +144,7 @@ install_files() {
   cp -p "$SRC/fleet-recall-mcp.py" "$DST/fleet-recall-mcp.py"
   cp -p "$SRC/fleet-rag.py" "$DST/fleet-rag.py"
   chmod +x "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
-  say "installed $DST (fleet_rag/, fleet_secrets/, fleet_infisical.py, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
+  say "installed $DST (fleet_rag/, fleet_infisical.py, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
   note "$DST" "installed"
 }
 

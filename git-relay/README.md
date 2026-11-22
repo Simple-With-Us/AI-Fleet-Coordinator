@@ -1,8 +1,8 @@
 # git-relay - the GitHub relay CLI, and GR-MCP
 
 git-relay knows each seat from its bearer token and picks the credential by task:  Opening a PR
-runs under the owner's scoped PR-only token (the only copy lives in the service's
-environment), and every other GitHub task runs under the seat's own GitHub App token, which
+runs under the owner's scoped PR-only token (read from its dedicated Infisical folder into
+service memory), and every other GitHub task runs under the seat's own GitHub App token, which
 git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
 policy, and every denial, failure and write is written to the audit log (a successful read is not).
 
@@ -115,15 +115,26 @@ is only a policy entry.
 `create_repo` creates a repository under `Simple-With-Us` (organization) or `jaywedgeworth22` (user).  A seat needs `create_repo` in its own policy row; nothing grants it by default.  Visibility is private unless the request says `public` and that same row sets `create_repo_public` to true.  The relay reads the repository first, never follows a redirect, and returns `already_exists` when the repository is already there, so a second call does not create again.  The call uses a namespace installation token minted only for this verb (`organization_administration: write` plus `metadata: read` for the org, `administration: write` plus `metadata: read` for the user).  That token is not the seat's mint ceiling, `mint_token` cannot request those writes, the token is not cached, it is revoked when the call finishes, and it is never returned or written to the audit log.  GitHub's default for `private` is false, so the relay always sends `private: true` unless public was both requested and allowed.  The GitHub App installation has to already hold those administration permissions or GitHub refuses the mint.
 
 App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
-`fleet-secrets` call per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
-overrides) through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no
-process-environment secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
+scoped Infisical read per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
+overrides) through the relay's own scoped service token (there is no shared reader CLI any
+more;  owner decision 2026-10-21 still stands:  no process-environment secrets, no broad
+machine identity in the relay), JWT signed with the local openssl binary
 (the key reaches openssl through an inherited pipe fd, never a file), installation tokens
 cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
 seat's) and refreshed 5 minutes early.  Values are cached in memory
 per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
-values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
-must be on PATH at startup.
+values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the relay's own scoped service
+token must be bound at startup.
+
+The shared client:  the relay holds no secret reader of its own.  It reads every
+credential through the fleet's one shared Infisical client, which this host
+installs as `fleet_infisical.py` beside the relay - `/opt/git-relay/scripts` by
+default.  `GIT_RELAY_INFISICAL_CLIENT` names one file outright and
+`GIT_RELAY_INFISICAL_CLIENT_DIRS` a comma-separated list of directories to look
+in.  A host without the client refuses to start rather than falling back to an
+ambient token.  The client verifies the bound token's own grant before every
+read, so a token clamped to another folder fails closed instead of answering
+for the wrong scope.
 
 ## MCP wrapper
 
@@ -303,9 +314,15 @@ The Infisical API-route row is separately refreshed from immutable main
 27801add4cfd5ea09fa8d2cbc3307e509779c1b9, source blob
 03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e, through the five rename/import/env
 edits recorded in docs/security/preservation-pending-manifest.json. Its complete
-credential-containing lines are unchanged. The new REVIEWED_PRESERVATIONS and
-REVIEWED_SAME_PATH_SOURCES registries remain empty; that does not mean the
-existing _REVIEWED_FIXTURES registry is empty or inactive. The refreshed exact
+credential-containing lines are unchanged.  REVIEWED_PRESERVATIONS now contains
+only the owner-approved AFC-797 source/output pair documented in
+[Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md)
+plus the two owner-approved AFC-793 fixture test pairs documented in
+[Reviewed Fixture Pairs Preservation](../docs/security/reviewed-fixture-pairs-preservation.md):
+`scripts/fleet_rag/tests/test_recall.py` (`b78c76d6…` to `d9cd1d0a…`) and
+`scripts/fleet_rag/tests/test_ingest.py` (`e970e451…` to `1eaa804f…`).
+REVIEWED_SAME_PATH_SOURCES remains empty; this is independent of the existing
+_REVIEWED_FIXTURES registry.  The refreshed exact
 Infisical row is active in source semantics, but no deployment or runtime use
 is authorized or established by this proposal. Provider and loaded-value guards
 remain independent.
@@ -425,7 +442,11 @@ Explicit `GIT_RELAY_APP_MINT=0` preserves the existing legacy startup behavior: 
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
+| GITHUB_TOKEN | ignored | Ambient owner tokens are not a credential source; the fixed `/git-relay-owner` reader supplies the scoped PR-only token |
+| INFISICAL_FLEET_OPS_PROJECT_ID | (required) | Explicit Fleet-OPS project UUID for every source; no HOME or project-file discovery |
+| GIT_RELAY_OWNER_CREDENTIAL_FILE | systemd credential `git-relay-owner-token` | Existing protected own read-token file for fixed prod `/git-relay-owner` |
+| GIT_RELAY_APPS_CREDENTIAL_FILE | systemd credential `git-relay-apps-token` | Existing protected own read-token file for the configured App-key folder |
+| GIT_RELAY_TOOLS_CREDENTIAL_FILE | existing App-file selector when unset | Existing explicit `/tools` file override; the legacy default selector does not prove a usable grant and remains an activation gate |
 | GIT_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
 | GIT_RELAY_VERIFY_CACHE_S | 3600 | Seconds one relay process reuses a positive `sbt_`/`gbb_` bearer verify, capped at 3600 and never past the bearer's expiry;  0 verifies live on every call.  A pause or revocation can reach that bearer's Git calls, writes included, up to this late (owner ruling Fri, Nov 6, 2026).  The hour runs from the Worker's own live check (`verified_at` in its answer), so the Worker's cache and this one together stay within one hour, and an older positive answer never replaces a newer refusal.  Refusals are remembered for 30 seconds as refusals only. |
 | GIT_RELAY_AUDIT_PATH | git-relay-audit.jsonl | Audit log location |
@@ -450,6 +471,59 @@ python3 -m git_relay.server     # equivalent, no wrapper needed
 
 `git-relay/bin/git-relay` runs straight from a checkout with no install step.  Stdlib only, no
 dependencies to install.
+
+## Direct Infisical Reader And Code Artifact
+
+`FleetSecretsSource` retains the `.secret`, `.secrets` and `.verified_secret` protocol, but reads
+through the canonical `scripts/fleet_infisical.py` rather than an external `fleet-secrets` app.
+The code path is fixed relative to the relay package: `<artifact>/git-relay/git_relay/app_tokens.py`
+loads only `<artifact>/scripts/fleet_infisical.py` through an owned private module handle and lock.
+Neither an import-path candidate nor a preloaded public or private module can supply this reader.
+The source is validated before its own protected token file is opened or passed to it.
+
+Each uncached batch names only the requested keys and uses `bounded_fetch_project` with a
+30-second operation budget and a 1-MiB whole-batch output cap.  The shared disposable worker
+performs the actual exact-project/prod/folder/read-only grant and strict record verification.
+The shared expiry contract accepts a future finite expiry or an explicitly present null expiry
+for an otherwise valid read-only grant; missing, malformed, expired and naive expiry still refuse.
+Only that explicit bootstrap token goes through private worker stdin, never argv or an inherited
+credential environment.  The source supplies only prod and its exact read path; it never discovers
+another consumer, an ambient token, a project file, a login session or a fallback application.
+No writer ledger is needed for these read-only calls.
+
+The existing process cache remains: verified values and confirmed missing names are reused by that
+source until restart.  Transient failures are not remembered as absence, and an incomplete batch
+does not cache partial values.  Rotating the own file affects uncached reads; restart is required to
+refresh an already cached value or missing name.  No upstream body or secret value enters an error.
+
+The three purposes remain separate: App id/key pairs come from configured prod `/github-apps`,
+the verification-channel key comes from configured prod `/tools`, and the owner PR-only token
+comes from fixed prod `/git-relay-owner`.  Existing factory/file selectors are preserved.
+In particular, the historical `/tools` default still selects the App token file, but a multi-folder
+grant cannot satisfy the canonical exact-one-folder verifier.  A dedicated, declared own `/tools`
+binding and its actual finite expiry must be verified before activation; this source change does
+not create, widen, borrow or prove any grant.
+
+Build the reviewed public code separately from installation:
+
+```text
+python3 git-relay/build-runtime.py <full-source-commit> <new-absolute-artifact-root>
+```
+
+The builder reads only one full immutable local Git commit and an explicit inventory of 38 code
+files: the existing launcher, 36 relay modules and the exact canonical client.  It writes the same
+monorepo-shaped layout plus `relay-runtime.json`, then verifies every mode, byte count and SHA-256
+and the complete finite inventory.  It refuses missing, oversized or symlinked source entries,
+existing destinations and symlinked or unsafe destination parents.  The artifact contains no live
+seat policy, host configuration, environment, credential file, external app or second client implementation.
+The receipt proves prepared code bytes only; it authorizes no installation or restart.
+
+The canonical bounded reader is on main; this source unit does not qualify a live binding.
+Activation remains held until every existing purpose has a verified own exact-scope read binding
+with finite expiry and the managed installed layout passes normal owner-PR/App/verification-channel
+acceptance.  The existing fixed
+five-file deployment transaction does not install this larger artifact.  Preserve the working release
+until a separately authorized installation and those actual acceptance checks succeed.
 
 ## Seat provisioning and deployment
 

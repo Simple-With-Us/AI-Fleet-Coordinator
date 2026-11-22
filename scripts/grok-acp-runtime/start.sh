@@ -6,14 +6,38 @@
 # Bind 12419 — NOT 2419.
 set -euo pipefail
 
-# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359), read through `fleet-secrets`.
-FLEET_SECRETS="${FLEET_SECRETS:-${HOME}/.local/bin/fleet-secrets}"
-if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
-  GROK_AGENT_SECRET="$("$FLEET_SECRETS" get GROK_AGENT_SECRET --path /grok-acp)" \
-    || { echo "missing GROK_AGENT_SECRET in Infisical /grok-acp" >&2; exit 1; }
+# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359).
+# The shared scoped reader is the one command every consumer outside this repository
+# runs.  The account is named here,  so the read uses the grok-acp-ro service token
+# from this host's own store and never an ambient environment token.
+SCOPED_READER="${INFISICAL_SCOPED_READER:-${HOME}/apps/infisical-scoped/infisical-scoped.py}"
+TOKEN_ACCOUNT="grok-acp-ro"
+# The scoped read runs under the system interpreter,  the same one the other readers
+# use,  and it is checked first:  an interpreter that is not there is an interpreter
+# failure,  not a missing secret.
+PYTHON="/usr/bin/python3"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "grok-acp:  ${PYTHON} is not executable on this host,  so the scoped reader cannot run" >&2
+  exit 1
 fi
+  # A reader that could not answer is not a missing secret:  the two failures name
+  # different components,  so an operator repairs the one that is broken.
+  if GROK_AGENT_SECRET="$("$PYTHON" -I "${SCOPED_READER}" get GROK_AGENT_SECRET \
+    --folder /grok-acp --project fleet-ops --account "${TOKEN_ACCOUNT}" 2>/dev/null)"; then
+    :
+  else
+    reader_status=$?
+    case "$reader_status" in
+      2) reason="the command line was refused" ;;
+      3) reason="the name is not in that folder" ;;
+      4) reason="the grant refused the read or the token store was unavailable" ;;
+      *) reason="reader failed (exit ${reader_status})" ;;
+    esac
+    echo "missing GROK_AGENT_SECRET in Infisical /grok-acp:  the scoped reader at ${SCOPED_READER} could not read it with the ${TOKEN_ACCOUNT} scoped service token (${reason})" >&2
+    exit 1
+  fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then
-  echo "GROK_AGENT_SECRET empty in Infisical /grok-acp" >&2
+  echo "GROK_AGENT_SECRET is empty in Infisical /grok-acp" >&2
   exit 1
 fi
 export GROK_AGENT_SECRET
@@ -24,7 +48,7 @@ export GROK_DISABLE_AUTOUPDATER=1
 export GROK_CLAUDE_MCPS_ENABLED=0
 export GROK_CURSOR_MCPS_ENABLED=0
 export GROK_MANAGED_MCPS_ENABLED=0
-HERE="$(cd "$(dirname "$0")" && pwd)"
+HERE="$SCRIPT_DIR"
 ACP_HOME="${HERE}/acp-home"
 ACP_CONFIG_SRC="${HERE}/acp-home-config.toml"
 mkdir -p "$ACP_HOME"

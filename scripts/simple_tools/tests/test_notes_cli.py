@@ -41,7 +41,7 @@ class NotesCliHarness(Harness):
         for patcher in (
             mock.patch.object(N, "direct_available", return_value=None),
             mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no fleet knobs in tests")),
-            mock.patch.object(NC, "fleet_secrets_get", return_value=""),
+            mock.patch.object(NC, "scoped_read", return_value=""),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -523,7 +523,11 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(sent["session"], SESSION)
         self.assertEqual(sent["request_id"], "cli-update-0001")
         self.assertEqual(sent["wait_seconds"], 0)
-        self.assertNotIn("identity", sent, "the gateway derives the seat from the bearer")
+        self.assertEqual(
+            sent.get("identity"),
+            "CLAUDE",
+            "a write names the bot it acts as;  the gateway checks it against the bearer",
+        )
         self.assertEqual([c[0] for c in gw.calls], ["notes_update", "notes_status"])
         self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")

@@ -21,7 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
-import { allowlistedGithubDiagnostics, classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
+import { allowlistedGithubDiagnostics, classifyRelayRefusal, movedRepository, scanCategoryFromError } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -285,7 +285,12 @@ export class GrRelayClient {
       // The cause class, from the relay's exact fixed strings and numeric
       // github_status only (src/gr-refusal.js):  a closed reason or nothing,
       // never the relay's prose.  An unmatched refusal keeps the flat answer.
-      const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
+      // A credential verdict also carries its scan category when the relay
+      // named one in the vouched anchored shape:  a closed-vocabulary member
+      // (src/gr-refusal.js), so the caller learns WHICH credential shape
+      // matched - the detail whose absence froze publications undiagnosed.
+      const scanCategory = credentialMarker ? scanCategoryFromError(parsed.error) : null;
+      const classified=credentialMarker?{reason:"credential_scan", ...(scanCategory ? {scan_category: scanCategory} : {})}:classifyRelayRefusal(parsed.error, body.github_status);
       // A moved repository carries only its validated details (a strict
       // owner/name and a numeric id), never the relay's prose.
       const moved=classified?.reason==="repository_moved"?movedRepository(body):{};
@@ -384,7 +389,14 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_open_pr",
     title: "Open Pull Request",
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" },
+      // Seat self-attestation from a native proxy, not per-chat authentication.
+      // The relay fixes these in its protected first-confirmed receipt; only
+      // Operator may bind after checking the exact current registry row.
+      origin_session_claim: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$" },
+      origin_letter_claim: { type: "string", pattern: "^[A-Z]{2}$" },
+      origin_generation_claim: { type: "integer", minimum: 1 },
+    }),
   },
   {
     name: "gr_edit_pr",

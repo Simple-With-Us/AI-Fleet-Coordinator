@@ -15,6 +15,7 @@
 // route has built the seat's tools:  the first call an isolate serves spent about 20 ms of CPU
 // building the SDK's server, handler and protocol schemas, for a request the router answers itself.
 
+import { nativeOriginContext } from "./native-origin-context.js";
 import { classifyInboundRequest, hostHeaderValidationResponse, isJsonContentType, ProtocolError, ProtocolErrorCode, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/server";
 import { PUBLIC_HOST } from "./config.js";
 import { IdentityRouter, identityInstructions, toolListCacheKey, toolListFor, allowedIdentities, pageOf, TOOLS_LIST_PAGE } from "./delegated-identities.js";
@@ -262,7 +263,7 @@ export async function toolCallEvent({ id, name, args }, router) {
   try {
     let result;
     try {
-      result = await router.call(name, args);
+      result = await router.call(name, args, nativeOriginContext(undefined));
     } catch (error) {
       if (error instanceof UnknownTool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool");
       throw error;

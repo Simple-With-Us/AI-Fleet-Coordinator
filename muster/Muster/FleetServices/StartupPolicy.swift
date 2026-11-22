@@ -21,7 +21,7 @@ public struct CommandExitError: LocalizedError {
     /// What the command printed on standard output.
     public let output: String
     /// The exit status, when the runner knows it.  Callers that must tell a
-    /// refused command from an absent one (fleet-secrets exit 3) read this;
+    /// refused command from an absent one (the reader's exit 3) read this;
     /// a fake that only knows the command failed leaves it 0.
     public let status: Int32
     /// What the command printed on standard error,  as it printed it.  The runner keeps it

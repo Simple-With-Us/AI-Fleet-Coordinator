@@ -113,33 +113,180 @@ _SOURCE_RHS = re.compile(
 )
 
 
+# A complete, unquoted dotted identifier chain (a property access or a call
+# target) is a source expression, not a stored literal.  Bare runs, quoted
+# values, env-prefixed forms and lowercase-only chains remain candidates.
+_DOTTED_RHS = re.compile(r"[A-Za-z_$]+(?:\.[A-Za-z_$]+)+(?= *[;(),\n]| *$)")
+
+
 def _source_assignment(text: str, match: re.Match[str]) -> bool:
     start = match.start("value")
     # An optional quote consumed by the detector means this is a literal, always.
     if start and text[start - 1] in "\"'":
         return False
     line = text[text.rfind("\n", 0, start) + 1 : start]
-    # A source line containing quotes or template delimiters is conservatively scanned.
-    if any(c in line for c in "\"'`"):
-        return False
     # Existing `if (...) cfg.key =` lines use the assignment's exact suffix.
     assignment = re.search(
         r"(?:^|[;{} )])((?:(?:const|let|var) +)?[A-Za-z_$][A-Za-z0-9_$.]*) *= *$", line
     )
-    if assignment is None:
+    labeled_arg = False
+    if assignment is not None:
+        # A source line containing quotes or template delimiters is conservatively scanned.
+        if any(c in line for c in "\"'`"):
+            return False
+    else:
+        # A labeled call argument (Swift/Kotlin) puts the keyword label right
+        # after `(` or `,` while an earlier `(` is still unclosed, possibly
+        # across lines.  Comma prose has no call paren, and quoted or
+        # line-start colon pairs (JSON/YAML) never reach this path.  Paren
+        # depth is tracked across the whole window so a closure inside the
+        # call keeps the paren open and an earlier string argument is fine.
+        # The separator must be the labeled-argument colon:  a `=` keyword
+        # argument inside parens keeps the `=` path's stricter treatment.
+        # Clearing is limited to call syntax; prose and quoted pairs still refuse.
+        if ":" not in text[match.start() : start]:
+            return False
+        before = text[max(0, match.start() - 300) : match.start()]
+        tail = re.search(r"[(,]\s*$", before)
+        if tail is None:
+            return False
+        # The innermost open paren must be a call paren (right after an
+        # identifier char). Balanced grouping pairs are popped when they
+        # close, so they do not hide the call; parens inside string literals
+        # are skipped, so prose or a quoted paren cannot open a call.
+        stack = []
+        quote = ""
+        for i, ch in enumerate(before):
+            if quote:
+                if ch == quote and before[i - 1] != "\\":
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
+                stack.append(i > 0 and (before[i - 1].isalnum() or before[i - 1] in "_$"))
+            elif ch == ")" and stack:
+                stack.pop()
+        labeled_arg = bool(stack) and stack[-1] and not quote
+        if not labeled_arg:
+            return False
+    if _SOURCE_RHS.match(text, start) is not None:
+        return True
+    chain = _DOTTED_RHS.match(text, start)
+    if chain is None:
         return False
-    return _SOURCE_RHS.match(text, start) is not None
+    value = chain.group(0)
+    if value.startswith(("process.env.", "import.meta.env.")):
+        return False
+    if re.search(r"[a-z][A-Z]", value) is not None:
+        return True
+    # Lowercase-only chains stay candidates after `=`, but in a labeled call
+    # argument a property chain is idiomatically lowercase (Swift/Kotlin).
+    return labeled_arg
 
 
-def scan(text: str, known: Iterable[str] = ()) -> str | None:
-    """The kind of secret found in `text`, or None.  `known` are exact values to refuse (and their
-    base64 Basic-auth forms are caught by the caller passing them too)."""
+# Public configuration identifiers, not credential values. Keep exact bindings:
+# an uppercase-looking string alone is not evidence that it names configuration.
+_PUBLIC_PYTHON_ENV_BINDINGS = {
+    "LISTENER_READ_TOKEN": "INFISICAL_LISTENER_READ_TOKEN",
+    "OPERATOR_VOICE_TOKEN": "INFISICAL_OPERATOR_VOICE_TOKEN",
+    "WAKE_ROUTER_TOKEN": "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN",
+}
+
+
+def _python_source_value_spans(text: str) -> frozenset[tuple[int, int]]:
+    """Only generic-detector false positives proved by complete Python syntax.
+
+    No source is executed. Quoted function names, comments, docstrings, bare
+    names and unknown string constants cannot qualify. Every other match is
+    still scanned independently, including literal arguments inside a call.
+    """
+    import ast
+
+    if len(text) > 128 * 1024:
+        return frozenset()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return frozenset()
+    # Python physical lines use only LF, CRLF or lone CR. str.splitlines()
+    # also splits Unicode separators inside valid literals, unlike the AST.
+    lines = re.split(r"(?<=\n)|(?<=\r)(?!\n)", text)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    offsets_valid = True
+
+    def offset(node, end=False):
+        nonlocal offsets_valid
+        try:
+            line = node.end_lineno if end else node.lineno
+            column = node.end_col_offset if end else node.col_offset
+            if type(line) is not int or type(column) is not int or not 1 <= line <= len(lines):
+                raise ValueError("invalid source location")
+            raw_line = lines[line - 1].encode("utf-8")
+            if not 0 <= column <= len(raw_line):
+                raise ValueError("invalid source column")
+            # AST columns are UTF-8 bytes; scanner spans are Unicode characters.
+            return starts[line - 1] + len(raw_line[:column].decode("utf-8"))
+        except (IndexError, TypeError, ValueError):
+            # Bad or undecodable locations invalidate the whole analysis,
+            # including any earlier spans, rather than crashing or guessing.
+            offsets_valid = False
+            return -1
+
+    spans = set()
+    for visited, node in enumerate(ast.walk(tree), 1):
+        if visited > 10000:
+            return frozenset()  # Budget failure never admits a partial analysis.
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and _PUBLIC_PYTHON_ENV_BINDINGS.get(node.targets[0].id) == node.value.value
+        ):
+            value = node.value
+            left, right = offset(value), offset(value, True)
+            # Require one ordinary quoted identifier, not an encoded,
+            # concatenated or multiline expression that happens to decode alike.
+            literal = text[left:right]
+            if literal in ("'" + value.value + "'", '"' + value.value + '"'):
+                spans.add((left + 1, right - 1))
+        elif (
+            isinstance(node, ast.keyword)
+            and node.arg == "token"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_wake_router_token"
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], ast.Name)
+            and node.value.args[0].id == "env"
+            and not node.value.keywords
+            and text[offset(node.value) : offset(node.value, True)] == "_wake_router_token(env)"
+        ):
+            # Only this public validator expression is classified here.
+            # Other callable identifiers can themselves look like credentials
+            # and retain the generic detector's conservative treatment.
+            spans.add((offset(node.value.func), offset(node.value.func, True)))
+    return frozenset(spans) if offsets_valid else frozenset()
+
+
+def _scan(text: str, known: Iterable[str], source_spans: frozenset[tuple[int, int]]) -> str | None:
     for value in known:
         if value and len(value) >= 8 and value in text:
             return "a loaded credential"
     for label, pattern in _PATTERNS:
         if "value" in pattern.groupindex:
-            if any(not _source_assignment(text, match) for match in pattern.finditer(text)):
+            for match in pattern.finditer(text):
+                if _source_assignment(text, match):
+                    continue
+                if (
+                    label in ("assigned credential", "assigned secret")
+                    and match.span("value") in source_spans
+                ):
+                    continue
                 return label
         elif pattern.search(text):
             return label
@@ -147,6 +294,11 @@ def scan(text: str, known: Iterable[str] = ()) -> str | None:
         if _zulip_shaped(match.group()):
             return "a Zulip-shaped API key"
     return None
+
+
+def scan(text: str, known: Iterable[str] = ()) -> str | None:
+    """Raw text keeps its existing conservative policy, without source classification."""
+    return _scan(text, known, frozenset())
 
 
 # Exact generic-fixture approvals are release code, never caller input. Each
@@ -158,6 +310,11 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "Simple-With-Us/CodeCaps",
             "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
             "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
+        ),
+        (
+            "Simple-With-Us/CodeCaps",
+            "ios/CodeCapsCompanion/App/Models/CompanionQuotaModel.swift",
+            "1e44f5721cf37b067a3a1a2091fc316d2a9f95546effc22d756126eca687894b",
         ),
         (
             "Simple-With-Us/Usage-Monitor",
@@ -193,6 +350,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         ]
     ),
     (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "git-relay/git_relay/server.py",
+        "182f99d6c71bb9616e4ac9381d2fadfbe26e8760fc3dac873a6b3c58d2f2c752",
+    ): frozenset({("assigned secret", 51282, 51325, 51290, 51325)}),
+    (
         "Simple-With-Us/Congress.Trade",
         "app/src/security/__tests__/originLock.test.ts",
         "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
@@ -202,6 +364,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "git-relay/git_relay/server.py",
         "0b9d5296287c1c3dd5b7d508af8ae2afffb9da83ff03f64a3331ec5f1df01f20",
     ): frozenset({("assigned secret", 52346, 52389, 52354, 52389)}),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "upgrade-reviewed-hub.py",
+        "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
+    ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
@@ -221,12 +388,26 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
             "app/package-lock.json",
             "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
         ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/deno.lock",
+            "faf4d3d6281fb4c94f0933043612483fd2f5463c469d0b5bb413365d8530a084",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "5ff0b0a6007a6df394d86060251d58a1a7ebd9b3e6330a3c5fc24021793b6932",
+        ),
     }
 )
 
 
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
-    """Normal scan, except the separately reviewed exact full-file subtypes.
+    """File-aware scan with exact reviewed subtypes kept as separate mechanisms.
+
+    Valid bounded Python source can classify public environment-name bindings
+    and the exact public token-validator expression, never arbitrary calls or values.
+    Raw-message scan() remains conservative. No classification executes source.
 
     Match-pinned fixtures require the exact nonempty effective match census.
     Generic fixtures waive generic assignments only.  Public-integrity reviews
@@ -246,7 +427,10 @@ def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str
         return None if kind == "a Zulip-shaped API key" else kind
     reviewed_matches = _REVIEWED_GENERIC_MATCHES.get(key)
     if key not in _REVIEWED_GENERIC_FIXTURES and reviewed_matches is None:
-        return scan(text, known)
+        # Language-aware classification, not a file/path or digest waiver.
+        # Only validated Python syntax can contribute non-secret source spans.
+        spans = _python_source_value_spans(text) if path.endswith(".py") else frozenset()
+        return _scan(text, known, spans)
     for value in known:
         if value and value in text:
             return "a loaded credential"

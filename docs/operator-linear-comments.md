@@ -49,12 +49,31 @@ Eavesdropper, and it hosts the mirror.
   fold-in was directed.  The retirement sequence below keeps that proof as a gate.
 - **Comment format:** first line `<!-- zulip-relay -->` plus a per-conversation key (the
   issue and the id of the first message recorded for the topic, so a topic rename keeps
-  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then a
-  bullet per recorded message — timestamp link (a `near/<message id>` permalink built
-  from the id alone, never from topic text), sender, and a neutralised quote (280 chars,
-  credential-shaped fields withheld whole, markdown defanged);  at most 20 bullets, with
+  editing the same comment);  then `**Zulip discussion:** #<stream> > <topic>`;  then one
+  block per recorded message — a bold line with the timestamp link (a `near/<message id>`
+  permalink built from the id alone, never from topic text) and the sender, then the whole
+  post as readable Markdown (the line structure kept, credential-shaped fields withheld
+  whole, links shown but never live);  at most 20 blocks, with
   an "_N earlier message(s) not listed._" line when the thread is longer;  footer
   "_Mirrored one way from Zulip by the relay.  Edit in Zulip, not here._"
+- **The whole post (AFC-847).**  A post is shown as the sender wrote it:  the message
+  content is converted to Markdown (`scripts/simple_tools/zulip_markdown.py`, standard
+  library only — Zulip's rendered HTML and its Markdown source both become Markdown) and
+  shown with its line structure kept, up to 10,000 characters a message (`MESSAGE_CHARS`,
+  Zulip's own limit, so no post Zulip sends is cut) and 50,000 characters a comment
+  (`COMMENT_CHARS`);  a cut always says what it left out
+  ("_N characters of this message are not shown._", "_N characters of this topic are not
+  shown._").  The credential scan runs over the converted text and not over the markup, so
+  a Zulip attribute cannot trip a row by itself, while a link's URL stays in the text, so a
+  credential inside one is still caught.  A link is shown, not live.  The comments written
+  before this change hold posts that were cut at 280 characters:  an entry records the
+  format its quotes were rendered in, an entry without one is read from Zulip again and
+  rendered again, and the comment is edited with the whole posts and says that it was
+  re-rendered.  The topic's next message repairs its comment, and a topic that stays
+  silent is repaired by the cycle, one comment per cycle.  A topic whose posts are longer
+  than the comment's bound leaves the oldest of them out, and the comment says how many
+  characters of the topic are not shown;  a second comment for the overflow would break
+  the one-comment-per-topic contract, which is the owner's ruling, so it is not done here.
 - **Dedup state:** a JSON ledger, `~/.agent-sync/linear-relay.json` on the host that runs
   it (override `LINEAR_RELAY_STATE`), keyed `ISSUE|stream_id|sha256(topic)[:32]`, holding
   the comment id, the recorded links, seen message ids, counts, edit timing and retry
@@ -66,7 +85,7 @@ Eavesdropper, and it hosts the mirror.
   ledger keeps an `archive` table:  a pruned entry that has a comment leaves its first
   message id and comment id there (no text), and the topic's next message restores it
   and edits the same comment, so pruning no longer starts a second one.  An archived
-  record dropped at the archive's bound (20,000 records, or the file's 8 MB) can, and
+  record dropped at the archive's bound (20,000 records, or the file's 16 MB) can, and
   so can a rename or move made while the worker was not running.
 
 ## The fold-in (this lane)
@@ -105,7 +124,10 @@ Eavesdropper, and it hosts the mirror.
   whole topic first;  when that read fails, the record waits and the comment is left
   as it is.
   Each history read has one 30-second deadline for all its pages, because it runs on
-  the routing thread.
+  the routing thread.  A caller that walks a topic page by page may hand the read a
+  deadline of its own, and the earlier of the two holds, so a walk never gets more time
+  out of a read than a read on its own gets.  A reader that cannot take a deadline is
+  refused before it reads, because a walk it cannot bound is not a bounded walk.
   Every message a read answers is checked against the shape Zulip's messages API gives
   it before anything reads it:  a malformed one is skipped and counted in the log (the
   count alone, never its text), so one bad message never holds a catch-up or a restore
@@ -159,10 +181,11 @@ the container).  That is superseded by the live layout, verified 2026-11-03:
 - **The daemon reaches the key through a service token, never a machine identity.**
   A scoped read-only Infisical service token, `operator-linear-read`, was minted for
   exactly prod `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens"
-  row 61).  The daemon resolves it from the runtime-only variable
-  `OPERATOR_LINEAR_INFISICAL_TOKEN` when the host binds it, else from the file named
-  by `[linear_comments] infisical_token_file` (owner-only permissions, checked;
-  default `~/workspace/.secrets/operator-linear-service-token`).
+  row 61).  The daemon resolves it from the file named by `[linear_comments]
+  infisical_token_file` (owner-only permissions, checked;  default
+  `~/workspace/.secrets/operator-linear-service-token`).  The environment is not a
+  source:  the host binds that bootstrap reader in its own protected store, never as a
+  runtime variable (owner ruling, November 22, 2026).
 - **The load, at engine build** (daemon start, and again when the service token
   changes):  the token is verified against its own Infisical record (read-only, one
   scope, exactly prod `/linear`, this project — anything wider is refused before a
@@ -191,7 +214,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/simple_tools/tests/test_operator_linear.py` (59 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (63 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -218,9 +241,12 @@ refused before any secret is read), the developer-token fetch and its bare-key
 Authorization form, and the daemon's configure step on a stub (engine built from the
 service token, kept across a reload, a stopped engine rebuilt on reload, a refused
 token file logged as this feature's error and nothing built).  The relay's own suite
-(`test_linear_relay.py`, 127 tests) covers the worker, the whole-topic continuation
+(`test_linear_relay.py`, 181 tests) covers the worker, the whole-topic continuation
 above, and the AFC-821 archive and catch-up, malformed history messages and reads that
-answer no list at all included.
+answer no list at all included, and the whole post (the conversion, the bounds and the
+notes, the credential scan over the converted text, and the repair of the comments an
+older build wrote).  The conversion itself has its own suite
+(`test_zulip_markdown.py`, 82 tests).
 
 ## Retirement sequence for the old relay (documented, NOT executed)
 
@@ -236,8 +262,8 @@ is neither live.
    sample's default) in the server image;  restart the app;  confirm the daemon is
    healthy and logs no `linear-comments` errors.  The standalone relay keeps running.
 3. **Shadow check.**  Place the `operator-linear-read` service token where the
-   daemon resolves it (`OPERATOR_LINEAR_INFISICAL_TOKEN`, or the
-   `[linear_comments] infisical_token_file`), set `OPERATOR_LINEAR_DRY_RUN=1`,
+   daemon resolves it (the `[linear_comments] infisical_token_file`, the consumer's own
+   store), set `OPERATOR_LINEAR_DRY_RUN=1`,
    enable `[linear_comments]`, reload.  For one active topic that names an issue,
    confirm from the log that the engine would create ONE comment and that its rendered
    coverage is the whole topic (the dry-run ledger is a sibling file;  the live ledger

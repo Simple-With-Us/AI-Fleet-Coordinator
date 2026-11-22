@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-18T22:29:25Z",
+  "updatedAt": "2026-11-22T18:32:09Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -46,7 +46,7 @@
     },
     "net.dealdex": {
       "marketingVersion": "0.1.0",
-      "build": "202611170738",
+      "build": "202611180257",
       "appleId": 6804249232,
       "displayName": "DealDex"
     },
@@ -81,21 +81,27 @@
     },
     "com.socratictrade.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611181427",
+      "build": "202611221154",
       "appleId": 6815511597,
       "displayName": "Socratic-Trade"
     },
     "com.simplewithus.codecaps.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611122138",
+      "build": "202611210543",
       "appleId": 6814623846,
       "displayName": "CodeCaps Companion"
     },
     "app.botfleet.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611180156",
+      "build": "202611221119",
       "appleId": 6820175685,
       "displayName": "BotFleet"
+    },
+    "codes.clutch.ios": {
+      "marketingVersion": "0.1.0",
+      "build": "202611210547",
+      "appleId": 6817951255,
+      "displayName": "Clutch"
     }
   }
 }

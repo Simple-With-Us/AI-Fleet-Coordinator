@@ -8,32 +8,127 @@ from __future__ import annotations
 import hmac
 import os
 import subprocess
+import sys
 
-from .config import FLEET_SECRETS_BIN, TOKEN_FOLDER, TOKEN_NAME
+from .config import READER_ACCOUNT, SCOPED_READER, TOKEN_FOLDER, TOKEN_NAME
+
+
+def _warn(message: str) -> None:
+    """One diagnostic on standard error.  A source name and a reason, never a value."""
+    sys.stderr.write("seat-mcp:  %s\n" % message)
+
+
+class ScopedReaderError(RuntimeError):
+    """The scoped reader could not answer.
+
+    The message names the reader and the account,  never a value.  `exit_code` is the
+    code the process ends with:  124 for a timeout,  127 for an interpreter that is not
+    there,  3 for a name the folder holds no value for,  4 for a grant the reader refused,
+    and 2 for anything else.
+    """
+
+    def __init__(self, message: str, exit_code: int = 2) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def _reader_path() -> str:
+    """The scoped reader's path, from the environment when the host overrides it."""
+    return os.environ.get("INFISICAL_SCOPED_READER") or str(SCOPED_READER)
+
+
+def _read_through_scoped_reader() -> str:
+    """SEAT_MCP_TOKEN from Fleet-OPS /seat-mcp, through this consumer's own scoped token.
+
+    The retired `fleet-secrets` command is gone;  the scoped reader is the one reader
+    left, and it carries the grant rather than a shared identity.  Every refusal raises
+    a `ScopedReaderError` that names the unavailable source:  the value is never
+    printed, logged or put in an argument.
+    """
+    reader = _reader_path()
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                # The isolated interpreter:  no inherited PYTHONPATH, no user site
+                # directory,  so the reader runs with the one module it ships.
+                "-I",
+                reader,
+                "get",
+                TOKEN_NAME,
+                "--folder",
+                TOKEN_FOLDER,
+                "--project",
+                "fleet-ops",
+                "--account",
+                READER_ACCOUNT,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        raise ScopedReaderError(
+            "the interpreter that runs the scoped reader is not there,  so the reader at "
+            "%s could not be started" % reader,
+            127,
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise ScopedReaderError(
+            "the scoped reader at %s did not answer in time" % reader,
+            124,
+        ) from None
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ScopedReaderError(
+            "the scoped reader at %s could not run (%s)" % (reader, type(exc).__name__),
+            2,
+        ) from None
+    if proc.returncode == 3:
+        raise ScopedReaderError(
+            "%s missing in Infisical %s:  the scoped reader at %s read the folder and the "
+            "name holds no value (exit 3)" % (TOKEN_NAME, TOKEN_FOLDER, reader),
+            3,
+        )
+    if proc.returncode == 4:
+        raise ScopedReaderError(
+            "%s in Infisical %s:  the scoped reader at %s refused the %s scoped service "
+            "token (exit 4)" % (TOKEN_NAME, TOKEN_FOLDER, reader, READER_ACCOUNT),
+            4,
+        )
+    if proc.returncode != 0:
+        raise ScopedReaderError(
+            "%s missing in Infisical %s:  the scoped reader at %s refused the %s scoped "
+            "service token (exit %s)"
+            % (TOKEN_NAME, TOKEN_FOLDER, reader, READER_ACCOUNT, proc.returncode),
+            2,
+        )
+    return proc.stdout.strip()
 
 
 def load_token() -> str:
-    """SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through `fleet-secrets`
-    (AFC-359).  Empty or absent is a hard fail that names the folder and key, never a value."""
-    token = os.environ.get(TOKEN_NAME, "").strip()
-    if not token:
-        binary = os.environ.get("FLEET_SECRETS_BIN") or str(FLEET_SECRETS_BIN)
-        try:
-            proc = subprocess.run(
-                [binary, "get", TOKEN_NAME, "--path", TOKEN_FOLDER],
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                token = proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            token = ""
-    if not token:
-        raise RuntimeError("%s missing in Infisical %s" % (TOKEN_NAME, TOKEN_FOLDER))
-    return token
+    """SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through the
+    scoped reader (AFC-359).
+
+    A host that bound the token in the environment keeps it.  Otherwise the read runs under
+    this consumer's own scoped service token,  and every failure names the source that must
+    be repaired:  the reader and its account for a failed read,  and the name and the
+    folder for a folder that holds no such name.  Never a value."""
+    token_value = os.environ.get(TOKEN_NAME, "").strip()
+    if not token_value:
+        token_value = _read_through_scoped_reader()
+    if not token_value:
+        # The name holds no value:  that is the absent case,  and it carries the
+        # exit code the absent case carries,  so a caller that repairs by exit
+        # code is not sent after a broken credential.
+        raise ScopedReaderError(
+            "%s is empty in Infisical %s:  the scoped reader read the folder with the %s "
+            "scoped service token and the name holds no value"
+            % (TOKEN_NAME, TOKEN_FOLDER, READER_ACCOUNT),
+            3,
+        )
+    return token_value
 
 
 def bearer_ok(header: str, token: str) -> bool:

@@ -14,6 +14,81 @@ import time
 import urllib.error
 import urllib.request
 
+
+def native_origin_claims(env, identity, meta=None):
+    """Codex-only same-seat claims from its existing private local note.
+
+    No process launch, registry call, signing key or post-open mutation.
+    Operator independently binds the protected relay receipt before effects.
+    """
+    if identity != "CODEX":
+        return {}
+    # A shared MCP process has no authoritative startup thread. Use only this call.
+    if not isinstance(meta, dict):
+        return {}
+    candidates = []
+    if "threadId" in meta:
+        candidates.append(meta["threadId"])
+    turn = meta.get("x-codex-turn-metadata")
+    if isinstance(turn, dict) and "thread_id" in turn:
+        candidates.append(turn["thread_id"])
+    if not candidates or any(not isinstance(x, str) for x in candidates):
+        return {}
+    sid = candidates[0]
+    if any(x != sid for x in candidates):
+        return {}
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid):
+        return {}
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return {}
+    fd = None
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", "CODEX", "letters"):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return {}
+        note_fd = os.open(sid + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            info = os.fstat(note_fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+            ):
+                return {}
+            raw = os.read(note_fd, 262145)
+        finally:
+            os.close(note_fd)
+        if len(raw) > 262144:
+            return {}
+        note = json.loads(raw)
+        if (
+            not isinstance(note, dict)
+            or note.get("session_id") != sid
+            or note.get("platform") != "codex"
+            or note.get("state") != "open"
+            or not re.fullmatch(r"[A-Z]{2}", str(note.get("label") or ""))
+            or type(note.get("generation")) is not int
+            or note["generation"] < 1
+        ):
+            return {}
+        return {
+            "origin_session_claim": sid,
+            "origin_letter_claim": note["label"],
+            "origin_generation_claim": note["generation"],
+        }
+    except (OSError, ValueError, TypeError):
+        return {}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILE_ARGS_BYTES = 6 * 1024 * 1024
@@ -288,7 +363,8 @@ def failure(message, code="outcome_unknown"):
 
 
 class Adapter:
-    def __init__(self, token, opener=None, cache_dir=None):
+    def __init__(self, token, opener=None, cache_dir=None, env=None):
+        self.env = dict(os.environ if env is None else env)
         self.identity = assigned_identity(token)  # A local guard, not server authentication.
         self.token = token
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
@@ -370,6 +446,24 @@ class Adapter:
                     **message,
                     "params": {**params, "arguments": {**args, "identity": self.identity}},
                 }
+        if (
+            message.get("method") == "tools/call"
+            and isinstance(params, dict)
+            and params.get("name") in ("gr_open_pr", "open_pr")
+        ):
+            args = message["params"].get("arguments")
+            if isinstance(args, dict):
+                claims = native_origin_claims(self.env, self.identity, params.get("_meta"))
+                args = {k: v for k, v in args.items() if not k.startswith("origin_")}
+                message = {
+                    **message,
+                    "params": {**message["params"], "arguments": {**args, **claims}},
+                }
+                if not claims:
+                    print(
+                        "assigned-hosted-stdio: review origin unavailable for this native context; alert held",
+                        file=sys.stderr,
+                    )
         headers = {
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",

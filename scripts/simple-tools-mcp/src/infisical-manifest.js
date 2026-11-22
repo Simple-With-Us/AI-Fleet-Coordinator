@@ -10,7 +10,7 @@
 // Fleet-OPS copy is updated by hand.  /wake declares JET's wake key alone:  a
 // names-only check on Sat, Oct 24 found WAKE_HMAC_KEY_JET and no other wake key
 // among the Worker's secrets (`wrangler secret list`) or at AI Fleet
-// Coordinator `/` (`fleet-secrets names`), so GROK-WEB's, ECHO's and WISE's
+// Coordinator `/` (a names-only read), so GROK-WEB's, ECHO's and WISE's
 // reads are capability-off in every mode (src/infisical.js counts them as
 // absent, not as fallbacks).  Adding one is a new key plus a copy-set change.
 

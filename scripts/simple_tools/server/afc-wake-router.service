@@ -34,6 +34,7 @@ Description=AFC wake router: the listener's wake webhook for every platform (OPS
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/afc-wake-router/env
+Environment=WAKE_ROUTER_REVIEW_ALERTS_CREDENTIAL_FILE=%h/.config/review-alerts/wake.key
 ExecStart=/usr/bin/python3 -I %h/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind 127.0.0.1 --port 8794
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always

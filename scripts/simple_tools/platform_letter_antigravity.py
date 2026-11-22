@@ -7,9 +7,14 @@ How `XX: Title` renaming works (`antigravity_rename`).  Antigravity's `Annotati
 conversation titles in `<product root>/annotations/<conversation_id>.pbtxt` (`title:"XX: Words"`) and syncs them with
 `<product root>/conversation_summaries.db`.  Updating `conversation_summaries.db` alone does not last across turns because
 `AnnotationsManager` overwrites the summary row from its annotation state; writing both `<product root>/annotations/<id>.pbtxt`
-(preserving any other fields such as `last_user_view_time`) and `<product root>/conversation_summaries.db` keeps the
-`"XX: Words"` prefix across turns on both the server and the Mac.  When a person renames the chat with `/rename`, the
-hook reads the stored title, keeps their words under the assigned letter, and sends the bare words to the Operator.
+(preserving any other fields such as `last_user_view_time`) and `<product root>/conversation_summaries.db` (`title` and
+`preview`, returning True only when a summary row actually matched) keeps the `"XX: Words"` prefix across turns on both
+the server and the Mac.  When a brand-new conversation's `SessionStart` or first `PreInvocation` runs before Antigravity
+inserts the summary row, the `.pbtxt` file is written immediately while the database update stays pending until `Stop`
+(`turn`), which also re-stamps the letter if Antigravity's async auto-titler overwrote the title during the turn.  Because
+Antigravity hooks can only return `injectSteps` (no native `sessionTitle` output field), out-of-band disk writes may not
+refresh a running Electron/UI sidebar until the next view sync or restart.  When a person renames the chat with `/rename`,
+the hook reads the stored title, keeps their words under the assigned letter, and sends the bare words to the Operator.
 
 What Antigravity gives a hook (read from the hook documentation the agy binary embeds, and from live runs).
 - A hook is a command in a named group of `~/.gemini/config/hooks.json`, which the CLI, the app and the IDE all load.
@@ -23,14 +28,15 @@ What Antigravity gives a hook (read from the hook documentation the agy binary e
   `initialNumSteps` and fires before every model call; `invocationNum` is 0 for the first call after a prompt, whether
   the conversation is new or resumed.  A resumed conversation (`--conversation`, `/resume`) gets no SessionStart.
   Stop adds `executionNum`, `terminationReason` and `fullyIdle`.  `UserPromptSubmit` and `SessionEnd` are never sent.
-- So the hook is installed on SessionStart (register, tell the chat its letter) and PreInvocation (the first call of a
+- So the hook is installed on SessionStart (register, tell the chat its letter), PreInvocation (the first call of a
   prompt: register a conversation the hook has not seen, such as one that was resumed from before the install, put the
-  Operator's title words right, mark the chat seen).  A later model call of the same prompt has nothing to do, and
-  `scripts/platform-letter` answers `{}` for it from the payload text before it starts the Python 3.11 re-run or
-  imports the library (`normalize` below turns the same payload away if that quick check lets it through).  Such a call
-  costs a process start and a read of standard input, where the import alone costs 30 to 60 ms more, and a tool loop
-  makes dozens of them.  Nothing is closed on an end: a closed conversation can be resumed, and the library's 36 hour
-  sweep frees the letters of idle ones.
+  Operator's title words right, mark the chat seen), and Stop (`turn`: retry a pending summary-row write after row
+  creation, put the letter back if Antigravity auto-titled the chat during the turn, and report touched issues).  A later
+  model call of the same prompt has nothing to do, and `scripts/platform-letter` answers `{}` for it from the payload text
+  before it starts the Python 3.11 re-run or imports the library (`normalize` below turns the same payload away if that
+  quick check lets it through).  Such a call costs a process start and a read of standard input, where the import alone
+  costs 30 to 60 ms more, and a tool loop makes dozens of them.  Nothing is closed on an end: a closed conversation can be
+  resumed, and the library's 36 hour sweep frees the letters of idle ones.
 - The answer that works is `{"injectSteps": [{"systemMessage": {"systemMessage": "<text>"}}]}`: agy stores it as a
   step of the conversation ("The following system message was injected by a SessionStart hook"), so the model has it
   for the rest of the conversation.  The documented `metadata.user_markdown` does not work in agy 1.4.10: given an
@@ -56,7 +62,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -70,7 +78,7 @@ DISPLAY = "Antigravity"
 ENV_CONVERSATION = "ANTIGRAVITY_CONVERSATION_ID"
 HOOKS_FILE = os.path.join(".gemini", "config", "hooks.json")
 GROUP = "session-letter"
-HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15}
+HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15, "Stop": 15}
 STORE_PRODUCTS = ("antigravity-cli", "antigravity")
 
 STORE_WAIT = 0.5  # seconds to wait for a locked summaries database before reading nothing
@@ -81,13 +89,16 @@ PROCESS_HOPS = (
 )
 AGY_NAMES = ("agy",)
 
-# Fields that only the events this adapter ignores carry: PostInvocation, Stop and the tool events.
-OTHER_EVENT_FIELDS = (
-    "modelOutput",
-    "modelThinking",
+# Fields that only Stop carries (the end of a turn).
+STOP_EVENT_FIELDS = (
     "executionNum",
     "terminationReason",
     "fullyIdle",
+)
+# Fields that only the events this adapter ignores carry: PostInvocation and the tool events.
+OTHER_EVENT_FIELDS = (
+    "modelOutput",
+    "modelThinking",
     "toolCall",
     "stepIdx",
 )
@@ -107,14 +118,17 @@ def _text(value: object) -> str:
 def normalize(data: Mapping[str, Any]) -> dict[str, Any] | None:
     """The library's view of an agy hook payload, or None for a payload this adapter does not act on.
 
-    agy names no event, so it is told from the fields: a payload with `initialNumSteps` or `invocationNum` is
-    PreInvocation, and only its first model call (`invocationNum` 0, or absent where an encoder leaves a zero out)
-    is a prompt; a payload with a field of another event (Stop, PostInvocation, a tool) is none of ours; a payload
-    with only the common fields is SessionStart."""
+    agy names no event, so it is told from the fields: a payload with `executionNum`, `terminationReason` or
+    `fullyIdle` is Stop; a payload with `initialNumSteps` or `invocationNum` is PreInvocation, and only its first
+    model call (`invocationNum` 0, or absent where an encoder leaves a zero out) is a prompt; a payload with a
+    field of another event (PostInvocation, a tool) is none of ours; a payload with only the common fields is
+    SessionStart."""
     cid = _text(data.get("conversationId"))
     if not cid or any(key in data for key in OTHER_EVENT_FIELDS):
         return None
-    if "invocationNum" in data or "initialNumSteps" in data:
+    if any(key in data for key in STOP_EVENT_FIELDS):
+        event = "Stop"
+    elif "invocationNum" in data or "initialNumSteps" in data:
         number = data.get("invocationNum") or 0
         if isinstance(number, bool) or not isinstance(number, int) or number != 0:
             return None  # a later model call of the same prompt
@@ -198,32 +212,32 @@ def antigravity_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def summaries_db(payload: Mapping[str, Any]) -> str:
+def _home(env: Mapping[str, str] | None = None) -> str:
+    return _text((env if env is not None else os.environ).get("HOME")) or os.path.expanduser("~")
+
+
+def summaries_db(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
     """The summaries database of the product that runs the conversation, from its artifact directory
     (`<product root>/brain/<id>`), or "" when the payload does not say or the product keeps none (the IDE)."""
-    art = _text(payload.get("artifactDirectoryPath"))
-    brain = os.path.dirname(art)
-    if not art or os.path.basename(brain) != "brain":
-        return ""
-    root = os.path.dirname(brain)
-    if not os.path.basename(root).startswith("antigravity"):
+    root = _direct_root(payload, env)
+    if not root:
         return ""
     path = os.path.join(root, "conversation_summaries.db")
-    return path if os.path.isfile(path) else ""
+    return path if os.path.isfile(path) and not os.path.islink(path) else ""
 
 
 def candidate_dbs(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> list[str]:
     """The summaries databases to consult for `payload`: the one its `artifactDirectoryPath` names first, then the
     host's `~/.gemini/antigravity-cli` and `~/.gemini/antigravity` stores when `HOME` is set."""
     found: list[str] = []
-    direct = summaries_db(payload)
+    direct = summaries_db(payload, env)
     if direct:
         found.append(direct)
-    home = _text((env or {}).get("HOME"))
+    home = _home(env)
     if home:
         for product in STORE_PRODUCTS:
             cand = os.path.join(home, ".gemini", product, "conversation_summaries.db")
-            if cand not in found and os.path.isfile(cand):
+            if cand not in found and os.path.isfile(cand) and not os.path.islink(cand):
                 found.append(cand)
     return found
 
@@ -267,10 +281,14 @@ def antigravity_chat_payload(sid: str) -> Mapping[str, Any]:
 
 def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
     """The conversation's title as agy shows it in `/resume` (its own, or the one it generated), "" when unknown.
-    The database is opened read only and never written: a hook runs inside a CLI that owns it."""
+
+    When the primary title carries an Operator letter prefix (`XX: `), verifies that every targeted store that knows
+    `cid` agrees on the title, so partial multi-store write failures continue retrying until all stores converge.  The
+    database is opened read only and never written: a hook runs inside a CLI that owns it."""
     cid = _text(payload.get("conversationId")) or _text(payload.get("session_id"))
     if not cid:
         return ""
+    first_title = ""
     for db in candidate_dbs(payload, env):
         try:
             conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
@@ -283,30 +301,142 @@ def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = Non
         except (sqlite3.Error, OSError, ValueError):
             continue
         if row and isinstance(row[0], str) and PL.tidy(row[0]):
-            return PL.tidy(row[0])
-    return ""
+            first_title = PL.tidy(row[0])
+            break
+    if not first_title:
+        return ""
+    if PL.LETTER_PREFIX.match(first_title):
+        for r in candidate_roots(payload, env):
+            if _root_knows_conversation(r, cid):
+                db = os.path.join(r, "conversation_summaries.db")
+                if os.path.isfile(db):
+                    try:
+                        conn = sqlite3.connect(
+                            "%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT
+                        )
+                        try:
+                            row = conn.execute(
+                                "SELECT title FROM conversation_summaries WHERE conversation_id = ?",
+                                (cid,),
+                            ).fetchone()
+                        finally:
+                            conn.close()
+                    except (sqlite3.Error, OSError, ValueError):
+                        return ""
+                    if row is None or PL.tidy(row[0]) != first_title:
+                        return ""
+    return first_title
 
 
-_TITLE_PBTXT_RE = re.compile(r'title:\s*"(?:\\.|[^"\\])*"')
+_TITLE_PBTXT_RE = re.compile(r'(?<![A-Za-z0-9_.-])title:\s*"(?:\\.|[^"\\])*"')
 _SAFE_CID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _direct_root(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
+    """The Antigravity product root named by `artifactDirectoryPath` (`<root>/brain/<id>`), when it exists.
+
+    Confines `<root>` safely under `HOME/.gemini/antigravity*` and rejects symlinks to prevent path traversal."""
+    art = _text(payload.get("artifactDirectoryPath"))
+    if not art or not os.path.isabs(art) or os.path.islink(art):
+        return ""
+    brain = os.path.dirname(art)
+    if not brain or os.path.basename(brain) != "brain" or os.path.islink(brain):
+        return ""
+    root = os.path.dirname(brain)
+    if not root or os.path.islink(root) or not os.path.isdir(root):
+        return ""
+    home = _home(env)
+    if not home:
+        return ""
+    gemini = os.path.join(home, ".gemini")
+    if os.path.islink(gemini) or not os.path.isdir(gemini):
+        return ""
+    base = os.path.realpath(gemini)
+    real = os.path.realpath(root)
+    if not os.path.basename(real).startswith("antigravity"):
+        return ""
+    if os.path.dirname(real) != base:
+        return ""
+    try:
+        if os.path.commonpath([real, base]) != base:
+            return ""
+    except ValueError:
+        return ""
+    return root
 
 
 def candidate_roots(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> list[str]:
     """The Antigravity product roots (`<root>/brain/<id>` first, then `~/.gemini/<product>`) that exist on disk."""
     roots: list[str] = []
-    art = _text(payload.get("artifactDirectoryPath"))
-    brain = os.path.dirname(art)
-    if art and os.path.basename(brain) == "brain":
-        root = os.path.dirname(brain)
-        if os.path.basename(root).startswith("antigravity") and os.path.isdir(root):
-            roots.append(root)
-    home = _text((env or {}).get("HOME"))
+    direct = _direct_root(payload, env)
+    if direct:
+        roots.append(direct)
+    home = _home(env)
     if home:
         for product in STORE_PRODUCTS:
             cand = os.path.join(home, ".gemini", product)
-            if cand not in roots and os.path.isdir(cand):
+            if cand not in roots and os.path.isdir(cand) and not os.path.islink(cand):
                 roots.append(cand)
     return roots
+
+
+def _root_knows_conversation(root: str, cid: str) -> bool:
+    """True when `root` already holds metadata or a summary row for `cid`."""
+    if (
+        os.path.isfile(os.path.join(root, "annotations", "%s.pbtxt" % cid))
+        or os.path.isdir(os.path.join(root, "brain", cid))
+        or os.path.isfile(os.path.join(root, "conversations", "%s.db" % cid))
+        or os.path.isfile(os.path.join(root, "conversations", "%s.pb" % cid))
+    ):
+        return True
+    db = os.path.join(root, "conversation_summaries.db")
+    if not os.path.isfile(db):
+        return False
+    try:
+        conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+                (cid,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return False
+
+
+def _update_summary_title(db: str, cid: str, title: str) -> bool:
+    """Update `title` (and `preview` when present) for `cid` in `conversation_summaries.db`.
+
+    Uses a single non-blocking attempt (`timeout=0`), returning True only when a row actually matched
+    (`rowcount > 0`).  Lock contention returns False immediately so the hook never stalls, and `Stop` retries."""
+    try:
+        conn = sqlite3.connect(db, timeout=0)
+        try:
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+            }
+            if "conversation_id" not in cols or "title" not in cols:
+                return False
+            with conn:
+                if "preview" in cols:
+                    cur = conn.execute(
+                        "UPDATE conversation_summaries SET title = ?, preview = ?"
+                        " WHERE conversation_id = ?",
+                        (title, title, cid),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
+                        (title, cid),
+                    )
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
 
 
 def _write_annotation_title(root: str, cid: str, title: str) -> bool:
@@ -349,31 +479,130 @@ def _write_annotation_title(root: str, cid: str, title: str) -> bool:
 
 def antigravity_rename(request: PL.TitleRequest) -> bool:
     """Put the lettered title (`XX: Words`) on the conversation in `<root>/annotations/<cid>.pbtxt` and
-    `<root>/conversation_summaries.db` so Antigravity's `AnnotationsManager` and `/resume` picker keep it."""
+    `<root>/conversation_summaries.db` so Antigravity's `AnnotationsManager` and `/resume` picker keep it.
+
+    Targets the conversation's own product root (`artifactDirectoryPath`) plus any other product root that already
+    holds metadata for `cid`, avoiding orphan `.pbtxt` files in unrelated stores.  When a targeted store has
+    `conversation_summaries.db`, returns True only if the annotation write AND a matching summary-row UPDATE
+    (`rowcount > 0`) succeeded, so a start/prompt that raced row creation stays pending until `Stop` retries it."""
     cid = _text(request.session_id)
     title = PL.tidy(request.title)
     if not cid or not title or not _SAFE_CID_RE.fullmatch(cid):
         return False
-    wrote = False
-    for root in candidate_roots(request.data, request.env):
-        if _write_annotation_title(root, cid, title):
-            wrote = True
+    roots = candidate_roots(request.data, request.env)
+    if not roots:
+        return False
+    direct = _direct_root(request.data, request.env)
+    if direct:
+        target_roots = [direct] + [
+            r for r in roots if r != direct and _root_knows_conversation(r, cid)
+        ]
+    else:
+        known = [r for r in roots if _root_knows_conversation(r, cid)]
+        target_roots = known or roots
+    all_ok = bool(target_roots)
+    for root in target_roots:
+        ann_ok = _write_annotation_title(root, cid, title)
+        root_ok = ann_ok
         db = os.path.join(root, "conversation_summaries.db")
         if os.path.isfile(db):
+            root_ok = _update_summary_title(db, cid, title) and root_ok
+        all_ok = all_ok and root_ok
+    return all_ok
+
+
+# The repair pass (`platform_letter.repair_unlettered`) asks for the conversations still showing the "??: "
+# placeholder:  at most this many, only ones whose last change is old enough that their own start hook has finished
+# (a brand-new "??" can be its start in flight), never a killed one, and none untouched for over a week.
+UNLETTERED_SCAN = 20
+UNLETTERED_ROWS = (
+    200  # the rows one store read takes, newest first, before the age window is applied
+)
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def _stored_time(value: object) -> float | None:
+    """A store timestamp in seconds, or None:  the ISO strings `last_modified_time` holds
+    ("2026-11-12 02:02:54.017305+00:00"), or the numbers `updated_at`/`created_at` hold
+    (seconds, or milliseconds past 1e12), as the catalog's reader treats them."""
+    if isinstance(value, bool) or not value:
+        return None
+    if isinstance(value, (int, float)):
+        stamp = float(value)
+        if stamp > 1e12:
+            stamp /= 1000.0
+        return stamp if stamp > 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        when = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return when.timestamp()
+
+
+def antigravity_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's conversations whose title still carries the "??: " placeholder, newest first, for the repair a
+    conversation's start sets off (`platform_letter.repair_after_start`).  Read from each summaries database the
+    host keeps (`candidate_dbs`), read only with a short wait for a lock;  a store that cannot be read, or a time
+    that cannot be parsed, leaves its conversations out, and no store at all answers None.  Each conversation's
+    title is read again in its own replayed start before anything changes."""
+    dbs = candidate_dbs({}, env)
+    if not dbs:
+        return None
+    now = time.time()
+    found: list[tuple[float, str]] = []
+    for db in dbs:
+        try:
+            conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
             try:
-                conn = sqlite3.connect(db, timeout=STORE_WAIT)
-                try:
-                    with conn:
-                        conn.execute(
-                            "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
-                            (title, cid),
-                        )
-                    wrote = True
-                finally:
-                    conn.close()
-            except (sqlite3.Error, OSError):
-                pass
-    return wrote
+                # The stores this host keeps do not all share one schema (the catalog's own
+                # reader of this table discovers its columns for the same reason):  a store
+                # without the columns one query names would raise and answer no sessions
+                # from that store at all (Kody, PR 2307).
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "conversation_id" not in cols:
+                    continue
+                time_col = next(
+                    (
+                        name
+                        for name in ("last_modified_time", "updated_at", "created_at")
+                        if name in cols
+                    ),
+                    "",
+                )
+                if not time_col:
+                    continue
+                killed_where = " AND killed = 0" if "killed" in cols else ""
+                rows = conn.execute(
+                    f"SELECT conversation_id, {time_col} FROM conversation_summaries"
+                    f" WHERE title LIKE '??: %'{killed_where}"
+                    f" ORDER BY {time_col} DESC LIMIT ?",
+                    (UNLETTERED_ROWS,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, ValueError):
+            continue
+        for cid, modified in rows:
+            when = _stored_time(modified)
+            if not isinstance(cid, str) or not _SAFE_CID_RE.fullmatch(cid) or when is None:
+                continue
+            if UNLETTERED_MIN_AGE_SECONDS <= now - when <= UNLETTERED_MAX_AGE_SECONDS:
+                found.append((when, cid))
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, cid in sorted(found, reverse=True):
+        if cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out[:UNLETTERED_SCAN]
 
 
 SPEC = PL.PlatformSpec(
@@ -388,9 +617,11 @@ SPEC = PL.PlatformSpec(
     kind=antigravity_kind,
     current_title=stored_title,
     stored_title=stored_title,
-    events={"SessionStart": "start", "PreInvocation": "prompt"},
+    events={"SessionStart": "start", "PreInvocation": "prompt", "Stop": "turn"},
     close_reasons=(),
+    quiet_events=("Stop",),
     chat_payload=antigravity_chat_payload,
+    unlettered_sessions=antigravity_unlettered_sessions,
     title_writer=antigravity_rename,
     output="json",
     locations=("mac", "server"),
@@ -413,7 +644,7 @@ def _note(env: Mapping[str, str], sid: str) -> dict[str, Any]:
 
 def message_for(body: Mapping[str, Any], env: Mapping[str, str], sid: str) -> str:
     """The text of the injected step for one library answer.  A letter is told with what is true of Antigravity: the
-    chat is addressed by it, and its title does not carry it.  Any other line (no letter yet, another seat's) is
+    chat is addressed by it, and its title starts with the letter.  Any other line (no letter yet, another seat's) is
     the library's own."""
     context = _text(body.get("context"))  # not `tidy`: the library's sentence gaps stay as they are
     label = _text(body.get("label"))
@@ -494,7 +725,7 @@ def hook_main(
 
 
 def entry(command: str, timeout: int, event: str) -> dict[str, Any]:
-    """One handler in agy's shape: SessionStart and PreInvocation take a flat list of handlers, with no matcher."""
+    """One handler in agy's shape: SessionStart, PreInvocation and Stop take a flat list of handlers, with no matcher."""
     return {"type": "command", "command": command, "timeout": timeout}
 
 

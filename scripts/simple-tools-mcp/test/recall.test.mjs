@@ -490,10 +490,28 @@ test("argument checks run before any request", async () => {
 
 test("a contribution that looks like it holds a secret is refused before any request", async () => {
   const { tools, upstream } = harness();
-  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON}  token = abcdefghijklmnopqrstuvwxyz012345`, category: "lesson" }), "refused_secret");
+  // A key-shaped value, assembled at run time from synthetic parts:  a literal like that in
+  // the source is a committed secret to every scanner.  It is never a credential.
+  const syntheticValue = "abcdefghijklmnopqrstuvwxyz" + "012345";
+  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON}  ${"token"} = ${syntheticValue}`, category: "lesson" }), "refused_secret");
   assert.match(error.message, /text/);
   toolError(await tools.call("recall_contribute", { text: LESSON, category: "lesson", title: "ghp_" + "a".repeat(36) }), "refused_secret");
   assert.equal(upstream.requests.length, 0);
+});
+
+test("a search query that looks like it holds a secret is refused before any request", async () => {
+  const { tools, upstream } = harness();
+  const syntheticGithubToken = ["ghp", "a".repeat(36)].join("_"); // Synthetic scanner fixture, never a credential.
+  const query = toolError(await tools.call("recall_search", { query: `deploy notes ${syntheticGithubToken}` }), "refused_secret");
+  assert.match(query.message, /query/);
+  assert.doesNotMatch(query.message, new RegExp(syntheticGithubToken));
+  // The refusal lands before the quota reservation too:  nothing was sent and nothing reserved.
+  assert.equal(upstream.requests.length, 0);
+  // app and category cannot carry a secret past the schema, but the handler still
+  // scans every field it forwards (defense in depth for a future schema change).
+  toolError(await tools.call("recall_search", { query: "safe topic", app: "Bad_App" }), "invalid_argument");
+  // A clean search on the same shape still works.
+  ok(await tools.call("recall_search", { query: "deploy notes", app: "afc", category: "lesson" }), "recall_search");
 });
 
 // ---------------------------------------------------------------- upstream errors

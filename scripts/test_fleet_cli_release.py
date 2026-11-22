@@ -232,6 +232,7 @@ class ReleaseTests(unittest.TestCase):
                 "doctor",
                 "public_fallback",
                 "contribute_guard",
+                "fleet_bearer",
             ],
         )
         while queue:
@@ -285,6 +286,12 @@ class ReleaseTests(unittest.TestCase):
     def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
         self.assertIn("scripts/fleet_infisical.py", release.TOOL_REQUIRED)
         self.assertNotIn("scripts/fleet_infisical.py", release.BASE_REQUIRED)
+        bundle = make_bundle()
+        bundle["files"].pop("scripts/fleet_infisical.py")
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(bundle).encode())
+        # The retired reader and its installer ship in no bundle at all.
         ledger = "scripts/simple_tools/operator_github_state.py"
         self.assertIn(ledger, release.TOOL_REQUIRED)
         self.assertNotIn(ledger, release.BASE_REQUIRED)
@@ -293,20 +300,12 @@ class ReleaseTests(unittest.TestCase):
         bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(bundle).encode())
-        for name in ("__init__", "core"):
-            path = "scripts/fleet_secrets/%s.py" % name
-            self.assertTrue(release.allowed_path(path), path)
-            self.assertIn(path, release.TOOL_REQUIRED)
-            self.assertNotIn(path, release.BASE_REQUIRED)
-            bundle = make_bundle()
-            bundle["files"].pop(path)
-            bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
-            with self.assertRaisesRegex(release.Refused, "bad_file_set"):
-                release.decode_bundle(json.dumps(bundle).encode())
         for path in (
             "scripts/fleet-secrets",
             "scripts/fleet_secrets/cli.py",
             "scripts/fleet_secrets/__main__.py",
+            "scripts/fleet_secrets/__init__.py",
+            "scripts/fleet_secrets/core.py",
             "scripts/fleet_secrets/linux-entrypoint.py",
             "scripts/fleet_secrets/tests/test_scoped_tokens.py",
             "scripts/install-fleet-secrets.sh",
@@ -1210,6 +1209,78 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             self.receive()
         self.assertFalse(self.base.exists())
+
+    def test_declared_reader_is_required_before_a_new_bundle_writes_any_files(self):
+        path = "scripts/infisical-scoped.py"
+        self.assertIn(path, release.EXACT)
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.assertTrue(release.shipped_path(path))
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            self.receive()
+        self.assertFalse(self.base.exists())
+
+    def test_actual_declared_reader_imports_from_the_staged_normal_payload_in_isolated_python(self):
+        root = Path(__file__).resolve().parent.parent
+        bundle = make_bundle()
+        actual = {}
+        for path in ("scripts/infisical-scoped.py", "scripts/fleet_infisical.py"):
+            data = (root / path).read_bytes()
+            actual[path] = data
+            bundle["files"][path] = {
+                "mode": 0o644,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "data": base64.b64encode(data).decode(),
+            }
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        smoke = release.smoke
+
+        def verify_staged_payload(stage, empty_home):
+            self.assertTrue(stage.name.startswith(".stage-"))
+            for path, data in actual.items():
+                self.assertEqual((stage / path).read_bytes(), data)
+            smoke(stage, empty_home)
+            # A foreign working directory and Python path cannot supply the client.
+            (empty_home / "fleet_infisical.py").write_text(
+                "raise AssertionError('foreign client imported')\n"
+            )
+            env = {"HOME": str(empty_home), "PATH": os.defpath, "PYTHONPATH": str(empty_home)}
+            for args in (("--help",), ("get", "--help")):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", str(stage / "scripts/infisical-scoped.py"), *args],
+                    cwd=empty_home,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=12,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIn("usage: infisical-scoped.py", result.stdout)
+                if args[0] == "get":
+                    self.assertIn("--consumer-binding", result.stdout)
+                    self.assertIn("--consumer", result.stdout)
+
+        with mock.patch.object(release, "smoke", side_effect=verify_staged_payload) as staged:
+            self.assertEqual(self.receive(bundle)["status"], "activated")
+        staged.assert_called_once()
+
+    def test_retained_release_without_declared_reader_remains_a_rollback_target(self):
+        path = "scripts/infisical-scoped.py"
+        old = make_bundle("before-declared-reader")
+        old["files"].pop(path)
+        old["bundle_sha256"] = release.manifest_digest(old["files"])
+        with mock.patch.object(release, "REQUIRED", release.REQUIRED - {path}):
+            self.receive(old)
+        self.receive(make_bundle("with-declared-reader"), install=False)
+        retained = self.base / "releases" / old["bundle_sha256"]
+        self.assertFalse((retained / path).exists())
+        self.assertEqual(release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(
+            release.control(self.home, "rollback")["bundle_sha256"], old["bundle_sha256"]
+        )
 
     def test_retained_release_without_consumer_bootstrap_remains_a_rollback_target(self):
         path = "scripts/fleet_infisical_bootstrap.py"

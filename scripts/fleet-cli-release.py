@@ -48,8 +48,6 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # dispatches for Muster's Seats panel.
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
 # The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
-# The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
-# unit template stays repo-only under simple_tools/server/).
 # The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
 # env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
@@ -68,6 +66,8 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# The 173rd is simple_tools/opencode_wake.py (AFC-865, the OpenCode seat's wake delivery:  the one wake
+# router serves it like every other seat with a platform module).
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
@@ -90,6 +90,7 @@ RECALL_MODULES = (
     "contribute_guard",
     "core",
     "doctor",
+    "fleet_bearer",
     "health",
     "infisical_settings",
     "public_fallback",
@@ -103,7 +104,6 @@ RECALL_MODULES = (
 # `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
-SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
@@ -132,9 +132,11 @@ EXACT = frozenset(
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
         "scripts/simple_tools/operator_github_state.py",
+        "scripts/service_zulip.py",
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
@@ -152,7 +154,6 @@ EXACT = frozenset(
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
         "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
@@ -165,11 +166,10 @@ EXACT = frozenset(
         # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
         # writer that owns the service-account auth, shipped as a data file beside the Python modules.
         "scripts/simple_tools/thread_registry_export.mjs",
+        "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
-        "scripts/zc-wake-bridge",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }
@@ -204,6 +204,7 @@ REPO_ONLY = frozenset(
         # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
         # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
         "scripts/simple_tools/thread_registry_export.test.mjs",
+        "scripts/simple_tools/registry_export_reader.test.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -255,10 +256,10 @@ TOOL_REQUIRED = frozenset(
         # Shared scoped client and direct command used by knobs, recall and other consumers.
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        "scripts/infisical-scoped.py",
         # Shared protected-custody helper for declared readers and interactive launchers.
         "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/simple_tools/mcp/fleetlink-tools.json",
@@ -270,6 +271,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/post_header.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
+        # Imported by the thread exporter; older rollback targets retain their original seam.
+        "scripts/simple_tools/registry_export_reader.mjs",
         "scripts/simple_tools/peer_actions.py",
         "scripts/simple_tools/peer_actions_cli.py",
         "scripts/simple_tools/fleet_bearer.py",

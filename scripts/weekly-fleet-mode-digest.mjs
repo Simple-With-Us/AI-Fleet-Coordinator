@@ -35,8 +35,8 @@
 //   simple-chat post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
-// value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
-// the old flat secrets file is retired, AFC-359).  Neither value is
+// value-blind from environment first, then the canonical isolated Infisical command;
+// The old flat secrets file is retired (AFC-359).  Neither value is
 // ever printed, logged, or included in the composed message.
 //
 // Install the LaunchAgent (every Monday 8:00 AM Central, matches system tz):
@@ -45,9 +45,8 @@
 // Uninstall:
 //   launchctl bootout gui/$(id -u)/com.jays.weekly-fleet-mode-digest
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const UM_BASE_URL =
@@ -109,31 +108,27 @@ function log(message) {
 
 // ------------------------------------------------------------- secrets ---
 
-/** The `fleet-secrets` command:  the LaunchAgent's PATH is minimal, so ~/.local/bin is tried
- *  explicitly before the bare name. */
-const FLEET_SECRETS_BINS = [join(homedir(), ".local", "bin", "fleet-secrets"), "fleet-secrets"];
+// The tracked LaunchAgent includes /usr/bin; use its system interpreter explicitly.
+const INFISICAL_PYTHON = "/usr/bin/python3";
+const INFISICAL_COMMAND = fileURLToPath(new URL("./fleet_infisical_cli.py", import.meta.url));
 
-/** Value-blind secret load: env var first, then `fleet-secrets get NAME`.
+/** Value-blind secret load: env var first, then the canonical isolated command.
  *  Never printed, logged, or returned in any user-facing string. */
 function resolveSecret(envVarNames) {
   for (const name of envVarNames) {
     const val = process.env[name]?.trim();
     if (val) return val;
   }
-  for (const bin of FLEET_SECRETS_BINS) {
-    if (bin.includes("/") && !existsSync(bin)) continue;
-    for (const name of envVarNames) {
-      // stdout is captured, never echoed;  stderr is discarded.
-      const run = spawnSync(bin, ["get", name], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 60_000,
-      });
-      if (!run.error && run.status === 0 && run.stdout?.trim()) {
-        return run.stdout.trim();
-      }
+  for (const name of envVarNames) {
+    // stdout is captured, never echoed; stderr is discarded.
+    const run = spawnSync(INFISICAL_PYTHON, ["-I", INFISICAL_COMMAND, "get", name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 60_000,
+    });
+    if (!run.error && run.status === 0 && run.stdout?.trim()) {
+      return run.stdout.trim();
     }
-    // A missing/failed command -- treated as "no secret available".
   }
   return null;
 }
@@ -185,7 +180,11 @@ function hostOf(url) {
 async function fetchUsageMonitorMix() {
   const token = resolveSecret(["USAGE_READ_TOKEN"]);
   if (!token) {
-    return { available: false, data: null, error: "USAGE_READ_TOKEN not found" };
+    return {
+      available: false,
+      data: null,
+      error: "USAGE_READ_TOKEN not found",
+    };
   }
   try {
     const data = await fetchJson(UM_MIX_URL, { authorization: `Bearer ${token}` });

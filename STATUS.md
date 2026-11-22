@@ -1,5 +1,11 @@
 # Status
 
+## 2026-11-21 CODEX — Operator Sheets Drain Uses A Stable Flock Lease (AFC-859)
+
+The drain and manual CLI now hold a kernel `flock` on one persistent owner-only lock inode, preserving the live-PID fence for old runners and refusing unsafe lock metadata.  The drain and thread-export CLI suites pass 82/82, including cross-process exclusion, ambiguous empty inodes, crash release, inode stability, malformed-content preservation and helper failure bounds.  Rollout remains pending: old PID-only runners must be quiescent, and both Sheets source units must be installed together through the approved code-only path.  This change does not modify the live runtime or arming.
+
+Rollout: `docs/rollouts/2026-11-21-afc-859-sheets-lease.md`.
+
 ## 2026-11-16 — fleet-health-recover probes /api/live and waits for ST strategy runs ([ST-4635](https://linear.app/simple-with-us/issue/ST-4635))
 
 `fleet-health-recover@socratic-app` now probes `/api/live` instead of `/api/health`, with the same 12s limit and the same 2-failure threshold.  A new opt-in run guard (`RUN_GUARD_DB`) defers a due restart while a strategy run or an unexpired run lease is in the DB, for at most 15 minutes, then restarts as before.  `usage-monitor` is unchanged.  The host was applied 2026-11-16 6:30pm CT, with backups under `/root/backups/fleet-health-recover-st4635-20261117T003012Z/`.  Rollout: `docs/rollouts/2026-11-16-fleet-health-recover-live-run-guard.md`.
@@ -10,7 +16,7 @@ One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lan
 
 ## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
 
-Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  (That reader was retired on Nov 17, 2026:  the CLI and its installer are gone, and the route is now a scoped Infisical service token.)  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
 
 ## 2026-11-01 MC — Muster Fleet Overhaul Sweep
 

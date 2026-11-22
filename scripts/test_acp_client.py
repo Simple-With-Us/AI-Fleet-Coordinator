@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Unit tests for grok-acp permission auto-approve and ACP terminals.  No live serve."""
+
 from __future__ import annotations
 
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from scripts.test_session_disk import RuntimeInfisicalFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 ACP = ROOT / "scripts" / "grok-acp-runtime"
@@ -19,7 +24,11 @@ def _load():
     spec = importlib.util.spec_from_file_location("acp_client_under_test", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["acp_client_under_test"] = mod
-    spec.loader.exec_module(mod)
+    if importlib.util.find_spec("websockets") is None:
+        with mock.patch.dict(sys.modules, {"websockets": types.SimpleNamespace()}):
+            spec.loader.exec_module(mod)
+    else:
+        spec.loader.exec_module(mod)
     return mod
 
 
@@ -27,6 +36,70 @@ MOD = _load()
 
 
 class PermissionTests(unittest.TestCase):
+    def test_a_host_without_the_grant_uses_its_own_binding(self):
+        # This host holds no grok-acp-ro grant,  so the value the host binds is a copy of
+        # the same scoped read:  it is used,  and nothing else is consulted.
+        with (
+            mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}),
+            mock.patch("fleet_infisical.fetch_scoped", return_value=("", "no-token")),
+            mock.patch.object(MOD.subprocess, "run") as run,
+        ):
+            self.assertEqual(MOD.load_secret(), "env-secret")
+        run.assert_not_called()
+
+    def test_the_store_grant_wins_over_an_inherited_value(self):
+        # The reviewed path is first:  an inherited value never replaces the grant.
+        with (
+            mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}),
+            mock.patch("fleet_infisical.fetch_scoped", return_value=("store-secret", "ok")),
+        ):
+            self.assertEqual(MOD.load_secret(), "store-secret")
+
+    def test_secret_uses_this_runtimes_own_scoped_grant_and_not_the_ambient_binding(self):
+        # The runtime's own grant comes from its own store,  and the general ambient
+        # binding names a different folder's grant:  a read under it is refused,  so
+        # this also proves which credential the read runs under.
+        with RuntimeInfisicalFixture() as provider, tempfile.TemporaryDirectory() as home:
+            env = {
+                "HOME": home,
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": "/hostile",
+                "FLEET_SECRETS_API": provider.url,
+                "INFISICAL_TOKEN": "st."
+                + "test-only-seat-key",  # assembled: a fixture, never a credential,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                "INFISICAL_ENVIRONMENT": "prod",
+            }
+            with (
+                mock.patch.dict("os.environ", env, clear=True),
+                mock.patch(
+                    "fleet_infisical.token_from_store",
+                    return_value=(
+                        "st." + "test-only-grok-key",
+                        "ok",
+                    ),  # assembled: a fixture, never a credential,
+                ),
+            ):
+                self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
+        self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
+        self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
+
+    def test_a_store_with_no_grant_fails_closed(self):
+        with RuntimeInfisicalFixture() as provider, tempfile.TemporaryDirectory() as home:
+            env = {
+                "HOME": home,
+                "PATH": "/usr/bin:/bin",
+                "FLEET_SECRETS_API": provider.url,
+                "INFISICAL_TOKEN": "st."
+                + "test-only-grok-key",  # assembled: a fixture, never a credential,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                "INFISICAL_ENVIRONMENT": "prod",
+            }
+            with mock.patch.dict("os.environ", env, clear=True):
+                with mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token")):
+                    with self.assertRaises(SystemExit):
+                        MOD.load_secret()
+
     def test_prefers_allow_always(self):
         params = {
             "options": [
@@ -74,7 +147,9 @@ class RpcShapeTests(unittest.TestCase):
 class TerminalTests(unittest.TestCase):
     def test_echo_roundtrip(self):
         hub = MOD.TerminalHub()
-        created = hub.create({"command": "printf", "args": ["perm-ok\n"], "cwd": tempfile.gettempdir()})
+        created = hub.create(
+            {"command": "printf", "args": ["perm-ok\n"], "cwd": tempfile.gettempdir()}
+        )
         tid = created["terminalId"]
         self.assertTrue(tid)
         waited = hub.wait_sync({"terminalId": tid})

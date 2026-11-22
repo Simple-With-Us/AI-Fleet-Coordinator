@@ -3,8 +3,9 @@
 
 Any message in a PUBLIC Zulip stream whose TOPIC TITLE or BODY names a Linear issue ID (AFC-123
 and the other team keys) is mirrored onto that issue as ONE comment per (issue, topic), written by
-a dedicated Linear app identity.  Later hits in the same topic edit that comment in place (a list
-of permalinks), at most once per EDIT_INTERVAL seconds per comment.  Once a topic has a standing
+a dedicated Linear app identity.  Later hits in the same topic edit that comment in place (every
+post of the topic, each under its permalink), at most once per EDIT_INTERVAL seconds per
+comment.  Once a topic has a standing
 comment, every later message in the topic joins it, key or not (the whole-topic scope the owner
 ruled on 2026-11-03, with the backfill in operator_linear.py's hosting).  Direct messages and private
 streams are never relayed: the relay bot is a plain member that only joins public streams, and the
@@ -15,6 +16,17 @@ Owner decisions (Jay, 2026-10-21 and 2026-10-23): human and bot posts both count
 record; no #issues stream; comments are NOT posted as the Wise app but as a new dedicated relay
 app; one updating comment per (issue, topic) with 10 minute batching; DMs and private streams are
 excluded.
+
+The comment carries the whole post, as readable text (AFC-847).  A Zulip message is converted
+to Markdown (scripts/simple_tools/zulip_markdown.py:  Zulip's rendered HTML and its Markdown
+source both become Markdown) and shown with the line structure it was sent with, up to
+MESSAGE_CHARS characters a message and COMMENT_CHARS characters a comment.  A cut is always
+said in the comment itself:  "N characters of this message are not shown" and "N characters of
+this topic are not shown".  The credential scan runs over the converted text and not over the
+markup, so a Zulip attribute cannot trip it by itself;  a link's URL stays in the text, so a
+credential inside one is still caught.  A comment an older build wrote holds quotes that were
+cut at 280 characters:  its quotes are read from Zulip again and the comment is edited with the
+whole posts (the repair, in _refresh).
 
 What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
 
@@ -125,6 +137,7 @@ import fcntl
 import hashlib
 import heapq
 import http.client
+import inspect
 import json
 import math
 import os
@@ -137,7 +150,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import secretscan
+from . import secretscan, zulip_markdown
 from .zulip import (
     ApiError,
     CredentialError,
@@ -181,7 +194,32 @@ MAX_SHORT_READS = 3  # reads in a row that bring nothing past where they began, 
 # characters, so a field past this bound is not one Zulip sent as it is.
 MAX_HISTORY_FIELD_BYTES = 64 * 1024
 MAX_ISSUES_PER_MESSAGE = 5
-QUOTE_CHARS = 280
+# The text of one message in the comment:  a post is shown whole, up to this many
+# characters.  Zulip itself refuses a message over 10,000 characters, so this bound cuts
+# no post Zulip sends, and the guard stays for a host that delivers more.
+MESSAGE_CHARS = 10000
+# The whole comment body.  The messages that do not fit in it are left out, and the
+# comment says how many characters of the topic they were.  It is well inside what
+# Linear takes for one comment.
+COMMENT_CHARS = 50000
+# The text one ledger entry holds.  It is a little more than a comment shows, so the
+# comment's own bound is what the reader sees, and the ledger does not hold text no
+# comment can show.
+MAX_ENTRY_TEXT = 60000
+# A label (the stream, the topic, the sender):  a name, not a post.
+LABEL_CHARS = 280
+# The render format of an entry's quotes.  An entry written by an older build carries no
+# version, and its quotes are read from Zulip again before its comment is edited.
+RENDER_VERSION = 2
+# How many standing comments are re-rendered from Zulip in one cycle, and how long an
+# entry whose topic could not be read waits before it is tried again.
+REFRESH_PER_CYCLE = 1
+# The pages a repair read goes through, so it reaches the messages of a busy topic
+# (Jet, PR 2340).
+MAX_REPAIR_PAGES = 8
+# The seconds one repair read takes, every page of it included (Kody, PR 2340).
+REPAIR_READ_BUDGET = 30.0
+REFRESH_RETRY = 900.0
 LINEAR_URL = "https://api.linear.app/graphql"
 USER_AGENT = "simple-tools-linear-relay/1 (fleet)"
 MARKER = "<!-- zulip-relay -->"  # first line of every relay comment, so humans can spot them
@@ -190,7 +228,12 @@ DRY_STATE = "~/.simple-tools/linear-relay.dry-run.json"
 LEDGER_VERSION = 2  # 2: the ledger key carries a digest of the topic, never the topic itself
 MAX_ENTRIES = 500  # the ledger is bounded: the oldest entries are pruned
 MAX_ARCHIVE = 20000  # what pruned entries leave behind (root, comment id) is bounded too
-MAX_LEDGER_BYTES = 8 * 1024 * 1024
+# The ledger holds the rendered text of every message it records, so it is larger than it
+# was when a quote was cut at 280 characters:  the bound is raised with the text, and the
+# file is rewritten whole on a dirty cycle, so the bound stays near the old one (Kody, PR
+# 2340).  A bound of 8 MB would shed the entry of most topics in the worst case, and every
+# shed entry costs a history read when its topic speaks again.
+MAX_LEDGER_BYTES = 16 * 1024 * 1024
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT = 30.0  # one HTTP request
@@ -260,16 +303,64 @@ _KEYED_SECRET = re.compile(
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
+# A bare 40-character lowercase hex run is a git SHA-1:  commits and PR heads quote them in
+# prose and in commit/pull URL paths, and withholding whole posts for a quoted SHA is the bug
+# AFC-834 records.  The context decides, per match (Kody, PR 2344):  a run is exempt in
+# commit-ish URL paths (`commit/`, `commits/`, `tree/`, `blob/`) and at plain-prose
+# boundaries (start, whitespace, an opening bracket, a prose quote);  it keeps withholding
+# in a query or keyed position (`?sha=`, `token:`, a JSON `"key": "`), mid-run, or when it
+# continues into a longer base64 run, as does any other length or a mixed-case run.
+_BARE_GIT_SHA = re.compile(r"\b[0-9a-f]{40}(?![A-Za-z0-9+/=])")
+
+
+def _sha_is_exposed(text: str, start: int) -> bool:
+    """True when the 40-character run at `start` sits in commit prose or a commit-ish URL
+    path, and is therefore a quotable git SHA rather than a credential context."""
+    before = text[:start]
+    for segment in ("commit/", "commits/", "tree/", "blob/"):
+        if before.endswith(segment):
+            return True
+    if before == "":
+        return True
+    last = before[-1]
+    # All whitespace (including newlines) is a prose boundary, so has_secret
+    # agrees whether it sees raw multiline text or safe_text's collapsed line.
+    if last.isspace() or last in "([{":
+        return True
+    # Quoted runs are never exempt.  A tight quote after an identifier
+    # (`token"…"`) can hide a credential, and even a prose quote is withheld
+    # (tests pin `"sha"`, `("sha")`, and `merged "sha"`).
+    return False
+
+
+def _mask_bare_shas(text: str) -> str:
+    """Mask only the bare git SHAs, with a character outside every credential alphabet:  the
+    mask also breaks any wider run a URL path would otherwise extend across the SHA."""
+    parts: list[str] = []
+    last = 0
+    for match in _BARE_GIT_SHA.finditer(text):
+        if _sha_is_exposed(text, match.start()):
+            parts.append(text[last : match.start()])
+            parts.append("!" * 40)
+            last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
+
+
 def has_secret(text: str) -> bool:
     """True when the text carries anything credential-shaped: the fleet's canonical scanner
     (`secretscan`, which knows Linear, Sentry, Infisical, Cloudflare and the other service
-    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments)."""
+    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments).
+    A bare 40-character lowercase hex run away from any query or key name is a git SHA-1,
+    not a credential, and cannot withhold a post on its own (AFC-834)."""
     text = text or ""
-    return (
-        secretscan.scan(text) is not None
-        or any(p.search(text) for p in _SECRET_PATTERNS)
-        or bool(_KEYED_SECRET.search(text))
-    )
+    if secretscan.scan(text) is not None or bool(_KEYED_SECRET.search(text)):
+        return True
+    # The bare SHAs are masked out before the wide rows run, with a character outside
+    # every credential alphabet:  the mask also breaks any wider run a URL path or a
+    # neighbouring segment would otherwise extend across the SHA (Kody, PR 2344).
+    probe = _mask_bare_shas(text)
+    return any(p.search(probe) for p in _SECRET_PATTERNS)
 
 
 def safe_text(text: str) -> str:
@@ -288,16 +379,148 @@ def _escape_markdown(text: str) -> str:
 
 
 def neutralise(text: str) -> str:
-    """Trim, withhold and defang untrusted Zulip text for a Linear comment.
+    """Trim, withhold and defang an untrusted Zulip label for a Linear comment.
 
     The result cannot open a link, start a code span, close the quoted string, or carry a
     credential into Linear.  The @ is kept but followed by a zero-width space, so a mention
-    never becomes a live mention."""
+    never becomes a live mention.  A label is a name, not a post:  a post is rendered by
+    post_text, which keeps the line structure the label throws away."""
     text = _escape_markdown(safe_text(text))
     text = text.replace("@", "@\u200b")
-    if len(text) > QUOTE_CHARS:
-        text = text[: QUOTE_CHARS - 1] + "\u2026"
+    if len(text) > LABEL_CHARS:
+        text = text[: LABEL_CHARS - 1] + "\u2026"
     return text
+
+
+def _code_ranges(pieces: list[tuple[bool, str]]) -> list[tuple[int, int]]:
+    """Where the code of a text sits:  the ranges its fenced blocks and code spans cover."""
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    for is_code, chunk in pieces:
+        if is_code:
+            ranges.append((offset, offset + len(chunk)))
+        offset += len(chunk)
+    return ranges
+
+
+def _link_openers(text: str, ranges: list[tuple[int, int]]) -> set[int]:
+    """The brackets of the text that open a link.
+
+    A link is a bracket, some text, a closing bracket and a parenthesis.  The bracket
+    that opens one is a bracket with no closing bracket between it and the closing one,
+    so every such bracket is escaped and the link can never be live (Kody, PR 2340).  A
+    bracket that opens no link is left alone, so the prose keeps its own shape.
+
+    The code of a post is skipped:  it is shown as the sender wrote it.  The scan is one
+    pass over the text, so a post full of brackets cannot stall the relay."""
+    opens: list[int] = []
+    found: set[int] = set()
+    index = 0
+    length = len(text)
+    range_index = 0
+    while index < length:
+        if range_index < len(ranges) and ranges[range_index][0] <= index < ranges[range_index][1]:
+            index = ranges[range_index][1]
+            range_index += 1
+            continue
+        char = text[index]
+        if char == "\\" and index + 1 < length:
+            index += 2  # an escaped character opens and closes nothing
+            continue
+        if char == "[":
+            opens.append(index)
+        elif char == "]":
+            if index + 1 < length and text[index + 1] == "(":
+                found.update(opens)
+            opens = []  # a closing bracket ends what a bracket could have opened
+        index += 1
+    return found
+
+
+def _defang_prose(chunk: str, offset: int, openers: set[int]) -> str:
+    """A piece of prose as a Linear comment can hold:  its link openers escaped and its
+    at signs broken.
+
+    The backslashes in front of a bracket decide how it reads:  an odd count escapes the
+    bracket already, and an even count does not, so a bracket behind two backslashes is
+    a live link again unless it is escaped here (Sentry, PR 2340)."""
+    out: list[str] = []
+    for index, char in enumerate(chunk):
+        if char == "@":
+            out.append("@\u200b")  # never a live mention
+            continue
+        if (offset + index) in openers:
+            slashes = 0
+            back = index - 1
+            while back >= 0 and chunk[back] == "\\":
+                slashes += 1
+                back -= 1
+            if slashes % 2 == 0:
+                out.append("\\")  # an odd count escapes the bracket already
+        out.append(char)
+    return "".join(out)
+
+
+def defang(text: str) -> str:
+    """Markdown that a Linear comment can hold:  its links are shown, not live, and an at
+    sign never starts a live mention.
+
+    Only the link openers are escaped.  The text around them is the post's own Markdown,
+    and a reader should see it as the sender wrote it;  a link is shown as the text and
+    the URL, never as a link that can be clicked.  A bracket that opens no link (one in a
+    code span, say) is left alone.
+
+    A fenced block and a code span are shown as the sender wrote them, so neither the
+    escaping nor the zero-width space reaches into them (Kody, PR 2340)."""
+    pieces = zulip_markdown.split_code(text)
+    openers = _link_openers(text, _code_ranges(pieces))
+    out: list[str] = []
+    offset = 0
+    for is_code, chunk in pieces:
+        if is_code:
+            out.append(chunk)
+        else:
+            out.append(_defang_prose(chunk, offset, openers))
+        offset += len(chunk)
+    return "".join(out)
+
+
+def post_text(content: str) -> str:
+    """One Zulip post as the text of a Linear comment:  readable Markdown with its line
+    structure kept, or the withheld placeholder when it carries anything
+    credential-shaped.
+
+    The post is converted first (Zulip's rendered HTML and its Markdown source both
+    become Markdown) and the credential scan runs over the converted text, so a markup
+    attribute can never trip it by itself.  A link's URL stays in the text, so a
+    credential inside one is still caught.  A post longer than MESSAGE_CHARS is cut, and
+    the cut says how many characters of it are not shown."""
+    converted = zulip_markdown.to_markdown(content)
+    if has_secret(converted):
+        return WITHHELD
+    text = defang(converted)
+    if len(text) > MESSAGE_CHARS:
+        shown = text[:MESSAGE_CHARS].rstrip()
+        # The count is what the comment really leaves out:  the tail and the whitespace
+        # the cut trims (Kody, PR 2340).
+        left_out = len(text) - len(shown)
+        # The cut must not leave a code fence open:  the rest of the comment would
+        # render as code (Sentry, PR 2340).
+        cut = zulip_markdown.close_code_fence(shown)
+        text = "%s\n\n_%d characters of this message are not shown._" % (cut, left_out)
+    return text
+
+
+def _field_is_secret(name: str, value: str) -> bool:
+    """Whether one field of a Zulip message carries anything credential-shaped.
+
+    A message's text is scanned as the text the comment shows:  the converted post, so a
+    markup attribute cannot trip the scanner by itself, and a link's URL stays in the
+    text, so a credential inside one is still caught.  The other fields are plain text
+    and are scanned as they are."""
+    if name == "content":
+        value = zulip_markdown.to_markdown(value)
+    return has_secret(value)
 
 
 # ------------------------------------------------------------------------------------------
@@ -400,6 +623,8 @@ def valid_entry(key: Any, entry: Any) -> bool:
         and _is_int(entry.get("failures"))
         and entry["failures"] >= 0
         and _is_number(entry.get("retry_after"))
+        and (entry.get("format") is None or _is_int(entry.get("format")))
+        and (entry.get("refreshed") is None or isinstance(entry.get("refreshed"), str))
     )
 
 
@@ -449,7 +674,7 @@ class Ledger:
     "at"}, and no topic text, stream name, link or quote.  The archive is bounded as well
     (MAX_ARCHIVE, and the file's byte bound); `archive_dropped` counts the records those bounds
     cost, each one a standing comment the relay can no longer find.  A full archive renders to
-    about 3.7 MB, a little under half of MAX_LEDGER_BYTES, so from then on the byte bound rather
+    about 3.7 MB, well under MAX_LEDGER_BYTES, so from then on the byte bound rather
     than MAX_ENTRIES can be what limits the live table, and an entry it retires pushes the
     oldest archive record out."""
 
@@ -750,6 +975,11 @@ def new_entry(issue: str, stream_id: int, stream: str, topic: str, root_mid: int
         "pending": False,
         "failures": 0,
         "retry_after": 0.0,
+        # The render format of the quotes below.  An entry written by an older build has
+        # none, and its quotes are read from Zulip again before its comment is edited.
+        "format": RENDER_VERSION,
+        # When the quotes were last re-rendered from Zulip, for the comment to say so.
+        "refreshed": None,
     }
 
 
@@ -1074,31 +1304,164 @@ class LinearClient:
 # ------------------------------------------------------------------------------------------
 # Worker
 # ------------------------------------------------------------------------------------------
+def _message_block(item: Mapping[str, Any], realm: str) -> str:
+    """One message of the comment:  its permalink and its sender, then its text.
+
+    The link is built here, from the message id, so no text that came out of Zulip can
+    reach it.  The sender is a label, escaped whole.  A message the relay never read (one
+    that came in by a topic rename) has no text, and its block shows none."""
+    head = "**[%s](%s) \u2014 %s**" % (
+        item["when"],
+        permalink(realm, int(item["mid"])),
+        neutralise(item["sender"]),
+    )
+    if not item["quote"]:
+        return head
+    return "%s\n\n%s" % (head, item["quote"])
+
+
 def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the relay") -> str:
+    """The body of the relay comment:  the marker, the heading, every recorded message as
+    its own block, and the footer.
+
+    The body is bounded and nothing is ever cut silently.  A message whose text is longer
+    than MESSAGE_CHARS was cut when it was stored, and it says so;  the messages that do
+    not fit in COMMENT_CHARS are left out here, and the comment says how many characters
+    of the topic they were."""
     links = entry["links"][-MAX_LINKS_SHOWN:]
     earlier = max(0, int(entry["count"]) - len(links))
-    lines = [
-        entry["marker"],
-        "**Zulip discussion:** #%s > %s"
-        % (neutralise(entry["stream"]), neutralise(entry["topic"])),
-        "",
-    ]
+    heading = "**Zulip discussion:** #%s > %s" % (
+        neutralise(entry["stream"]),
+        neutralise(entry["topic"]),
+    )
+    lines = [entry["marker"], heading, ""]
+    if entry.get("refreshed"):
+        lines += ["_Re-rendered from Zulip on %s._" % entry["refreshed"], ""]
+    note = _repair_note(entry)
+    if note:
+        lines += [note, ""]
     if earlier > 0:
-        lines.append("_%d earlier message(s) not listed._" % earlier)
-    for item in links:
-        # The URL is built here, from the message id, so no text that came out of Zulip can
-        # reach it.  The quote was neutralised when it was stored, so it is not escaped twice.
-        # A message the relay never read (one that came in by a topic rename) has no quote, and
-        # its bullet shows none rather than an empty pair of quotation marks.
-        head = "- [%s](%s), %s" % (
-            item["when"],
-            permalink(realm, int(item["mid"])),
-            neutralise(item["sender"]),
-        )
-        lines.append('%s: "%s"' % (head, item["quote"]) if item["quote"] else head)
+        lines += ["_%d earlier message(s) not listed._" % earlier, ""]
+    # What the messages share of the body:  the marker, the heading, the notes and the
+    # footer are outside it, and the note about what was left out has room in it.
+    budget = COMMENT_CHARS - len("\n".join(lines)) - 200
+    blocks: list[str] = []
+    used = 0
+    left_out = 0
+    for item in reversed(links):
+        block = _message_block(item, realm)
+        if blocks and used + len(block) > budget:
+            # The newest messages are the ones that fit:  what is left out is the oldest.
+            left_out += len(item["quote"])
+            continue
+        blocks.append(block)
+        used += len(block)
+    blocks.reverse()
+    if left_out:
+        lines += ["_%d characters of this topic are not shown._" % left_out, ""]
+    for block in blocks:
+        lines += [block, ""]
     # Rendered copy: the sentence gap is a no-break space plus a space.
-    lines += ["", "_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
+    lines += ["_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
     return "\n".join(lines)
+
+
+def _item_current(item: Mapping[str, Any]) -> bool:
+    """True when a message's quote in an entry is the whole post and not a cut.
+
+    An entry an older build wrote holds quotes that were cut at 280 characters, and the
+    cut text is gone:  only Zulip holds the whole post.  Every message carries the
+    format its own quote was rendered in, so a message that was not read back yet says
+    so on its own (Jet, PR 2340)."""
+    try:
+        return int(item.get("format", 0)) >= RENDER_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def _repair_note(entry: Mapping[str, Any]) -> str:
+    """What the comment says about the messages of an entry that were not read back.
+
+    A message that was not read back keeps the text it had, and the reader is told
+    that, so a cut post never shows in the comment as if it were the whole one (Jet,
+    PR 2340)."""
+    unread = sum(1 for item in entry["links"] if not _item_current(item) and not _item_gone(item))
+    gone = sum(1 for item in entry["links"] if _item_gone(item))
+    lines = []
+    if unread:
+        lines.append(
+            "_%d message(s) were not read back from Zulip and keep their earlier text._" % unread
+        )
+    if gone:
+        lines.append("_%d message(s) are no longer in Zulip and keep their earlier text._" % gone)
+    return "\n".join(lines)
+
+
+class _ReaderWithoutDeadline(ValueError):
+    """A reader that cannot take the deadline a walk shares.
+
+    A walk it cannot bound is not a bounded walk, so the repair is not attempted and
+    the comment waits for a reader that can (Kody, PR 2340)."""
+
+
+def _call_with_deadline(
+    reader: Callable[..., Any], args: tuple[Any, ...], deadline: float | None
+) -> Any:
+    """Call a reader with the deadline it takes, and without one when it takes none.
+
+    The deadline is handed the way the reader declares it:  in place, or as a keyword,
+    and never to a reader that has no parameter named "deadline" (Kody, PR 2340)."""
+    how = _deadline_argument(reader)
+    if how == "positional":
+        return reader(*args, deadline)
+    if how == "keyword":
+        return reader(*args, deadline=deadline)
+    return reader(*args)
+
+
+def _deadline_argument(reader: Callable[..., Any]) -> str | None:
+    """How a reader takes the deadline a walk shares:  "positional", "keyword", or None.
+
+    The decision is on the parameter named "deadline" and on nothing else, so a reader
+    with a fourth parameter of another name is never handed the deadline.  A reader that
+    cannot take the deadline cannot hold a bounded walk, so the caller refuses it before
+    it reads (Kody, PR 2340)."""
+    try:
+        parameters = inspect.signature(reader).parameters
+    except (TypeError, ValueError):
+        return None
+    parameter = parameters.get("deadline")
+    if parameter is not None:
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return "positional"
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY:
+            return "keyword"
+        return None
+    for candidate in parameters.values():
+        if candidate.kind is inspect.Parameter.VAR_KEYWORD:
+            return "keyword"
+    return None
+
+
+def _item_gone(item: Mapping[str, Any]) -> bool:
+    """True when a message is marked as no longer in Zulip.
+
+    The flag comes out of the ledger, so it is read as a value and not as an identity:
+    a number, a string and a boolean all mean the same thing here (Kody, PR 2340)."""
+    value = item.get("gone")
+    return value is not None and bool(value)
+
+
+def _item_done(item: Mapping[str, Any]) -> bool:
+    """True when a message in an entry needs nothing more.
+
+    A message is done when its quote is the whole post, and also when it is no longer
+    in Zulip:  no read can bring it back, so waiting for one would wait for ever (Jet,
+    PR 2340)."""
+    return _item_current(item) or _item_gone(item)
 
 
 def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
@@ -1209,7 +1572,9 @@ class RelayWorker:
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
         history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
-        history_since: Callable[[int, str, int], list[Mapping[str, Any]]] | None = None,
+        # A reader may take the deadline a walk shares as its fourth argument, and one
+        # that does not is called with the three the catch-up path passes (Kody, PR 2340).
+        history_since: Callable[..., list[Mapping[str, Any]]] | None = None,
         byline: str = "the relay",
     ) -> None:
         self.realm = zulip_realm
@@ -1240,6 +1605,9 @@ class RelayWorker:
         self._caught_up: set[str] = set()
         self._catching: dict[str, _CatchUp] = {}
         self._read_retry: dict[str, float] = {}
+        # For a key whose topic could not be read to re-render its comment, the monotonic
+        # time before which it is not read for again.
+        self._refresh_retry: dict[str, float] = {}
         self._archive_drops_logged = 0  # how much of ledger.archive_dropped the log has said
         # Whose name the comment footer carries: "the relay" standalone, "the Operator" hosted.
         # The marker line itself never changes, so a hosted worker adopts the comments the
@@ -1412,7 +1780,7 @@ class RelayWorker:
         """Say which fields of one message carry credential-shaped text, and so show WITHHELD in
         the comment (_append withholds each such field whole, on the live path and the history
         path alike).  The field names and the message id only: the text never reaches the log."""
-        withheld = [name for name, value in fields if has_secret(value)]
+        withheld = [name for name, value in fields if _field_is_secret(name, value)]
         if withheld:
             self.log(
                 "message %d: withheld %s (credential-shaped text)" % (mid, ", ".join(withheld))
@@ -1748,27 +2116,91 @@ class RelayWorker:
                 "mid": mid,
                 "sender": safe_text(sender),
                 "when": time.strftime("%b %d %H:%M UTC", time.gmtime(when)),
-                "quote": neutralise(content),
+                "quote": post_text(content),
+                # The format this quote was rendered in:  a message an older build
+                # recorded has none, and its quote is the cut one (Jet, PR 2340).
+                "format": RENDER_VERSION,
             }
         )
-        entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
+        self._trim_entry(entry)
         entry["dirty"] = True
         entry["last_touch"] = self.clock()
         return True
 
+    def _repair(
+        self,
+        entry: dict[str, Any],
+        key: str,
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+    ) -> None:
+        """Re-render the quotes of a comment an older build wrote, from the topic's history.
+
+        A topic that cannot be read waits REFRESH_RETRY before it is tried again, so a
+        silent topic is not read once a message (Kody, PR 2340)."""
+        if self.monotonic() < self._refresh_retry.get(key, 0.0):
+            return  # the topic is waiting to be tried again
+        try:
+            read, complete = self._read_for_repair(entry, stream_id, topic, cache)
+        except _ReaderWithoutDeadline as exc:
+            # A reader that cannot take the deadline cannot hold a bounded walk, so the
+            # entry waits for a reader that can (Kody, PR 2340).  The log carries the
+            # type of the failure and never its text, which can hold message or topic
+            # content (Kody, PR 2340).
+            self.log(
+                "a repair read was refused (%s); the comment waits for a reader that can"
+                % type(exc).__name__
+            )
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
+        if read is None:
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
+        if not self._refresh(entry, read, complete):
+            # The read held none of this entry's messages:  the entry waits as well.
+            self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
+            return
+        self._refresh_retry.pop(key, None)
+
+    def _trim_entry(self, entry: dict[str, Any]) -> bool:
+        """Bound what an entry holds:  the messages it lists, and the text of those
+        messages.
+
+        The oldest messages leave the list when the entry holds more text than a comment
+        can show (the count of the messages that are not listed says so).  A repair holds
+        the same bound (Kody, PR 2340).  True when messages left the list, so the caller
+        can write the shortened entry back (Kody, PR 2340)."""
+        before = len(entry["links"])
+        entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
+        held = sum(len(item["quote"]) for item in entry["links"])
+        while len(entry["links"]) > 1 and held > MAX_ENTRY_TEXT:
+            held -= len(entry["links"][0]["quote"])
+            entry["links"].pop(0)
+        return len(entry["links"]) != before
+
     def _read_topic(
-        self, stream_id: int, topic: str, cache: dict[tuple[int, str], Any]
+        self,
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+        deadline: float | None = None,
     ) -> tuple[list[Mapping[str, Any]] | None, str]:
         """The whole topic from the history reader, oldest first, read once per message for
         every entry the message makes or restores (the caller's cache).  (messages, "") when the
         read succeeded, (None, the error's type name) when it failed, and (None, "") when there
-        is no reader to read with (the standalone process)."""
+        is no reader to read with (the standalone process).
+
+        The deadline is the one the caller's read shares, and it is handed to the reader
+        when the reader takes one (Kody, PR 2340)."""
         if self.history is None:
             return None, ""
         cache_key = (stream_id, topic)
         if cache_key not in cache:
             try:
-                read, malformed, over = _by_id(self.history(stream_id, topic))
+                read, malformed, over = _by_id(
+                    _call_with_deadline(self.history, (stream_id, topic), deadline)
+                )
             except Exception as exc:  # noqa: BLE001 - history must never stop a record
                 cache[cache_key] = (None, type(exc).__name__)
             else:
@@ -1867,6 +2299,201 @@ class RelayWorker:
         else:
             self._judge(key, read, 0, mid)
         return entry
+
+    def _needs_refresh(self, entry: Mapping[str, Any]) -> bool:
+        """True when the entry's quotes were rendered by an older build.
+
+        An entry written before this build holds quotes that were cut at 280 characters
+        and escaped, and the cut text is gone:  only Zulip holds the whole post.  The
+        entry is stale while any of its messages still holds such a quote, so a repair
+        that covered only part of the topic does not pass for a whole repair (Jet, PR
+        2340)."""
+        try:
+            if int(entry.get("format", 0)) < RENDER_VERSION:
+                return True
+        except (TypeError, ValueError):
+            return True
+        return any(not _item_done(item) for item in entry["links"])
+
+    def _read_for_repair(
+        self,
+        entry: Mapping[str, Any],
+        stream_id: int,
+        topic: str,
+        cache: dict[tuple[int, str], Any],
+    ) -> tuple[list[Mapping[str, Any]] | None, bool]:
+        """The topic's messages, read far enough to hold the entry's own messages, and
+        whether the read reached the end of the topic.
+
+        A reader answers the oldest messages of a topic first, up to its cap, so the
+        messages of a busy topic are not in the first read.  The read goes on, page by
+        page, until the entry's newest message is in it, and the pages it took are
+        shared with the other entries of the topic (Jet, PR 2340).
+
+        Every page of the walk shares one deadline, so the walk is bounded in time and
+        not only in pages, and a walk that runs out of time leaves the entry due for a
+        later try (Kody, PR 2340)."""
+        # The reader compares the deadline with the real clock, so the deadline is
+        # computed with the real clock too (Kody, PR 2340).  It is computed before the
+        # first read, so the whole repair read shares one budget (Kody, PR 2340).
+        deadline = time.monotonic() + REPAIR_READ_BUDGET
+        read, _error = self._read_topic(stream_id, topic, cache, deadline)
+        if read is None:
+            return None, False
+        wanted = max((int(item["mid"]) for item in entry["links"]), default=0)
+        reader = self.history_since
+        how = None
+        if reader is not None:
+            # A reader that pages the topic must take the deadline, or the walk cannot be
+            # bounded in time (Kody, PR 2340).
+            how = _deadline_argument(reader)
+            if how is None:
+                raise _ReaderWithoutDeadline(
+                    "the repair read needs a reader that takes a deadline, and this one does not"
+                )
+        pages = 0
+        complete = False
+        while (
+            wanted
+            and self.history_since is not None
+            and pages < MAX_REPAIR_PAGES
+            and (not read or max(int(message["id"]) for message in read) < wanted)
+        ):
+            if time.monotonic() >= deadline:
+                self.log("the repair read of %s ran out of time" % self._label(entry))
+                break
+            newest = max((int(message["id"]) for message in read), default=0)
+            try:
+                if how == "positional":
+                    found, malformed, over = _by_id(reader(stream_id, topic, newest, deadline))
+                else:
+                    found, malformed, over = _by_id(
+                        reader(stream_id, topic, newest, deadline=deadline)
+                    )
+            except Exception as exc:  # noqa: BLE001 - a repair must never stop the relay
+                self.log(
+                    "the messages of %s could not be read further (%s)"
+                    % (self._label(entry), type(exc).__name__)
+                )
+                break
+            self._log_malformed(malformed, over)
+            if not found:
+                # The topic ends here only when the page was read whole:  a page the
+                # reader could not parse is empty as well, and it says nothing about
+                # the end of the topic (Kody, PR 2340).
+                complete = not malformed and not over
+                break
+            known = {int(message["id"]) for message in read}
+            read = list(read) + [message for message in found if int(message["id"]) not in known]
+            pages += 1
+        if pages:
+            # The pages are shared with the other entries of the topic in this cycle.
+            cache[(stream_id, topic)] = (read, "")
+        return read, complete
+
+    def _refresh(
+        self, entry: dict[str, Any], read: list[Mapping[str, Any]], complete: bool = False
+    ) -> bool:
+        """Render the entry's recorded quotes again from the messages the topic holds.
+
+        The quotes are replaced only for the messages the read actually holds, so a read
+        of another topic (the stored topic is the whitespace-collapsed form, and a topic
+        whose title carried a credential is stored withheld) changes nothing.  The entry
+        counts as rendered in this format once the read covered one of its messages;  a
+        message the read does not hold (one older than the read's cap, or one that was
+        deleted) keeps the text it had."""
+        by_id: dict[int, Mapping[str, Any]] = {}
+        for message in read:
+            try:
+                by_id[int(message["id"])] = message
+            except (KeyError, TypeError, ValueError):
+                continue
+        changed = 0
+        covered = 0
+        for item in entry["links"]:
+            message = by_id.get(int(item["mid"]))
+            if message is None:
+                continue
+            covered += 1
+            quote = post_text(str(message.get("content", "")))
+            if quote != item["quote"]:
+                item["quote"] = quote
+                changed += 1
+            item["format"] = RENDER_VERSION
+        if not covered:
+            # The read is of another topic, or it holds none of this entry's messages:
+            # the entry keeps the format it had and waits for a later try.
+            return False
+        # The read held a message of this topic, so it is a read of this topic:  a message
+        # of the entry that the read passed and did not hold is gone from Zulip, and no
+        # read can bring it back (Jet, PR 2340).
+        newest = max((int(message["id"]) for message in read), default=0)
+        for item in entry["links"]:
+            if _item_done(item):
+                continue
+            mid = int(item["mid"])
+            if mid < newest or (complete and mid > newest):
+                item["gone"] = True
+        if all(_item_done(item) for item in entry["links"]):
+            entry["format"] = RENDER_VERSION
+        # The note about the messages that were not read back reaches the reader when
+        # it changes, even when the re-render itself changed nothing (Jet, PR 2340).
+        note = _repair_note(entry)
+        if note != entry.get("pending_repair", ""):
+            entry["pending_repair"] = note
+            entry["dirty"] = True
+        # The text an entry holds is bounded the way a new message bounds it:  the whole
+        # posts do not push the entry past what a comment can show (Kody, PR 2340).
+        trimmed = self._trim_entry(entry)
+        if changed or trimmed:
+            entry["dirty"] = True
+            entry["last_touch"] = self.clock()
+        if changed:
+            entry["refreshed"] = time.strftime("%b %d %H:%M UTC", time.gmtime(self.clock()))
+            self.log("re-rendered the quotes of %s from Zulip" % self._label(entry))
+        return True
+
+    def _refresh_stale(self) -> None:
+        """Re-render the standing comments an older build wrote.
+
+        A comment written before this build holds quotes that were cut at 280
+        characters;  the whole post is only in Zulip, so the topic is read again and the
+        comment is edited with the whole text.  One comment is refreshed per cycle, so a
+        realm full of old comments is repaired over a few cycles instead of in one
+        burst, and an entry whose topic cannot be read, or whose repair failed, waits
+        REFRESH_RETRY seconds before it is tried again."""
+        if self.history is None:
+            return  # no reader: the standalone process cannot read a topic back
+        now = self.monotonic()
+        attempts = 0
+        cache: dict[tuple[int, str], Any] = {}
+        for key, entry in sorted(
+            self.ledger.entries.items(),
+            key=lambda item: float(item[1].get("last_touch", 0.0)),
+        ):
+            if attempts >= REFRESH_PER_CYCLE:
+                break
+            if not self._needs_refresh(entry) or not entry.get("comment_id"):
+                continue
+            if self._is_public(int(entry["stream_id"])) is not True:
+                continue  # a stream that turned private is dropped, not repaired
+            if entry["topic"] == WITHHELD:
+                continue  # a topic whose title carried a credential cannot be read back
+            if now < self._refresh_retry.get(key, 0.0):
+                continue  # its topic could not be read a moment ago
+            # Every read counts, not every repair:  an entry whose topic cannot be read
+            # must not make the cycle read every stale entry, every cycle (Sentry, PR 2340).
+            attempts += 1
+            try:
+                self._repair(entry, key, int(entry["stream_id"]), entry["topic"], cache)
+            except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the others
+                # The log names the entry and the type of the failure, never the text of
+                # the exception, which can hold message or topic content (Kody, PR 2340).
+                self.log("the repair of %s failed (%s)" % (self._label(entry), type(exc).__name__))
+                # The entry waits before it is tried again, so a repair that keeps failing
+                # does not take the cycle's one repair every cycle, and the other stale
+                # comments are repaired too (Kody, PR 2340).
+                self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
 
     def _append_history(self, entry: dict[str, Any], message: Mapping[str, Any]) -> bool:
         """Record one message read from Zulip's history, as _by_id checked it, the way the live
@@ -2101,6 +2728,22 @@ class RelayWorker:
                 entry = self._enter(key, ident, stream_id, stream, topic, mid, reads)
                 if entry is None:
                     continue  # an archived comment whose history could not be read waits
+            elif self._needs_refresh(entry):
+                # A comment an older build wrote:  its quotes are read from Zulip again, so
+                # the next edit of it carries the whole posts.  A topic that could not be
+                # read waits REFRESH_RETRY, so every message of it does not read it again
+                # (Kody, PR 2340).  The message itself is recorded either way.
+                try:
+                    self._repair(entry, key, stream_id, topic, reads)
+                except Exception as exc:  # noqa: BLE001 - one bad repair must not stop the message
+                    # The log names the entry and the type of the failure, never the text
+                    # of the exception, which can hold message or topic content (Kody, PR
+                    # 2340).  The entry waits REFRESH_RETRY, so the next message of the
+                    # topic does not retry the repair at once (Kody, PR 2340).
+                    self.log(
+                        "the repair of %s failed (%s)" % (self._label(entry), type(exc).__name__)
+                    )
+                    self._refresh_retry[key] = self.monotonic() + REFRESH_RETRY
             if self._append(entry, mid, sender, content, now):
                 self._note_recorded(key, mid)
                 self._flush(key, now)  # creates at once; edits wait for the interval
@@ -2253,6 +2896,7 @@ class RelayWorker:
             self.log("%s relay comment for %s" % (done, label))
             entry["last_edit"] = now
             entry["dirty"] = False
+            entry["refreshed"] = None  # the comment says so once
             entry["failures"] = 0
             entry["retry_after"] = 0.0
         except LinearAuthError as exc:
@@ -2283,6 +2927,7 @@ class RelayWorker:
             if self.public_streams is None:
                 return  # nothing is known about any stream yet: write nothing, drop nothing
             self._drop_private_archive()
+            self._refresh_stale()
             for key in list(self.ledger.entries):
                 entry = self.ledger.entries.get(key)
                 if entry is None:

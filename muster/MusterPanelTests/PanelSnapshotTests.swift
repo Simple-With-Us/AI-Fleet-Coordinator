@@ -17,11 +17,12 @@ import XCTest
 /// store here starts a timer, a watcher or a run of its own.
 ///
 /// Inert by default:  a few panels read through app singletons (`OpsController.shared`,
-/// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
+/// `FleetViewStore.shared`, `SeatActivityStore.shared`,
 /// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
 /// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
-/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
-/// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
+/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so the scoped
+/// Infisical reader, the recall token read, `ssh` for `eavesdropper-status --plan`, the
+/// Seats panel's sources and
 /// every other launch fail at once without starting, and `InertURLProtocol` fails every
 /// request through `URLSession.shared`.  Those panels show their own could-not-read state,
 /// which is the same on every Mac and in CI.  They may still read the Mac's own report files
@@ -70,6 +71,48 @@ final class PanelSnapshotTests: XCTestCase {
     /// How much taller than asked the window may come out at the minimum size.
     static let toolbarAllowance: CGFloat = 52
 
+    func test_seat_list_control_light_and_dark() throws {
+        let output = ProcessInfo.processInfo.environment["MUSTER_PANEL_SNAPSHOT_DIR"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let draft = #"["JET","CODEX","7-CUSTOM_1"]"#
+        for dark in [false, true] {
+            let control = ServerSeatListEditor(draft: .constant(draft),
+                                               maxItems: 64, maxLength: 32)
+                .padding(20).frame(width: 420, height: 260, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .environment(\.colorScheme, dark ? .dark : .light)
+            let hosting = NSHostingView(rootView: control)
+            let frame = NSRect(x: 0, y: 0, width: 420, height: 260)
+            let window = NSWindow(contentRect: frame.offsetBy(dx: Self.offscreen, dy: Self.offscreen),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+            window.hasShadow = false
+            defer { window.contentView = nil; window.orderOut(nil); window.close() }
+            window.contentView = hosting
+            window.setContentSize(frame.size)
+            hosting.frame = frame
+            window.orderBack(nil)
+            window.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(Self.settle))
+            window.layoutIfNeeded()
+            hosting.layoutSubtreeIfNeeded()
+            hosting.displayIfNeeded()
+            let fields = Self.descendants(of: hosting).compactMap { $0 as? NSTextField }
+                .filter { $0.isEditable }
+            XCTAssertEqual(fields.map(\.stringValue), ["JET, CODEX, 7-CUSTOM_1"])
+            let shown = try XCTUnwrap(fields.first).stringValue
+            XCTAssertEqual(ServerSeatNames.draft(from: shown), draft)
+            let bitmap = try XCTUnwrap(Self.capture(hosting, in: window, appearance: window.appearance))
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            XCTAssertGreaterThan(png.count, 5000)
+            try png.write(to: output.appendingPathComponent("seat-list-\(dark ? "dark" : "light").png"))
+        }
+    }
+
     private var savedDestination: Any?
     private var savedTheme: Any?
     private var scratch: URL!
@@ -114,7 +157,7 @@ final class PanelSnapshotTests: XCTestCase {
             XCTFail("the Ops runner started ssh")
         } catch {}
         let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
-        XCTAssertEqual(tried, ["fleet-secrets", "fleet-secrets", "ssh"])
+        XCTAssertEqual(tried, ["infisical-scoped.py", "infisical-scoped.py", "ssh"])
 
         do {
             _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)

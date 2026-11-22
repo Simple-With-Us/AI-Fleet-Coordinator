@@ -92,14 +92,17 @@ Credentials (never logged; the developer key lives in memory only):
     permission and needs no mint.  The daemon reaches the key through ONE scoped
     read-only Infisical service token (operator-linear-read;  registry:  SWU Fleet
     References, "Infisical Service Tokens"), never through a machine identity and
-    never through a baked Linear token.  The service token itself arrives one of two
-    ways:
+    never through a baked Linear token.  The service token itself arrives from one
+    place, the consumer's own store:
 
-    OPERATOR_LINEAR_INFISICAL_TOKEN   the service token, bound directly by the host as
-                            a runtime-only variable;  wins when set
     [linear_comments] infisical_token_file   the path of a file holding the service
                             token (owner-only permissions, checked before use);
                             defaults to ~/workspace/.secrets/operator-linear-service-token
+
+    The environment is not a source (owner ruling, November 22, 2026):  the host binds
+    that bootstrap reader in its own protected store, never as an environment variable,
+    so no copy of the grant can travel in the environment.  The store is the only
+    source, and a host without one runs this feature off.
 
     At engine build (daemon start, and again whenever the service token changes) the
     key is fetched with the service token — after the token is verified against its
@@ -137,7 +140,6 @@ from typing import Any
 from . import linear_relay as lr
 from .zulip import ZulipClient, _strip_quotes, realm_url
 
-SERVICE_TOKEN_ENV = "OPERATOR_LINEAR_INFISICAL_TOKEN"
 STATE_ENV = "OPERATOR_LINEAR_STATE"
 DRY_RUN_ENV = "OPERATOR_LINEAR_DRY_RUN"
 OWN_EMAIL_ENV = "OPERATOR_ZULIP_EMAIL"
@@ -200,20 +202,29 @@ def _default_http(
         return status, {}
 
 
-def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
-    """The scoped Infisical service token for the key fetch:  the host-bound variable
-    wins;  else the configured file (default DEFAULT_SERVICE_TOKEN_FILE).  "" when
-    neither source yields one — the feature is simply unconfigured.  A file that
+def service_token(token_file: str | None = None) -> str:
+    """The scoped Infisical service token for the key fetch, from the consumer's store.
+
+    The store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE) and it is the
+    only source:  the environment is never a source (owner ruling, November 22, 2026),
+    so no hand-set copy of the reviewed, scope-limited grant can travel as a variable.
+    "" when the store yields none:  the feature is simply unconfigured.  A file that
     exists but is group- or other-readable raises CredentialRefused:  a service token
     must not sit in a file other accounts can read."""
-    bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
-    if bound:
-        return bound
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
+    except FileNotFoundError:
         return ""
+    except OSError as exc:
+        # The store exists but cannot be read (a locked-down parent directory, the
+        # wrong owner):  that is a broken store, not an absent one, and it fails
+        # closed rather than reporting the feature unconfigured.
+        raise CredentialRefused(
+            "token_file_unreadable",
+            "%s could not be read (%s); a service token file that exists but "
+            "cannot be read is a broken store, not an absent one" % (path, type(exc).__name__),
+        ) from None
     if mode & 0o077:
         raise CredentialRefused(
             "token_file_permissions",
@@ -221,9 +232,14 @@ def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
             "must be owner-only" % (path, mode),
         )
     try:
-        return _strip_quotes(path.read_text("utf-8"))
-    except OSError:
-        return ""
+        stored = _strip_quotes(path.read_text("utf-8"))
+    except OSError as exc:
+        raise CredentialRefused(
+            "token_file_unreadable",
+            "%s could not be read (%s); a service token file that exists but "
+            "cannot be read is a broken store, not an absent one" % (path, type(exc).__name__),
+        ) from None
+    return stored
 
 
 def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
@@ -316,7 +332,6 @@ def fetch_api_key(token: str, *, http: HttpFn | None = None) -> str:
 
 
 def load_api_key(
-    env: Mapping[str, str],
     token_file: str | None = None,
     *,
     http: HttpFn | None = None,
@@ -327,7 +342,9 @@ def load_api_key(
     IS configured but the key cannot be fetched.  The key is held in memory only —
     nothing here writes it anywhere;  `hide` (the daemon's log scrubber registry) is
     told the value the moment it is fetched, so no later log line can carry it."""
-    token = service_token(env, token_file)
+    # The consumer's own store is the only source:  the environment is never a source
+    # (owner ruling, November 22, 2026), and a hand-set value never replaces it.
+    token = service_token(token_file)
     if not token:
         return None
     key = fetch_api_key(token, http=http)
@@ -483,32 +500,54 @@ class OperatorLinearComments:
         )
 
     # -- plumbing ----------------------------------------------------------------------
-    def _history(self, stream_id: int, topic: str) -> list[Mapping[str, Any]]:
+    def _history(
+        self, stream_id: int, topic: str, deadline: float | None = None
+    ) -> list[Mapping[str, Any]]:
         """The whole topic, oldest first:  the worker's backfill reader, for an entry a
         message makes or restores.  With no client there is nothing to read with, and that
         is a failed read, not an empty topic:  an empty answer would let a restored entry
-        rewrite its standing comment down to the live message."""
+        rewrite its standing comment down to the live message.
+
+        The deadline is the one the caller's read shares, and the Operator's own budget
+        bounds the read as well, so a walk never gets more time out of a read than a read
+        on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
-            client, stream_id, topic, deadline=time.monotonic() + HISTORY_READ_BUDGET
+            client,
+            stream_id,
+            topic,
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
-    def _history_since(self, stream_id: int, topic: str, after_id: int) -> list[Mapping[str, Any]]:
+    def _history_since(
+        self,
+        stream_id: int,
+        topic: str,
+        after_id: int,
+        deadline: float | None = None,
+    ) -> list[Mapping[str, Any]]:
         """The topic's messages after one message id, oldest first:  the worker's catch-up
         reader.  With no client there is nothing to read with, and that is a failed read,
         not an empty topic:  the worker logs it and a later message tries again, where an
-        empty answer would mark the topic caught up."""
+        empty answer would mark the topic caught up.
+
+        The deadline is the one the caller's walk shares, so a walk of several pages is
+        bounded in time as a whole and not page by page (Kody, PR 2340).  The Operator's
+        own budget bounds the read as well, so a walk never gets more time out of a read
+        than a read on its own gets (Kody, PR 2340)."""
         client = self._client
         if client is None:
             raise RuntimeError("no Zulip client to read the topic with")
+        budget = time.monotonic() + HISTORY_READ_BUDGET
         return fetch_topic_history(
             client,
             stream_id,
             topic,
             after_id=after_id,
-            deadline=time.monotonic() + HISTORY_READ_BUDGET,
+            deadline=budget if deadline is None else min(deadline, budget),
         )
 
     def _ensure_streams(self, client: ZulipClient | None) -> None:
@@ -620,7 +659,7 @@ def build(
     configured credential that is refused raises CredentialRefused, and a ledger that
     refuses to open raises SystemExit:  the daemon logs both as this feature failing
     closed — never as a daemon failure."""
-    token = load_api_key(env, service_token_file, http=http, hide=hide)
+    token = load_api_key(service_token_file, http=http, hide=hide)
     if token is None:
         return None
     dry = env.get(DRY_RUN_ENV) == "1"

@@ -3026,7 +3026,8 @@ def build_parser_for(
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
 # SIMPLE_CHAT_REMOTE=1 sends a few READ verbs (whoami, channels, topics, read, inbox) to the hosted ST-MCP
-# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server decides
+# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, or the declared seat's canonical file
+# ~/.secrets/fleet-tools/<seat> when the environment has none).  The hosted server decides
 # the seat from the bearer; this client never names one, so --as and --default-seat are refused.  The endpoint is
 # the fixed constant below (no override), no Zulip key or rc file is read, and a failure never falls back to the
 # direct path.  Every other verb and every flag with no hosted equivalent is refused.  The hosted bearer holds
@@ -3056,6 +3057,7 @@ _REMOTE_CODES = frozenset(
         "rate_limited",
         "not_configured",
         "outcome_unknown",
+        "origin_held",
         "paused",
         "linear_error",
         "internal",
@@ -3338,13 +3340,28 @@ class RemoteError(Exception):
     pass
 
 
+def _own_bearer(env: Mapping[str, str]) -> str:
+    """The calling bot's own bearer from the declared seat's canonical file, or "" (the
+    environment had none).  The snapshot's own HOME locates the canonical file, not the
+    process home:  a caller holding an env from a hook or test gets that env's file.
+    fleet_bearer.own_bearer does the read;  its FleetError is re-raised as RemoteError,
+    never carrying the bearer."""
+    from . import fleet_bearer
+
+    try:
+        return fleet_bearer.own_bearer(env, home=env.get("HOME") or None)
+    except fleet_bearer.FleetError as exc:
+        raise RemoteError(str(exc)) from None
+
+
 def _remote_call(
     env: Mapping[str, str], tool: str, arguments: dict[str, Any], write: bool = False
 ) -> dict[str, Any]:
-    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip()
+    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip() or _own_bearer(env)
     if not bearer:
         raise RemoteError(
-            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV} or the declared seat's "
+            "canonical file (~/.secrets/fleet-tools/<seat>); there is no fallback "
             "to direct credentials"
         )
     if not REMOTE_BEARER_RE.fullmatch(bearer):
