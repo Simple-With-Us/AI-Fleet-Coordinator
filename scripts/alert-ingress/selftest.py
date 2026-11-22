@@ -27,8 +27,7 @@ The assertions are made against the messages this run posted, not against every
 message the topic holds:  the ids present before the run are the baseline, so a
 second run over a healthy ingress proves the same thing the first one did.
 
-Secrets are read from the environment first and from this selftest's own scoped
-service token second,
+Secrets are read through this selftest's own scoped service token,
 and are never printed:  names and lengths only.  --cleanup first sends each test
 incident its recovery, so none stays firing in /status, then deletes the one-line
 alert messages this test created in #alerts and #Alerts-Log and the raw copies in
@@ -101,8 +100,9 @@ def masked_preview(secret):
 
 # This selftest's own scoped read-only service token:  one grant on the one Infisical
 # folder it reads, held in the consumer's own store (the owner's login keychain on the
-# Mac, a private file on a server).  The environment still wins when it already binds a
-# token.
+# Mac, a private file on a server).  It is the only grant this script reads with:  the
+# environment's project token is a wider grant than this one,  so it never stands in for
+# it.
 TOKEN_ACCOUNTS = {
     ("ai-fleet-coordinator", "/zulip"): "alert-ingress-selftest-ro",
 }
@@ -133,9 +133,10 @@ def fs_get(name, project, path):
     # resolves the project from there, and the grant check, the query and the
     # provenance check then all use one workspace.
     scoped[FI.ENV_PROJECT] = project_id
-    token = (env.get(FI.COORDINATOR_READ_TOKEN_ENV_NAME) or "").strip()
-    if not token:
-        token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
+    # The consumer's own grant,  resolved from its own store:  a token the environment
+    # happens to hold is a wider grant than this selftest's own,  so it is never used
+    # here,  and a store with no token fails closed.
+    token, _status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
     if not token:
         raise Failed(
             f"{name} could not be read:  the scoped token is not bound",

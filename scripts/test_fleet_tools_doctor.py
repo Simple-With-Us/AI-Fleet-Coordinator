@@ -27,6 +27,15 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 
 
+def synthetic_grant() -> str:
+    """A service-token-shaped value, made up and assembled here so no token-shaped literal sits.
+
+    The client checks the shape, never the value:  the "st." prefix, the length and the
+    absence of whitespace.
+    """
+    return ".".join(["st", "synthetic", "notarealvalue", "notarealvalue"])
+
+
 def fixture_project_id() -> str:
     """The synthetic Infisical project id,  built at run time.
 
@@ -55,9 +64,9 @@ class FakeClient:
         pass
 
     def __init__(
-        self, grant="st.fixture-doctor-grant-value", names=("CLAUDE_ZULIP_KEY",), failure=None
+        self, grant=None, names=("CLAUDE_ZULIP_KEY",), failure=None
     ):
-        self.grant = grant
+        self.grant = synthetic_grant() if grant is None else grant
         self.names = names
         self.failure = failure
         self.calls = []
@@ -103,7 +112,7 @@ class CanonicalNamesTests(unittest.TestCase):
         _, project_id, folder, token, timeout = listings[0]
         self.assertEqual(folder, "/zulip")
         self.assertEqual(project_id, fixture_project_id())
-        self.assertEqual(token, "st.fixture-doctor-grant-value")
+        self.assertEqual(token, synthetic_grant())
         self.assertGreater(timeout, 0)
         # The account is the doctor's own for that project and folder,  and the folder is
         # the one the client reads.

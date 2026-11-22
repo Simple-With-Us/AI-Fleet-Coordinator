@@ -62,6 +62,10 @@ def read_key():
     A source that failed is not a missing value:  the shared client,  the token store and
     the read itself each raise,  naming the reader and the account,  so the source that
     must be repaired stays visible.  The key is never logged.
+
+    A hung read says it hung:  the shared client lets a socket timeout through as a
+    `TimeoutError`,  and a timeout is not a broken credential,  so it keeps its own
+    message and the repair that follows it is the right one.
     """
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
