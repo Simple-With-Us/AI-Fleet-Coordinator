@@ -164,7 +164,9 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
         scoped[core.ENV_PROJECT] = project_id
         secrets = {}
         for name in names:
-            value, status = core.fetch_scoped(name, path, str(account), scoped, **policy)
+            value, status = core.fetch_scoped(
+                name, path, str(account), scoped, timeout=core.EXPORT_TIMEOUT, **policy
+            )
             if status == "ok":
                 secrets[name] = value
                 continue
