@@ -645,6 +645,9 @@ def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
         token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
         if token:
             return token
+    bound = (scoped.get(FI.ENV_TOKEN) or "").strip()
+    if bound:
+        return FI.check_service_token(bound)
     if account:
         raise FI.SecretsError(f"service-token-required: {account} is not usable ({status})")
     raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
