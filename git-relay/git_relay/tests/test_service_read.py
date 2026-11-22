@@ -434,3 +434,107 @@ class Reads(unittest.TestCase):
         self.assertIsNone(restarted.load_error)
         with self.assertRaises(ValueError):
             restarted.protected_for_repo(REPO)
+
+    def test_verified_no_follow_repository_move_resolves_fence_across_restart(self):
+        import io
+        from urllib.error import HTTPError
+        from git_relay.github_client import GitHubClient
+
+        self.create(**CLAIMS)
+        calls = []
+
+        def moved(req, **kwargs):
+            calls.append(req.method)
+            raise HTTPError(
+                req.full_url,
+                307,
+                "fixture",
+                {"Location": "https://api.github.com/repositories/123/pulls"},
+                io.BytesIO(b"{}"),
+            )
+
+        self.relay.client = GitHubClient(TOKEN, opener=moved)
+        status, answer = self.create(**dict(CLAIMS, head="old-repository"))
+        self.assertEqual(status, 400, answer)
+        self.assertEqual(answer["error"], "repository moved")
+        self.assertEqual(answer["repository_id"], 123)
+        self.assertFalse(answer["retryable"])
+        self.assertEqual(calls, ["POST"])
+        self.assertEqual(self.read("creation_receipts")[0], 200)
+        restarted = PROwnerStore(self.owners._path)
+        self.assertEqual(len(restarted.protected_for_repo(REPO)), 1)
+        self.assertFalse(restarted._pending_creations)
+
+    def test_unproven_redirects_and_unknown_errors_keep_each_durable_fence(self):
+        from git_relay.github_client import RelayGitHubError
+
+        self.create(**CLAIMS)
+        cases = [
+            RelayGitHubError(301, "fixture"),
+            RelayGitHubError(307, "fixture", code="repository_moved"),
+            RelayGitHubError(502, "fixture", code="repository_moved", moved_repository_id=123),
+            RelayGitHubError(0, "fixture"),
+            RelayGitHubError(408, "fixture"),
+        ]
+        for i, failure in enumerate(cases):
+            with self.subTest(status=failure.status):
+                before = len(self.owners._pending_creations)
+                with mock.patch.object(self.client, "open_pr", side_effect=failure):
+                    self.create(**dict(CLAIMS, head="uncertain-%d" % i))
+                self.assertEqual(len(self.owners._pending_creations), before + 1)
+                restarted = PROwnerStore(self.owners._path)
+                self.assertEqual(len(restarted._pending_creations), before + 1)
+                with self.assertRaises(ValueError):
+                    restarted.protected_for_repo(REPO)
+
+    def test_actual_post_create_readback_redirect_or_refusal_stays_unknown(self):
+        from git_relay.github_client import GitHubClient, RelayGitHubError
+
+        self.create(**CLAIMS)
+        for status in (301, 404, 429):
+            with self.subTest(readback_status=status):
+                upstream = GitHubClient(TOKEN)
+                upstream._sleep = lambda _: None
+                post_count = []
+
+                def call(method, path, *args, **kwargs):
+                    if method == "POST":
+                        post_count.append(path)
+                        return {"number": 8, "html_url": "https://github.com/%s/pull/8" % REPO}
+                    raise RelayGitHubError(
+                        status,
+                        "fixture",
+                        code="repository_moved" if status == 301 else None,
+                        moved_repository_id=123 if status == 301 else None,
+                    )
+
+                upstream._call = call
+                self.relay.client = upstream
+                before = len(self.owners._pending_creations)
+                answer_status, answer = self.create(**dict(CLAIMS, head="readback-%d" % status))
+                self.assertEqual(answer_status, 502, answer)
+                self.assertEqual(answer["readback_status"], status)
+                self.assertEqual(answer["outcome"], "unknown")
+                self.assertEqual(len(post_count), 1)
+                restarted = PROwnerStore(self.owners._path)
+                self.assertEqual(len(restarted._pending_creations), before + 1)
+                with self.assertRaises(ValueError):
+                    restarted.protected_for_repo(REPO)
+
+    def test_corrupt_tail_remains_held_after_later_append_and_restart(self):
+        self.create(**CLAIMS)
+        original = self.owners.lookup(REPO, 7)
+        with open(self.owners._path, "ab") as handle:
+            handle.write(b'{"owner_index_event":')
+        damaged = PROwnerStore(self.owners._path)
+        self.assertEqual(damaged.skipped_lines, 1)
+        with self.assertRaises(ValueError):
+            damaged.protected_for_repo(REPO)
+        damaged.record(seat="swu-codex", repo=REPO, number=9, head="later", base="main")
+        with self.assertRaises(ValueError):
+            damaged.protected_for_repo(REPO)
+        restarted = PROwnerStore(self.owners._path)
+        self.assertEqual(restarted.lookup(REPO, 7), original)
+        self.assertEqual(restarted.skipped_lines, 1)
+        with self.assertRaises(ValueError):
+            restarted.protected_for_repo(REPO)

@@ -883,7 +883,17 @@ class Relay:
                     **({"draft": args["draft"]} if "draft" in args else {}),
                 )
             except RelayGitHubError as exc:
-                if self.pr_owners is not None and 400 <= exc.status < 500 and exc.status != 408:
+                # Only the client's validated, un-followed repository move
+                # is additional no-create evidence. Generic redirects and
+                # post-create readback failures remain fenced as uncertain.
+                repository_moved = (
+                    exc.code == "repository_moved"
+                    and 300 <= exc.status < 400
+                    and exc.moved_repository_id is not None
+                )
+                if self.pr_owners is not None and (
+                    repository_moved or 400 <= exc.status < 500 and exc.status != 408
+                ):
                     try:
                         self.pr_owners.refuse_creation(corr)
                     except (OSError, ValueError):
