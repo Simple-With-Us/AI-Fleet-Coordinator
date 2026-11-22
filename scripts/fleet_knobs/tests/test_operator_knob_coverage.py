@@ -60,7 +60,6 @@ ALLOWLIST: dict[str, str] = {
     "OPERATOR_ROUTINE_KEY_NAME": "name of the secret that holds the routine key, not the secret.",
     "OPERATOR_SECRET_PATH": "Infisical folder of a secret, not a value.",
     "OPERATOR_SECRET_PROJECT": "Infisical project of a secret, not a value.",
-    "OPERATOR_LINEAR_INFISICAL_TOKEN": "bootstrap credential for reading Infisical itself;  cannot live in Infisical.",
     "OPERATOR_ZULIP_EMAIL": "the Operator bot's identity, resolved through the credential store.",
     "GH_TOKEN": "set for a child process by the GitHub client, not read as a setting.",
     "ZULIP_SITE": "the Zulip site address, a host fact shared by every seat.",

@@ -95,11 +95,19 @@ Credentials (never logged; the developer key lives in memory only):
     never through a baked Linear token.  The service token itself arrives one of two
     ways:
 
-    OPERATOR_LINEAR_INFISICAL_TOKEN   the service token, bound directly by the host as
-                            a runtime-only variable;  wins when set
-    [linear_comments] infisical_token_file   the path of a file holding the service
-                            token (owner-only permissions, checked before use);
+    [linear_comments] infisical_token_file   the path of the consumer's own store
+                            holding the service token (owner-only permissions,
+                            checked before use);
                             defaults to ~/workspace/.secrets/operator-linear-service-token
+
+    The store is the ONLY source of that token.  No environment copy is consulted,
+    so a hand-set value can never replace the reviewed grant:  the owner's rule
+    (2026-11-11) lets a host bind a service token as a runtime variable only when
+    it is synced from Infisical,  and a copy a hand-set value can replace is
+    exactly what that rule refuses.  A host that delivers the token as a variable
+    places it in the store file instead.  A store that is not there leaves the
+    feature unconfigured (it is off);  a store that is there and cannot be read
+    is a failure and refuses,  naming the path.
 
     At engine build (daemon start, and again whenever the service token changes) the
     key is fetched with the service token — after the token is verified against its
@@ -137,7 +145,6 @@ from typing import Any
 from . import linear_relay as lr
 from .zulip import ZulipClient, _strip_quotes, realm_url
 
-SERVICE_TOKEN_ENV = "OPERATOR_LINEAR_INFISICAL_TOKEN"
 STATE_ENV = "OPERATOR_LINEAR_STATE"
 DRY_RUN_ENV = "OPERATOR_LINEAR_DRY_RUN"
 OWN_EMAIL_ENV = "OPERATOR_ZULIP_EMAIL"
@@ -200,26 +207,22 @@ def _default_http(
         return status, {}
 
 
-def service_token(
-    env: Mapping[str, str], token_file: str | None = None, *, store_first: bool = False
-) -> str:
-    """The scoped Infisical service token for the key fetch.
+def service_token(token_file: str | None = None) -> str:
+    """The scoped Infisical service token for the key fetch:  the consumer's own store,
+    and only that store.
 
-    The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE).
-    With ``store_first`` the store is the authority and the host-bound variable is only
-    a copy of that same grant, used when the store has none;  without it the historical
-    order holds and the host-bound variable wins.  "" when neither source yields one —
+    The store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE),  read with
+    owner-only permissions,  checked before use.  "" when the store holds no grant —
     the feature is simply unconfigured.  A file that exists but is group- or
     other-readable raises CredentialRefused:  a service token must not sit in a file
-    other accounts can read."""
-    bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
-    if bound and not store_first:
-        return bound
+    other accounts can read.  A file that exists but cannot be read raises
+    CredentialRefused too,  naming the path:  a broken reader is a failure,  not an
+    absent grant,  and it never falls back to another source."""
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except OSError:
-        return bound
+        return ""
     if mode & 0o077:
         raise CredentialRefused(
             "token_file_permissions",
@@ -228,14 +231,14 @@ def service_token(
         )
     try:
         stored = _strip_quotes(path.read_text("utf-8"))
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise CredentialRefused(
             "token_file_unreadable",
             "%s could not be read (%s); a service token file that exists but "
             "cannot be read is a broken store, not an absent one"
             % (path, type(exc).__name__),
         ) from None
-    return stored or bound
+    return stored
 
 
 def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
@@ -328,7 +331,6 @@ def fetch_api_key(token: str, *, http: HttpFn | None = None) -> str:
 
 
 def load_api_key(
-    env: Mapping[str, str],
     token_file: str | None = None,
     *,
     http: HttpFn | None = None,
@@ -339,9 +341,8 @@ def load_api_key(
     IS configured but the key cannot be fetched.  The key is held in memory only —
     nothing here writes it anywhere;  `hide` (the daemon's log scrubber registry) is
     told the value the moment it is fetched, so no later log line can carry it."""
-    # The store is the authority:  the host-bound variable is only a copy of that same
-    # grant,  used when the store has none.  A hand-set value never replaces it.
-    token = service_token(env, token_file, store_first=True)
+    # The consumer's own store is the only source:  no environment copy is consulted.
+    token = service_token(token_file)
     if not token:
         return None
     key = fetch_api_key(token, http=http)
@@ -656,7 +657,7 @@ def build(
     configured credential that is refused raises CredentialRefused, and a ledger that
     refuses to open raises SystemExit:  the daemon logs both as this feature failing
     closed — never as a daemon failure."""
-    token = load_api_key(env, service_token_file, http=http, hide=hide)
+    token = load_api_key(service_token_file, http=http, hide=hide)
     if token is None:
         return None
     dry = env.get(DRY_RUN_ENV) == "1"
