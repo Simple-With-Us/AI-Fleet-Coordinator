@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { HostedTools } from "../src/hosted-tools.js";
 import { GrRelayClient } from "../src/gr-tools.js";
-import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, isRefusalReason, githubRefusalStatus, refusalReasonText } from "../src/gr-refusal.js";
+import { REFUSAL_REASONS, SCAN_CATEGORIES, allowlistedGithubDiagnostics, classifyRelayRefusal, isRefusalReason, isScanCategory, githubRefusalStatus, refusalReasonText, scanCategoryFromError } from "../src/gr-refusal.js";
 import { loadConfig } from "../src/config.js";
 import { testEnv } from "./helpers.mjs";
 import * as S from "../src/seat-state.js";
@@ -239,4 +239,30 @@ test("the classifier is closed:  only members of REFUSAL_REASONS ever come out",
 test("credential_scan is a member of the set but never classified from a string here", () => {
   assert.equal(REFUSAL_REASONS.includes("credential_scan"), true);
   assert.equal(classifyRelayRefusal("credential-shaped content refused", undefined), null);
+});
+
+test("the scan category vocabulary is closed and extraction is anchored", () => {
+  assert.ok(SCAN_CATEGORIES.every((c) => /^[a-z0-9_]{1,60}$/.test(c)), "ids are short snake_case");
+  for (const c of SCAN_CATEGORIES) assert.ok(isScanCategory(c));
+  assert.equal(isScanCategory("made_up_category"), false);
+  assert.equal(isScanCategory(undefined), false);
+  assert.equal(
+    scanCategoryFromError("args.files[2].content_b64 looks like it contains a credential (aws_access_key_id); refusing to relay it"),
+    "aws_access_key_id",
+  );
+  assert.equal(
+    scanCategoryFromError("docs/a.md looks like it contains a credential (assigned_secret); refusing to relay it"),
+    "assigned_secret",
+  );
+  // Near-misses and unvouched categories stay hidden.
+  for (const error of [
+    "args.body looks like it contains a credential (made_up_category); refusing to relay it",
+    "args.body looks like it contains a credential (github_token); refusing to relay it (extra)",
+    "args.body looks like it contains a credential (github_token)",
+    "credential-shaped content refused",
+    42,
+    undefined,
+  ]) {
+    assert.equal(scanCategoryFromError(error), null, String(error));
+  }
 });
