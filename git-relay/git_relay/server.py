@@ -134,6 +134,9 @@ _SERVICE_READ_VERBS = {
     "check_runs": "/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}",
 }
 _SERVICE_READ_MAX_PAGE = 20
+#: The creation-receipt census bound:  the most eligible rows one answer may
+#: carry.  A repo with more fails closed instead of paging.
+_SERVICE_READ_RECEIPT_LIMIT = 1000
 
 
 def _text(value, field: str, required: bool = True) -> str | None:
@@ -928,12 +931,17 @@ class Relay:
     def _service_read(self, token, args) -> tuple[int, dict]:
         """The alert service's fixed-shape read lane (no seat, no token export)."""
         expected = self.service_read_token
+        args = args if isinstance(args, dict) else {}
         if expected is None:
+            # Every exit from this lane is audited, so an unconfigured-lane
+            # probe stays visible in review instead of a silent 503.
+            self.audit.record(
+                "service-read", "service_read", "", "error", {"cause": "not_configured"}
+            )
             return 503, {"error": "service reads are not configured"}
         if not isinstance(token, str) or not hmac.compare_digest(token.encode(), expected.encode()):
             self._unauth_auditor.record(self.audit, "service_read")
             return 401, {"error": "unauthenticated"}
-        args = args if isinstance(args, dict) else {}
         repo = args.get("repo")
         if not isinstance(repo, str) or not _SERVICE_READ_REPO_RE.fullmatch(repo):
             self.audit.record("service-read", "service_read", "", "bad_request", {"field": "repo"})
@@ -947,16 +955,37 @@ class Relay:
         # change, arbitrary path, caller envelope, App mint or token export.
         if args.get("verb") == "creation_receipts":
             if set(args) != {"repo", "verb"}:
+                self.audit.record(
+                    "service-read",
+                    "service_read",
+                    repo,
+                    "bad_request",
+                    {"field": "verb", "cause": "creation_receipt_args"},
+                )
                 return 400, {"error": "creation receipt query accepts repo and verb only"}
             if self.pr_owners is None:
+                self.audit.record(
+                    "service-read",
+                    "service_read",
+                    repo,
+                    "error",
+                    {"cause": "owners_unavailable"},
+                )
                 return 503, {"error": "creation receipts unavailable"}
-            rows = self.pr_owners.for_repo(repo)
-            rows = [
-                row
-                for row in rows
-                if row.get("confirmed") is True and row.get("source") == "open_pr"
-            ]
-            if len(rows) > 1000:
+            # The store answers this query under the bound:  it stops at the
+            # limit and reports the overflow, so the per-repo history is never
+            # materialized in full and the refusal is decided first.
+            rows, overflow = self.pr_owners.confirmed_for_repo(
+                repo, _SERVICE_READ_RECEIPT_LIMIT
+            )
+            if overflow:
+                self.audit.record(
+                    "service-read",
+                    "service_read",
+                    repo,
+                    "error",
+                    {"cause": "census_exceeded", "limit": _SERVICE_READ_RECEIPT_LIMIT},
+                )
                 return 503, {"error": "creation receipt census exceeds bounded query"}
             self.audit.record(
                 "service-read",
@@ -993,6 +1022,9 @@ class Relay:
             )
             return 400, {"error": "page out of range"}
         if self.app_minter is None:
+            self.audit.record(
+                "service-read", "service_read", repo, "error", {"cause": "minter_absent"}
+            )
             return 503, {"error": "service reads are not wired"}
         detail = {"verb": verb, "number": number, "page": page}
         try:

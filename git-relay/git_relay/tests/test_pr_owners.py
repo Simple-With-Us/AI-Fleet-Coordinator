@@ -151,6 +151,34 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(sorted(r["number"] for r in store.for_seat("swu-echo")), [1, 3])
             self.assertEqual([r["number"] for r in store.for_repo("o/s")], [3])
 
+    def test_confirmed_for_repo_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PROwnerStore(str(Path(directory) / "owners.jsonl"))
+            store.record(seat="swu-echo", repo="o/r", number=1, head="h", base="main")
+            store.record(
+                seat="swu-echo", repo="o/r", number=2, head="h", base="main", confirmed=False
+            )
+            store.record(
+                seat="swu-echo",
+                repo="o/r",
+                number=3,
+                head="h",
+                base="main",
+                source="audit_backfill",
+            )
+            # Only a confirmed open_pr row is an eligible creation receipt.
+            rows, overflow = store.confirmed_for_repo("O/R", 10)
+            self.assertEqual([r["number"] for r in rows], [1])
+            self.assertFalse(overflow)
+            # The bound is decided before the rows are built.
+            rows, overflow = store.confirmed_for_repo("o/r", 1)
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(overflow)
+            store.record(seat="swu-echo", repo="o/r", number=4, head="h", base="main")
+            rows, overflow = store.confirmed_for_repo("o/r", 1)
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(overflow)
+
 
 class RelayHookTests(unittest.TestCase):
     def open_pr(self, directory, client, token=ECHO_TOKEN, extra=None, **kwargs):
@@ -375,13 +403,13 @@ class StoreRobustnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = PROwnerStore(str(Path(directory) / "owners.jsonl"))
             store.record(
-                seat="swu-echo", repo="Simple-With-Us/BotFleet", number=5, head="h", base="main"
+                seat="swu-echo", repo="Example/FixtureRepo", number=5, head="h", base="main"
             )
-            self.assertIsNotNone(store.lookup("simple-with-us/botfleet", 5))
-            self.assertEqual(len(store.for_repo("SIMPLE-WITH-US/BOTFLEET")), 1)
+            self.assertIsNotNone(store.lookup("example/fixturerepo", 5))
+            self.assertEqual(len(store.for_repo("EXAMPLE/FIXTUREREPO")), 1)
             # The row keeps the creation-time spelling.
             self.assertEqual(
-                store.lookup("simple-with-us/botfleet", 5)["repo"], "Simple-With-Us/BotFleet"
+                store.lookup("example/fixturerepo", 5)["repo"], "Example/FixtureRepo"
             )
 
 

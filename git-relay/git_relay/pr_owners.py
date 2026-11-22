@@ -113,6 +113,9 @@ class PROwnerStore:
     def __init__(self, path: str):
         self._path = path
         self._by_pr: dict[tuple[str, int], dict] = {}
+        # A per-repo key list, in first-seen order, so a per-repo query never
+        # scans every row in the store.
+        self._by_repo: dict[str, list[tuple[str, int]]] = {}
         self._lock = threading.Lock()
         self.skipped_lines = 0
         self.load_error: str | None = None
@@ -168,6 +171,7 @@ class PROwnerStore:
         existing = self._by_pr.get(key)
         if existing is None:
             self._by_pr[key] = row
+            self._by_repo.setdefault(key[0], []).append(key)
             return True
         if existing.get("confirmed"):
             return False
@@ -251,7 +255,38 @@ class PROwnerStore:
     def for_repo(self, repo: str) -> list[dict]:
         folded = repo.casefold()
         with self._lock:
-            return [dict(r) for r in self._by_pr.values() if r.get("repo", "").casefold() == folded]
+            rows = []
+            for key in self._by_repo.get(folded, ()):
+                row = self._by_pr.get(key)
+                if row is not None:
+                    rows.append(dict(row))
+            return rows
+
+    def confirmed_for_repo(self, repo: str, limit: int) -> tuple[list[dict], bool]:
+        """Bounded query: the confirmed open_pr rows for one repo, at most `limit`.
+
+        Returns (rows, overflow).  `overflow` is True when more eligible rows
+        exist than the bound allows, so the caller can fail closed.  The scan
+        stops at the bound:  the per-repo history is never materialized in full
+        and the refusal is decided before the rows are built.
+        """
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        folded = repo.casefold()
+        rows: list[dict] = []
+        overflow = False
+        with self._lock:
+            for key in self._by_repo.get(folded, ()):
+                row = self._by_pr.get(key)
+                if row is None:
+                    continue
+                if row.get("confirmed") is not True or row.get("source") != CONFIRMED:
+                    continue
+                if len(rows) >= limit:
+                    overflow = True
+                    break
+                rows.append(dict(row))
+        return rows, overflow
 
     def __len__(self) -> int:
         with self._lock:

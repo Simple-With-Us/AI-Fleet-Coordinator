@@ -1,5 +1,7 @@
+import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from git_relay.tests.test_review_alert_relay import (
     ARGS,
@@ -68,12 +70,66 @@ class ProtectedReceipts(unittest.TestCase):
 
         self.relay.pr_owners = mock.Mock()
         row = dict(repo=ARGS["repo"], number=7, confirmed=True, source="open_pr")
-        self.relay.pr_owners.for_repo.return_value = [dict(row, source="audit_backfill")] * 1001 + [
-            row
-        ]
+        # The store answers under the bound:  the eligible rows and whether
+        # more exist than the limit allows.
+        self.relay.pr_owners.confirmed_for_repo.return_value = ([row], False)
         self.assertEqual(self.read()[1]["body"], [row])
-        self.relay.pr_owners.for_repo.return_value = [row] * 1001
+        self.relay.pr_owners.confirmed_for_repo.return_value = ([], True)
         self.assertEqual(self.read()[0], 503)
+
+    def test_real_store_answers_under_the_bound(self):
+        # The real store, not a mock:  a long ineligible history does not
+        # exhaust the census, and too many eligible rows still fail closed.
+        store = self.relay.pr_owners
+        for number in range(1, 1002):
+            store.record(
+                seat="swu-echo",
+                repo=ARGS["repo"],
+                number=number,
+                head="echo/x",
+                base="main",
+                confirmed=True,
+                source="audit_backfill",
+            )
+        eligible = dict(repo=ARGS["repo"], number=2000, confirmed=True, source="open_pr")
+        store.record(
+            seat="swu-echo",
+            repo=ARGS["repo"],
+            number=2000,
+            head="echo/x",
+            base="main",
+            confirmed=True,
+        )
+        status, result = self.read()
+        self.assertEqual(status, 200, result)
+        self.assertEqual([r["number"] for r in result["body"]], [2000])
+        self.assertEqual(eligible["number"], 2000)
+        for number in range(2001, 3001):
+            store.record(
+                seat="swu-echo",
+                repo=ARGS["repo"],
+                number=number,
+                head="echo/x",
+                base="main",
+                confirmed=True,
+            )
+        status, _ = self.read()
+        self.assertEqual(status, 503)
+
+    def test_census_refusal_is_audited(self):
+        from unittest import mock
+
+        self.relay.pr_owners = mock.Mock()
+        self.relay.pr_owners.confirmed_for_repo.return_value = ([], True)
+        self.assertEqual(self.read()[0], 503)
+        rows = [
+            json.loads(line)
+            for line in (Path(self.tmp.name) / "audit.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(
+            any(r.get("result") == "error" and r.get("cause") == "census_exceeded" for r in rows)
+        )
 
     def test_github_mint_failure_returns_audited_502(self):
         from unittest import mock

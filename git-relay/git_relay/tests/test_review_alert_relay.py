@@ -226,6 +226,23 @@ class ServiceReadTests(unittest.TestCase):
             )
             self.assertEqual(status, 503)
 
+    def test_unconfigured_lane_is_audited(self):
+        # An unconfigured-lane probe must leave an audit row, so it is visible
+        # in review instead of a silent 503.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client())
+            relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(
+                any(r.get("result") == "error" and r.get("cause") == "not_configured" for r in rows)
+            )
+
     def test_wrong_bearer_is_401_and_audited(self):
         with tempfile.TemporaryDirectory() as directory:
             relay = make_relay(
@@ -361,6 +378,21 @@ class ServiceReadTests(unittest.TestCase):
                 SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
             )
             self.assertEqual(status, 503)
+
+    def test_without_minter_is_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), minter=None, service_repos=[ARGS["repo"]])
+            relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(
+                any(r.get("result") == "error" and r.get("cause") == "minter_absent" for r in rows)
+            )
 
     def test_ok_read_is_audited_without_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
