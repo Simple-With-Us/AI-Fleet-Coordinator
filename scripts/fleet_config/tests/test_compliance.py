@@ -623,8 +623,10 @@ class ReviewFindingTests(unittest.TestCase):
             result = check_command(self._command("security", detail), "mac", self.ctx)
             self.assertIs(result.state, CheckState.UNKNOWN)
             self.assertIn("not allowed to run", result.reason)
+        # The retired reader is not a program this package may start at all.
         result = check_command(self._command("fleet-secrets", "set NAME"), "mac", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn("not allowed to run", result.reason)
         self.assertIn("not on the allowlist", result.reason)
 
     def test_command_rules_cannot_run_the_retired_secret_command(self) -> None:

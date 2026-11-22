@@ -117,6 +117,10 @@ def bind_creation(repo, number, *, lookup_creation, registry_history, registry_b
     ):
         raise Held("binding-receipt-mismatch")
     return {
+        "platform": session["platform"],
+        "verified_host": session["verified_host"],
+        "profile_scope": session["profile_scope"],
+        "seat": principal,
         "repo": row["repo"],
         "number": number,
         "corr": corr,

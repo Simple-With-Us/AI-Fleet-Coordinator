@@ -303,16 +303,64 @@ _KEYED_SECRET = re.compile(
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
+# A bare 40-character lowercase hex run is a git SHA-1:  commits and PR heads quote them in
+# prose and in commit/pull URL paths, and withholding whole posts for a quoted SHA is the bug
+# AFC-834 records.  The context decides, per match (Kody, PR 2344):  a run is exempt in
+# commit-ish URL paths (`commit/`, `commits/`, `tree/`, `blob/`) and at plain-prose
+# boundaries (start, whitespace, an opening bracket, a prose quote);  it keeps withholding
+# in a query or keyed position (`?sha=`, `token:`, a JSON `"key": "`), mid-run, or when it
+# continues into a longer base64 run, as does any other length or a mixed-case run.
+_BARE_GIT_SHA = re.compile(r"\b[0-9a-f]{40}(?![A-Za-z0-9+/=])")
+
+
+def _sha_is_exposed(text: str, start: int) -> bool:
+    """True when the 40-character run at `start` sits in commit prose or a commit-ish URL
+    path, and is therefore a quotable git SHA rather than a credential context."""
+    before = text[:start]
+    for segment in ("commit/", "commits/", "tree/", "blob/"):
+        if before.endswith(segment):
+            return True
+    if before == "":
+        return True
+    last = before[-1]
+    # All whitespace (including newlines) is a prose boundary, so has_secret
+    # agrees whether it sees raw multiline text or safe_text's collapsed line.
+    if last.isspace() or last in "([{":
+        return True
+    # Quoted runs are never exempt.  A tight quote after an identifier
+    # (`token"…"`) can hide a credential, and even a prose quote is withheld
+    # (tests pin `"sha"`, `("sha")`, and `merged "sha"`).
+    return False
+
+
+def _mask_bare_shas(text: str) -> str:
+    """Mask only the bare git SHAs, with a character outside every credential alphabet:  the
+    mask also breaks any wider run a URL path would otherwise extend across the SHA."""
+    parts: list[str] = []
+    last = 0
+    for match in _BARE_GIT_SHA.finditer(text):
+        if _sha_is_exposed(text, match.start()):
+            parts.append(text[last : match.start()])
+            parts.append("!" * 40)
+            last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
+
+
 def has_secret(text: str) -> bool:
     """True when the text carries anything credential-shaped: the fleet's canonical scanner
     (`secretscan`, which knows Linear, Sentry, Infisical, Cloudflare and the other service
-    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments)."""
+    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments).
+    A bare 40-character lowercase hex run away from any query or key name is a git SHA-1,
+    not a credential, and cannot withhold a post on its own (AFC-834)."""
     text = text or ""
-    return (
-        secretscan.scan(text) is not None
-        or any(p.search(text) for p in _SECRET_PATTERNS)
-        or bool(_KEYED_SECRET.search(text))
-    )
+    if secretscan.scan(text) is not None or bool(_KEYED_SECRET.search(text)):
+        return True
+    # The bare SHAs are masked out before the wide rows run, with a character outside
+    # every credential alphabet:  the mask also breaks any wider run a URL path or a
+    # neighbouring segment would otherwise extend across the SHA (Kody, PR 2344).
+    probe = _mask_bare_shas(text)
+    return any(p.search(probe) for p in _SECRET_PATTERNS)
 
 
 def safe_text(text: str) -> str:

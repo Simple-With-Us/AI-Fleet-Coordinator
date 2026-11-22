@@ -55,7 +55,7 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
             mock.patch.object(server.shutil, "which", return_value="synthetic-cli")
         )
         constructor = stack.enter_context(
-            mock.patch.object(app_tokens, "FleetSecretsSource", return_value=source)
+            mock.patch.object(app_tokens, "InfisicalSource", return_value=source)
         )
         minter = stack.enter_context(
             mock.patch.object(app_tokens, "AppTokenMinter", wraps=app_tokens.AppTokenMinter)
@@ -218,7 +218,7 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
                 **options,
             )
 
-        self.source = app_tokens.FleetSecretsSource(
+        self.source = app_tokens.InfisicalSource(
             reader=reader,
             path="/github-apps",
             credential_file=str(token),

@@ -9,6 +9,11 @@ from pathlib import Path
 
 HOME = Path("/Users/jay")
 APP_ROOT = HOME / "apps" / "seat-mcp"
+# The retired `fleet-secrets` command is gone.  The scoped reader is the one reader
+# left, and it holds this consumer's own service token:  the token is read from
+# Fleet-OPS /seat-mcp with the `seat-mcp-ro` grant, and nothing else reads it.
+SCOPED_READER = HOME / "apps" / "infisical-scoped" / "infisical-scoped.py"
+READER_ACCOUNT = "seat-mcp-ro"
 TOKEN_FOLDER = "/seat-mcp"
 TOKEN_NAME = "SEAT_MCP_TOKEN"
 JOBS_DIR = HOME / ".seat-mcp" / "jobs"

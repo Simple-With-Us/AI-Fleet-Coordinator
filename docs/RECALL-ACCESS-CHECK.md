@@ -42,7 +42,7 @@ Canonical design doc: [`docs/RAG-FLEET-INFRA.md`](RAG-FLEET-INFRA.md).
 **Credential names** (values live in Infisical, never here):
 
 - `RECALL_API_TOKEN` — bearer for `recall.jays.services` (Infisical shared/prod).
-- `SEAT_MCP_TOKEN` — bearer for `agents.jays.services` (Infisical Fleet-OPS `/seat-mcp` on the Mac, `fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp`).
+- `SEAT_MCP_TOKEN` — bearer for `agents.jays.services` (Infisical Fleet-OPS `/seat-mcp` on the Mac, read through the consumer's own scoped service token).
 - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` — Cloudflare Access service token
   (Infisical Fleet-OPS root `AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID` / `..._SECRET` on the Mac).  Both hostnames sit
   behind the same Access application, so one service token covers them.

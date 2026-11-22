@@ -48,10 +48,11 @@ What it promises:
     with "already started" and starts nothing, and an application pm2 no longer remembers
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
-    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    the adjacent shared Infisical reader into memory, sent in one request header and never
-    printed, logged or passed in an argv.  The reader accepts only the control consumer's
-    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
+    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
+    the shared Infisical client with this service's own scoped token, into memory, sent in
+    one request header and never printed, logged or passed in an argv.  A forced command
+    has only the environment sshd gives it, so the token comes from `ops-control.env`
+    (0600).
     `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
@@ -812,10 +813,11 @@ INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
-# The control consumer's Infisical binding, and nothing else from its credential file.
+# The Infisical identity this service may be handed from the credential file, and nothing
+# else from it.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this custody boundary independent of the optional shared reader.
+
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -4363,49 +4365,49 @@ def _load_infisical_reader(ctx):
             module = None
     if module is None or not all(
         callable(getattr(module, name, None))
-        for name in ("bounded_fetch_project", "infisical_project_id")
+        for name in ("bounded_fetch_project", "infisical_project_id", "fetch_verified")
     ):
         raise Failed("fleet_infisical.py is not available")
     return module
 
 
 def read_coolify_token(ctx):
-    """One strict named read through this control consumer's own binding.  Raises Failed."""
-    reader = _load_infisical_reader(ctx)
-    env = secrets_env(ctx)
-    binding = env.pop("INFISICAL_TOKEN", "")
-    if not binding:
-        raise Failed("the Coolify token is not available")
+    """The Coolify API token, through this service's own scoped token, into memory only.
+
+    The token's grant names exactly the /coolify folder, and the shared client checks the
+    answer's own provenance before the value is used.  No child process starts and no
+    other credential source is consulted.  Raises Failed."""
+    token = scoped_token(ctx)
+    client = _load_infisical_reader(ctx)
+    env = {
+        key: value
+        for key, value in ctx.environ.items()
+        if key not in SHARED_AUTH_ENV_NAMES and key != SCOPED_TOKEN_NAME
+    }
+    env["HOME"] = str(ctx.home)
+    env[client.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
     try:
-        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
-        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
-        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
-        values = reader.bounded_fetch_project(
-            project,
-            COOLIFY_TOKEN_PATH,
-            scoped,
-            token=binding,
-            names=(COOLIFY_TOKEN_NAME,),
-            timeout=SECRET_TIMEOUT,
-            writer=False,
-            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
-            strict_records=True,
+        value = client.fetch_verified(
+            COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token, timeout=SECRET_TIMEOUT
         )
-        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
-    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
-        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+    except TimeoutError:
+        # A hung read is a timeout,  not an absent token:  it keeps its own signal so
+        # the caller can retry instead of treating the credential as broken.  The read
+        # itself was never sent,  so this is not an unknown end:  nothing was started.
+        raise Failed("the Coolify token read timed out", error_code="timeout") from None
+    except client.SecretsError:
         raise Failed("the Coolify token is not available") from None
-    if not token or any(c.isspace() or ord(c) < 33 for c in token):
+    if not value or any(c.isspace() or ord(c) < 33 for c in value):
         raise Failed("the Coolify token is not available")
-    return token
+    return value
 
 
-def secrets_env(ctx):
-    """Resolve this control consumer's private reader binding.  Raises Failed.
+def scoped_token(ctx):
+    """This service's own scoped Infisical token, from its credential file or the process.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
-    Inherited shared token and machine-identity bindings are discarded."""
+    as the bearer of one request, never put in an argv or in a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:
@@ -4421,8 +4423,7 @@ def secrets_env(ctx):
                 or any(c.isspace() for c in value)
             ):
                 raise Failed("the scoped Infisical token is malformed")
-            env["INFISICAL_TOKEN"] = value
-        return env
+        return value
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
     try:
@@ -4466,9 +4467,7 @@ def secrets_env(ctx):
         or any(c.isspace() for c in token)
     ):
         raise Failed("the Infisical credential file is malformed")
-    if token:
-        env["INFISICAL_TOKEN"] = token
-    return env
+    return token
 
 
 def check_token(ctx):

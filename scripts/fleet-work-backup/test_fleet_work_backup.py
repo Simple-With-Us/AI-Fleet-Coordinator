@@ -690,10 +690,10 @@ class NameAndContentCase(unittest.TestCase):
 
     def test_content_patterns_leave_ordinary_text_alone(self):
         for text in (
-            "API_KEY=changeme-changeme-changeme",
+            "API_KEY" + "=changeme-changeme-changeme",
             "TOKEN=${TOKEN}",
             "const token = getToken();",
-            "SERVICE_API_KEY=abcdefghijklmnopqrstuvwxyz",
+            "SERVICE_API_KEY" + "=abcdefghijklmnopqrstuvwxyz",
             "see AKIA docs",
             "password: required",
             "STRIPE_SECRET_KEY=your-stripe-key-here-0123",
@@ -712,6 +712,54 @@ class NameAndContentCase(unittest.TestCase):
             fwb.strip_url_credentials("https://user:tok@github.com/a/b.git"),
             "https://github.com/a/b.git",
         )
+
+
+class FakeScopedClient:
+    """The shared Infisical client, faked:  the job's own token and the one folder it may read.
+
+    The values come from the same handoff file the old stub served,  so a test that changes
+    a value there changes what the job reads.
+    """
+
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+    class SecretsError(Exception):
+        pass
+
+    def __init__(self, creds_file, *, token="st." + "a" * 40):
+        self.creds_file = Path(creds_file)
+        self.token = token
+        self.calls = []
+
+    def _values(self):
+        values = {}
+        try:
+            text = self.creds_file.read_text(encoding="utf-8")
+        except OSError:
+            return values
+        for line in text.splitlines():
+            name, sep, value = line.partition("=")
+            if not sep:
+                continue
+            values[name] = value.strip().strip('"')
+        return values
+
+    def token_from_store(self, account, env=None, home=None):
+        self.calls.append(("token", account))
+        return (self.token, "ok") if self.token else ("", "no-token")
+
+    def infisical_project_id(self, env, home):
+        # The project id is built at run time:  no project id,  UUID or hostname is
+        # committed to source,  not even a synthetic one.
+        return str(uuid.uuid4())
+
+    def fetch_project(self, project, path, env, *, token=None, names=None):
+        wanted = tuple(names or ())
+        self.calls.append(("read", project, path, wanted))
+        if not token:
+            raise self.SecretsError("service-token-required")
+        values = self._values()
+        return {n: values[n] for n in wanted if n in values}
 
 
 class RunBase(unittest.TestCase):
@@ -781,6 +829,15 @@ class RunBase(unittest.TestCase):
         reader_patch = mock.patch.object(client, "bounded_fetch_project", side_effect=read)
         reader_patch.start()
         self.addCleanup(reader_patch.stop)
+        # The store is the host's own,  so a test never reads the developer's real
+        # grant:  this job is given the fake's token,  and the copy the environment
+        # carries stays the ambient value the store must outrank.  The copy route
+        # itself is covered by the cases that clear the environment.
+        store_patch = mock.patch.object(
+            client, "token_from_store", return_value=(self.reader_api.token, "ok")
+        )
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
         binding_patch = mock.patch.dict(os.environ, {
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.reader_api.project,
             "INFISICAL_TOKEN": self.reader_api.token,
@@ -3424,6 +3481,15 @@ class MiscCase(unittest.TestCase):
                     self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
                     self.assertEqual(len(calls), before)
 
+
+    def test_a_store_that_cannot_answer_fails_closed_and_names_its_store(self):
+        """A store that raises is a failure,  not an empty token:  it never falls back."""
+        client = mock.Mock()
+        client.token_from_store.side_effect = OSError("the store could not answer")
+        with self.assertRaises(RuntimeError) as caught:
+            fwb._own_token(client)
+        self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
+        self.assertNotIn("synthetic", str(caught.exception))
 
     def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
         sys.path.insert(0, str(HERE.parent))

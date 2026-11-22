@@ -5,8 +5,9 @@
   the hosted Worker's Linear token health that Muster reads, ~/.local/state/fleet-tools/worker-health.json
   (0600, atomic).  It runs the managed runtime's copy of fleet-worker-health.py, so it moves with main,
   under /usr/bin/python3 -I (Python 3.9 on macOS).  The signing key HEALTH_HMAC_KEY comes from
-  a synced environment value or the adjacent isolated fleet_infisical_cli.py get command, which
-  requires a finite future grant expiry.  The key is held in memory and is never printed or written.
+  this script's own scoped read-only service token (worker-health-ro) against Infisical Fleet-OPS
+  prod root, which requires a finite future grant expiry.  The key is held in memory and is never
+  printed or written.
   A failed call still writes the file, with state "unknown" and a fixed error code, and exits 1.
   It changes nothing else.
   Install:  cp this file to ~/Library/LaunchAgents/ and
