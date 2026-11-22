@@ -2511,9 +2511,7 @@ def sweep_stale(
     ended: list[dict[str, Any]] = []
     try:
         with registry._write_txn() as conn:
-            ended.extend(
-                registry._retire_closed_aliases(conn, namespace, _utcnow(), seat=seat)
-            )
+            ended.extend(registry._retire_closed_aliases(conn, namespace, _utcnow(), seat=seat))
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
                 " ORDER BY registered_at ASC",

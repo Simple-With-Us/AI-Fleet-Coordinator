@@ -146,9 +146,7 @@ class RegistryTest(unittest.TestCase):
         # A session closed by direct SQL (closed_at set, its alias never retired)
         # reads as holding no letter, so allocation must not count its pair as
         # live forever:  the orphan alias is retired and the pair is reissued.
-        holders = [
-            self.reg.resolve_or_register(ident(native=f"n{i}")) for i in range(26)
-        ]
+        holders = [self.reg.resolve_or_register(ident(native=f"n{i}")) for i in range(26)]
         first = holders[0]
         self.assertEqual(first["label"], "AA")
         conn = sqlite3.connect(self.db)
@@ -168,8 +166,7 @@ class RegistryTest(unittest.TestCase):
             " WHERE letter = 'AA' ORDER BY generation"
         ).fetchall()
         live = conn.execute(
-            "SELECT COUNT(*) FROM alias_assignments"
-            " WHERE letter = 'AA' AND retired_at IS NULL"
+            "SELECT COUNT(*) FROM alias_assignments WHERE letter = 'AA' AND retired_at IS NULL"
         ).fetchone()[0]
         conn.close()
         self.assertEqual(live, 1)  # the partial unique index's one live holder
