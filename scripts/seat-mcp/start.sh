@@ -21,8 +21,7 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
-if [[ -z "${SEAT_MCP_TOKEN:-}" ]]; then
-  if SEAT_MCP_TOKEN="$("$PYTHON" "${SCOPED_READER}" get SEAT_MCP_TOKEN \
+  if SEAT_MCP_TOKEN="$("$PYTHON" -I "${SCOPED_READER}" get SEAT_MCP_TOKEN \
     --folder /seat-mcp --project fleet-ops --account seat-mcp-ro 2>/dev/null)"; then
     :
   else
@@ -36,7 +35,6 @@ if [[ -z "${SEAT_MCP_TOKEN:-}" ]]; then
     echo "missing SEAT_MCP_TOKEN in Infisical /seat-mcp:  the scoped reader at ${SCOPED_READER} could not read it with the seat-mcp-ro scoped service token (${reason})" >&2
     exit 1
   fi
-fi
 if [[ -z "${SEAT_MCP_TOKEN}" ]]; then
   echo "SEAT_MCP_TOKEN empty in Infisical /seat-mcp" >&2
   exit 1
