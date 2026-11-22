@@ -741,7 +741,8 @@ def build_parser() -> argparse.ArgumentParser:
 #
 # SIMPLE_RECALL_REMOTE=1 sends the supported recall tools to the hosted ST-MCP endpoint with the bot's own bearer
 # (SIMPLE_TOOLS_BEARER, or the declared seat's canonical file ~/.secrets/fleet-tools/<seat> when the environment
-# has none).  A process that declares a fleet seat (AGENT_LAUNCH_SEAT, AGENT_SEAT or AGENT_TAG) and has no local
+# has none).  A process that declares a fleet seat (AGENT_LAUNCH_SEAT, AGENT_SEAT or AGENT_TAG), or that sets
+# SIMPLE_TOOLS_BEARER with a well-formed bearer and no seat, and has no local
 # corpus configured (no QDRANT_URL) runs the hosted READ verbs this way by default (hosted_default below;  writes
 # keep their explicit SIMPLE_RECALL_REMOTE opt-in, and a search flag with no hosted equivalent keeps the direct
 # route).  An explicit SIMPLE_RECALL_REMOTE=0 keeps the direct route too.  The hosted server serves Recall from ONE shared backend
@@ -766,8 +767,9 @@ _LOCAL_ONLY_FLAGS = ("--source", "--seat", "--since-days", "--per-doc", "--no-re
 
 
 def hosted_default(cmd: str) -> bool:
-    """Hosted by default for a process that declares a fleet seat:  the seat's own bearer
-    (environment or its canonical file) is the only credential the hosted read verbs need.
+    """Hosted by default for a process that declares a fleet seat or sets SIMPLE_TOOLS_BEARER:
+    the bearer (environment, or the declared seat's canonical file) is the only credential the hosted
+    read verbs need, so a launcher that names no seat but supplies the bearer is served too.
     An explicit SIMPLE_RECALL_REMOTE switch decides either way, a configured local corpus
     (QDRANT_URL) keeps the direct route, a verb with no hosted route stays local, a write
     keeps its explicit opt-in, and a search flag with no hosted equivalent stays direct."""
@@ -781,14 +783,15 @@ def hosted_default(cmd: str) -> bool:
         return False
     if not any(
         os.environ.get(name, "").strip()
-        for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
+        for name in (REMOTE_BEARER_ENV, "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
     ):
         return False
     # A declaration alone is not enough:  with no usable own bearer (a typo'd or unmanaged
     # seat) the hosted route would only fail on the missing credential, so keep the direct
     # route this client had before the hosted default.
     try:
-        return bool(fleet_bearer.own_bearer())
+        bearer = fleet_bearer.own_bearer()
+        return bool(bearer) and REMOTE_BEARER_RE.fullmatch(bearer) is not None
     except fleet_bearer.FleetError:
         return False
 
