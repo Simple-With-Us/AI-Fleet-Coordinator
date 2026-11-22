@@ -4391,7 +4391,9 @@ def scoped_token(ctx):
 
 
 def check_token(ctx):
-
+    """(answer, exit status) for `--check-token`: read the token as a redeploy would, then
+    ask Coolify whether it accepts that token for a deploy.  The probe names the nil
+    uuid, which matches no resource, so nothing is deployed and the token is not shown."""
     answer = _refusal("")
     answer["verb"] = "check-token"
     try:
