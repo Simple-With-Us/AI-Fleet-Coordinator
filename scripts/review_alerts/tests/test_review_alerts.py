@@ -355,8 +355,11 @@ class FakeRead:
 
 def verified_origin(*_args):
     return dict(
-        seat="CLAUDE", platform="claude", verified_host="server",
-        profile_scope="fixture-profile", session=SESSION,
+        seat="CLAUDE",
+        platform="claude",
+        verified_host="server",
+        profile_scope="fixture-profile",
+        session=SESSION,
     )
 
 
