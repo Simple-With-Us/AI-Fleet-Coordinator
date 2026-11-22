@@ -938,8 +938,9 @@ class Failed(Exception):
         self.error_code = error_code
         self.completed = completed
         # True when the action was started and its end could not be observed (a command killed at its
-        # time limit, or a request that may have been sent and got no answer).  The `--from-muster` route
-        # calls such a run `unknown`, never `failed` (server-route-spec section 13); no answer carries it.
+        # time limit, a request that may have been sent and got no answer, or a mutating request
+        # answered with a server error).  The `--from-muster` route calls such a run `unknown`, never
+        # `failed` (server-route-spec section 13); no answer carries it.
         self.timed_out = timed_out
 
 
@@ -4479,9 +4480,13 @@ def execute(ctx, scope, action, target, commands):
         finally:
             coolify_token = ""
         if not 200 <= status < 300:
+            # The redeploy is a POST, so a server error can follow a deploy that was already
+            # applied:  the action had begun or may have, and the route reports it `unknown`,
+            # never `failed` (server-route-spec section 13).  A 4xx refused the request before
+            # anything began.
             raise Failed(
                 f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
-                timed_out=bool(getattr(status, "sent", False)),
+                timed_out=bool(getattr(status, "sent", False)) or 500 <= status < 600,
             )
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()

@@ -3,8 +3,7 @@
 **Why.**  `scripts/fleet-ops-control.py` read a Coolify token from an Infisical secret and folder that
 do not exist: the Fleet-OPS prod project has no `/coolify` folder and no `COOLIFY_API_TOKEN`, so
 `server redeploy` and `--check-token` failed closed with "the Coolify token is not available" before
-any Coolify request.  The helper now fails with "the Coolify token is not available: set
-`FLEET_OPS_CONTROL_INFISICAL_TOKEN`", so the failure names the variable it needs.  The server's audit log carries those failures for the Eavesdropper redeploys on
+any Coolify request.  The helper now fails with "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env", so the failure names the variable it needs.  The server's audit log carries those failures for the Eavesdropper redeploys on
 2026-11-18.
 
 **What the deploy-only Coolify token is.**  Fleet-OPS prod holds three Coolify tokens at the project
@@ -24,8 +23,7 @@ enforced at the folder.
 owned by the consumer's account, holding one line: `FLEET_OPS_CONTROL_INFISICAL_TOKEN=<value>`.  The
 value is never on a command line, in an argv, in the answer or in the audit.  The path follows the
 running account's home, so the forced command, which runs as `jay`, reads that file, while a root
-shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with "the Coolify
-token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN" even though the ssh path works.
+shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env" even though the ssh path works.
 
 **What was verified, and how.**
 
@@ -36,8 +34,8 @@ token is not available: set FLEET_OPS_CONTROL_INFISICAL_TOKEN" even though the s
   that another account owns;  a root shell proves nothing about the ssh path.  The check reads the
   token the way a redeploy does and posts the deploy route the nil uuid, which names no resource, so
   nothing is deployed and Coolify's own not-found is what proves the token is accepted.
-- The same script with `server redeploy l40rxd4rbj1pnogmbtetzmsf --plan` answered
-  `"result": "planned"` with the command `[["coolify", "POST", "/api/v1/deploy?uuid=l40rxd4rbj1pnogmbtetzmsf"]]`.
+- The same script with `server redeploy <application-uuid> --plan` answered
+  `"result": "planned"` with the command `[["coolify", "POST", "/api/v1/deploy?uuid=<application-uuid>"]]`.
   A plan sends nothing.
 - The installed copy on the server is the helper this change ships, installed as `jay` by
   `scripts/hetzner/install-resource-control.sh` from the server's own checkout, and the installed file is

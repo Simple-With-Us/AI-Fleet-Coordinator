@@ -7166,14 +7166,21 @@ class UnknownOutcomeTests(Checks):
         self.assertEqual([row["result"] for row in rows], ["unknown"])
         self.assertEqual(answer["body"]["auditId"], rows[0]["id"])
 
-    def test_a_post_that_never_left_or_that_was_answered_badly_is_failed(self):
-        for name, status in (("never sent", 0), ("answered 500", 500), ("answered 404", 404)):
+    def test_a_post_that_never_left_or_that_was_refused_is_failed(self):
+        for name, status in (("never sent", 0), ("answered 404", 404)):
             with self.subTest(case=name):
                 answer, code, _, rows = self.run_redeploy(
                     lambda url, headers, s=status, method="GET": (s, "")
                 )
                 self.assertEqual((code, answer["body"]["outcome"]), (1, "failed"))
                 self.assertEqual([row["result"] for row in rows], ["failed"])
+
+    def test_a_post_answered_with_a_server_error_is_unknown(self):
+        # The redeploy is a POST, so a 5xx can follow a deploy that was already applied:
+        # the action had begun or may have, so the outcome is `unknown`, never `failed`.
+        answer, code, _, rows = self.run_redeploy(lambda url, headers, method="GET": (500, ""))
+        self.assertEqual((code, answer["body"]["outcome"]), (1, "unknown"))
+        self.assertEqual([row["result"] for row in rows], ["unknown"])
 
     def test_a_post_that_was_accepted_is_submitted(self):
         answer, code, _, rows = self.run_redeploy(lambda url, headers, method="GET": (202, ""))
