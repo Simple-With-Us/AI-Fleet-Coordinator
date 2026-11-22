@@ -401,6 +401,21 @@ class ChildEnrollment(Base):
         self.assertEqual(listed, [])
         self.assertLessEqual(reads["n"], 4 * Z.CHILD_SCAN)
 
+    def test_a_string_failed_at_child_still_enrolls(self) -> None:
+        parent, child = sess(109), sess(110)
+        self.add_session(parent, title="String stamp on the enrollment pass")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        # A retry stamp that is not a number reads as no refusal on the enrollment pass too:
+        # the malformed stamp neither crashes the parent's Stop hook nor blocks this child
+        # from taking its letter with its siblings.
+        with open(os.path.join(self.state, "ZC", "letters", child + ".json"), "w") as fh:
+            json.dump({"state": "open-nothing", "failed_at": "not-a-number"}, fh)
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        self.assertTrue(self.note(child).get("label"))
+        self.assertTrue(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", child))
+
     def test_a_string_failed_at_never_aborts_a_scan(self) -> None:
         parent, child = sess(107), sess(108)
         self.add_session(parent, title="String stamp")
