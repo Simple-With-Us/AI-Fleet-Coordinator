@@ -2232,6 +2232,185 @@ def close_session(
     }
 
 
+#: How long one host's liveness report stays authoritative.  A report older
+#: than this is not evidence either way:  the host may be asleep,  and a host
+#: that cannot be reached has not said its chats ended.
+DEFAULT_LIVENESS_WINDOW_MINUTES = 60
+#: The most chats one host liveness report may name.
+MAX_LIVENESS_IDS = 2000
+
+
+def record_host_liveness(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    live: Mapping[str, str],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Store the host's own view of the chats it still holds open.
+
+    `live` maps a native session id to the host's own last-activity time for
+    that chat (an ISO 8601 instant).  The host knows better than the sweep
+    whether a chat is still open,  so the report is what the sweep asks before
+    it recycles a letter.  One row per (platform, verified_host):  the last
+    report wins,  and a report that names no chat is a report that says the
+    host holds none.
+    """
+    namespace = normalize_platform(platform)
+    host = str(verified_host or "").strip().lower()
+    if not namespace or not host:
+        raise ValueError("a liveness report needs a platform and a verified host")
+    entries = _liveness_entries(live)
+    if len(entries) > MAX_LIVENESS_IDS:
+        raise ValueError("one liveness report names at most %d chats" % MAX_LIVENESS_IDS)
+    moment = now or datetime.now(UTC)
+    stamp = moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    registry = SessionRegistry(db_path)
+    try:
+        with registry._write_txn() as conn:
+            conn.execute(
+                "INSERT INTO host_liveness (platform, verified_host, reported_at, live)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(platform, verified_host) DO UPDATE SET"
+                " reported_at = excluded.reported_at, live = excluded.live",
+                (namespace, host, stamp, json.dumps(entries, sort_keys=True)),
+            )
+    finally:
+        registry.close_db()
+    return {
+        "platform": namespace,
+        "verified_host": host,
+        "reported_at": stamp,
+        "count": len(entries),
+    }
+
+
+def _liveness_entries(live: Mapping[str, str]) -> dict[str, str]:
+    """The report's chats, each with the host's own last-activity time.
+
+    An entry without a usable time is dropped rather than guessed:  a chat the
+    host named without saying when it was last touched says nothing about
+    whether it is still open.
+    """
+    entries: dict[str, str] = {}
+    for sid, stamp in dict(live or {}).items():
+        key = str(sid or "").strip()
+        if not key or len(key) > 200:
+            continue
+        moment = _parse_instant(str(stamp or ""))
+        if moment is None:
+            continue
+        entries[key] = moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return entries
+
+
+def _host_liveness_row(conn: Any, platform: str, verified_host: str) -> dict[str, Any]:
+    """One host's latest liveness report, read on the caller's own connection.
+
+    The sweep reads the reports inside its own transaction,  so the liveness
+    row and the rows it decides are the same snapshot.
+    """
+    namespace = normalize_platform(platform)
+    host = str(verified_host or "").strip().lower()
+    if not namespace or not host:
+        return {}
+    row = conn.execute(
+        "SELECT reported_at, live FROM host_liveness WHERE platform = ? AND verified_host = ?",
+        (namespace, host),
+    ).fetchone()
+    if row is None:
+        return {}
+    try:
+        live = json.loads(row["live"])
+    except (TypeError, ValueError):
+        live = {}
+    if not isinstance(live, dict):
+        live = {}
+    return {
+        "platform": namespace,
+        "verified_host": host,
+        "reported_at": row["reported_at"],
+        "live": {str(k): str(v) for k, v in live.items()},
+    }
+
+
+def host_liveness(db_path: str, platform: str, verified_host: str) -> dict[str, Any]:
+    """The host's latest liveness report, or an empty answer when it has none.
+
+    The answer carries the report's own time and the chats it named with the
+    host's last-activity time for each,  so the caller can tell a fresh report
+    from a stale one and a live chat from a gone one.
+    """
+    if not os.path.isfile(db_path):
+        return {}
+    registry = SessionRegistry(db_path)
+    try:
+        return _host_liveness_row(registry._conn, platform, verified_host)
+    finally:
+        registry.close_db()
+
+
+def attested_retirement(
+    rows: list[Any],
+    reports: Mapping[tuple[str, str], Mapping[str, Any]],
+    cutoff: datetime,
+    *,
+    liveness_window_minutes: int = DEFAULT_LIVENESS_WINDOW_MINUTES,
+    now: datetime | None = None,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Split the candidate rows into the ones a host attested may go and the ones it did not.
+
+    A candidate is a row the sweep's own idle test would close.  That test is a
+    guess about the chat,  and the chat's own host knows better,  so once a host
+    reports,  the host's own answer decides:  a chat it names with a recent time
+    is live and keeps its letter,  a chat it does not name is one it no longer
+    holds,  and a chat it names with an old time is one it has not touched for
+    longer than the window.
+
+    A host that has never reported is not in the attested regime:  the sweep's
+    own test still decides there,  so the letters of a platform that has not
+    adopted the report are not stranded.  A host whose report has gone stale is
+    unreachable,  and an unreachable host is not positive evidence that its
+    chats ended,  so its rows are kept and the reason is named.
+    """
+    moment = now or datetime.now(UTC)
+    fresh_after = moment - timedelta(minutes=max(1, int(liveness_window_minutes)))
+    retirable: list[Any] = []
+    refused: list[dict[str, Any]] = []
+    for row in rows:
+        key = (str(row["platform"]), str(row["verified_host"]))
+        report = reports.get(key)
+        if not report:
+            # The host has never reported:  it is not in the attested regime.
+            retirable.append(row)
+            continue
+        reported_at = _parse_instant(str(report.get("reported_at") or ""))
+        if reported_at is None or reported_at < fresh_after:
+            refused.append({"record_id": row["record_id"], "reason": "host_unverified"})
+            continue
+        live = report.get("live")
+        live = live if isinstance(live, Mapping) else {}
+        sid = str(row["native_session_id"])
+        if sid not in live:
+            # The host's report does not name this chat:  it no longer holds it.
+            retirable.append(row)
+            continue
+        activity = _parse_instant(str(live.get(sid) or ""))
+        if activity is None:
+            # The host named this chat but its own time cannot be read.  A corrupt
+            # timestamp is not evidence that the chat ended,  so the letter is kept
+            # and the reason is named,  the same way a stale report is kept.
+            refused.append({"record_id": row["record_id"], "reason": "host_unverified"})
+            continue
+        if activity >= cutoff:
+            # The host says it still holds the chat and touched it lately.
+            refused.append({"record_id": row["record_id"], "reason": "host_confirms_live"})
+            continue
+        retirable.append(row)
+    return retirable, refused
+
+
 def sweep_stale(
     db_path: str,
     *,
@@ -2266,6 +2445,7 @@ def sweep_stale(
             open_rows = list(rows)
             seen_at = {r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows}
             registered_at = {r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows}
+            candidates: list[Any] = []
             for row in open_rows:
                 last_seen = seen_at.get(row["record_id"])
                 if last_seen is None or last_seen >= cutoff:
@@ -2283,6 +2463,17 @@ def sweep_stale(
                         break
                 if not replaced:
                     continue
+                candidates.append(row)
+            # The idle test above is a guess about the chat;  the chat's own host
+            # knows better,  so only the rows a fresh host report attests may go
+            # (AFC-878).  The rows a host did not attest keep their letters.
+            reports: dict[tuple[str, str], Mapping[str, Any]] = {}
+            for host in {str(row["verified_host"]) for row in candidates}:
+                reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
+            candidates, _refused = attested_retirement(
+                candidates, reports, cutoff, now=moment
+            )
+            for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
                     continue
