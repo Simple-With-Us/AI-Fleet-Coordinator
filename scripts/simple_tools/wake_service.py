@@ -362,6 +362,7 @@ def main(argv: list[str]) -> int:
     serve = sub.add_parser("serve")
     serve.add_argument("--bind", default=DEFAULT_BIND)
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve.add_argument("--start-quiesced", action="store_true")
     args = parser.parse_args(argv)
     # The registry's address and key come from the knobs (WakeSettings.registry_env), never from
     # this environment or an env file.
@@ -372,7 +373,9 @@ def main(argv: list[str]) -> int:
     previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: group.kick())
     group.start_refresh()
     try:
-        return WR.serve(served.seats, args.bind, args.port)
+        return WR.serve(
+            served.seats, args.bind, args.port, start_quiesced=args.start_quiesced
+        )
     finally:
         group.stop_refresh()
         signal.signal(signal.SIGHUP, previous)

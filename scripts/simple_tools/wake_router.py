@@ -3334,9 +3334,14 @@ class Seats:
             state = dict(self.seat_health(seat)[1])
             state.pop("seat")
             every[seat] = state
-        counted = [state for seat, state in every.items() if seat not in self.not_installed]
+        counted = [
+            state for seat, state in every.items() if seat not in self.not_installed
+        ]
         healthy = bool(counted) and all(state["healthy"] for state in counted)
-        return (200 if healthy else 503), {"healthy": healthy, "seats": every}
+        answer = {"healthy": healthy, "seats": every}
+        if hasattr(self, "upgrade_quiesced"):
+            answer["upgrade_quiesced"] = self.upgrade_quiesced
+        return (200 if healthy else 503), answer
 
     def start(self) -> None:
         """Start each seat's router.  One that cannot start (its folder cannot be read, say) is
@@ -3550,6 +3555,9 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             if require_pr and not REQUIRE_PR_RE.fullmatch(require_pr):
                 self._answer(400, {"error": "require_pr malformed"})
                 return
+            if getattr(seats, "upgrade_quiesced", False) and payload.get("test") is not True:
+                self._answer(503, {"error": "upgrade intake quiesced"})
+                return
             reserved = str(payload.get("wake_id") or "").startswith("ra-")
             if scope == REVIEW_ALERT_SCOPE:
                 if not (
@@ -3578,7 +3586,9 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(target: Router | Seats, bind: str, port: int) -> int:
+def serve(
+    target: Router | Seats, bind: str, port: int, *, start_quiesced: bool = False
+) -> int:
     """Run every seat's router on one port.  A seat starts without its routine key or its
     registry address, since both come from Infisical, which may be down at start.  Without the
     key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
@@ -3600,12 +3610,39 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         # shutdown() waits for serve_forever, which is this same thread, so it needs its own.
         threading.Thread(target=server.shutdown, daemon=True).start()
 
+    seats.upgrade_quiesced = start_quiesced
+    activation = threading.Event()
+    activation_stop = threading.Event()
+    expected_seats = set(seats.routers)
+
+    def activate(_signum, _frame):
+        activation.set()  # The signal handler never starts workers or mutates router state.
+
+    def activation_worker():
+        activation.wait()
+        if activation_stop.is_set() or not start_quiesced:
+            return
+        seats.start()  # This one thread runs once, even when multiple signals arrive.
+        ready = set(seats.routers) == expected_seats and not seats.down
+        if ready and seats.health()[0] == 200:
+            seats.upgrade_quiesced = False
+
+    activation_thread = threading.Thread(target=activation_worker, daemon=True)
+    if start_quiesced:
+        activation_thread.start()
+    prior_activation = signal.signal(signal.SIGUSR1, activate)
     previous = signal.signal(signal.SIGTERM, on_term)
     try:
-        seats.start()
+        if not start_quiesced:
+            seats.start()
         served = ", ".join(sorted(seats.routers)) or "none"
-        unserved = {**seats.down, **{seat: NOT_INSTALLED for seat in seats.not_installed}}
-        down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
+        unserved = {
+            **seats.down,
+            **{seat: NOT_INSTALLED for seat in seats.not_installed},
+        }
+        down = (
+            ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
+        )
         print(
             "wake-router listening on %s:%d for seats %s;  not served:  %s"
             % (bind, port, served, down),
@@ -3616,6 +3653,11 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         pass
     finally:
         server.server_close()
+        activation_stop.set()
+        activation.set()
+        if start_quiesced:
+            activation_thread.join()  # Serialize shutdown after any replay/start; no late worker can appear after stop.
         seats.stop()
         signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGUSR1, prior_activation)
     return 0
