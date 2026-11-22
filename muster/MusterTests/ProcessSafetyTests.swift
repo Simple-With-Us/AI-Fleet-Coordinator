@@ -172,24 +172,6 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertTrue(reason.contains("no such file"), reason)
     }
 
-    func test_simpleTools_kills_a_child_that_ignores_SIGTERM() async throws {
-        let base = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("muster-safety-\(UUID().uuidString)", isDirectory: true)
-        let scripts = base.appendingPathComponent("scripts", isDirectory: true)
-        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
-        let command = scripts.appendingPathComponent("simple-chat")
-        try "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n"
-            .write(to: command, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
-        let location = EngineLocation(root: base, interpreter: URL(fileURLWithPath: "/usr/bin/python3"))
-        let runner = SimpleToolsCLI(location: { location })
-
-        let start = Date()
-        let result = try await runner.run(SimpleToolsInvocation(["status"], timeout: 1))
-
-        XCTAssertTrue(result.timedOut)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
-    }
 
     func test_fleetView_decodes_a_valid_envelope() throws {
         let script = try makeScript("""

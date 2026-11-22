@@ -36,6 +36,7 @@ WORKDIR /app
 COPY scripts/simple-chat /app/scripts/simple-chat
 COPY scripts/fleet_infisical_bootstrap.py /app/scripts/
 COPY scripts/simple_tools /app/scripts/simple_tools
+COPY scripts/review_alerts /app/scripts/review_alerts
 COPY scripts/fleet-ops-eavesdropper-settings.json /app/scripts/
 COPY scripts/fleet_infisical.py /app/scripts/
 # The Operator's Linear project webhook (AFC-565) runs these two with the listener.
