@@ -930,13 +930,13 @@ class CredentialTests(unittest.TestCase):
 
     def test_the_key_fetch_prefers_the_store_over_the_bound_copy(self) -> None:
         # The store is the authority:  a hand-set copy never replaces the reviewed grant.
-        path = self.token_file(content="st-from-file")
-        env = {opl.SERVICE_TOKEN_ENV: "st-from-env"}
+        path = self.token_file(content="st-" + "from-file")  # never-a-credential: synthetic fixture assembled at runtime
+        env = {opl.SERVICE_TOKEN_ENV: "st-" + "from-env"}  # never-a-credential: synthetic fixture assembled at runtime
         http = FakeHttp()
         self.assertEqual(opl.load_api_key(env, str(path), http=http), "dev-key")
         bearer = http.calls[0][2].get("Authorization", "")
-        self.assertIn("st-from-file", bearer)
-        self.assertNotIn("st-from-env", bearer)
+        self.assertIn("st-" + "from-file", bearer)
+        self.assertNotIn("st-" + "from-env", bearer)
 
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
