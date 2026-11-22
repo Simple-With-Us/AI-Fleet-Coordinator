@@ -513,9 +513,7 @@ def router_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
-        exclude=exclude_non_interactive(
-            here, str(_config(settings).get("local_host") or "server")
-        ),
+        exclude=exclude_non_interactive(here, str(_config(settings).get("local_host") or "server")),
     )
 
 
