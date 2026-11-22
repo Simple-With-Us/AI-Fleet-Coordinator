@@ -58,8 +58,6 @@ def load_secret() -> str:
     try:
         import fleet_infisical as FI
     except ImportError:
-        if bound:
-            return bound
         sys.exit(
             "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the shared Infisical "
             "client is not importable,  so the scoped read cannot run"
