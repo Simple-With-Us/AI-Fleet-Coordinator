@@ -853,39 +853,38 @@ class RegistryService:
         refused too:  a host that holds rows cannot also say it holds nothing.
         """
         named = sorted({str(sid or "").strip() for sid in live} - {""})
-        registry = OR.SessionRegistry(self.db_path)
+        # The check only reads,  so it reads on a read-only connection:  a write transaction
+        # here would hold the registry's write lock for the whole validation.
+        registry = OR.SessionRegistry(self.db_path, read_only=True)
         try:
-            with registry._write_txn() as conn:
-                foreign: list[str] = []
-                for start in range(0, len(named), REPORT_BATCH):
-                    chunk = named[start : start + REPORT_BATCH]
-                    placeholders = ",".join("?" * len(chunk))
-                    rows = conn.execute(
-                        "SELECT DISTINCT verified_host FROM sessions"
-                        " WHERE platform = ? AND closed_at IS NULL"
-                        " AND native_session_id IN (%s)" % placeholders,
-                        [platform, *chunk],
-                    ).fetchall()
-                    for (other,) in rows:
-                        name = str(other)
-                        if name != host and name not in foreign:
-                            foreign.append(name)
-                if foreign:
-                    return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
-                        len(foreign),
-                        host,
+            conn = registry._conn
+            foreign: list[str] = []
+            for start in range(0, len(named), REPORT_BATCH):
+                chunk = named[start : start + REPORT_BATCH]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    "SELECT DISTINCT native_session_id FROM sessions"
+                    " WHERE platform = ? AND closed_at IS NULL AND verified_host != ?"
+                    " AND native_session_id IN (%s)" % placeholders,
+                    [platform, host, *chunk],
+                ).fetchall()
+                foreign.extend(str(row[0]) for row in rows)
+            if foreign:
+                return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
+                    len(foreign),
+                    host,
+                )
+            if not named:
+                held = conn.execute(
+                    "SELECT COUNT(*) FROM sessions"
+                    " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
+                    (platform, host),
+                ).fetchone()[0]
+                if held:
+                    return (
+                        "the report names no chat,  but this host has %d open row(s),  so it "
+                        "contradicts them" % int(held)
                     )
-                if not named:
-                    held = conn.execute(
-                        "SELECT COUNT(*) FROM sessions"
-                        " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
-                        (platform, host),
-                    ).fetchone()[0]
-                    if held:
-                        return (
-                            "the report names no chat,  but this host has %d open row(s),  so it "
-                            "contradicts them" % int(held)
-                        )
         finally:
             registry.close_db()
         return None
