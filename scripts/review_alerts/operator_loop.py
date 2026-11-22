@@ -13,7 +13,7 @@ import os
 import threading
 import time
 
-from . import events, github_read, service, wakes
+from . import events, github_read, messages, service, wakes
 from .operator_origin_bridge import RegistryOriginBinder
 from .operator_pr_origin import Held
 
@@ -46,7 +46,7 @@ class ProtectedReceipts:
         return dict(rows[0]) if len(rows) == 1 else None
 
 
-def start(env, registry, stop, log):
+def start(env, registry, stop, log, *, operator_send=None, destination_for_origin=None):
     """Return no thread when not configured; active errors surface, never disable other wakes."""
     from .config import configured
 
@@ -69,6 +69,9 @@ def start(env, registry, stop, log):
         or not os.path.isabs(state)
     ):
         raise Held("review-service-config-incomplete")
+    if not callable(operator_send) or not callable(destination_for_origin):
+        raise Held("review-service-message-callbacks-required")
+    messenger = messages.OperatorMessages(operator_send, destination_for_origin)
     token_file = env.get("RA_SERVICE_TOKEN_FILE", "")
     wake_file = env.get("RA_WAKE_KEY_FILE", "")
     if not service._credential_from_file(token_file) or not service._credential_from_file(
@@ -131,6 +134,7 @@ def start(env, registry, stop, log):
             owner_provider=receipts.rows,
             origin_binder=binder.bind,
             cancelled=stop.is_set,
+            message_poster=messenger.post,
         )
         interval = max(60, float(env.get("RA_INTERVAL_S", "900")))
     except Exception:
