@@ -21,4 +21,4 @@ Sanctioned fleet helper scripts carry a detached minisign signature.  A script's
 
 ## Currently signed helpers
 
-None.  The one helper that lived in `~/.secrets/bin` (`infisical-machine.sh`, Oct 7) was deleted on 2026-10-23 as superseded by `fleet-secrets`.
+None.  The one helper that lived in `~/.secrets/bin` (`infisical-machine.sh`, Oct 7) was deleted on 2026-10-23 as superseded by the scoped Infisical service tokens.

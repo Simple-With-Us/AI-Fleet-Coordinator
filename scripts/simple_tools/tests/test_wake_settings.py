@@ -689,6 +689,24 @@ class Service(Settings):
 
 
 class Wiring(Settings):
+    def test_start_quiesced_flag_is_forwarded_as_an_exact_boolean(self) -> None:
+        self.fake.set(secrets={})
+        for argv, expected in [(["serve"], False), (["serve", "--start-quiesced"], True)]:
+            with self.subTest(argv=argv):
+                seen = []
+
+                def serve(seats, bind, port, *, start_quiesced):
+                    seen.append(start_quiesced)
+                    return 0
+
+                with (
+                    mock.patch.object(CW, "state_dir", return_value=self.state),
+                    mock.patch.object(WR, "serve", side_effect=serve),
+                ):
+                    self.assertEqual(SVC.main(argv), 0)
+                self.assertEqual(len(seen), 1)
+                self.assertIs(seen[0], expected)
+
     def test_the_router_runs_on_the_knobs_and_not_the_file(self) -> None:
         self.local(delivery_enabled=True)
         self.fake.set(
@@ -701,7 +719,8 @@ class Wiring(Settings):
         seen = {}
         before = signal.getsignal(signal.SIGHUP)
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen.update(config=router.config, hup=signal.getsignal(signal.SIGHUP))
             seen.update(threads=refresh_threads(), attempts=router.config["max_attempts"])
@@ -730,7 +749,8 @@ class Wiring(Settings):
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen["key"] = router.routine_key()
             self.fake.set(mode="fail")
@@ -751,7 +771,8 @@ class Wiring(Settings):
         self.fake.set(secrets={})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             self.fake.set(secrets=ARMED)
             os.kill(os.getpid(), signal.SIGHUP)
@@ -772,7 +793,8 @@ class Wiring(Settings):
         self.fake.set(secrets={WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "ZC"})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             seen.update(names=seats.names(), served=sorted(seats.routers))
             seen["delivery"] = seats.routers[CW.SEAT].config["delivery_enabled"]
             return 0

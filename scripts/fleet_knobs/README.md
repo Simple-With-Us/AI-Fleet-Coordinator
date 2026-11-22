@@ -108,7 +108,7 @@ planned or done, 1 failed, 2 refused.
 A stable copy run with `python3 -I` must carry this package (`scripts/fleet_knobs/`, without
 `tests/`) plus `fleet_infisical.py`.  Both use only the standard library.  The fleet-facts and
 needs-owner installers copy the shared client and retain only the compatibility import shim;
-they do not install a fleet-secrets executable, `cli.py` or `__main__.py`.  Their
+they do not install a reader executable, `cli.py` or `__main__.py`.  Their
 installed `python3 -I` tests exercise real metadata and named-value verification through a
 loopback fixture, including successful reads and rejection before values for mismatched grants.
 

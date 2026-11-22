@@ -1,16 +1,11 @@
+import contextlib
 import importlib.util
+import io
 import os
-import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 import unittest
 import uuid
 from unittest import mock
-
-from fleet_infisical import SecretsError
-from fleet_knobs.tests._fake import ScopedReadAPI, fixture_service_token
 
 SPEC = importlib.util.spec_from_file_location(
     "alert_ingress_provision",
@@ -20,6 +15,28 @@ SPEC = importlib.util.spec_from_file_location(
 )
 provision = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provision)
+
+
+class FakeRead:
+    """Stands in for the shared client's scoped read.
+
+    The contract it reproduces:  one read answers with the names the folder holds,  and a
+    name the folder does not hold is simply absent.
+    """
+
+    def __init__(self, answers, absent=()):
+        self.answers = answers
+        self.absent = set(absent)
+        self.calls = []
+
+    def __call__(self, project, path, env, *, token=None, names=None, **kwargs):
+        self.calls.append((project, path, tuple(names or ()), dict(kwargs)))
+        found = {}
+        for name in names or ():
+            if name in self.absent:
+                continue
+            found[name] = self.answers[name]
+        return found
 
 
 class ServiceTokenTestCase(unittest.TestCase):
@@ -35,350 +52,244 @@ class ServiceTokenTestCase(unittest.TestCase):
         )
         self.token_env.start()
         self.addCleanup(self.token_env.stop)
+        project = mock.patch.object(
+            provision.scoped_secrets,
+            "infisical_project_id",
+            lambda env, home, project="fleet-ops": str(uuid.uuid4()),
+        )
+        project.start()
+        self.addCleanup(project.stop)
+        # The provisioner reads its token from its own store,  and the store is the
+        # only source it may use:  the environment's copy never stands in for it.  The
+        # store is stubbed here so a test never reads the host's own credential store.
+        store = mock.patch.object(
+            provision.scoped_secrets,
+            "token_from_store",
+            return_value=("st." + "fixture-store-read-token-value", "ok"),
+        )
+        store.start()
+        self.addCleanup(store.stop)
+
+    def read(self, answers, absent=()):
+        """Patch the scoped read and return the fake."""
+        fake = FakeRead(answers, absent)
+        patcher = mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
 
 
-class ReaderTestCase(unittest.TestCase):
-    """Each reader check uses a cleared environment and synthetic loopback API."""
+class ScopedRead(ServiceTokenTestCase):
+    """One scoped read, with the provisioner's own token for that project."""
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        env = {"HOME": self.temp.name, "PATH": os.defpath}
-        self.env_patch = mock.patch.dict(os.environ, env, clear=True)
-        self.env_patch.start()
-        self.addCleanup(self.env_patch.stop)
+    def test_one_name_is_read_as_itself(self):
+        read = self.read({"ONLY_ONE": "the-value"})
+        found = provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(found, {"ONLY_ONE": "the-value"})
+        self.assertEqual(len(read.calls), 1)
 
-    def use_api(self, api, *, own_binding, project_id=None, other_bindings=True):
-        api.record_override.setdefault("secretValueHidden", False)
-        env = {"FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"], own_binding: api.token}
-        if project_id:
-            env["INFISICAL_FLEET_OPS_PROJECT_ID"] = project_id
-        if other_bindings:
-            env.update(
-                {
-                    provision.READ_TOKEN_AFC: fixture_service_token(),
-                    provision.READ_TOKEN_FLEETOPS: fixture_service_token(),
-                    provision.WRITE_TOKEN_AFC: fixture_service_token(),
-                    "INFISICAL_TOKEN": fixture_service_token(),
-                    "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": fixture_service_token(),
-                }
-            )
-            env[own_binding] = api.token
-        os.environ.update(env)
+    def test_several_names_come_from_one_read(self):
+        read = self.read({"A": "one", "B": "two"})
+        found = provision.scoped_values(["A", "B"], "fleet-ops", "/")
+        self.assertEqual(found, {"A": "one", "B": "two"})
+        self.assertEqual(len(read.calls), 1)
+
+    def test_an_absent_name_is_left_out(self):
+        read = self.read({"PRESENT": "the-value"}, absent=("GONE",))
+        found = provision.scoped_values(["PRESENT", "GONE"], "fleet-ops", "/")
+        self.assertEqual(found, {"PRESENT": "the-value"})
+        self.assertEqual(len(read.calls), 1)
 
 
-class BoundedReader(ReaderTestCase):
-    def test_empty_names_remain_offline_without_an_own_binding(self):
-        with ScopedReadAPI({}, project=str(uuid.uuid4())) as api:
-            os.environ["FLEET_SECRETS_API"] = api.env["FLEET_SECRETS_API"]
-            for names in ([], iter(())):
-                self.assertEqual(
-                    provision.fleet_secrets_get_many(names, provision.FLEETOPS_SLUG, "/"), {}
-                )
-            self.assertEqual(api.requests, [])
+class StoreFirst(ServiceTokenTestCase):
+    """The store is the authority for the token;  the environment only carries a copy."""
 
-    def test_one_and_multiple_names_use_the_real_bounded_reader(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI(
-            {"ONLY_ONE": "one-value", "A": "alpha", "B": "beta"}, project=project
-        ) as api:
-            self.use_api(
-                api,
-                own_binding=provision.READ_TOKEN_FLEETOPS,
-                project_id=project,
-            )
-            with mock.patch.object(
+    def test_the_store_token_is_the_one_the_read_runs_under(self):
+        seen = []
+
+        def fake_store(account, env=None, home=None):
+            seen.append(account)
+            return ("st." + "fixture-store-read-token-value", "ok")
+
+        read = self.read({"A": "one"})
+        with mock.patch.object(provision.scoped_secrets, "token_from_store", fake_store):
+            found = provision.scoped_values(["A"], "fleet-ops", "/zulip")
+        self.assertEqual(found, {"A": "one"})
+        self.assertEqual(seen, ["alert-ingress-fleetops-ro"])
+        self.assertEqual(len(read.calls), 1)
+
+    def test_an_empty_store_fails_closed_even_when_the_environment_carries_a_copy(self):
+        # The owner's ruling on OPS-1101:  the environment's copy is never used in
+        # place of the store,  so a store with no token fails closed.
+        read = self.read({"A": "one"})
+        with (
+            mock.patch.object(
+                provision.scoped_secrets, "token_from_store", return_value=("", "no-token")
+            ),
+            self.assertRaises(provision.ReadError) as ctx,
+        ):
+            provision.scoped_values(["A"], "fleet-ops", "/zulip")
+        self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
+        self.assertEqual(read.calls, [])
+
+    def test_a_malformed_store_token_fails_closed_and_names_the_account(self):
+        # A store token that is not a service token is a refusal,  not a value:  the
+        # error names the account it came from,  and no read starts.
+        read = self.read({"A": "one"})
+        with (
+            mock.patch.object(
                 provision.scoped_secrets,
-                "bounded_fetch_project",
-                wraps=provision.scoped_secrets.bounded_fetch_project,
-            ) as fetch:
-                self.assertEqual(
-                    provision.fleet_secrets_get("ONLY_ONE", provision.FLEETOPS_SLUG, "/"),
-                    "one-value",
-                )
-                self.assertEqual(
-                    provision.fleet_secrets_get_many(["A", "B"], provision.FLEETOPS_SLUG, "/"),
-                    {"A": "alpha", "B": "beta"},
-                )
-            self.assertEqual(fetch.call_count, 2)
-            self.assertEqual(api.requests.count("/api/v2/service-token"), 2)
-            self.assertEqual(len([path for path in api.requests if "/secrets/raw/" in path]), 3)
-            for call in fetch.call_args_list:
-                self.assertEqual(call.args[:2], (project, "/"))
-                self.assertEqual(
-                    call.args[2],
-                    {
-                        "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
-                        "INFISICAL_READ_PATHS": "/",
-                    },
-                )
-                self.assertEqual(call.kwargs["token"], api.token)
-                self.assertEqual(call.kwargs["timeout"], 90.0)
-                self.assertTrue(call.kwargs["strict_records"])
-                self.assertEqual(call.kwargs["max_output_bytes"], 1024 * 1024)
+                "token_from_store",
+                return_value=("not-a-service-token", "ok"),
+            ),
+            self.assertRaises(provision.ReadError) as ctx,
+        ):
+            provision.scoped_values(["A"], "fleet-ops", "/zulip")
+        self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
+        self.assertEqual(read.calls, [])
 
-    def test_missing_names_are_omitted_and_required_batch_values_fail(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"PRESENT": "the-value"}, project=project) as api:
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            self.assertEqual(
-                provision.fleet_secrets_get_many(["PRESENT", "GONE"], provision.FLEETOPS_SLUG, "/"),
-                {"PRESENT": "the-value"},
+    def test_an_unsupported_project_is_refused_before_a_read(self):
+        read = self.read({"A": "one"})
+        with self.assertRaises(provision.ReadError) as ctx:
+            provision.scoped_values(["A"], "not-a-project", "/zulip")
+        self.assertIn("unsupported Infisical project", str(ctx.exception))
+        self.assertEqual(read.calls, [])
+
+
+class ScopedReadContract(ServiceTokenTestCase):
+    """The read keeps the contract the replaced reader enforced.
+
+    The strict read refuses a row that cannot be tied to the folder it came from,  and
+    a hung read keeps the timeout exit code the old subprocess contract promised.
+    """
+
+    def test_the_read_asks_for_strict_records(self):
+        # The strict read, with the bounds the contract carries:  a deadline,  a cap on the
+        # answer,  and no writer.
+        read = self.read({"ONLY_ONE": "the-value"})
+        provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        asked = read.calls[0][3]
+        self.assertIs(asked["strict_records"], True)
+        self.assertIs(asked["writer"], False)
+        self.assertGreater(asked["timeout"], 0)
+        self.assertGreater(asked["max_output_bytes"], 0)
+
+    def test_a_row_without_its_provenance_is_refused(self):
+        # The strict read refuses a row that cannot be tied to the folder it came from:
+        # the client raises the refusal,  and the provisioner names it.  The client's own
+        # suite proves the refusal against the real worker
+        # (fleet_infisical_cli_tests.test_bounded_reads).
+        def without_provenance(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsError(
+                "unverified-source:  no secret row for ONLY_ONE at /", 4
             )
-            self.assertIsNone(provision.fleet_secrets_get("GONE", provision.FLEETOPS_SLUG, "/"))
+
+        with (
+            mock.patch.object(
+                provision.scoped_secrets, "bounded_fetch_project", without_provenance
+            ),
+            self.assertRaises(provision.ReadError) as caught,
+        ):
+            provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertIn("unverified-source", caught.exception.reason)
+        self.assertEqual(caught.exception.code, 1)
+
+    def test_a_hung_read_exits_with_the_timeout_code(self):
+        # `SecretsTimeout` is both a `SecretsError` and a `TimeoutError`,  so the
+        # timeout has to be caught first to keep exit code 124.
+        self.assertTrue(issubclass(provision.scoped_secrets.SecretsTimeout, TimeoutError))
+
+        def hung(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsTimeout()
+
+        with mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", hung):
             with self.assertRaises(provision.ReadError) as caught:
-                provision.batch_values(["PRESENT", "GONE"], provision.FLEETOPS_SLUG, "/")
-            self.assertIn("GONE is absent from fleet-ops/", caught.exception.reason)
+                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(caught.exception.code, provision.EXIT_TIMEOUT)
+        self.assertEqual(caught.exception.code, 124)
 
-    def test_environment_precedence_avoids_a_provider_read(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"A": "from-provider"}, project=project) as api:
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            os.environ["A"] = "from-environment"
-            self.assertEqual(
-                provision.batch_values(["A"], provision.FLEETOPS_SLUG, "/"),
-                {"A": "from-environment"},
-            )
-            self.assertEqual(api.requests, [])
+    def test_a_broken_credential_exits_with_one(self):
+        def broken(project, path, env, *, token=None, names=None, **kwargs):
+            raise provision.scoped_secrets.SecretsError("token-expired-or-invalid", 3)
 
-    def test_afc_and_fleetops_use_only_their_own_project_and_folder(self):
-        afc_values = {"AFC_VALUE": "from-afc"}
-        with ScopedReadAPI(
-            afc_values, project=provision.AFC, path=provision.SECRET_PATH
-        ) as afc_api:
-            self.use_api(afc_api, own_binding=provision.READ_TOKEN_AFC)
-            self.assertEqual(
-                provision.fleet_secrets_get("AFC_VALUE", provision.AFC_SLUG, provision.SECRET_PATH),
-                "from-afc",
-            )
-            self.assertEqual(afc_api.requests.count("/api/v2/service-token"), 1)
-
-        fleetops_project = str(uuid.uuid4())
-        with ScopedReadAPI(
-            {"FLEETOPS_VALUE": "from-fleetops"}, project=fleetops_project
-        ) as fleetops_api:
-            self.use_api(
-                fleetops_api,
-                own_binding=provision.READ_TOKEN_FLEETOPS,
-                project_id=fleetops_project,
-            )
-            self.assertEqual(
-                provision.fleet_secrets_get("FLEETOPS_VALUE", provision.FLEETOPS_SLUG, "/"),
-                "from-fleetops",
-            )
-
-        with self.assertRaises(provision.ReadError):
-            provision.fleet_secrets_get("AFC_VALUE", provision.AFC_SLUG, "/")
-        self.assertEqual(len(afc_api.requests), 2)
-
-    def test_other_project_or_folder_is_refused_before_any_read(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"A": "value"}, project=project) as api:
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            for invalid_project, invalid_path in (
-                ("unknown", "/"),
-                (provision.FLEETOPS_SLUG, "/other"),
-            ):
-                with self.assertRaises(provision.ReadError):
-                    provision.fleet_secrets_get("A", invalid_project, invalid_path)
-            self.assertEqual(api.requests, [])
-
-    def test_missing_own_token_does_not_borrow_generic_or_other_bindings(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"A": "value"}, project=project) as api:
-            os.environ.update(
-                {
-                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
-                    "HOME": self.temp.name,
-                    provision.READ_TOKEN_AFC: fixture_service_token(),
-                    provision.WRITE_TOKEN_AFC: fixture_service_token(),
-                    "INFISICAL_TOKEN": api.token,
-                    "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": api.token,
-                    "INFISICAL_FLEET_OPS_PROJECT_ID": project,
-                }
-            )
+        with mock.patch.object(provision.scoped_secrets, "bounded_fetch_project", broken):
             with self.assertRaises(provision.ReadError) as caught:
-                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-            self.assertEqual(
-                caught.exception.reason, f"{provision.READ_TOKEN_FLEETOPS} is missing or invalid"
-            )
-            os.environ[provision.READ_TOKEN_FLEETOPS] = ""
-            with self.assertRaises(provision.ReadError):
-                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-            self.assertEqual(api.requests, [])
-
-    def test_explicit_null_expiry_read_only_binding_reads_named_value(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"A": "test-only"}, project=project) as api:
-            api.metadata_override = {"expiresAt": None}
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            self.assertEqual(
-                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/"), "test-only"
-            )
-            self.assertEqual(len(api.requests), 2)
-            self.assertEqual(api.requests[0], "/api/v2/service-token")
-
-    def test_invalid_metadata_and_strict_records_fail_without_values(self):
-        project = str(uuid.uuid4())
-        failures = (
-            {"metadata_override": {"workspace": str(uuid.uuid4())}},
-            {"metadata_override": {"scopes": [{"environment": "prod", "secretPath": "/wrong"}]}},
-            {"metadata_override": {"scopes": [{"environment": "dev", "secretPath": "/"}]}},
-            {"metadata_override": {"permissions": ["read", "write"]}},
-            {"metadata_override": {"expiresAt": None, "permissions": ["read", "write"]}},
-            {"metadata_override": {"expiresAt": None, "workspace": str(uuid.uuid4())}},
-            {"metadata_override": {"expiresAt": "invalid"}},
-            {"metadata_override": {"expiresAt": "2099-01-01T00:00:00"}},
-            {"metadata_override": {"expiresAt": "2000-01-01T00:00:00Z"}},
-            {"record_override": {"secretValueHidden": True}},
-            {"record_override": {"secretValueHidden": "false"}},
-            {"record_override": {"secretPath": "/wrong"}},
-            {"record_override": {"secretKey": "OTHER"}},
-            {"record_override": {"secretValue": ""}},
-            {"record_omissions": ("workspace",)},
-            {"record_omissions": ("secretValueHidden",)},
-        )
-        for options in failures:
-            with self.subTest(options=options):
-                with ScopedReadAPI({"A": "sentinel-value"}, project=project) as api:
-                    api.metadata_override.update(options.get("metadata_override", {}))
-                    api.record_override.update(options.get("record_override", {}))
-                    api.record_omissions = options.get("record_omissions", ())
-                    self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-                    with self.assertRaises(provision.ReadError) as caught:
-                        provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-                    self.assertNotIn("sentinel-value", caught.exception.reason)
-                    self.assertEqual(len(api.requests), 1 if "metadata_override" in options else 2)
-                    self.assertEqual(api.requests[0], "/api/v2/service-token")
-
-    def test_timeout_and_provider_failures_are_fixed_safe_errors(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"A": "sentinel-value"}, project=project) as api:
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            with (
-                mock.patch.object(
-                    provision.scoped_secrets,
-                    "bounded_fetch_project",
-                    side_effect=SecretsError("bounded-read-timeout", failure_kind="unavailable"),
-                ),
-                self.assertRaises(provision.ReadError) as caught,
-            ):
-                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-            self.assertEqual(caught.exception.code, provision.EXIT_TIMEOUT)
-            self.assertNotIn("sentinel-value", caught.exception.reason)
-
-        with ScopedReadAPI({"A": "sentinel-value"}, project=project) as api:
-            self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            api.status = 503
-            with self.assertRaises(provision.ReadError) as caught:
-                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-            self.assertNotIn("sentinel-value", caught.exception.reason)
-            self.assertLessEqual(len(caught.exception.reason), 96)
+                provision.scoped_values(["ONLY_ONE"], "fleet-ops", "/")
+        self.assertEqual(caught.exception.code, 1)
+        self.assertNotEqual(caught.exception.code, provision.EXIT_TIMEOUT)
 
 
-class IsolatedPayload(unittest.TestCase):
-    """The public payload imports and reads without an installed app package."""
+class BatchValues(ServiceTokenTestCase):
+    """One batched scoped read, an absence is an error."""
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = pathlib.Path(self.temp.name)
-        self.source_root = pathlib.Path(__file__).resolve().parent
-        self.payload = self.root / "payload"
-        self.app_sentinel = self.root / "external-app-invoked"
-        app = self.root / "home" / ".local" / "bin" / "fleet-secrets"
-        app.parent.mkdir(parents=True)
-        app.write_text(
-            f"#!{sys.executable}\n"
-            "import pathlib\n"
-            f"pathlib.Path({str(self.app_sentinel)!r}).write_text('called')\n"
-            "raise SystemExit(97)\n"
-        )
-        app.chmod(0o700)
-        (self.payload / "scripts" / "alert-ingress").mkdir(parents=True)
-        shutil.copy2(
-            self.source_root / "fleet_infisical.py", self.payload / "scripts" / "fleet_infisical.py"
-        )
-        shutil.copy2(
-            self.source_root / "alert-ingress" / "provision-secrets.py",
-            self.payload / "scripts" / "alert-ingress" / "provision-secrets.py",
-        )
+    def test_the_environment_does_not_replace_the_scoped_read(self):
+        # The reviewed source is the scoped read:  a hand-set environment copy never
+        # stands in for it,  so the value written into a target is the reviewed one.
+        read = self.read({"A": "from-infisical"})
+        with mock.patch.dict(os.environ, {"A": "from-the-environment"}):
+            values = provision.batch_values(["A"], "fleet-ops", "/")
+        self.assertEqual(values, {"A": "from-infisical"})
+        self.assertEqual(len(read.calls), 1)
 
-    def run_payload(self, script, env):
-        return subprocess.run(
-            [sys.executable, "-I", "-B", str(script)],
-            cwd=self.root,
-            env={"HOME": str(self.root / "home"), "PATH": "", **env},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=20,
-            check=False,
-        )
+    def test_an_absent_name_is_an_error(self):
+        self.read({}, absent=("MISSING",))
+        with self.assertRaises(provision.ReadError) as caught:
+            provision.batch_values(["MISSING"], "fleet-ops", "/")
+        self.assertIn("MISSING is absent from fleet-ops/", caught.exception.reason)
 
-    def test_isolated_payload_reads_with_only_adjacent_canonical_library(self):
-        project = str(uuid.uuid4())
-        with ScopedReadAPI({"ISOLATED_VALUE": "isolated-value"}, project=project) as api:
-            env = {
-                "HOME": str(self.root / "home"),
-                "PATH": "",
-                "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
-                "INFISICAL_FLEET_OPS_PROJECT_ID": project,
-                provision.READ_TOKEN_FLEETOPS: api.token,
+    def test_three_names_are_one_export(self):
+        # Fleet-OPS reads use this caller's distinct service token.
+        read = self.read(
+            {
+                "CLOUDFLARE_FLEET_API_TOKEN": "the-token",
             }
-            child = self.root / "read.py"
-            child.write_text(
-                "import importlib.util, json, pathlib, sys\n"
-                f"p=pathlib.Path({str(self.payload / 'scripts' / 'alert-ingress' / 'provision-secrets.py')!r})\n"
-                "s=importlib.util.spec_from_file_location('isolated_provision', p)\n"
-                "m=importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-                "assert 'fleet_secrets' not in sys.modules\n"
-                "assert m.fleet_secrets_get('ISOLATED_VALUE', m.FLEETOPS_SLUG, '/') == 'isolated-value'\n"
-                "print('ok')\n"
-            )
-            proc = subprocess.run(
-                [sys.executable, "-I", "-B", str(child)],
-                cwd=self.root,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=20,
-                check=False,
-            )
-            self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"ok\n", b""))
-            self.assertFalse(self.app_sentinel.exists())
-            self.assertEqual(
-                {
-                    p.relative_to(self.payload).as_posix()
-                    for p in self.payload.rglob("*")
-                    if p.is_file()
-                },
-                {"scripts/fleet_infisical.py", "scripts/alert-ingress/provision-secrets.py"},
-            )
+        )
+        values = provision.batch_values(
+            ["CLOUDFLARE_FLEET_API_TOKEN"],
+            "fleet-ops",
+            "/",
+        )
+        self.assertEqual(len(read.calls), 1)
+        self.assertEqual(values["CLOUDFLARE_FLEET_API_TOKEN"], "the-token")
 
-    def test_missing_or_broken_canonical_payload_fails_with_fixed_127(self):
-        for broken in (False, True):
-            with self.subTest(broken=broken):
-                scripts = self.payload / "scripts"
-                canonical = scripts / "fleet_infisical.py"
-                original = canonical.read_bytes()
-                try:
-                    canonical.unlink()
-                    if broken:
-                        canonical.write_text("raise RuntimeError('private sentinel')\n")
-                    proc = self.run_payload(
-                        self.payload / "scripts" / "alert-ingress" / "provision-secrets.py",
-                        {"HOME": str(self.root / "home"), "PATH": ""},
-                    )
-                    self.assertEqual(proc.returncode, 127)
-                    self.assertEqual(proc.stdout, b"")
-                    self.assertNotIn(b"private sentinel", proc.stderr)
-                    self.assertNotIn(b"Traceback", proc.stderr)
-                    self.assertIn(b"shared Infisical reader is unavailable", proc.stderr)
-                    self.assertFalse(self.app_sentinel.exists())
-                finally:
-                    canonical.write_bytes(original)
+
+class FleetOpsFolder(ServiceTokenTestCase):
+    """The Fleet-OPS read names the folder its own grant covers.
+
+    The Fleet-OPS project root is an alias layer:  a name at the root comes back as
+    an unexpanded reference,  which the shared client refuses.  The read names the
+    folder where the literal lives,  and this pins that,  so a change back to the
+    root cannot pass quietly.
+    """
+
+    def test_the_fleet_ops_read_names_its_own_folder_and_not_the_project_root(self):
+        seen = []
+
+        def fake_scoped_values(names, project, path):
+            seen.append((project, path))
+            if project == provision.FLEETOPS_SLUG:
+                # Stop here:  this test is about the folder the read asked for,  and
+                # nothing may be written.
+                raise provision.ReadError(
+                    "stop before any write", provision.EXIT_MISSING_EXECUTABLE
+                )
+            return {name: "fixture-value" for name in names}
+
+        with (
+            mock.patch.object(provision, "scoped_values", fake_scoped_values),
+            mock.patch.object(sys, "argv", ["provision-secrets.py", "--apply"]),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = provision.main()
+        self.assertEqual(code, provision.EXIT_MISSING_EXECUTABLE)
+        self.assertEqual(
+            seen,
+            [
+                (provision.AFC_SLUG, provision.SECRET_PATH),
+                (provision.FLEETOPS_SLUG, "/global-api-keys"),
+            ],
+        )
+        self.assertNotEqual(seen[-1][1], "/")
 
 
 class ServiceTokenWrites(ServiceTokenTestCase):

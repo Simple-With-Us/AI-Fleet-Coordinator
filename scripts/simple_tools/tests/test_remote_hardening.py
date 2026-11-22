@@ -717,6 +717,8 @@ class CodeAllowList(unittest.TestCase):
             with self.subTest(module=module.__name__):
                 self.assertEqual(found - set(module._REMOTE_CODES), set())
                 self.assertEqual(module._remote_code("rate_limited"), "rate_limited")
+                self.assertEqual(module._remote_code("origin_held"), "origin_held")
+                self.assertEqual(module._remote_code("origin_held_extra"), "error")
                 self.assertEqual(module._remote_code("ghp_" + "A" * 40), "error")
                 self.assertEqual(module._remote_code(5), "error")
 

@@ -97,7 +97,7 @@ Before step 1 the script checks that `/etc/operator-sheets`, if it exists, is ro
    `registry_export_reader.mjs` and the private `fleet_infisical.py` worker) into
    `/usr/local/lib/operator-sheets-drain/` (0644, root; a file whose content, mode or owner
    differs is replaced);
-2. reads `GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_secrets/core.py`, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
+2. reads `GOOGLE_SHEETS_SA` from Infisical Fleet-OPS prod `/google-sheets-sa` inside its own process through `scripts/fleet_infisical.py`, with the installer's own scoped read-only service token, checks it is a service-account key, and writes `/etc/operator-sheets/sa.json` (0600, root, in a 0700 directory);
 3. writes `/etc/operator-sheets/drain.env` (0600) with `OPERATOR_SHEETS_SA_FILE`, the workbook id, both sheet ids, the registry container and store, and the knobs, and prints the names (never the values) of settings that changed, were kept or were dropped;
 4. runs a preflight, with a 120 s limit on each read, to check that the registry's
    `pending-outbox` and `export-attempts` reads inside the container return JSON lists (it prints

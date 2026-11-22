@@ -513,15 +513,15 @@ class _OkMinter:
 
 class _MissingApp:
     def token_for(self, slug, repo, perms):
-        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_ID")
+        raise AppTokenError("there is no value for GH_APP_SWU_ZC_ID")
 
     def installation_metadata(self, slug, repo):
-        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_PRIVATE_KEY")
+        raise AppTokenError("there is no value for GH_APP_SWU_ZC_PRIVATE_KEY")
 
 
 class _TimeoutApp:
     def token_for(self, slug, repo, perms):
-        raise AppTokenError("fleet-secrets lookup timed out for GH_APP_SWU_ZC_ID")
+        raise AppTokenError("the store lookup failed for GH_APP_SWU_ZC_ID")
 
 
 class _SuspendedApp:

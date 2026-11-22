@@ -17,11 +17,12 @@ import XCTest
 /// store here starts a timer, a watcher or a run of its own.
 ///
 /// Inert by default:  a few panels read through app singletons (`OpsController.shared`,
-/// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
+/// `FleetViewStore.shared`, `SeatActivityStore.shared`,
 /// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
 /// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
-/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
-/// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
+/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so the scoped
+/// Infisical reader, the recall token read, `ssh` for `eavesdropper-status --plan`, the
+/// Seats panel's sources and
 /// every other launch fail at once without starting, and `InertURLProtocol` fails every
 /// request through `URLSession.shared`.  Those panels show their own could-not-read state,
 /// which is the same on every Mac and in CI.  They may still read the Mac's own report files
@@ -156,7 +157,7 @@ final class PanelSnapshotTests: XCTestCase {
             XCTFail("the Ops runner started ssh")
         } catch {}
         let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
-        XCTAssertEqual(tried, ["fleet-secrets", "fleet-secrets", "ssh"])
+        XCTAssertEqual(tried, ["infisical-scoped.py", "infisical-scoped.py", "ssh"])
 
         do {
             _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)

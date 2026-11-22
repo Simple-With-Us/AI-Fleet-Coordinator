@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from .deploy_guard import freeze_qualified
+from .deploy_guard import freeze_failures
 from .deploy_transaction import TransactionError
 
 
@@ -52,10 +52,13 @@ class Supervisor:
                 states, children = self.host.tasks_and_children(expected)
                 pending = self.host.pending_count()
                 after = self.host.process_identity()
-                if not freeze_qualified(
+                failed = freeze_failures(
                     expected, before, after, states, children, pending, self.host.stop_job_exists()
-                ):
-                    raise TransactionError("active or changed relay; abort")
+                )
+                if failed:
+                    raise TransactionError(
+                        "active or changed relay; abort; freeze predicates=" + ",".join(failed)
+                    )
                 # Freeze blocks accepts and Python handlers. Single exact task
                 # means no live request thread; child check rules out minter.
                 self.host.stop_without_kill(expected)

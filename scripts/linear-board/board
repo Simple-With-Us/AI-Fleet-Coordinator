@@ -870,7 +870,7 @@ class Infisical:
         self._token = _secret_from_file_or_env(
             "LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE", "LINEAR_BOARD_INFISICAL_READ_TOKEN"
         )
-        self._write_token = _secret_from_file_or_env(
+        self._writer = _secret_from_file_or_env(
             "LINEAR_BOARD_INFISICAL_WRITE_TOKEN_FILE", "LINEAR_BOARD_INFISICAL_WRITE_TOKEN"
         )
         self.enabled = env("LINEAR_BOARD_INFISICAL", "1") != "0"
@@ -981,10 +981,10 @@ class Infisical:
         if metadata is None:
             return False
         self._project = self._expected_project
-        if need_project and not self._write_token:
+        if need_project and not self._writer:
             warn("Infisical write skipped (LINEAR_BOARD_INFISICAL_WRITE_TOKEN is not configured)")
             return False
-        if need_project and self._verify_scope(self._write_token, writer=True) is None:
+        if need_project and self._verify_scope(self._writer, writer=True) is None:
             return False
         return True
 
@@ -1024,9 +1024,9 @@ class Infisical:
         if not self._ready(need_project=True):
             return False
         body = dict(self._where(), secretValue=value, type="shared")
-        js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._write_token)
+        js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._writer)
         if js is not None and js.get("_status") == 404:
-            js = self._call("POST", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._write_token)
+            js = self._call("POST", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body, token=self._writer)
         if js is None or js.get("_status"):
             return False
         if self._secrets is not None:
@@ -1133,15 +1133,15 @@ def tools_verify_key() -> str:
     The token's grant is verified against its own metadata before any use:
     the expected project, exactly the prod:/tools scope, read-only, unexpired.
     Only the key value leaves this function;  the token never does."""
-    token = _secret_from_file_or_env(BEARER_TOOLS_TOKEN_FILE_ENV, "SIMPLE_BOARD_TOOLS_TOKEN")
+    bearer = _secret_from_file_or_env(BEARER_TOOLS_TOKEN_FILE_ENV, "SIMPLE_BOARD_TOOLS_TOKEN")
     project = (env(BEARER_TOOLS_PROJECT_ENV) or "").strip()
-    if not token or not project:
+    if not bearer or not project:
         return ""
     api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
     headers = {
         "Content-Type": "application/json",
         "User-Agent": USER_AGENT,
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {bearer}",
     }
 
     def get(path: str):
@@ -1228,19 +1228,19 @@ def bearer_verified_seat() -> str:
             f"{BEARER_FILE_ENV} must name the private file holding this seat's bearer",
             EXIT_AUTH,
         )
-    token = read_secret_file(path)
-    if not token:
+    bearer = read_secret_file(path)
+    if not bearer:
         die(
             "no seat bearer is readable at its private file; refusing to act without a verified identity",
             EXIT_AUTH,
         )
-    claimed = parse_bearer_identity(token)
+    claimed = parse_bearer_identity(bearer)
     if claimed is None:
         die("the value at the bearer locator is not an admin-minted bearer", EXIT_AUTH)
     key = tools_verify_key()
     if len(key) < 32:
         die("bearer verification is not configured on this host", EXIT_AUTH)
-    digest = hashlib.sha256(token.encode()).hexdigest()
+    digest = hashlib.sha256(bearer.encode()).hexdigest()
     body = json.dumps(
         {
             "contract": BEARER_VERIFY_CONTRACT,
@@ -6118,6 +6118,7 @@ _REMOTE_CODES = frozenset(
         "rate_limited",
         "not_configured",
         "outcome_unknown",
+        "origin_held",
         "paused",
         "linear_error",
         "internal",

@@ -254,7 +254,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(self.fs_calls(), [])
 
     def test_site_defaults_to_realm_when_absent(self):
-        # fleet-secrets can not answer SITE (exit 3) but EMAIL and KEY are in env.
+        # The scoped reader can not answer SITE (exit 3) but EMAIL and KEY are in env.
         with (
             mock.patch.dict(os.environ, ADMIN_ENV),
             mock.patch.dict(self.api.values, {}, clear=True),

@@ -115,15 +115,26 @@ is only a policy entry.
 `create_repo` creates a repository under `Simple-With-Us` (organization) or `jaywedgeworth22` (user).  A seat needs `create_repo` in its own policy row; nothing grants it by default.  Visibility is private unless the request says `public` and that same row sets `create_repo_public` to true.  The relay reads the repository first, never follows a redirect, and returns `already_exists` when the repository is already there, so a second call does not create again.  The call uses a namespace installation token minted only for this verb (`organization_administration: write` plus `metadata: read` for the org, `administration: write` plus `metadata: read` for the user).  That token is not the seat's mint ceiling, `mint_token` cannot request those writes, the token is not cached, it is revoked when the call finishes, and it is never returned or written to the audit log.  GitHub's default for `private` is false, so the relay always sends `private: true` unless public was both requested and allowed.  The GitHub App installation has to already hold those administration permissions or GitHub refuses the mint.
 
 App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
-`fleet-secrets` call per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
-overrides) through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no
-process-environment secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
+scoped Infisical read per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
+overrides) through the relay's own scoped service token (there is no shared reader CLI any
+more;  owner decision 2026-10-21 still stands:  no process-environment secrets, no broad
+machine identity in the relay), JWT signed with the local openssl binary
 (the key reaches openssl through an inherited pipe fd, never a file), installation tokens
 cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
 seat's) and refreshed 5 minutes early.  Values are cached in memory
 per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
-values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
-must be on PATH at startup.
+values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the relay's own scoped service
+token must be bound at startup.
+
+The shared client:  the relay holds no secret reader of its own.  It reads every
+credential through the fleet's one shared Infisical client, which this host
+installs as `fleet_infisical.py` beside the relay - `/opt/git-relay/scripts` by
+default.  `GIT_RELAY_INFISICAL_CLIENT` names one file outright and
+`GIT_RELAY_INFISICAL_CLIENT_DIRS` a comma-separated list of directories to look
+in.  A host without the client refuses to start rather than falling back to an
+ambient token.  The client verifies the bound token's own grant before every
+read, so a token clamped to another folder fails closed instead of answering
+for the wrong scope.
 
 ## MCP wrapper
 
@@ -305,7 +316,11 @@ The Infisical API-route row is separately refreshed from immutable main
 edits recorded in docs/security/preservation-pending-manifest.json. Its complete
 credential-containing lines are unchanged.  REVIEWED_PRESERVATIONS now contains
 only the owner-approved AFC-797 source/output pair documented in
-[Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md). 
+[Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md)
+plus the two owner-approved AFC-793 fixture test pairs documented in
+[Reviewed Fixture Pairs Preservation](../docs/security/reviewed-fixture-pairs-preservation.md):
+`scripts/fleet_rag/tests/test_recall.py` (`b78c76d6…` to `d9cd1d0a…`) and
+`scripts/fleet_rag/tests/test_ingest.py` (`e970e451…` to `1eaa804f…`).
 REVIEWED_SAME_PATH_SOURCES remains empty; this is independent of the existing
 _REVIEWED_FIXTURES registry.  The refreshed exact
 Infisical row is active in source semantics, but no deployment or runtime use
