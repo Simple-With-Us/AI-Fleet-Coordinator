@@ -36,9 +36,7 @@ sys.exit(int(os.environ.get("FAKE_READER_EXIT", "4")))
 def function_source(name: str) -> str:
     """One shell function out of the shipped script,  verbatim."""
     text = SCRIPT.read_text(encoding="utf-8")
-    match = re.search(
-        r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), text, re.S | re.M
-    )
+    match = re.search(r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), text, re.DOTALL | re.MULTILINE)
     if not match:
         raise AssertionError("%s is not in %s" % (name, SCRIPT.name))
     return match.group(0)

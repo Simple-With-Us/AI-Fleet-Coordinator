@@ -164,16 +164,12 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
         scoped[core.ENV_PROJECT] = project_id
         secrets = {}
         for name in names:
-            value, status = core.fetch_scoped(
-                name, path, str(account), scoped, **policy
-            )
+            value, status = core.fetch_scoped(name, path, str(account), scoped, **policy)
             if status == "ok":
                 secrets[name] = value
                 continue
             if status == "absent":
-                raise SecretsError(
-                    "key {} is not in Infisical at {}".format(name, opts["path"]), 3
-                )
+                raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
             raise SecretsError(
                 "the {} scoped service token could not read {} from Infisical at {} ({})".format(
                     account, name, opts["path"], status
