@@ -395,23 +395,20 @@ def main():
 
     print(f"{mode}: alert-ingress secret provisioning")
 
-    # 1. Every value this run needs, read in one canonical named batch.  The
-    #    environment comes first for every name, so a value the environment
-    #    already holds is never fetched again.
+    # 1. Every value this run needs, read in one canonical named batch from
+    #    the scoped read.  A hand-set environment value never stands in for
+    #    the reviewed value, so nothing the environment holds is written
+    #    into a target.
     bot_names = [infisical_name for _source, infisical_name, _binding in BOT_PAIRS]
     wanted = bot_names + list(GENERATED) + list(VENDOR_ISSUED)
-    from_env = {name: os.environ.get(name, "").strip() for name in wanted}
-    to_fetch = [name for name in wanted if not from_env[name]]
     try:
-        fetched = scoped_values(to_fetch, AFC_SLUG, SECRET_PATH)
+        fetched = scoped_values(wanted, AFC_SLUG, SECRET_PATH)
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code
 
     values = {}
-    present = {
-        name: from_env.get(name) or fetched.get(name) for _source, name, _binding in BOT_PAIRS
-    }
+    present = {name: fetched.get(name) for _source, name, _binding in BOT_PAIRS}
     skipped = sorted(
         source
         for source in OPTIONAL_SOURCES
@@ -434,7 +431,7 @@ def main():
             f"  skip  the {source} bot pair is not in {AFC_SLUG}{SECRET_PATH} yet;  that source stays closed"
         )
     for name in VENDOR_ISSUED:
-        value = from_env[name] or fetched.get(name)
+        value = fetched.get(name)
         if value is None:
             print(f"  skip  {name} is vendor-issued and not in {AFC_SLUG}{SECRET_PATH} yet")
             continue
@@ -468,7 +465,7 @@ def main():
             return error.code
 
     for name in GENERATED:
-        existing = from_env[name] or fetched.get(name)
+        existing = fetched.get(name)
         if existing is not None:
             values[name] = existing
             print(f"  read  {name}  (len {len(existing)})")
