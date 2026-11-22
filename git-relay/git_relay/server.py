@@ -975,9 +975,7 @@ class Relay:
             # The store answers this query under the bound:  it stops at the
             # limit and reports the overflow, so the per-repo history is never
             # materialized in full and the refusal is decided first.
-            rows, overflow = self.pr_owners.confirmed_for_repo(
-                repo, _SERVICE_READ_RECEIPT_LIMIT
-            )
+            rows, overflow = self.pr_owners.confirmed_for_repo(repo, _SERVICE_READ_RECEIPT_LIMIT)
             if overflow:
                 self.audit.record(
                     "service-read",

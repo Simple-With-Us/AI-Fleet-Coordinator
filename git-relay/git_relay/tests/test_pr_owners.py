@@ -408,9 +408,7 @@ class StoreRobustnessTests(unittest.TestCase):
             self.assertIsNotNone(store.lookup("example/fixturerepo", 5))
             self.assertEqual(len(store.for_repo("EXAMPLE/FIXTUREREPO")), 1)
             # The row keeps the creation-time spelling.
-            self.assertEqual(
-                store.lookup("example/fixturerepo", 5)["repo"], "Example/FixtureRepo"
-            )
+            self.assertEqual(store.lookup("example/fixturerepo", 5)["repo"], "Example/FixtureRepo")
 
 
 class RebuildConflictTests(unittest.TestCase):
