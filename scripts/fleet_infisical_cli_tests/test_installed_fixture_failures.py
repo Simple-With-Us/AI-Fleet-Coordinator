@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fleet_secrets.tests.installed_writer_fixture import run_fixture
+from fleet_infisical_cli_tests.installed_writer_fixture import run_fixture
 
 
 class InstalledFixtureFailureTests(unittest.TestCase):

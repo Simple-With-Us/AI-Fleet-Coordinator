@@ -24,7 +24,7 @@ import {
 
 const config = loadConfig(testEnv());
 const CLIENT_ID = "lin_fake_client_id";
-const CLIENT_SECRET = "fake-secret-value";
+const CLIENT_CREDENTIAL = "fake-secret-value";
 const MARKER_RE = /(BEGIN|END)[^\p{L}\p{N}]*UNTRUSTED[^\p{L}\p{N}]*LINEAR/iu;
 
 function memoryGate(clock) {
@@ -54,7 +54,7 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
   const quota = memoryQuota();
   // The workspace cache holds ids only and is keyed by seat, so each harness
   // gets its own:  one test's teams must never answer another test's state.
-  const client = credentials ? new LinearClient({ quota, seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now }) : null;
+  const client = credentials ? new LinearClient({ quota, seat, clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now }) : null;
   const tools = new HostedTools({
     seat,
     scopes,
@@ -85,7 +85,7 @@ function clientHarness({ seat = "GROK-WEB", viewer } = {}) {
   const fake = new FakeLinear(viewer ? { viewer } : {});
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now });
+  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now });
   return { fake, gate, clock, client };
 }
 
@@ -225,7 +225,7 @@ test("confirmViewer refuses a viewer that is not an app, and one that is another
       // the credential itself.
       assert.match(error.upstreamMessage, /GROK-WEB/);
       assert.ok(!error.upstreamMessage.includes(CLIENT_ID));
-      assert.ok(!error.upstreamMessage.includes(CLIENT_SECRET));
+      assert.ok(!error.upstreamMessage.includes(CLIENT_CREDENTIAL));
       return true;
     },
   );
@@ -987,7 +987,7 @@ test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, 
     quota: memoryQuota(),
     seat: "GROK-WEB",
     clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
+    clientSecret: CLIENT_CREDENTIAL,
     gate,
     fetch: fake.fetch,
     now: () => clock.now,
@@ -1062,7 +1062,7 @@ test("a logger that throws during the early mint still leaves the cached token i
   const fake = new FakeLinear();
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
+  const client = new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
   const first = await client.token();
   await ageCachedToken(gate, clock, 29 * 24);
   gate.idemBegin = async () => { throw new TypeError("boom"); };
@@ -1183,7 +1183,7 @@ test("a proof belongs to its client: a different client on the same request is p
   const first = await tools.confirmedViewer();
   assert.equal(await tools.confirmedViewer(), first);
   assert.equal(viewerQueries(fake), 1);
-  const other = new LinearClient({ quota: memoryQuota(), seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
+  const other = new LinearClient({ quota: memoryQuota(), seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
   tools.linear = other;
   await tools.confirmedViewer();
   assert.equal(viewerQueries(fake), 2, "a swapped client is not covered by the earlier proof");
@@ -1223,7 +1223,7 @@ async function maHarness() {
   h.fake.addLabel("seat:MA");
   h.fake.issued.push("tok-ma");
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_CREDENTIAL}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   return h;
 }
@@ -1242,7 +1242,7 @@ test("MA claim without its claim label says the app cannot delegate, not that th
   const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
   fake.issued.push("tok-ma");
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_CREDENTIAL}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
   const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");

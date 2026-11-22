@@ -18,6 +18,7 @@ import os
 import re
 import selectors
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -88,11 +89,13 @@ PROJECT_SOURCES = {
     ),
 }
 
-# Retired Keychain identifiers retained for compatibility callers; this module never reads them.
+# Retired Keychain identifiers kept for compatibility callers; this module never reads
+# them.  They are named apart from the live ones so no live constant is shadowed by a
+# retired name.
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
-KEYCHAIN_SERVICE = "fleet-secrets"
-KEYCHAIN_CLIENT_ID = "infisical-client-id"
-KEYCHAIN_CLIENT_SECRET_ACCOUNT_NAME = "infisical-client-secret"
+RETIRED_KEYCHAIN_SERVICE = "fleet-secrets"
+RETIRED_KEYCHAIN_CLIENT_ID = "infisical-client-id"
+RETIRED_KEYCHAIN_CLIENT_SECRET_ACCOUNT_NAME = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
 COORDINATOR_READ_TOKEN_ENV_NAME = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
 WRITE_TOKEN_ENV_NAME = "INFISICAL_WRITE_TOKEN"
@@ -197,6 +200,18 @@ class UsageError(SecretsError):
         super().__init__(message, 2)
 
 
+class SecretsTimeout(SecretsError, TimeoutError):
+    """A socket timeout against Infisical:  transient,  never a refusal.
+
+    It is a `SecretsError`,  so every fail-closed path still catches it,  and a
+    `TimeoutError`,  so a consumer that can retry says "retryable" instead of
+    reading a hung lookup as a broken credential.
+    """
+
+    def __init__(self, message: str = "fetch-failed: timeout") -> None:
+        super().__init__(message, 4)
+
+
 # --------------------------------------------------------------------------- configuration
 
 
@@ -226,11 +241,22 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
     value = (env.get(env_name) or "").strip()
     if not value:
         try:
-            value = (
-                (home / project_file).read_text(encoding="utf-8").strip().splitlines()[0].strip()
-            )
-        except (OSError, UnicodeDecodeError, IndexError):
+            text = (home / project_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = None
+        if text is None:
             value = ""
+        else:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            # The file holds one identifier:  a file with two entries never silently
+            # selects one of them,  and a malformed entry is refused rather than trimmed
+            # into shape.
+            if len(lines) != 1:
+                raise SecretsError(
+                    f"the {_LABELS[project]} Infisical project id file (~/{project_file}) must "
+                    "hold exactly one identifier"
+                )
+            value = lines[0]
     if not value:
         raise SecretsError(
             f"the {_LABELS[project]} Infisical project id is not set:  set {env_name} or put it in ~/{project_file} "
@@ -547,6 +573,41 @@ def verify_service_token(
         exc.failure_kind = "refused"
         raise
     return paths
+
+
+def token_scopes(token: str, env: Mapping[str, str]) -> tuple[str, ...]:
+    """The prod folders one service token's own grant covers.
+
+    A consumer that reads a folder the token does not hold must fail closed,
+    and a consumer that holds more than one folder must declare exactly the
+    grant's set:  the shared client refuses a read whose declared folders are
+    not the grant's folders.  This is how a consumer learns that set from the
+    store instead of hard-coding it, so a grant that changes on the server
+    stops the read rather than widening it.
+
+    The answer is a list of folder paths, never a value and never a token.
+    """
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_service_token(token)
+    status, metadata = _api_json("GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024)
+    if status != 200 or not isinstance(metadata, dict):
+        raise SecretsError("token-verification-failed")
+    scopes = metadata.get("scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise SecretsError("token-scope-mismatch")
+    paths: list[str] = []
+    for scope in scopes:
+        if not isinstance(scope, dict) or scope.get("environment") != ENVIRONMENT:
+            raise SecretsError("token-scope-mismatch")
+        secret_path = scope.get("secretPath")
+        if not isinstance(secret_path, str):
+            raise SecretsError("token-scope-mismatch")
+        paths.append(check_path(secret_path))
+    if len(paths) != len(set(paths)):
+        raise SecretsError("token-scope-mismatch")
+    return tuple(paths)
 
 
 def secret_query(project: str, path: str, *, values: bool = True) -> str:
@@ -874,6 +935,7 @@ def bounded_fetch_project(
     strict_records: bool = False,
     require_finite_expiry: bool = False,
     expected_identity: dict | None = None,
+    api_base: str | None = None,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -912,6 +974,17 @@ def bounded_fetch_project(
     selected = {key: env[key] for key in (ENV_API, *ENV_NAMES, ENV_READ_PATHS) if key in env}
     if any(not isinstance(value, str) for value in selected.values()):
         raise UsageError("bounded-read-invalid")
+    if api_base is not None:
+        # The provider can be named in code,  never only in the environment.  The
+        # argument is checked with the same rules a configured provider is,  and it
+        # wins over any base the caller's own environment carried,  so a route can
+        # pin its own origin and a caller cannot be redirected by a stray value.
+        if not isinstance(api_base, str) or not api_base:
+            raise UsageError("bounded-read-invalid")
+        try:
+            selected[ENV_API] = _provider_base({ENV_API: api_base}, strict=True)
+        except ValueError:
+            raise UsageError("bounded-read-invalid") from None
     request = dict(
         schema=1,
         operation="named-fetch",
@@ -1398,6 +1471,9 @@ def fetch_verified(
     path: str,
     env: Mapping[str, str],
     token: str | None = None,
+    timeout: float | None = None,
+    *,
+    require_finite_expiry: bool = False,
 ) -> str:
     """One folder-PROVEN secret, through the REST raw-secret endpoint.
 
@@ -1411,7 +1487,11 @@ def fetch_verified(
     reference, an oversized answer or a redirect fails closed.  The value
     never appears in a message or a log;  errors name the key, the folder,
     or the HTTP status only.  Exit 3 when the key is absent at that path.
+
+    `timeout`, when set, bounds the whole read:  the grant check and the fetch share
+    one deadline,  so a caller's own limit is never stretched by a slow provider.
     """
+    deadline = None if timeout is None else time.monotonic() + timeout
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
@@ -1419,7 +1499,14 @@ def fetch_verified(
     check_path(path)
     project = infisical_project_id(env, home_dir(env))
     token = token if token is not None else resolve_token(env)
-    verify_service_token(token, project, path, env)
+    verify_service_token(
+        token,
+        project,
+        path,
+        env,
+        deadline=deadline,
+        require_finite_expiry=require_finite_expiry,
+    )
     query = secret_query(project, path)
     status, answer = _api_json(
         "GET",
@@ -1428,6 +1515,7 @@ def fetch_verified(
         None,
         env,
         max_bytes=MAX_VERIFIED_BYTES,
+        deadline=deadline,
     )
     if status in (400, 404):
         raise SecretsError(f"key {name} is not in Infisical at {path}", 3)
@@ -1543,6 +1631,16 @@ def _decode_json(raw: bytes):
     return value
 
 
+def _is_timeout(reason: object) -> bool:
+    """True when a transport failure is a timeout rather than a refusal.
+
+    `socket.timeout` is listed beside `TimeoutError` because the two are only the
+    same class from Python 3.10 on,  and the Mac still runs part of this code
+    under 3.9,  where a read timeout is not a `TimeoutError`.
+    """
+    return isinstance(reason, (TimeoutError, socket.timeout))
+
+
 def _api_json(
     method: str,
     path: str,
@@ -1576,7 +1674,7 @@ def _api_json(
         headers={
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
-            "User-Agent": "fleet-secrets",
+            "User-Agent": "fleet-infisical",
         },
     )
     max_bytes = MAX_OUTPUT_BYTES if max_bytes is None else max_bytes
@@ -1598,12 +1696,25 @@ def _api_json(
         if on_status is not None:
             on_status(status)
         raw = exc.read(limit)
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+    except urllib.error.URLError as exc:
+        # A connect timeout arrives wrapped in a URLError.  It is transient,  not a refusal.
+        if _is_timeout(exc.reason):
+            raise SecretsTimeout() from None
         if (
             not response_seen
             and on_unsent is not None
             and isinstance(getattr(exc, "reason", exc), ConnectionRefusedError)
         ):
+            on_unsent()
+        return 0, None
+    # `socket.timeout` is only an alias of `TimeoutError` from Python 3.10 on,  and the
+    # Mac still runs part of this code under 3.9,  so both names are caught here.
+    except (TimeoutError, socket.timeout):  # noqa: UP041 - both names are needed on 3.9
+        # A read timeout is transient too.  It reaches the consumer as a timeout,  so a
+        # consumer that can retry says so instead of reporting a broken credential.
+        raise SecretsTimeout() from None
+    except OSError as exc:
+        if not response_seen and on_unsent is not None and isinstance(exc, ConnectionRefusedError):
             on_unsent()
         return 0, None
     finally:
@@ -2299,7 +2410,76 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
             _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
             raise WriteError("outcome_unknown", intent, provider_status=record["provider_status"])
     finally:
+        # Clear the dict that held the value,  then rebind:  a rebind alone leaves the
+        # old dict allocated and inspectable,  which defeats the zero-retention intent.
         body.clear()
+        body = {}
+        token = ""
+
+
+def fetch_scoped(
+    name: str,
+    folder: str,
+    account: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    require_finite_expiry: bool = False,
+    timeout: float | None = None,
+) -> tuple[str, str]:
+    """One secret, through the consumer's own scoped token, and the status.
+
+    The token comes from the consumer's own store (see `token_from_store`) and the read goes
+    through `fetch_verified`, which checks the answer's own provenance as well as the grant.
+    The store is the authority:  this path never reads a token from the environment,  so a
+    hand-set value can never replace the reviewed, scope-limited grant.
+
+    Returns (value, status).  The value is "" for every failure, and the status says which:
+    "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
+    it), "no-token", "keychain-locked", "keychain-timeout", "keychain-missing",
+    "token-unreadable" or "failed".
+
+    A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
+    retry says so instead of reading a hung lookup as a broken credential.
+
+    `timeout`, when set, bounds the whole read:  the grant check and the fetch share one
+    deadline,  so a caller's own limit is never stretched by a slow provider.
+
+    The value never appears in a message, a log or an exception.
+    """
+    env = os.environ if env is None else env
+    token, status = token_from_store(account, env)
+    if not token:
+        return "", status
+    try:
+        return (
+            fetch_verified(
+                name,
+                folder,
+                env,
+                token,
+                timeout,
+                require_finite_expiry=require_finite_expiry,
+            ),
+            "ok",
+        )
+    except TimeoutError:
+        # The timeout reaches the consumer instead of being reported as a refusal.
+        raise
+    except SecretsError as exc:
+        message = exc.message
+        if exc.code == 3:
+            return "", "absent"
+        if (
+            "token-verification-failed" in message
+            or "status-403" in message
+            or "token-scope-mismatch" in message
+        ):
+            # A grant that does not cover the folder is a refusal to repair,  not a
+            # failed read a retry would fix:  the repair is the grant,  so it says so.
+            # The markers are exact:  an unrelated message that merely mentions a
+            # scope or a grant is a failed read,  and it is retried.
+            return "", "forbidden"
+        return "", "failed"
 
 
 def reconcile_secret(

@@ -122,11 +122,11 @@ with the top-level `apps` (the acronyms) and `--app`.
    owner to say "commit". Do not leave a remote branch without a PR.
 5. **Prior owner messages stay in scope** unless the owner cancels or
    clearly redirects.
-6. **Secrets:** read from Infisical Fleet-OPS with `fleet-secrets` (nothing reads `~/.secrets`). Never print them.
+6. **Secrets:** read from Infisical Fleet-OPS with the consumer's own scoped service token (nothing reads `~/.secrets`). Never print them.
    Infisical is the runtime source of truth. Never `infisical secrets` bare.
    Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
-   prints **values**.  Fleet keys: `fleet-secrets get NAME` (one value) or
-   `fleet-secrets names` (names only);  the flat `global-api-keys` file is retired and
+   prints **values**.  Fleet keys: a scoped Infisical read of NAME (one value) or
+   a names-only scoped Infisical read (names only);  the flat `global-api-keys` file is retired and
    nothing may read it.  Never `cat` or open a secrets file with a Read tool.  Never
    `od` / `xxd` / `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 7. **Light theme default.  Use U+00A0 plus one normal space between sentences**,
@@ -278,7 +278,7 @@ creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` �
 Never echo the key.
 
 Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
-(`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
+(`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through the seat's own scoped service token
 vars (not setup-only) and run `python3 scripts/simple-chat` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
@@ -393,8 +393,8 @@ Only when the seat's product needs them. Do not block first code on these.
 | Extra | Notes |
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
-| MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app;  the Zulip credential comes from Infisical Fleet-OPS `/zulip` through `fleet-secrets`, and `GH_TOKEN` must be a **runtime** var |
+| MCP servers | Per-platform config.  Secrets from Infisical (the consumer's own scoped service token).  Never commit tokens. |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app;  the Zulip credential comes from Infisical Fleet-OPS `/zulip` through the seat's own scoped service token, and `GH_TOKEN` must be a **runtime** var |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 

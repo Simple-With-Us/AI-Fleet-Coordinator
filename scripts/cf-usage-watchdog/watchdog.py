@@ -624,7 +624,13 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """Named direct read using only this service's explicit scoped token."""
+        """Named direct read using only this service's explicit scoped token.
+
+        The read runs under the one token this service's own store holds for it:  its grant
+        covers exactly the one folder this read declares,  and the client refuses a read
+        whose declared folders are not the grant's folders.  There is no PATH helper,
+        CLI login or machine identity in this path.
+        """
         conf = self.cfg["infisical"]
         fi = None
         try:
