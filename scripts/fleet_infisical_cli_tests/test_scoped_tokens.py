@@ -357,8 +357,10 @@ class ScopedReadStatus(unittest.TestCase):
         def read(*args, **kwargs):
             raise error
 
-        with mock.patch.object(core, "token_from_store", lambda account, env: (READ, "ok")), \
-                mock.patch.object(core, "fetch_verified", read):
+        with (
+            mock.patch.object(core, "token_from_store", lambda account, env: (READ, "ok")),
+            mock.patch.object(core, "fetch_verified", read),
+        ):
             return core.fetch_scoped("A_KEY", "/", "consumer-ro", {})
 
     def test_a_grant_that_does_not_cover_the_folder_is_forbidden(self):
