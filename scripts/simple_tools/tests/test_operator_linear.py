@@ -848,6 +848,16 @@ class CredentialTests(unittest.TestCase):
     def test_service_token_missing_file_is_unconfigured(self) -> None:
         self.assertEqual(opl.service_token(str(self.dir / "absent")), "")
 
+    def test_service_token_refuses_an_unreadable_store(self) -> None:
+        # An existing store that cannot be read is a broken store, not an absent
+        # one:  the feature fails closed instead of reporting itself unconfigured.
+        path = self.token_file()
+        with mock.patch.object(opl.os, "stat", side_effect=PermissionError("denied")):
+            with self.assertRaises(opl.CredentialRefused) as caught:
+                opl.service_token(str(path))
+        self.assertEqual(caught.exception.reason, "token_file_unreadable")
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
+
     def test_service_token_refuses_a_group_readable_file(self) -> None:
         path = self.token_file(mode=0o644)
         with self.assertRaises(opl.CredentialRefused) as caught:

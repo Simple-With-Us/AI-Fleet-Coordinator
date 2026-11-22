@@ -214,8 +214,17 @@ def service_token(token_file: str | None = None) -> str:
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
+    except FileNotFoundError:
         return ""
+    except OSError as exc:
+        # The store exists but cannot be read (a locked-down parent directory, the
+        # wrong owner):  that is a broken store, not an absent one, and it fails
+        # closed rather than reporting the feature unconfigured.
+        raise CredentialRefused(
+            "token_file_unreadable",
+            "%s could not be read (%s); a service token file that exists but "
+            "cannot be read is a broken store, not an absent one" % (path, type(exc).__name__),
+        ) from None
     if mode & 0o077:
         raise CredentialRefused(
             "token_file_permissions",
