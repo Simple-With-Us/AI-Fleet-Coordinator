@@ -193,7 +193,7 @@ def _read_token(project):
         or not 20 <= len(token) <= 2048
         or any(c.isspace() for c in token)
     ):
-        raise ReadError(f"{token_name} is missing or invalid")
+        raise ReadError(f"the {account} service-token store token is missing or invalid")
     return token
 
 
