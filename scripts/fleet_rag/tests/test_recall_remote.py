@@ -217,6 +217,9 @@ class RemoteRecall(unittest.TestCase):
                 ({"AGENT_SEAT": "1bad"}, "search", False),
                 ({"AGENT_SEAT": "CODEX", "SIMPLE_RECALL_REMOTE": "0", "SIMPLE_TOOLS_BEARER": BEARER}, "search", False),
                 ({"AGENT_SEAT": "CODEX", "QDRANT_URL": "http://q.example", "SIMPLE_TOOLS_BEARER": BEARER}, "search", False),
+                # A launcher that declares no seat but supplies the bearer goes hosted too.
+                ({"SIMPLE_TOOLS_BEARER": BEARER}, "search", True),
+                ({"SIMPLE_TOOLS_BEARER": BEARER}, "stats", True),
                 ({}, "search", False),
             )
             for env, cmd, expected in cases:
