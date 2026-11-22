@@ -251,6 +251,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         ]
     ),
     (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "git-relay/git_relay/server.py",
+        "182f99d6c71bb9616e4ac9381d2fadfbe26e8760fc3dac873a6b3c58d2f2c752",
+    ): frozenset({("assigned secret", 51282, 51325, 51290, 51325)}),
+    (
         "Simple-With-Us/Congress.Trade",
         "app/src/security/__tests__/originLock.test.ts",
         "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
