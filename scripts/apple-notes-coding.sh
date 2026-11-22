@@ -2371,31 +2371,31 @@ _scoped_secret() {
     --folder "$folder" --project fleet-ops --account "$account"
 }
 
-# One secret on stdout:  the environment value first, else this consumer's own scoped token
-# against Infisical Fleet-OPS prod /global-api-keys, else nothing.  A failed read says which
-# source was unavailable:  the reader, the account, or the folder.
+# One secret on stdout:  this consumer's own scoped token against Infisical
+# Fleet-OPS prod /global-api-keys, else nothing.  The scoped grant is the only
+# source:  a value already sitting in the environment is never read,  so a
+# hand-set value cannot replace the reviewed grant (OPS-1101).  A failed read
+# says which source was unavailable:  the reader, the account, or the folder.
 _pushover_secret() {
-  local name="$1" value="${!1:-}"
+  local name="$1" value=""
+  local err_file="" reason=""
+  err_file="$(mktemp)"
+  value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>"$err_file")" || value=""
+  reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
   if [[ -z "$value" ]]; then
-    local err_file="" reason=""
-    err_file="$(mktemp)"
-    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>"$err_file")" || value=""
-    reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
-    rm -f "$err_file"
-    if [[ -z "$value" ]]; then
-      echo "apple-notes: ${name} is not available:  the apple-notes-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})}" >&2
-      # The read failed,  so the helper does not report success:  the caller
-      # decides what a missing notification key means.
-      return 1
-    fi
+    echo "apple-notes: ${name} is not available:  the apple-notes-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})}" >&2
+    # The read failed,  so the helper does not report success:  the caller
+    # decides what a missing notification key means.
+    return 1
   fi
   printf '%s' "$value"
 }
 
 _send_pushover_notification() {
   local user_key token
-  # Environment value first, then this consumer's own scoped token against Infisical
-  # Fleet-OPS prod /global-api-keys through the shared scoped reader (OPS-818;  the old
+  # This consumer's own scoped token against Infisical Fleet-OPS prod
+  # /global-api-keys through the shared scoped reader (OPS-818;  the old
   # flat secrets file is retired, AFC-359).
   # A key the helper could not read is an empty key,  never a silent success:
   # the Pushover call below is skipped and the macOS notification carries the
