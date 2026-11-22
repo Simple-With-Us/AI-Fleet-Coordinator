@@ -185,6 +185,7 @@ REPAIR_MAX_CHATS = 5
 #: (`_claim`), and the spawn claim a chat's start takes before it sets off a run, so several chats starting in the
 #: same moment set off one run between them.  A claim older than this is a holder that died, and is taken over.
 REPAIR_LOCK_SECONDS = 30
+REPAIR_SPAWN_CLAIM_SECONDS = 300
 # The enrollment of a lettered chat's own sub-thread children (`enroll_children`), on the turn-end event of the
 # chat that started them:  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every
 # child unlettered, so the parent - whose turn end already runs - enrolls its own.  At most CHILD_ENROLL_MAX
@@ -195,7 +196,6 @@ REPAIR_LOCK_SECONDS = 30
 # every quiet chat's.
 CHILD_ENROLL_MAX = 8
 CHILD_ENROLL_SECONDS = 5
-REPAIR_SPAWN_CLAIM_SECONDS = 300
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -428,11 +428,11 @@ GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
 #: An adapter's `unlettered_sessions`:  from the environment, the session ids of this host's chats that still
 #: carry the "??: " placeholder title, newest first.  Ids only, bounded by the adapter, and any doubt leaves a
 #: chat out.
-U#: An adapter's `child_sessions`:  from the environment and the session id of a chat that holds a letter, the
+UnletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
+#: An adapter's `child_sessions`:  from the environment and the session id of a chat that holds a letter, the
 #: ids of this host's sub-thread children of that chat that may still need one, newest first.  Ids only,
 #: bounded by the adapter, and any doubt answers none.
 ChildSessions = Callable[[Mapping[str, str], str], Iterable[str] | None]
-nletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
 #: An adapter's `live_chats`:  from the environment, the chats this host still holds open and the host's own
 #: last-activity time for each, as native session id to an ISO 8601 instant.  The host knows better than the
 #: sweep whether a chat is still open,  so this is what the liveness report carries (AFC-878).  Any doubt
@@ -486,10 +486,10 @@ class PlatformSpec:
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
     unlettered_sessions        for a platform whose own session store on this host lists its chats with the titles
                                the hook put on them:  the ids of the ones whose title carries no letter, for the
-                               r    child_sessions             for a platform that runs no hook inside a sub-agent (ZCode):  the ids of this host's
+                               repair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
+    child_sessions             for a platform that runs no hook inside a sub-agent (ZCode):  the ids of this host's
                                sub-thread children of a lettered chat, for the enrollment the chat's own turn end
                                makes (`enroll_children`)
-epair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
     unlettered_feed            for a row with no `unlettered_sessions`:  why it has none, in one line (the platform is
                                hook-only:  no store this host can list, or titles that never carry "??: ").  Every
                                row of the table says one or the other (test_platform_letter_feeds)
@@ -529,9 +529,9 @@ epair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
     session_env: tuple[str, ...] = ()
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
-    gone_elsewhere: GoneElsewher    child_sessions: ChildSessions | None = None
-e | None = None
+    gone_elsewhere: GoneElsewhere | None = None
     unlettered_sessions: UnletteredSessions | None = None
+    child_sessions: ChildSessions | None = None
     unlettered_feed: str = ""
     live_chats: LiveChats | None = None
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
@@ -642,7 +642,9 @@ def mac_ssh(env: Mapping[str, str]) -> str:
 def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
     """Where a chat's note lives: under the state root, in a folder named by a plain seat token only, so a seat
     value with a separator can never place the note anywhere else."""
-    safe = I.valid_seat(who) or "UNKN
+    safe = I.valid_seat(who) or "UNKNOWN"
+    return os.path.join(L.state_root(env), safe, "letters", sid + ".json")
+
 
 def note_holds_letter(env: Mapping[str, str], who: str, sid: str) -> bool:
     """True when the chat's own note on this host says it holds a letter (open, with a label):  the hook's
@@ -654,8 +656,6 @@ def note_holds_letter(env: Mapping[str, str], who: str, sid: str) -> bool:
         return lettered(_read_json(note_path(env, who, sid)))
     except Exception:  # noqa: BLE001 - a note that cannot be read is one that holds no letter
         return False
-OWN"
-    return os.path.join(L.state_root(env), safe, "letters", sid + ".json")
 
 
 # --------------------------------------------------------------------------------------------
@@ -1284,10 +1284,9 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
     evidence that the chats ended (AFC-878)."""
     spec = load_spec(args.platform)
     if spec is None:
-        ret        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
-live-chat report,  so this host cannot say which chats are open"
-            % spec.platform
-        }
+        return {"error": "%r is not a platform this side writes" % args.platform}
+    if spec.live_chats is None:
+        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
     live = live_report(spec, env)
     if live is None:
         # The host could not answer,  so it does not report:  a report of nothing would tell
@@ -2719,6 +2718,14 @@ def turn_note(
     if not fresh:
         return None
     out = dict(fresh)
+    for key in TURN_KEYS:
+        if key in after:
+            out[key] = after[key]
+        elif key in before:
+            out.pop(key, None)
+    return out
+
+
 def enroll_children(chat: Chat, started: float | None = None) -> int:
     """Register the sub-thread children of this chat that hold no letter, on the chat's own turn end
     (`on_turn`):  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every child
@@ -2781,23 +2788,17 @@ def enroll_children(chat: Chat, started: float | None = None) -> int:
     return replayed
 
 
-    for key in TURN_KEYS:
-        if key in after:
-            out[key] = after[key]
-        elif key in before:
-            out.pop(key, None)
-    return out
-
-
 def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
-    """A turn ended (a spec that maps its turn-end event to `turn`):  ask again for a missing letter, report     titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
-iter when it has one;  a platform that takes
-    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
-    lettered chat on a pla    started = (
+    """A turn ended (a spec that maps its turn-end event to `turn`):  ask again for a missing letter, report the turn,
+    print nothing, close nothing.
+
+    A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
+    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
+    lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
+    that retitled the chat itself, dropping the letter, gets it back)."""
+    started = (
         time.monotonic()
     )  # the enrollment tail shares this pass's whole budget, not a fresh one
-tform whose writer renames natively, the turn end also does the rename part (a platform
-    that retitled the chat itself, dropping the letter, gets it back)."""
     note = chat.read()
     if not note:
         return 0
@@ -2819,12 +2820,12 @@ tform whose writer renames natively, the turn end also does the rename part (a p
         data,
         _text(chat.env.get("HOME")) or os.path.expanduser("~"),
         chat.now,
-           enroll_children(chat, started)
- lambda text: chat.registry("issues", issues=text),
+        lambda text: chat.registry("issues", issues=text),
     )
     merged = turn_note(before, note, chat.read())
     if merged is not None:
         chat.write(merged)
+    enroll_children(chat, started)
     return 0
 
 
