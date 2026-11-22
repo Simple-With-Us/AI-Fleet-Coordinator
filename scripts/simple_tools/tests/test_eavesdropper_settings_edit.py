@@ -1615,7 +1615,9 @@ class ControlVerbTests(Case):
         foc = self.foc
         corrupt = {"tables": {"notes_queue": {"server_seats": "not-a-spec"}}}
         self.assertIsNone(foc._strip_unknown_allowlist_entry(corrupt, "notes_queue.server_seats"))
-        nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}}}}}
+        # Only an entry of a type the host knows the editor learned later may be
+        # dropped at all, so the nested fixtures carry that type.
+        nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "seats"}}}}}
         stripped = foc._strip_unknown_allowlist_entry(nested, "seat.*.budget.future_cap")
         # The parent had no other sub-key, so it goes with it:  an empty parent
         # spec would reach the editor and it refuses "%s needs its keys".
@@ -1623,7 +1625,7 @@ class ControlVerbTests(Case):
         self.assertEqual(nested["seat"], {})
         # A parent with another sub-key keeps it, and the report names the
         # sub-key that was left out.
-        kept = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}, "wakes_per_day": {"type": "int"}}}}}
+        kept = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "seats"}, "wakes_per_day": {"type": "int"}}}}}
         stripped = foc._strip_unknown_allowlist_entry(kept, "seat.*.budget.future_cap")
         self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget.future_cap"))
         self.assertEqual(sorted(kept["seat"]["budget"]["keys"]), ["wakes_per_day"])
