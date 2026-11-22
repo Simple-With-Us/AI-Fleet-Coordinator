@@ -696,6 +696,15 @@ class AppTokenMinter:
             self._tokens[cache_key] = (expiry, token)
             return token, expiry
 
+    def _mint_installation_token(self, iid, bearer, repositories, permissions):
+        """The service lane's installation issuance request, not its answer validation."""
+        return self._api(
+            "POST",
+            f"/app/installations/{iid}/access_tokens",
+            bearer,
+            {"repositories": repositories, "permissions": permissions},
+        )
+
     def token_for_service(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint one installation token for the dedicated service-read lane and
         validate the ANSWER before the token may be used:  the granted
@@ -732,12 +741,7 @@ class AppTokenMinter:
             or str((install.get("account") or {}).get("login", "")).casefold() != owner.casefold()
         ):
             raise AppTokenError("app installation is missing, suspended, or on another account")
-        data = self._api(
-            "POST",
-            f"/app/installations/{iid}/access_tokens",
-            bearer,
-            {"repositories": [name], "permissions": permissions},
-        )
+        data = self._mint_installation_token(iid, bearer, [name], permissions)
         if not isinstance(data, dict):
             raise AppTokenError("minted-token response was malformed")
         token = data.get("token")

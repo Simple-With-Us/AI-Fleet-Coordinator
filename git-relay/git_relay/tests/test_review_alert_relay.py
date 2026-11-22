@@ -428,7 +428,8 @@ class ServiceReadRevokeTests(unittest.TestCase):
 class MinterServiceLaneTests(unittest.TestCase):
     """Adversarial validation of the strict service-lane mint."""
 
-    def _minter(self, answer, revoke_fails=False):
+    def _minter(self, answer, revoke_fails=False, expected_permissions=None):
+        expected_permissions = dict(self.GRANTS if expected_permissions is None else expected_permissions)
         from git_relay.app_tokens import AppTokenMinter
 
         revoked = []
@@ -441,11 +442,13 @@ class MinterServiceLaneTests(unittest.TestCase):
         def api(method, path, bearer, payload=None):
             calls.append((method, path))
             if method == "GET" and path == "/app":
+                self.assertEqual(bearer, "jwt")
+                self.assertIsNone(payload)
                 return {"id": 5389035}
-            if method == "GET" and path.endswith("/installation"):
+            if method == "GET" and path == "/repos/example/fixture/installation":
+                self.assertEqual(bearer, "jwt")
+                self.assertIsNone(payload)
                 return {"id": 173216048, "account": {"login": "example"}}
-            if method == "POST" and path.endswith("/access_tokens"):
-                return answer
             if method == "DELETE" and path == "/installation/token":
                 revoked.append(bearer)
                 if revoke_fails:
@@ -453,8 +456,36 @@ class MinterServiceLaneTests(unittest.TestCase):
                 return {}
             raise AssertionError((method, path))
 
-        minter = AppTokenMinter(Source(), api, signer=lambda *a: "jwt", clock=lambda: 1000.0)
+        testcase = self
+
+        class ServiceMinter(AppTokenMinter):
+            def _mint_installation_token(self, iid, bearer, repositories, permissions):
+                testcase.assertEqual(iid, 173216048)
+                testcase.assertEqual(bearer, "jwt")
+                testcase.assertEqual(repositories, ["fixture"])
+                testcase.assertEqual(permissions, expected_permissions)
+                return answer
+
+        minter = ServiceMinter(Source(), api, signer=lambda *a: "jwt", clock=lambda: 1000.0)
         return minter, revoked
+
+    def test_fixture_rejects_wrong_semantic_request_and_unexpected_http(self):
+        minter, _ = self._minter(self._answer())
+        good = (173216048, "jwt", ["fixture"], dict(self.GRANTS))
+        wrong = [
+            (1, good[1], good[2], good[3]),
+            (good[0], "wrong", good[2], good[3]),
+            (good[0], good[1], ["other"], good[3]),
+            (good[0], good[1], good[2], {"contents": "write"}),
+        ]
+        for request in wrong:
+            with self.subTest(request=request), self.assertRaises(AssertionError):
+                minter._mint_installation_token(*request)
+        for request in [("POST", "/unexpected", "jwt", {}),
+                        ("GET", "/repos/other/fixture/installation", "jwt", None),
+                        ("GET", "/app", "wrong", None)]:
+            with self.subTest(request=request), self.assertRaises(AssertionError):
+                minter._api(*request)
 
     GRANTS = {"pull_requests": "read", "checks": "read", "metadata": "read"}
 
@@ -479,7 +510,7 @@ class MinterServiceLaneTests(unittest.TestCase):
     def test_implicit_metadata_read_is_accepted(self):
         grants = {"pull_requests": "read"}
         answer = self._answer(permissions={"pull_requests": "read", "metadata": "read"})
-        minter, _ = self._minter(answer)
+        minter, _ = self._minter(answer, expected_permissions=grants)
         token, _expiry = minter.token_for_service("swu-operator", "example/fixture", grants)
         self.assertEqual(token, "minted-token")
 
@@ -532,7 +563,7 @@ class MinterServiceLaneTests(unittest.TestCase):
 
     def test_metadata_above_read_is_refused_and_revoked(self):
         answer = self._answer(permissions={"pull_requests": "read", "metadata": "write"})
-        minter, revoked = self._minter(answer)
+        minter, revoked = self._minter(answer, expected_permissions={"pull_requests": "read"})
         with self.assertRaises(Exception):
             minter.token_for_service("swu-operator", "example/fixture", {"pull_requests": "read"})
         self.assertEqual(revoked, ["minted-token"])
