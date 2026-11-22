@@ -3,8 +3,10 @@
 **Why.**  `scripts/fleet-ops-control.py` read a Coolify token from an Infisical secret and folder that
 do not exist: the Fleet-OPS prod project has no `/coolify` folder and no `COOLIFY_API_TOKEN`, so
 `server redeploy` and `--check-token` failed closed with "the Coolify token is not available" before
-any Coolify request.  The helper now fails with "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env", so the failure names the variable it needs.  The server's audit log carries those failures for the Eavesdropper redeploys on
-2026-11-18.
+any Coolify request.  The helper now fails with
+"the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env",
+so the failure names the variable it needs.  The server's audit log carries those failures for
+the Eavesdropper redeploys on 2026-11-18.
 
 **What the deploy-only Coolify token is.**  Fleet-OPS prod holds three Coolify tokens at the project
 root, and the deploy-only one has a folder of its own, `/coolify-deploy-only-token`, with exactly one
@@ -23,7 +25,9 @@ enforced at the folder.
 owned by the consumer's account, holding one line: `FLEET_OPS_CONTROL_INFISICAL_TOKEN=<value>`.  The
 value is never on a command line, in an argv, in the answer or in the audit.  The path follows the
 running account's home, so the forced command, which runs as `jay`, reads that file, while a root
-shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env" even though the ssh path works.
+shell reads `/root/.config/fleet-tools/ops-control.env`, finds nothing, and fails with
+"the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+even though the ssh path works.
 
 **What was verified, and how.**
 
