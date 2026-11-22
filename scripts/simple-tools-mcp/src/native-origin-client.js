@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveSecret } from "./infisical.js";
 
 const OriginClaims = z.object({
   origin_session_claim: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
@@ -49,5 +50,20 @@ export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = 
     const claims = OriginClaims.parse(JSON.parse(text));
     if (claims.origin_session_claim !== session) throw new Error("lookup-session-mismatch");
     return claims;
+  };
+}
+
+// Read only for an exact creation invocation. The shared runtime loader supplies
+// its normal bounded cache; neither value has a persistent Worker copy.
+export function nativeOriginResolverFromSecrets(env) {
+  return async (context) => {
+    if (context?.seat !== "CODEX") throw new Error("unsupported-seat");
+    const names = ["REVIEW_ORIGIN_READ_URL", "REVIEW_ORIGIN_CODEX_READ_KEY"];
+    const values = await Promise.all(names.map((name) => resolveSecret(env, {
+      name, path: "/zulip", envName: name, optional: true, legacy: "",
+    })));
+    const resolver = nativeOriginResolver(Object.fromEntries(names.map((name, i) => [name, values[i]])));
+    if (!resolver) throw new Error("lookup-unconfigured: check REVIEW_ORIGIN_READ_URL and REVIEW_ORIGIN_CODEX_READ_KEY");
+    return resolver(context);
   };
 }
