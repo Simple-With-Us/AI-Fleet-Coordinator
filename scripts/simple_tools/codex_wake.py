@@ -463,7 +463,9 @@ def make_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
-        exclude=exclude_non_interactive(env),
+        # The same resolved host the delivery uses, so this host's own engine rows are the
+        # ones excluded and not another host's.
+        exclude=exclude_non_interactive(env, str(_config(settings).get("local_host") or "server")),
     )
 
 
@@ -485,6 +487,20 @@ def router_platform(
     Mac, and the app-server daemon on the server, whose live chats are the ones the
     registry names `verified_host: server`.  Any other host is refused."""
     here = dict(env)
+    # One transport per host kind, built on first use and kept:  the daemon transport holds
+    # the few-seconds status cache, so rebuilding it per wake would pay a binary lookup and
+    # a daemon round-trip on every delivery.  The settings are still read per delivery, and
+    # a host change builds that host's transport once.
+    native_by_host: dict[str, Any] = {}
+
+    def native_for(local_host: str) -> Any:
+        if transport is not None:
+            return transport
+        built = native_by_host.get(local_host)
+        if built is None:
+            built = native_transport(here, local_host)
+            native_by_host[local_host] = built
+        return built
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         # The settings are read when the delivery happens:  the router keeps them current, and
@@ -497,7 +513,7 @@ def router_platform(
             return CW.deliver_remote(here, config, target, wake, platform=PLATFORM, runner=runner)
         if target.host != local_host:
             return WR.Delivery("refused", code="unknown-host")
-        native = transport or native_transport(here, local_host)
+        native = native_for(local_host)
         return CodexDelivery(
             native,
             here,
@@ -517,7 +533,7 @@ def router_platform(
     )
 
 
-def exclude_non_interactive(env: Mapping[str, str], local_host: str = "mac"):
+def exclude_non_interactive(env: Mapping[str, str], local_host: str = "server"):
     """Exclude known engine/subagent rows; an unreadable store is not proof of exclusion.
 
     Only this host's own rows are read:  a row on another host is that host's to judge.

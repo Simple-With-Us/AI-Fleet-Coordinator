@@ -23,6 +23,9 @@ from . import platform_letter_codex as PLC
 
 #: How long one daemon answer stands for the next caller.  A fresh probe skips the cache.
 STATUS_TTL = 5.0
+#: How many thread answers the cache holds at once, so a long-lived router does not grow
+#: one permanent entry per thread it has ever been asked about.
+STATUS_MAX_ENTRIES = 512
 #: The whole daemon conversation, connect and answer together.
 DEADLINE = 5.0
 #: The status the daemon reports for a thread no live owner holds.
@@ -64,7 +67,8 @@ class DaemonStatus:
     One answer serves every caller for `ttl` seconds, so a delivery attempt does not spend
     a daemon conversation per check.  A failed probe is cached as no answer for the same
     time, so a broken daemon is asked once and not once per caller, and it never
-    authorizes a delivery.
+    authorizes a delivery.  Expired answers are dropped when the next one is stored, and
+    the cache holds at most `max_entries` threads.
     """
 
     def __init__(
@@ -73,10 +77,12 @@ class DaemonStatus:
         *,
         ttl: float = STATUS_TTL,
         opener: Callable[..., Any] | None = None,
+        max_entries: int = STATUS_MAX_ENTRIES,
     ):
         self.env = env
         self.ttl = ttl
         self.opener = opener
+        self._max_entries = max(1, max_entries)
         self._cache: dict[str, tuple[float, str]] = {}
 
     def status(self, thread_id: str, *, fresh: bool = False) -> str:
@@ -87,6 +93,14 @@ class DaemonStatus:
             if cached is not None and now < cached[0]:
                 return cached[1]
         answer = daemon_status(self.env, thread_id, opener=self.opener)
+        now = time.monotonic()
+        # An expired answer proves nothing, so it goes first.  What is left is bounded, so a
+        # long-lived router holds the newest answers and not one entry per thread ever asked.
+        for key in [key for key, kept in self._cache.items() if now >= kept[0]]:
+            del self._cache[key]
+        self._cache.pop(thread_id, None)
+        while len(self._cache) >= self._max_entries:
+            self._cache.pop(next(iter(self._cache)))
         self._cache[thread_id] = (now + self.ttl, answer)
         return answer
 

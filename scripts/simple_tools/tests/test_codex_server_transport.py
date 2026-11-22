@@ -97,6 +97,30 @@ class DaemonStatusTests(unittest.TestCase):
             self.assertFalse(probe.loaded("thread-1"))
             self.assertEqual(len(open_rpc.made), 1)
 
+    def test_the_cache_holds_only_so_many_threads(self):
+        open_rpc = opener("idle")
+        probe = CST.DaemonStatus({"HOME": "/home/test"}, opener=open_rpc, max_entries=3)
+        with patch.object(PLC, "daemon_socket", return_value="/tmp/app-server-control.sock"):
+            for number in range(5):
+                self.assertTrue(probe.loaded("thread-%d" % number))
+            self.assertEqual(len(probe._cache), 3)
+            self.assertEqual(len(open_rpc.made), 5)
+            # The oldest answers went first:  asking for one again costs a daemon
+            # conversation, while a kept answer still serves from the cache.
+            self.assertTrue(probe.loaded("thread-0"))
+            self.assertEqual(len(open_rpc.made), 6)
+            self.assertTrue(probe.loaded("thread-4"))
+            self.assertEqual(len(open_rpc.made), 6)
+
+    def test_an_expired_answer_is_dropped_when_the_next_one_is_stored(self):
+        open_rpc = opener("idle")
+        probe = CST.DaemonStatus({"HOME": "/home/test"}, opener=open_rpc)
+        probe._cache["thread-old"] = (0.0, "idle")
+        with patch.object(PLC, "daemon_socket", return_value="/tmp/app-server-control.sock"):
+            self.assertTrue(probe.loaded("thread-1"))
+        self.assertNotIn("thread-old", probe._cache)
+        self.assertIn("thread-1", probe._cache)
+
     def test_a_failed_probe_is_cached_as_no_answer(self):
         open_rpc = opener(None, error=RuntimeError("the daemon is down"))
         probe = CST.DaemonStatus({"HOME": "/home/test"}, opener=open_rpc)
