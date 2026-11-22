@@ -312,14 +312,22 @@ class ServerPyAdmissionTests(unittest.TestCase):
         census = frozenset(tuple(row) for row in doc["effective_matches"])
         self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], census)
         self.assertEqual(record["provenance_source"]["sha256"], self.legacy_digest)
-        # Main has moved on since this candidate was reviewed, so the checkout
-        # no longer has to hold either reviewed version. The registry and the
-        # record stay bound to each other; the byte checks run only when the
-        # checkout actually holds the admitted candidate.
+
+    def test_census_holds_against_the_admitted_bytes_when_present(self):
+        root = Path(__file__).resolve().parents[3]
+        doc = json.loads(
+            (root / "docs/security/server-py-match-pinned-review-20261118.json").read_text()
+        )["reviewed_file"]
         raw = (root / doc["path"]).read_bytes()
-        if hashlib.sha256(raw).hexdigest() == self.key[2]:
-            self.assertEqual(len(raw), doc["bytes"])
-            self.assertIsNone(relay.scan_file(doc["repository"], doc["path"], raw.decode("utf-8")))
+        if hashlib.sha256(raw).hexdigest() != self.key[2]:
+            # Loud on purpose: the admitted candidate bytes are not preserved in
+            # any published commit, so the census is UNREPRODUCED until they are.
+            self.skipTest(
+                "UNREPRODUCED: checkout does not hold the admitted server.py bytes "
+                + self.key[2][:8]
+            )
+        self.assertEqual(len(raw), doc["bytes"])
+        self.assertIsNone(relay.scan_file(doc["repository"], doc["path"], raw.decode("utf-8")))
 
     def test_stale_or_incomplete_census_refuses_the_admitted_digest(self):
         census = relay._REVIEWED_GENERIC_MATCHES[self.key]
