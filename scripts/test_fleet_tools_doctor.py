@@ -19,11 +19,23 @@ import threading
 import time
 import unittest
 import urllib.parse
+import uuid
 from datetime import UTC
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+
+
+def fixture_project_id() -> str:
+    """The synthetic Infisical project id,  built at run time.
+
+    No project id,  UUID or hostname is committed to source,  not even a synthetic
+    one,  so the value a reader is asked for is assembled here instead.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, "fleet-tools-doctor-fixture"))
+
+
 spec = importlib.util.spec_from_file_location("doctor", HERE / "fleet-tools-doctor.py")
 doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
@@ -60,7 +72,7 @@ class FakeClient:
 
     def infisical_project_id(self, env, home, project="fleet-ops"):
         self.calls.append(("infisical_project_id", project))
-        return "00000000-0000-4000-8000-000000000861"
+        return fixture_project_id()
 
     def list_project_names(self, project_id, folder, env, *, token=None, timeout=60):
         self.calls.append(("list_project_names", project_id, folder, token, timeout))
@@ -88,7 +100,7 @@ class CanonicalNamesTests(unittest.TestCase):
         self.assertEqual(len(listings), 1)  # the second call is the cache
         _, project_id, folder, token, timeout = listings[0]
         self.assertEqual(folder, "/zulip")
-        self.assertEqual(project_id, "00000000-0000-4000-8000-000000000861")
+        self.assertEqual(project_id, fixture_project_id())
         self.assertEqual(token, "st.fixture-doctor-grant-value")
         self.assertGreater(timeout, 0)
         # The account is the doctor's own for that project and folder,  and the folder is
@@ -119,7 +131,7 @@ class CanonicalNamesTests(unittest.TestCase):
 class CanonicalConsumerTransportTests(unittest.TestCase):
     """Exercise real isolated children with synthetic loopback responses and no installed CLI."""
 
-    PROJECT = "00000000-0000-4000-8000-000000000861"
+    PROJECT = fixture_project_id()
     BINDING = "st.synthetic-command-consumer-test-only"
     VALUE = "synthetic-consumer-value-never-output"
 

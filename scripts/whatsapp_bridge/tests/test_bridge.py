@@ -609,6 +609,41 @@ class LaunchTests(unittest.TestCase):
                 launch.run_with_secrets(command, {})
             self.assertEqual(caught.exception.code, 2)
 
+    def test_a_flag_after_the_separator_is_the_programs_own(self):
+        """A --path or --only after the separator belongs to the executable,  not the launcher."""
+        import fleet_infisical as core
+
+        from whatsapp_bridge import launch
+
+        seen = []
+
+        def fetch_all(path, prepared):
+            seen.append(path)
+            return {"WHATSAPP_API_KEY": "synthetic"}
+
+        command = [
+            "--path",
+            "/jet",
+            "--only",
+            "WHATSAPP_API_KEY",
+            "--",
+            "python3",
+            "--path",
+            "/elsewhere",
+            "--only",
+            "OTHER_SECRET",
+        ]
+        with (
+            patch.object(core, "fetch_all", side_effect=fetch_all),
+            patch.object(launch.os, "execvpe") as execute,
+        ):
+            launch.run_with_secrets(command, {})
+        self.assertEqual(seen, ["/jet"])
+        self.assertEqual(
+            execute.call_args[0][2]["WHATSAPP_API_KEY"], "synthetic"
+        )
+        self.assertNotIn("OTHER_SECRET", execute.call_args[0][2])
+
     def test_poller_and_binder_strip_bootstrap_before_exec(self):
         self._launch("poll")
         self._launch("bind")

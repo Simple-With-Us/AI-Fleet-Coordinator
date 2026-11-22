@@ -829,6 +829,15 @@ class RunBase(unittest.TestCase):
         reader_patch = mock.patch.object(client, "bounded_fetch_project", side_effect=read)
         reader_patch.start()
         self.addCleanup(reader_patch.stop)
+        # The store is the host's own,  so a test never reads the developer's real
+        # grant:  this job is given the fake's token,  and the copy the environment
+        # carries stays the ambient value the store must outrank.  The copy route
+        # itself is covered by the cases that clear the environment.
+        store_patch = mock.patch.object(
+            client, "token_from_store", return_value=(self.reader_api.token, "ok")
+        )
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
         binding_patch = mock.patch.dict(os.environ, {
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.reader_api.project,
             "INFISICAL_TOKEN": self.reader_api.token,

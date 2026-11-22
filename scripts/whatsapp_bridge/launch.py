@@ -120,8 +120,13 @@ def run_with_secrets(command, prepared, optional=()):
     try:
         items = list(command)
         split = items.index("--")
-        folder = items[items.index("--path") + 1]
-        wanted = [name for name in items[items.index("--only") + 1].split(",") if name]
+        # Only the flags before the separator are the launcher's own.  A flag that
+        # belongs to the executable after the separator is the program's argument,
+        # not the folder or the secret list,  and reading past the separator would
+        # take it for one and read the wrong folder.
+        prefix = items[:split]
+        folder = prefix[prefix.index("--path") + 1]
+        wanted = [name for name in prefix[prefix.index("--only") + 1].split(",") if name]
         executable = items[split + 1 :]
     except (ValueError, IndexError, AttributeError, TypeError):
         raise SecretsError("invalid command", 2) from None

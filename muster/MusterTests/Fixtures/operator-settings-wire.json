@@ -751,7 +751,7 @@
     }
   },
   "producer_sha256": {
-    "scripts/fleet-ops-control.py": "5e0047042bc89a815aecfd6c133872347af574f1b64d1c10951de9fee2cbe905",
+    "scripts/fleet-ops-control.py": "51f2b99bf5f42b19c339d670f1f736f19327e61e99e47f8bea47e4470dfbd9a5",
     "scripts/simple_tools/server/eavesdropper_settings_edit.py": "173736f205a36b64ae4ce10e8c0c105156e43701c274dbe41f1ce10dd6cde182",
     "scripts/simple_tools/server/operator_settings.py": "146dad4b13a5180a57db6ebf7b0c7128a4811068d60d790b99b1d764dfe0c09d",
     "scripts/simple_tools/operator_github_state.py": "a86f230b4902252be43b918bef1768c645744b0106d3edfade5a169f97f1cf89"

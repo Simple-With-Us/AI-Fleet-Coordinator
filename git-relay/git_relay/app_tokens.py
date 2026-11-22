@@ -109,6 +109,18 @@ _NO_APP_CREDENTIAL_EXACT = frozenset(
 )
 
 
+# This relay's own App material:  GH_APP_<SLUG>_ID and GH_APP_<SLUG>_PRIVATE_KEY.
+# The reader's absent and empty messages name one of them,  and nothing else.
+_APP_SECRET_NAME = re.compile(r"GH_APP_[A-Z0-9_]+(?:_ID|_PRIVATE_KEY)\Z")
+
+
+def _names_an_app_secret(text: str, prefix: str) -> bool:
+    """True when the reader's message names one of this relay's own App secrets."""
+    if not text.startswith(prefix):
+        return False
+    return bool(_APP_SECRET_NAME.match(text[len(prefix):]))
+
+
 def missing_app_credential(exc: BaseException) -> bool:
     """True when the mint failed because the seat's own App id or key is absent or unusable."""
     text = str(exc)
@@ -118,11 +130,18 @@ def missing_app_credential(exc: BaseException) -> bool:
     # two shapes the store answers with:  the canonical reader names Infisical,
     # the store-scoped reader names the store.  Both are the same condition,  so
     # both are a missing App credential and not a transient failure.
-    if text.startswith(("Infisical has no value for ", "there is no value for ")):
+    #
+    # The name after the wording must be this relay's own App material.  A wider
+    # prefix would take an unrelated provider or plumbing error that happens to
+    # start the same way as a missing App credential,  and would then retry it as
+    # a credential problem and hide the real failure.
+    if _names_an_app_secret(text, "Infisical has no value for "):
         return True
-    if text.startswith(
-        ("Infisical returned an empty value for ", "the store returned an empty value for ")
-    ):
+    if _names_an_app_secret(text, "there is no value for "):
+        return True
+    if _names_an_app_secret(text, "Infisical returned an empty value for "):
+        return True
+    if _names_an_app_secret(text, "the store returned an empty value for "):
         return True
     if text.startswith("app id for ") and text.endswith(" is not an integer"):
         return True

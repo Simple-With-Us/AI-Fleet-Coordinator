@@ -258,7 +258,6 @@ def main() -> int:
     fwb = load_module()
     copy(READER_SRC, READER_DST, 0o644, a.dry_run)
     copy(SCRIPT_SRC, SCRIPT_DST, 0o755, a.dry_run)
-    copy(CLIENT_SRC, CLIENT_DST, 0o644, a.dry_run)
     hard: list[str] = []
     missing = prerequisites(fwb, a.interpreter, a.install_restic, a.dry_run, hard)
     if a.check_repo:
