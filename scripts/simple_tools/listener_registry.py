@@ -120,6 +120,7 @@ WRITE_OPS = (
     "register",
     "relabel",
     "update",
+    "bind-pr",
     "close",
     "sweep",
     "touch",
@@ -520,6 +521,22 @@ class RegistryService:
             parent_letter=str(payload.get("parent_letter") or ""),
             issuer=OPERATOR,
             force=bool(payload.get("force")),
+        )
+        return 200, out
+
+    def _op_bind_pr(self, principal: str, payload: Mapping[str, Any]) -> Answer:
+        identity = _identity(payload)
+        row, refusal = self._own_row(principal, identity)
+        if refusal:
+            return refusal
+        if row is None:
+            return _error(404, "session_unknown", "session is not registered")
+        out = OR.bind_pr(
+            self.db_path,
+            **identity,
+            repo=payload.get("repo"),
+            number=payload.get("number"),
+            generation=payload.get("generation"),
         )
         return 200, out
 

@@ -171,7 +171,14 @@ def pairs_after(pair: str) -> tuple[str, ...]:
     )
 
 
-MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
+MUTABLE_ATTRS = (
+    "title",
+    "project",
+    "thread_link",
+    "apple_note_link",
+    "state",
+    "wake_capability",
+)
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
 # One platform namespace per platform, not per adapter.
@@ -541,7 +548,11 @@ class SessionRegistry:
         return row
 
     def _get_by_identity(
-        self, platform: str, verified_host: str, profile_scope: str, native_session_id: str
+        self,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
     ) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
@@ -677,7 +688,10 @@ class SessionRegistry:
         on the platform ("cursor").  Both sides fold, so the join finds the record.
         """
         row = self._get_by_identity(
-            normalize_platform(platform), verified_host, profile_scope, native_session_id
+            normalize_platform(platform),
+            verified_host,
+            profile_scope,
+            native_session_id,
         )
         if row is None:
             return None
@@ -694,7 +708,11 @@ class SessionRegistry:
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
     def _pair_of(
-        self, conn: sqlite3.Connection, platform: str, native_session_id: str, own: str = ""
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        native_session_id: str,
+        own: str = "",
     ) -> str:
         """The pair a live session holds on the platform, found by its native session id on any host, or "" when
         it is unknown, closed, holds a single letter, or is the chat asking (a chat is not its own parent)."""
@@ -835,7 +853,17 @@ class SessionRegistry:
             " outcome, source, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, now, record_id, label, event, actor, outcome, source, details),
         )
-        cells = [event_id, now, record_id, label, event, actor, outcome, source, details]
+        cells = [
+            event_id,
+            now,
+            record_id,
+            label,
+            event,
+            actor,
+            outcome,
+            source,
+            details,
+        ]
         conn.execute(
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
             (_ulid(), "event_append", json.dumps({"cells": cells}), now),
@@ -847,7 +875,12 @@ class SessionRegistry:
         letter, _ = self._active_alias(conn, record_id)
         conn.execute(
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
-            (_ulid(), "session_upsert", json.dumps({"cells": _session_cells(row, letter)}), now),
+            (
+                _ulid(),
+                "session_upsert",
+                json.dumps({"cells": _session_cells(row, letter)}),
+                now,
+            ),
         )
 
     def enqueue_session_snapshot(self, record_id: str, expected_sha256: str) -> dict[str, Any]:
@@ -1046,9 +1079,17 @@ class SessionRegistry:
                             identity["native_session_id"],
                             identity.get("parent_letter") or "",
                         )
+                        conn.execute(
+                            "DELETE FROM session_pr_bindings WHERE record_id = ?",
+                            (record_id,),
+                        )
                         previous = letter
                         letter, generation = self._allocate(
-                            conn, identity["platform"], record_id, now, after=parent_pair
+                            conn,
+                            identity["platform"],
+                            record_id,
+                            now,
+                            after=parent_pair,
                         )
                         self._insert_event(
                             conn,
@@ -1161,7 +1202,8 @@ class SessionRegistry:
             at = at or _utcnow()
             self._get(record_id)
             conn.execute(
-                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+                (at, record_id),
             )
             self._enqueue_session_upsert(conn, record_id, at)
 
@@ -1189,7 +1231,8 @@ class SessionRegistry:
                     )
             sets = ", ".join(f"{k} = ?" for k in attrs)
             conn.execute(
-                f"UPDATE sessions SET {sets} WHERE record_id = ?", (*attrs.values(), record_id)
+                f"UPDATE sessions SET {sets} WHERE record_id = ?",
+                (*attrs.values(), record_id),
             )
             self._enqueue_session_upsert(conn, record_id, now)
 
@@ -1283,11 +1326,19 @@ class SessionRegistry:
                 letter, generation = previous, int(last["generation"])
             else:
                 parent_pair = self._parent_pair(
-                    conn, namespace, parent_session_id, row["native_session_id"], parent_letter
+                    conn,
+                    namespace,
+                    parent_session_id,
+                    row["native_session_id"],
+                    parent_letter,
                 )
                 letter, generation = self._allocate(
                     conn, namespace, record_id, now, after=parent_pair
                 )
+            # A closed-to-open transition never revives an old PR claim,
+            # including rows closed by listener SQL or predating this feature.
+            # Explicit binding after reopen rechecks current ownership.
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -1295,7 +1346,15 @@ class SessionRegistry:
             )
             details = f"previous letter {previous}" if previous else ""
             self._insert_event(
-                conn, record_id, letter, "reopen", actor, "reopened", source, details, now
+                conn,
+                record_id,
+                letter,
+                "reopen",
+                actor,
+                "reopened",
+                source,
+                details,
+                now,
             )
             self._enqueue_session_upsert(conn, record_id, now)
             return letter, generation, previous
@@ -1340,7 +1399,11 @@ class SessionRegistry:
                 )
             current, generation = self._active_alias(conn, record_id)
             parent_pair = self._parent_pair(
-                conn, row["platform"], parent_session_id, row["native_session_id"], parent_letter
+                conn,
+                row["platform"],
+                parent_session_id,
+                row["native_session_id"],
+                parent_letter,
             )
             # Every chat holds a pair now, so a single letter is the only one that moves on its own, and the space a
             # caller names does not change that.  Force only places a pair holder again when it names a live parent
@@ -1362,13 +1425,22 @@ class SessionRegistry:
                     " WHERE record_id = ? AND retired_at IS NULL",
                     (now, record_id),
                 )
+            conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
             letter, new_generation = self._allocate(
                 conn, row["platform"], record_id, now, after=parent_pair
             )
             placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             details = "previous letter %s" % current if current else ""
             self._insert_event(
-                conn, record_id, letter, "relabel", actor, "relabelled", source, details, now
+                conn,
+                record_id,
+                letter,
+                "relabel",
+                actor,
+                "relabelled",
+                source,
+                details,
+                now,
             )
             self._enqueue_session_upsert(conn, record_id, now)
             return {
@@ -1381,7 +1453,13 @@ class SessionRegistry:
             }
 
     def record_event(
-        self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
+        self,
+        record_id: str,
+        event: str,
+        actor: str,
+        outcome: str,
+        source: str,
+        details: str = "",
     ) -> str:
         with self._write_txn() as conn:
             now = _utcnow()
@@ -1823,7 +1901,10 @@ def normalize_issues(value: object, now: float | None = None) -> list[dict[str, 
         if isinstance(item, str) and now is not None:
             ident, seen = valid_issue_id(item), datetime.fromtimestamp(float(now), UTC)
         elif isinstance(item, Mapping):
-            ident, seen = valid_issue_id(item.get("id")), _zoned_instant(item.get("seen_at"))
+            ident, seen = (
+                valid_issue_id(item.get("id")),
+                _zoned_instant(item.get("seen_at")),
+            )
         else:
             continue
         if not ident or seen is None:
@@ -2010,7 +2091,8 @@ def update_session(
                 outcome = "unchanged"
             at = _utcnow()
             conn.execute(
-                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+                (at, record_id),
             )
             registry._enqueue_session_upsert(conn, record_id, at)
             current = conn.execute(
@@ -2077,7 +2159,10 @@ def touch_session(
         )
         held_issues = _stored_issues(registry._conn, row["record_id"])
         if row["closed_at"]:
-            closed: dict[str, Any] = {"record_id": row["record_id"], "outcome": "closed"}
+            closed: dict[str, Any] = {
+                "record_id": row["record_id"],
+                "outcome": "closed",
+            }
             if held_issues:
                 closed["issues"] = (
                     held_issues  # a closed session keeps its list, as update reports it
@@ -2280,6 +2365,7 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
         for row in rows:
             event = close_by_id.get(row["record_id"])
             item = dict(row)
+            item["bound_prs"] = _bound_prs(registry._conn, row["record_id"])
             item["end_reason"] = (event["details"] if event else "") or ""
             item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
             item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
@@ -2373,6 +2459,7 @@ def resolve_label(
                 (namespace, want, int(generation)),
             ).fetchone()
         held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
+        held_prs = _bound_prs(registry._conn, row["record_id"]) if row is not None else []
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
@@ -2383,6 +2470,7 @@ def resolve_label(
     if row is None:
         return None
     found = dict(row)
+    found["bound_prs"] = held_prs
     label = str(found.get("label") or "")
     found["ref"] = cross_seat_ref(
         str(found.get("seat") or ""),
@@ -2827,7 +2915,16 @@ def record_export_attempt(
                 "INSERT INTO export_attempts"
                 " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (attempt_id, outbox_id, destination, tab, kind, outcome, detail, _utcnow()),
+                (
+                    attempt_id,
+                    outbox_id,
+                    destination,
+                    tab,
+                    kind,
+                    outcome,
+                    detail,
+                    _utcnow(),
+                ),
             )
         return attempt_id
     finally:
@@ -3142,7 +3239,10 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     rs.add_argument("--letter", required=True, help="the letter, such as A")
     rs.add_argument(
-        "--generation", type=int, default=None, help="the generation of a recycled letter"
+        "--generation",
+        type=int,
+        default=None,
+        help="the generation of a recycled letter",
     )
     u = sub.add_parser(
         "update",
@@ -3181,7 +3281,8 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     c.add_argument("--actor", default="registry")
     c.add_argument("--source", default="registry")
     w = sub.add_parser(
-        "sweep", help="end the letters of sessions that are stale and have been replaced"
+        "sweep",
+        help="end the letters of sessions that are stale and have been replaced",
     )
     w.add_argument("--db", default="", help="the registry file (default: the shared path)")
     w.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
@@ -3249,7 +3350,14 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
                 print(json.dumps({"error": "unknown_record", "code": "unknown_record"}))
                 return 2
             except sqlite3.Error:
-                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                print(
+                    json.dumps(
+                        {
+                            "error": "registry_unavailable",
+                            "code": "registry_unavailable",
+                        }
+                    )
+                )
                 return 3
             except ValueError:
                 print(json.dumps({"error": "registry_error", "code": "registry_error"}))
@@ -3276,12 +3384,22 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             except InvalidSessionSnapshotDigest:
                 print(
                     json.dumps(
-                        {"error": "invalid_snapshot_sha256", "code": "invalid_snapshot_sha256"}
+                        {
+                            "error": "invalid_snapshot_sha256",
+                            "code": "invalid_snapshot_sha256",
+                        }
                     )
                 )
                 return 2
             except sqlite3.Error:
-                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                print(
+                    json.dumps(
+                        {
+                            "error": "registry_unavailable",
+                            "code": "registry_unavailable",
+                        }
+                    )
+                )
                 return 3
             except ValueError:
                 print(json.dumps({"error": "registry_error", "code": "registry_error"}))
@@ -3374,6 +3492,144 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 0
     print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
     return 0
+
+
+# Explicit allowlist of repositories qualified for the review-alert read lane.
+PR_BIND_REPOS = frozenset(
+    {
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "Simple-With-Us/BotFleet",
+        "Simple-With-Us/Clutch",
+        "Simple-With-Us/CodeCaps",
+        "Simple-With-Us/Congress.Trade",
+        "Simple-With-Us/HogHunter",
+        "Simple-With-Us/Kodus-Config",
+        "Simple-With-Us/Socratic-Trade",
+        "Simple-With-Us/Usage-Monitor",
+    }
+)
+MAX_BOUND_PRS = 32
+
+
+def _bound_prs(conn, record_id: str) -> list[dict[str, Any]]:
+    try:
+        rows = conn.execute(
+            "SELECT repo, number, generation, bound_at FROM session_pr_bindings WHERE record_id = ? ORDER BY bound_at, repo, number",
+            (record_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []  # Old read-only registry: absence never invents binding.
+    return [
+        {
+            "repo": r["repo"],
+            "number": r["number"],
+            "generation": r["generation"],
+            "ts": r["bound_at"],
+        }
+        for r in rows
+    ]
+
+
+def bind_pr(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    repo: str,
+    number: int,
+    generation: int,
+) -> dict[str, Any]:
+    """Seat-authenticated self-registration, not cryptographic creator proof.
+
+    Generation is checked inside the same write transaction as the binding.
+    Another live row already holding this PR makes a conflict, never a transfer.
+    A letter re-issue invalidates an old binding without rewriting history.
+    """
+    if repo not in PR_BIND_REPOS:
+        raise ValueError("repository is not qualified for PR binding")
+    if type(number) is not int or not 1 <= number <= 10**12:
+        raise ValueError("PR number out of range")
+    if type(generation) is not int or not 1 <= generation <= 2147483647:
+        raise ValueError("generation required")
+    registry = SessionRegistry(db_path)
+    try:
+        with registry._write_txn() as conn:
+            row = _session_row_for_update(
+                conn,
+                platform=platform,
+                verified_host=verified_host,
+                profile_scope=profile_scope,
+                native_session_id=native_session_id,
+            )
+            rid = row["record_id"]
+            letter, actual = registry._active_alias(conn, rid)
+            if row["closed_at"] or not letter or actual != generation:
+                raise ValueError("session is not live at required generation")
+            conflicts = conn.execute(
+                "SELECT b.record_id FROM session_pr_bindings b JOIN sessions s ON s.record_id=b.record_id "
+                "JOIN alias_assignments a ON a.record_id=b.record_id AND a.retired_at IS NULL "
+                "WHERE b.repo=? AND b.number=? AND s.closed_at IS NULL AND b.generation=a.generation AND b.record_id<>?",
+                (repo, number, rid),
+            ).fetchall()
+            if conflicts:
+                raise ValueError("PR is bound to another live session; explicit transfer required")
+            existing = conn.execute(
+                "SELECT generation FROM session_pr_bindings WHERE record_id=? AND repo=? AND number=?",
+                (rid, repo, number),
+            ).fetchone()
+            renewed = bool(existing and existing["generation"] != generation)
+            if renewed:
+                at = _utcnow()
+                conn.execute(
+                    "UPDATE session_pr_bindings SET generation=?,bound_at=? WHERE record_id=? AND repo=? AND number=?",
+                    (generation, at, rid, repo, number),
+                )
+                registry._insert_event(
+                    conn,
+                    rid,
+                    letter,
+                    "bind-pr-renew",
+                    "registry",
+                    "renewed",
+                    "registry",
+                    repo + "#" + str(number),
+                    at,
+                )
+                registry._enqueue_session_upsert(conn, rid, at)
+            if not existing:
+                count = conn.execute(
+                    "SELECT count(*) FROM session_pr_bindings WHERE record_id=?", (rid,)
+                ).fetchone()[0]
+                if count >= MAX_BOUND_PRS:
+                    raise ValueError("session PR binding limit reached")
+                at = _utcnow()
+                conn.execute(
+                    "INSERT INTO session_pr_bindings(record_id,repo,number,generation,bound_at) VALUES(?,?,?,?,?)",
+                    (rid, repo, number, generation, at),
+                )
+                registry._insert_event(
+                    conn,
+                    rid,
+                    letter,
+                    "bind-pr",
+                    "registry",
+                    "bound",
+                    "registry",
+                    repo + "#" + str(number),
+                    at,
+                )
+                registry._enqueue_session_upsert(conn, rid, at)
+            return {
+                "outcome": "renewed" if renewed else "unchanged" if existing else "bound",
+                "native_session_id": native_session_id,
+                "label": letter,
+                "generation": generation,
+                "bound_prs": _bound_prs(conn, rid),
+            }
+    finally:
+        registry.close_db()
 
 
 if __name__ == "__main__":
