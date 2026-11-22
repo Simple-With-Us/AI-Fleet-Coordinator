@@ -138,6 +138,16 @@ class CanonicalNamesTests(unittest.TestCase):
             self.assertIsNone(doctor.infisical_names("/zulip", {}))
         self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read was refused")
 
+    def test_a_hung_listing_is_a_timeout_and_not_a_refusal(self):
+        # A transient timeout keeps its retry signal:  the reason says so,  so a
+        # report sends the reader to retry instead of to the grant.
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        hung = FakeClient(failure=TimeoutError("the read timed out"))
+        with mock.patch.object(doctor, "shared_client", return_value=hung):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read timed out")
+
 
 class CanonicalConsumerTransportTests(unittest.TestCase):
     """Exercise real isolated children with synthetic loopback responses and no installed CLI."""

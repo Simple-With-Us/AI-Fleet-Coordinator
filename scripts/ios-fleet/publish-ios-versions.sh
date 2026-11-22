@@ -103,6 +103,9 @@ done
 # folder asked for,  and checks the answer's own provenance,  so no token ever
 # reaches an argument list and no inherited API base can redirect it.
 INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+# This consumer's own read-only service token, named here so the account is one
+# constant in the .gitleaks.toml allowlist, like every other consumer's.
+TOKEN_ACCOUNT="github-pat-ro"
 if [[ -z "$INFISICAL_SCOPED_READER" ]]; then
   echo "INFISICAL_SCOPED_READER is not set:  name the shared scoped reader to read with" >&2
   exit 2
@@ -151,7 +154,7 @@ resolve_token() {
   # prod /github folder, read with this consumer's own scoped service token.
   local err_file=""
   err_file="$(mktemp)"
-  pat="$(_scoped_secret GITHUB_PAT "/github" "github-pat-ro" 2>"$err_file")" || pat=""
+  pat="$(_scoped_secret GITHUB_PAT "/github" "${TOKEN_ACCOUNT}" 2>"$err_file")" || pat=""
   reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
   rm -f "$err_file"
   if [[ -z "$pat" ]]; then
