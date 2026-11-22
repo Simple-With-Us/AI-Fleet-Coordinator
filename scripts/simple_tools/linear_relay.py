@@ -342,12 +342,13 @@ def _mask_commit_ids(text: str) -> str:
         # A 40/64 lowercase-hex prefix inside a longer token (base64, a mixed
         # credential) must stay unmasked so has_secret can withhold the field.
         # Hex neighbours are already excluded by _COMMIT_ID_WORD.
-        # A slash is not one of those neighbours:  it separates the segments of a URL
-        # path, so a run that is one whole segment stands on its own and is masked
-        # (AFC-834).
+        # A slash and a hyphen are not those neighbours:  a slash separates the segments
+        # of a URL path and a hyphen separates the words around a run, so a run that is
+        # one whole segment, or one whole word, stands on its own and is masked (Kody,
+        # PR 2360).
         prev = text[start - 1] if start else ""
         nxt = text[end] if end < len(text) else ""
-        tokenish = lambda ch: ch.isalnum() or ch in "_+=-"
+        tokenish = lambda ch: ch.isalnum() or ch in "_+="
         if (prev and tokenish(prev)) or (nxt and tokenish(nxt)):
             return match.group(0)
         return "(a hex run of %d characters, masked)" % len(match.group(0))

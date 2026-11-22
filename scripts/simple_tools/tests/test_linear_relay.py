@@ -833,6 +833,16 @@ class RelayTests(unittest.TestCase):
                 self.assertFalse(lr.has_secret(masked), text)
 
 
+    def test_a_commit_id_next_to_a_hyphen_is_masked(self) -> None:
+        # A hyphen separates the words around a run, so a run next to one stands on its
+        # own and is masked (kody, PR 2360).
+        run = "a" * 40
+        text = "commit-%s" % run
+        masked = lr._mask_commit_ids(text)
+        self.assertNotIn(run, masked, text)
+        self.assertIn("masked", masked, text)
+        self.assertFalse(lr.has_secret(masked), text)
+
     def test_an_embedded_hex_prefix_is_left_unmasked_for_the_scanner(self) -> None:
         # A lowercase-hex prefix inside a longer opaque token must not be
         # partly masked: the suffix would otherwise leak (kody, PR 2360).

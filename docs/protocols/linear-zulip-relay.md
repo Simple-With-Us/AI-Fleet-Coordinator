@@ -94,8 +94,8 @@ one:  it is also the shape of credential material.  So the run is masked, the p
 quotes one is carried, and the value itself is neither stored nor relayed.  A run that is part of a
 longer opaque token, or that is the value of a credential assignment (`token=<id>`,  `"token": "<id>"`, 
 `client_secret=<id>`) or a URL query value (`?sig=<id>`), is not masked and is withheld whole, as it always
-was.  The run is found wherever it stands on its own, inside the path of a URL as well as in prose, so a
-commit link is carried with its id masked.  A
+was.  The run is found wherever it stands on its own, inside the path of a URL, beside a hyphen and in
+prose, so a commit link is carried with its id masked.  A
 hexadecimal run of 32 characters or more is withheld whole unless it is masked this way.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  Neither
