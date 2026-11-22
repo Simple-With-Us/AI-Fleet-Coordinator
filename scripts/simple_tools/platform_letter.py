@@ -1249,7 +1249,10 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
     if spec is None:
         return {"error": "%r is not a platform this side writes" % args.platform}
     if spec.live_chats is None:
-        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
+        return {
+            "error": "%s has no live-chat report,  so this host cannot say which chats are open"
+            % spec.platform
+        }
     live = live_report(spec, env)
     out = _call_api(
         env,

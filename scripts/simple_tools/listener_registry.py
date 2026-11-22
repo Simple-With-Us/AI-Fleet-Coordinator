@@ -836,7 +836,6 @@ class RegistryService:
             "kept_count": len(kept),
         }
 
-
     def _op_report_live(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         """Store the host's own view of the chats it still holds open (OPERATOR only).
 
