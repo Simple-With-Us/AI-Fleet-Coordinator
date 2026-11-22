@@ -36,10 +36,9 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read through this consumer's explicitly bound default Fleet-OPS reader (RECALL_API_TOKEN,
-     and the Access pair under its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix).
-     Missing names are read together once per public operation.  An absent reader binding
-     leaves the optional credential absent.  The request also
+     read from Infisical through the shared Infisical client (RECALL_API_TOKEN, and the Access pair under
+     its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix) so this works from the stock
+     `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
      Cloudflare's bot management -- 403, "error code: 1010").  A missing name, or a failure on
      the public path too (a rejected bearer, Access rejecting the service token, the box itself
@@ -111,9 +110,8 @@ USER_AGENT = (
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
 # rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# a name not in the environment uses the shared named reader with this consumer's explicit
-# default Fleet-OPS binding, never the separate recall-project token.  RECALL_API_TOKEN is a
-# root key of that name; the Cloudflare
+# a name not in the environment comes from Infisical through the shared client (AFC-359:  no
+# credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
 # Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
 # under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
 # environment always wins.
@@ -407,9 +405,11 @@ def using_fake_backend() -> bool:
 def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
-    Environment first; a missing name uses the shared default Fleet-OPS reader only when
-    this consumer's own binding is configured.  The separate recall-project token does not
-    cover this route, and missing values remain optional.
+    Environment first (a value there always wins, and is all the unit tests ever set); when a
+    name is not in the environment, read it from Infisical through the shared client the same
+    way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
+    works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
+    and no change to any client's MCP config.
     """
     vals = _resolve_public_env()
     return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
@@ -423,14 +423,17 @@ def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, st
     vals = {key: (os.environ.get(key) or "").strip() for key in keys}
     missing = [key for key in keys if not vals[key]]
     if missing:
-        found = core.fleet_secrets_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
+        found = core.fleet_ops_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
         for key in missing:
             vals[key] = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return vals
 
 
 def _resolve_public_env_key(key: str) -> str:
-    return _resolve_public_env((key,))[key]
+    v = (os.environ.get(key) or "").strip()
+    if not v:
+        v = (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
+    return v
 
 
 def _public_headers(

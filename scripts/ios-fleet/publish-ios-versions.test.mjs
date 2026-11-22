@@ -8,6 +8,9 @@ import test from "node:test";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(ROOT, "scripts/ios-fleet/publish-ios-versions.sh");
+// A token-shaped value, assembled at run time from synthetic parts:  a literal like that in
+// the source is a committed secret to every scanner.  It is never a credential.
+const SYNTHETIC_GH_TOKEN = "ghp_" + "notarealtoken";
 
 const FLEET = {
   schemaVersion: 1,
@@ -33,7 +36,18 @@ const FLEET = {
 };
 
 function run(args, env = {}) {
-  return spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, FLEET_ICON_AUDIT: "off", ...env } });
+  // The shared scoped reader is pointed at a path that does not exist,  so no test
+  // ever reaches the owner's keychain or the real Infisical:  a run with no token
+  // in the environment must fail the same way on every machine.
+  return spawnSync("bash", [SCRIPT, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FLEET_ICON_AUDIT: "off",
+      INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"),
+      ...env,
+    },
+  });
 }
 
 function fixture(name, doc) {
@@ -473,7 +487,7 @@ test("the no-op check compares the base as read, even when --out-json is the sam
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a bare gh login is not a credential; an unbound Infisical GH_PAT read fails", () => {
+test("a bare gh login is not a credential; the scoped GITHUB_PAT is, or the run fails", () => {
   const { dir, base } = fixture("afc-ios-versions-pat-", FLEET);
   const stub = mkdtempSync(join(tmpdir(), "afc-ios-stub-"));
   writeFileSync(join(stub, "gh"), "#!/usr/bin/env bash\nexit 0\n");
@@ -483,7 +497,7 @@ test("a bare gh login is not a credential; an unbound Infisical GH_PAT read fail
     { PATH: `${stub}:${process.env.PATH}`, GH_TOKEN: "", GITHUB_TOKEN: "", INFISICAL_TOKEN: "" },
   );
   assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /shared Infisical reader could not return GH_PAT/);
+  assert.match(res.stderr, /github-pat-ro service token could not return GITHUB_PAT/);
   rmSync(dir, { recursive: true, force: true });
   rmSync(stub, { recursive: true, force: true });
 });
@@ -550,6 +564,16 @@ test("the sheet sync runs after the publish, a failure fails the run, a missing 
   rmSync(bad.dir, { recursive: true, force: true });
 });
 
+test("the reader must be named by the environment, never a default path", () => {
+  const res = spawnSync("bash", [SCRIPT, "--bundle-id", "com.socratictrade.ios", "--version", "1.0.69"], {
+    encoding: "utf8",
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: "" },
+  });
+  assert.equal(res.status, 2, res.stderr);
+  assert.match(res.stderr, /INFISICAL_SCOPED_READER/);
+  assert.ok(!res.stderr.includes("/Users/"), "no user path may be committed as a default");
+});
+
 test("the local cache is written only after the publish, never before a failed one", () => {
   const copy = mkdtempSync(join(tmpdir(), "afc-ios-copy-"));
   const script = join(copy, "publish-ios-versions.sh");
@@ -560,14 +584,14 @@ test("the local cache is written only after the publish, never before a failed o
   const bad = stubDir({ branch: { doc: thin } });
   const failed = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${bad}:${process.env.PATH}`, FAKE_GH_DIR: bad, GH_TOKEN: SYNTHETIC_GH_TOKEN, GITHUB_TOKEN: "" },
   });
   assert.notEqual(failed.status, 0);
   assert.ok(!existsSync(cache), "a failed publish must not write the local cache");
   const good = stubDir();
   const done = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    env: { ...process.env, FLEET_ICON_AUDIT: "off", PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "" },
+    env: { ...process.env, FLEET_ICON_AUDIT: "off", INFISICAL_SCOPED_READER: join(tmpdir(), "afc-ios-no-such-reader"), PATH: `${good}:${process.env.PATH}`, FAKE_GH_DIR: good, GH_TOKEN: SYNTHETIC_GH_TOKEN, GITHUB_TOKEN: "" },
   });
   assert.equal(done.status, 0, done.stderr);
   assert.equal(JSON.parse(readFileSync(cache, "utf8")).apps["com.socratictrade.ios"].marketingVersion, "1.0.69");

@@ -24,6 +24,7 @@ from unittest import mock
 
 from simple_tools import adapters as A
 from simple_tools import config as C
+from simple_tools import heldback as HELD
 from simple_tools import listener_records as LR
 from simple_tools import live as L
 from simple_tools import wake_router as WR
@@ -1100,3 +1101,191 @@ class ReceiptWordTests(unittest.TestCase):
         self.assertEqual(A._ROUTER_SEAT_RE.pattern, WR.SEAT_RE.pattern.strip("^$"))
         self.assertEqual(A._ROUTER_WAKE_ID_RE.pattern, WR.WAKE_ID_RE.pattern.strip("^$"))
         self.assertEqual(W.RECEIPT_BACKFILL, WR.DONE_KEEP_SECONDS)
+
+
+class ReceiptSurfacedTests(ReceiptHarness):
+    """A router wake surfaces nothing at accept time (AFC-841):  its 202 only stored the wake, so
+    the held-back items it listed wait for the terminal receipt -- they surface when it ends
+    delivered, and stay held back on any other ending, with a test for each."""
+
+    def seed(self, message_id: int, seat: str = "CLAUDE") -> None:
+        HELD.hold(
+            self.seat_paths(seat),
+            {
+                "wake_ids": ["w-seed-%d" % message_id],
+                "message_id": message_id,
+                "owner": False,
+                "topic_key": L.topic_key("simple-tools", "earlier"),
+                "dm": False,
+                "channel": "simple-tools",
+                "topic": "earlier",
+                "stream_id": 3,
+                "sender_full_name": "Codex",
+                "zulip_link": "",
+                "reason": "wakes_per_hour",
+                "at": int(self.clock.time()),
+            },
+            cap=200,
+            now=self.clock.time(),
+        )
+
+    def held_ids(self, seat: str = "CLAUDE") -> list[int]:
+        data = HELD.load(self.seat_paths(seat))
+        return [e["message_id"] for e in data["records"] + data["overflow"]]
+
+    def test_a_router_wake_surfaces_its_held_back_items_only_on_a_delivered_receipt(self) -> None:
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        self.seed(900001)
+        self.seed(900002)
+        wake_id = self.wake(daemon)
+        row = self.done_row(wake_id)
+        # At accept time nothing is surfaced, and the row carries what the receipt needs:
+        # the wake's own trigger id plus the two held-back items it listed, and the lost count.
+        self.assertFalse(row["surfaced"])
+        self.assertEqual(row["held_listed"], sorted([self.message_id, 900001, 900002]))
+        self.assertEqual(row["held_lost"], 0)
+        self.assertEqual(self.held_ids(), [900001, 900002], "accept alone must not surface")
+        self.assertEqual(
+            [r for r in self.ledger() if r["state"] == "surfaced"], [], "no closing rows yet"
+        )
+        self.assertEqual(self.log_events("held-back-surfaced"), [])
+        # The delivered receipt is what surfaces them.
+        self.answer(wake_id, self.receipt(wake_id))
+        self.pass_at(daemon, 31)
+        self.assertEqual(self.outcome()["state"], "delivered")
+        self.assertEqual(self.held_ids(), [], "a delivered receipt surfaces the listed items")
+        self.assertEqual(
+            [(e["wake_id"], e["surfaced"]) for e in self.log_events("held-back-surfaced")],
+            [(wake_id, 2)],
+        )
+        closed = [r for r in self.ledger() if r["state"] == "surfaced"]
+        self.assertEqual(
+            [(r["wake_id"], r.get("message_id"), r.get("by")) for r in closed],
+            [("w-seed-900001", 900001, wake_id), ("w-seed-900002", 900002, wake_id)],
+        )
+
+    def test_a_router_wake_that_ends_dead_leaves_its_held_back_items_held(self) -> None:
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        self.seed(900001)
+        wake_id = self.wake(daemon)
+        self.assertFalse(self.done_row(wake_id)["surfaced"])
+        self.answer(wake_id, self.receipt(wake_id, status="dead"))
+        self.pass_at(daemon, 31)
+        self.assertEqual(self.outcome()["state"], "undelivered")
+        self.assertEqual(
+            self.held_ids(), [900001], "a dead wake's items are listed for the next wake"
+        )
+        self.assertEqual(self.log_events("held-back-surfaced"), [])
+        self.assertEqual([r for r in self.ledger() if r["state"] == "surfaced"], [])
+
+    def test_a_router_wake_at_its_deadline_records_unknown_and_leaves_its_items_held(self) -> None:
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        self.seed(900001)
+        wake_id = self.wake(daemon)
+        self.pending_answer(wake_id)
+        self.pass_at(daemon, DEADLINE + 10)
+        row = self.outcome()
+        self.assertEqual((row["state"], row.get("receipt_last")), ("unknown", "accepted"))
+        self.assertEqual(self.held_ids(), [900001], "an unknown ending never surfaces")
+        self.assertEqual(self.log_events("held-back-surfaced"), [])
+
+    def test_a_stale_lost_snapshot_is_never_replayed_once_another_wake_surfaced_the_items(self) -> None:
+        # Wake W1 lists the held item and carries lost=2 (two earlier evictions).  Before its
+        # receipt settles, another wake surfaces that item -- clearing the lost count with its
+        # own report -- and two newer evictions accrue.  W1's delivered receipt must then do
+        # nothing at all:  replaying its lost=2 would erase the two newer evictions' count
+        # (Kody, PR 2446).
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        # Four holds under cap 1 / overflow cap 1 leave lost=2 and two held ids (overflow first).
+        for mid in (900001, 900002, 900003, 900004):
+            HELD.hold(self.seat_paths(), self._record(mid), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 2, "two evicted entries are the lost count")
+        self.assertEqual(sorted(self.held_ids()), [900003, 900004])
+        wake_id = self.wake(daemon)
+        self.assertEqual(self.done_row(wake_id)["held_lost"], 2)
+        # Another wake surfaces the items the router wake listed, with its own lost report.
+        HELD.surface(self.seat_paths(), message_ids=[900003, 900004], lost=2)
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 0)
+        # Two newer evictions accrue afterwards, never reported to any wake yet.
+        for mid in (910001, 910002, 910003, 910004):
+            HELD.hold(self.seat_paths(), self._record(mid), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths())["lost"], 2)
+        # The router wake's delivered receipt settles:  its items are already gone, so the
+        # replay must not touch the store.
+        self.answer(wake_id, self.receipt(wake_id))
+        self.pass_at(daemon, 31)
+        self.assertEqual(self.outcome()["state"], "delivered")
+        self.assertEqual(
+            HELD.load(self.seat_paths())["lost"], 2, "the stale lost snapshot was replayed"
+        )
+        self.assertEqual(
+            [e for e in self.log_events("held-back-surfaced") if e.get("by") == "receipt"],
+            [],
+        )
+
+    def _record(self, message_id: int) -> dict[str, Any]:
+        return {
+            "wake_ids": ["w-seed-%d" % message_id],
+            "message_id": message_id,
+            "owner": False,
+            "topic_key": L.topic_key("simple-tools", "earlier"),
+            "dm": False,
+            "channel": "simple-tools",
+            "topic": "earlier",
+            "stream_id": 3,
+            "sender_full_name": "Codex",
+            "zulip_link": "",
+            "reason": "wakes_per_hour",
+            "at": int(self.clock.time()),
+        }
+
+    def test_a_wake_that_listed_no_items_still_clears_the_lost_count_it_carried(self) -> None:
+        # A done row whose held_listed is empty (its items were all evicted before it) still
+        # clears the lost count it reported (Kody, PR 2446).
+        daemon = self.start(router_seat("CLAUDE", "Claude"), CLAUDE_ROUTINE_URL=self.url())
+        HELD.hold(self.seat_paths(), self._record(900001), cap=1, overflow_cap=1, now=self.clock.time())
+        HELD.hold(self.seat_paths(), self._record(900002), cap=1, overflow_cap=1, now=self.clock.time())
+        HELD.hold(self.seat_paths(), self._record(900003), cap=1, overflow_cap=1, now=self.clock.time())
+        self.assertEqual(HELD.load(self.seat_paths()).get("lost", 0), 1)
+        runner = daemon.seats["CLAUDE"]
+        runner.ledger.append(
+            {
+                "ts": self.clock.time(), "wake_id": "w-empty", "seat": "CLAUDE", "state": "done",
+                "adapter": "http", "surfaced": False, "receipt_awaited": True,
+                "held_listed": [], "held_lost": 1,
+            }
+        )
+        daemon._surface_from_receipt(runner, "w-empty")
+        self.assertEqual(HELD.load(self.seat_paths()).get("lost", 0), 0, "the carried count is cleared")
+        (event,) = self.log_events("held-back-surfaced")
+        self.assertEqual((event["surfaced"], event["lost"], event["by"]), (0, 1, "receipt"))
+
+    def test_a_worker_wake_keeps_surfacing_at_accept_time(self) -> None:
+        # The Worker's own delivered answer still surfaces at once:  the receipt wait is the
+        # router's alone, and a non-router seat's accepted wake is not held for a receipt.
+        daemon = self.start(
+            router_seat("CODEX", "Codex", key_env="CODEX_ROUTINE_KEY", auth="hmac-sha256"),
+            CODEX_ROUTINE_URL=self.url("CODEX"),
+            CODEX_ROUTINE_KEY="h" * 40,
+        )
+        self.seed(900001, "CODEX")
+        # A Worker 202 that says it delivered one subscriber (the POST is answered from the script).
+        self.routine.script.append((202, {"subscribers": 1, "delivered": 1, "outcome": "delivered"}))
+        runner = daemon.seats["CODEX"]
+        row = {
+            "seq": 8001, "id": 8001, "kind": "message", "type": "stream",
+            "channel": "simple-tools", "topic": "t", "sender": "Codex", "sender_id": 11,
+            "is_bot": True, "content": MENTION, "classes": ["eligible", "direct"],
+            "wake_worthy": True,
+        }
+        L.append_jsonl(runner.paths.seat_inbox, [row])
+        now = self.clock.time()
+        pending = W.Pending("w-worker-1", "CODEX", row, owner=False, now=now, due=now)
+        pending.add(row, False)
+        runner.ledger.append(pending.row("queued", now))
+        daemon.run_routine(runner, pending, now)
+        done = [r for r in self.ledger("CODEX") if r["state"] == "done"][0]
+        self.assertTrue(done["surfaced"], "the Worker's delivered answer surfaces at once")
+        self.assertNotIn("receipt_awaited", done)
+        self.assertNotIn("held_listed", done)
+        self.assertEqual(self.held_ids("CODEX"), [], "the Worker wake surfaced the held item")

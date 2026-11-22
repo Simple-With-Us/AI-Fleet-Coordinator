@@ -11,7 +11,6 @@
 #                         textsafe.py (render_untrusted) and secretscan.py (redact_fields)
 #   fleet_knobs/*.py      the K1 knob reader, without its tests:  `publish` and `publish-mac` fetch the signing key
 #                         and the allowed-apps list through it (imported only then)
-#   fleet_secrets/        only the low-level scoped verifier library; no CLI entrypoint
 # and $HOME/.local/bin/fleet-facts is a symlink to the entry script.
 #
 # It touches nothing else:  no LaunchAgent, no pm2, no network, and no credential files.  Every path is
@@ -41,7 +40,7 @@ link="$link_dir/fleet-facts"
 
 for need in "$scripts_dir/fleet-facts" "$here/mac-facts-publish" "$here/cli.py" \
             "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$scripts_dir/fleet_knobs/knobs.py" \
-            "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py" "$scripts_dir/fleet_infisical.py"; do
+            "$scripts_dir/fleet_infisical.py"; do
   [ -f "$need" ] || { echo "install.sh: missing $need (run this from a full checkout)" >&2; exit 1; }
 done
 
@@ -53,7 +52,7 @@ if [ "$apply" -eq 1 ]; then
   stage="$HOME/apps/.fleet-facts.new.$$"
   trap 'rm -rf "$stage"' EXIT
   rm -rf "$stage"
-  mkdir -p "$stage/fleet_facts" "$stage/simple_tools" "$stage/fleet_knobs" "$stage/fleet_secrets"
+  mkdir -p "$stage/fleet_facts" "$stage/simple_tools" "$stage/fleet_knobs"
   for f in "$here"/*.py; do
     case "$(basename "$f")" in check_fixtures.py) continue ;; esac   # a CI tool, not part of the runtime
     cp "$f" "$stage/fleet_facts/"
@@ -62,12 +61,11 @@ if [ "$apply" -eq 1 ]; then
   cp "$here/mac-facts-publish" "$stage/mac-facts-publish"
   cp "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$stage/simple_tools/"
   cp "$scripts_dir"/fleet_knobs/*.py "$stage/fleet_knobs/"
-  cp "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py" "$stage/fleet_secrets/"
   cp "$scripts_dir/fleet_infisical.py" "$stage/fleet_infisical.py"
   chmod 644 "$stage/fleet_infisical.py"
   : > "$stage/simple_tools/__init__.py"
   chmod 755 "$stage/fleet-facts" "$stage/mac-facts-publish"
-  chmod 644 "$stage"/fleet_facts/*.py "$stage"/simple_tools/*.py "$stage"/fleet_knobs/*.py "$stage"/fleet_secrets/*.py
+  chmod 644 "$stage"/fleet_facts/*.py "$stage"/simple_tools/*.py "$stage"/fleet_knobs/*.py
   prev="$dest.prev"
   rm -rf "$prev"
   if [ -e "$dest" ]; then mv "$dest" "$prev"; fi

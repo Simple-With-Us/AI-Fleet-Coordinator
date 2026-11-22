@@ -1,5 +1,7 @@
 # Muster Operations:  Live Data, Knob Writes And Process Control
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 > **Historical, marked November 5, 2026.**  This is the October 28 plan as it was written, kept for its reasoning.  It is not a description of Muster or of the server control route today, and the code wins wherever the two differ.  What each panel reads and changes now is the Every Panel table in `muster/README.md`.  The server route's later changes are in `docs/rollouts/2026-11-03-afc-607-muster-update-route.md`.
 >
 > Where this plan is now wrong:
@@ -70,7 +72,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 - Every verb takes `--plan` (prints what it would run, as JSON, and changes nothing) or `--yes` (runs it).  Without either it refuses.
 - `--json` output:  `{ "ok": bool, "verb", "target", "commands": [[argv...]], "result": "planned"|"done"|"refused"|"failed", "detail" }`.
 - Mac:  `launchctl kickstart [-k] gui/<uid>/<label>`, `launchctl bootout gui/<uid>/<label>`, and `launchctl bootstrap gui/<uid> <plist>` when the agent is not loaded.
-- Server:  system-scoped commands run as root; user-scoped commands run in the configured account's user manager.  `redeploy` checks the uuid against the latest `server-status.json` Coolify list, then calls Coolify's `GET /api/v1/deploy?uuid=<uuid>` with the Coolify token from `fleet-secrets` (`Fleet-OPS /coolify COOLIFY_API_TOKEN`), read into memory and never printed.  No Coolify uuid or host is committed:  the uuid comes from the live report.
+- Server:  system-scoped commands run as root; user-scoped commands run in the configured account's user manager.  `redeploy` checks the uuid against the latest `server-status.json` Coolify list, then calls Coolify's `GET /api/v1/deploy?uuid=<uuid>` with the Coolify token from the consumer's own scoped service token (`Fleet-OPS /coolify COOLIFY_API_TOKEN`), read into memory and never printed.  No Coolify uuid or host is committed:  the uuid comes from the live report.
 - The Mac reaches the server verbs through `ssh <alias> -- <verb ...>` over a second forced-command key (`fleet-ops-ctl`), whose forced command is `fleet-ops-control.py --from-ssh`.  That mode reads `SSH_ORIGINAL_COMMAND`, splits it with `shlex`, accepts only the `server` verbs, and re-checks the allowlist.  The key-install steps are in `docs/protocols/fleet-tool-parity.md`.
 - Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl` (0600):  time, host, verb, target, result.  No output from the commands themselves is recorded.
 

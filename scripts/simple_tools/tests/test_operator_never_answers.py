@@ -253,7 +253,13 @@ class StructureTests(unittest.TestCase):
             callers.found,
             {
                 # The owner's DM notes and alerts, which are the Operator's own and answer nothing.
-                "_operator_send": {"dm_owner", "_run_broadcast_audit_body", "_held_alert"},
+                "_operator_send": {
+                    "dm_owner",
+                    "_run_broadcast_audit_body",
+                    "_held_alert",
+                    # Protected PR-review event notice, not a wake's answer or model output.
+                    "_review_alert_message_send",
+                },
                 "_operator_edit": {"_held_alert_edit"},
                 # Nothing else:  the Operator asks nobody (see OperatorAsksNobodyTests).
             },

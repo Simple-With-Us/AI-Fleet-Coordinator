@@ -19,8 +19,10 @@ bridge runs on the Mac, and every tick:
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
 
-The simple-chat CLI resolves each posting seat's own credential.  The read side takes
-either an explicit --rc file or the selected bot's names from Infisical Fleet-OPS /zulip (`canonical bounded named reader`, AFC-800).
+No token is read into this process: the simple-chat CLI resolves each posting seat's
+own credential.  The read side takes either an explicit --rc file of the caller's own or
+the selected bot's names from Infisical Fleet-OPS /zulip, through this bridge's own
+scoped read-only service token (the canonical bounded named reader, AFC-800).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -64,6 +66,12 @@ except ImportError:  # pragma: no cover
 CHANNEL_DEFAULT = "work-in-progress"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
+# This bridge's own scoped read-only service token:  Fleet-OPS prod /zulip, the one folder it
+# reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
+# private file on a server);  the shared Infisical client checks the token's own grant and the
+# answer's own provenance before a value is used.  A token bound in the environment is only a
+# copy of that same grant,  and it is used when the store has none.
+TOKEN_ACCOUNT = "outbox-bridge-ro"
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -518,6 +526,27 @@ def _infisical_reader():
             raise
 
 
+def _own_token(client):
+    """The bridge's own scoped token:  its own store first,  the bound copy second.
+
+    The store is the authority:  it is the home the process was given,  so a process
+    with no home has no store and falls back to the copy the host bound.  The client
+    still checks the token's own grant,  so a copy is only ever used for the folder
+    that grant names."""
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        try:
+            token, _status = client.token_from_store(TOKEN_ACCOUNT, dict(os.environ), Path(home))
+        except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+            raise RuntimeError(
+                "the %s scoped token store could not be read (%s)"
+                % (TOKEN_ACCOUNT, type(exc).__name__)
+            ) from None
+        if token:
+            return token
+    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
+
+
 def _read_infisical_names(names, folder):
     """Read only this caller's named values through the pinned canonical worker."""
     try:
@@ -528,7 +557,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        token = _own_token(client)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -545,17 +574,13 @@ def _read_infisical_names(names, folder):
         return {}
 
 
-def _fleet_secrets(names, folder):
-    """One bounded named batch, using only this caller's explicit read binding."""
-    return _read_infisical_names(names, folder)
-
-
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
     Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
-    Infisical through `canonical bounded named reader`, so the key never appears on a command line and
-    never in an exception message.  Refuses any host but the fleet realm and
+    Infisical through this bridge's own scoped token, read by the canonical bounded named
+    reader, so the key never appears on a command line and never in an exception
+    message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
 
@@ -568,7 +593,7 @@ class ZulipClient:
                 "%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
                 for part in ("EMAIL", "KEY", "SITE")
             )
-            values = _fleet_secrets(names, "/zulip")
+            values = _read_infisical_names(names, "/zulip")
             self.email, self.key, self.site = (values.get(name) for name in names)
             text = ""
             if not (self.email and self.key and self.site):
@@ -604,8 +629,8 @@ class ZulipClient:
         if "narrow" in params:
             params["narrow"] = json.dumps(params["narrow"])
         url = "%s/api/v1/%s?%s" % (self.site.rstrip("/"), path, urllib.parse.urlencode(params))
-        token = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
-        req = urllib.request.Request(url, headers={"Authorization": "Basic " + token})
+        basic = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
+        req = urllib.request.Request(url, headers={"Authorization": "Basic " + basic})
         opener = urllib.request.build_opener(_NoRedirectHandler())
         try:
             with opener.open(req, timeout=20) as resp:
