@@ -133,7 +133,12 @@ class Base(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name)
+        # Resolve the temp home: on macOS the default temp root is under /var, a symlink to
+        # /private/var, and the production audit-capture walk opens each component with
+        # O_NOFOLLOW, so an unresolved home is refused before any update-status logic runs.
+        # The resolved path is the same directory; symlinks a test plants below it are still
+        # refused exactly as in production.
+        self.home = Path(self.tmp.name).resolve()
         self.config_path = self.home / "fleet-ops-control.json"
         self.config_path.write_text(json.dumps(CONFIG))
         self.state = self.home / ".local" / "state" / "fleet-tools"
@@ -146,6 +151,28 @@ class Base(unittest.TestCase):
         patcher = mock.patch.object(foc, "_load_infisical_reader", return_value=self.client)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The linux update tests fake systemctl/sudo through the runner, but update_command
+        # first checks the pinned executables on the real filesystem, and /usr/bin/systemctl
+        # does not exist on macOS.  Present exactly those two pinned paths as executable
+        # files (every other path keeps the real answer) so the fake runner is reached; the
+        # production check itself is untouched, and the missing/non-executable refusal tests
+        # override this fake for one pinned path at a time.
+        pinned = {foc.UPDATE_SYSTEMCTL, foc.SUDO}
+        real_isfile = os.path.isfile
+        real_access = os.access
+
+        def fake_isfile(path):
+            return True if str(path) in pinned else real_isfile(path)
+
+        def fake_access(path, mode, *args, **kwargs):
+            return True if str(path) in pinned else real_access(path, mode, *args, **kwargs)
+
+        for patcher in (
+            mock.patch.object(foc.os.path, "isfile", side_effect=fake_isfile),
+            mock.patch.object(foc.os, "access", side_effect=fake_access),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -658,7 +685,7 @@ class ServerVerbTests(Base):
 
 
 class UpdateReceiptTests(Base):
-    def update(self, states=None, submit=(0, b""), permission=0, uid=1001):
+    def update(self, states=None, submit=(0, b""), permission=0, uid=None):
         sequence = list(states or [update_state()])
         self.update_calls = []
 
@@ -671,7 +698,10 @@ class UpdateReceiptTests(Base):
             return submit
 
         ctx = self.ctx(runner=runner)
-        ctx.uid = uid
+        # Default to the real non-root uid: a hardcoded server uid (1001) is not the owner of
+        # the test's audit file on a Mac (501), so the production audit writer would refuse
+        # its own row.  Any non-zero uid exercises the sudo route; root is passed explicitly.
+        ctx.uid = uid if uid is not None else (1001 if ctx.uid == 0 else ctx.uid)
         return self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], ctx)
 
     def test_old_success_is_never_completion(self):
@@ -839,6 +869,22 @@ class UpdateReceiptTests(Base):
         ):
             ctx = self.ctx()
             with mock.patch.object(foc.os.path, "isfile", side_effect=lambda path: path != missing):
+                with self.assertRaises(foc.Refused) as raised:
+                    foc.update_command(
+                        ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
+                    )
+            self.assertEqual(raised.exception.error_code, expected)
+            self.assertEqual(self.runner.calls, [])
+
+    def test_non_executable_pinned_executables_refuse_before_sudo_query(self):
+        for missing, expected in (
+            (foc.UPDATE_SYSTEMCTL, "update_executable_unavailable"),
+            (foc.SUDO, "authorization_unavailable"),
+        ):
+            ctx = self.ctx()
+            with mock.patch.object(
+                foc.os, "access", side_effect=lambda path, *args, **kwargs: str(path) != missing
+            ):
                 with self.assertRaises(foc.Refused) as raised:
                     foc.update_command(
                         ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}

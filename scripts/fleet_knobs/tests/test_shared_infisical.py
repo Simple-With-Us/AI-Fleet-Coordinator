@@ -194,7 +194,19 @@ else:
         scripts = Path(__file__).resolve().parents[2]
         # The shared reader has one implementation and one name.  The legacy alias package is gone,
         # so no consumer can reach a second copy of the client.
-        self.assertFalse((scripts / "fleet_secrets").exists())
+        # A leftover gitignored __pycache__-only directory is not the legacy package: only
+        # importable source under fleet_secrets would let a consumer reach a second copy.
+        legacy = scripts / "fleet_secrets"
+        legacy_sources = (
+            sorted(
+                str(path.relative_to(scripts))
+                for path in legacy.rglob("*.py")
+                if "__pycache__" not in path.parts
+            )
+            if legacy.is_dir()
+            else []
+        )
+        self.assertEqual(legacy_sources, [])
         self.assertTrue((scripts / "fleet_infisical.py").is_file())
         self.assertTrue(hasattr(fleet_infisical, "fetch_verified"))
         self.assertTrue(hasattr(fleet_infisical, "SecretsError"))
