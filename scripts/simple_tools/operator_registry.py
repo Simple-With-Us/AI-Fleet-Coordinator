@@ -870,9 +870,13 @@ class SessionRegistry:
         )
         return event_id
 
-    def _enqueue_session_upsert(self, conn: sqlite3.Connection, record_id: str, now: str) -> None:
+    def _enqueue_session_upsert(
+        self, conn: sqlite3.Connection, record_id: str, now: str, label: str | None = None
+    ) -> None:
         row = conn.execute("SELECT * FROM sessions WHERE record_id = ?", (record_id,)).fetchone()
-        letter, _ = self._active_alias(conn, record_id)
+        # A caller closing the session has already retired its alias, so the live
+        # lookup would name no letter;  it passes the letter it captured first.
+        letter = label if label is not None else self._active_alias(conn, record_id)[0]
         conn.execute(
             "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
             (
@@ -1268,7 +1272,9 @@ class SessionRegistry:
             self._insert_event(
                 conn, record_id, letter, "close", actor, "closed", source, reason, now
             )
-            self._enqueue_session_upsert(conn, record_id, now)
+            # The alias is retired above, so the snapshot takes the letter captured
+            # before it:  the sheet's final row for this session keeps its Label.
+            self._enqueue_session_upsert(conn, record_id, now, label=letter)
             return True
 
     def reopen(
@@ -2470,9 +2476,7 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(
-                candidates, reports, cutoff, now=moment
-            )
+            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
@@ -2498,7 +2502,9 @@ def sweep_stale(
                     "stale and replaced by a newer session",
                     now,
                 )
-                registry._enqueue_session_upsert(conn, row["record_id"], now)
+                # Same as close():  the alias is retired above, so the snapshot
+                # takes the letter captured before it and keeps its Label.
+                registry._enqueue_session_upsert(conn, row["record_id"], now, label=letter)
                 ended.append(
                     {
                         "record_id": row["record_id"],

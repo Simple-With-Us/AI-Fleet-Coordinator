@@ -438,6 +438,8 @@ class RunnerTests(QueueHarness):
 
     def test_a_late_definite_report_settles_a_write_the_lease_called_unknown(self) -> None:
         # The Mac slept past the lease:  the write reads unknown, then the runner reports what really happened.
+        seen: list[tuple[str, str, str]] = []
+        self.queue.note_link_hook = lambda seat, sid, nid: seen.append((seat, sid, nid))  # noqa: E731
         self.assert_answer(self.enqueue(request(rid="late-write-1")), 202)
         write = self.assert_answer(self.claim(), 200)
         self.clock.advance(NQ.LEASE_S + 1)
@@ -446,6 +448,16 @@ class RunnerTests(QueueHarness):
         body = self.assert_answer(self.status("CLAUDE", "late-write-1"), 200)
         self.assertEqual((body["state"], body["result"]["note_id"]), ("done", "x-coredata://late"))
         self.assertNotIn("error", body)
+        # The lease sweep's unknown finish dropped the request, but the late finish
+        # still offers the note link for the session that finish retained.
+        self.assertEqual(seen, [("CLAUDE", SID, "x-coredata://late")])
+        # Only the session id survives that drop:  no request, and no body text.
+        stored_record = json.loads(
+            (Path(self.root) / NQ.QUEUE_DIR / NQ.REQUESTS_DIR / "CLAUDE" / "late-write-1.json").read_text()
+        )
+        self.assertNotIn("request", stored_record)
+        self.assertNotIn("the body text", json.dumps(stored_record))
+        self.assertEqual(stored_record.get("session"), SID)
         # Once settled it stays settled:  the same report again is a no-op, and another claim is still refused.
         self.assert_answer(self.report(write, result={"status": "done"}), 200)
         self.assert_answer(self.report(dict(write, claim="c" * 24), result={"status": "done"}), 409, "conflict")
