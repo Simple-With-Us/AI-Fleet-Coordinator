@@ -935,6 +935,7 @@ def bounded_fetch_project(
     strict_records: bool = False,
     require_finite_expiry: bool = False,
     expected_identity: dict | None = None,
+    api_base: str | None = None,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -973,6 +974,17 @@ def bounded_fetch_project(
     selected = {key: env[key] for key in (ENV_API, *ENV_NAMES, ENV_READ_PATHS) if key in env}
     if any(not isinstance(value, str) for value in selected.values()):
         raise UsageError("bounded-read-invalid")
+    if api_base is not None:
+        # The provider can be named in code,  never only in the environment.  The
+        # argument is checked with the same rules a configured provider is,  and it
+        # wins over any base the caller's own environment carried,  so a route can
+        # pin its own origin and a caller cannot be redirected by a stray value.
+        if not isinstance(api_base, str) or not api_base:
+            raise UsageError("bounded-read-invalid")
+        try:
+            selected[ENV_API] = _provider_base({ENV_API: api_base}, strict=True)
+        except ValueError:
+            raise UsageError("bounded-read-invalid") from None
     request = dict(
         schema=1,
         operation="named-fetch",

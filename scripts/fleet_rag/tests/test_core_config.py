@@ -78,9 +78,14 @@ class FleetOpsRootReaderTests(unittest.TestCase):
             "PATH": str(self.home),
             "INFISICAL_TOKEN": self.api.token,
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
-            "FLEET_RAG_INFISICAL_API": self.api.env["FLEET_SECRETS_API"],
             "INFISICAL_ENVIRONMENT": "prod",
         }
+        # This route's API base stays pinned to the shared client's default and honours
+        # no base name of its own,  so the test moves that default to its own fake
+        # server instead of putting a base in the environment.
+        self.base = mock.patch.object(fi, "API_BASE", self.api.env["FLEET_SECRETS_API"])
+        self.base.start()
+        self.addCleanup(self.base.stop)
         # The root reader takes its token from its own store first.  The store is
         # stubbed here so a test never reads the host's own credential store, and the
         # environment copy is what the read falls back to.
@@ -147,6 +152,21 @@ class FleetOpsRootReaderTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
         self.assertEqual([path for path in self.api.requests if "/v3/secrets/raw/" in path], [])
+
+    def test_an_environment_base_cannot_redirect_this_route(self):
+        # The route names its provider in code,  so a base under any environment name
+        # never moves the read to another origin:  the read still lands on the route's
+        # own provider,  and the fake answers it.
+        env = {
+            **self.env,
+            "FLEET_RAG_INFISICAL_API": "https://ignored.example.invalid/api",
+            "INFISICAL_FLEET_OPS_API": "https://ignored.example.invalid/api",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                core.fleet_ops_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+        self.assertTrue(any("/v3/secrets/raw/" in path for path in self.api.requests))
 
     def test_a_missing_binding_names_the_unavailable_source(self):
         env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
@@ -215,6 +235,12 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
         self.store.start()
         self.addCleanup(self.store.stop)
+        # The Fleet-OPS route's API base stays pinned to the shared client's default and
+        # honours no base name of its own,  so the test moves that default to its own
+        # fake server instead of putting a base in the environment.
+        self.base = mock.patch.object(fi, "API_BASE", self.api.env["FLEET_SECRETS_API"])
+        self.base.start()
+        self.addCleanup(self.base.stop)
 
     def test_many_preserves_present_subset_through_real_named_reader_without_a_binary(self):
         import fleet_infisical as shared

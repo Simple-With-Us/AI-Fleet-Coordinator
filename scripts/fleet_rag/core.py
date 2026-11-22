@@ -332,8 +332,9 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
             f"({status})  and {FLEET_OPS_TOKEN_ENV} binds none"
         )
         return {}
-    # The API base stays pinned to the shared client's default;  environment
-    # values are never honoured here so the bearer-token read cannot be redirected.
+    # The API base is named in code and stays pinned to the shared client's own
+    # default;  no environment value is honoured here,  so the bearer-token read
+    # cannot be redirected to another origin.
     try:
         project = secrets.infisical_project_id(source, secrets.home_dir(source), "fleet-ops")
         got = secrets.bounded_fetch_project(
@@ -343,6 +344,7 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
             token=token,
             names=wanted,
             timeout=FLEET_SECRETS_TIMEOUT,
+            api_base=secrets.API_BASE,
         )
     except TimeoutError:
         eprint("fleet_rag: the Fleet-OPS read timed out")
