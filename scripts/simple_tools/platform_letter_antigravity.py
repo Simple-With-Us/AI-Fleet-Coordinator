@@ -82,9 +82,6 @@ HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15, "Stop": 15}
 STORE_PRODUCTS = ("antigravity-cli", "antigravity")
 
 STORE_WAIT = 0.5  # seconds to wait for a locked summaries database before reading nothing
-WRITE_WAIT = 2.0  # seconds to wait per attempt when updating conversation_summaries.db
-WRITE_ATTEMPTS = 2
-WRITE_RETRY_DELAY = 0.25
 PS = "/bin/ps"
 PS_WAIT = 2.0
 PROCESS_HOPS = (
@@ -121,23 +118,21 @@ def _text(value: object) -> str:
 def normalize(data: Mapping[str, Any]) -> dict[str, Any] | None:
     """The library's view of an agy hook payload, or None for a payload this adapter does not act on.
 
-    agy names no event, so it is told from the fields: a payload with `initialNumSteps` or `invocationNum` is
-    PreInvocation, and only its first model call (`invocationNum` 0, or absent where an encoder leaves a zero out)
-    is a prompt; a payload with `executionNum`, `terminationReason` or `fullyIdle` (and no invocation counters) is
-    Stop; a payload with a field of another event (PostInvocation, a tool) is none of ours; a payload with only the
-    common fields is SessionStart."""
+    agy names no event, so it is told from the fields: a payload with `executionNum`, `terminationReason` or
+    `fullyIdle` is Stop; a payload with `initialNumSteps` or `invocationNum` is PreInvocation, and only its first
+    model call (`invocationNum` 0, or absent where an encoder leaves a zero out) is a prompt; a payload with a
+    field of another event (PostInvocation, a tool) is none of ours; a payload with only the common fields is
+    SessionStart."""
     cid = _text(data.get("conversationId"))
     if not cid or any(key in data for key in OTHER_EVENT_FIELDS):
         return None
-    if "invocationNum" in data or "initialNumSteps" in data:
-        if any(key in data for key in STOP_EVENT_FIELDS):
-            return None
+    if any(key in data for key in STOP_EVENT_FIELDS):
+        event = "Stop"
+    elif "invocationNum" in data or "initialNumSteps" in data:
         number = data.get("invocationNum") or 0
         if isinstance(number, bool) or not isinstance(number, int) or number != 0:
             return None  # a later model call of the same prompt
         event = "PreInvocation"
-    elif any(key in data for key in STOP_EVENT_FIELDS):
-        event = "Stop"
     else:
         event = "SessionStart"
     return dict(
@@ -217,32 +212,32 @@ def antigravity_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def summaries_db(payload: Mapping[str, Any]) -> str:
+def _home(env: Mapping[str, str] | None = None) -> str:
+    return _text((env if env is not None else os.environ).get("HOME")) or os.path.expanduser("~")
+
+
+def summaries_db(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
     """The summaries database of the product that runs the conversation, from its artifact directory
     (`<product root>/brain/<id>`), or "" when the payload does not say or the product keeps none (the IDE)."""
-    art = _text(payload.get("artifactDirectoryPath"))
-    brain = os.path.dirname(art)
-    if not art or os.path.basename(brain) != "brain":
-        return ""
-    root = os.path.dirname(brain)
-    if not os.path.basename(root).startswith("antigravity"):
+    root = _direct_root(payload, env)
+    if not root:
         return ""
     path = os.path.join(root, "conversation_summaries.db")
-    return path if os.path.isfile(path) else ""
+    return path if os.path.isfile(path) and not os.path.islink(path) else ""
 
 
 def candidate_dbs(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> list[str]:
     """The summaries databases to consult for `payload`: the one its `artifactDirectoryPath` names first, then the
     host's `~/.gemini/antigravity-cli` and `~/.gemini/antigravity` stores when `HOME` is set."""
     found: list[str] = []
-    direct = summaries_db(payload)
+    direct = summaries_db(payload, env)
     if direct:
         found.append(direct)
-    home = _text((env or {}).get("HOME"))
+    home = _home(env)
     if home:
         for product in STORE_PRODUCTS:
             cand = os.path.join(home, ".gemini", product, "conversation_summaries.db")
-            if cand not in found and os.path.isfile(cand):
+            if cand not in found and os.path.isfile(cand) and not os.path.islink(cand):
                 found.append(cand)
     return found
 
@@ -306,31 +301,54 @@ def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = Non
     return ""
 
 
-_TITLE_PBTXT_RE = re.compile(r'(?:^|(?<=\s))title:\s*"(?:\\.|[^"\\])*"')
+_TITLE_PBTXT_RE = re.compile(r'(?<![A-Za-z0-9_.-])title:\s*"(?:\\.|[^"\\])*"')
 _SAFE_CID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
-def _direct_root(payload: Mapping[str, Any]) -> str:
-    """The Antigravity product root named by `artifactDirectoryPath` (`<root>/brain/<id>`), when it exists."""
+def _direct_root(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
+    """The Antigravity product root named by `artifactDirectoryPath` (`<root>/brain/<id>`), when it exists.
+
+    Confines `<root>` safely under `HOME/.gemini/antigravity*` and rejects symlinks to prevent path traversal."""
     art = _text(payload.get("artifactDirectoryPath"))
+    if not art or not os.path.isabs(art) or os.path.islink(art):
+        return ""
     brain = os.path.dirname(art)
-    if not art or os.path.basename(brain) != "brain":
+    if not brain or os.path.basename(brain) != "brain" or os.path.islink(brain):
         return ""
     root = os.path.dirname(brain)
-    return root if os.path.basename(root).startswith("antigravity") and os.path.isdir(root) else ""
+    if not root or os.path.islink(root) or not os.path.isdir(root):
+        return ""
+    home = _home(env)
+    if not home:
+        return ""
+    gemini = os.path.join(home, ".gemini")
+    if os.path.islink(gemini) or not os.path.isdir(gemini):
+        return ""
+    base = os.path.realpath(gemini)
+    real = os.path.realpath(root)
+    if not os.path.basename(real).startswith("antigravity"):
+        return ""
+    if os.path.dirname(real) != base:
+        return ""
+    try:
+        if os.path.commonpath([real, base]) != base:
+            return ""
+    except ValueError:
+        return ""
+    return root
 
 
 def candidate_roots(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> list[str]:
     """The Antigravity product roots (`<root>/brain/<id>` first, then `~/.gemini/<product>`) that exist on disk."""
     roots: list[str] = []
-    direct = _direct_root(payload)
+    direct = _direct_root(payload, env)
     if direct:
         roots.append(direct)
-    home = _text((env or {}).get("HOME"))
+    home = _home(env)
     if home:
         for product in STORE_PRODUCTS:
             cand = os.path.join(home, ".gemini", product)
-            if cand not in roots and os.path.isdir(cand):
+            if cand not in roots and os.path.isdir(cand) and not os.path.islink(cand):
                 roots.append(cand)
     return roots
 
@@ -364,41 +382,34 @@ def _root_knows_conversation(root: str, cid: str) -> bool:
 def _update_summary_title(db: str, cid: str, title: str) -> bool:
     """Update `title` (and `preview` when present) for `cid` in `conversation_summaries.db`.
 
-    Returns True only when a row actually matched (`rowcount > 0`), retrying briefly on SQLite lock contention."""
-    for attempt in range(WRITE_ATTEMPTS):
+    Uses a single non-blocking attempt (`timeout=0`), returning True only when a row actually matched
+    (`rowcount > 0`).  Lock contention returns False immediately so the hook never stalls, and `Stop` retries."""
+    try:
+        conn = sqlite3.connect(db, timeout=0)
         try:
-            conn = sqlite3.connect(db, timeout=WRITE_WAIT)
-            try:
-                cols = {
-                    str(r[1])
-                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
-                }
-                if "conversation_id" not in cols or "title" not in cols:
-                    return False
-                with conn:
-                    if "preview" in cols:
-                        cur = conn.execute(
-                            "UPDATE conversation_summaries SET title = ?, preview = ?"
-                            " WHERE conversation_id = ?",
-                            (title, title, cid),
-                        )
-                    else:
-                        cur = conn.execute(
-                            "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
-                            (title, cid),
-                        )
-                return cur.rowcount > 0
-            finally:
-                conn.close()
-        except sqlite3.OperationalError as exc:
-            msg = str(exc).lower()
-            if attempt + 1 < WRITE_ATTEMPTS and ("locked" in msg or "busy" in msg):
-                time.sleep(WRITE_RETRY_DELAY)
-                continue
-            return False
-        except (sqlite3.Error, OSError):
-            return False
-    return False
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+            }
+            if "conversation_id" not in cols or "title" not in cols:
+                return False
+            with conn:
+                if "preview" in cols:
+                    cur = conn.execute(
+                        "UPDATE conversation_summaries SET title = ?, preview = ?"
+                        " WHERE conversation_id = ?",
+                        (title, title, cid),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
+                        (title, cid),
+                    )
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
 
 
 def _write_annotation_title(root: str, cid: str, title: str) -> bool:
@@ -454,7 +465,7 @@ def antigravity_rename(request: PL.TitleRequest) -> bool:
     roots = candidate_roots(request.data, request.env)
     if not roots:
         return False
-    direct = _direct_root(request.data)
+    direct = _direct_root(request.data, request.env)
     if direct:
         target_roots = [direct] + [
             r for r in roots if r != direct and _root_knows_conversation(r, cid)

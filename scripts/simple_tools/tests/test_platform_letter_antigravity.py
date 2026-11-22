@@ -159,7 +159,7 @@ class Base(unittest.TestCase):
 
     def summaries(self, titles: dict[str, str], product: str = "antigravity-cli") -> str:
         """A product root with a summaries database holding these titles; returns the root."""
-        root = os.path.join(self.tmp.name, ".gemini", product)
+        root = os.path.join(self.home, ".gemini", product)
         os.makedirs(os.path.join(root, "brain"), exist_ok=True)
         conn = sqlite3.connect(os.path.join(root, "conversation_summaries.db"))
         with conn:
@@ -221,6 +221,8 @@ class NormalizeTests(unittest.TestCase):
             start_payload(terminationReason="NO_TOOL_CALL"),
             start_payload(fullyIdle=True),
             start_payload(executionNum=2),
+            pre_payload(number=2, executionNum=0, fullyIdle=True),
+            pre_payload(number=0, terminationReason="NO_TOOL_CALL"),
         ):
             out = PA.normalize(data)
             self.assertIsNotNone(out, data)
@@ -237,9 +239,7 @@ class NormalizeTests(unittest.TestCase):
         post = pre_payload(modelOutput="done")
         post_thinking = start_payload(modelThinking="hmm")
         tool = start_payload(toolCall={"name": "run_command", "args": {}}, stepIdx=3)
-        mixed = pre_payload(number=2, executionNum=0, fullyIdle=True)
-        mixed_zero = pre_payload(number=0, terminationReason="NO_TOOL_CALL")
-        for data in (post, post_thinking, tool, mixed, mixed_zero):
+        for data in (post, post_thinking, tool):
             self.assertIsNone(PA.normalize(data))
 
     def test_a_payload_with_no_conversation_is_nothing(self) -> None:
@@ -310,25 +310,25 @@ class KindTests(Base):
 class StoredTitleTests(Base):
     def test_the_title_is_read_from_the_products_summaries_database(self) -> None:
         root = self.summaries({CID: "Audio Check  Probe", "other": "Not Mine"})
-        self.assertEqual(PA.stored_title(self.payloads(root)[0]), "Audio Check Probe")
-        self.assertEqual(PA.stored_title(self.payloads(root, "unknown-id")[0]), "")
+        self.assertEqual(PA.stored_title(self.payloads(root)[0], env=self.env()), "Audio Check Probe")
+        self.assertEqual(PA.stored_title(self.payloads(root, "unknown-id")[0], env=self.env()), "")
 
     def test_the_database_is_only_read(self) -> None:
         root = self.summaries({CID: "Probe"})
         db = os.path.join(root, "conversation_summaries.db")
         before = (os.path.getmtime(db), Path(db).read_bytes())
-        PA.stored_title(self.payloads(root)[0])
+        PA.stored_title(self.payloads(root)[0], env=self.env())
         self.assertEqual((os.path.getmtime(db), Path(db).read_bytes()), before)
 
     def test_a_product_with_no_database_or_a_broken_one_has_no_title(self) -> None:
-        ide = os.path.join(self.tmp.name, ".gemini", "antigravity-ide")
+        ide = os.path.join(self.home, ".gemini", "antigravity-ide")
         os.makedirs(os.path.join(ide, "brain"))
-        self.assertEqual(PA.stored_title(start_payload(artifactDirectoryPath=os.path.join(ide, "brain", CID))), "")
+        self.assertEqual(PA.stored_title(start_payload(artifactDirectoryPath=os.path.join(ide, "brain", CID)), env=self.env()), "")
         root = self.summaries({CID: "Probe"})
         Path(root, "conversation_summaries.db").write_bytes(b"not a database")
-        self.assertEqual(PA.stored_title(self.payloads(root)[0]), "")
+        self.assertEqual(PA.stored_title(self.payloads(root)[0], env=self.env()), "")
         for art in ("", "relative", "/x/notbrain/%s" % CID, "/x/other/brain/%s" % CID):
-            self.assertEqual(PA.stored_title(start_payload(artifactDirectoryPath=art)), "", art)
+            self.assertEqual(PA.stored_title(start_payload(artifactDirectoryPath=art), env=self.env()), "", art)
 
 
 class HookTests(Base):
@@ -397,7 +397,7 @@ class HookTests(Base):
         self.hook(start)
         label = self.note()["label"]
         expected = "%s: Audio Check Probe" % label
-        self.assertEqual(PA.stored_title(start), expected)
+        self.assertEqual(PA.stored_title(start, env=self.env()), expected)
         self.assertEqual(self.summary_row(root), (expected, expected))
         self.assertFalse(self.note()["pending"])
         ann_text = Path(ann_file).read_text(encoding="utf-8")
@@ -538,7 +538,7 @@ class HookTests(Base):
 
     def test_rename_handles_minimal_schema_ide_root_and_transient_sqlite_lock(self) -> None:
         # Minimal schema without `preview` column still updates `title` and succeeds.
-        root = os.path.join(self.tmp.name, ".gemini", "antigravity")
+        root = os.path.join(self.home, ".gemini", "antigravity")
         os.makedirs(os.path.join(root, "brain"), exist_ok=True)
         db = os.path.join(root, "conversation_summaries.db")
         conn = sqlite3.connect(db)
@@ -565,7 +565,7 @@ class HookTests(Base):
         )
         conn.close()
 
-        # Transient SQLite lock retries once and succeeds.
+        # Transient SQLite lock fails fast without blocking, allowing Stop to retry later.
         real_connect = sqlite3.connect
         calls = {"n": 0}
 
@@ -575,12 +575,13 @@ class HookTests(Base):
                 raise sqlite3.OperationalError("database is locked")
             return real_connect(*args, **kwargs)
 
-        with mock.patch.object(PA.sqlite3, "connect", side_effect=flaky_connect), mock.patch.object(PA.time, "sleep"):
-            self.assertTrue(PA._update_summary_title(db, CID, "AA: Unlocked"))
-        self.assertEqual(calls["n"], 2)
+        with mock.patch.object(PA.sqlite3, "connect", side_effect=flaky_connect):
+            self.assertFalse(PA._update_summary_title(db, CID, "AA: Unlocked"))
+        self.assertEqual(calls["n"], 1)
+        self.assertTrue(PA._update_summary_title(db, CID, "AA: Unlocked"))
 
         # IDE root with no conversation_summaries.db succeeds via `.pbtxt`.
-        ide_root = os.path.join(self.tmp.name, ".gemini", "antigravity-ide")
+        ide_root = os.path.join(self.home, ".gemini", "antigravity-ide")
         os.makedirs(os.path.join(ide_root, "brain"), exist_ok=True)
         ide_req = PL.TitleRequest(
             platform=PA.PLATFORM,
@@ -591,13 +592,59 @@ class HookTests(Base):
             current="",
             reason="start",
             data=self.payloads(ide_root)[0],
-            env={"HOME": os.path.join(self.tmp.name, "empty-home")},
+            env=self.env(),
         )
         self.assertTrue(PA.antigravity_rename(ide_req))
         self.assertEqual(
             Path(ide_root, "annotations", "%s.pbtxt" % CID).read_text(encoding="utf-8"),
             'title:"AA: IDE Chat"',
         )
+
+    def test_write_annotation_title_replaces_delimited_and_preserves_subtitles(self) -> None:
+        root = os.path.join(self.home, ".gemini", "antigravity")
+        ann_file = os.path.join(root, "annotations", "%s.pbtxt" % CID)
+        for original, expected in (
+            ('title:"Old Title"', 'title:"AA: New Title"'),
+            ('title: "Old Title"', 'title:"AA: New Title"'),
+            ('{title:"Old Title"}', '{title:"AA: New Title"}'),
+            ('[title:"Old Title"]', '[title:"AA: New Title"]'),
+            ('meta:{title:"Old Title"} subtitle:"Keep"', 'meta:{title:"AA: New Title"} subtitle:"Keep"'),
+            ('subtitle:"Keep" title:"Old Title"', 'subtitle:"Keep" title:"AA: New Title"'),
+        ):
+            os.makedirs(os.path.dirname(ann_file), exist_ok=True)
+            Path(ann_file).write_text(original, encoding="utf-8")
+            self.assertTrue(PA._write_annotation_title(root, CID, "AA: New Title"))
+            self.assertEqual(Path(ann_file).read_text(encoding="utf-8"), expected)
+
+    def test_direct_root_rejects_symlinks_and_paths_outside_home_gemini(self) -> None:
+        valid_root = os.path.join(self.home, ".gemini", "antigravity-cli")
+        os.makedirs(os.path.join(valid_root, "brain"), exist_ok=True)
+        valid_art = os.path.join(valid_root, "brain", CID)
+        self.assertEqual(PA._direct_root({"artifactDirectoryPath": valid_art}, self.env()), valid_root)
+
+        outside = os.path.join(self.tmp.name, "outside", "antigravity-cli")
+        os.makedirs(os.path.join(outside, "brain"), exist_ok=True)
+        outside_art = os.path.join(outside, "brain", CID)
+        self.assertEqual(PA._direct_root({"artifactDirectoryPath": outside_art}, self.env()), "")
+
+        sym_art = os.path.join(valid_root, "brain", "sym-cid")
+        os.symlink(outside_art, sym_art)
+        self.assertEqual(PA._direct_root({"artifactDirectoryPath": sym_art}, self.env()), "")
+
+        sym_brain_root = os.path.join(self.home, ".gemini", "antigravity-symbrain")
+        os.makedirs(sym_brain_root, exist_ok=True)
+        os.symlink(os.path.join(outside, "brain"), os.path.join(sym_brain_root, "brain"))
+        self.assertEqual(
+            PA._direct_root({"artifactDirectoryPath": os.path.join(sym_brain_root, "brain", CID)}, self.env()), ""
+        )
+
+        sym_root = os.path.join(self.home, ".gemini", "antigravity-symroot")
+        os.symlink(outside, sym_root)
+        self.assertEqual(PA._direct_root({"artifactDirectoryPath": os.path.join(sym_root, "brain", CID)}, self.env()), "")
+
+        other_root = os.path.join(self.home, ".gemini", "other-tool")
+        os.makedirs(os.path.join(other_root, "brain"), exist_ok=True)
+        self.assertEqual(PA._direct_root({"artifactDirectoryPath": os.path.join(other_root, "brain", CID)}, self.env()), "")
 
     def test_a_resumed_conversation_is_registered_on_its_first_prompt(self) -> None:
         # A conversation from before the install, resumed: agy sends no SessionStart.
@@ -868,6 +915,7 @@ class QuickAnswerTests(Base):
             pre_payload(number=0),
             start_payload(),
             stop_payload(),
+            stop_payload(invocationNum=3, initialNumSteps=10),
             pre_payload(number=0, lastUserInput=LONG_WORDS),
         ):
             text = json.dumps(payload, ensure_ascii=False)
@@ -920,6 +968,9 @@ class QuickAnswerTests(Base):
             (b'{"invocationNum" :\n 12, "x": 0}', True),
             (b'{"x": "invocationNum", "invocationNum": 4}', True),  # the first one is a value, not the key
             (b'{"invocationNum": 1.5}', True),  # not an integer: normalize() turns it away too
+            (b'{"invocationNum": 3, "executionNum": 0}', False),
+            (b'{"invocationNum": 3, "terminationReason": "NO_TOOL_CALL"}', False),
+            (b'{"invocationNum": 3, "fullyIdle": true}', False),
             (b'{"invocationNum": 0}', False),
             (b'{"invocationNum": 0, "n": 5}', False),
             (b'{"n": 5, "invocationNum":0}', False),
@@ -965,11 +1016,13 @@ class QuickAnswerTests(Base):
                 self.assertFalse(later_model_call(text.encode("utf-8")), text)
         for payload in (
             dict(pre_payload(number=4), toolCall={"n": 1}),
-            dict(pre_payload(number=4), executionNum=0, fullyIdle=True),
             dict(pre_payload(number=4), conversationId=""),
         ):
             self.assertTrue(later_model_call(json.dumps(payload).encode("utf-8")))
             self.assertIsNone(PA.normalize(payload))
+        mixed = dict(pre_payload(number=4), executionNum=0, fullyIdle=True)
+        self.assertFalse(later_model_call(json.dumps(mixed).encode("utf-8")))
+        self.assertEqual(PA.normalize(mixed)["hook_event_name"], "Stop")
 
 
 class MessageTests(unittest.TestCase):
