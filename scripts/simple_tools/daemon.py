@@ -640,6 +640,13 @@ def _inbox_row_key(row: Mapping[str, Any]) -> str:
     return "%s:%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker, edited)
 
 
+#: Notes that used to go to the owner as direct messages go here instead (owner ruling, Nov 18
+#: 2026:  anything that would be a DM belongs in Side-Chats;  the only DMs the Operator may send
+#: are wake-clarification questions to the sender or tagger).
+SIDE_CHATS_CHANNEL = "Side-Chats"
+SIDE_CHATS_ESCALATION_TOPIC = "Operator escalation notes"
+
+
 class Daemon:
     def __init__(
         self,
@@ -3519,8 +3526,17 @@ class Daemon:
 
         The sender's email is enough too, and the seat it maps to is not required:  a bot whose
         email maps to no seat of the fleet still used `@all`, and the audit has a "could not
-        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped.
+
+        The Operator's own reminder is never audited:  its text quotes the `@all` it is reminding
+        about, so without this exclusion every reminder would schedule an audit of itself (Kody,
+        #2411)."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if (
+            self.config.operator_user_id > 0
+            and message.get("sender_id") == self.config.operator_user_id
+        ):
             return False
         if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
             return False
@@ -4611,8 +4627,22 @@ class Daemon:
         # nothing proves the reminder did not reach the owner, so it is never sent twice.
         self._update_broadcast_effect_detail(mid, "audit", {"send_attempted_at": self.clock.time()})
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
-        except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
+            #  A reminder used to be a direct message;  the owner ruling of Nov 18, 2026 sends
+            #  anything DM-shaped to Side-Chats instead, mentioning the owner so it still lands.
+            #  Any live runner's realm-users map carries the owner's display name.
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
+        except Exception as exc:  # noqa: BLE001 - a failed reminder is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit driving so the
             # reminder is not lost, a permanent one fails it with its reason, and a write
             # that may have reached the server is UNKNOWN and never sent twice.  An Operator
@@ -5560,17 +5590,18 @@ class Daemon:
         risk: str | None,
         history: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[OPERATOR·note]` with the seat whose
-        wake wrote the note (owner ruling, Oct 30 2026: it used to go out as the seat's own bot, which
-        did not think or say it).  The owner is in the conversation, so the owner-in-the-conversation
-        guard (AFC-469) passes without any exemption.  It rides on a wake that already passed the
-        seat's budgets, so it is at most one DM per wake, and it never raises: a refusal or a
-        failure is logged and recorded in the ledger row, and the banner and owner queue still hold
-        the note.  With no Operator the DM is not sent (`operator-post-refused`, site `owner-dm`),
-        never sent as the seat.
+        """Post the escalated note to #Side-Chats from the OPERATOR bot, tagged `[OPERATOR·note]`
+        with the seat whose wake wrote the note (owner ruling, Oct 30 2026: it used to go out as
+        the seat's own bot, which did not think or say it; owner ruling, Nov 18 2026: anything that
+        would be a direct message goes to Side-Chats instead \u2014 the only DMs the Operator may send
+        are wake-clarification questions to the sender or tagger).  The post mentions the owner by
+        name so the note still reaches Jay, and it never raises: a refusal or a failure is logged
+        and recorded in the ledger row, and the banner and owner queue still hold the note.  With
+        no Operator the post is not sent (`operator-post-refused`, site `owner-dm`), never sent as
+        the seat.
 
         No production code calls it since the listener stopped starting models (owner ruling, Nov 10,
-        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
+        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
         owner rules on it, and the tests call it directly."""
         owner_id = self.config.owner_user_id
         if owner_id <= 0 or runner.fatal:
@@ -5608,7 +5639,19 @@ class Daemon:
                 )
                 return {"owner_dm": None, "owner_dm_error": withheld}
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                getattr(runner, "users", None)
+                or next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
         except OPV.OperatorUnavailable as exc:
             self._operator_refused("owner-dm", exc, seat=runner.seat, wake_id=pending.wake_id)
             return {
@@ -5628,6 +5671,23 @@ class Daemon:
         if withheld:
             sent["owner_dm_note_withheld"] = withheld
         return sent
+
+    def _side_chats_post(
+        self, owner_id: int, text: str, users: Mapping[int, Any] | None = None
+    ) -> dict[str, Any]:
+        """A Side-Chats stream post that mentions the owner by name, for a note that used to be a
+        direct message (owner ruling, Nov 18 2026).  The mention is the realm's own display name
+        for the pinned owner id, so the notification is real;  without a name the post still lands
+        in the followed topic and the owner queue."""
+        person = (users or {}).get(int(owner_id)) or {}
+        name = str(person.get("full_name") or "").strip()
+        body = ("@**%s**\n" % name) if name else ""
+        return {
+            "type": "stream",
+            "to": SIDE_CHATS_CHANNEL,
+            "topic": SIDE_CHATS_ESCALATION_TOPIC,
+            "content": body + text,
+        }
 
     # ---- held-back wakes ----------------------------------------------------------------------
     def held_tick(self, runner: SeatRunner, now: float) -> None:
