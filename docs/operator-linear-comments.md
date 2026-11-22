@@ -181,13 +181,10 @@ the container).  That is superseded by the live layout, verified 2026-11-03:
 - **The daemon reaches the key through a service token, never a machine identity.**
   A scoped read-only Infisical service token, `operator-linear-read`, was minted for
   exactly prod `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens"
-  row 61).  The daemon resolves it from the consumer's own store, the file
-  named by `[linear_comments] infisical_token_file` (owner-only permissions,
-  checked; default `~/workspace/.secrets/operator-linear-service-token`).
-  That store is the only source:  no runtime-only variable is read for it,
-  so a hand-set value can never replace the reviewed grant (the owner's rule of
-  2026-11-11).  A host that delivered the token as a variable places it in the
-  store file instead.
+  row 61).  The daemon resolves it from the runtime-only variable
+  `OPERATOR_LINEAR_INFISICAL_TOKEN` when the host binds it, else from the file named
+  by `[linear_comments] infisical_token_file` (owner-only permissions, checked;
+  default `~/workspace/.secrets/operator-linear-service-token`).
 - **The load, at engine build** (daemon start, and again when the service token
   changes):  the token is verified against its own Infisical record (read-only, one
   scope, exactly prod `/linear`, this project — anything wider is refused before a
@@ -263,9 +260,9 @@ is neither live.
 2. **Deploy dark.**  Ship the fold-in with `[linear_comments] enabled = false` (the
    sample's default) in the server image;  restart the app;  confirm the daemon is
    healthy and logs no `linear-comments` errors.  The standalone relay keeps running.
-3. **Shadow check.**  Place the `operator-linear-read` service token in the
-   consumer's own store (the `[linear_comments] infisical_token_file`),
-   set `OPERATOR_LINEAR_DRY_RUN=1`,
+3. **Shadow check.**  Place the `operator-linear-read` service token where the
+   daemon resolves it (`OPERATOR_LINEAR_INFISICAL_TOKEN`, or the
+   `[linear_comments] infisical_token_file`), set `OPERATOR_LINEAR_DRY_RUN=1`,
    enable `[linear_comments]`, reload.  For one active topic that names an issue,
    confirm from the log that the engine would create ONE comment and that its rendered
    coverage is the whole topic (the dry-run ledger is a sibling file;  the live ledger

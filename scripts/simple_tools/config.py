@@ -615,9 +615,9 @@ class Config:
         # the server instance only, so two instances can never stack comments.
         self.linear_comments_enabled = False
         # [linear_comments] infisical_token_file:  where the scoped read-only Infisical
-        # service token for the Operator's Linear developer token lives:  the
-        # consumer's own store,  and the only source of that token.  "" means
-        # operator_linear's default.
+        # service token for the Operator's Linear developer token lives, when the host
+        # does not bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's
+        # default.
         self.linear_comments_infisical_token_file = ""
         # [registry] (AFC-721):  the Eavesdropper's one stale sweeper and its gone-report guard.
         # They apply only where the registry lives (the server instance);  the defaults live here,

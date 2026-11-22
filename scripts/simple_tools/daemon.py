@@ -1332,8 +1332,8 @@ class Daemon:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
         off unless [linear_comments] enabled is true and the Operator's Linear credential
         loads — the owner's developer token in Infisical prod /linear, reached through
-        the scoped read-only Infisical service token in the consumer's own store (the
-        [linear_comments] infisical_token_file).  A reload that leaves the service
+        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
+        or the [linear_comments] infisical_token_file).  A reload that leaves the service
         token as it was keeps the same engine object, so its ledger lock and its
         (topic, issue) -> comment mapping survive — unless the engine has stopped (a
         refused Linear credential), in which case the reload rebuilds it, so a repaired
@@ -1356,10 +1356,10 @@ class Daemon:
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
-            # The consumer's own store (the configured token file) is the only source
-            # of that grant:  no environment copy can replace it,  and a store that
-            # cannot be read refuses instead of falling back to another source.
-            service = OPL.service_token(token_file)
+            # The consumer's own store (the configured token file) is the authority:  a
+            # host-bound variable is only a copy of that same grant,  and it is used
+            # when the store has none.
+            service = OPL.service_token(self.env, token_file, store_first=True)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.
@@ -1368,8 +1368,8 @@ class Daemon:
         if not service:
             self.log.write(
                 "linear-comments-off",
-                reason="no Infisical service token in the consumer's own store "
-                "(the [linear_comments] infisical_token_file)",
+                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
+                "is not set and no usable infisical_token_file)",
                 hint=ENV_RESTART_HINT,
             )
             return
