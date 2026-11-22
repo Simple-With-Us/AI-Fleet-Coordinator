@@ -3007,6 +3007,9 @@ class CredentialTests(Base):
         )
         self.assertEqual((code, ans["result"]), (1, "failed"))
         self.assertIn("COOLIFY_DEPLOY_ONLY", ans["detail"])
+        # The message carries the number an operator greps for,  not the enum name.
+        self.assertIn("HTTP 403", ans["detail"])
+        self.assertNotIn("HTTPStatus", ans["detail"])
         code, ans = self.run_main(
             ["--check-token"], self.ctx(http_status=http.HTTPStatus.TOO_MANY_REQUESTS)
         )
