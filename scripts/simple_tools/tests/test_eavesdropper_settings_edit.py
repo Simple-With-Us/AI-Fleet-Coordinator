@@ -206,6 +206,20 @@ class AllowlistTests(Case):
         )
         self.assertEqual((code, answer["errorCode"]), (2, "key_not_allowed"))
 
+    def test_an_unknown_nested_spec_type_refuses_the_whole_allowlist(self) -> None:
+        # A sub-key this editor does not know would leave its parent entry
+        # with a hole in it, so the whole allowlist refuses and the refusal
+        # names the full path.  A whole entry this editor does not know is
+        # left out instead (the rule the shipped `seats` entries need).
+        doc = shipped_allowlist()
+        doc["tables"]["notes_queue"]["server_seats"] = {
+            "type": "table",
+            "keys": {"future_cap": {"type": "future-thing"}},
+        }
+        with self.assertRaises(M.Refusal) as caught:
+            M.validate_allowlist(doc)
+        self.assertIn("notes_queue.server_seats.future_cap", str(caught.exception))
+
     def test_a_secret_named_sub_key_with_an_unknown_type_still_refuses_whole(self) -> None:
         doc = shipped_allowlist()
         doc["seat"]["routine"]["keys"]["token_file"] = {"type": "future-thing"}
@@ -1603,8 +1617,16 @@ class ControlVerbTests(Case):
         self.assertIsNone(foc._strip_unknown_allowlist_entry(corrupt, "notes_queue.server_seats"))
         nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}}}}}
         stripped = foc._strip_unknown_allowlist_entry(nested, "seat.*.budget.future_cap")
+        # The parent had no other sub-key, so it goes with it:  an empty parent
+        # spec would reach the editor and it refuses "%s needs its keys".
+        self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget"))
+        self.assertEqual(nested["seat"], {})
+        # A parent with another sub-key keeps it, and the report names the
+        # sub-key that was left out.
+        kept = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}, "wakes_per_day": {"type": "int"}}}}}
+        stripped = foc._strip_unknown_allowlist_entry(kept, "seat.*.budget.future_cap")
         self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget.future_cap"))
-        self.assertEqual(nested["seat"]["budget"]["keys"], {})
+        self.assertEqual(sorted(kept["seat"]["budget"]["keys"]), ["wakes_per_day"])
 
     def test_a_nested_drop_blocks_only_its_own_sub_key(self) -> None:
         foc = self.foc

@@ -198,19 +198,29 @@ class StepFailed(Exception):
 
 
 def _check_spec(spec, where, nested=False):
-    """The cleaned spec, or None for a type this editor does not know.
+    """The cleaned spec, or None for a whole entry whose type this editor does not know.
 
-    A spec type a newer allowlist names and this editor predates is not a
-    malformed allowlist:  the entry is left out, so it can neither be read
-    nor written here, and every known entry still works.  That is the same
-    rule Muster's parser uses, and it keeps a host/container version skew
-    from refusing the whole settings read.  A known type with a bad range
-    or shape still refuses the whole allowlist below."""
+    A whole entry whose type a newer allowlist names and this editor predates
+    is not a malformed allowlist:  the entry is left out, so it can neither be
+    read nor written here, and every known entry still works.  That is the same
+    rule Muster's parser uses, and it keeps a host/container version skew from
+    refusing the whole settings read.  A sub-key this editor does not know is
+    different:  leaving it out would give its parent entry a hole, so it
+    refuses the whole allowlist and names the full path.  A known type with a
+    bad range or shape still refuses the whole allowlist below."""
     if not isinstance(spec, dict):
         raise Refusal(
             "allowlist_invalid", "%s needs a type from %s" % (where, ", ".join(SPEC_TYPES))
         )
     if spec.get("type") not in SPEC_TYPES:
+        if nested:
+            # A sub-key this editor does not know would leave its parent entry
+            # with a hole in it, so the whole allowlist refuses and the refusal
+            # names the full path.  A whole entry this editor does not know is
+            # left out instead (see below).
+            raise Refusal(
+                "allowlist_invalid", "%s needs a type from %s" % (where, ", ".join(SPEC_TYPES))
+            )
         return None
     kind = spec["type"]
     known = {"type"}
@@ -276,12 +286,7 @@ def _check_spec(spec, where, nested=False):
                     "%s.%s reads as a secret, a path or a URL and can never be allowlisted"
                     % (where, name),
                 )
-            sub = _check_spec(sub, "%s.%s" % (where, name), nested=True)
-            if sub is None:
-                continue
-            cleaned[name] = sub
-        if not cleaned:
-            return None
+            cleaned[name] = _check_spec(sub, "%s.%s" % (where, name), nested=True)
         spec = dict(spec, keys=cleaned)
     elif kind == "seat-env":
         if not nested:

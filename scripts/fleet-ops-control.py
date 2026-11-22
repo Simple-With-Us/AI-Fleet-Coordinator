@@ -2347,7 +2347,8 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     well-formed spec (a table with a string `type`) may be dropped:  a
     corrupt entry is not an unknown type, and its refusal stands.  The
     report is the full `where` path, so a dropped sub-key does not read as
-    its whole parent entry."""
+    its whole parent entry.  When the last sub-key of a parent entry goes,
+    the parent goes with it, so no empty parent spec reaches the editor."""
     if not isinstance(allowlist, dict) or not isinstance(where, str):
         return None
 
@@ -2370,6 +2371,11 @@ def _strip_unknown_allowlist_entry(allowlist, where):
         keys = spec.get("keys") if isinstance(spec, dict) else None
         sub = keys.get(parts[3]) if isinstance(keys, dict) else None
         if isinstance(keys, dict) and typed(sub) and keys.pop(parts[3], None) is not None:
+            if not keys:
+                # The parent has no sub-key left:  drop it whole, so no empty
+                # parent spec reaches the editor (it refuses "%s needs its keys").
+                seat.pop(parts[2], None)
+                return (("seat", parts[2]), "seat.*.%s" % parts[2])
             return (("seat", parts[2]), where)
         return None
     tables = allowlist.get("tables")
@@ -2389,6 +2395,11 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     keys = spec.get("keys") if isinstance(spec, dict) else None
     sub = keys.get(parts[2]) if isinstance(keys, dict) else None
     if isinstance(keys, dict) and typed(sub) and keys.pop(parts[2], None) is not None:
+        if not keys:
+            # The parent has no sub-key left:  drop it whole, so no empty parent
+            # spec reaches the editor (it refuses "%s needs its keys").
+            entries.pop(parts[1], None)
+            return ((parts[0], parts[1]), "%s.%s" % (parts[0], parts[1]))
         return ((parts[0], parts[1]), where)
     return None
 
@@ -2430,7 +2441,11 @@ def _set_touches(changes, stripped, remove=None):
             if len(key_parts) == 4 and key_parts[0] == "seat" and key_parts[2] == name:
                 if not nested or key_parts[3] == dropped:
                     return True
-            elif len(key_parts) == 3 and key_parts[0] == "seat" and key_parts[2] == name:
+            elif (
+                len(key_parts) == 3
+                and key_parts[0] == "seat"
+                and key_parts[2] == name
+            ):
                 # A whole-parent removal takes the dropped sub-key's stored
                 # value with it, so it keeps the original refusal, the same
                 # way a whole-entry drop does.
