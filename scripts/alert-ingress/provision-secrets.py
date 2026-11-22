@@ -263,6 +263,7 @@ def scoped_values(names, project, path):
             writer=False,
             max_output_bytes=READ_MAX_OUTPUT_BYTES,
             strict_records=True,
+            api_base=scoped_secrets.API_BASE,
         )
     except TimeoutError:
         # `SecretsTimeout` is a `SecretsError` as well,  so the timeout is caught first:
