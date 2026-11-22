@@ -205,7 +205,17 @@ def _shared_client():
                     raise ValueError()
             finally:
                 os.close(directory_fd)
-            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+                "st_mode",
+                "st_uid",
+                "st_gid",
+                "st_nlink",
+            )
             identities = [
                 tuple(getattr(info, key) for key in fields) for info in (before, after, current)
             ]
@@ -234,6 +244,78 @@ def _shared_client():
             if isinstance(exc, Exception):
                 raise AppTokenError("canonical Infisical reader unavailable") from None
             raise
+
+
+_SYSTEMD_CREDENTIAL_DIRECTORY = "/run/credentials/git-relay.service"
+_SYSTEMD_SOURCE_NAMES = {
+    "/git-relay-owner": "git-relay-owner-token",
+    "/github-apps": "git-relay-apps-token",
+    "/tools": "git-relay-tools-token",
+}
+
+
+def _open_systemd_source(path, scope, environ):
+    """Open only this service's fixed credential for the declared exact scope.
+
+    systemd's 0440 mask is accepted only with its exact named-service-UID ACL,
+    zero group/other rights, and root-owned no-follow directory chain. No new
+    consumer, arbitrary group-readable file, or another scope's token qualifies.
+    """
+    from .policy_input import _systemd_acl
+
+    name = _SYSTEMD_SOURCE_NAMES.get(scope)
+    if (
+        not name
+        or environ.get("CREDENTIALS_DIRECTORY") != _SYSTEMD_CREDENTIAL_DIRECTORY
+        or path != _SYSTEMD_CREDENTIAL_DIRECTORY + "/" + name
+    ):
+        raise ValueError("systemd credential binding invalid")
+    parents = []
+    token_fd = None
+    try:
+        parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        parents.append(parent)
+        for component in ("run", "credentials", "git-relay.service"):
+            parent = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent,
+            )
+            parents.append(parent)
+            info = os.fstat(parent)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != 0
+                or stat.S_IMODE(info.st_mode) & 0o022
+            ):
+                raise ValueError("systemd credential directory invalid")
+        info = os.fstat(parent)
+        if info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o550:
+            raise ValueError("systemd credential directory invalid")
+        _systemd_acl(parent, 5)
+        token_fd = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent
+        )
+        info = os.fstat(token_fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o440
+            or info.st_nlink != 1
+            or not 0 < info.st_size <= _MAX_TOKEN_BYTES
+        ):
+            raise ValueError("systemd credential file invalid")
+        _systemd_acl(token_fd, 4)
+        result, token_fd = token_fd, None
+        return result
+    except Exception:
+        raise ValueError("systemd credential custody invalid") from None
+    finally:
+        if token_fd is not None:
+            os.close(token_fd)
+        for fd in reversed(parents):
+            os.close(fd)
 
 
 class FleetSecretsSource:
@@ -266,19 +348,34 @@ class FleetSecretsSource:
         if not self._credential_file:
             raise AppTokenError(f"credential file binding required for {self._path}")
         try:
-            fd = os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            systemd = self._credential_file.startswith(_SYSTEMD_CREDENTIAL_DIRECTORY + "/")
+            fd = (
+                _open_systemd_source(self._credential_file, self._path, self._environ)
+                if systemd
+                else os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            )
             with os.fdopen(fd, "rb") as source:
                 before = os.fstat(source.fileno())
                 if (
                     not stat.S_ISREG(before.st_mode)
                     or before.st_uid not in (0, os.geteuid())
-                    or stat.S_IMODE(before.st_mode) & 0o077
+                    or (not systemd and stat.S_IMODE(before.st_mode) & 0o077)
                     or before.st_size > _MAX_TOKEN_BYTES
                 ):
                     raise ValueError()
                 raw = source.read(_MAX_TOKEN_BYTES + 1)
                 after = os.fstat(source.fileno())
-            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+                "st_mode",
+                "st_uid",
+                "st_gid",
+                "st_nlink",
+            )
             identities = [
                 tuple(getattr(info, key) for key in fields)
                 for info in (before, after, os.stat(self._credential_file, follow_symlinks=False))
