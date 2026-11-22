@@ -4401,9 +4401,14 @@ def scoped_token(ctx):
     return token
 
 
+def _is_http_status(status) -> bool:
+    """True for an HTTP status:  an int,  or an int subclass such as `http.HTTPStatus`."""
+    return isinstance(status, int) and not isinstance(status, bool)
+
+
 def _coolify_http_failure(status) -> str:
     """Coolify's own answer when it refuses the deploy token, with the remedy it needs."""
-    if type(status) is not int or not status:
+    if not _is_http_status(status) or not status:
         # Anything that is not an HTTP status is no answer at all.
         return "Coolify did not answer"
     if status in (401, 403):
@@ -4423,12 +4428,12 @@ def _coolify_failed(status) -> Failed:
     applied it,  so the run is retryable and not terminal.  A server error may follow a
     deploy that was already applied,  so the action had begun or may have,  and that is
     `unknown`,  never `failed` (server-route-spec section 13)."""
-    if type(status) is int and status in (408, 429):
+    if _is_http_status(status) and status in (408, 429):
         return Failed(_coolify_http_failure(status), error_code="retryable")
     return Failed(
         _coolify_http_failure(status),
         timed_out=bool(getattr(status, "sent", False))
-        or (type(status) is int and 500 <= status < 600),
+        or (_is_http_status(status) and 500 <= status < 600),
     )
 
 

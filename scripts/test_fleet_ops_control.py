@@ -2997,6 +2997,22 @@ class CredentialTests(Base):
         )
         self.assertEqual(self.http_calls, [])
 
+    def test_a_status_that_is_an_int_subclass_keeps_its_meaning(self):
+        """`http.HTTPStatus` is an int subclass,  so it keeps its own handling."""
+        import http
+
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.FORBIDDEN)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertIn("COOLIFY_DEPLOY_ONLY", ans["detail"])
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.TOO_MANY_REQUESTS)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
+
     def test_a_status_that_is_not_a_status_is_a_no_answer(self):
         """An unexpected value from the HTTP seam must not crash the helper (Kody)."""
         self.credentials(self.pair_text())
