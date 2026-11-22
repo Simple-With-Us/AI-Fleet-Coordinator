@@ -424,7 +424,7 @@ Authorization: Bearer <token>
 
 The shared client is `scripts/fleet_infisical.py`, and it stays.  `fetch_verified(name, folder, env, token)` performs the read and checks the answer's own provenance (workspace, environment, secretPath, secretKey and shared type), so a value from the wrong place fails closed.  `token_from_store(account)` reads the consumer's own store and says which refusal it was (`ok`, `no-token`, `keychain-locked`, `token-unreadable`).  `fetch_scoped(name, folder, account)` does both and returns the value and a status (`ok`, `absent`, `forbidden`, `no-token`, `keychain-locked`, `token-unreadable`, `failed`).  A consumer that lives outside this repository calls the same route itself, with the checks its own code needs;  `scripts/mac-resource-watch.py` is the reviewed precedent for that shape.
 
-**The consumer's own scoped token is authoritative.**  The credential for a folder is the consumer's own scoped service token, read from the consumer's own store.  The environment may carry a copy of that same token, which is how a host transports a value it already synced from Infisical, and a copy is used only when the scoped read populated it;  it never outranks the store.  A hand-set environment value must never replace the reviewed, scope-limited grant, and the read's own scope check still decides whether any token may read a folder at all.
+**The consumer's own scoped token is authoritative.**  The credential for a folder is the consumer's own scoped service token, read from the consumer's own store.  The environment is never a source for it:  the consumer's own store is the only source, and the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value;  it never outranks the store.  A hand-set environment value must never replace the reviewed, scope-limited grant, and the read's own scope check still decides whether any token may read a folder at all.
 
 **No fallback and no cached copy.**  There is no route to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields nothing, and the consumer says which of those it was.
 
@@ -446,7 +446,7 @@ if status != "ok":
 
 Never `echo` the value, never put it in argv, and never write it to a log or a transcript.
 
-**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  A value already in the environment is used only when it is a copy the scoped read populated, and the token is never a fallback for a hand-set value.
+**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  No value is read from the environment at all:  the consumer's own store is the only source, and the token is never a fallback for a hand-set value.
 
 **(c) A consumer on a server.**  The same client and the same shape, with the token in the 0600 file the store table above names.
 
@@ -480,7 +480,7 @@ The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical se
 
 ## Retiring `~/.secrets` (AFC-359)
 
-Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (the consumer's own scoped service token, read from the consumer's own store, with an environment copy of that same token used only when the scoped read populated it, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (the consumer's own scoped service token, read from the consumer's own store, read from the consumer's own store and never from the environment, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
 
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|

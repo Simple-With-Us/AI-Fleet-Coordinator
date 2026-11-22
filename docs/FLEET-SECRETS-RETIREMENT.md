@@ -44,18 +44,13 @@ reader, used by many consumers, each of which should instead hold its own narrow
    precedent for that shape.
 
 4. **The consumer's own store is the authority for the token.**  The scoped service token is read from the
-   consumer's own store, and it is the credential the read runs under.  The environment may carry a copy of
-   that same token, which is how a host transports a value it already synced from Infisical, and such a copy
-   is allowed only under a variable named for that consumer;  the general ambient `INFISICAL_TOKEN` must not
-   silently stand in for a consumer's narrower grant (the owner's ruling on OPS-1101).  A hand-set
+   consumer's own store, and it is the credential the read runs under.  The environment is never a source for it:  the consumer's own store is the only source, and the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value.  The general ambient `INFISICAL_TOKEN` must not silently stand in for a consumer's narrower grant either, and the Option 2 record on OPS-1101 is superseded by the owner's ruling of November 22, 2026, which makes the environment never a source for any consumer.  A hand-set
    environment value never replaces the reviewed, scope-limited grant.  The read's own scope check still decides
    whether any token may read a folder at
    all:  `validate_service_metadata` requires the token's granted folders to equal the declared folders
    exactly.
 
-   This is about the token.  A consumer whose own contract says a host binds a secret *value* in the
-   environment (a realm credential for a given realm, for example) keeps that behaviour:  the value is the
-   host's own binding, and the token that fetches it is still the consumer's own scoped service token.
+   This is about the token.  A consumer whose own contract used to say a host binds a secret *value* in the environment (a realm credential for a given realm, for example) keeps its own contract, but the value resolves from the store now:  the environment is never a source for a value either, and the token that fetches it is still the consumer's own scoped service token.
 
 5. **No fallback, no cached copy.**  There is no route to the shared reader, to a machine identity, to the System
    Keychain old identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields
