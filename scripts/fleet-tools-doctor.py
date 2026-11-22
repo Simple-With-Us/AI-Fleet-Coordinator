@@ -1579,6 +1579,9 @@ def infisical_names(
                         project_id, folder, scoped, token=read_token, timeout=60
                     )
                 )
+            except TimeoutError:
+                names = None
+                reason = "the scoped read timed out"
             except (client.SecretsError, OSError, ValueError):
                 names = None
                 reason = "the scoped read was refused"
