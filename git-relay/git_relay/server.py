@@ -35,7 +35,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import git_read
+from . import git_read, service_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import (
@@ -53,6 +53,7 @@ from .policy import (
     auth_failure_response,
 )
 from .policy_input import seats_json_from_env
+from .pr_owners import PROwnerStore
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -145,6 +146,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     if action == git_read.ACTION:
         raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
+    if action == service_read.ACTION:
+        return service_read.validate(args)
     if action == "create_repo":
         return _validate_create_repo(args)
     specs: dict = {"repo": ("text", True)}
@@ -197,6 +200,9 @@ def _validate_args(action: str, args: dict) -> dict:
         )
     elif action == "resolve_thread":
         specs["thread_id"] = ("thread_id", True)
+    if action == "open_pr":
+        claims = service_read.origin_claims(args)
+        specs.update({name: ("origin", True) for name in claims})
     extra = sorted(set(args) - set(specs))
     if extra:
         raise ValueError(f"{action}: unexpected fields ({len(extra)})")
@@ -334,6 +340,7 @@ class Relay:
         outcomes: OutcomeStore | None = None,
         workflow_verbs_enabled: bool = False,
         typed_disarm_enabled: bool = False,
+        pr_owners: PROwnerStore | None = None,
     ):
         # Off unless the operator turns it on: with it off every wf_ action is refused
         # as registered-not-wired, exactly as before the wiring existed.
@@ -345,6 +352,7 @@ class Relay:
         self._bootstrap_auditor = BootstrapDenialAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
+        self.pr_owners = pr_owners
         self.typed_gateway = None
         if typed_disarm_enabled:
             from .typed_gateway import TypedGateway
@@ -694,6 +702,10 @@ class Relay:
                     unconfirmed = getattr(exc, "unconfirmed_number", None)
                     if unconfirmed is not None:
                         detail["unconfirmed_number"] = unconfirmed
+                        if action == "open_pr":
+                            detail["owner_recorded"] = self._record_pr_owner(
+                                seat, canonical, unconfirmed, attempt_corr, confirmed=False
+                            )
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 502, payload
@@ -744,6 +756,11 @@ class Relay:
                 )
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
+            owner_recorded = None
+            if action == "open_pr" and type(result.get("number")) is int:
+                owner_recorded = self._record_pr_owner(
+                    seat, canonical, result["number"], attempt_corr, confirmed=True
+                )
             if action == "create_repo":
                 # The request description is never an audit field.  Neither is a token.
                 detail = {
@@ -755,6 +772,8 @@ class Relay:
                 detail = _workflow_audit_detail(canonical, result)
             else:
                 detail = {**canonical, **result}
+                if owner_recorded is not None:
+                    detail["owner_recorded"] = owner_recorded
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -812,24 +831,76 @@ class Relay:
         if key is not None:
             self.outcomes.finish(key, state)
 
+    def _record_pr_owner(self, seat, canonical, number, corr, confirmed):
+        if self.pr_owners is None:
+            return None
+        try:
+            self.pr_owners.record(
+                seat=seat,
+                repo=canonical["repo"],
+                number=number,
+                head=canonical["head"],
+                base=canonical["base"],
+                corr=corr,
+                confirmed=confirmed,
+                origin=service_read.origin_claims(canonical),
+            )
+        except Exception:
+            # Creation is already known. Never turn an index failure into a
+            # retriable create or invent a creation-time origin on replay.
+            return False
+        return True
+
     def _dispatch(
         self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
     ) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
+        if action == service_read.ACTION:
+            return service_read.dispatch(self, seat, args)
         if action in SeatPolicy.WORKFLOW_ACTIONS:
             return self._dispatch_workflow(seat, action, args, repo, caller_token=caller_token)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
-            return self.client.open_pr(
-                repo,
-                base=_text(args.get("base"), "base"),
-                head=_text(args.get("head"), "head"),
-                title=_clean_text(args.get("title"), "title"),
-                body=_clean_text(args.get("body"), "body"),
-                **({"draft": args["draft"]} if "draft" in args else {}),
-            )
+            # This correlation is already durable in the normal outcome store.
+            # Fence the derived index BEFORE the upstream side effect so even
+            # total disk failure after a known create cannot hide a missing row
+            # across process restart. No new origin is obtained on retry.
+            corr = self.outcomes.corr_of(key_for(seat, action, args))
+            if self.pr_owners is not None:
+                try:
+                    self.pr_owners.begin_creation(corr)
+                except (OSError, ValueError):
+                    raise ServerUnavailable("creation index fence unavailable") from None
+            try:
+                return self.client.open_pr(
+                    repo,
+                    base=_text(args.get("base"), "base"),
+                    head=_text(args.get("head"), "head"),
+                    title=_clean_text(args.get("title"), "title"),
+                    body=_clean_text(args.get("body"), "body"),
+                    **({"draft": args["draft"]} if "draft" in args else {}),
+                )
+            except RelayGitHubError as exc:
+                # Only the client's validated, un-followed repository move
+                # is additional no-create evidence. Generic redirects and
+                # post-create readback failures remain fenced as uncertain.
+                repository_moved = (
+                    exc.code == "repository_moved"
+                    and 300 <= exc.status < 400
+                    and exc.moved_repository_id is not None
+                )
+                if self.pr_owners is not None and (
+                    repository_moved or 400 <= exc.status < 500 and exc.status != 408
+                ):
+                    try:
+                        self.pr_owners.refuse_creation(corr)
+                    except (OSError, ValueError):
+                        # Retain the durable fence if cleanup fails. Refusal is
+                        # still a refusal; never issue a second upstream write.
+                        pass
+                raise
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
 
@@ -973,6 +1044,8 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
 
 def _is_workflow_read(self, action: str) -> bool:
     """A wf_ verb that changes nothing upstream needs no idempotency key and holds no outcome."""
+    if action == service_read.ACTION:
+        return True
     if action not in SeatPolicy.WORKFLOW_ACTIONS:
         return False
     from .workflow_verbs import SPECS
@@ -1298,6 +1371,7 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
 
 DEFAULT_AUDIT_PATH = "git-relay-audit.jsonl"
 DEFAULT_OUTCOMES_PATH = "git-relay-outcomes.json"
+DEFAULT_PR_OWNERS_PATH = "git-relay-pr-owners.jsonl"
 # The state files were renamed along with the CLI (GHR -> git-relay).  The
 # outcome store is a write-idempotency ledger:  its pending/unknown rows are
 # the only thing that stops a replay of a write whose GitHub outcome was never
@@ -1635,6 +1709,9 @@ def from_env() -> Relay:
         if "GIT_RELAY_OUTCOMES_PATH" in os.environ
         else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
     )
+    owners_path = os.environ.get("GIT_RELAY_PR_OWNERS_PATH") or os.path.join(
+        os.path.dirname(os.path.abspath(audit_path)), DEFAULT_PR_OWNERS_PATH
+    )
     audit = AuditLog(audit_path)
     # App-disabled legacy startup keeps the auth-free library default.
     outcomes = OutcomeStore(outcomes_path, max_entries=outcome_capacity)
@@ -1646,6 +1723,7 @@ def from_env() -> Relay:
         outcomes=outcomes,
         workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
         typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
+        pr_owners=PROwnerStore(owners_path),
     )
 
 

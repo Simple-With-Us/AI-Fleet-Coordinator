@@ -24,6 +24,8 @@ Nothing here touches the network:  the Linear client and the Zulip client are fa
 
 from __future__ import annotations
 
+import inspect
+import pathlib
 import tempfile
 import time
 import unittest
@@ -826,29 +828,40 @@ class CredentialTests(unittest.TestCase):
         return path
 
     # -- where the service token comes from -------------------------------------------
-    def test_service_token_prefers_the_store_over_the_bound_copy(self) -> None:
-        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
+    def test_service_token_reads_the_store(self) -> None:
+        # The store is the only source:  the reviewed, scope-limited grant lives there.
         path = self.token_file()
-        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
-        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-file")
+        self.assertEqual(opl.service_token(str(path)), "st-" + "from-file")
 
-    def test_service_token_uses_the_bound_copy_when_the_store_has_none(self) -> None:
-        # The consumer's own named copy is the second source (the owner's ruling on
-        # OPS-1101,  Option 2):  a copy may travel,  and it is only this consumer's.
-        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
-        self.assertEqual(opl.service_token(env, str(self.dir / "absent")), "st-" + "from-env")
+    def test_the_environment_is_not_a_source(self) -> None:
+        # Owner ruling, November 22, 2026:  the environment is never a source.  The
+        # retired variable is gone from the module, and the resolver takes no
+        # environment at all, so no copy of the grant can travel as a variable.
+        source = pathlib.Path(opl.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("OPERATOR_LINEAR_INFISICAL_TOKEN", source)
+        self.assertNotIn("env", inspect.signature(opl.service_token).parameters)
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()
-        self.assertEqual(opl.service_token({}, str(path)), "st-" + "from-file")
+        self.assertEqual(opl.service_token(str(path)), "st-" + "from-file")
 
     def test_service_token_missing_file_is_unconfigured(self) -> None:
-        self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
+        self.assertEqual(opl.service_token(str(self.dir / "absent")), "")
+
+    def test_service_token_refuses_an_unreadable_store(self) -> None:
+        # An existing store that cannot be read is a broken store, not an absent
+        # one:  the feature fails closed instead of reporting itself unconfigured.
+        path = self.token_file()
+        with mock.patch.object(opl.os, "stat", side_effect=PermissionError("denied")):
+            with self.assertRaises(opl.CredentialRefused) as caught:
+                opl.service_token(str(path))
+        self.assertEqual(caught.exception.reason, "token_file_unreadable")
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     def test_service_token_refuses_a_group_readable_file(self) -> None:
         path = self.token_file(mode=0o644)
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.service_token({}, str(path))
+            opl.service_token(str(path))
         self.assertEqual(caught.exception.reason, "token_file_permissions")
         self.assertNotIn("st-" + "from-file", str(caught.exception))
 
@@ -929,32 +942,31 @@ class CredentialTests(unittest.TestCase):
     def test_load_api_key_runs_the_whole_chain(self) -> None:
         http = FakeHttp()
         hidden: list[str] = []
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
-        self.assertEqual(opl.load_api_key(env, http=http, hide=hidden.extend), "dev-key")
+        path = self.token_file(content="st-" + "test")
+        self.assertEqual(opl.load_api_key(str(path), http=http, hide=hidden.extend), "dev-key")
         self.assertEqual(len(http.calls), 2)  # record, then the key — no OAuth exchange
         self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
         self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
 
-    def test_the_key_fetch_prefers_the_store_over_the_bound_copy(self) -> None:
-        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
+    def test_the_key_fetch_uses_the_store(self) -> None:
+        # The store is the only source:  the grant that reaches Infisical is the one
+        # the consumer's own store holds.
         path = self.token_file(content="st-" + "from-file")  # never-a-credential: synthetic fixture assembled at runtime
-        env = {opl.SERVICE_TOKEN_ENV: "st-" + "from-env"}  # never-a-credential: synthetic fixture assembled at runtime
         http = FakeHttp()
-        self.assertEqual(opl.load_api_key(env, str(path), http=http), "dev-key")
+        self.assertEqual(opl.load_api_key(str(path), http=http), "dev-key")
         bearer = http.calls[0][2].get("Authorization", "")
         self.assertIn("st-" + "from-file", bearer)
-        self.assertNotIn("st-" + "from-env", bearer)
 
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
-        self.assertIsNone(opl.load_api_key({}, str(self.dir / "absent"), http=http))
+        self.assertIsNone(opl.load_api_key(str(self.dir / "absent"), http=http))
         self.assertEqual(http.calls, [])
 
     def test_build_wires_the_developer_token_into_the_engine(self) -> None:
         http = FakeHttp()
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
-        engine = opl.build(env, self.dir, log=self.logs.append, http=http)
+        path = self.token_file(content="st-" + "test")
+        engine = opl.build({}, self.dir, log=self.logs.append, service_token_file=str(path), http=http)
         self.assertIsNotNone(engine)
         self.assertIsInstance(engine.worker.linear, lr.LinearClient)
         self.assertEqual(engine.worker.linear.auth_scheme, "api_key")
@@ -972,9 +984,9 @@ class CredentialTests(unittest.TestCase):
 
     def test_build_propagates_a_refused_credential(self) -> None:
         http = FakeHttp(statuses={"secrets": 403})
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
+        path = self.token_file(content="st-" + "test")
         with self.assertRaises(opl.CredentialRefused):
-            opl.build(env, self.dir, log=self.logs.append, http=http)
+            opl.build({}, self.dir, log=self.logs.append, service_token_file=str(path), http=http)
 
 
 class _StubResponse:
@@ -1110,6 +1122,12 @@ class DaemonConfigureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
 
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
+        path = self.dir / "service-token"
+        path.write_text(content, "utf-8")
+        path.chmod(mode)
+        return path
+
     def stub(self, env, token_file=""):
         import types
 
@@ -1140,7 +1158,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_engine_builds_from_the_service_token_and_survives_a_reload(self) -> None:
         http = FakeHttp()
-        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        stub = self.stub({}, token_file=str(self.token_file(content="st-" + "test")))
         with mock.patch.object(opl, "_default_http", http):
             stub.configure()
             engine = stub.linear_comments
@@ -1155,7 +1173,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_a_stopped_engine_is_rebuilt_on_reload(self) -> None:
         http = FakeHttp()
-        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        stub = self.stub({}, token_file=str(self.token_file(content="st-" + "test")))
         with mock.patch.object(opl, "_default_http", http):
             stub.configure()
             engine = stub.linear_comments

@@ -190,3 +190,8 @@ e80ee810190a03ff7f1b139b3f1295d31f102799:scripts/build-push-client-release.py:ge
 # house cause shape (cause_8) in be929219, so the current source scans clean;  this fingerprint
 # silences that one historical commit only, the same convention as the entries above.
 8340a571e728c20b4eb6bb8e9bb3d162320c65f9:scripts/simple-tools-mcp/test/worker-diagnostics.test.mjs:generic-api-key:109
+# PR #2229 (scanner refusal category), first commit:  the test module proved the scanner names
+# the matched category, and its made-up JWT-shaped fixture for that case was a literal at
+# rest in 85634a8c, so the history scan read it as a token.  The fixture is assembled at run
+# time from the next commit on, so this fingerprint silences that one historical commit only.
+85634a8ca9f55ca38946f0b0b782b8a01a61ef6c:git-relay/git_relay/tests/test_scan_refusal_category.py:jwt:26

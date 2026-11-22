@@ -74,7 +74,7 @@ class ArtifactTests(unittest.TestCase):
         destination = self.root / "artifact"
         manifest = builder.build_runtime(self.commit, destination)
         self.assertEqual(set(manifest["files"]), set(builder.FILES))
-        self.assertEqual(len(manifest["files"]), 38)
+        self.assertEqual(len(manifest["files"]), 40)
         self.assertEqual(manifest["sourceCommit"], self.commit)
         self.assertEqual(
             (destination / "scripts/fleet_infisical.py").read_text(), "# Public fixture code\n"
