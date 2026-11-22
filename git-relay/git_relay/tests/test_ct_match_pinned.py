@@ -110,7 +110,7 @@ class MatchPinnedReview(unittest.TestCase):
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
         self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 4)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 4)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 5)
         server_key = (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
@@ -348,6 +348,68 @@ class ServerPyAdmissionTests(unittest.TestCase):
     def test_extra_match_in_candidate_bytes_cannot_ride_the_digest(self):
         # Any added assignment changes the digest, so the admission misses and
         # the normal scan refuses; proven with a synthetic stand-in body.
+        body = "const secret = '" + "a" * 24 + "'; const token = '" + "b" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(
+            relay,
+            "_REVIEWED_GENERIC_MATCHES",
+            {key: frozenset(list(MatchPinnedReview().metadata(relay, body))[:1])},
+        ):
+            self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
+        self.assertEqual(relay.scan(body), "assigned secret")
+
+
+class ServerPyRetargetAdmissionTests(unittest.TestCase):
+    """The edit_pr ref-validation server.py candidate 0b9d5296: exact bytes, exact census, stale metadata refuses."""
+
+    key = (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "git-relay/git_relay/server.py",
+        "0b9d5296287c1c3dd5b7d508af8ae2afffb9da83ff03f64a3331ec5f1df01f20",
+    )
+    legacy_digest = "82b53da38ce0a110a3f25b947fbcabcfcef031a8295795d72f46f48d55d79305"
+
+    def test_durable_record_binds_registry_and_checkout(self):
+        root = Path(__file__).resolve().parents[3]
+        record = json.loads(
+            (
+                root / "docs/security/server-py-retarget-match-pinned-review-20261118.json"
+            ).read_text()
+        )
+        doc = record["reviewed_file"]
+        self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
+        census = frozenset(tuple(row) for row in doc["effective_matches"])
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], census)
+        self.assertEqual(record["provenance_source"]["sha256"], self.legacy_digest)
+        # The checkout holds a complete version of the file: the reviewed main
+        # version, the proposed candidate, or a later main version that carries
+        # no assignable match at all, so there is nothing left to admit.  A
+        # third version that does carry a match is refused by the scanner,
+        # which the scan assertion below proves.
+        raw = (root / doc["path"]).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest not in {self.legacy_digest, self.key[2]}:
+            self.assertEqual(
+                MatchPinnedReview().metadata(relay, raw.decode("utf-8")),
+                frozenset(),
+            )
+        self.assertIsNone(relay.scan_file(doc["repository"], doc["path"], raw.decode("utf-8")))
+
+    def test_stale_or_incomplete_census_refuses_the_proposed_digest(self):
+        census = relay._REVIEWED_GENERIC_MATCHES[self.key]
+        body = "const secret = '" + "a" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        real = MatchPinnedReview().metadata(relay, body)
+        self.assertEqual(len(real), 1)
+        for metadata in (frozenset(), frozenset({("assigned secret", 0, 1, 0, 1)})):
+            with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: metadata}):
+                self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: real}):
+            self.assertIsNone(relay.scan_file(key[0], key[1], body))
+        # The genuine registry entry still pins exactly one reviewed span.
+        self.assertEqual(census, frozenset({("assigned secret", 52346, 52389, 52354, 52389)}))
+
+    def test_extra_match_in_candidate_bytes_cannot_ride_the_digest(self):
         body = "const secret = '" + "a" * 24 + "'; const token = '" + "b" * 24 + "';"
         key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
         with patch.object(
