@@ -206,6 +206,12 @@ class AllowlistTests(Case):
         )
         self.assertEqual((code, answer["errorCode"]), (2, "key_not_allowed"))
 
+    def test_a_secret_named_sub_key_with_an_unknown_type_still_refuses_whole(self) -> None:
+        doc = shipped_allowlist()
+        doc["seat"]["routine"]["keys"]["token_file"] = {"type": "future-thing"}
+        with self.assertRaises(M.Refusal):
+            M.validate_allowlist(doc)
+
     def test_a_secret_named_sub_key_cannot_be_listed_inside_a_table(self) -> None:
         doc = shipped_allowlist()
         doc["seat"]["routine"]["keys"]["token_file"] = {"type": "bool"}
@@ -1590,6 +1596,15 @@ class ControlVerbTests(Case):
         self.assertIn("left out", answer["detail"])
         final = json.loads(reader.calls[-1]["data"])
         self.assertNotIn("server_seats", final["allowlist"]["tables"]["notes_queue"])
+
+    def test_the_retry_never_drops_a_corrupt_or_nested_entry_whole(self) -> None:
+        foc = self.foc
+        corrupt = {"tables": {"notes_queue": {"server_seats": "not-a-spec"}}}
+        self.assertIsNone(foc._strip_unknown_allowlist_entry(corrupt, "notes_queue.server_seats"))
+        nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}}}}}
+        stripped = foc._strip_unknown_allowlist_entry(nested, "seat.*.budget.future_cap")
+        self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget.future_cap"))
+        self.assertEqual(nested["seat"]["budget"]["keys"], {})
 
     def test_a_change_to_a_dropped_entry_keeps_the_original_refusal(self) -> None:
         class OldEditorReader(FakeReader):

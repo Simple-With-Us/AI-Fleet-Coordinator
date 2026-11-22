@@ -265,15 +265,18 @@ def _check_spec(spec, where, nested=False):
                 raise Refusal(
                     "allowlist_invalid", "%s has a sub-key name that is not allowed" % where
                 )
-            sub = _check_spec(sub, "%s.%s" % (where, name), nested=True)
-            if sub is None:
-                continue
-            if sub["type"] != "seat-env" and _DENY_NAME_RE.search(name):
+            # The deny-name check comes before the unknown-type skip:  a
+            # secret-named sub-key refuses the whole allowlist whatever type
+            # it claims, so an unknown type can never bypass it.
+            if not (isinstance(sub, dict) and sub.get("type") == "seat-env") and _DENY_NAME_RE.search(name):
                 raise Refusal(
                     "allowlist_invalid",
                     "%s.%s reads as a secret, a path or a URL and can never be allowlisted"
                     % (where, name),
                 )
+            sub = _check_spec(sub, "%s.%s" % (where, name), nested=True)
+            if sub is None:
+                continue
             cleaned[name] = sub
         if not cleaned:
             return None

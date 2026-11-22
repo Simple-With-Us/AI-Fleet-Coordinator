@@ -2337,26 +2337,36 @@ _SETTINGS_UNKNOWN_TYPE_RE = re.compile(r"^([A-Za-z0-9_.*-]+) needs a type from "
 
 
 def _strip_unknown_allowlist_entry(allowlist, where):
-    """Drop the allowlist entry `where` names;  return ("seat"|table, name) or None.
+    """Drop the allowlist entry `where` names;  return (("seat"|table, name), report) or None.
 
     The editor in a not-yet-redeployed container image predates a spec type
     the host allowlist now uses (for example `seats`) and refuses the whole
     request for it.  Dropping only that entry leaves it unreadable and
     unwritable through the old editor — fail closed for that one key — while
-    every known setting keeps working until the image catches up."""
+    every known setting keeps working until the image catches up.  Only a
+    well-formed spec (a table with a string `type`) may be dropped:  a
+    corrupt entry is not an unknown type, and its refusal stands.  The
+    report is the full `where` path, so a dropped sub-key does not read as
+    its whole parent entry."""
     if not isinstance(allowlist, dict) or not isinstance(where, str):
         return None
+
+    def typed(spec):
+        return isinstance(spec, dict) and isinstance(spec.get("type"), str)
+
     parts = where.split(".")
     if parts[0] == "seat" and len(parts) >= 3 and parts[1] == "*":
         seat = allowlist.get("seat")
         if not isinstance(seat, dict):
             return None
         if len(parts) == 3:
-            return ("seat", parts[2]) if seat.pop(parts[2], None) is not None else None
+            spec = seat.get(parts[2])
+            return (("seat", parts[2]), where) if typed(spec) and seat.pop(parts[2], None) is not None else None
         spec = seat.get(parts[2])
         keys = spec.get("keys") if isinstance(spec, dict) else None
-        if isinstance(keys, dict) and keys.pop(parts[3], None) is not None:
-            return ("seat", parts[2])
+        sub = keys.get(parts[3]) if isinstance(keys, dict) else None
+        if isinstance(keys, dict) and typed(sub) and keys.pop(parts[3], None) is not None:
+            return (("seat", parts[2]), where)
         return None
     tables = allowlist.get("tables")
     if not isinstance(tables, dict) or len(parts) < 2:
@@ -2365,11 +2375,13 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     if not isinstance(entries, dict):
         return None
     if len(parts) == 2:
-        return (parts[0], parts[1]) if entries.pop(parts[1], None) is not None else None
+        spec = entries.get(parts[1])
+        return ((parts[0], parts[1]), where) if typed(spec) and entries.pop(parts[1], None) is not None else None
     spec = entries.get(parts[1])
     keys = spec.get("keys") if isinstance(spec, dict) else None
-    if isinstance(keys, dict) and keys.pop(parts[2], None) is not None:
-        return (parts[0], parts[1])
+    sub = keys.get(parts[2]) if isinstance(keys, dict) else None
+    if isinstance(keys, dict) and typed(sub) and keys.pop(parts[2], None) is not None:
+        return ((parts[0], parts[1]), where)
     return None
 
 
@@ -2431,10 +2443,10 @@ def eavesdropper_settings(
             match = _SETTINGS_UNKNOWN_TYPE_RE.match(str(document.get("detail") or ""))
             if match is None:
                 break
-            affected = _strip_unknown_allowlist_entry(request["allowlist"], match.group(1))
-            if affected is None or _set_touches(request.get("set"), affected):
+            stripped = _strip_unknown_allowlist_entry(request["allowlist"], match.group(1))
+            if stripped is None or _set_touches(request.get("set"), stripped[0]):
                 break
-            skipped_allowlist.append(".".join(affected))
+            skipped_allowlist.append(stripped[1])
             document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
     result = document.get("result")
     if result not in EAVESDROPPER_SETTINGS_RESULTS or not isinstance(document.get("ok"), bool):
