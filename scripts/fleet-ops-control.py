@@ -2429,7 +2429,12 @@ def _set_touches(changes, stripped, remove=None):
             if len(key_parts) == 4 and key_parts[0] == "seat" and key_parts[2] == name:
                 if not nested or key_parts[3] == dropped:
                     return True
-            elif len(key_parts) == 3 and key_parts[0] == "seat" and key_parts[2] == name and not nested:
+            elif (
+                len(key_parts) == 3
+                and key_parts[0] == "seat"
+                and key_parts[2] == name
+                and not nested
+            ):
                 return True
         elif len(key_parts) == 3 and key_parts[0] == table and key_parts[1] == name:
             if not nested or key_parts[2] == dropped:
@@ -2486,7 +2491,9 @@ def eavesdropper_settings(
             if match is None:
                 break
             stripped = _strip_unknown_allowlist_entry(request["allowlist"], match.group(1))
-            if stripped is None or _set_touches(request.get("set"), stripped, request.get("remove")):
+            if stripped is None or _set_touches(
+                request.get("set"), stripped, request.get("remove")
+            ):
                 break
             skipped_allowlist.append(stripped[1])
             document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
