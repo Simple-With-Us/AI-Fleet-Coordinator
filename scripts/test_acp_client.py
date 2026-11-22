@@ -65,16 +65,22 @@ class PermissionTests(unittest.TestCase):
                 "PATH": "/usr/bin:/bin",
                 "PYTHONPATH": "/hostile",
                 "FLEET_SECRETS_API": provider.url,
-                "INFISICAL_TOKEN": "st." + "test-only-seat-key",  # assembled: a fixture, never a credential,
+                "INFISICAL_TOKEN": "st."
+                + "test-only-seat-key",  # assembled: a fixture, never a credential,
                 "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
                 "INFISICAL_ENVIRONMENT": "prod",
             }
-            with mock.patch.dict("os.environ", env, clear=True):
-                with mock.patch(
+            with (
+                mock.patch.dict("os.environ", env, clear=True),
+                mock.patch(
                     "fleet_infisical.token_from_store",
-                    return_value=("st." + "test-only-grok-key", "ok")  # assembled: a fixture, never a credential,
-                ):
-                    self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
+                    return_value=(
+                        "st." + "test-only-grok-key",
+                        "ok",
+                    ),  # assembled: a fixture, never a credential,
+                ),
+            ):
+                self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
         self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
         self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
 
@@ -84,14 +90,13 @@ class PermissionTests(unittest.TestCase):
                 "HOME": home,
                 "PATH": "/usr/bin:/bin",
                 "FLEET_SECRETS_API": provider.url,
-                "INFISICAL_TOKEN": "st." + "test-only-grok-key",  # assembled: a fixture, never a credential,
+                "INFISICAL_TOKEN": "st."
+                + "test-only-grok-key",  # assembled: a fixture, never a credential,
                 "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
                 "INFISICAL_ENVIRONMENT": "prod",
             }
             with mock.patch.dict("os.environ", env, clear=True):
-                with mock.patch(
-                    "fleet_infisical.token_from_store", return_value=("", "no-token")
-                ):
+                with mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token")):
                     with self.assertRaises(SystemExit):
                         MOD.load_secret()
 

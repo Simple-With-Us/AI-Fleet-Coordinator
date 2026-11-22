@@ -122,11 +122,13 @@ class StoreFirst(ServiceTokenTestCase):
         # The owner's ruling on OPS-1101:  the environment's copy is never used in
         # place of the store,  so a store with no token fails closed.
         read = self.read({"A": "one"})
-        with mock.patch.object(
-            provision.scoped_secrets, "token_from_store", return_value=("", "no-token")
+        with (
+            mock.patch.object(
+                provision.scoped_secrets, "token_from_store", return_value=("", "no-token")
+            ),
+            self.assertRaises(provision.ReadError) as ctx,
         ):
-            with self.assertRaises(provision.ReadError) as ctx:
-                provision.scoped_values(["A"], "fleet-ops", "/zulip")
+            provision.scoped_values(["A"], "fleet-ops", "/zulip")
         self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
         self.assertEqual(read.calls, [])
 
@@ -134,13 +136,15 @@ class StoreFirst(ServiceTokenTestCase):
         # A store token that is not a service token is a refusal,  not a value:  the
         # error names the account it came from,  and no read starts.
         read = self.read({"A": "one"})
-        with mock.patch.object(
-            provision.scoped_secrets,
-            "token_from_store",
-            return_value=("not-a-service-token", "ok"),
+        with (
+            mock.patch.object(
+                provision.scoped_secrets,
+                "token_from_store",
+                return_value=("not-a-service-token", "ok"),
+            ),
+            self.assertRaises(provision.ReadError) as ctx,
         ):
-            with self.assertRaises(provision.ReadError) as ctx:
-                provision.scoped_values(["A"], "fleet-ops", "/zulip")
+            provision.scoped_values(["A"], "fleet-ops", "/zulip")
         self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
         self.assertEqual(read.calls, [])
 

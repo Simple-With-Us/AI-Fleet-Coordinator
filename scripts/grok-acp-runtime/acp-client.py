@@ -67,13 +67,9 @@ def load_secret() -> str:
             "GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, timeout=60
         )
     except TimeoutError:
-        sys.exit(
-            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read timed out"
-        )
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read timed out")
     except Exception:
-        sys.exit(
-            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read failed"
-        )
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read failed")
     if read_value:
         return read_value
     if bound and status in ("no-token", "keychain-missing"):

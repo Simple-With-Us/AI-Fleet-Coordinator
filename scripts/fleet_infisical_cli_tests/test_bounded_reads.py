@@ -223,17 +223,16 @@ class BoundedReadTests(unittest.TestCase):
 
     def test_an_invalid_explicit_api_base_is_refused_before_any_worker(self):
         for bad in ("", "not a url", "https://user@example.invalid/api", "ftp://example.invalid"):
-            with self.subTest(bad=bad):
-                with self.assertRaises(core.UsageError):
-                    core.bounded_fetch_project(
-                        self.project,
-                        "/operator-registry",
-                        self.env,
-                        token=self.sample,
-                        names=("A_KEY",),
-                        timeout=1.0,
-                        api_base=bad,
-                    )
+            with self.subTest(bad=bad), self.assertRaises(core.UsageError):
+                core.bounded_fetch_project(
+                    self.project,
+                    "/operator-registry",
+                    self.env,
+                    token=self.sample,
+                    names=("A_KEY",),
+                    timeout=1.0,
+                    api_base=bad,
+                )
         self.assertEqual(self.calls, [])
         self.assertEqual(self.children, [])
 

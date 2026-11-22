@@ -63,9 +63,7 @@ class FakeClient:
     class SecretsError(RuntimeError):
         pass
 
-    def __init__(
-        self, grant=None, names=("CLAUDE_ZULIP_KEY",), failure=None
-    ):
+    def __init__(self, grant=None, names=("CLAUDE_ZULIP_KEY",), failure=None):
         self.grant = synthetic_grant() if grant is None else grant
         self.names = names
         self.failure = failure
@@ -264,9 +262,7 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             # grant than this one,  so it never stands in for it.  The store read is
             # stubbed here,  so a test never reads the host's own credential store.
             client = staged_doctor.shared_client()
-            store = mock.patch.object(
-                client, "token_from_store", return_value=(self.BINDING, "ok")
-            )
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
             store.start()
             self.addCleanup(store.stop)
             self.assertEqual(
@@ -300,9 +296,7 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             # The grant comes from the doctor's own store;  the store read is stubbed
             # here,  so a test never reads the host's own credential store.
             client = doctor.shared_client()
-            store = mock.patch.object(
-                client, "token_from_store", return_value=(self.BINDING, "ok")
-            )
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
             store.start()
             self.addCleanup(store.stop)
             self.assertIsNone(doctor.infisical_names("/zulip", env))

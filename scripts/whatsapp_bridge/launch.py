@@ -126,7 +126,11 @@ def run_with_secrets(command, prepared, optional=()):
         # take it for one and read the wrong folder.
         prefix = items[:split]
         folder = prefix[max(i for i, v in enumerate(prefix) if v == "--path") + 1]
-        wanted = [name for name in prefix[max(i for i, v in enumerate(prefix) if v == "--only") + 1].split(",") if name]
+        wanted = [
+            name
+            for name in prefix[max(i for i, v in enumerate(prefix) if v == "--only") + 1].split(",")
+            if name
+        ]
         executable = items[split + 1 :]
     except (ValueError, IndexError, AttributeError, TypeError):
         raise SecretsError("invalid command", 2) from None

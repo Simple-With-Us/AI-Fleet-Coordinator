@@ -232,8 +232,7 @@ def service_token(
         raise CredentialRefused(
             "token_file_unreadable",
             "%s could not be read (%s); a service token file that exists but "
-            "cannot be read is a broken store, not an absent one"
-            % (path, type(exc).__name__),
+            "cannot be read is a broken store, not an absent one" % (path, type(exc).__name__),
         ) from None
     return stored or bound
 
