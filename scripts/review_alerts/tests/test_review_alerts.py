@@ -353,6 +353,13 @@ class FakeRead:
         return self._checks
 
 
+def verified_origin(*_args):
+    return dict(
+        seat="CLAUDE", platform="claude", verified_host="server",
+        profile_scope="fixture-profile", session=SESSION,
+    )
+
+
 class ServiceCycleTests(unittest.TestCase):
     def _service(self, directory, owners, read=None, router=None):
         owners_path = Path(directory) / "owners.jsonl"
@@ -367,6 +374,7 @@ class ServiceCycleTests(unittest.TestCase):
             repos={REPO},
             gate_seat="CLAUDE",
             message_poster=lambda owner, event, link: 123,
+            origin_binder=verified_origin,
         )
         return svc
 
@@ -665,6 +673,7 @@ class InstantParsingTests(unittest.TestCase):
                 repos={REPO},
                 gate_seat="CLAUDE",
                 message_poster=lambda owner, event, link: 123,
+                origin_binder=verified_origin,
             )
             return svc.cycle()["events"]
 
@@ -708,6 +717,7 @@ class InstantParsingTests(unittest.TestCase):
                 repos={REPO},
                 gate_seat="CLAUDE",
                 message_poster=lambda owner, event, link: 123,
+                origin_binder=verified_origin,
             )
             counts = svc.cycle()
             self.assertEqual(counts["events"], 1)
@@ -727,6 +737,7 @@ class PerCycleGateTests(unittest.TestCase):
             repos={REPO},
             gate_seat="CLAUDE",
             message_poster=lambda owner, event, link: 123,
+            origin_binder=verified_origin,
         )
 
     def test_gate_ok_cycle_runs(self):

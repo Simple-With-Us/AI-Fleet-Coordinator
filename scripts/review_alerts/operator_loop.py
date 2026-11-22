@@ -69,6 +69,8 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
         or not os.path.isabs(state)
     ):
         raise Held("review-service-config-incomplete")
+    if not callable(operator_send) or not callable(destination_for_origin):
+        raise Held("review-service-message-callbacks-required")
     messenger = messages.OperatorMessages(operator_send, destination_for_origin)
     token_file = env.get("RA_SERVICE_TOKEN_FILE", "")
     wake_file = env.get("RA_WAKE_KEY_FILE", "")

@@ -445,13 +445,18 @@ class AlertService:
             self._finish(row, "held", "operator-message-unconfigured")
             counts["held"] += 1
             return
+        origin = self.origins_this_cycle.get((row["repo"], row["number"]))
+        if not isinstance(origin, dict) or not origin:
+            self._finish(row, "held", "no-origin-claim")
+            counts["held"] += 1
+            return
         # Persist intent before crossing the existing Operator post boundary.
         posting = dict(row, status="message-posting", reason=None)
         self.store.append(posting)
         try:
             posting_owner = dict(
                 owner or {},
-                _review_origin=self.origins_this_cycle.get((row["repo"], row["number"])),
+                _review_origin=origin,
             )
             message_id = self.message_poster(posting_owner, row, row.get("link") or "")
             if type(message_id) is not int or not 0 < message_id <= 2**63 - 1:

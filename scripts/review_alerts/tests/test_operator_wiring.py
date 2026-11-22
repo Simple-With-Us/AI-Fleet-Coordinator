@@ -11,6 +11,7 @@ from review_alerts.tests.test_review_alerts import (
     FakeRouter,
     claimed_owner,
     kody_review,
+    verified_origin,
 )
 
 
@@ -18,7 +19,7 @@ class Wiring(unittest.TestCase):
     def test_binding_failure_preserves_cursor_and_retry_delivers(self):
         with tempfile.TemporaryDirectory() as d:
             router = FakeRouter()
-            bind = mock.Mock(side_effect=RuntimeError("held"))
+            bind = mock.Mock(side_effect=RuntimeError("held"), return_value=verified_origin())
             runner = service.AlertService(
                 events.EventStore(str(Path(d) / "events.jsonl")),
                 FakeRead(reviews=[kody_review(51)]),
@@ -126,7 +127,7 @@ class Wiring(unittest.TestCase):
             with self.subTest(receipt=receipt), tempfile.TemporaryDirectory() as d:
                 router = FakeRouter()
                 router.fail_submit = wakes.WakeRetryable("test")
-                bind = mock.Mock()
+                bind = mock.Mock(return_value=verified_origin())
                 runner = service.AlertService(
                     events.EventStore(str(Path(d) / "events.jsonl")),
                     FakeRead(reviews=[kody_review(51)]),
