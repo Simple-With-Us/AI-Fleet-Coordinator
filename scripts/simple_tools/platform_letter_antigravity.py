@@ -281,10 +281,14 @@ def antigravity_chat_payload(sid: str) -> Mapping[str, Any]:
 
 def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
     """The conversation's title as agy shows it in `/resume` (its own, or the one it generated), "" when unknown.
-    The database is opened read only and never written: a hook runs inside a CLI that owns it."""
+
+    When the primary title carries an Operator letter prefix (`XX: `), verifies that every targeted store that knows
+    `cid` agrees on the title, so partial multi-store write failures continue retrying until all stores converge.  The
+    database is opened read only and never written: a hook runs inside a CLI that owns it."""
     cid = _text(payload.get("conversationId")) or _text(payload.get("session_id"))
     if not cid:
         return ""
+    first_title = ""
     for db in candidate_dbs(payload, env):
         try:
             conn = sqlite3.connect("%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT)
@@ -297,8 +301,31 @@ def stored_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = Non
         except (sqlite3.Error, OSError, ValueError):
             continue
         if row and isinstance(row[0], str) and PL.tidy(row[0]):
-            return PL.tidy(row[0])
-    return ""
+            first_title = PL.tidy(row[0])
+            break
+    if not first_title:
+        return ""
+    if PL.LETTER_PREFIX.match(first_title):
+        for r in candidate_roots(payload, env):
+            if _root_knows_conversation(r, cid):
+                db = os.path.join(r, "conversation_summaries.db")
+                if os.path.isfile(db):
+                    try:
+                        conn = sqlite3.connect(
+                            "%s?mode=ro" % Path(db).as_uri(), uri=True, timeout=STORE_WAIT
+                        )
+                        try:
+                            row = conn.execute(
+                                "SELECT title FROM conversation_summaries WHERE conversation_id = ?",
+                                (cid,),
+                            ).fetchone()
+                        finally:
+                            conn.close()
+                    except (sqlite3.Error, OSError, ValueError):
+                        return ""
+                    if row is None or PL.tidy(row[0]) != first_title:
+                        return ""
+    return first_title
 
 
 _TITLE_PBTXT_RE = re.compile(r'(?<![A-Za-z0-9_.-])title:\s*"(?:\\.|[^"\\])*"')

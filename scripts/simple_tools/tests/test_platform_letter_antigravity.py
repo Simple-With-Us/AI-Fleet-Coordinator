@@ -567,10 +567,23 @@ class HookTests(Base):
         self.assertEqual(self.summary_row(ag_root), ("AA: Direct Chat", "AA: Direct Chat"))
         self.assertIsNone(self.summary_row(cli_root))
 
+        # Reset secondary annotation and summary for the end-to-end hook lifecycle test.
+        Path(ann_dir, "%s.pbtxt" % CID).write_text('title:"Old"', encoding="utf-8")
+        self.set_title(ag_root, CID, "Direct Chat")
+        start, _ = self.payloads(ag_root)
+        t0 = time.time()
+        self.hook(start, now=t0)
+        label = self.note()["label"]
+        expected = "%s: Direct Chat" % label
+        self.assertTrue(self.note()["pending"])
+        self.assertEqual(self.summary_row(ag_root), (expected, expected))
+
+        # Secondary row created: Stop retries and converges both stores.
         self.insert_summary(cli_root, CID, title="", preview="")
-        self.assertTrue(PA.antigravity_rename(req))
-        self.assertEqual(self.summary_row(cli_root), ("AA: Direct Chat", "AA: Direct Chat"))
-        self.assertIn("AA: Direct Chat", Path(ann_dir, "%s.pbtxt" % CID).read_text(encoding="utf-8"))
+        self.assertEqual(self.hook(self.stop_for(ag_root), now=t0 + 10), {})
+        self.assertFalse(self.note()["pending"])
+        self.assertEqual(self.summary_row(cli_root), (expected, expected))
+        self.assertIn(expected, Path(ann_dir, "%s.pbtxt" % CID).read_text(encoding="utf-8"))
 
     def test_rename_handles_minimal_schema_ide_root_and_transient_sqlite_lock(self) -> None:
         # Minimal schema without `preview` column still updates `title` and succeeds.
