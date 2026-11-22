@@ -75,7 +75,7 @@ test("exact metadata snapshots projection and holds explicit mismatches", async 
   globalThis.fetch = async (url, init) => {
     reads++;
     assert.equal(new URL(url).searchParams.get("native_session_id"), claims.origin_session_claim);
-    assert.equal(init.redirect, "error");
+    assert.equal(init.redirect, "manual");
     assert.equal(init.headers["X-Simple-Tools-Signature"].length, 64);
     return Response.json(claims);
   };

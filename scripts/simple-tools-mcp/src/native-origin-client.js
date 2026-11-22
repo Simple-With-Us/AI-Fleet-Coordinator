@@ -18,7 +18,7 @@ export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = 
     const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
     const bytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(message)));
     const signature = [...bytes].map((n) => n.toString(16).padStart(2, "0")).join("");
-    const response = await fetcher(url.href, { method: "GET", redirect: "error", cache: "no-store",
+    const response = await fetcher(url.href, { method: "GET", redirect: "manual", cache: "no-store",
       signal: AbortSignal.timeout(3000), headers: {
         "X-Simple-Tools-Timestamp": stamp, "X-Simple-Tools-Signature": signature,
       } });
