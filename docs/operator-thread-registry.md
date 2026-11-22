@@ -120,13 +120,13 @@ the Operator registries;  no dedicated SA is created for this registry.
 
 - Env:  `GOOGLE_SHEETS_SA` (the service-account JSON), or
 - Infisical Fleet-OPS prod, path `/google-sheets-sa`, key
-  `GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the approved
-  fleet Sheets route, no purpose-scoped copy.  The CLI never writes the key to disk
+  `GOOGLE_SHEETS_SA`, resolved through the shared isolated reader with an explicit own `OPERATOR_SHEETS_TOKEN_FILE` bootstrap at runtime — the approved
+  fleet Sheets route, no purpose-scoped copy.  The reader never writes the key to disk
   or prints it.
 - On the server, the scheduled drain reads the same key from
   `/etc/operator-sheets/sa.json` (`OPERATOR_SHEETS_SA_FILE`), which
   `install-operator-sheets-drain.sh` writes (0600, root) from that Infisical path with its
-  scoped read-only service token.  The two routes above are the CLI's, for manual runs.
+  scoped read-only service token.  The two routes above are the reader's, for manual runs.
 
 **What is needed (owner/admin action):**  share the "Operator Thread Registry" sheet with
 that service account's `client_email` as Editor.  Without the share, the CLI exits with an

@@ -1,5 +1,7 @@
 # AFC-477 WhatsApp Wake Bridge For Jet:  Proposal (pending approval)
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 Thu, Oct 22, 2026, 6:35am.  Linear AFC-477.  Owner:  CLAUDE (session 75771c43).  Status:  proposal pending approval.  Nothing in this document is built, deployed or holding standing access.  The only live work approved so far is the second-event spike, and its exact scope is in section 13.
 
 Every component, route, key and tool name below is a working name.  Section 12 explains why, and lists the names that Jay and Jet choose.
@@ -29,7 +31,7 @@ Changed after the review of PR #854 by Sentry and Kody:
 
 - There is no resend.  A reply whose outcome is unknown stays `outcome_unknown` for good, and Jet asks Jay in a new message instead (section 10).
 - Idempotency on `client_ref` has explicit rows for `sent`, `outcome_unknown` and definite refusals (section 10).
-- The bridge gets its key only from its own environment, injected by `fleet-secrets run`, and fails closed without it (section 14).
+- The bridge gets its key only from its own environment, injected by its own scoped service token read, and fails closed without it (section 14).
 - Inbound bodies are secret-scanned and redacted before storage, and replies are scanned before they are queued (section 5).
 - Only the pinned owner identity can open a binding window (section 6).
 - The bridge advances its offset on a processed-batch acknowledgement, even when nothing was stored, and validates every Meta batch against a boundary schema (section 5).
@@ -268,7 +270,7 @@ The store is the record, not the event.  A message stays pending until Jet ackno
 Three switches, all off by default:  POLL, WAKE and SEND.  Both of their sources are live, so no change needs a restart:
 
 - **The Worker admin switch** acts at once.  Every poll, outbox claim and heartbeat answer carries the current POLL, WAKE and SEND, the bridge re-reads them there, and the Worker itself refuses ingest or claims while a switch is off.
-- **The Infisical values** (`/jet`) arrive at start through `fleet-secrets run`, and the bridge re-reads them every 30 seconds with a small `fleet-secrets get <NAME> --path /jet` for each switch, without restarting (section 14).  For WAKE, which the Worker acts on, the bridge passes its latest reading in every ingest and heartbeat.
+- **The Infisical values** (`/jet`) arrive at start through the bridge's own scoped service token, and the bridge re-reads them every 30 seconds with a small scoped read of `<NAME>` in `/jet` for each switch, without restarting (section 14).  For WAKE, which the Worker acts on, the bridge passes its latest reading in every ingest and heartbeat.
 - A switch is on only when both sources say on.  Any read failure, timeout, unparsable value or reading older than 60 seconds counts as off, so the bridge fails closed, and turning any switch off stops it within 60 seconds.
 - A local disable file stops the bridge at once.
 
@@ -367,7 +369,7 @@ Also:
 - **A9.**  ChatGPT accepts a second event subscription in the same conversation, with a stable callback URL.  The spike tests this.
 - **A10.**  Workers KV keeps no point-in-time copy of an expired key, which the crypto-shred option relies on.  To confirm against Cloudflare's documentation before relying on it.
 - **A11.**  `messages[].timestamp` is set consistently within one chat.  The manual says only that it is a Unix time in seconds (p. 11, L808-811), not whose clock sets it.  The binding cutoff is the code message's own timestamp from the same chat, so a constant offset cancels out.
-- **A12.**  The `fleet-secrets` CLI is installed on the bridge host and runs there in its token mode, with `INFISICAL_TOKEN` from the bridge identity, both for the start-time `run` and for the 30-second `get`.  The bridge keeps that identity's credential in its systemd credential directory, never in its own environment or logs.  It never passes its own auth variables on to the command it starts (`AUTH_ENV_VARS` in `fleet_secrets/core.py`).
+- **A12.**  The shared reader is installed on the bridge host and runs there in its token mode, with `INFISICAL_TOKEN` from the bridge identity, both for the start-time `run` and for the 30-second `get`.  The bridge keeps that identity's credential in its systemd credential directory, never in its own environment or logs.  It never passes its own auth variables on to the command it starts (`AUTH_ENV_VARS` in the retired reader package).
 
 ### What the package does that the bridge must not
 
@@ -447,15 +449,15 @@ Approved by Jay (my 6:16am post, https://simplewithus.zulipchat.com/#narrow/near
 
 ## 14. Credential And Access Scope
 
-- **The key:**  AFC Infisical, prod, `/jet/WHATSAPP_API_KEY`, as a reference only.  The bridge reads `WHATSAPP_API_KEY` from its own process environment and nowhere else.  The value is injected at start by `fleet-secrets run --only WHATSAPP_API_KEY --path /jet -- <bridge>`, running under the bridge's own identity, so the bridge holds no Infisical client of its own and reaches Infisical only through the `fleet-secrets` CLI.  The same call, with the other names added to `--only`, injects the signing key and the switch values.  If any of them is missing or empty, the bridge exits non-zero at once with a message naming the variable and its source, for example `WHATSAPP_API_KEY missing from the process environment (expected from fleet-secrets run --path /jet)`, and never starts polling.  It never prints the value.  The value may start with `WHATSAPP_API_KEY=`, so the bridge strips exactly one leading occurrence in the process and never sources or evaluates it.  The Authorization header is redacted from logs, and errors are logged as code and `fbtrace_id` only.  If Meta rejects the key (400 with code 100, or 401 with code 190), the bridge stops polling and sending, logs only the provider error code and `fbtrace_id`, and raises a content-free alert that the key was rejected.  It never prints any part of the key, not even a masked preview, because fleet policy is never to print, echo or paste any part of a credential.
+- **The key:**  AFC Infisical, prod, `/jet/WHATSAPP_API_KEY`, as a reference only.  The bridge reads `WHATSAPP_API_KEY` from its own process environment and nowhere else.  The value is injected at start by the bridge's own scoped read of `WHATSAPP_API_KEY` in `/jet`, running under the bridge's own identity, so the bridge holds no Infisical client of its own and reaches Infisical only through its own scoped service token.  The same call, with the other names added to `--only`, injects the signing key and the switch values.  If any of them is missing or empty, the bridge exits non-zero at once with a message naming the variable and its source, for example `WHATSAPP_API_KEY missing from the process environment (expected from the scoped read of the /jet folder)`, and never starts polling.  It never prints the value.  The value may start with `WHATSAPP_API_KEY=`, so the bridge strips exactly one leading occurrence in the process and never sources or evaluates it.  The Authorization header is redacted from logs, and errors are logged as code and `fbtrace_id` only.  If Meta rejects the key (400 with code 100, or 401 with code 190), the bridge stops polling and sending, logs only the provider error code and `fbtrace_id`, and raises a content-free alert that the key was rejected.  It never prints any part of the key, not even a masked preview, because fleet policy is never to print, echo or paste any part of a credential.
 - **The bridge identity** (working name `wa-bridge`):
   - Universal Auth, no organization role, project role No Access.
   - One extra privilege:  Secrets Read and Describe, env prod, path exactly `/jet` (not `/jet/**`).  If the installed Infisical supports name conditions, also limit it to the bridge's own names.
   - Client-secret trusted IP set to the bridge host's address, and a short token lifetime.
-  - Its own credentials come from a root-only 0600 file through systemd `LoadCredential`, or a Coolify runtime-only secret.  Never the shared `/root/.config/fleet-secrets/bootstrap.json`.
+  - Its own credentials come from a root-only 0600 file through systemd `LoadCredential`, or a Coolify runtime-only secret.  Never a shared bootstrap file.
   - Before go-live, prove that reads of other AFC folders and of Fleet-OPS fail, and that every write fails.
 - **The signing key** `WA_BRIDGE_HMAC_KEY_JET` (working name):  in `/jet`, and installed as a Worker secret.
-- **The switches:**  their values sit in `/jet` beside the key.  The start values arrive through the same `fleet-secrets run` call, and the bridge re-reads them every 30 seconds with `fleet-secrets get <NAME> --path /jet` (section 9), so the bridge identity never needs the AFC root folder, which `fleet_knobs.fetch` would export whole (`scripts/fleet_knobs/source.py:116-127`).  Whether the knob registry and `INFISICAL.md` can list keys outside the root folder still needs a check.
+- **The switches:**  their values sit in `/jet` beside the key.  The start values arrive through the same scoped read, and the bridge re-reads them every 30 seconds with a scoped read of `<NAME>` in `/jet` (section 9), so the bridge identity never needs the AFC root folder, which `fleet_knobs.fetch` would export whole (`scripts/fleet_knobs/source.py:116-127`).  Whether the knob registry and `INFISICAL.md` can list keys outside the root folder still needs a check.
 - **Remaining risk:**  root on the shared box can reach `/jet` through the shared automation identity, and can read the bridge's memory.  Agent sessions on that box run as root.  Options for Jay:
   - Accept it.
   - Move the key to its own Infisical project that only the bridge identity can read.  That blocks Infisical reads, not memory reads.
@@ -476,7 +478,7 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
 ## 16. Ops Changes That Need Approval
 
 1. **The bridge host**, in one of P1 to P3:
-   - P1:  OS user `wa-bridge`, always-on unit `wa-bridge.service` with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths` for the state directory only, `UMask=0077`, `LimitCORE=0` and `LoadCredential`.  Its start command is `fleet-secrets run --only <names> --path /jet -- <bridge>` (section 14).  It runs from a pinned release directory and restarts explicitly on deploy, not from the hourly-updated fleet CLI checkout.
+   - P1:  OS user `wa-bridge`, always-on unit `wa-bridge.service` with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths` for the state directory only, `UMask=0077`, `LimitCORE=0` and `LoadCredential`.  Its start command resolves the names through its own scoped read of `/jet` and then starts the bridge (section 14).  It runs from a pinned release directory and restarts explicitly on deploy, not from the hourly-updated fleet CLI checkout.
    - State in a 0700 directory of a few kilobytes, logs to journald, nothing in /tmp.
    - The process gets a row in the processes list (`/Users/jay/apps/MAC-LOCAL-PROCESSES.md`) and its Apple Note.
    - Jay decides whether the failing units already on the host are cleared first.

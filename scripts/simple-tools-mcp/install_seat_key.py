@@ -123,7 +123,7 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
 def fleet_ops_project() -> str:
     """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
     line of ~/.simple-tools/fleet-ops-project-id (same sources as
-    scripts/fleet_secrets/core.py).  Fails closed when neither holds a UUID."""
+    scripts/fleet_infisical.py).  Fails closed when neither holds a UUID."""
     value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
     if not value:
         try:

@@ -48,12 +48,12 @@ struct OperatorOptions: Equatable {
         ),
         Name(
             name: "OPERATOR_ZULIP_USER_ID",
-            location: "Infisical  Fleet-OPS /zulip_operator via fleet-secrets",
+            location: "Infisical  Fleet-OPS /zulip_operator via the scoped read",
             purpose: "the pinned bot check"
         ),
         Name(
             name: "OPERATOR_ZULIP_EMAIL",
-            location: "Infisical  Fleet-OPS /zulip_operator via fleet-secrets",
+            location: "Infisical  Fleet-OPS /zulip_operator via the scoped read",
             purpose: "the pinned bot check"
         ),
     ]

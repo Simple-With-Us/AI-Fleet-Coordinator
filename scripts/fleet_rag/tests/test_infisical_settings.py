@@ -113,7 +113,7 @@ class _SettingsCase(unittest.TestCase):
         self._urlopen = mock.patch("urllib.request.urlopen", self.world)
         self._urlopen.start()
         from types import SimpleNamespace
-        self._opener = mock.patch("fleet_secrets.core._opener", side_effect=lambda: SimpleNamespace(open=lambda *a, **kw: urllib.request.urlopen(*a, **kw)))
+        self._opener = mock.patch("fleet_infisical._opener", side_effect=lambda: SimpleNamespace(open=lambda *a, **kw: urllib.request.urlopen(*a, **kw)))
         self._opener.start()
         self._env = mock.patch.dict(os.environ, {
             "INFISICAL_TOKEN": SERVICE_TOKEN,

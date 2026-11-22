@@ -275,13 +275,6 @@ def install(source_directory):
         settings = json.loads(payload['fleet-ops-eavesdropper-settings.json'])
         if not isinstance(settings, dict) or not isinstance(settings.get('applyEnabled'), bool):
             raise RuntimeError('the eavesdropper settings allowlist has an invalid shape')
-        package = os.open('fleet_secrets', DIRECTORY_FLAGS, dir_fd=source)
-        stack.callback(os.close, package)
-        names = sorted(name for name in os.listdir(package) if name.endswith('.py'))
-        if not {'__init__.py', 'core.py'} <= set(names):
-            raise RuntimeError('the broker secrets package is incomplete')
-        for name in names:
-            payload['fleet_secrets/' + name] = read_source(package, name)
         ledger = os.open('simple_tools', DIRECTORY_FLAGS, dir_fd=source)
         stack.callback(os.close, ledger)
         for name in ('__init__.py', 'operator_github_state.py'):
@@ -301,7 +294,7 @@ def install(source_directory):
             stack.callback(os.close, parent)
         os.fchmod(parent, 0o755)
         packages = {}
-        for name in ('fleet_secrets', 'hetzner', 'simple_tools'):
+        for name in ('hetzner', 'simple_tools'):
             packages[name] = open_directory(parent, name, owner)
             stack.callback(os.close, packages[name])
             os.fchmod(packages[name], 0o755)

@@ -600,7 +600,7 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     if not names:
         return []
     if fetch is None:
-        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
+        fetch = lambda ns: Z._fetch_from_infisical(ns, env, home)
     try:
         got = dict(fetch(tuple(names)))
     except Z.CredentialError as exc:
@@ -1332,8 +1332,9 @@ class Daemon:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
         off unless [linear_comments] enabled is true and the Operator's Linear credential
         loads — the owner's developer token in Infisical prod /linear, reached through
-        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
-        or the [linear_comments] infisical_token_file).  A reload that leaves the service
+        the scoped read-only Infisical service token (the [linear_comments]
+        infisical_token_file, the consumer's own store;  the environment is never a
+        source).  A reload that leaves the service
         token as it was keeps the same engine object, so its ledger lock and its
         (topic, issue) -> comment mapping survive — unless the engine has stopped (a
         refused Linear credential), in which case the reload rebuilds it, so a repaired
@@ -1356,7 +1357,9 @@ class Daemon:
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
-            service = OPL.service_token(self.env, token_file)
+            # The consumer's own store (the configured token file) is the only source:
+            # the environment is never a source (owner ruling, November 22, 2026).
+            service = OPL.service_token(token_file)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.
@@ -1365,8 +1368,8 @@ class Daemon:
         if not service:
             self.log.write(
                 "linear-comments-off",
-                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
-                "is not set and no usable infisical_token_file)",
+                reason="no Infisical service token (no usable [linear_comments] "
+                "infisical_token_file in the consumer's store)",
                 hint=ENV_RESTART_HINT,
             )
             return
@@ -1491,6 +1494,29 @@ class Daemon:
         self._review_alert_thread = None
         self._review_alert_stop = None
 
+    def _review_alert_destination(self, origin):
+        from review_alerts.messages import side_chats_destination
+
+        from . import dm_policy
+
+        return side_chats_destination(
+            self.operator_voice.client(),
+            origin,
+            seat_tag_for,
+            dm_policy.SIDE_CHATS_STREAM_ID,
+            dm_policy.side_chats_topic,
+        )
+
+    def _review_alert_message_send(self, params):
+        from review_alerts.messages import MessageRetryable
+
+        try:
+            return self._operator_send(params)
+        except (OPV.OperatorUnavailable, OPV.OperatorRefused):
+            # These refusals are documented to happen before posting anything.
+            # API/network errors are deliberately NOT classified retry-safe.
+            raise MessageRetryable("operator-message-unavailable") from None
+
     def _configure_review_alerts(self) -> None:
         self._stop_review_alerts()
         if self.stop.is_set() or getattr(self.config, "instance", "mac") != "server":
@@ -1500,7 +1526,14 @@ class Daemon:
 
             stop = threading.Event()
             self._review_alert_stop = stop
-            self._review_alert_thread = start(self.env, self.registry_service, stop, self.log.write)
+            self._review_alert_thread = start(
+                self.env,
+                self.registry_service,
+                stop,
+                self.log.write,
+                operator_send=self._review_alert_message_send,
+                destination_for_origin=self._review_alert_destination,
+            )
         except Exception as exc:
             self.log.write("review-alert-start-error", reason=type(exc).__name__)
 

@@ -30,43 +30,54 @@ from pathlib import Path
 import websockets
 from mcp_catalog import CatalogError, expand_names
 
+# The shared Infisical client,  one directory up:  every read goes through it,  and
+# through no second reader.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
-FLEET_INFISICAL_CLI = Path(__file__).resolve().parent.parent / "fleet_infisical_cli.py"
+# This runtime's own read-only service token,  for the one folder it reads:  the
+# grok-acp-ro grant,  held in this host's own store.  The general ambient Infisical
+# binding is a wider grant than this one,  so it never stands in for it.
+TOKEN_ACCOUNT = "grok-acp-ro"
+SECRET_FOLDER = "/grok-acp"
 
 
 def load_secret() -> str:
-    """Use existing Infisical-synced transport, else read Fleet-OPS /grok-acp."""
-    secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
-    if not secret:
-        try:
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    str(FLEET_INFISICAL_CLI),
-                    "get",
-                    "GROK_AGENT_SECRET",
-                    "--project",
-                    "fleet-ops",
-                    "--path",
-                    "/grok-acp",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                secret = proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            secret = ""
-    if not secret:
-        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
-    return secret
+    """This runtime's own scoped read first,  the host's own binding second.
+
+    The value comes from the reviewed path whenever this host holds the grant:  the
+    grok-acp-ro service token,  read from this host's own store,  fetches the value from
+    Infisical /grok-acp.  A host that carries no such grant binds the value itself,  and
+    that binding is a copy of the same scoped read,  so it is used only when the store
+    holds no grant at all.  A store that cannot answer is a failure,  not an absent grant.
+    """
+    bound = os.environ.get("GROK_AGENT_SECRET", "").strip()
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        sys.exit(
+            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the shared Infisical "
+            "client is not importable,  so the scoped read cannot run"
+        )
+    try:
+        read_value, status = FI.fetch_scoped(
+            "GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, timeout=60
+        )
+    except TimeoutError:
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read timed out")
+    except Exception:
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read failed")
+    if read_value:
+        return read_value
+    if bound and status in ("no-token", "keychain-missing"):
+        return bound
+    sys.exit(
+        "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the %s scoped read "
+        "returned nothing (%s)" % (TOKEN_ACCOUNT, status)
+    )
 
 
 def is_rpc_response(msg: dict) -> bool:

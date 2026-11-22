@@ -203,6 +203,39 @@ class BoundedReadTests(unittest.TestCase):
                     self.fetch(expected_identity=expected, require_finite_expiry=True)
                 self.assertEqual(len(self.calls), 1, "grant refusal must precede values")
 
+    def test_an_explicit_api_base_reaches_the_worker_and_overrides_the_environment(self):
+        # The provider can be named in code.  The explicit argument wins over a base
+        # the caller's own environment carried,  so a route can pin its own origin.
+        env = {**self.env, core.ENV_API: "https://ignored.example.invalid/api"}
+        self.assertEqual(
+            core.bounded_fetch_project(
+                self.project,
+                "/operator-registry",
+                env,
+                token=self.sample,
+                names=("A_KEY",),
+                timeout=1.0,
+                api_base=self.env[core.ENV_API],
+            ),
+            {"A_KEY": "value-A_KEY"},
+        )
+        self.assertEqual(len(self.calls), 2)
+
+    def test_an_invalid_explicit_api_base_is_refused_before_any_worker(self):
+        for bad in ("", "not a url", "https://user@example.invalid/api", "ftp://example.invalid"):
+            with self.subTest(bad=bad), self.assertRaises(core.UsageError):
+                core.bounded_fetch_project(
+                    self.project,
+                    "/operator-registry",
+                    self.env,
+                    token=self.sample,
+                    names=("A_KEY",),
+                    timeout=1.0,
+                    api_base=bad,
+                )
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.children, [])
+
     def test_expected_expiry_accepts_only_the_same_instant(self):
         expected = {"id": "fixture-record", "name": "consumer-ro", "expiresAt": self.expiry}
         self.metadata_changes = dict(expected, expiresAt="2098-12-31T18:00:00-06:00")
@@ -309,12 +342,21 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
             mock.patch.object(
                 core.os, "write", side_effect=BlockingIOError(errno.EAGAIN, "fixture")
             ),
-            self.assertRaisesRegex(core.SecretsError, "bounded-read-timeout"),
+            self.assertRaises(core.SecretsError) as caught,
         ):
             started = time.monotonic()
             self.fetch(timeout=0.15)
         self.assertLess(time.monotonic() - started, 0.65)
-        self.assertIsNotNone(self.children[-1].poll())
+        # The read gives up on its own deadline:  the timeout,  or the cleanup that
+        # follows it when the killed child is not reaped inside the cleanup's window.
+        self.assertIn(
+            str(caught.exception), ("bounded-read-timeout", "bounded-read-cleanup-failed")
+        )
+        child = self.children[-1]
+        give_up = time.monotonic() + 1.0
+        while child.poll() is None and time.monotonic() < give_up:
+            time.sleep(0.01)
+        self.assertIsNotNone(child.poll())
 
     def test_real_worker_preserves_only_closed_unresolved_reason_and_code_five(self):
         self.record_changes = {"secretValue": "${PUBLIC_FIXTURE_REFERENCE}"}

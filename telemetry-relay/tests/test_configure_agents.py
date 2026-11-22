@@ -20,8 +20,8 @@ from relay_common import CONFIGURE, PRODUCERS
 
 scripts_path = Path(__file__).resolve().parents[2] / "scripts"
 sys.path[:0] = [str(scripts_path), str(scripts_path / "telemetry")]
+import fleet_infisical as core
 from configure_agents import fetch_export
-from fleet_secrets import core
 
 
 def _token() -> str:
