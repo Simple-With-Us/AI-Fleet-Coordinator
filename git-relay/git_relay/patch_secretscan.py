@@ -248,7 +248,7 @@ def _python_source_value_spans(text: str) -> frozenset[tuple[int, int]]:
             and isinstance(node.value.args[0], ast.Name)
             and node.value.args[0].id == "env"
             and not node.value.keywords
-            and text[offset(node.value):offset(node.value, True)] == "_wake_router_token(env)"
+            and text[offset(node.value) : offset(node.value, True)] == "_wake_router_token(env)"
         ):
             # Only this public validator expression is classified here.
             # Other callable identifiers can themselves look like credentials
@@ -266,7 +266,10 @@ def _scan(text: str, known: Iterable[str], source_spans: frozenset[tuple[int, in
             for match in pattern.finditer(text):
                 if _source_assignment(text, match):
                     continue
-                if label in ("assigned credential", "assigned secret") and match.span("value") in source_spans:
+                if (
+                    label in ("assigned credential", "assigned secret")
+                    and match.span("value") in source_spans
+                ):
                     continue
                 return label
         elif pattern.search(text):

@@ -61,14 +61,24 @@ class PythonSourceClassification(unittest.TestCase):
 
     def test_random_quoted_and_unquoted_assignments_still_refuse(self):
         for quote in (repr, str):
-            self.assertIsNotNone(self.check_file(assignment_source("TEST_TOKEN", synthetic(), quote)))
+            self.assertIsNotNone(
+                self.check_file(assignment_source("TEST_TOKEN", synthetic(), quote))
+            )
 
     def test_unknown_uppercase_names_do_not_become_an_environment_exemption(self):
-        self.assertIsNotNone(self.check_file(assignment_source("LISTENER_READ_TOKEN", "SOME_OTHER_PUBLIC_LOOKING_TOKEN")))
-        self.assertIsNotNone(self.check_file(assignment_source("OTHER_TOKEN", "INFISICAL_LISTENER_READ_TOKEN")))
+        self.assertIsNotNone(
+            self.check_file(
+                assignment_source("LISTENER_READ_TOKEN", "SOME_OTHER_PUBLIC_LOOKING_TOKEN")
+            )
+        )
+        self.assertIsNotNone(
+            self.check_file(assignment_source("OTHER_TOKEN", "INFISICAL_LISTENER_READ_TOKEN"))
+        )
 
     def test_public_name_in_an_unrelated_binding_does_not_qualify(self):
-        self.assertIsNotNone(self.check_file(assignment_source("WAKE_ROUTER_TOKEN", "INFISICAL_LISTENER_READ_TOKEN")))
+        self.assertIsNotNone(
+            self.check_file(assignment_source("WAKE_ROUTER_TOKEN", "INFISICAL_LISTENER_READ_TOKEN"))
+        )
 
     def test_credential_shaped_callable_names_are_not_classified_as_source(self):
         for name in ("call_" + synthetic(), "unrelated_public_validator"):
@@ -104,7 +114,11 @@ class PythonSourceClassification(unittest.TestCase):
         self.assertIsNotNone(self.check_file(keyword_source("some_credential_value")))
 
     def test_comments_and_docstrings_do_not_qualify(self):
-        for text in ("# " + public_source(), repr(public_source()) + "\n", "# " + keyword_source(CALL)):
+        for text in (
+            "# " + public_source(),
+            repr(public_source()) + "\n",
+            "# " + keyword_source(CALL),
+        ):
             self.assertIsNotNone(self.check_file(text))
 
     def test_invalid_python_cannot_supply_source_evidence(self):
@@ -129,7 +143,10 @@ class PythonSourceClassification(unittest.TestCase):
         self.assertIsNotNone(self.check_file(text))
 
     def test_known_runtime_value_is_not_waived_inside_a_call(self):
-        self.assertEqual(self.check_file(keyword_source(CALL), known=["_wake_router_token"]), "a loaded credential")
+        self.assertEqual(
+            self.check_file(keyword_source(CALL), known=["_wake_router_token"]),
+            "a loaded credential",
+        )
 
     def test_unicode_offsets_are_not_byte_offsets(self):
         text = 'title = "café"; ' + keyword_source(CALL)
@@ -148,7 +165,7 @@ class PythonSourceClassification(unittest.TestCase):
             self.assertEqual(self.check_file(text), scanner.scan(text))
 
     def test_oversize_source_does_not_get_semantic_admission(self):
-        self.assertIsNotNone(self.check_file('# padding\n' * 240000 + public_source()))
+        self.assertIsNotNone(self.check_file("# padding\n" * 240000 + public_source()))
 
 
 if __name__ == "__main__":
