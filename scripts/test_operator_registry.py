@@ -556,6 +556,28 @@ class RegistryTest(unittest.TestCase):
             0,
         )
 
+    def test_a_child_reissues_an_orphan_in_its_own_row_not_the_oldest_elsewhere(self):
+        # Allocation retires at most one orphan inline; for a child that one
+        # must come from the child's own row, or a full row stays exhausted
+        # while an unrelated older orphan elsewhere is retired instead.
+        self._labels(["parent"])  # AA
+        self._labels(["other"])  # BB, the older orphan outside row A
+        row = self._labels(["kid-%d" % i for i in range(25)], parent="parent")  # AB ... AZ
+        self.assertEqual((row[0], row[-1]), ("AB", "AZ"))
+        conn = sqlite3.connect(self.db)
+        for native in ("other", "kid-0"):
+            record_id = self.reg.lookup("claude", "mac-1", "simplewithus", native)["record_id"]
+            conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", record_id),
+            )
+        conn.execute(
+            "UPDATE alias_assignments SET assigned_at = '2000-01-01T00:00:00.000Z' WHERE letter = 'BB'"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._labels(["kid-new"], parent="parent"), ["AB"])
+
     def test_a_subthreads_pairs_wrap_past_z_back_to_a(self):
         self._labels(["n-%d" % i for i in range(24)])  # AA ... XX
         # The owner's example:  a subthread of XX gets XY, XZ, XA, XB.

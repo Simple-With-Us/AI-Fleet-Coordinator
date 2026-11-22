@@ -759,6 +759,7 @@ class SessionRegistry:
         now: str,
         seat: str | None = None,
         limit: int | None = None,
+        letters: frozenset[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         """Retire the live alias rows of sessions that are already closed, in the caller's transaction.
 
@@ -781,6 +782,11 @@ class SessionRegistry:
         if seat is not None:
             query += " AND s.seat = ?"
             params = (platform, seat)
+        if letters is not None:
+            if not letters:
+                return []
+            query += " AND a.letter IN (%s)" % ",".join("?" * len(letters))
+            params = (*params, *sorted(letters))
         query += " ORDER BY a.assigned_at ASC"
         if limit is not None:
             query += " LIMIT ?"
@@ -850,9 +856,14 @@ class SessionRegistry:
         # its close never retired must not count as live here:  retire one orphan first, in this
         # same transaction, which frees a pair in idx_alias_active for reissue without making a
         # bulk close cost O(orphans) writes on the hot register path.  Any orphans left still count
-        # live below and are never issued over; sweep_stale drains the remainder.
-        self._retire_closed_aliases(conn, platform, now, limit=1)
+        # live below and are never issued over; sweep_stale drains the remainder.  A child is
+        # confined to its parent's row, so its one inline retirement must come from that row's
+        # candidate pairs, not the oldest orphan platform-wide.
         members = frozenset(LETTER_SPACES["double"])
+        wanted = (
+            tuple(p for p in pairs_after(after) if p in members) if after else None
+        )
+        self._retire_closed_aliases(conn, platform, now, limit=1, letters=wanted)
         live = {
             r["letter"]
             for r in conn.execute(
