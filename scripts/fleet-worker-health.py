@@ -56,20 +56,20 @@ def request_body(now=None):
 
 
 def read_key():
-    """The signing key:  the environment value first, else this script's own scoped token
-    against Infisical Fleet-OPS prod root.  "" when the folder holds no such name.
+    """The signing key:  this script's own scoped token against Infisical Fleet-OPS
+    prod root.  "" when the folder holds no such name.
 
     A source that failed is not a missing value:  the shared client,  the token store and
     the read itself each raise,  naming the reader and the account,  so the source that
-    must be repaired stays visible.  The key is never logged.
+    must be repaired stays visible.  The key is never logged,  and it is never taken
+    from the environment either.
 
     A hung read says it hung:  the shared client lets a socket timeout through as a
     `TimeoutError`,  and a timeout is not a broken credential,  so it keeps its own
     message and the repair that follows it is the right one.
     """
-    key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
-    if key:
-        return key
+    # The scoped grant is the only source:  a value the environment happens to hold
+    # never replaces it,  so the reviewed grant is what signs the answer.
     if not os.path.isfile(INFISICAL_CLI):
         # A reader that is not there is a broken reader,  not a missing value:  the
         # source that must be repaired is named,  so it stays visible.

@@ -2361,13 +2361,16 @@ fi
 # One value on standard output.  The reader's own reason goes to standard error
 # and its exit code says whether the name was absent (3), the grant refused the
 # read (4) or the usage was wrong (2).
+# The reader runs under an isolated interpreter (-I),  the way the seat-mcp and
+# senate launchers run it:  an inherited PYTHONPATH or a user-site package must
+# not be able to see or replace the grant this read carries.
 _scoped_secret() {
   local name="$1" folder="$2" account="$3"
   [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
     echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
     return 4
   }
-  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+  /usr/bin/python3 -I "$INFISICAL_SCOPED_READER" get "$name" \
     --folder "$folder" --project fleet-ops --account "$account"
 }
 

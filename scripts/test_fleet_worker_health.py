@@ -93,14 +93,24 @@ class WorkerHealthReader(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old_env)
 
-    def test_read_key_comes_from_the_environment_first(self):
+    def test_read_key_ignores_a_hand_set_environment_value(self):
         old_env = dict(os.environ)
         os.environ["HEALTH_HMAC_KEY"] = "from-the-environment"
+        asked = []
+
+        def read(name, folder, account, env=None, **options):
+            asked.append((name, folder, account))
+            return ("from-the-scoped-token", "ok")
+
         try:
-            self.assertEqual(fwh.read_key(), "from-the-environment")
+            # The scoped grant is the only source:  a value the environment happens
+            # to hold never replaces the reviewed grant.
+            with mock.patch.object(fleet_infisical, "fetch_scoped", read):
+                self.assertEqual(fwh.read_key(), "from-the-scoped-token")
         finally:
             os.environ.clear()
             os.environ.update(old_env)
+        self.assertEqual(asked, [("HEALTH_HMAC_KEY", "/", "worker-health-ro")])
 
     def test_read_key_uses_the_own_scoped_token(self):
         old_env = dict(os.environ)
