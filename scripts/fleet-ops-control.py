@@ -53,8 +53,9 @@ What it promises:
     one request header and never printed, logged or passed in an argv.  A forced command
     has only the environment sshd gives it, so the token comes from `ops-control.env`
     (0600).
-    `--check-token` reads the token the same way and asks
-    Coolify for its version, which proves the whole path and changes nothing.
+    `--check-token` reads the token the same way and asks Coolify whether it accepts
+    that token for a deploy, naming a uuid that can match no resource, so it proves the
+    whole path and deploys nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
     accepts only a `server` verb, one target, one of `--plan` or `--yes` and an optional
@@ -805,14 +806,27 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
-COOLIFY_TOKEN_PATH = "/coolify"
+# The Coolify token this control consumer reads:  the deploy-only token, named
+# COOLIFY_DEPLOY_ONLY, in its own Infisical folder in the Fleet-OPS prod project.  The
+# consumer's scoped service token is bound to that one folder, so the grant never
+# reaches the project root and the token this consumer can never reach is the
+# full-admin one.
+COOLIFY_TOKEN_NAME = "COOLIFY_DEPLOY_ONLY"
+COOLIFY_TOKEN_PATH = "/coolify-deploy-only-token"
 COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
 INFISICAL_READER_NAME = "fleet_infisical.py"
 INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
+# Coolify 4.x answers the deploy route with POST only, and a deploy-scoped token has no
+# `read` permission, so the install check cannot ask Coolify for its version.  It asks
+# the deploy route about the nil uuid, which can name no resource:  the answer is a
+# not-found when the token is accepted for a deploy, and nothing is deployed.
+COOLIFY_CHECK_UUID = "00000000-0000-4000-8000-000000000000"
+# Coolify's own answer when the route answered and no resource carries the uuid.
+COOLIFY_NO_RESOURCE = "No resources found"
+COOLIFY_DEPLOY_PATH = "/api/v1/deploy?uuid=%s"
 # The Infisical identity this service may be handed from the credential file, and nothing
 # else from it.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
@@ -925,8 +939,9 @@ class Failed(Exception):
         self.error_code = error_code
         self.completed = completed
         # True when the action was started and its end could not be observed (a command killed at its
-        # time limit, or a request that may have been sent and got no answer).  The `--from-muster` route
-        # calls such a run `unknown`, never `failed` (server-route-spec section 13); no answer carries it.
+        # time limit, a request that may have been sent and got no answer, or a mutating request
+        # answered with a server error).  The `--from-muster` route calls such a run `unknown`, never
+        # `failed` (server-route-spec section 13); no answer carries it.
         self.timed_out = timed_out
 
 
@@ -1321,8 +1336,11 @@ class NoAnswer(int):
     sent = True
 
 
-def http_get(url, headers, timeout=HTTP_TIMEOUT):
-    """The HTTP status of one GET, or 0 when there was no answer.  The body is discarded.
+def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
+    """(status, body) of one request, or (0, "") when there was no answer.
+
+    The body is bounded and returned because the install check has to tell a refused
+    token from a route that no longer answers.  The caller never logs it.
 
     A `NoAnswer` (it is 0 too) means the request may have been sent.  `urllib.request` is imported
     here and not at the top of the file so that `ssl`, the proxy variables and the opener are set up
@@ -1342,22 +1360,43 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
 
     opener = urllib.request.build_opener(NoRedirect)
     try:
-        request = urllib.request.Request(url, method="GET", headers=headers)
+        request = urllib.request.Request(
+            url,
+            data=b"" if method == "POST" else None,
+            method=method,
+            headers=headers,
+        )
     except ValueError:
-        return 0
+        return 0, ""
     try:
         with opener.open(request, timeout=timeout) as response:
-            response.read(64 * 1024)
-            return response.status
+            raw = response.read(64 * 1024)
+            return response.status, raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return exc.code
+        try:
+            raw = exc.read(64 * 1024)
+        except (http.client.HTTPException, OSError):
+            # A truncated or reset error body is not the status:  the status is what the
+            # caller needs,  and an empty body is an empty body.
+            raw = b""
+        return exc.code, raw.decode("utf-8", "replace")
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(exc, ValueError) or isinstance(
             reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError, PermissionError)
         ):
-            return 0
-        return NoAnswer(0)
+            return 0, ""
+        return NoAnswer(0), ""
+
+
+def http_get(url, headers, timeout=HTTP_TIMEOUT):
+    """(status, body) of one GET, or (0, "") when there was no answer."""
+    return http_request(url, headers, "GET", timeout)
+
+
+def http_post_request(url, headers, timeout=HTTP_TIMEOUT):
+    """(status, body) of one POST with no body, or (0, "") when there was no answer."""
+    return http_request(url, headers, "POST", timeout)
 
 
 def _declared_length(response):
@@ -1488,6 +1527,7 @@ class Context:
         environ=None,
         runner=None,
         http=None,
+        http_post=None,
         now=None,
         config_path=CONFIG_PATH,
         status_path=None,
@@ -1506,7 +1546,10 @@ class Context:
         self.home = Path(home) if home else Path.home()
         self.environ = dict(os.environ if environ is None else environ)
         self.runner = runner or run_command
-        self.http = http or http_get
+        # One injectable HTTP path:  a POST goes through the same seam, so a test that
+        # replaces `http` replaces every request the script makes.
+        self.http = http or http_request
+        self.http_post = http_post or (lambda url, headers: self.http(url, headers, method="POST"))
         self.now = now or time.time
         self.config_path = config_path
         self.status_path = status_path or (
@@ -2337,6 +2380,22 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
 
 _SETTINGS_UNKNOWN_TYPE_RE = re.compile(r"^([A-Za-z0-9_.*-]+) needs a type from ")
 
+# The spec types the Eavesdropper's settings editor learned after the oldest
+# image this host still runs.  An image that predates one of them refuses the
+# whole request, and only an entry of one of these types may be dropped to let
+# the rest of the request through:  the editor's own answer names the entry,
+# but the host decides from its own allowlist whether that entry may go, so a
+# wrong or hostile answer cannot weaken the allowlist entry by entry.  `seats`
+# came with the notes_queue seat lists (AFC-2341).
+_SETTINGS_NEWLY_ADDED_TYPES = frozenset({"seats"})
+
+# The actions that may ask the editor again after it refused the allowlist.
+# `get` and `plan` write nothing;  `save`, `initialize` and `reconcile` carry
+# the request identity that makes a repeat of the request a replay in the
+# canonical writer's ledger.  `apply` writes the live file and has no
+# identity, so it keeps its refusal.
+_SETTINGS_RETRY_ACTIONS = ("get", "plan", "save", "initialize", "reconcile")
+
 
 def _strip_unknown_allowlist_entry(allowlist, where):
     """Drop the allowlist entry `where` names;  return (("seat"|table, name), report) or None.
@@ -2345,20 +2404,34 @@ def _strip_unknown_allowlist_entry(allowlist, where):
     the host allowlist now uses (for example `seats`) and refuses the whole
     request for it.  Dropping only that entry leaves it unreadable and
     unwritable through the old editor — fail closed for that one key — while
-    every known setting keeps working until the image catches up.  Only a
-    well-formed spec (a table with a string `type`) may be dropped:  a
-    corrupt entry is not an unknown type, and its refusal stands.  The
-    report is the full `where` path, so a dropped sub-key does not read as
-    its whole parent entry.  When the last sub-key of a parent entry goes,
-    the parent goes with it, so no empty parent spec reaches the editor."""
+    every known setting keeps working until the image catches up.  Only an
+    entry of a newly added type may be dropped:  the editor's answer names
+    the entry, but the host decides from its own allowlist whether that entry
+    may go.  Only the exact path shapes the editor names are handled, for the
+    same reason:  a table entry (`table.name`), a table sub-key
+    (`table.name.key`), a seat entry (`seat.*.name`) or a seat sub-key
+    (`seat.*.name.key`).  A deeper path names nothing the editor produces, so
+    it is refused rather than guessed at, and a corrupt entry is not an
+    unknown type, and its refusal stands.  The report is the full `where`
+    path, so a dropped sub-key does not read as its whole parent entry.
+    When the last sub-key of a parent entry goes, the parent goes with it,
+    so no empty parent spec reaches the editor."""
     if not isinstance(allowlist, dict) or not isinstance(where, str):
         return None
 
-    def typed(spec):
-        return isinstance(spec, dict) and isinstance(spec.get("type"), str)
+    def newly_added(spec):
+        """True for a spec whose type the editor learned after the oldest image."""
+        return (
+            isinstance(spec, dict)
+            and isinstance(spec.get("type"), str)
+            and spec["type"] in _SETTINGS_NEWLY_ADDED_TYPES
+        )
 
     parts = where.split(".")
-    if parts[0] == "seat" and len(parts) >= 3 and parts[1] == "*":
+    if parts[0] == "seat":
+        if len(parts) not in (3, 4) or parts[1] != "*":
+            # Not a path shape the editor names, so nothing is dropped.
+            return None
         seat = allowlist.get("seat")
         if not isinstance(seat, dict):
             return None
@@ -2366,13 +2439,13 @@ def _strip_unknown_allowlist_entry(allowlist, where):
             spec = seat.get(parts[2])
             return (
                 (("seat", parts[2]), where)
-                if typed(spec) and seat.pop(parts[2], None) is not None
+                if newly_added(spec) and seat.pop(parts[2], None) is not None
                 else None
             )
         spec = seat.get(parts[2])
         keys = spec.get("keys") if isinstance(spec, dict) else None
         sub = keys.get(parts[3]) if isinstance(keys, dict) else None
-        if isinstance(keys, dict) and typed(sub) and keys.pop(parts[3], None) is not None:
+        if isinstance(keys, dict) and newly_added(sub) and keys.pop(parts[3], None) is not None:
             if not keys:
                 # The parent has no sub-key left:  drop it whole, so no empty
                 # parent spec reaches the editor (it refuses "%s needs its keys").
@@ -2381,7 +2454,7 @@ def _strip_unknown_allowlist_entry(allowlist, where):
             return (("seat", parts[2]), where)
         return None
     tables = allowlist.get("tables")
-    if not isinstance(tables, dict) or len(parts) < 2:
+    if not isinstance(tables, dict) or len(parts) not in (2, 3):
         return None
     entries = tables.get(parts[0])
     if not isinstance(entries, dict):
@@ -2390,13 +2463,13 @@ def _strip_unknown_allowlist_entry(allowlist, where):
         spec = entries.get(parts[1])
         return (
             ((parts[0], parts[1]), where)
-            if typed(spec) and entries.pop(parts[1], None) is not None
+            if newly_added(spec) and entries.pop(parts[1], None) is not None
             else None
         )
     spec = entries.get(parts[1])
     keys = spec.get("keys") if isinstance(spec, dict) else None
     sub = keys.get(parts[2]) if isinstance(keys, dict) else None
-    if isinstance(keys, dict) and typed(sub) and keys.pop(parts[2], None) is not None:
+    if isinstance(keys, dict) and newly_added(sub) and keys.pop(parts[2], None) is not None:
         if not keys:
             # The parent has no sub-key left:  drop it whole, so no empty parent
             # spec reaches the editor (it refuses "%s needs its keys").
@@ -2500,6 +2573,14 @@ def eavesdropper_settings(
         # change is never silently dropped.
         for _ in range(16):
             if document.get("errorCode") != "allowlist_invalid":
+                break
+            if document.get("replaced") or document.get("rolledBack"):
+                # The editor's answer says it touched the file, so this refusal
+                # came after a side effect:  a retry would repeat it.
+                break
+            if action not in _SETTINGS_RETRY_ACTIONS:
+                # An action that can act twice does not ask again:  `apply`
+                # writes the live file and carries no request identity.
                 break
             match = _SETTINGS_UNKNOWN_TYPE_RE.match(str(document.get("detail") or ""))
             if match is None:
@@ -4374,10 +4455,15 @@ def _load_infisical_reader(ctx):
 def read_coolify_token(ctx):
     """The Coolify API token, through this service's own scoped token, into memory only.
 
-    The token's grant names exactly the /coolify folder, and the shared client checks the
-    answer's own provenance before the value is used.  No child process starts and no
-    other credential source is consulted.  Raises Failed."""
+    The token's grant names exactly the /coolify-deploy-only-token folder, and the shared
+    client checks the answer's own provenance before the value is used.  No child process
+    starts and no other credential source is consulted.  Raises Failed."""
     token = scoped_token(ctx)
+    if not token:
+        raise Failed(
+            "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+            "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+        )
     client = _load_infisical_reader(ctx)
     env = {
         key: value
@@ -4394,12 +4480,44 @@ def read_coolify_token(ctx):
         # A hung read is a timeout,  not an absent token:  it keeps its own signal so
         # the caller can retry instead of treating the credential as broken.  The read
         # itself was never sent,  so this is not an unknown end:  nothing was started.
-        raise Failed("the Coolify token read timed out", error_code="timeout") from None
-    except client.SecretsError:
-        raise Failed("the Coolify token is not available") from None
+        raise Failed(
+            "the Infisical read of the Coolify token timed out", error_code="timeout"
+        ) from None
+    except Exception as exc:  # noqa: BLE001 - provider/source text and values never become diagnostics
+        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+        raise Failed(_infisical_coolify_read_reason(exc)) from None
     if not value or any(c.isspace() or ord(c) < 33 for c in value):
-        raise Failed("the Coolify token is not available")
+        raise Failed(
+            f"the Infisical read returned no usable {COOLIFY_TOKEN_NAME}; "
+            f"check the secret name and the {COOLIFY_TOKEN_PATH} folder grant"
+        )
     return value
+
+
+def _infisical_coolify_read_reason(exc: BaseException) -> str:
+    """Allow-listed reason only; never the provider's raw message."""
+    # The shared client's `SecretsError.code` is the process exit code (default 4),  not an
+    # HTTP status;  the provider's own status is `provider_status`.  The exit code is read
+    # last and only as a status,  so a 403 refusal is never masked by it.
+    status = None
+    for attribute in ("provider_status", "status", "status_code", "code"):
+        value = getattr(exc, attribute, None)
+        if type(value) is int and 100 <= value <= 599:
+            status = value
+            break
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if status == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
+        return (
+            "the Infisical reader refused the token (scope or 403); issue a "
+            "token for /coolify-deploy-only-token and write it to ops-control.env"
+        )
+    if "timeout" in name or "timeout" in text:
+        return "the Infisical read of the Coolify token timed out"
+    return (
+        "the Infisical read of the Coolify token failed; check "
+        "FLEET_OPS_CONTROL_INFISICAL_TOKEN and the folder grant"
+    )
 
 
 def scoped_token(ctx):
@@ -4470,9 +4588,49 @@ def scoped_token(ctx):
     return token
 
 
+def _is_http_status(status) -> bool:
+    """True for an HTTP status:  an int,  or an int subclass such as `http.HTTPStatus`."""
+    return isinstance(status, int) and not isinstance(status, bool)
+
+
+def _coolify_http_failure(status) -> str:
+    """Coolify's own answer when it refuses the deploy token, with the remedy it needs."""
+    if not _is_http_status(status) or not status:
+        # Anything that is not an HTTP status is no answer at all.
+        return "Coolify did not answer"
+    # An int subclass such as `http.HTTPStatus` renders as its member name,  so the
+    # message carries the number an operator greps for.
+    code = int(status)
+    if code in (401, 403):
+        return (
+            f"Coolify refused the {COOLIFY_TOKEN_NAME} token (HTTP {code}); "
+            f"rotate it in the {COOLIFY_TOKEN_PATH} folder"
+        )
+    if code in (408, 429):
+        return f"Coolify answered a retryable HTTP {code}; the deploy may be retried"
+    return f"Coolify answered HTTP {code}"
+
+
+def _coolify_failed(status) -> Failed:
+    """The failure one Coolify answer means, with the retryable and the unknown apart.
+
+    A transient answer (408, 429) refused or timed out the request before Coolify
+    applied it,  so the run is retryable and not terminal.  A server error may follow a
+    deploy that was already applied,  so the action had begun or may have,  and that is
+    `unknown`,  never `failed` (server-route-spec section 13)."""
+    if _is_http_status(status) and status in (408, 429):
+        return Failed(_coolify_http_failure(status), error_code="retryable")
+    return Failed(
+        _coolify_http_failure(status),
+        timed_out=bool(getattr(status, "sent", False))
+        or (_is_http_status(status) and 500 <= status < 600),
+    )
+
+
 def check_token(ctx):
     """(answer, exit status) for `--check-token`: read the token as a redeploy would, then
-    ask Coolify for its version with it.  Nothing is changed and the token is not shown."""
+    ask Coolify whether it accepts that token for a deploy.  The probe names the nil
+    uuid, which matches no resource, so nothing is deployed and the token is not shown."""
     answer = _refusal("")
     answer["verb"] = "check-token"
     try:
@@ -4480,19 +4638,27 @@ def check_token(ctx):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http(
-                base + "/api/v1/version",
+            status, body = ctx.http_post(
+                base + (COOLIFY_DEPLOY_PATH % COOLIFY_CHECK_UUID),
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
             coolify_token = ""
-        if not 200 <= status < 300:
-            raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
+        # The nil uuid names no resource, so a route that answers it proves the token is
+        # accepted for a deploy.  A not-found from another cause (a route that moved, a
+        # proxy) answers differently, and only Coolify's own answer counts as accepted.
+        accepted = status == 200 or (
+            status == 404 and isinstance(body, str) and COOLIFY_NO_RESOURCE in body
+        )
+        if not accepted:
+            raise _coolify_failed(status)
     except Refused as exc:
         answer.update(detail=str(exc))
         return answer, 2
     except Failed as exc:
         answer.update(result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         return answer, 1
     answer.update(ok=True, result="done", detail="the Coolify token is available and accepted")
     return answer, 0
@@ -4537,7 +4703,7 @@ def plan_request(ctx, config, scope, action, target):
         service = row.get("service")
         if isinstance(service, str) and name.endswith(f" ({service})"):
             name = name[: -len(f" ({service})")]
-        return [["coolify", "GET", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
+        return [["coolify", "POST", f"/api/v1/deploy?{query}"]], "redeploy", name[:120]
     raise Refused("unknown server verb")
 
 
@@ -4547,17 +4713,18 @@ def execute(ctx, scope, action, target, commands):
         base = coolify_base(ctx)
         coolify_token = read_coolify_token(ctx)
         try:
-            status = ctx.http(
+            status, _body = ctx.http_post(
                 base + commands[0][2],
                 {"Authorization": "Bearer " + coolify_token, "Accept": "application/json"},
             )
         finally:
             coolify_token = ""
         if not 200 <= status < 300:
-            raise Failed(
-                f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
-                timed_out=bool(getattr(status, "sent", False)),
-            )
+            # The redeploy is a POST, so a server error can follow a deploy that was already
+            # applied:  the action had begun or may have, and the route reports it `unknown`,
+            # never `failed` (server-route-spec section 13).  A 4xx refused the request before
+            # anything began.
+            raise _coolify_failed(status)
         return f"Coolify accepted the redeploy (HTTP {status})"
     env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
     finished = 0
@@ -5137,10 +5304,11 @@ def handle(
             answer["errorCode"] = exc.error_code
         if exc.completed is not None:
             answer["completedCommands"] = exc.completed
-        if exc.timed_out and require_approval:
+        if exc.timed_out and (require_approval or (scope == "server" and action == "redeploy")):
             # Started and killed at its time limit: the route's word is `unknown`, in the answer and
             # in the one audit row (section 13).  A caller without the route's switch still gets
-            # `failed`, as ever.
+            # `failed`, as ever,  except for a redeploy:  its POST may have been applied before
+            # the server error,  so `failed` would tell the operator that nothing was deployed.
             answer["result"] = "unknown"
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):

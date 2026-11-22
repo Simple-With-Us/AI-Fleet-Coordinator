@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -146,6 +147,8 @@ class Base(unittest.TestCase):
         for directory in (self.home / ".local", self.home / ".local/state"):
             directory.chmod(0o700)
         self.http_calls = []
+        self.http_methods = []
+        self.http_body = ""
         # Every test gets the shared client faked:  no test reaches Infisical.
         self.client = FakeInfisical()
         patcher = mock.patch.object(foc, "_load_infisical_reader", return_value=self.client)
@@ -177,13 +180,20 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def http(self, url, headers):
+    def http(self, url, headers, method="GET"):
         self.http_calls.append((url, dict(headers)))
-        return self.http_status
+        self.http_methods.append(method)
+        return self.http_status, self.http_body
 
-    def ctx(self, platform="linux", runner=None, environ=None, http_status=200):
+    def http_post(self, url, headers):
+        self.http_calls.append((url, dict(headers)))
+        self.http_methods.append("POST")
+        return self.http_status, self.http_body
+
+    def ctx(self, platform="linux", runner=None, environ=None, http_status=200, http_body=""):
         self.runner = runner or FakeRunner()
         self.http_status = http_status
+        self.http_body = http_body
         return foc.Context(
             platform=platform,
             uid=os.getuid(),
@@ -191,6 +201,7 @@ class Base(unittest.TestCase):
             environ=environ or {"PATH": "/usr/bin:/bin", "SECRET_THING": "x" * 20},
             runner=self.runner,
             http=self.http,
+            http_post=self.http_post,
             now=lambda: NOW,
             config_path=self.config_path,
             pm2_node="/fake/bin/node",
@@ -204,7 +215,10 @@ class Base(unittest.TestCase):
         def fixture_token(_ctx):
             value = getattr(_ctx.runner, "secret", TOKEN)
             if not value:
-                raise foc.Failed("the Coolify token is not available")
+                raise foc.Failed(
+                    "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+                    "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+                )
             return value
 
         # Pure control-flow tests retain their explicit synthetic credential seam.  The
@@ -2407,7 +2421,7 @@ class RedeployTests(Base):
         self.write_status(self.ROWS)
         code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        self.assertEqual(ans["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(ans["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
         self.assertEqual(self.http_calls, [])
         self.assertEqual(self.runner.calls, [])
 
@@ -2419,6 +2433,7 @@ class RedeployTests(Base):
         ((url, headers),) = self.http_calls
         self.assertEqual(url, f"http://127.0.0.1:8000/api/v1/deploy?uuid={UUID}")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+        self.assertEqual(self.http_methods, ["POST"])
         for argv, _env in self.runner.calls:
             self.assertNotIn(TOKEN, " ".join(argv))
         self.assertNotIn(TOKEN, json.dumps(ans))
@@ -2763,7 +2778,7 @@ class RedeployResourceNameTests(Base):
     def test_the_name_never_carries_the_uuid(self):
         code, answer = self.redeploy("fleet-recall")
         self.assertNotIn(UUID, answer["resourceName"])
-        self.assertEqual(answer["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(answer["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
 
     def test_a_refused_redeploy_has_no_resource_name(self):
         self.write_status([self.row("fleet-recall", status="absent")])
@@ -2775,13 +2790,26 @@ class RedeployResourceNameTests(Base):
         )
         self.assertNotIn("resourceName", answer)
 
-    def test_a_failed_redeploy_still_names_the_application(self):
+    def test_a_redeploy_with_a_server_error_is_unknown_and_names_the_application(self):
+        """A redeploy POST answered with a server error may have been applied (section 13)."""
         self.write_status([self.row("fleet-recall")])
         code, answer = self.run_main(
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=500)
         )
+        self.assertEqual((code, answer["result"]), (1, "unknown"))
+        self.assertEqual(answer["resourceName"], "fleet-recall")
+        rows = self.audit_rows()
+        self.assertEqual(rows[-1]["result"], "unknown")
+
+    def test_a_redeploy_refused_before_the_deploy_is_failed(self):
+        """A 4xx refused the request before anything began,  so it is a definite failure."""
+        self.write_status([self.row("fleet-recall")])
+        code, answer = self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=403)
+        )
         self.assertEqual((code, answer["result"]), (1, "failed"))
         self.assertEqual(answer["resourceName"], "fleet-recall")
+        self.assertEqual(self.audit_rows()[-1]["result"], "failed")
 
     def test_no_other_verb_carries_a_resource_name_or_a_logs_unit(self):
         for argv in (
@@ -2813,7 +2841,12 @@ class FakeInfisical:
     ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 
     class SecretsError(Exception):
-        pass
+        """The shared client's error:  `code` is the exit code,  `provider_status` the HTTP status."""
+
+        def __init__(self, message, code=4, *, provider_status=None):
+            super().__init__(message)
+            self.code = code
+            self.provider_status = provider_status
 
     class SecretsTimeout(TimeoutError):
         """A hung read:  a timeout,  not a refusal."""
@@ -2823,6 +2856,8 @@ class FakeInfisical:
         self.calls = []
         self.timeouts = []
         self.refuse_empty_token = False
+        self.refuse_scope = False
+        self.refuse_status = None
         self.hang = False
 
     def fetch_verified(self, name, path, env, token=None, timeout=None):
@@ -2830,6 +2865,11 @@ class FakeInfisical:
         self.timeouts.append(timeout)
         if self.hang:
             raise self.SecretsTimeout("fetch-failed: timeout")
+        if self.refuse_scope:
+            raise self.SecretsError("token-scope-mismatch")
+        if self.refuse_status is not None:
+            # The message names no scope,  so only the provider status can route this.
+            raise self.SecretsError("token-verification-failed", provider_status=self.refuse_status)
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
@@ -2864,7 +2904,10 @@ class CredentialTests(Base):
             "WISE_RELAY_INFISICAL_TOKEN",
         )
     }
-    COORDINATES = {"INFISICAL_PROJECT_ID": "preserved-project", "INFISICAL_READ_PATHS": "/coolify"}
+    COORDINATES = {
+        "INFISICAL_PROJECT_ID": "preserved-project",
+        "INFISICAL_READ_PATHS": foc.COOLIFY_TOKEN_PATH,
+    }
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
@@ -2902,7 +2945,7 @@ class CredentialTests(Base):
         # "submitted" for that action, so the expectation follows the code.
         self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
         name, path, env, token = self.read_call()
-        self.assertEqual((name, path), ("COOLIFY_API_TOKEN", "/coolify"))
+        self.assertEqual((name, path), (foc.COOLIFY_TOKEN_NAME, foc.COOLIFY_TOKEN_PATH))
         self.assertEqual(token, self.VALUE)
         self.assertNotIn(self.TOKEN_NAME, env)
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
@@ -2976,6 +3019,123 @@ class CredentialTests(Base):
         self.assertNotEqual(code, 0)
         self.assertNotIn("synthetic-unrelated-credential", json.dumps(ans))
 
+    def test_a_missing_binding_names_the_variable_and_the_file(self):
+        code, ans = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            ans["detail"],
+            "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+            "in the process environment or in $HOME/.config/fleet-tools/ops-control.env",
+        )
+        self.assertEqual(self.client.calls, [])  # the read never runs
+        self.assertEqual(self.http_calls, [])
+
+    def test_a_refused_grant_names_the_folder_the_operator_needs(self):
+        self.client.refuse_scope = True
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
+        )
+        self.assertEqual(self.http_calls, [])
+
+    def test_a_status_that_is_an_int_subclass_keeps_its_meaning(self):
+        """`http.HTTPStatus` is an int subclass,  so it keeps its own handling."""
+        import http
+
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.FORBIDDEN)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertIn("COOLIFY_DEPLOY_ONLY", ans["detail"])
+        # The message carries the number an operator greps for,  not the enum name.
+        self.assertIn("HTTP 403", ans["detail"])
+        self.assertNotIn("HTTPStatus", ans["detail"])
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.TOO_MANY_REQUESTS)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
+
+    def test_a_status_that_is_not_a_status_is_a_no_answer(self):
+        """An unexpected value from the HTTP seam must not crash the helper (Kody)."""
+        self.credentials(self.pair_text())
+        for status in (None, "oops", object()):
+            with self.subTest(status=type(status).__name__):
+                code, ans = self.run_main(["--check-token"], self.ctx(http_status=status))
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(ans["detail"], "Coolify did not answer")
+
+    def test_a_truncated_error_body_still_answers_its_status(self):
+        """A cut error body must not escape the request helper:  the status is what it needs."""
+        import http.client
+        import urllib.error
+
+        class Cut(urllib.error.HTTPError):
+            def read(self, *args):
+                raise http.client.IncompleteRead(b"")
+
+        error = Cut("http://127.0.0.1:8000/api/v1/deploy?uuid=x", 500, "Server Error", {}, None)
+        try:
+            with mock.patch("urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = error
+                status, body = foc.http_request("http://127.0.0.1:8000/x", {}, "POST", 1)
+        finally:
+            error.close()
+        self.assertEqual((status, body), (500, ""))
+
+    def test_a_transient_coolify_answer_is_retryable_and_not_terminal(self):
+        """A 408 or a 429 refused the deploy before it was applied,  so the run may be retried."""
+        self.write_status(self.ROWS)
+        for status in (408, 429):
+            with self.subTest(status=status):
+                code, ans = self.run_main(
+                    ["server", "redeploy", UUID, "--yes", "--json"],
+                    self.ctx(
+                        environ={
+                            "PATH": "/usr/bin",
+                            **self.SHARED_AUTH,
+                            **self.COORDINATES,
+                            self.TOKEN_NAME: self.VALUE,
+                        },
+                        http_status=status,
+                    ),
+                )
+                self.assertEqual((code, ans["result"]), (1, "failed"), ans)
+                self.assertEqual(ans["errorCode"], "retryable")
+
+    def test_a_provider_403_is_the_scope_remedy_and_not_the_generic_one(self):
+        """The reader's exit code is not an HTTP status;  the provider status is."""
+        self.client.refuse_status = 403
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
+        )
+        self.assertEqual(self.http_calls, [])
+
+    def test_the_reason_mapper_reads_the_provider_status_before_the_exit_code(self):
+        refusal = FakeInfisical.SecretsError("token-verification-failed", provider_status=403)
+        self.assertIn("refused the token", foc._infisical_coolify_read_reason(refusal))
+        unavailable = FakeInfisical.SecretsError("token-verification-failed", provider_status=503)
+        self.assertIn("failed", foc._infisical_coolify_read_reason(unavailable))
+        # The exit code alone is not a status:  it must not read as a scope refusal.
+        exit_code = FakeInfisical.SecretsError("token-verification-failed", code=4)
+        self.assertNotIn("refused the token", foc._infisical_coolify_read_reason(exit_code))
+
     def test_a_shared_or_malformed_file_fails_before_the_read(self):
         cases = [
             (self.pair_text(), 0o640),
@@ -3015,26 +3175,63 @@ class CredentialTests(Base):
         code, ans = self.redeploy()
         self.assertEqual((code, ans["detail"]), (1, "the Infisical credential file cannot be read"))
 
-    def test_check_token_reads_the_token_and_asks_coolify_for_its_version(self):
+    def test_check_token_reads_the_token_and_asks_coolify_about_a_deploy(self):
         self.credentials(self.pair_text())
         code, ans = self.run_main(["--check-token"], self.ctx())
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
-        self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
+        self.assertEqual(
+            url,
+            f"http://127.0.0.1:8000/api/v1/deploy?uuid={foc.COOLIFY_CHECK_UUID}",
+        )
         self.assertEqual(headers["Authorization"], "Bearer " + self.client.value)
+        self.assertEqual(self.http_methods, ["POST"])
         self.assertNotIn(self.VALUE, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
         self.assertEqual(self.read_call()[3], self.VALUE)
+
+    def test_check_token_accepts_only_coolifys_own_not_found(self):
+        # The nil uuid names no resource:  Coolify's own answer is the proof that the
+        # token is accepted for a deploy.  Another not-found is not that proof.
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=404, http_body="No resources found")
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=404, http_body="Not Found")
+        )
+        self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 404"))
+        self.assertEqual(len(self.http_calls), 2)  # both probes reached the deploy route
 
     def test_check_token_failures(self):
         self.credentials(self.pair_text())
         self.client.value = ""
         code, ans = self.run_main(["--check-token"], self.ctx())
-        self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                (
+                    "the Infisical read returned no usable COOLIFY_DEPLOY_ONLY; "
+                    "check the secret name and the /coolify-deploy-only-token folder grant"
+                ),
+            ),
+        )
         self.assertEqual(self.http_calls, [])
         self.client.value = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
-        self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                "Coolify refused the COOLIFY_DEPLOY_ONLY token (HTTP 401); "
+                "rotate it in the /coolify-deploy-only-token folder",
+            ),
+        )
+        code, ans = self.run_main(["--check-token"], self.ctx(http_status=429))
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
         code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
         self.assertEqual((code, ans["result"]), (2, "refused"))
         code, ans = self.run_main(["--check-token", "--json"], self.ctx())
@@ -7190,6 +7387,239 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(answer["unavailableSource"], "fleet_infisical.py")
         self.assertNotIn(self.api.token, json.dumps(answer))
+
+
+class CommittedPlanConsumersTests(unittest.TestCase):
+    """One deploy plan, one mapping:  no committed consumer still maps it to a GET.
+
+    The deploy route answers POST only,  so a consumer that still says GET disagrees with
+    the helper about the action it takes.  A dated record keeps the mapping it recorded and
+    names the live statement;  every other committed file must carry the POST mapping.
+    """
+
+    REPO = Path(HERE).parent
+    LIVE = "docs/protocols/fleet-tool-parity.md"
+    DATED_RECORDS = (
+        "docs/plans/2026-10-28-muster-ops-control.md",
+        "docs/rollouts/2026-11-08-helper-unit-status.md",
+    )
+    # The live spec keeps its review history,  and that history records the GET mapping of
+    # the day it answered;  its normative part names POST.
+    LIVE_SPEC = "docs/muster-ios/server-route-spec.md"
+    SPEC_HISTORY_HEADING = "## 18.  Review Response"
+    SKIP_DIRS = frozenset(
+        {".git", "node_modules", "__pycache__", ".venv", "site", "build", "dist", ".mypy_cache"}
+    )
+    MAX_BYTES = 4 * 1024 * 1024
+    # A plan command in any committed file,  with or without the escapes a JSON string
+    # carries,  and the prose form a dated record uses.
+    STALE = (
+        re.compile(r'\[\s*"?coolify"?\s*,\s*"?GET"?\s*,'),
+        re.compile(r"GET\s+/api/v1/deploy\?"),
+    )
+
+    def committed_files(self):
+        for root, dirs, files in os.walk(self.REPO):
+            dirs[:] = sorted(name for name in dirs if name not in self.SKIP_DIRS)
+            for name in sorted(files):
+                yield Path(root) / name
+
+    def stale_lines(self, text):
+        """The lines that still map the deploy to a GET, with their line numbers."""
+        plain = text.replace("\\", "")
+        found = []
+        for number, line in enumerate(plain.splitlines(), start=1):
+            if any(pattern.search(line) for pattern in self.STALE):
+                found.append(number)
+        return found
+
+    def spec_history_line(self, text):
+        """The first line of the spec's review history,  where a recorded GET may stand."""
+        for number, line in enumerate(text.splitlines(), start=1):
+            if line.startswith(self.SPEC_HISTORY_HEADING):
+                return number
+        raise AssertionError("the live spec has no review-response section")
+
+    def test_no_committed_consumer_maps_the_deploy_to_a_get(self):
+        offenders = []
+        for path in self.committed_files():
+            try:
+                if path.stat().st_size > self.MAX_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            lines = self.stale_lines(text)
+            if not lines:
+                continue
+            relative = path.relative_to(self.REPO).as_posix()
+            if relative in self.DATED_RECORDS:
+                continue
+            if relative == self.LIVE_SPEC:
+                history = self.spec_history_line(text)
+                offenders += [f"{relative}:{number}" for number in lines if number <= history]
+                continue
+            offenders += [f"{relative}:{number}" for number in lines]
+        self.assertEqual(
+            offenders,
+            [],
+            "a committed consumer still maps the deploy to a GET: " + ", ".join(offenders),
+        )
+
+    def test_the_live_spec_names_the_post_mapping_before_its_review_history(self):
+        text = (self.REPO / self.LIVE_SPEC).read_text(encoding="utf-8")
+        history = self.spec_history_line(text)
+        normative = "\n".join(text.splitlines()[: history - 1])
+        self.assertIn('"coolify", "POST"', normative)
+        self.assertEqual(self.stale_lines(normative), [])
+
+    def test_the_committed_fixture_carries_the_post_mapping(self):
+        fixture = self.REPO / "scripts/fixtures/muster-vectors-v5.json"
+        plain = fixture.read_text(encoding="utf-8").replace("\\", "")
+        self.assertIn('"coolify","POST",', plain)
+        self.assertNotIn('"coolify","GET",', plain)
+
+    def test_the_live_protocol_states_the_post_mapping(self):
+        live = (self.REPO / self.LIVE).read_text(encoding="utf-8")
+        plain = re.sub(r"\s+", " ", live.replace("\\", ""))
+        self.assertIn('"coolify", "POST"', plain)
+
+    def test_each_dated_record_points_at_the_live_statement(self):
+        for relative in self.DATED_RECORDS:
+            text = (self.REPO / relative).read_text(encoding="utf-8")
+            self.assertIn(self.LIVE, text, relative)
+
+
+class StaleEditorAllowlistTests(unittest.TestCase):
+    """The retry that lets a stale editor's refusal through.
+
+    An editor image that predates a spec type the host allowlist now uses
+    refuses the whole request.  The host drops that one entry and asks again.
+    The entry it drops comes from the host's own allowlist and never from the
+    editor's answer alone, the path shape is one the editor names, and the
+    retry never repeats a side effect.
+    """
+
+    def allowlist(self):
+        return {
+            "applyEnabled": True,
+            "seat": {
+                "routine": {"type": "table", "keys": {"url_env": {"type": "seat-env"}}},
+            },
+            "tables": {
+                "notes_queue": {
+                    "enabled": {"type": "bool"},
+                    "worker_seats": {"type": "seats"},
+                }
+            },
+        }
+
+    def editor(self, answers, calls):
+        def run(ctx, request):
+            calls.append(json.loads(json.dumps(request)))
+            return answers[min(len(calls) - 1, len(answers) - 1)]
+
+        return run
+
+    def refusal(self, **extra):
+        answer = {
+            "ok": False,
+            "result": "refused",
+            "errorCode": "allowlist_invalid",
+            "detail": "notes_queue.worker_seats needs a type from bool, int, number",
+        }
+        answer.update(extra)
+        return (answer, 2)
+
+    def ctx(self):
+        return foc.Context(platform="linux", uid=os.getuid(), home=Path("/tmp"), environ={})
+
+    def test_an_entry_of_a_newly_added_type_is_dropped_and_the_rest_stays(self):
+        allowlist = self.allowlist()
+        stripped = foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats")
+        self.assertEqual(stripped, (("notes_queue", "worker_seats"), "notes_queue.worker_seats"))
+        self.assertNotIn("worker_seats", allowlist["tables"]["notes_queue"])
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+
+    def test_an_entry_of_a_known_type_is_never_dropped(self):
+        allowlist = self.allowlist()
+        self.assertIsNone(foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.enabled"))
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_a_seat_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["seat"]["routine"]["keys"]["worker_seats"] = {"type": "seats"}
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "seat.*.routine.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["seat"]["routine"]["keys"])
+        self.assertIn("routine", allowlist["seat"])
+
+    def test_a_table_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["tables"]["notes_queue"]["worker_seats"] = {
+            "type": "table",
+            "keys": {"worker_seats": {"type": "seats"}},
+        }
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"]["worker_seats"]["keys"])
+
+    def test_the_retry_drops_the_entry_and_asks_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(), ({"ok": True, "result": "read", "settings": {}}, 0)]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("worker_seats", calls[1]["allowlist"]["tables"]["notes_queue"])
+        self.assertEqual(fields["skippedAllowlist"], ["notes_queue.worker_seats"])
+        self.assertEqual(fields["result"], "read")
+
+    def test_a_refusal_that_came_after_a_side_effect_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(result="failed", replaced=True)]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_an_apply_that_would_write_the_live_file_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal()]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(
+                self.ctx(), "apply", {"notes_queue.enabled": True}
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
 
 
 if __name__ == "__main__":
