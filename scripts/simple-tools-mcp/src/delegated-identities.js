@@ -352,11 +352,11 @@ export class IdentityRouter {
   }
 
   /** One tools/call, its result as the client gets it (textFirst, AFC-637). */
-  async call(name, rawArgs) {
-    return textFirst(await this.dispatch(name, rawArgs), typeof name === "string" && Object.hasOwn(this.toolsByName, name) ? this.toolsByName[name] : undefined);
+  async call(name, rawArgs, invocation = null) {
+    return textFirst(await this.dispatch(name, rawArgs, invocation), typeof name === "string" && Object.hasOwn(this.toolsByName, name) ? this.toolsByName[name] : undefined);
   }
 
-  async dispatch(name, rawArgs) {
+  async dispatch(name, rawArgs, invocation = null) {
     // An events-only seat serves notifications only:  every name is unknown
     // to the connection, the same protocol error as any unknown name
     // (buildServer maps UnknownTool), audited like one.
@@ -385,7 +385,7 @@ export class IdentityRouter {
     if (name === "guide") return this.guide(rawArgs);
     if (name === "catalog") return this.catalog(rawArgs);
     // Unknown names stay protocol errors, audited by the grant's own tools.
-    if (!Object.hasOwn(HOSTED_TOOLS_BY_NAME, name)) return this.callerTools.call(name, rawArgs);
+    if (!Object.hasOwn(HOSTED_TOOLS_BY_NAME, name)) return this.callerTools.call(name, rawArgs, invocation);
     // The grant's scope comes first:  a read-only grant learns it cannot write before it learns how to
     // name an identity, and the challenge is the same whichever identity a call names.
     try {
@@ -414,7 +414,7 @@ export class IdentityRouter {
     // Only the identity property is removed;  inner schemas never see it.  Non-object arguments reach the
     // inner validator unchanged.
     const innerArgs = named ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "identity")) : rawArgs;
-    if (identity === this.seat) return this.callerTools.call(name, innerArgs);
+    if (identity === this.seat) return this.callerTools.call(name, innerArgs, invocation);
     // The grant's pause applies before another identity is built (its scope was checked above).
     try {
       if (this.callerTools.paused) throw new ToolError("paused", `The ${this.seat} seat is paused.`);
@@ -435,7 +435,7 @@ export class IdentityRouter {
         return errorResult(mapped, (message) => this.callerTools.scrub(message));
       }
     }
-    return tools.call(name, innerArgs);
+    return tools.call(name, innerArgs, invocation);
   }
 
   /** The guide tool:  no identity, no credential, nothing written.  A supplied `identity` is ignored. */
