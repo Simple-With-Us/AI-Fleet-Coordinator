@@ -951,7 +951,7 @@ enum OperatorPanelPresentation {
             switch status.operatorVoiceReading {
             case .cannotPost(let code, _):
                 tone = tone == .good ? .warning : tone
-                let cause = OperatorVoiceReading.cause(code ?? "")
+                let cause = EavesdropperStatusText.cause(code ?? "")
                 lines.append("It cannot post to Zulip\(cause.map { ": \($0)" } ?? ".")")
             case .canPost, .notReported:
                 break
