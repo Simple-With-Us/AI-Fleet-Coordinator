@@ -1,0 +1,106 @@
+{
+  "status": "degraded",
+  "ok": true,
+  "time": "2026-11-18T17:23:23.385Z",
+  "pipeline": {
+    "status": "degraded",
+    "checks": [
+      {
+        "id": "ingestion_backlog",
+        "status": "ok"
+      },
+      {
+        "id": "ingestion_dead_letter",
+        "status": "ok"
+      },
+      {
+        "id": "cron_deadline",
+        "status": "ok"
+      },
+      {
+        "id": "delivery_quarantine",
+        "status": "ok"
+      },
+      {
+        "id": "extraction_provider",
+        "status": "ok"
+      },
+      {
+        "id": "filing_skips",
+        "status": "ok"
+      },
+      {
+        "id": "fmp_latency",
+        "status": "ok"
+      },
+      {
+        "id": "extraction_backlog",
+        "status": "ok"
+      },
+      {
+        "id": "autopilot_halt",
+        "status": "ok"
+      },
+      {
+        "id": "data_freshness",
+        "status": "ok"
+      },
+      {
+        "id": "review_resolution_integrity",
+        "status": "ok"
+      },
+      {
+        "id": "stranded_filings",
+        "status": "ok"
+      },
+      {
+        "id": "polling_house",
+        "status": "ok"
+      },
+      {
+        "id": "polling_senate",
+        "status": "ok"
+      },
+      {
+        "id": "polling_executive",
+        "status": "ok"
+      },
+      {
+        "id": "latency_probes",
+        "status": "ok"
+      },
+      {
+        "id": "senate_relay",
+        "status": "ok"
+      },
+      {
+        "id": "senate_efd",
+        "status": "degraded"
+      },
+      {
+        "id": "senate_fetcher",
+        "status": "ok"
+      },
+      {
+        "id": "price_freshness",
+        "status": "ok"
+      },
+      {
+        "id": "st_peer_prices",
+        "status": "ok"
+      },
+      {
+        "id": "st_inbound_market_data",
+        "status": "ok"
+      },
+      {
+        "id": "empty_fetch_handoff",
+        "status": "ok"
+      },
+      {
+        "id": "delivery_mode",
+        "status": "ok"
+      }
+    ]
+  }
+}

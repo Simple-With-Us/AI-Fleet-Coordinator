@@ -1479,6 +1479,31 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _stop_review_alerts(self) -> None:
+        stop = getattr(self, "_review_alert_stop", None)
+        thread = getattr(self, "_review_alert_thread", None)
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            # Ownership cannot move to a new registry or process while the
+            # old loop can still issue an effect. Its HTTP reads have timeouts.
+            thread.join()
+        self._review_alert_thread = None
+        self._review_alert_stop = None
+
+    def _configure_review_alerts(self) -> None:
+        self._stop_review_alerts()
+        if self.stop.is_set() or getattr(self.config, "instance", "mac") != "server":
+            return
+        try:
+            from review_alerts.operator_loop import start
+
+            stop = threading.Event()
+            self._review_alert_stop = stop
+            self._review_alert_thread = start(self.env, self.registry_service, stop, self.log.write)
+        except Exception as exc:
+            self.log.write("review-alert-start-error", reason=type(exc).__name__)
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -1491,6 +1516,7 @@ class Daemon:
 
         One writer (AFC-721):  only the server instance builds the service, and with it the one stale
         sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
+        self._stop_review_alerts()
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
         old_sweeper = getattr(self, "registry_sweeper", None)
@@ -1506,19 +1532,44 @@ class Daemon:
         if operator_key:
             self.hide_values([operator_key])
             keys[LREG.OPERATOR] = operator_key
+        import re
+
+        from .review_origin_projection import KEY_ENV as REVIEW_ORIGIN_KEY_ENV
+
+        review_origin_key = Z._strip_quotes(self.env.get(REVIEW_ORIGIN_KEY_ENV) or "")
+        if review_origin_key:
+            self.hide_values([review_origin_key])
+            if (
+                not re.fullmatch(r"[!-~]{32,512}", review_origin_key)
+                or "${" in review_origin_key
+                or review_origin_key in keys.values()
+            ):
+                self.log.write(
+                    "review-origin-projection-held",
+                    key_env=REVIEW_ORIGIN_KEY_ENV,
+                    reason="invalid-or-reused-read-key",
+                )
+                review_origin_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in
         # process and need no key.  The keys decide only whether the API serves /registry/v1/.
         db_path = OR.registry_db_path(self.root, self.env)
         share = self.config.registry_gone_report_max_share
         window = self.config.registry_gone_report_window_minutes
-        spec = (db_path, share, window, tuple(sorted((name, key) for name, key in keys.items())))
+        spec = (
+            db_path,
+            share,
+            window,
+            tuple(sorted((name, key) for name, key in keys.items())),
+            review_origin_key,
+        )
         if old is not None and old_spec == spec:
             service = old
         else:
             service = LREG.RegistryService(
                 db_path,
                 keys,
+                review_origin_read_key=review_origin_key,
                 clock=self.clock.time,
                 log=self.log.write,
                 gone_report_max_share=share,
@@ -1564,7 +1615,11 @@ class Daemon:
         # The registry service and its sweeper live with the instance, not with the API
         # (AFC-721):  an API that is off or fails to bind leaves them running.
         service = self._configure_registry()
-        registry = service if service is not None and service.keys else None
+        registry = (
+            service
+            if service is not None and (service.keys or service.has_review_origin_key)
+            else None
+        )
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
@@ -1754,6 +1809,7 @@ class Daemon:
         self._apply_config()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_review_alerts()
         self._configure_linear_comments()
         self._remember_operator_settings()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
@@ -7192,6 +7248,7 @@ class Daemon:
         self._remember_operator_settings()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_review_alerts()
         self._configure_linear_comments()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
@@ -7282,6 +7339,7 @@ class Daemon:
 
     def shutdown(self) -> None:
         self.stop.set()
+        self._stop_review_alerts()
         if self.outgoing_webhook_server is not None:
             self.outgoing_webhook_server.close()
             self.outgoing_webhook_server = None
