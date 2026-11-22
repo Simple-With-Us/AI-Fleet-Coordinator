@@ -48,8 +48,6 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # dispatches for Muster's Seats panel.
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
 # The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
-# The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
-# unit template stays repo-only under simple_tools/server/).
 # The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
 # env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
@@ -172,8 +170,6 @@ EXACT = frozenset(
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
-        "scripts/zc-wake-bridge",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }

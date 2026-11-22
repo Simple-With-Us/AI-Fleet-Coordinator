@@ -1,4 +1,4 @@
-"""Muster carries no machine power, process kill or remote-host control code.
+"""Muster carries no machine power or remote-host control code.
 
 AFC-616:  the BotFleet Control port brought VM providers (a cloud power-off
 and a run-any-script provider), a process monitor that sent
@@ -7,6 +7,15 @@ hostname, and a token path in the server control API.  No view or model
 reached any of it, so it was removed.  This keeps it from coming back
 unreviewed:  a feature that needs one of these paths is a new, reviewed
 change to this test, not a quiet revival.
+
+AFC-879 is that reviewed change for one path only:  the owner ordered the
+process monitor back, wired into the Services panel this time, because a
+helper whose manager has stopped is reported by no manager and only a
+census of the Mac itself can see it.  `ProcessMonitor.swift` is therefore
+allowed back, with its `kill` on the fleet's own processes, and nothing
+else in this test is relaxed:  the VM providers, the offline VM helpers,
+the persistence policy and the multi-host store stay removed, and no
+other file may run the system kill command.
 
 Muster still stops its own child processes when they overrun a deadline,
 with `Darwin.kill` on a pid it started;  that is not what this checks.
@@ -25,8 +34,6 @@ REMOVED_TYPES = (
     "HetznerCloudVMProvider",
     "CustomScriptVMProvider",
     "BotFleetServerVMProvider",
-    "FleetProcessMonitor",
-    "FleetProcessClassifier",
     "OfflineVMHelper",
     "OfflineDockerVM",
     "PersistencePolicy",
@@ -69,6 +76,12 @@ class NoUnwiredControlPathTests(unittest.TestCase):
         for path in self.sources():
             code = swift_code(path)
             for pattern in FORBIDDEN_SWIFT:
+                # AFC-879:  the reviewed process monitor is the one file that
+                # may run the system kill command, and only on the fleet's
+                # own processes, under its own guards.  Every other pattern
+                # binds it too.
+                if pattern == r'"/bin/kill"' and path.name == "ProcessMonitor.swift":
+                    continue
                 self.assertIsNone(re.search(pattern, code), "%s matches %s" % (path.name, pattern))
 
     def test_the_server_control_api_sends_no_credential(self):
@@ -80,7 +93,6 @@ class NoUnwiredControlPathTests(unittest.TestCase):
         text = (MUSTER / "project.yml").read_text()
         for name in (
             "VMProvider.swift",
-            "ProcessMonitor.swift",
             "OfflineVMHelper.swift",
             "OfflineDockerVM.swift",
             "PersistencePolicy.swift",

@@ -316,7 +316,11 @@ The Infisical API-route row is separately refreshed from immutable main
 edits recorded in docs/security/preservation-pending-manifest.json. Its complete
 credential-containing lines are unchanged.  REVIEWED_PRESERVATIONS now contains
 only the owner-approved AFC-797 source/output pair documented in
-[Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md). 
+[Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md)
+plus the two owner-approved AFC-793 fixture test pairs documented in
+[Reviewed Fixture Pairs Preservation](../docs/security/reviewed-fixture-pairs-preservation.md):
+`scripts/fleet_rag/tests/test_recall.py` (`b78c76d6…` to `d9cd1d0a…`) and
+`scripts/fleet_rag/tests/test_ingest.py` (`e970e451…` to `1eaa804f…`).
 REVIEWED_SAME_PATH_SOURCES remains empty; this is independent of the existing
 _REVIEWED_FIXTURES registry.  The refreshed exact
 Infisical row is active in source semantics, but no deployment or runtime use

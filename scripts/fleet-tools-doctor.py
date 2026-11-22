@@ -138,8 +138,8 @@ SHIPPED = (
     "scripts/simple-git",
     "scripts/git-tools/",
     "scripts/simple_tools/",
-    # The wake bridges are roots of their own (OPS-1048), not under a directory the list already covers.
-    "scripts/zc-wake-bridge",
+    # The AG wake bridge is a root of its own (AFC-665), not under a directory the list already covers;
+    # the ZC bridge retired on Nov 21, 2026 (its files deleted after the delivered-and-executed wake proof).
     "scripts/ag-wake-bridge",
     "scripts/linear-board/",
     "fleet-apps.json",
@@ -205,9 +205,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/registry_export_reader.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  mirror the release EXACT entries for the wake bridges (the receivers the seats' http
-        # routines POST to).
-        "scripts/zc-wake-bridge",
+        # AFC-665:  mirror the release EXACT entry for the AG wake bridge (the receiver the seat's http
+        # routine POSTs to).  The ZC bridge retired on Nov 21, 2026 and its entry went with it.
         "scripts/ag-wake-bridge",
         # The shared scoped client every consumer imports.
         "scripts/fleet_infisical.py",

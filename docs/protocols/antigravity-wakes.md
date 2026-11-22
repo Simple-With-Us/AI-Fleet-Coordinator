@@ -21,7 +21,7 @@ whose AG delivery is `deliver_local` in `scripts/simple_tools/antigravity_wake.p
                     agy --conversation <uuid> -p "<[AG·wake] ... thread link ...>"
 
 The delivered prompt carries metadata only (channel, topic, the Zulip link, the wake id):  a
-message body is never quoted into a prompt, matching the wake alerter and `zc-wake-bridge`
+message body is never quoted into a prompt, matching the wake alerter and the retired `zc-wake-bridge`
 discipline.  The woken agent reads its own inbox with `simple-chat inbox --peek` and answers in
 the thread.  Wakes held back by the seat's budget, and messages that arrive while no delivery ran,
 stay in the inbox; nothing is lost when the bridge is down, and a wake id is marked seen only
