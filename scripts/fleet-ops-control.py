@@ -2441,11 +2441,7 @@ def _set_touches(changes, stripped, remove=None):
             if len(key_parts) == 4 and key_parts[0] == "seat" and key_parts[2] == name:
                 if not nested or key_parts[3] == dropped:
                     return True
-            elif (
-                len(key_parts) == 3
-                and key_parts[0] == "seat"
-                and key_parts[2] == name
-            ):
+            elif len(key_parts) == 3 and key_parts[0] == "seat" and key_parts[2] == name:
                 # A whole-parent removal takes the dropped sub-key's stored
                 # value with it, so it keeps the original refusal, the same
                 # way a whole-entry drop does.
