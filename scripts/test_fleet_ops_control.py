@@ -882,13 +882,15 @@ class UpdateReceiptTests(Base):
             (foc.SUDO, "authorization_unavailable"),
         ):
             ctx = self.ctx()
-            with mock.patch.object(
-                foc.os, "access", side_effect=lambda path, *args, **kwargs: str(path) != missing
+            with (
+                mock.patch.object(
+                    foc.os, "access", side_effect=lambda path, *args, **kwargs: str(path) != missing
+                ),
+                self.assertRaises(foc.Refused) as raised,
             ):
-                with self.assertRaises(foc.Refused) as raised:
-                    foc.update_command(
-                        ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
-                    )
+                foc.update_command(
+                    ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
+                )
             self.assertEqual(raised.exception.error_code, expected)
             self.assertEqual(self.runner.calls, [])
 

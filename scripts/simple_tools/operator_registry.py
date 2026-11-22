@@ -2476,9 +2476,7 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(
-                candidates, reports, cutoff, now=moment
-            )
+            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
