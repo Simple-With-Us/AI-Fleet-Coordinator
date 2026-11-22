@@ -1,7 +1,7 @@
 """Fixed systemd credential boundary, no live credential reads."""
 
-import os
 import io
+import os
 import stat
 import struct
 import tempfile
