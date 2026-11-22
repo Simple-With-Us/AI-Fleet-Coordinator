@@ -159,8 +159,14 @@ class OperatorStillSendsTests(DaemonHarness):
         pending.add({"id": mid, "ts": now}, False)
         sent = daemon.dm_owner(daemon.seats["CLAUDE"], pending, "Codex asked for the key.", "high", [])
         (note,) = self.operator_posts()
-        self.assertEqual(note["type"], "private")
-        self.assertTrue(note["content"].startswith("[OPERATOR·note] re=%d\n" % mid), note["content"])
+        self.assertEqual(note["type"], "stream")
+        self.assertEqual(
+            (note["display_recipient"], note["subject"]), ("Side-Chats", "Operator escalation notes")
+        )
+        self.assertTrue(
+            note["content"].startswith("@**Jay Wedgeworth**\n[OPERATOR·note] re=%d\n" % mid),
+            note["content"],
+        )
         self.assertIn("Codex asked for the key.", note["content"])
         self.assertEqual(sent, {"owner_dm": note["id"]})
         self.assertEqual(self.seat_requests(), [])

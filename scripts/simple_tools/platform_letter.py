@@ -186,6 +186,16 @@ REPAIR_MAX_CHATS = 5
 #: same moment set off one run between them.  A claim older than this is a holder that died, and is taken over.
 REPAIR_LOCK_SECONDS = 30
 REPAIR_SPAWN_CLAIM_SECONDS = 300
+# The enrollment of a lettered chat's own sub-thread children (`enroll_children`), on the turn-end event of the
+# chat that started them:  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every
+# child unlettered, so the parent - whose turn end already runs - enrolls its own.  At most CHILD_ENROLL_MAX
+# children are replayed per pass, and a pass starts no new replay once CHILD_ENROLL_SECONDS have gone by (the
+# repair pass's own shape:  one replay in flight may outlast the gate, and the rest wait for the next pass).  A
+# child the assigner refused a letter (its parent's row is full) holds a failed note, so RETRY_SECONDS holds its
+# next try back;  the ephemeral letters sub-agents consume are freed by the assigner's own stale sweep, like
+# every quiet chat's.
+CHILD_ENROLL_MAX = 8
+CHILD_ENROLL_SECONDS = 5
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -419,6 +429,10 @@ GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
 #: carry the "??: " placeholder title, newest first.  Ids only, bounded by the adapter, and any doubt leaves a
 #: chat out.
 UnletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
+#: An adapter's `child_sessions`:  from the environment and the session id of a chat that holds a letter, the
+#: ids of this host's sub-thread children of that chat that may still need one, newest first.  Ids only,
+#: bounded by the adapter, and any doubt answers none.
+ChildSessions = Callable[[Mapping[str, str], str], Iterable[str] | None]
 #: An adapter's `live_chats`:  from the environment, the chats this host still holds open and the host's own
 #: last-activity time for each, as native session id to an ISO 8601 instant.  The host knows better than the
 #: sweep whether a chat is still open,  so this is what the liveness report carries (AFC-878).  Any doubt
@@ -473,6 +487,9 @@ class PlatformSpec:
     unlettered_sessions        for a platform whose own session store on this host lists its chats with the titles
                                the hook put on them:  the ids of the ones whose title carries no letter, for the
                                repair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
+    child_sessions             for a platform that runs no hook inside a sub-agent (ZCode):  the ids of this host's
+                               sub-thread children of a lettered chat, for the enrollment the chat's own turn end
+                               makes (`enroll_children`)
     unlettered_feed            for a row with no `unlettered_sessions`:  why it has none, in one line (the platform is
                                hook-only:  no store this host can list, or titles that never carry "??: ").  Every
                                row of the table says one or the other (test_platform_letter_feeds)
@@ -514,6 +531,7 @@ class PlatformSpec:
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
     unlettered_sessions: UnletteredSessions | None = None
+    child_sessions: ChildSessions | None = None
     unlettered_feed: str = ""
     live_chats: LiveChats | None = None
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
@@ -626,6 +644,18 @@ def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
     value with a separator can never place the note anywhere else."""
     safe = I.valid_seat(who) or "UNKNOWN"
     return os.path.join(L.state_root(env), safe, "letters", sid + ".json")
+
+
+def note_holds_letter(env: Mapping[str, str], who: str, sid: str) -> bool:
+    """True when the chat's own note on this host says it holds a letter (open, with a label):  the hook's
+    record of what the assigner issued it, read with no call.  A chat with no note, one that was refused or
+    failed, one held by another seat, or a note that cannot be read answers False.  An adapter's listing asks
+    this about a chat the hook did not run for (a sub-agent child's parent, on a platform that runs no hook
+    inside a sub-agent), so the pass it feeds registers the child, never a parent nobody ever lettered."""
+    try:
+        return lettered(_read_json(note_path(env, who, sid)))
+    except Exception:  # noqa: BLE001 - a note that cannot be read is one that holds no letter
+        return False
 
 
 # --------------------------------------------------------------------------------------------
@@ -1256,7 +1286,10 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
     if spec is None:
         return {"error": "%r is not a platform this side writes" % args.platform}
     if spec.live_chats is None:
-        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
+        return {
+            "error": "%s has no live-chat report,  so this host cannot say which chats are open"
+            % spec.platform
+        }
     live = live_report(spec, env)
     if live is None:
         # The host could not answer,  so it does not report:  a report of nothing would tell
@@ -2696,20 +2729,101 @@ def turn_note(
     return out
 
 
+def enroll_children(chat: Chat, started: float | None = None) -> int:
+    """Register the sub-thread children of this chat that hold no letter, on the chat's own turn end
+    (`on_turn`):  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every child
+    unlettered, so the parent - whose turn end already runs - enrolls its own.  The replay is the child's own
+    start (`on_start`, the repair pass's replay), so the child takes the pair after its parent's in the
+    parent's row, its parent already settled costs no call of its own, and its title is written as any
+    chat's start would write it.
+
+    A parent that holds no letter enrolls nothing:  a child's pair comes from its parent's row, and a parent
+    with none is its own flow's to fix (its next prompt or turn end asks again, and the turn end after that
+    enrolls the children).  A child that holds a letter costs one note read;  one that was refused or failed
+    is not asked again until RETRY_SECONDS have passed (its note's `failed_at` - a parent row that is full is
+    refused, logged in the child's own note, and never retried in a storm);  and a pass replays at most
+    CHILD_ENROLL_MAX children, starting no new replay once CHILD_ENROLL_SECONDS have gone by since the
+    turn-end pass began - `on_turn` passes its own start, so the gate covers the parent's turn work too,
+    not just the enrollment tail.  Whatever one child's replay breaks never reaches the parent's chat:
+    each child is its own try (naming it, reading its note, checking its retry window and replaying its
+    start all sit inside one guarded region), and this whole pass is the hook's quiet side work.
+    Returns the children whose starts were replayed."""
+    spec = chat.spec
+    if spec.child_sessions is None or spec.chat_payload is None:
+        return 0
+    if not lettered(chat.read()):
+        return 0  # a child's pair comes from its parent's row; a parent with no letter has none to give
+    try:
+        listed = list(spec.child_sessions(chat.env, chat.session_id) or [])
+    except Exception:  # noqa: BLE001 - the store an adapter reads is never the chat's own business
+        return 0
+    home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+    deadline = (time.monotonic() if started is None else started) + CHILD_ENROLL_SECONDS
+    replayed = 0
+    for item in listed:
+        if replayed >= CHILD_ENROLL_MAX or time.monotonic() >= deadline:
+            break  # the rest wait for the next turn end:  no child's start may stretch this one
+        try:
+            sid = SI.check(_text(item), "a listed child session id")
+            payload = dict(spec.chat_payload(sid))
+            if _text(spec.kind(payload, chat.env)) != "subagent" or not in_scope(
+                spec, chat.env, payload
+            ):
+                continue  # the store no longer calls it this chat's sub-thread child
+            child = Chat(
+                spec,
+                chat.env,
+                chat.location,
+                sid,
+                now=chat.now,
+                transport=chat.transport,
+                seat=chat.seat,
+            )
+            note = child.read()  # inside the guard:  one unreadable note is one child not enrolled
+            if note.get("state") in ("closed", "mismatch") or lettered(note):
+                continue
+            if chat.now - _seconds(note.get("failed_at")) < RETRY_SECONDS:
+                continue  # a refusal or a failed ask is not repeated on every turn end
+            on_start(child, payload, Out(io.StringIO(), spec, ""), home)
+        except Exception:  # noqa: BLE001 - one child's enrollment never stops the pass, or the chat
+            continue
+        replayed += 1
+    return replayed
+
+
 def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     """A turn ended (a spec that maps its turn-end event to `turn`):  ask again for a missing letter, report the turn,
     print nothing, close nothing.
 
     A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
-    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
+    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
     lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
     that retitled the chat itself, dropping the letter, gets it back)."""
+    started = (
+        time.monotonic()
+    )  # the enrollment tail shares this pass's whole budget, not a fresh one
     note = chat.read()
     if not note:
         return 0
     if lettered(note) and chat.spec.title_writer is not None:
         on_rename(chat, data, Out(io.StringIO(), chat.spec, ""))
         note = chat.read()
+        if note.get("pending"):
+            current = chat_name(chat.spec.current_title(data, chat.env))
+            before_pending = (
+                note.get("pending"),
+                note.get("shown"),
+                note.get("retry_at"),
+                note.get("turn_retried"),
+            )
+            _retry_pending(chat, note, current, data, force=not note.get("turn_retried"))
+            if (
+                note.get("pending"),
+                note.get("shown"),
+                note.get("retry_at"),
+                note.get("turn_retried"),
+            ) != before_pending:
+                chat.write(note)
     elif not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
@@ -2730,6 +2844,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     merged = turn_note(before, note, chat.read())
     if merged is not None:
         chat.write(merged)
+    enroll_children(chat, started)
     return 0
 
 
@@ -2814,35 +2929,54 @@ def present(
     if title == current:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return None
     wrote = _write_title(chat, note, title, current, data, reason)
     if wrote:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return None
     if spec.title_in_output and settable:
         note.update(shown=title, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
         return title
     note["pending"] = spec.title_writer is not None
     if note["pending"]:
         note["retry_at"] = (
             chat.now + RETRY_SECONDS
         )  # a writer that is down is not asked again on every prompt
+        note.pop("turn_retried", None)
     return None
 
 
-def _retry_pending(chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any]) -> None:
+def _retry_pending(
+    chat: Chat,
+    note: dict[str, Any],
+    current: str,
+    data: Mapping[str, Any],
+    *,
+    force: bool = False,
+) -> None:
     want = str(note.get("want") or "")
     if not (note.get("pending") and want and chat.spec.title_writer is not None):
         return
-    if chat.now < float(note.get("retry_at") or 0):
-        return
-    if want == current or _write_title(chat, note, want, current, data, "retry"):
+    if want == current:
         note.update(shown=want, pending=False)
         note.pop("retry_at", None)
+        note.pop("turn_retried", None)
+        return
+    if not force and chat.now < _seconds(note.get("retry_at")):
+        return
+    if _write_title(chat, note, want, current, data, "retry"):
+        note.update(shown=want, pending=False)
+        note.pop("retry_at", None)
+        note.pop("turn_retried", None)
     else:
         note["retry_at"] = chat.now + RETRY_SECONDS
+        if force:
+            note["turn_retried"] = True
 
 
 def _gone(answer: Mapping[str, Any]) -> bool:
