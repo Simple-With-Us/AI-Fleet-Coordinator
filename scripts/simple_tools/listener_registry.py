@@ -241,11 +241,20 @@ class RegistryService:
         db_path: str,
         keys: Mapping[str, str],
         *,
+        review_origin_read_key: str = "",
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
         gone_report_max_share: float = DEFAULT_GONE_REPORT_MAX_SHARE,
         gone_report_window_minutes: int = DEFAULT_GONE_REPORT_WINDOW_MINUTES,
     ) -> None:
+        from .review_origin_projection import ReviewOriginProjection
+
+        self.review_origin = ReviewOriginProjection(
+            str(db_path), review_origin_read_key, clock=clock
+        )
+        self.has_review_origin_key = (
+            isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32
+        )
         self.db_path = str(db_path)
         self.gone_report_max_share = float(gone_report_max_share)
         self.gone_report_window_minutes = int(gone_report_window_minutes)
@@ -261,6 +270,8 @@ class RegistryService:
             and isinstance(key, str)
             and len(key) >= MIN_KEY_LEN
         }
+        if review_origin_read_key and review_origin_read_key in self.keys.values():
+            raise ValueError("review origin key must be dedicated")
         self.clock = clock
         self.log = log or (lambda *_args, **_kwargs: None)
 
@@ -293,6 +304,8 @@ class RegistryService:
         path, query = parts.path, parts.query
         if not path.startswith(PREFIX) or parts.fragment or len(query) > MAX_QUERY:
             return _error(404, "not_found", "not found")
+        if path == PREFIX + "review-origin":
+            return self.review_origin.handle(method, raw_path, headers, body)
         op = path[len(PREFIX) :]
         if op not in _METHODS or "/" in op:
             return _error(404, "not_found", "not found")
