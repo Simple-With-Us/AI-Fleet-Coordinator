@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -2779,7 +2780,12 @@ class FakeInfisical:
     ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 
     class SecretsError(Exception):
-        pass
+        """The shared client's error:  `code` is the exit code,  `provider_status` the HTTP status."""
+
+        def __init__(self, message, code=4, *, provider_status=None):
+            super().__init__(message)
+            self.code = code
+            self.provider_status = provider_status
 
     class SecretsTimeout(TimeoutError):
         """A hung read:  a timeout,  not a refusal."""
@@ -2790,6 +2796,7 @@ class FakeInfisical:
         self.timeouts = []
         self.refuse_empty_token = False
         self.refuse_scope = False
+        self.refuse_status = None
         self.hang = False
 
     def fetch_verified(self, name, path, env, token=None, timeout=None):
@@ -2799,6 +2806,11 @@ class FakeInfisical:
             raise self.SecretsTimeout("fetch-failed: timeout")
         if self.refuse_scope:
             raise self.SecretsError("token-scope-mismatch")
+        if self.refuse_status is not None:
+            # The message names no scope,  so only the provider status can route this.
+            raise self.SecretsError(
+                "token-verification-failed", provider_status=self.refuse_status
+            )
         if self.refuse_empty_token and not token:
             raise self.SecretsError("service-token-required")
         return self.value
@@ -2974,6 +2986,31 @@ class CredentialTests(Base):
         )
         self.assertEqual(self.http_calls, [])
 
+    def test_a_provider_403_is_the_scope_remedy_and_not_the_generic_one(self):
+        """The reader's exit code is not an HTTP status;  the provider status is."""
+        self.client.refuse_status = 403
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
+        )
+        self.assertEqual(self.http_calls, [])
+
+    def test_the_reason_mapper_reads_the_provider_status_before_the_exit_code(self):
+        refusal = FakeInfisical.SecretsError("token-verification-failed", provider_status=403)
+        self.assertIn("refused the token", foc._infisical_coolify_read_reason(refusal))
+        unavailable = FakeInfisical.SecretsError("token-verification-failed", provider_status=503)
+        self.assertIn("failed", foc._infisical_coolify_read_reason(unavailable))
+        # The exit code alone is not a status:  it must not read as a scope refusal.
+        exit_code = FakeInfisical.SecretsError("token-verification-failed", code=4)
+        self.assertNotIn("refused the token", foc._infisical_coolify_read_reason(exit_code))
+
     def test_a_shared_or_malformed_file_fails_before_the_read(self):
         cases = [
             (self.pair_text(), 0o640),
@@ -3051,15 +3088,22 @@ class CredentialTests(Base):
             (
                 1,
                 (
-                    "the Infisical read returned no usable Coolify token; "
-                    "check the /coolify-deploy-only-token folder grant"
+                    "the Infisical read returned no usable COOLIFY_DEPLOY_ONLY; "
+                    "check the secret name and the /coolify-deploy-only-token folder grant"
                 ),
             ),
         )
         self.assertEqual(self.http_calls, [])
         self.client.value = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
-        self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                "Coolify refused the COOLIFY_DEPLOY_ONLY token (HTTP 401); "
+                "rotate it in the /coolify-deploy-only-token folder",
+            ),
+        )
         code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
         self.assertEqual((code, ans["result"]), (2, "refused"))
         code, ans = self.run_main(["--check-token", "--json"], self.ctx())
@@ -7215,6 +7259,107 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(answer["unavailableSource"], "fleet_infisical.py")
         self.assertNotIn(self.api.token, json.dumps(answer))
+
+
+class CommittedPlanConsumersTests(unittest.TestCase):
+    """One deploy plan, one mapping:  no committed consumer still maps it to a GET.
+
+    The deploy route answers POST only,  so a consumer that still says GET disagrees with
+    the helper about the action it takes.  A dated record keeps the mapping it recorded and
+    names the live statement;  every other committed file must carry the POST mapping.
+    """
+
+    REPO = Path(HERE).parent
+    LIVE = "docs/protocols/fleet-tool-parity.md"
+    DATED_RECORDS = (
+        "docs/plans/2026-10-28-muster-ops-control.md",
+        "docs/rollouts/2026-11-08-helper-unit-status.md",
+    )
+    # The live spec keeps its review history,  and that history records the GET mapping of
+    # the day it answered;  its normative part names POST.
+    LIVE_SPEC = "docs/muster-ios/server-route-spec.md"
+    SPEC_HISTORY_HEADING = "## 18.  Review Response"
+    SKIP_DIRS = frozenset(
+        {".git", "node_modules", "__pycache__", ".venv", "site", "build", "dist", ".mypy_cache"}
+    )
+    MAX_BYTES = 4 * 1024 * 1024
+    # A plan command in any committed file,  with or without the escapes a JSON string
+    # carries,  and the prose form a dated record uses.
+    STALE = (
+        re.compile(r'\[\s*"?coolify"?\s*,\s*"?GET"?\s*,'),
+        re.compile(r"GET\s+/api/v1/deploy\?"),
+    )
+
+    def committed_files(self):
+        for root, dirs, files in os.walk(self.REPO):
+            dirs[:] = sorted(name for name in dirs if name not in self.SKIP_DIRS)
+            for name in sorted(files):
+                yield Path(root) / name
+
+    def stale_lines(self, text):
+        """The lines that still map the deploy to a GET, with their line numbers."""
+        plain = text.replace("\\", "")
+        found = []
+        for number, line in enumerate(plain.splitlines(), start=1):
+            if any(pattern.search(line) for pattern in self.STALE):
+                found.append(number)
+        return found
+
+    def spec_history_line(self, text):
+        """The first line of the spec's review history,  where a recorded GET may stand."""
+        for number, line in enumerate(text.splitlines(), start=1):
+            if line.startswith(self.SPEC_HISTORY_HEADING):
+                return number
+        raise AssertionError("the live spec has no review-response section")
+
+    def test_no_committed_consumer_maps_the_deploy_to_a_get(self):
+        offenders = []
+        for path in self.committed_files():
+            try:
+                if path.stat().st_size > self.MAX_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            lines = self.stale_lines(text)
+            if not lines:
+                continue
+            relative = path.relative_to(self.REPO).as_posix()
+            if relative in self.DATED_RECORDS:
+                continue
+            if relative == self.LIVE_SPEC:
+                history = self.spec_history_line(text)
+                offenders += [f"{relative}:{number}" for number in lines if number <= history]
+                continue
+            offenders += [f"{relative}:{number}" for number in lines]
+        self.assertEqual(
+            offenders,
+            [],
+            "a committed consumer still maps the deploy to a GET: " + ", ".join(offenders),
+        )
+
+    def test_the_live_spec_names_the_post_mapping_before_its_review_history(self):
+        text = (self.REPO / self.LIVE_SPEC).read_text(encoding="utf-8")
+        history = self.spec_history_line(text)
+        normative = "\n".join(text.splitlines()[: history - 1])
+        self.assertIn('"coolify", "POST"', normative)
+        self.assertEqual(self.stale_lines(normative), [])
+
+    def test_the_committed_fixture_carries_the_post_mapping(self):
+        fixture = self.REPO / "scripts/fixtures/muster-vectors-v5.json"
+        plain = fixture.read_text(encoding="utf-8").replace("\\", "")
+        self.assertIn('"coolify","POST",', plain)
+        self.assertNotIn('"coolify","GET",', plain)
+
+    def test_the_live_protocol_states_the_post_mapping(self):
+        live = (self.REPO / self.LIVE).read_text(encoding="utf-8")
+        plain = re.sub(r"\s+", " ", live.replace("\\", ""))
+        self.assertIn('"coolify", "POST"', plain)
+
+    def test_each_dated_record_points_at_the_live_statement(self):
+        for relative in self.DATED_RECORDS:
+            text = (self.REPO / relative).read_text(encoding="utf-8")
+            self.assertIn(self.LIVE, text, relative)
 
 
 if __name__ == "__main__":

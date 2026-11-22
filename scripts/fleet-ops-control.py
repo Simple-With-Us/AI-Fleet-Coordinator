@@ -806,10 +806,11 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-# The Coolify token this control consumer reads:  the deploy-only token, in its own
-# Infisical folder in the Fleet-OPS prod project.  The consumer's scoped service
-# token is bound to that one folder, so the grant never reaches the project root and
-# the token this consumer can never reach is the full-admin one.
+# The Coolify token this control consumer reads:  the deploy-only token, named
+# COOLIFY_DEPLOY_ONLY, in its own Infisical folder in the Fleet-OPS prod project.  The
+# consumer's scoped service token is bound to that one folder, so the grant never
+# reaches the project root and the token this consumer can never reach is the
+# full-admin one.
 COOLIFY_TOKEN_NAME = "COOLIFY_DEPLOY_ONLY"
 COOLIFY_TOKEN_PATH = "/coolify-deploy-only-token"
 COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
@@ -4295,22 +4296,26 @@ def read_coolify_token(ctx):
         raise Failed(_infisical_coolify_read_reason(exc)) from None
     if not value or any(c.isspace() or ord(c) < 33 for c in value):
         raise Failed(
-            "the Infisical read returned no usable Coolify token; "
-            "check the /coolify-deploy-only-token folder grant"
+            f"the Infisical read returned no usable {COOLIFY_TOKEN_NAME}; "
+            f"check the secret name and the {COOLIFY_TOKEN_PATH} folder grant"
         )
     return value
 
 
 def _infisical_coolify_read_reason(exc: BaseException) -> str:
     """Allow-listed reason only; never the provider's raw message."""
-    code = (
-        getattr(exc, "code", None)
-        or getattr(exc, "status", None)
-        or getattr(exc, "status_code", None)
-    )
+    # The shared client's `SecretsError.code` is the process exit code (default 4),  not an
+    # HTTP status;  the provider's own status is `provider_status`.  The exit code is read
+    # last and only as a status,  so a 403 refusal is never masked by it.
+    status = None
+    for attribute in ("provider_status", "status", "status_code", "code"):
+        value = getattr(exc, attribute, None)
+        if type(value) is int and 100 <= value <= 599:
+            status = value
+            break
     name = type(exc).__name__.lower()
     text = str(exc).lower()
-    if code == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
+    if status == 403 or "403" in text or "scope" in text or "folder" in text or "grant" in text:
         return (
             "the Infisical reader refused the token (scope or 403); issue a "
             "token for /coolify-deploy-only-token and write it to ops-control.env"
@@ -4391,6 +4396,16 @@ def scoped_token(ctx):
     return token
 
 
+def _coolify_http_failure(status) -> str:
+    """Coolify's own answer when it refuses the deploy token, with the remedy it needs."""
+    if status in (401, 403):
+        return (
+            f"Coolify refused the {COOLIFY_TOKEN_NAME} token (HTTP {status}); "
+            f"rotate it in the {COOLIFY_TOKEN_PATH} folder"
+        )
+    return f"Coolify answered HTTP {status}" if status else "Coolify did not answer"
+
+
 def check_token(ctx):
     """(answer, exit status) for `--check-token`: read the token as a redeploy would, then
     ask Coolify whether it accepts that token for a deploy.  The probe names the nil
@@ -4413,7 +4428,7 @@ def check_token(ctx):
         # proxy) answers differently, and only Coolify's own answer counts as accepted.
         accepted = status == 200 or (status == 404 and COOLIFY_NO_RESOURCE in body)
         if not accepted:
-            raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
+            raise Failed(_coolify_http_failure(status))
     except Refused as exc:
         answer.update(detail=str(exc))
         return answer, 2
@@ -4485,7 +4500,7 @@ def execute(ctx, scope, action, target, commands):
             # never `failed` (server-route-spec section 13).  A 4xx refused the request before
             # anything began.
             raise Failed(
-                f"Coolify answered HTTP {status}" if status else "Coolify did not answer",
+                _coolify_http_failure(status),
                 timed_out=bool(getattr(status, "sent", False)) or 500 <= status < 600,
             )
         return f"Coolify accepted the redeploy (HTTP {status})"
