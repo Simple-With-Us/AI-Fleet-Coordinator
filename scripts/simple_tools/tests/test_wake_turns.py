@@ -512,6 +512,23 @@ class Gather(TurnBase):
                 self.drain(router)
                 self.assertEqual(self.calls, [("D", "w-1"), ("D", "x-2")])
 
+    def test_required_session_pr_wakes_cannot_be_turn_heads_or_riders(self):
+        router = self.turns()
+        self.letters(router, "head", "review")
+        self.prime(router)
+        review = router._entries["review"]
+        review["wake"].update(required_session=SID_A,
+                              require_pr="Simple-With-Us/HogHunter#7")
+        router._save(review)
+        head = router._entries["head"]
+        pick = WR._pick_from(head["pick"])
+        self.assertEqual(router._gather(head, pick, "test-turn"), [])
+        self.assertFalse(router._may_ride(review, WR.turn_key(self.target_a), self.clock.now))
+        self.assertEqual(router._gather(review, WR._pick_from(review["pick"]), "test-turn"), [])
+        self.assertFalse(WR.certain(WR.Pick(target=self.target_a,
+            picked="required-session", reason="required-session",
+            link_note=WR.LINK_NOTES["required-session"])))
+
     def test_certain_reasons_are_exact_addresses_disjoint_from_unsure_notes(self) -> None:
         self.assertEqual(WR.CERTAIN_REASONS, frozenset({"letter", "reply", "session-id"}))
         unsure = {reason for reason, note in WR.LINK_NOTES.items() if WR.UNSURE in note}

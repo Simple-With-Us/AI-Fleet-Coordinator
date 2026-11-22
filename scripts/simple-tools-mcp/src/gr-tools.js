@@ -389,7 +389,14 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_open_pr",
     title: "Open Pull Request",
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" },
+      // Seat self-attestation from a native proxy, not per-chat authentication.
+      // The relay fixes these in its protected first-confirmed receipt; only
+      // Operator may bind after checking the exact current registry row.
+      origin_session_claim: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$" },
+      origin_letter_claim: { type: "string", pattern: "^[A-Z]{2}$" },
+      origin_generation_claim: { type: "integer", minimum: 1 },
+    }),
   },
   {
     name: "gr_edit_pr",

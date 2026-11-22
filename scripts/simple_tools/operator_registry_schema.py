@@ -9,7 +9,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -103,5 +103,28 @@ CREATE TABLE IF NOT EXISTS session_issues (
     record_id TEXT PRIMARY KEY REFERENCES sessions(record_id),
     issues TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
+);
+-- Version 4: explicitly self-registered PR bindings. No historical backfill.
+CREATE TABLE IF NOT EXISTS session_pr_bindings (
+    record_id TEXT NOT NULL REFERENCES sessions(record_id),
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY(record_id, repo, number)
+);
+
+-- Version 5 (AFC-878): the host's own view of the chats it still holds open.
+-- One row per (platform, verified_host): the last report the host made, and
+-- `live`, a JSON object of native session id to the host's own last-activity
+-- time for that chat. The sweep asks this before it recycles a pair: a chat
+-- the host says it still holds open keeps its letter, and a host that has
+-- gone silent is not evidence that its chats ended.
+CREATE TABLE IF NOT EXISTS host_liveness (
+    platform TEXT NOT NULL,
+    verified_host TEXT NOT NULL,
+    reported_at TEXT NOT NULL,
+    live TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (platform, verified_host)
 );
 """

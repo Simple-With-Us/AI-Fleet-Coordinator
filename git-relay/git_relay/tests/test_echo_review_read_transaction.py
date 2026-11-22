@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from .historical_recovery_fixture import historical_source_root
+
 HERE = Path(__file__).resolve().parents[2] / "deploy" / "echo-review-read"
 
 
@@ -22,12 +24,25 @@ proof = load("echo_proof", "runtime_proof.py")
 
 
 class Tests(unittest.TestCase):
+    def test_current_modified_modules_refuse_before_output_creation(self):
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as temporary:
+            before = Path(temporary) / "before"
+            before.write_bytes(b"fixture")
+            output = Path(temporary) / "must-not-exist"
+            with (
+                patch.object(builder, "image", return_value=b"candidate"),
+                self.assertRaisesRegex(ValueError, "finite recovery module drift: deploy_guard.py"),
+            ):
+                builder.build(root, before, output)
+            self.assertFalse(output.exists())
+
     def test_live_byte_drift_refuses(self):
         with self.assertRaisesRegex(ValueError, "baseline drift"):
             builder.image(b"changed")
 
     def test_only_one_exact_state_file_and_private_candidate(self):
-        root = Path(__file__).resolve().parents[3]
+        root = historical_source_root(self, builder)
         with tempfile.TemporaryDirectory() as tmp:
             source, out = Path(tmp) / "before", Path(tmp) / "package"
             source.write_bytes(b"fixture")
@@ -59,7 +74,7 @@ class Tests(unittest.TestCase):
 
     def test_runtime_proof_pin_and_tamper_refusal(self):
         self.assertEqual(builder.digest((HERE / "runtime_proof.py").read_bytes()), builder.PROOF)
-        root = Path(__file__).resolve().parents[3]
+        root = historical_source_root(self, builder)
         with tempfile.TemporaryDirectory() as tmp:
             before = Path(tmp) / "before"
             before.write_bytes(b"fixture")

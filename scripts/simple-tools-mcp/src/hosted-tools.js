@@ -1,3 +1,5 @@
+import { resolveNativeOriginClaims } from "./native-origin-context.js";
+import { nativeOriginResolver } from "./native-origin-client.js";
 import { withServiceTitle } from "./tool-titles.js";
 import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
@@ -552,7 +554,7 @@ export class HostedTools {
   // ---------------------------------------------------------------- entry
 
   /** Run one tool.  Returns a CallToolResult.  Throws UnknownTool. */
-  async call(name, rawArgs) {
+  async call(name, rawArgs, invocation = null) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
     if (!spec) {
       await this.safely(() => this.auditRow(this.gate, {
@@ -627,7 +629,7 @@ export class HostedTools {
         ? callLinearMcp(this, publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_NAMED_BY_NAME, publicName)
           ? callNamedLinear(this, publicName, preparedArgs, audit)
-          : this[`tool_${legacyZulipName}`](preparedArgs, audit), gapNotices);
+          : this[`tool_${legacyZulipName}`](preparedArgs, audit, invocation), gapNotices);
       // AFC-722 review:  a gap the server could not write is reported, never dropped silently.
       if (gapNotices.length && Array.isArray(result?.content)) {
         result = { ...result, content: [...result.content, ...gapNotices.map((text) => ({ type: "text", text }))] };
@@ -1732,7 +1734,19 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_open_pr(args, _extra, invocation) {
+    // Missing context retains explicit-claim compatibility, not verified per-call custody.
+    // Claims still require the protected creation receipt and independent canonical binder.
+    if (this.seat === "CODEX" && invocation && invocation.state !== "missing") {
+      const origin = await resolveNativeOriginClaims("CODEX", invocation, nativeOriginResolver(this.workerEnv));
+      if (origin.state !== "resolved") throw new ToolError("origin_held", "Native PR origin could not be verified. Nothing was created.");
+      if (Object.entries(origin.claims).some(([name, value]) => Object.hasOwn(args, name) && args[name] !== value)) {
+        throw new ToolError("origin_held", "Native PR origin conflicts with the current thread. Nothing was created.");
+      }
+      args = { ...args, ...origin.claims };
+    }
+    return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) }));
+  }
   async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }

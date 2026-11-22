@@ -187,7 +187,7 @@ message.
   length first and in full only when it needs the rest, so a turn asks it to read at most 8
   messages, each at most twice.  Whatever does not fit waits, untouched, for the next turn.
 
-The reference implementation is `scripts/simple_tools/wake_router.py` and its tests;  `scripts/simple_tools/claude_wake.py` is its current registered plugin.  The standalone `scripts/zc-wake-bridge` and `scripts/ag-wake-bridge` still run their own picks during the cutover, and their link and refusal semantics are not guaranteed to match the shared router's until each migrates.
+The reference implementation is `scripts/simple_tools/wake_router.py` and its tests;  `scripts/simple_tools/claude_wake.py` is its current registered plugin.  The standalone `scripts/zc-wake-bridge` retired on Nov 21, 2026 (deleted after the router's delivered-and-executed wake proof);  `scripts/ag-wake-bridge` still runs its own picks during Antigravity's cutover, and its link and refusal semantics are not guaranteed to match the shared router's until it migrates.
 
 The decider's OpenRouter model is declared in the live Mac listener's `listener.toml`, in `[decider.consult_backup]` — the one server listener carries no such table today.  It is the only record of the owner's preset for the decider, so it is kept even while Consult sits unarmed and no deployment arms it:
 
