@@ -2361,7 +2361,11 @@ def _strip_unknown_allowlist_entry(allowlist, where):
             return None
         if len(parts) == 3:
             spec = seat.get(parts[2])
-            return (("seat", parts[2]), where) if typed(spec) and seat.pop(parts[2], None) is not None else None
+            return (
+                (("seat", parts[2]), where)
+                if typed(spec) and seat.pop(parts[2], None) is not None
+                else None
+            )
         spec = seat.get(parts[2])
         keys = spec.get("keys") if isinstance(spec, dict) else None
         sub = keys.get(parts[3]) if isinstance(keys, dict) else None
@@ -2376,7 +2380,11 @@ def _strip_unknown_allowlist_entry(allowlist, where):
         return None
     if len(parts) == 2:
         spec = entries.get(parts[1])
-        return ((parts[0], parts[1]), where) if typed(spec) and entries.pop(parts[1], None) is not None else None
+        return (
+            ((parts[0], parts[1]), where)
+            if typed(spec) and entries.pop(parts[1], None) is not None
+            else None
+        )
     spec = entries.get(parts[1])
     keys = spec.get("keys") if isinstance(spec, dict) else None
     sub = keys.get(parts[2]) if isinstance(keys, dict) else None
