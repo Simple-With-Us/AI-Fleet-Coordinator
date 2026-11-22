@@ -220,14 +220,16 @@ class ScopedReadContract(ServiceTokenTestCase):
 
 
 class BatchValues(ServiceTokenTestCase):
-    """The environment first, one batched read second, an absence is an error."""
+    """One batched scoped read, an absence is an error."""
 
-    def test_the_environment_comes_first(self):
+    def test_the_environment_does_not_replace_the_scoped_read(self):
+        # The reviewed source is the scoped read:  a hand-set environment copy never
+        # stands in for it,  so the value written into a target is the reviewed one.
         read = self.read({"A": "from-infisical"})
         with mock.patch.dict(os.environ, {"A": "from-the-environment"}):
             values = provision.batch_values(["A"], "fleet-ops", "/")
-        self.assertEqual(values, {"A": "from-the-environment"})
-        self.assertEqual(read.calls, [])
+        self.assertEqual(values, {"A": "from-infisical"})
+        self.assertEqual(len(read.calls), 1)
 
     def test_an_absent_name_is_an_error(self):
         self.read({}, absent=("MISSING",))

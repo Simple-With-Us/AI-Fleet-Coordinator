@@ -274,27 +274,25 @@ def scoped_values(names, project, path):
 
 
 def batch_values(names, project, path):
-    """Every named value:  the environment first, one bounded named read second.
+    """Every named value:  one bounded scoped read, and nothing else.
 
-    A name the folder does not hold is an error here, not a silent gap:  the
-    caller asked for a value it cannot do without.  The names are ever
-    reported;  the values never are.
+    The value comes from the reviewed source:  this provisioner's own scoped read of
+    the folder that holds it.  An environment copy never stands in for it,  so a
+    hand-set value cannot be written into a target instead of the reviewed one.  A
+    name the folder does not hold is an error here,  not a silent gap:  the caller
+    asked for a value it cannot do without.  The names are ever reported;  the
+    values never are.
     """
+    wanted = [name for name in names if name]
+    if not wanted:
+        return {}
+    fetched = scoped_values(wanted, project, path)
     values = {}
-    missing = []
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            values[name] = value
-        else:
-            missing.append(name)
-    if missing:
-        fetched = scoped_values(missing, project, path)
-        for name in missing:
-            value = fetched.get(name)
-            if not value:
-                raise ReadError(f"{name} is absent from {project}{path}")
-            values[name] = value
+    for name in wanted:
+        value = fetched.get(name)
+        if not value:
+            raise ReadError(f"{name} is absent from {project}{path}")
+        values[name] = value
     return values
 
 
