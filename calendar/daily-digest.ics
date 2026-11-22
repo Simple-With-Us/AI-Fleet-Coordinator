@@ -11,11 +11,11 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
-SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
-DESCRIPTION:100 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
+SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
+DESCRIPTION:114 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
  PRs:\n- [AI-Fleet-Coordinator#1872] Merge branch 'main' into burndown-1626
  \n- [AI-Fleet-Coordinator#2073] (minimax) Record The Owner Deferral For Th
  e Brokerable Host Map (OPS-969)\n- [AI-Fleet-Coordinator#2180] (codex) Per
@@ -66,7 +66,7 @@ DESCRIPTION:100 PRs merged · 0 issues opened · 0 issues closed\n\nMerged
  [AI-Fleet-Coordinator#2416] (codex) Finish Shared Reader And Retained Inst
  aller Migration\n- [AI-Fleet-Coordinator#2417] (codex) Validate Shared Pro
  vider URLs Before Bearer Handoff\n- [AI-Fleet-Coordinator#2418] chore: com
- .simplewithus.codecaps.ios 0.1.0\n  … +60 more
+ .simplewithus.codecaps.ios 0.1.0\n  … +74 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-21
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -74,7 +74,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -138,7 +138,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -204,7 +204,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -275,7 +275,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -317,7 +317,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -374,7 +374,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -435,7 +435,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -496,7 +496,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -554,7 +554,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -618,7 +618,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -686,7 +686,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -750,7 +750,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -812,7 +812,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -882,68 +882,69 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
-SUMMARY:Fleet: 115 merged · 0 opened · 0 closed
-DESCRIPTION:115 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
- PRs:\n- [AI-Fleet-Coordinator#1337] Keep The Letter On Chats An Agent Titl
- ed\n- [AI-Fleet-Coordinator#1367] Update non-major dependencies\n- [AI-Fle
- et-Coordinator#1392] (chatgpt) docs(AFC-643): compact post intro ( \, HH.1
- .M periods)\n- [AI-Fleet-Coordinator#1410] (grok-bot) AFC-512: Mac process
- -list rows for Slack-era callers\n- [AI-Fleet-Coordinator#1419] AFC-651: a
- ccept @preset/<slug> OpenRouter model references in seat validation\n- [AI
- -Fleet-Coordinator#1439] Muster reads Zulip as the Operator through a read
- -only muster-service\n- [AI-Fleet-Coordinator#1448] Muster Release: The Fe
- ed Waited On\, The Latest Pin Held\, And The Receipts Written Down\n- [AI-
- Fleet-Coordinator#1449] simple-git: a declared seat gets its own bearer fr
- om the host helper (AFC-613)\n- [AI-Fleet-Coordinator#1450] Apps & Work: K
- eep The Filter Row Inside The Pane\, And List The Apps At Once\n- [AI-Flee
- t-Coordinator#1451] Hosted gr_ refusals name their cause (AFC-623)\n- [AI-
- Fleet-Coordinator#1452] Doctor LaunchAgent: Pull VM Reports\, And Point At
-  The Runtime That Exists\n- [AI-Fleet-Coordinator#1453] lane retire: accep
- t dirty paths already published to origin/main\n- [AI-Fleet-Coordinator#14
- 54] ZCode session letters: the adapter\, the wrapper and the registry API 
- branch\n- [AI-Fleet-Coordinator#1455] Lark Bridge: Find The Renamed Fleet 
- Runtime\n- [AI-Fleet-Coordinator#1456] Operator Sheets Drain: Full 16-Colu
- mn Sessions Profile\, Write Pacing And 429 Back-Off\n- [AI-Fleet-Coordinat
- or#1457] Muster: Read Slow Things Less Often\n- [AI-Fleet-Coordinator#1458
- ] Operator Sheets Drain: Idempotent Installer With The Timer Left Disabled
- \n- [AI-Fleet-Coordinator#1459] Operator voice: a server credential route\
- , config-pin fallback\, and a published voice state (AFC-602)\n- [AI-Fleet
- -Coordinator#1460] Seat inventory: record the server deployment\, and corr
- ect which account runs the control route (AFC-652)\n- [AI-Fleet-Coordinato
- r#1461] Worker CPU: cheaper git reads\, hashing and Infisical refresh (Ref
- s AFC-617)\n- [AI-Fleet-Coordinator#1462] Listener drain on current main: 
- defer-marked pauses\, broadcast parking\, offer fence\, hook gate (AFC-652
- \, supersedes #1424)\n- [AI-Fleet-Coordinator#1463] Muster App Processes: 
- Every Fleet App's Processes On The Mac And The Server\n- [AI-Fleet-Coordin
- ator#1464] Muster Instruction Previews Mark What Usually Changes For A Pla
- tform\n- [AI-Fleet-Coordinator#1465] Muster: Every Seat In Seats\, The Ope
- rator's Voice\, And The Operator In Services\n- [AI-Fleet-Coordinator#1466
- ] Muster: Fewer Engine Runs\, Single-Flight Reads\, Bounded Child Processe
- s\, Cached Reports\n- [AI-Fleet-Coordinator#1467] Tools Doctor Edits An Un
- changed Status Post\; Muster Reads Each Tool's Versions\n- [AI-Fleet-Coord
- inator#1468] Temp-Build Rule Class For Builds Aimed At System Temp (AFC-61
- 8)\n- [AI-Fleet-Coordinator#1469] Muster Wake & Listener And Seat Activity
- : Say Only What The Status Supports\n- [AI-Fleet-Coordinator#1470] chore: 
- com.simplewithus.codecaps.ios 0.1.0\n- [AI-Fleet-Coordinator#1471] Update 
- non-major dependencies\n- [AI-Fleet-Coordinator#1472] simple-git: show the
-  closed refusal reason and github_status for relay_refused\n- [AI-Fleet-Co
- ordinator#1473] Muster Tools And Worker Health: Installed\, Latest And Oth
- er Host Columns\n- [AI-Fleet-Coordinator#1474] Compliance Grid Says What I
- t Proves: The Mac's Seat Config\, Current Cells\, Plain States\n- [AI-Flee
- t-Coordinator#1475] git-relay: add the ZC seat entry (swu-zc\, fleet profi
- le) to the reviewed seat policy\n- [AI-Fleet-Coordinator#1476] Muster Fres
- hness: Report Ages That Keep Moving\, Copies Named As Copies\, And A Next 
- Step\n- [AI-Fleet-Coordinator#1477] Muster Grid And Config Reader: Keep Th
- e Last Answer\, Read Changed Inputs\, Redact Without Overreach\n- [AI-Flee
- t-Coordinator#1478] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Flee
- t-Coordinator#1479] Server eavesdropper-status verb\, its reducer\, and th
- e renamed Mac sync job label (AFC-654\, AFC-655)\n- [AI-Fleet-Coordinator#
- 1480] (minimax) The OpenRouter Wake Fallback Is — M3.1 Flash\n- [AI-Flee
- t-Coordinator#1481] Apps & Work And Services: Read Through The App's Store
- s On A Visit\n  … +75 more
+SUMMARY:Fleet: 108 merged · 0 opened · 0 closed
+DESCRIPTION:108 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
+ PRs:\n- [AI-Fleet-Coordinator#1367] Update non-major dependencies\n- [AI-F
+ leet-Coordinator#1448] Muster Release: The Feed Waited On\, The Latest Pin
+  Held\, And The Receipts Written Down\n- [AI-Fleet-Coordinator#1450] Apps 
+ & Work: Keep The Filter Row Inside The Pane\, And List The Apps At Once\n-
+  [AI-Fleet-Coordinator#1452] Doctor LaunchAgent: Pull VM Reports\, And Poi
+ nt At The Runtime That Exists\n- [AI-Fleet-Coordinator#1453] lane retire: 
+ accept dirty paths already published to origin/main\n- [AI-Fleet-Coordinat
+ or#1454] ZCode session letters: the adapter\, the wrapper and the registry
+  API branch\n- [AI-Fleet-Coordinator#1455] Lark Bridge: Find The Renamed F
+ leet Runtime\n- [AI-Fleet-Coordinator#1456] Operator Sheets Drain: Full 16
+ -Column Sessions Profile\, Write Pacing And 429 Back-Off\n- [AI-Fleet-Coor
+ dinator#1457] Muster: Read Slow Things Less Often\n- [AI-Fleet-Coordinator
+ #1458] Operator Sheets Drain: Idempotent Installer With The Timer Left Dis
+ abled\n- [AI-Fleet-Coordinator#1459] Operator voice: a server credential r
+ oute\, config-pin fallback\, and a published voice state (AFC-602)\n- [AI-
+ Fleet-Coordinator#1460] Seat inventory: record the server deployment\, and
+  correct which account runs the control route (AFC-652)\n- [AI-Fleet-Coord
+ inator#1461] Worker CPU: cheaper git reads\, hashing and Infisical refresh
+  (Refs AFC-617)\n- [AI-Fleet-Coordinator#1462] Listener drain on current m
+ ain: defer-marked pauses\, broadcast parking\, offer fence\, hook gate (AF
+ C-652\, supersedes #1424)\n- [AI-Fleet-Coordinator#1463] Muster App Proces
+ ses: Every Fleet App's Processes On The Mac And The Server\n- [AI-Fleet-Co
+ ordinator#1464] Muster Instruction Previews Mark What Usually Changes For 
+ A Platform\n- [AI-Fleet-Coordinator#1465] Muster: Every Seat In Seats\, Th
+ e Operator's Voice\, And The Operator In Services\n- [AI-Fleet-Coordinator
+ #1466] Muster: Fewer Engine Runs\, Single-Flight Reads\, Bounded Child Pro
+ cesses\, Cached Reports\n- [AI-Fleet-Coordinator#1467] Tools Doctor Edits 
+ An Unchanged Status Post\; Muster Reads Each Tool's Versions\n- [AI-Fleet-
+ Coordinator#1468] Temp-Build Rule Class For Builds Aimed At System Temp (A
+ FC-618)\n- [AI-Fleet-Coordinator#1469] Muster Wake & Listener And Seat Act
+ ivity: Say Only What The Status Supports\n- [AI-Fleet-Coordinator#1470] ch
+ ore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Fleet-Coordinator#1471] Up
+ date non-major dependencies\n- [AI-Fleet-Coordinator#1472] simple-git: sho
+ w the closed refusal reason and github_status for relay_refused\n- [AI-Fle
+ et-Coordinator#1473] Muster Tools And Worker Health: Installed\, Latest An
+ d Other Host Columns\n- [AI-Fleet-Coordinator#1474] Compliance Grid Says W
+ hat It Proves: The Mac's Seat Config\, Current Cells\, Plain States\n- [AI
+ -Fleet-Coordinator#1475] git-relay: add the ZC seat entry (swu-zc\, fleet 
+ profile) to the reviewed seat policy\n- [AI-Fleet-Coordinator#1476] Muster
+  Freshness: Report Ages That Keep Moving\, Copies Named As Copies\, And A 
+ Next Step\n- [AI-Fleet-Coordinator#1477] Muster Grid And Config Reader: Ke
+ ep The Last Answer\, Read Changed Inputs\, Redact Without Overreach\n- [AI
+ -Fleet-Coordinator#1478] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI
+ -Fleet-Coordinator#1479] Server eavesdropper-status verb\, its reducer\, a
+ nd the renamed Mac sync job label (AFC-654\, AFC-655)\n- [AI-Fleet-Coordin
+ ator#1480] (minimax) The OpenRouter Wake Fallback Is — M3.1 Flash\n- [AI
+ -Fleet-Coordinator#1481] Apps & Work And Services: Read Through The App's 
+ Stores On A Visit\n- [AI-Fleet-Coordinator#1482] Wake & Listener: Say What
+  Each State Means On Screen\, Not Only On Hover\n- [AI-Fleet-Coordinator#1
+ 483] Muster Reads The Server Eavesdropper's Status\n- [AI-Fleet-Coordinato
+ r#1484] Muster For iPhone And iPad: The Design And The Server Route Spec\n
+ - [AI-Fleet-Coordinator#1485] AFC-649: preset-backed bridge consult backup
+ \, re-cut on current main (source only)\n- [AI-Fleet-Coordinator#1486] AFC
+ -658: additive seat insertion policy + external own-seat runtime proof\n- 
+ [AI-Fleet-Coordinator#1487] Server Report: Each File Against origin/main\,
+  And The Host's Own Config By Digest (BACKEND-15)\n- [AI-Fleet-Coordinator
+ #1488] Muster Freshness: Fleet Hosts Ages On The Tick\, Apps & Work's Head
+ er Moves\, Resource Limits Checks Reach\n  … +68 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-07
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -951,7 +952,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 49 merged · 0 opened · 0 closed
@@ -1006,7 +1007,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
@@ -1056,7 +1057,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -1111,7 +1112,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 122 merged · 0 opened · 0 closed
@@ -1170,7 +1171,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
@@ -1233,7 +1234,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
+DTSTAMP:20261122T081354Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 62 merged · 0 opened · 0 closed
@@ -1286,45 +1287,6 @@ DESCRIPTION:62 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Trade#2928] (cursor) fix(admin): accept empty seenAt in ingest-failure\n  
  … +22 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-01
-CATEGORIES:fleet-daily,agent-activity
-STATUS:CONFIRMED
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261122T012213Z
-DTSTART;VALUE=DATE:20261031
-DTEND;VALUE=DATE:20261101
-SUMMARY:Fleet: 27 merged · 0 opened · 0 closed
-DESCRIPTION:27 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [BotFleet#1428] Add Native Saved Hosts And Servers Settings\n- [Bot
- Fleet#1430] Add Host Resource Reports\, Storage Guards And Inventory\n- [B
- otFleet#1435] Compose The Native Headless Host With Durable Recovery\n- [B
- otFleet#1436] Add Amp orb lifecycle files so fresh orbs start ready\n- [Bo
- tFleet#1437] Plan BF-2444: unified conversation per bot\, browsing during 
- work\, context policy\n- [BotFleet#1438] Reuse the resource report's brack
- eted storage observation\n- [BotFleet#1439] Update dependency posthog-js t
- o v1.438.22\n- [BotFleet#1440] Update non-major dependencies\n- [BotFleet#
- 1441] Health audit: validated port env\, visible resume failures\, tighten
- ed gates\n- [BotFleet#1442] Update dependency postcss to v8.5.32\n- [BotFl
- eet#1443] Update dependency posthog-js to v1.438.24\n- [BotFleet#1444] fix
- (deploy): resolve serving alias for production baseline\n- [BotFleet#1445]
-  Update pnpm to v12.16.0\n- [Congress.Trade#2910] Add Senate PTR Intake Ro
- ute for Mac eFD Fetcher Rows (CT-2442)\n- [Congress.Trade#2912] Force mini
- match ^11 via npm overrides to clear npm audit\n- [Congress.Trade#2913] Up
- date non-major dependencies\n- [Congress.Trade#2915] Update non-major depe
- ndencies\n- [Congress.Trade#2916] Update non-major dependencies\n- [Contac
- tLogo#281] chore(deps): update dependency @tanstack/react-query to v5.105.
- 0\n- [ContactLogo#282] chore(deps): update non-major dependencies\n- [Cont
- actLogo#283] chore(deps): update dependency better-auth to v1.7.14\n- [Fle
- etLink#156] fix(worker): reject invalid requests before storage work (FL-7
- 6)\n- [FleetLink#157] feat(worker): creator-controlled team-only bot shari
- ng\n- [Socratic-Trade#4971] fix(benchmark): Alpaca Paper vs-S&P parity via
-  broker equity history\n- [Socratic-Trade#4972] Update non-major dependenc
- ies\n- [Usage-Monitor#1852] fix(deps): review minimatch security update (U
- M-1647)\n- [codecaps#344] fix(snapshot): finish queued writes without bloc
- king quit (CC-196)
-URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-31
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
