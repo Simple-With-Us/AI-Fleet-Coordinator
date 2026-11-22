@@ -524,6 +524,37 @@ class ServiceReadRevokeTests(unittest.TestCase):
             self.assertEqual(status, 502)
             self.assertEqual(minter.revokes, ["minted-token"])
 
+    def test_a_failed_read_keeps_its_detail_when_the_revocation_also_fails(self):
+        # A read that failed and a revocation that failed are two signals:
+        # the row carries both, so review can tell a lone cleanup failure
+        # from a combined read and cleanup failure.
+        from git_relay.github_client import RelayGitHubError
+
+        class FailingClient(Client):
+            def _call(self, method, path, bearer=None, timeout=None):
+                raise RelayGitHubError(502, "upstream is unhappy", code="server_error")
+
+        with tempfile.TemporaryDirectory() as directory:
+            minter = FakeMinter(revoke_ok=False)
+            relay = make_relay(
+                directory, FailingClient(), minter=minter, service_repos=[ARGS["repo"]]
+            )
+            status, _ = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            self.assertEqual(status, 502)
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row.get("result"), "error")
+            self.assertEqual(row.get("at"), "github")
+            self.assertEqual(row.get("github_code"), "server_error")
+            self.assertIs(row.get("revoke_failed"), True)
+
     def test_one_call_writes_exactly_one_row(self):
         # Every exit from the lane writes exactly one row, so a call is
         # never double-counted in review.

@@ -1,0 +1,36 @@
+{
+  "review": "AI-Fleet-Coordinator git_relay/server.py match-pinned generic-assignment admission proposal (edit_pr base ref-validation candidate)",
+  "proposal_status": "installed by this pull request as a match-pinned admission: the change adds the _REVIEWED_GENERIC_MATCHES registry entry and this durable record; the admission waives only the pinned census match for the exact reviewed full-file digest and claims no clearance of any other bytes",
+  "prepared_at": "2026-11-18",
+  "prepared_by": "wise reliability lane, full-content read of the complete candidate file",
+  "reviewed_file": {
+    "repository": "Simple-With-Us/AI-Fleet-Coordinator",
+    "path": "git-relay/git_relay/server.py",
+    "sha256": "0b9d5296287c1c3dd5b7d508af8ae2afffb9da83ff03f64a3331ec5f1df01f20",
+    "bytes": 81835,
+    "lines": 1785,
+    "effective_matches": [
+      [
+        "assigned secret",
+        52346,
+        52389,
+        52354,
+        52389
+      ]
+    ]
+  },
+  "provenance_source": {
+    "path": "git-relay/git_relay/server.py",
+    "sha256": "82b53da38ce0a110a3f25b947fbcabcfcef031a8295795d72f46f48d55d79305",
+    "admission": "legacy exact-file fixture entry for the reviewed main version",
+    "delta": "the candidate differs from the reviewed main version only by the edit_pr base-parameter change (38 insertions, 7 deletions: a new _ref validator enforcing git check-ref-format rules and the edit_pr base argument kind changed from text to ref); the delta contains no generic assignment, and the single effective match is the identical pre-existing line 1107, an unquoted call-result assignment into local variable token from the AppTokenMinter method token_for_namespace with arguments (app_slug, account[0], account[1]); the same line content appeared as line 1077 in the frozen 182f99d6 bytes and is byte-identical"
+  },
+  "relation_to_prior_admissions": "independent standalone proposal based on main 92911dd7; not an extension of the frozen 182f99d6 admission (separate unmerged lane) or the CodeCaps 529 admission (held pending reconciliation); the frozen 182f99d6 bytes remain preserved and unmodified",
+  "findings": {
+    "single_match": "line 1107 assigns the unquoted function-call result of AppTokenMinter.token_for_namespace to local token; executable lookup logic, not a stored credential value",
+    "enumeration": "exactly one effective generic assignment; zero dedicated-provider hits, zero bearer-header hits, zero Zulip-shaped key hits, zero loaded-credential hits under empty known set",
+    "full_content": "the complete 1,785-line file was enumerated with the scanner's own detection code (patch_secretscan._PATTERNS, _GENERIC_ASSIGNMENTS, _source_assignment); no stored credential literal, no encoded payload, no exfiltration destination, no embedded instruction content was found"
+  },
+  "admission_scope": "if independently reviewed and admitted, admits only this repository, full path and exact full-file digest for the generic-assignment categories, with the exact match census pinned; any changed bytes lose the admission and undergo the normal scan, which refuses another match or any other scannable pattern but accepts content that is normally clean (so removing the sole match is not a guaranteed refusal); a refreshed digest carrying stale or incomplete census metadata refuses; loaded-credential and dedicated-shape enforcement remain absolute",
+  "candidate_state": "the candidate bytes are the unpublished working tree version of the file; immutable full-content evidence snapshot: local evidence repository /Users/jay/.local/state/fleet/afc-serverpy-retarget-evidence-20261118 on the Mac, commit 3269432550a1cbdaf76e81317f3333a77387a96d, blob 3f6d4af30c6fabde929e862b2f9239a71ca9d0ac; the pinned census was re-verified against these exact bytes with the scanner's own detection code on 2026-11-18 (exact bytes admitted, a one-byte mutation refused); any further edit re-spins the digest and voids the admission; this record does not authorize publication, installation or deployment of the candidate source by itself"
+}

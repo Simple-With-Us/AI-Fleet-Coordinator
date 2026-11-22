@@ -373,7 +373,14 @@ def lane(relay, token, args) -> tuple[int, dict]:
             # failure is folded into this call's one row.
             if bearer is not None and not relay.app_minter.revoke_installation_token(bearer):
                 outcome = "error"
-                detail = {**detail, "at": "revoke"}
+                if "at" in detail:
+                    # The read already named where it failed:  keep that
+                    # detail and flag the failed revocation beside it, so
+                    # review can tell a lone cleanup failure from a
+                    # combined read and cleanup failure.
+                    detail = {**detail, "revoke_failed": True}
+                else:
+                    detail = {**detail, "at": "revoke"}
     finally:
         if not row_written:
             relay.audit.record("service-read", "service_read", repo, outcome, detail)
