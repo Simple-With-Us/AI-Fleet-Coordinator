@@ -5,7 +5,7 @@ from simple_tools import zulip as _zulip
 
 
 def _no_live_infisical(names, *_args):  # pragma: no cover - a guard
-    """Infisical /zulip (OPS-818, AFC-359) must never reach the real fleet-secrets from a test.  A test that
+    """Infisical /zulip (OPS-818, AFC-359) must never reach the real Infisical from a test.  A test that
     exercises it patches `zulip._default_infisical_fetch` (see Harness.infisical_values)."""
     raise _zulip.CredentialError("infisical disabled in tests")
 

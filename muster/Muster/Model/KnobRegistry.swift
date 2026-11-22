@@ -416,7 +416,7 @@ struct KnobRegistry {
         case "service-token-required":
             return "Muster runs the knob engine without the knob reader's Infisical token, so it cannot read Infisical"
         case "scoped-reader-unavailable":
-            return "the fleet-secrets reader the engine needs is not installed on this Mac"
+            return "the scoped Infisical reader the engine needs is not installed on this Mac"
         case "timeout":
             return "Infisical did not answer within 8 seconds"
         case "scoped-read-failed":

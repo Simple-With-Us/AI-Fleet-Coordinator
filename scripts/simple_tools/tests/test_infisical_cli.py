@@ -8,17 +8,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+from fleet_infisical_cli_tests.installed_writer_fixture import assert_installed_writer
 
 
 class IsolatedCommandTests(unittest.TestCase):
     def test_coding_memory_installer_payload_can_run_its_delegate_in_isolation(self):
         scripts = Path(__file__).resolve().parents[2]
         installer = (scripts / "hetzner/install-coding-memory.sh").read_text()
-        start = 'install -m 0700 "$scripts/fleet-secrets"'
+        start = 'install -m 0600 "$scripts/fleet_infisical.py"'
         payload = start + installer.split(start, 1)[1].split('python3 - "$config/environment"', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             destination = root / "coding-memory"
             if destination.is_symlink():
                 raise ValueError(f"refusing symlink: {destination}")
@@ -31,6 +31,9 @@ class IsolatedCommandTests(unittest.TestCase):
             if fleet_secrets_dir.is_symlink():
                 raise ValueError(f"refusing symlink: {fleet_secrets_dir}")
             fleet_secrets_dir.mkdir(mode=0o700)
+            (fleet_secrets_dir / "__init__.py").write_text(
+                "raise AssertionError('retired package executed')\n"
+            )
             hostile = root / "hostile"
             hostile.mkdir()
             (hostile / "fleet_infisical_cli.py").write_text("raise AssertionError('foreign command')\n")
@@ -58,13 +61,12 @@ class IsolatedCommandTests(unittest.TestCase):
                 )
             assert_installed_writer(self, settings, root)
             result = subprocess.run(
-                [sys.executable, "-I", str(settings / "linux-entrypoint.py"), "--help"],
+                [sys.executable, "-I", str(settings / "fleet_infisical_cli.py"), "--help"],
                 cwd=hostile,
                 env={
-                    "HOME": directory,
+                    "HOME": str(root),
                     "PATH": os.defpath,
                     "PYTHONPATH": str(hostile),
-                    "FLEET_SECRETS_CLI": str(settings / "fleet-secrets"),
                 },
                 capture_output=True,
                 text=True,
@@ -73,11 +75,12 @@ class IsolatedCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("names", result.stdout)
             self.assertNotIn("foreign command", result.stdout + result.stderr)
+            self.assertNotIn("retired package executed", result.stdout + result.stderr)
 
     def test_bridge_release_uses_shared_command_without_compatibility_package(self):
         scripts = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             library = root / "release/lib"
             library.mkdir(parents=True)
             launcher = root / "release/scripts/whatsapp_bridge/launch.py"
@@ -99,7 +102,7 @@ class IsolatedCommandTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, "-I", "-c", code, str(library), str(launcher)],
                 cwd=hostile,
-                env={"HOME": directory, "PATH": os.defpath, "PYTHONPATH": str(hostile)},
+                env={"HOME": str(root), "PATH": os.defpath, "PYTHONPATH": str(hostile)},
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -118,9 +121,9 @@ class IsolatedCommandTests(unittest.TestCase):
                 [sys.executable, "-I", str(entry), "--help"],
                 cwd=hostile,
                 env={
-                    "HOME": directory,
+                    "HOME": str(hostile),
                     "PATH": os.defpath,
-                    "PYTHONPATH": directory,
+                    "PYTHONPATH": str(hostile),
                     "INFISICAL_TOKEN": "synthetic-fixture",
                 },
                 capture_output=True,

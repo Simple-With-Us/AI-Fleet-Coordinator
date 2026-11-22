@@ -23,7 +23,8 @@
 # --force-platform-letter repoints it anyway.  The server gets the command from the fleet-cli managed wrappers (scripts/fleet-cli-release.py).
 #
 # It touches nothing else: no pm2, no LaunchAgents, no Slack files, no credential files.
-# Credentials come from Infisical Fleet-OPS /zulip through fleet-secrets; see README.md (AFC-359).
+# Credentials come from Infisical Fleet-OPS /zulip through the consumer's own scoped token;
+# see README.md (AFC-359).
 set -euo pipefail
 
 DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"

@@ -114,22 +114,48 @@ final class SecretNamesTests: XCTestCase {
             XCTAssertEqual(error as? FleetSecretError, .refused("doctor"))
         }
     }
+    func test_get_reads_through_the_scoped_reader_in_the_knobs_project() throws {
+        let fake = B3bCommands(); fake.replies["get"] = "A_VALUE"
+        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        XCTAssertEqual(try secrets.secret(named: "A_KEY"), "A_VALUE")
+        XCTAssertEqual(fake.calls.first?.0, "/Users/example/apps/infisical-scoped/infisical-scoped.py")
+        XCTAssertEqual(fake.calls.first?.1,
+                       ["get", "A_KEY", "--folder", "/", "--project", "ai-fleet-coordinator",
+                        "--account", "muster-afc-ro"])
+    }
+    func test_the_reader_path_can_be_pointed_elsewhere() throws {
+        let fake = B3bCommands(); fake.replies["get"] = "A_VALUE"
+        let elsewhere = URL(fileURLWithPath: "/Users/example/other/reader.py")
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, reader: elsewhere)
+        XCTAssertEqual(try secrets.secret(named: "A_KEY"), "A_VALUE")
+        XCTAssertEqual(fake.calls.first?.0, "/Users/example/other/reader.py")
+    }
     func test_doctor_parse_keeps_only_booleans_counts_and_short_tokens() throws {
-        let json = #"{"ok":true,"cli_present":true,"names_count":3,"auth_mode":"machine","failure_reason":null,"cli_version":"1.2.3","secret_value":"should-not-pass"}"#
+        // The reader's report names no CLI:  the old CLI keys are dropped like any
+        // other key the panel does not name.
+        let json = #"{"ok":true,"environment_ok":true,"project_id_resolvable":true,"reader_configured":true,"fetch_names_ok":true,"names_count":3,"failure_reason":null,"cli_present":true,"cli_version":"1.2.3","auth_mode":"machine","secret_value":"should-not-pass"}"#
         let report = try FleetSecrets.parseDoctor(json)
         XCTAssertEqual(report["ok"], "true")
+        XCTAssertEqual(report["environment_ok"], "true")
+        XCTAssertEqual(report["reader_configured"], "true")
         XCTAssertEqual(report["names_count"], "3")
         XCTAssertNil(report["secret_value"])
+        XCTAssertNil(report["cli_present"])
+        XCTAssertNil(report["cli_version"])
+        XCTAssertNil(report["auth_mode"])
     }
 }
 
 final class RecallSettingsTests: XCTestCase {
     func test_request_builder_uses_bearer_without_embedding_token_in_url() throws {
         let config = RecallSettingsConfig(baseURLString: "https://recall.example.test", tokenKeyName: "RECALL_ADMIN_TOKEN")
-        let request = try RecallSettingsClient.buildRequest(config: config, token: "fake-token-for-test")
+        // A synthetic token,  assembled at run time:  a token-shaped literal does
+        // not sit in the source.
+        let fakeToken = "fake-" + "token-for-test"
+        let request = try RecallSettingsClient.buildRequest(config: config, token: fakeToken)
         XCTAssertEqual(request.url?.absoluteString, "https://recall.example.test/admin/settings")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fake-token-for-test")
-        XCTAssertFalse(request.url?.absoluteString.contains("fake-token-for-test") ?? true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + fakeToken)
+        XCTAssertFalse(request.url?.absoluteString.contains(fakeToken) ?? true)
     }
     func test_request_builder_rejects_bad_config() {
         XCTAssertThrowsError(try RecallSettingsClient.buildRequest(

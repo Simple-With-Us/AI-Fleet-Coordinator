@@ -1,7 +1,7 @@
 # fleet-recall-service
 
 Hetzner-side HTTP front for the fleet-agents corpus, so cloud seats and phones reach fleet
-recall even while the Mac is asleep.  It runs on the Coolify box next to Qdrant and TEI and
+recall even while the Mac is asleep.  It runs on the Coolify box next to Qdrant and TEI and
 imports `scripts/fleet_rag/recall_api.py` unchanged, so the semantics are exactly those of the
 `recall` CLI, the stdio `fleet-recall-mcp.py`, and the seat-mcp tools.
 
@@ -16,58 +16,58 @@ service is the one that does not depend on the Mac.
 | GET | `/health` | none | `{ok, name, version, fleet_rag, collection, points, backend_ok, mcp, recall}` — `points` is the live count, cached 30 s; `ok` is the process, `backend_ok` is Qdrant |
 | GET | `/recall/stats` | bearer | `recall_stats()`, including `search_cache` hit and miss counts |
 | POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days`, `include_retracted`, `compact`, `full` |
-| POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url`.  `force`, if present, is dropped before validation (the local duplicate-guard knob; not part of this tool schema) |
+| POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url`.  `force`, if present, is dropped before validation (the local duplicate-guard knob; not part of this tool schema) |
 | POST | `/recall/correct` | bearer | `recall_correct(**body)` — `doc_id`, `text`, `reason`, **`seat` required**; `title`, `url`, `expected_revision` |
 | POST | `/recall/retract` | bearer | `recall_retract(**body)` — `doc_id`, `reason`, **`seat` required**; `expected_revision` |
 | POST | `/mcp` | bearer | streamable-HTTP JSON-RPC: `initialize` (sets `MCP-Session-Id`), `notifications/*` (202), `ping`, `tools/list`, `tools/call`, `server/discover` — same framing as seat-mcp, so a client can swap the URL |
 
 Auth is `Authorization: Bearer <RECALL_API_TOKEN>` on everything except `/health`, compared in
-constant time over bytes (a non-ASCII bearer is simply wrong — 401, never a traceback).  An
+constant time over bytes (a non-ASCII bearer is simply wrong — 401, never a traceback).  An
 OWNER mutation additionally requires the distinct `RECALL_OWNER_TOKEN`; with it unset the
 service refuses that mutation 403, so a client-supplied `seat: "OWNER"` is never enough.
-anything else answers 401 with `WWW-Authenticate: Bearer`.  REST errors are
+anything else answers 401 with `WWW-Authenticate: Bearer`.  REST errors are
 `{"ok": false, "error": ...}` — 400 for caller mistakes (including a body the peer closed
 mid-way), 408 for a body that stalls past the socket timeout, 411 for a chunked body (send
-`Content-Length`), 413 over 2 MB, 502 (exception class only) when Qdrant or TEI fails.  MCP tool
+`Content-Length`), 413 over 2 MB, 502 (exception class only) when Qdrant or TEI fails.  MCP tool
 errors come back as `isError: true` results so the model sees them; unknown tools / methods are
 JSON-RPC errors (-32602 / -32601); a message whose `id` is absent **or null** is a notification
-(202, no body).  `seat` is required on every mutation and the process's own `AGENT_SEAT` is
-never used for a remote caller.  A mutation may be made by the contribution's owning seat or
-the `OWNER` admin seat.  A correction keeps the same point and `doc_id`, moves the old text
-into `revisions[]`, and searches only the replacement.  A same-text metadata correction updates
-the same point and audit; a completely unchanged correction answers `unchanged`.  Re-contributing
+(202, no body).  `seat` is required on every mutation and the process's own `AGENT_SEAT` is
+never used for a remote caller.  A mutation may be made by the contribution's owning seat or
+the `OWNER` admin seat.  A correction keeps the same point and `doc_id`, moves the old text
+into `revisions[]`, and searches only the replacement.  A same-text metadata correction updates
+the same point and audit; a completely unchanged correction answers `unchanged`.  Re-contributing
 text whose deterministic point id already exists answers `duplicate`, including after retraction
-or correction, rather than overwriting audit.  A retraction keeps the point as audit
+or correction, rather than overwriting audit.  A retraction keeps the point as audit
 metadata, excludes it from normal search, and is idempotent; `include_retracted=true` is the
-search audit view.  Reasons, titles and URLs are scrubbed and gitleaks-gated like contribution
-text.  The service serializes its one-point read-modify-write in-process; do not scale the
+search audit view.  Reasons, titles and URLs are scrubbed and gitleaks-gated like contribution
+text.  The service serializes its one-point read-modify-write in-process; do not scale the
 service to multiple write replicas without an external mutation lock or leader.
 
-**Keep-alive discipline.**  The server speaks HTTP/1.1 behind Traefik, which pools connections.
+**Keep-alive discipline.**  The server speaks HTTP/1.1 behind Traefik, which pools connections.
 Every reply sent before the request body was consumed — 401, 411, 413, a 404/405 on a POST, and
 *every* GET/HEAD, since no GET route reads a body — drains a body of up to 2 MB and closes the
 connection (`Connection: close`), so an unread body can never be parsed as the *next* request
 on the pooled socket.  (A `GET /health` carrying `Content-Length` or `Transfer-Encoding` used
 to leave its bytes on the socket: the pipelined caller got a 501, and a body that was itself a
-well-formed request was executed.)  The drain runs once per request, so the 200 / 401 / 404
-that follows never blocks on a second read.  Body-less GETs and authenticated, well-formed
+well-formed request was executed.)  The drain runs once per request, so the 200 / 401 / 404
+that follows never blocks on a second read.  Body-less GETs and authenticated, well-formed
 POSTs keep the connection open as usual.
 
-**Socket timeout.**  Every connection carries a socket timeout (`RECALL_SOCKET_TIMEOUT`
+**Socket timeout.**  Every connection carries a socket timeout (`RECALL_SOCKET_TIMEOUT`
 seconds, default `15`), so a client that declares a body and stalls — `Content-Length: 500000`
-with ten bytes sent — can no longer park a handler thread forever in the drain.  When the
+with ten bytes sent — can no longer park a handler thread forever in the drain.  When the
 timeout fires the pending reply (401 / 404 / 405) still goes out with `Connection: close`; a
-stalled body on an authenticated POST is answered **408** with close.  Neither path raises into
+stalled body on an authenticated POST is answered **408** with close.  Neither path raises into
 `handle_error`, so there is no traceback, and an idle keep-alive connection is closed by
 `http.server` after the same timeout (Traefik reconnects transparently).
 
 **Search cache.**  Repeated identical `recall_search` calls in this process skip the embedder and Qdrant.  The cache is an in-process LRU of 256 entries that live for 10 minutes, unless `RECALL_SEARCH_CACHE_SIZE` or `RECALL_SEARCH_CACHE_TTL_SECONDS` says otherwise.  The key is the normalized query, the filters, the limit, and the compact and full flags.  The embedder and the reranker still see the caller's casing.  A completed ingest writes `search-cache-epoch.json` next to `last-run.json`, and the cache drops its entries when either file changes.  A container that cannot read that directory keeps entries until the TTL.  A contribution, correction, or retraction publishes that same epoch file when the directory is visible, so other processes miss too.  `compact` and `full` do not change the JSON hit text.
 
-**Mutation gate.**  `recall_contribute`, `recall_correct` and `recall_retract` over this surface
+**Mutation gate.**  `recall_contribute`, `recall_correct` and `recall_retract` over this surface
 are gated exactly as on the Mac: the regex scrub runs, then gitleaks scans the scrubbed text or
 metadata and refuses anything it still flags
-(fail closed if gitleaks cannot deliver a verdict).  `bootstrap.sh` and the `Dockerfile`
-install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for that reason.  If
+(fail closed if gitleaks cannot deliver a verdict).  `bootstrap.sh` and the `Dockerfile`
+install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for that reason.  If
 the download fails the service still starts, the log says so, and every contribution's
 `scrubbed` list carries `gitleaks-unavailable` so callers can see the gate was regex-only.
 
@@ -76,7 +76,7 @@ Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when
 | Variable | Required | Notes |
 |---|---|---|
 | `RECALL_API_TOKEN` | yes | bearer for every non-health route; the process refuses to start without it |
-| `INFISICAL_TOKEN` | for Infisical reads | scoped read-only service token for the AI Fleet Coordinator project and settings path; bind from the Recall read grant when using managed settings |
+| `INFISICAL_TOKEN` | for Infisical reads | the Recall read grant's own scoped read-only service token for the AI Fleet Coordinator project and settings path, taken from the recall reader's own store binding and verified against its grant before the read; the environment carries only a copy of that same token, and a hand-set value never replaces the reviewed, scope-limited grant |
 | `INFISICAL_WRITE_TOKEN` | no | separate write-capable service token for admin settings updates |
 | `RECALL_ADMIN_TOKEN` | for admin routes | bearer for `GET`/`POST` `/admin/settings` and `POST` `/admin/reload-settings`; the admin surface answers 403 until it is set |
 | `RECALL_OWNER_TOKEN` | for OWNER recall mutations | distinct bearer proving the owner identity for `recall_correct` / `recall_retract`; those calls answer 403 until it is set |
@@ -88,11 +88,11 @@ Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when
 | `TEI_API_KEY` | yes | |
 | `TEI_EMBED_MODEL` | no | informational |
 | `PORT` / `HOST` | no | default `8080` / `0.0.0.0` |
-| `RECALL_SOCKET_TIMEOUT` | no | per-connection socket timeout in seconds (default `15`); a stalled body is answered and closed instead of parking a thread.  Empty / unparsable / non-positive values fall back to the default |
+| `RECALL_SOCKET_TIMEOUT` | no | per-connection socket timeout in seconds (default `15`); a stalled body is answered and closed instead of parking a thread.  Empty / unparsable / non-positive values fall back to the default |
 | `RECALL_SEARCH_CACHE_SIZE` | no | in-process search cache capacity (default `256`).  `0` stores nothing, and an unparsable or out-of-range value uses the default |
 | `RECALL_SEARCH_CACHE_TTL_SECONDS` | no | how long a cached search stays valid, in seconds (default `600`, ten minutes).  `0` stores nothing |
 | `SETTINGS_REFRESH_SECONDS` | no | background settings-refresh interval in seconds (default `300`); itself tunable in Infisical |
-| `INFISICAL_ENVIRONMENT` | no | the Infisical env the service reads.  `prod` is the only environment (default `prod`);  unset or empty means prod and any other slug is refused (the service exits 2) |
+| `INFISICAL_ENVIRONMENT` | no | the Infisical env the service reads.  `prod` is the only environment (default `prod`);  unset or empty means prod and any other slug is refused (the service exits 2) |
 | `RECALL_REF` | no | git ref the bootstrap fetches (default `main`) |
 | `RECALL_FAKE` | no | `1` serves the in-process fake corpus (tests, smoke) |
 | `GITLEAKS_VERSION` | no | gitleaks release the bootstrap / image installs (default `8.30.1`) |
@@ -108,15 +108,15 @@ Logs go to stdout as `time method path status`; no bodies, headers, query string
 
 - `server.py` — the service (stdlib only, `ThreadingHTTPServer`)
 - `bootstrap.sh` — fetch the public repo tarball with `urllib`, extract `scripts/fleet_rag` and
-  `scripts/fleet-recall-service` into `/app`, install gitleaks, `exec` the server.  Honors
+  `scripts/fleet-recall-service` into `/app`, install gitleaks, `exec` the server.  Honors
   `RECALL_REF`, `RECALL_APP_DIR`, `RECALL_TARBALL` (reused when present), `RECALL_TARBALL_URL`,
   `RECALL_BOOTSTRAP_ONLY=1`, and the `GITLEAKS_VERSION` / `RECALL_GITLEAKS_*` knobs above.
   The gitleaks step downloads
   `https://github.com/gitleaks/gitleaks/releases/download/v<ver>/gitleaks_<ver>_linux_<x64|arm64>.tar.gz`
   (arch from `uname -m`) with `urllib`, checks the size is plausible (1 MB..200 MB, optional
   sha256), extracts the binary, requires `gitleaks version` to print the pin, then installs it
-  atomically to `/usr/local/bin/gitleaks`.  A failure is logged as `bootstrap: gitleaks: … --
-  continuing WITHOUT gitleaks` and the server starts anyway.  `RECALL_GITLEAKS_ONLY=1` runs only
+  atomically to `/usr/local/bin/gitleaks`.  A failure is logged as `bootstrap: gitleaks: … --
+  continuing WITHOUT gitleaks` and the server starts anyway.  `RECALL_GITLEAKS_ONLY=1` runs only
   that step (what the `Dockerfile` uses).
 - `compose.example.yaml` — the Coolify resource: stock `python:3.14-slim`, a `python -c` command
   that downloads the tarball, extracts `bootstrap.sh`, and execs it; healthcheck on `/health`;
@@ -137,7 +137,9 @@ curl -s http://127.0.0.1:8080/health
 ```
 
 Against the live backend, export the `QDRANT_*` / `TEI_*` names from Infisical shared/prod
-into the environment first (never paste them into a file), then drop `RECALL_FAKE`.
+into the environment (never paste them into a file), then drop `RECALL_FAKE`.  The environment then
+holds only a copy of what that scoped read returned, and a hand-set value never replaces the reviewed,
+scope-limited grant.
 
 ## Network (checked 2026-09-02 from the box)
 
@@ -152,7 +154,7 @@ From a `python:3.12-slim` container on the `coolify` docker network:
 | `qdrant` / `tei` container DNS names | not on the `coolify` network (each Coolify service has its own network `ookh0qml…` / `cday9viy…`) |
 
 So the compose file defaults `QDRANT_URL` and `TEI_URL` to the Tailscale address, the same
-values every Mac client already uses.  If the host ever loses Tailscale, the fallback is to
+values every Mac client already uses.  If the host ever loses Tailscale, the fallback is to
 attach `recall-api` to the two service networks and use the `qdrant` / `tei` aliases.
 
 ## Deploy on Coolify (orchestrator applies; nothing here is automated)
@@ -161,22 +163,22 @@ Targets: project `l11qegr5vie93o7dqlfjgd6n`, environment `production`, server
 `jxzqcs3h6g1wiipnnblhismp` (the Hetzner box; its public addresses are private
 deployment inventory, so they live in the operator's own inventory on that Mac), FQDN `https://recall.jays.services`.
 
-1. **Coolify resource.**  Project → production → *New Resource* → *Docker Compose* (empty) on
-   server `jxzqcs3h6g1wiipnnblhismp`.  Paste `compose.example.yaml`.  Name it `recall-api`.
+1. **Coolify resource.**  Project → production → *New Resource* → *Docker Compose* (empty) on
+   server `jxzqcs3h6g1wiipnnblhismp`.  Paste `compose.example.yaml`.  Name it `recall-api`.
    Leave *Connect to predefined network* on (the default) so Traefik can reach it.
 2. **Environment variables** (the compose `${…}` references appear in the resource's
-   *Environment Variables* tab).  From Infisical shared/prod (project
+   *Environment Variables* tab).  From Infisical shared/prod (project
    `18f563a3-9c88-454c-96eb-28fc9678f3ba`) set `QDRANT_API_KEY`, `QDRANT_READONLY_API_KEY`,
    `TEI_API_KEY`; keep the defaults for `QDRANT_URL`, `TEI_URL`, `QDRANT_FLEET_COLLECTION`,
-   `TEI_EMBED_MODEL`, `RECALL_REF=main`.  `SERVICE_PASSWORD_RECALLTOKEN` is generated by Coolify
+   `TEI_EMBED_MODEL`, `RECALL_REF=main`.  `SERVICE_PASSWORD_RECALLTOKEN` is generated by Coolify
    — copy its value into Infisical shared/prod as **`RECALL_API_TOKEN`** so Infisical stays the
-   canonical home and the Mac seats can read it from there.  Use the Coolify UI or the MCP
+   canonical home and the Mac seats can read it from there.  Use the Coolify UI or the MCP
    `bulk_env_update` tool; never put a value in a tracked file.
-3. **Domain.**  On the `recall-api` service set the domain to `https://recall.jays.services`
-   (port 8080).  Traefik issues the Let's Encrypt certificate once DNS resolves.
+3. **Domain.**  On the `recall-api` service set the domain to `https://recall.jays.services`
+   (port 8080).  Traefik issues the Let's Encrypt certificate once DNS resolves.
 4. **Cloudflare DNS** (zone `jays.services`, account *Usage.Jays.Services*): `A recall →
    <the host's public address>`, proxied; optionally an `AAAA recall` record for the same host's
-   public IPv6 address, proxied.  The
+   public IPv6 address, proxied.  The
    zone is already *Full (strict)*, which is what the other Coolify-hosted names use.
 5. **Cloudflare Access** (org `silent-frost-37e0.cloudflareaccess.com`), mirroring
    `agents.jays.services` (app `1e1a5fc4-0f7d-44ac-bb0d-5fa6d5d73ddf`):
@@ -191,8 +193,8 @@ deployment inventory, so they live in the operator's own inventory on that Mac),
      bypass app `99c0aacc-9e84-49b4-89b0-51bdb4b6bf36`).
 6. **Deploy** and watch the log: `compose: fetching …` → `bootstrap: extracted N files` →
    `bootstrap: gitleaks: installed 8.30.1 at /usr/local/bin/gitleaks` → `listening on
-   0.0.0.0:8080`.  The first start downloads a ~4 MB source tarball and a ~10 MB gitleaks
-   tarball; `start_period` is 120 s.  `docker logs` never shows a token.
+   0.0.0.0:8080`.  The first start downloads a ~4 MB source tarball and a ~10 MB gitleaks
+   tarball; `start_period` is 120 s.  `docker logs` never shows a token.
 7. **Verify** from anywhere: `/health` must be public and report `backend_ok: true` with the
    live point count (38,7xx); `/recall/stats` must be 401 without headers and 200 with them.
 8. **Record it**: fleet-ops `ATTACK-MAP.md` (host row), the Coolify resource UUID in
@@ -200,7 +202,7 @@ deployment inventory, so they live in the operator's own inventory on that Mac),
    `https://recall.jays.services/health`.
 
 **Updating**: the container fetches `RECALL_REF` on every start, so *Restart* in Coolify picks
-up the latest `main`.  Pin `RECALL_REF` to a tag or sha for a frozen deploy.
+up the latest `main`.  Pin `RECALL_REF` to a tag or sha for a frozen deploy.
 
 **Until this lane lands on `main`** the tarball does not contain `scripts/fleet-recall-service`
 and the bootstrap exits with `server.py missing after extract`; deploy after the merge, or set
@@ -209,7 +211,7 @@ and the bootstrap exits with `server.py missing after extract`; deploy after the
 ## Clients
 
 Every request needs the bearer plus the two Cloudflare Access service-token headers (the
-service token gets you through Access; the bearer gets you into the service).  Values come from
+service token gets you through Access; the bearer gets you into the service).  Values come from
 the environment / a secret store, never from a file in a repo.
 
 ### curl (REST)
@@ -291,7 +293,7 @@ url = "https://recall.jays.services/mcp"
 env_http_headers = { "Authorization" = "RECALL_AUTH_HEADER", "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
 ```
 
-The tracked example is `scripts/seat-mcp/mcp.example.json` (entry `fleet-recall`).  Tools:
+The tracked example is `scripts/seat-mcp/mcp.example.json` (entry `fleet-recall`).  Tools:
 `recall_search`, `recall_stats`, `recall_contribute`, `recall_correct`, `recall_retract`
 (pass `seat` for mutations).
 

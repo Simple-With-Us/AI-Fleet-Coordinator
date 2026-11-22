@@ -1,4 +1,4 @@
-"""fleet-secrets CLI behavior tests with fake REST and explicit manual-session boundaries."""
+"""The shared Infisical command's behavior, with fake REST and explicit manual-session boundaries."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from fleet_secrets import cli, core
+import fleet_infisical as core
+import fleet_infisical_cli as cli
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
@@ -155,7 +156,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        self.home = Path(self.tmp.name).resolve()
         self.env = {
             "HOME": str(self.home),
             "PATH": "/usr/bin:/bin",
@@ -228,6 +229,49 @@ class GetTests(Base):
         self.assertEqual((code, out), (3, ""))
         self.assertIn("NOPE", err)
         self.assertNoSentinel(out, err)
+
+    def test_an_explicit_account_reads_through_that_account(self):
+        seen = {}
+
+        def scoped_read(name, folder, account, env=None, **options):
+            seen["call"] = (name, folder, account)
+            seen["paths"] = env.get(core.ENV_READ_PATHS)
+            seen["project"] = env.get(core.ENV_PROJECT)
+            return (VAL_A, "ok")
+
+        with mock.patch.object(core, "fetch_scoped", scoped_read):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(seen["call"], ("ALPHA", "/", "consumer-ro"))
+        self.assertEqual(seen["paths"], "/")
+        self.assertEqual(seen["project"], PROJECT)
+
+    def test_an_account_bound_read_never_uses_the_ambient_binding(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: (VAL_A, "ok")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches, [])
+
+    def test_an_absent_name_under_an_account_exits_3(self):
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: ("", "absent")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("ALPHA", err)
+        self.assertNoSentinel(out, err)
+
+    def test_a_refused_account_read_exits_4_and_names_the_account(self):
+        with mock.patch.object(core, "fetch_scoped", lambda *a, **k: ("", "forbidden")):
+            code, out, err = self.call("get", "ALPHA", "--account", "consumer-ro")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("consumer-ro", err)
+        self.assertNoSentinel(out, err)
+
+    def test_without_an_account_the_read_still_uses_the_ambient_binding(self):
+        world = self.use(World())
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
 
     def test_path_is_passed_and_prod_is_the_only_env(self):
         w = self.use(World())
@@ -547,7 +591,7 @@ class NoValueInErrorsTests(Base):
     def test_timeout_and_missing_cli(self):
         world = self.use(World(export_rc=124))
         code, _, err = self.call("get", "ALPHA")
-        self.assertEqual((code, err.strip()), (4, "fleet-secrets: timeout"))
+        self.assertEqual((code, err.strip()), (4, "fleet-infisical: timeout"))
         world.export_rc = 0
         with mock.patch.object(core, "find_cli", lambda env: None):
             code, _, err = self.call("get", "ALPHA")
@@ -617,9 +661,10 @@ class DoctorTests(Base):
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
-        self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
-        self.assertFalse(rep["ok"])
+        # The unqualified doctor needs the FleetLink folder only on a server;  a Mac reads its own.
+        self.assertEqual(code, 1 if core.is_linux() else 0)
+        self.assertEqual(rep["ok"], not core.is_linux())
 
     def test_selected_doctor_reads_only_the_default_project_root(self):
         world = World()
@@ -1236,7 +1281,7 @@ class TestApiProvider(unittest.TestCase):
                     out, err = io.StringIO(), io.StringIO()
                     self.assertEqual(cli.main(["get", "ALPHA"], env=env, out=out, err=err), 2)
                     self.assertEqual(out.getvalue(), "")
-                    self.assertEqual(err.getvalue(), "fleet-secrets: read-provider-invalid\n")
+                    self.assertEqual(err.getvalue(), "fleet-infisical: read-provider-invalid\n")
                     request.assert_not_called()
                     opener.assert_not_called()
 
@@ -1334,7 +1379,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_prints_the_value_only(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         out = io.StringIO()
         with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
@@ -1345,7 +1390,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_root_path_is_a_usage_error(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         with self.assertRaises(core.UsageError):
             cli.cmd_get_verified(["NAME"], {}, io.StringIO())
@@ -1353,7 +1398,7 @@ class TestCmdGetVerified(unittest.TestCase):
     def test_dispatched_from_main(self):
         import io
 
-        from fleet_secrets import cli
+        import fleet_infisical_cli as cli
 
         out = io.StringIO()
         with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
