@@ -310,6 +310,9 @@ DONE_KEEP_SECONDS = 30 * 86400
 REQUEST_TIMEOUT = 30
 # What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
 STOP_MARGIN_SECONDS = 5.0
+#: How long a shutdown waits for the activation worker before it stops the seats anyway.
+#: A hung start must not hold SIGTERM past the unit's TimeoutStopSec.
+ACTIVATION_JOIN_TIMEOUT = 30.0
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused", "unknown")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
@@ -1839,6 +1842,8 @@ class Router:
         """Replay what a restart left pending, then start the workers."""
         self.replay()
         with self._cond:
+            if self._stopping:
+                return  # a shutdown in progress must not start workers
             for _ in range(int(self.config["workers"])):
                 self._add_worker()
 
@@ -3650,7 +3655,17 @@ def serve(target: Router | Seats, bind: str, port: int, *, start_quiesced: bool 
         activation_stop.set()
         activation.set()
         if start_quiesced:
-            activation_thread.join()  # Serialize shutdown after any replay/start; no late worker can appear after stop.
+            # Serialize shutdown after any replay/start, but bound the wait:  a hung start
+            # must not hold SIGTERM past the unit's TimeoutStopSec, and a late start adds
+            # no worker, because a router that is stopping starts none.
+            activation_thread.join(timeout=ACTIVATION_JOIN_TIMEOUT)
+            if activation_thread.is_alive():
+                print(
+                    f"wake-router: activation did not finish within {ACTIVATION_JOIN_TIMEOUT:g}s;"
+                    " shutdown continues",
+                    file=sys.stderr,
+                    flush=True,
+                )
         seats.stop()
         signal.signal(signal.SIGTERM, previous)
         signal.signal(signal.SIGUSR1, prior_activation)

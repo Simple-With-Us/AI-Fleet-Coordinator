@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-READONLY_BOOTSTRAP = 'import sys,os\ndef readonly_audit(event, args):\n    if event == "open":\n        _path, mode, flags = args\n        writing = (\n            bool(\n                flags\n                & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)\n            )\n            if isinstance(flags, int)\n            else any(c in str(mode) for c in "wax+")\n        )\n        if writing:\n            raise RuntimeError("candidate attempted write outside isolated state")\n    if event in (\n        "os.remove",\n        "os.rename",\n        "os.rmdir",\n        "os.mkdir",\n        "os.chmod",\n        "os.chown",\n        "os.link",\n        "os.symlink",\n        "os.truncate",\n        "subprocess.Popen",\n        "os.system",\n        "os.exec",\n        "os.posix_spawn",\n    ):\n        raise RuntimeError("readonly candidate attempted mutation or subprocess")\n\nsys.dont_write_bytecode = True\nsys.addaudithook(readonly_audit)\n'
+READONLY_BOOTSTRAP = 'import sys,os\ndef readonly_audit(event, args):\n    if event == "open":\n        _path, mode, flags = args\n        writing = (\n            bool(\n                flags\n                & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)\n            )\n            if isinstance(flags, int)\n            else any(c in str(mode) for c in "wax+")\n        )\n        if writing:\n            raise RuntimeError("candidate attempted write outside isolated state")\n    if event in (\n        "os.remove",\n        "os.rename",\n        "os.replace",\n        "os.rmdir",\n        "os.mkdir",\n        "os.chmod",\n        "os.chown",\n        "os.link",\n        "os.symlink",\n        "os.truncate",\n        "os.utime",\n        "os.fork",\n        "subprocess.Popen",\n        "os.system",\n        "os.exec",\n        "os.posix_spawn",\n    ):\n        raise RuntimeError("readonly candidate attempted mutation or subprocess")\n\nsys.dont_write_bytecode = True\nsys.addaudithook(readonly_audit)\n'
 
 
 class UpgradeRefused(RuntimeError):
@@ -27,8 +27,12 @@ def _json(path):
         raise UpgradeRefused("unreadable custody record") from None
 
 
-def census(roots):
-    """Complete raw queue/receipt/log inventory. No replay, pruning or repairs."""
+def census(roots, allow_in_flight=False):
+    """Complete raw queue/receipt/log inventory. No replay, pruning or repairs.
+
+    A pending record that is already in flight is refused unless the caller is
+    taking the stop boundary, where the old service is about to drain it.
+    """
     result = {"pending": {}, "receipts": {}, "logs": {}, "files": {}}
     for seat, raw in sorted(roots.items()):
         root = Path(raw)
@@ -49,7 +53,7 @@ def census(roots):
 
                     if not _loadable(value, path.stem):
                         raise UpgradeRefused("unloadable pending record")
-                    if value.get("in_flight") or value.get("running"):
+                    if (value.get("in_flight") or value.get("running")) and not allow_in_flight:
                         raise UpgradeRefused("unsettled current delivery")
                     result["pending"][key] = value
                     receipt = value.get("receipt")
@@ -134,6 +138,31 @@ def compare(before, after):
         )
 
 
+def compare_stopped(pre_stop, after):
+    """Nothing may be accepted once the units are stopped.
+
+    The boundary census is taken after intake is closed and before the router
+    stops, so a delivery that was already in flight there is a drain of the old
+    service, not new intake.  Any receipt, log entry or pending wake that the
+    stopped census shows and the boundary did not is intake that kept running
+    while the upgrade claimed it was stopped.
+    """
+    known = set(pre_stop["receipts"]) | set(pre_stop["pending"])
+    for key in after["pending"]:
+        if key not in pre_stop["pending"]:
+            raise UpgradeRefused("new pending wake after stop; intake was not stopped")
+    for key in after["receipts"]:
+        if key not in known:
+            raise UpgradeRefused("new receipt after stop; intake was not stopped")
+    for seat, rows in after["logs"].items():
+        base = pre_stop["logs"].get(seat, [])
+        for row in rows[len(base) :]:
+            if row.get("test") is True:
+                continue
+            if seat + "/" + str(row.get("wake_id")) not in known:
+                raise UpgradeRefused("new receipt log entry after stop; intake was not stopped")
+
+
 def tree_manifest(root):
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
@@ -171,10 +200,44 @@ def health(port):
         return json.load(response)
 
 
+def proc_identity(proc_root, pid):
+    """What a pid under proc_root is, so a reused pid is not read as the old process.
+
+    Returns None when there is no such process, and otherwise its start time
+    and command line, which a recycled pid does not keep.
+    """
+    process = Path(proc_root) / pid
+    if not process.exists():
+        return None
+    try:
+        stat = process.joinpath("stat").read_bytes()
+        starttime = stat.rsplit(b")", 1)[-1].split()[19]
+    except (OSError, IndexError):
+        starttime = None
+    try:
+        cmdline = process.joinpath("cmdline").read_bytes()
+    except OSError:
+        cmdline = None
+    return (starttime, cmdline)
+
+
+def same_process(before, after):
+    """Whether two identities are the same process, and True when nothing says otherwise."""
+    if before is None or after is None:
+        return False
+    if before[0] is not None and after[0] is not None:
+        return before[0] == after[0]
+    if before[1] is not None and after[1] is not None:
+        return before[1] == after[1]
+    return True
+
+
 def stopped(host, unit, proc_root):
     code, previous_pid, _ = host.systemctl("show", "--property=MainPID", "--value", unit)
     if code or not previous_pid.strip().isdigit():
         raise UpgradeRefused("cannot establish prior unit process")
+    previous = previous_pid.strip()
+    identity = proc_identity(proc_root, previous) if previous != "0" else None
     if host.systemctl("stop", unit)[0] != 0:
         raise UpgradeRefused("unit stop failed")
     code, pid, _ = host.systemctl("show", "--property=MainPID", "--value", unit)
@@ -186,8 +249,10 @@ def stopped(host, unit, proc_root):
         or status.strip() not in ("inactive", "failed")
     ):
         raise UpgradeRefused("unit not confirmed stopped")
-    if previous_pid.strip() != "0" and (proc_root / previous_pid.strip()).exists():
-        raise UpgradeRefused("previous unit process still exists")
+    if identity is not None:
+        current = proc_identity(proc_root, previous)
+        if current is not None and same_process(identity, current):
+            raise UpgradeRefused("previous unit process still exists")
 
 
 class ControlledUpgrade:
@@ -289,11 +354,16 @@ class ControlledUpgrade:
         compare(self.before, census(self.roots))
         self.stop_attempted = True
         stopped(self.host, self.front, self.proc_root)
+        # The stop boundary: intake is closed, and a delivery still in flight drains here.
+        self.pre_stop = census(self.roots, allow_in_flight=True)
         stopped(self.host, self.router, self.proc_root)
         self.after = census(self.roots)
         compare(self.before, self.after)
+        compare_stopped(self.pre_stop, self.after)
         after_path = self.snapshot / "stopped-census.json"
-        durable_write(after_path, json.dumps(self.after), 0o600)
+        durable_write(
+            after_path, json.dumps({"pre_stop": self.pre_stop, "after": self.after}), 0o600
+        )
 
     def verify_old(self):
         if (
@@ -335,6 +405,7 @@ class ControlledUpgrade:
             raise UpgradeRefused("recovery stop or custody unverified for " + ",".join(failures))
         if hasattr(self, "after"):
             compare(self.after, final)
+            compare_stopped(self.after, final)
         if getattr(self, "activation_requested", False):
             raise UpgradeRefused(
                 "post-activation recovery preserved final custody; effects may have occurred, explicit recovery decision required"

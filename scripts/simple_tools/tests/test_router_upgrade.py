@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from simple_tools.router_upgrade import UpgradeRefused, census, compare, stopped
+from simple_tools.router_upgrade import (
+    UpgradeRefused,
+    census,
+    compare,
+    compare_stopped,
+    stopped,
+)
 
 
 class Custody(unittest.TestCase):
@@ -672,7 +678,7 @@ class InstallerRecovery(unittest.TestCase):
                 phase["failed"] = True
                 raise U.UpgradeRefused("injected original stop failure")
 
-        def census_fault(roots):
+        def census_fault(roots, **kwargs):
             if failure == "prestop-census" and phase["stops"] == 0:
                 raise U.UpgradeRefused("injected original pre-stop census failure")
             if (
@@ -682,7 +688,7 @@ class InstallerRecovery(unittest.TestCase):
             ):
                 phase["failed"] = True
                 raise U.UpgradeRefused("injected original stopped census failure")
-            return real_census(roots)
+            return real_census(roots, **kwargs)
 
         def write_fault(path, data, mode):
             if (
@@ -733,6 +739,218 @@ class InstallerRecovery(unittest.TestCase):
             self.assertEqual(recovered["phase"], "post-activation")
             self.assertTrue(recovered["census"]["receipts"])
             self.assertIn("original promotion failure", output.getvalue())
+
+
+class ProcessIdentity(Custody):
+    """A pid that the kernel gave to another process is not the old unit's process."""
+
+    def proc_stat(self, starttime):
+        tokens = ["S"] + ["0"] * 49
+        tokens[19] = str(starttime)
+        return ("123 (router) " + " ".join(tokens)).encode()
+
+    def test_a_reused_pid_is_not_the_old_process(self):
+        class Host:
+            def __init__(self, root):
+                self.root = root
+                self.shown = 0
+
+            def systemctl(self, *args):
+                if args[0] == "show":
+                    self.shown += 1
+                    return 0, "123" if self.shown == 1 else "0", ""
+                if args[0] == "stop":
+                    # the old process is gone and the kernel gave its pid to another one
+                    (self.root / "123" / "stat").write_bytes(self.stat)
+                    (self.root / "123" / "cmdline").write_bytes(b"other-process\0")
+                if args[0] == "is-active":
+                    return 3, "inactive", ""
+                return 0, "", ""
+
+        process = self.root / "123"
+        process.mkdir()
+        (process / "stat").write_bytes(self.proc_stat(100))
+        (process / "cmdline").write_bytes(b"wake-router\0")
+        host = Host(self.root)
+        host.stat = self.proc_stat(200)
+        stopped(host, "unit", self.root)
+
+    def test_the_same_process_after_the_stop_still_refuses(self):
+        class Host:
+            def __init__(self, root):
+                self.root = root
+                self.shown = 0
+
+            def systemctl(self, *args):
+                if args[0] == "show":
+                    self.shown += 1
+                    return 0, "123" if self.shown == 1 else "0", ""
+                if args[0] == "is-active":
+                    return 3, "inactive", ""
+                return 0, "", ""
+
+        process = self.root / "123"
+        process.mkdir()
+        (process / "stat").write_bytes(self.proc_stat(100))
+        (process / "cmdline").write_bytes(b"wake-router\0")
+        with self.assertRaisesRegex(UpgradeRefused, "previous unit process still exists"):
+            stopped(Host(self.root), "unit", self.root)
+
+
+class StopBoundary(Custody):
+    """The stop boundary: nothing may be accepted once the units are stopped."""
+
+    def pending(self, name="one"):
+        import re
+
+        from simple_tools import wake_router as WR
+
+        platform = WR.Platform(
+            "CLAUDE", "claude", "@claude", re.compile(".*"), lambda *a: None
+        )
+        router = WR.Router(platform, {}, {}, self.root, lambda: ("x" * 48, ""))
+        router.accept(WR.Wake(name, seat="CLAUDE"))
+        return self.root / "pending" / (name + ".json")
+
+    def test_an_in_flight_wake_is_refused_unless_it_is_the_boundary(self):
+        pending = self.pending()
+        value = json.loads(pending.read_text())
+        value["in_flight"] = True
+        pending.write_text(json.dumps(value))
+        with self.assertRaisesRegex(UpgradeRefused, "unsettled current delivery"):
+            census(self.roots)
+        boundary = census(self.roots, allow_in_flight=True)
+        self.assertIn("SEATX/one", boundary["pending"])
+
+    def test_a_new_receipt_after_the_stop_is_refused(self):
+        boundary = census(self.roots)
+        self.write("b")
+        with self.assertRaisesRegex(UpgradeRefused, "new receipt after stop"):
+            compare_stopped(boundary, census(self.roots))
+
+    def test_a_new_pending_wake_after_the_stop_is_refused(self):
+        boundary = census(self.roots)
+        self.pending("two")
+        with self.assertRaisesRegex(UpgradeRefused, "new pending wake after stop"):
+            compare_stopped(boundary, census(self.roots))
+
+    def test_a_new_log_entry_after_the_stop_is_refused(self):
+        boundary = census(self.roots)
+        (self.root / "wakes.jsonl").write_text(
+            json.dumps(
+                {"wake_id": "b", "status": "completed", "delivered": True, "code": ""}
+            )
+        )
+        with self.assertRaises(UpgradeRefused):
+            compare_stopped(boundary, census(self.roots))
+
+    def test_the_drain_of_a_wake_in_flight_at_the_boundary_is_allowed(self):
+        pending = self.pending()
+        value = json.loads(pending.read_text())
+        value["in_flight"] = True
+        pending.write_text(json.dumps(value))
+        boundary = census(self.roots, allow_in_flight=True)
+        # the old service settles it while it stops
+        pending.unlink()
+        self.write("one", delivered=True)
+        compare_stopped(boundary, census(self.roots))
+
+
+class AuditHook(unittest.TestCase):
+    def test_the_hook_denies_the_mutations_it_could_leave_open(self):
+        import subprocess
+        import sys
+
+        from simple_tools.router_upgrade import READONLY_BOOTSTRAP
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.write_text("x")
+            target = root / "target"
+            calls = {
+                "replace": "os.replace(%r, %r)" % (str(source), str(target)),
+                "utime": "os.utime(%r, None)" % str(source),
+                "fork": "os.fork()",
+            }
+            for name, call in calls.items():
+                with self.subTest(name=name):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-c",
+                            READONLY_BOOTSTRAP + "\nimport os\n" + call,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "readonly candidate attempted mutation", result.stderr
+                    )
+            self.assertFalse(target.exists())
+
+
+class BoundedActivation(unittest.TestCase):
+    def test_a_hung_activation_does_not_hold_the_shutdown(self):
+        import signal
+        import socket
+        import subprocess
+        import sys
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        code = """import sys,re,time
+from simple_tools import wake_router as W
+W.ACTIVATION_JOIN_TIMEOUT=0.5
+p=W.Platform('CLAUDE','claude','@claude',re.compile('.*'),lambda *a:None)
+r=W.Router(p,{}, {},__import__('pathlib').Path('/not-used'),lambda:('r'*48,''))
+s=W.Seats([r])
+def start():
+ print('activation-start',flush=True);time.sleep(30);print('activation-end',flush=True)
+def stop():print('stopped',flush=True);return True
+s.start=start;s.stop=stop;s.health=lambda:(200,{'healthy':True})
+raise SystemExit(W.serve(s,'127.0.0.1',int(sys.argv[1]),start_quiesced=True))
+"""
+        child = subprocess.Popen(
+            [sys.executable, "-c", code, str(port)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertIn("listening", child.stdout.readline())
+            child.send_signal(signal.SIGUSR1)
+            self.assertEqual(child.stdout.readline().strip(), "activation-start")
+            child.send_signal(signal.SIGTERM)
+            out, err = child.communicate(timeout=15)
+            self.assertEqual(child.returncode, 0, err)
+            self.assertIn("stopped", out)
+            self.assertIn("activation did not finish", err)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+
+
+class LateStart(unittest.TestCase):
+    def test_a_start_after_a_stop_adds_no_worker(self):
+        import re
+
+        from simple_tools import wake_router as WR
+
+        platform = WR.Platform(
+            "CLAUDE", "claude", "@claude", re.compile(".*"), lambda *a: None
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            router = WR.Router(platform, {}, {}, Path(temporary), lambda: ("x" * 48, ""))
+            router.stop(0.0)
+            router.start()
+            self.assertEqual(router._threads, [])
 
 
 class ImportGuard(unittest.TestCase):
