@@ -631,7 +631,9 @@ class PinDecisionTests(unittest.TestCase):
         #  different echo shape, changes one side of the comparison and fails the test, instead of its reason
         #  silently escaping the length check.
         branches = re.findall(r"^  (?:[0-9]+|\*)\)\s*$", block, re.MULTILINE)
-        self.assertGreaterEqual(len(branches), 8, "a branch is missing from the case block")
+        #  the floor is seven, not eight:  the rc 5 branch (the Shortcuts app could not be started)
+        #  left with the pre-launch it reported, on 2026-11-22
+        self.assertGreaterEqual(len(branches), 7, "a branch is missing from the case block")
         self.assertEqual(
             len(reasons), len(branches), "a case branch has no reason the length check can see"
         )
