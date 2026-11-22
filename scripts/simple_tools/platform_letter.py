@@ -2782,7 +2782,7 @@ def enroll_children(chat: Chat, started: float | None = None) -> int:
             note = child.read()  # inside the guard:  one unreadable note is one child not enrolled
             if note.get("state") in ("closed", "mismatch") or lettered(note):
                 continue
-            if chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
+            if chat.now - _seconds(note.get("failed_at")) < RETRY_SECONDS:
                 continue  # a refusal or a failed ask is not repeated on every turn end
             on_start(child, payload, Out(io.StringIO(), spec, ""), home)
         except Exception:  # noqa: BLE001 - one child's enrollment never stops the pass, or the chat
