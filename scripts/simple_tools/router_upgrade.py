@@ -82,7 +82,7 @@ def _record(records, key, receipt):
         not isinstance(receipt, dict)
         or receipt.get("wake_id") != key.split("/", 1)[1]
         or "delivered" not in receipt
-        or receipt["delivered"] not in (True, False, None)
+        or (receipt["delivered"] is not None and type(receipt["delivered"]) is not bool)
         or not isinstance(receipt.get("status"), str)
     ):
         raise UpgradeRefused("receipt identity or shape mismatch")
@@ -262,12 +262,17 @@ class ControlledUpgrade:
     def quiesce(self):
         # Preserve unit/release/state-location custody before any outage.
         self.snapshot.mkdir(mode=0o700)
+        # Persist the snapshot directory link before any possible outage.
+        parent = os.open(self.snapshot.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
         for name, value in self.units.items():
-            path = self.snapshot / name
-            path.write_bytes(value)
-            path.chmod(0o600)
+            durable_write(self.snapshot / name, value, 0o600)
         path = self.snapshot / "custody.json"
-        path.write_text(
+        durable_write(
+            path,
             json.dumps(
                 {
                     "release": self.current,
@@ -277,11 +282,9 @@ class ControlledUpgrade:
                     "candidate_manifest": self.candidate_manifest,
                     "qualification": self.qualified,
                 }
-            )
+            ),
+            0o600,
         )
-        path.chmod(0o600)
-        with path.open("rb") as handle:
-            os.fsync(handle.fileno())
         self.verify_old()
         compare(self.before, census(self.roots))
         self.stop_attempted = True
@@ -290,10 +293,7 @@ class ControlledUpgrade:
         self.after = census(self.roots)
         compare(self.before, self.after)
         after_path = self.snapshot / "stopped-census.json"
-        after_path.write_text(json.dumps(self.after))
-        after_path.chmod(0o600)
-        with after_path.open("rb") as handle:
-            os.fsync(handle.fileno())
+        durable_write(after_path, json.dumps(self.after), 0o600)
 
     def verify_old(self):
         if (
@@ -501,7 +501,7 @@ def wait_health(port, quiesced):
             answer = health(port)
             if answer.get("upgrade_quiesced") is quiesced and answer.get("healthy") is True:
                 return answer
-        except (OSError, ValueError):
+        except (OSError, ValueError, UpgradeRefused):
             pass
         if time.monotonic() >= deadline:
             raise UpgradeRefused("candidate readiness/quiescence acknowledgement timed out")
@@ -515,7 +515,7 @@ def durable_write(path, text, mode):
     temporary = path.with_name("." + path.name + "-" + secrets.token_hex(8))
     fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, mode)
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "wb" if isinstance(text, bytes) else "w") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())

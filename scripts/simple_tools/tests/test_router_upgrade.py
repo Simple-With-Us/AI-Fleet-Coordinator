@@ -92,6 +92,93 @@ class Custody(unittest.TestCase):
         stopped(Host(), "unit", self.root)
 
 
+class StrictFlags(Custody):
+    def test_numeric_delivered_is_not_a_boolean(self):
+        for value in (0, 1):
+            self.write(delivered=value)
+            with self.assertRaises(UpgradeRefused): census(self.roots)
+
+    def test_numeric_test_flag_cannot_hide_receipt(self):
+        row = {"wake_id": "log-only", "status": "delivered", "delivered": None, "test": 1}
+        (self.root / "wakes.jsonl").write_text(json.dumps(row))
+        self.assertIn("SEATX/log-only", census(self.roots)["receipts"])
+        row["test"] = True
+        (self.root / "wakes.jsonl").write_text(json.dumps(row))
+        self.assertNotIn("SEATX/log-only", census(self.roots)["receipts"])
+
+
+class ReadinessAndDurability(unittest.TestCase):
+    def test_refused_readiness_polls_but_never_accepts_numeric_flags(self):
+        from unittest import mock
+        from simple_tools import router_upgrade as U
+        ready = {"healthy": True, "upgrade_quiesced": True}
+        with mock.patch.object(U, "health", side_effect=[UpgradeRefused("not-ready"), ready]), mock.patch.object(U.time, "sleep"), mock.patch.object(U.time, "monotonic", side_effect=[0, 1]):
+            self.assertIs(U.wait_health(1, True), ready)
+        for response in (UpgradeRefused("not-ready"), {"healthy": 1, "upgrade_quiesced": True}, {"healthy": True, "upgrade_quiesced": 1}):
+            options = {"side_effect": response} if isinstance(response, Exception) else {"return_value": response}
+            with mock.patch.object(U, "health", **options), mock.patch.object(U.time, "monotonic", side_effect=[0, 31]):
+                with self.assertRaisesRegex(UpgradeRefused, "timed out"): U.wait_health(1, True)
+
+    def test_atomic_binary_write_mode_cleanup_and_failed_replace(self):
+        import os
+        from unittest import mock
+        from simple_tools import router_upgrade as U
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "unit"
+            value = b"unit-bytes\x00\xff\r\n"
+            U.durable_write(path, value, 0o600)
+            self.assertEqual(path.read_bytes(), value)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with mock.patch.object(U.os, "replace", side_effect=OSError("replace-failed")):
+                with self.assertRaises(OSError): U.durable_write(path, b"replacement", 0o600)
+            self.assertEqual(path.read_bytes(), value)
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["unit"])
+
+    def test_snapshot_parent_fsync_failure_is_before_stop(self):
+        from unittest import mock
+        from simple_tools import router_upgrade as U
+        with tempfile.TemporaryDirectory() as tmp:
+            upgrade = U.ControlledUpgrade.__new__(U.ControlledUpgrade)
+            upgrade.snapshot = Path(tmp) / "snapshot"
+            with mock.patch.object(U.os, "fsync", side_effect=OSError("parent-sync")), mock.patch.object(U, "stopped") as stop:
+                with self.assertRaises(OSError): upgrade.quiesce()
+            stop.assert_not_called()
+            self.assertFalse(getattr(upgrade, "stop_attempted", False))
+
+    def test_all_snapshot_artifacts_use_atomic_write_and_stop_boundary(self):
+        from unittest import mock
+        from simple_tools import router_upgrade as U
+        for failure in (None, "front", "router", "custody.json", "stopped-census.json"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                upgrade = U.ControlledUpgrade.__new__(U.ControlledUpgrade)
+                upgrade.snapshot = Path(tmp) / "snapshot"
+                upgrade.units = {"front": b"front\xff", "router": b"router\x00"}
+                upgrade.current = "old"
+                upgrade.roots = {}
+                upgrade.before = {"pending": {}, "receipts": {}, "logs": {}}
+                upgrade.old_manifest = {}; upgrade.candidate_manifest = {}; upgrade.qualified = {"qualified": True}
+                upgrade.verify_old = lambda: None
+                upgrade.host = object(); upgrade.front = "front"; upgrade.router = "router"; upgrade.proc_root = Path(tmp)
+                actual = U.durable_write; writes = []
+                def write(path, data, mode):
+                    writes.append(path.name)
+                    if path.name == failure: raise OSError("injected-artifact-write")
+                    return actual(path, data, mode)
+                with mock.patch.object(U, "durable_write", side_effect=write), mock.patch.object(U, "census", return_value=upgrade.before), mock.patch.object(U, "stopped") as stop:
+                    if failure:
+                        with self.assertRaises(OSError): upgrade.quiesce()
+                    else:
+                        upgrade.quiesce()
+                if failure in ("front", "router", "custody.json"):
+                    stop.assert_not_called(); self.assertFalse(getattr(upgrade, "stop_attempted", False))
+                else:
+                    self.assertEqual(stop.call_count, 2)
+                    self.assertTrue(upgrade.stop_attempted)
+                if failure is None:
+                    self.assertEqual(writes, ["front", "router", "custody.json", "stopped-census.json"])
+                    for name, value in upgrade.units.items(): self.assertEqual((upgrade.snapshot / name).read_bytes(), value)
+
+
 class CompleteCensus(Custody):
     def test_historic_unknown_disappearance_refused(self):
         self.write(delivered=None, status="unknown")
@@ -521,7 +608,7 @@ class InstallerRecovery(unittest.TestCase):
         (state / "pending").mkdir()
         events = []
         real_census = U.census
-        real_write = Path.write_bytes
+        real_write = U.durable_write
         phase = {"stops": 0, "failed": False}
 
         class Candidate(U.ControlledUpgrade):
@@ -597,7 +684,7 @@ class InstallerRecovery(unittest.TestCase):
                 raise U.UpgradeRefused("injected original stopped census failure")
             return real_census(roots)
 
-        def write_fault(path, data):
+        def write_fault(path, data, mode):
             if (
                 failure == "snapshot"
                 and path.parent.name == "upgrade-fixture-snapshot"
@@ -605,7 +692,7 @@ class InstallerRecovery(unittest.TestCase):
             ):
                 phase["failed"] = True
                 raise OSError("injected original snapshot failure")
-            return real_write(path, data)
+            return real_write(path, data, mode)
 
         ns = program(INSTALL)
         output = io.StringIO()
@@ -613,7 +700,7 @@ class InstallerRecovery(unittest.TestCase):
             mock.patch.object(U, "ControlledUpgrade", Candidate),
             mock.patch.object(U, "stopped", stop),
             mock.patch.object(U, "census", census_fault),
-            mock.patch.object(Path, "write_bytes", write_fault),
+            mock.patch.object(U, "durable_write", write_fault),
             contextlib.redirect_stdout(output),
         ):
             result = ns["main"](
