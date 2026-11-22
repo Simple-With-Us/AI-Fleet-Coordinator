@@ -182,6 +182,7 @@ class SeatPolicy:
         "mint_token",
         # Read-only fetch and clone over the relay's /git/ route (git_read.py).  The token stays in the relay.
         "git_read",
+        "service_read",
         "merge_pr",
         "workflow_dispatch",
         "resolve_thread",
@@ -712,7 +713,7 @@ class SeatPolicy:
         repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
         write bucket can only err toward counting.
         """
-        if action in ("mint_token", "git_read"):
+        if action in ("mint_token", "git_read", "service_read"):
             return False
         if action in cls.WORKFLOW_ACTIONS:
             # Imported here:  workflow_verbs imports server, which imports this module.
