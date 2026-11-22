@@ -1,6 +1,8 @@
 # Unit Status, Logs Of The Service A Timer Starts, And The Redeploy Name
 
 > **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+>
+> **Nov 22, 2026.**  The redeploy command this record shows is the GET the Coolify route never answered:  the live route is POST (`[["coolify", "POST", "/api/v1/deploy?uuid=UUID"]]`), and the live token is `COOLIFY_DEPLOY_ONLY` in `/coolify-deploy-only-token`.  The live statement is `docs/protocols/fleet-tool-parity.md`;  this document is the record as it stood.
 
 Muster's Server panel needs four small things from the restricted helper (`scripts/fleet-ops-control.py`, the forced command of the `fleet-ops-ctl` key) that it cannot get today: a way to read one listed unit's state on demand, the journal of the service a timer starts instead of the timer's own two-line journal, the authoritative name of an application before a redeploy is approved, and the owner copy for the Mac's agents that the server's units already carry.  This note describes the four changes, the exact shape of each answer for the Swift owner, how to deploy them, and what was checked.
 

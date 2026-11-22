@@ -2,7 +2,12 @@
 
 Endpoints (all JSON in, JSON out):
     GET  /healthz
-    POST /v1/open_pr           {repo, base, head, title, body, draft?}  (owner token; read back)
+    POST /v1/open_pr           {repo, base, head, title, body, draft?,
+                                origin_session_claim?, origin_letter_claim?,
+                                origin_generation_claim?}              (owner token; read back)
+    POST /v1/service_read      {repo, number, verb, page?, sha?}      (dedicated
+                                service bearer; fixed read verbs, repo allowlist;
+                                narrowed one-repo App grant, never the token)
     POST /v1/edit_pr           {repo, number, title?, body?}        (seat's App)
     POST /v1/reply_thread      {repo, number, comment_id, body}     (seat's App)
     POST /v1/comment_pr        {repo, number, body}                 (seat's App)
@@ -102,6 +107,16 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8471
 
 
+#: The fleet session-id shape (fleet-apps.json `sessionIds`;  session_ids.py parity copy
+#: is ^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$).  A claim is a caller's say-so only:  it is
+#: never sent upstream and never routes anything.  The only binding is the
+#: session's own registry row (bound_prs), checked live by the wake-router at
+#: delivery;  the relay itself verifies nothing about the claims.
+_SESSION_CLAIM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
+#: A fleet session letter is exactly two capitals (wake-router letter rule).
+_LETTER_CLAIM_RE = re.compile(r"[A-Z]{2}")
+
+
 def _text(value, field: str, required: bool = True) -> str | None:
     if value is None:
         if required:
@@ -159,6 +174,12 @@ def _validate_args(action: str, args: dict) -> dict:
                 "title": ("clean", True),
                 "body": ("clean", True),
                 "draft": ("boolean", False),
+                # Untrusted caller claims:  recorded for the ownership index,
+                # never sent upstream.  The trusted binding is the session's own
+                # registry row (bound_prs), enforced by the wake-router.
+                "origin_session_claim": ("session_claim", False),
+                "origin_letter_claim": ("letter_claim", False),
+                "origin_generation_claim": ("generation_claim", False),
             }
         )
     elif action == "edit_pr":
@@ -200,12 +221,17 @@ def _validate_args(action: str, args: dict) -> dict:
         )
     elif action == "resolve_thread":
         specs["thread_id"] = ("thread_id", True)
-    if action == "open_pr":
-        claims = service_read.origin_claims(args)
-        specs.update({name: ("origin", True) for name in claims})
     extra = sorted(set(args) - set(specs))
     if extra:
         raise ValueError(f"{action}: unexpected fields ({len(extra)})")
+    if action == "open_pr":
+        # The three creation-time native claims are all-or-none:  a caller
+        # that offers one claim offers all three, so a partial set can never
+        # be read as a complete attestation.  Each claim is shape-checked
+        # below, and an absent claim set stays absent.
+        offered = {name for name in args if name.startswith("origin_")}
+        if offered and offered != set(service_read.CLAIMS):
+            raise ValueError("native origin claims must be supplied together")
     canonical: dict = {}
     for field, (kind, required) in specs.items():
         value = args.get(field)
@@ -217,6 +243,13 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
             if not re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", value):
                 raise ValueError("thread_id must be a pull request review thread id")
+        elif kind == "generation_claim":
+            if value is None and not required:
+                pass
+            else:
+                value = _number(value, field)
+                if value > 2147483647:
+                    raise ValueError(f"{field} must be a generation between 1 and 2147483647")
         elif kind == "number":
             value = _number(value, field)
         elif kind == "boolean":
@@ -225,6 +258,14 @@ def _validate_args(action: str, args: dict) -> dict:
             # False is the existing default and must retain the same outcome key.
             if value is False:
                 value = None
+        elif kind == "session_claim":
+            value = _text(value, field, required=required)
+            if value is not None and not _SESSION_CLAIM_RE.fullmatch(value):
+                raise ValueError(f"{field} is not a session id shape")
+        elif kind == "letter_claim":
+            value = _text(value, field, required=required)
+            if value is not None and not _LETTER_CLAIM_RE.fullmatch(value):
+                raise ValueError(f"{field} is not a session letter (two capitals)")
         elif kind == "method":
             if value is None:
                 value = "squash"
@@ -341,6 +382,8 @@ class Relay:
         workflow_verbs_enabled: bool = False,
         typed_disarm_enabled: bool = False,
         pr_owners: PROwnerStore | None = None,
+        service_read_token: str | None = None,
+        service_read_repos=frozenset(),
     ):
         # Off unless the operator turns it on: with it off every wf_ action is refused
         # as registered-not-wired, exactly as before the wiring existed.
@@ -353,6 +396,10 @@ class Relay:
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
         self.pr_owners = pr_owners
+        # The service-read lane:  a dedicated bearer (not a seat token) and the
+        # exact repos it may read.  None/empty keeps the lane closed.
+        self.service_read_token = service_read_token
+        self.service_read_repos = frozenset(service_read_repos)
         self.typed_gateway = None
         if typed_disarm_enabled:
             from .typed_gateway import TypedGateway
@@ -368,6 +415,18 @@ class Relay:
         *,
         operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
+        if action == "service_read" and self.service_read_token is not None:
+            # The alert service's read lane:  its own bearer, no seat policy,
+            # fixed verbs and an explicit repo allowlist.  It never mints for
+            # a caller-chosen scope and never returns a token.
+            #
+            # A configured lane owns the action outright:  the lane's own
+            # credential is the only one it accepts, and it answers every
+            # other bearer with its ordinary unauthenticated refusal.  A
+            # relay with no lane configured leaves the action to the normal
+            # policy path, where the seat's own grant, repository scope and
+            # quota apply.
+            return service_read.lane(self, token, args)
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
         if self.typed_gateway is not None:
@@ -451,6 +510,8 @@ class Relay:
         # from key_for, the outcome store, or dispatch) can skip it or double it.
         outcome = "ok"
         detail: dict = {}
+        title_prefixed = False
+        key_title = None
         try:
             # Order is deliberate:  secret scan, full shape validation, then the
             # policy check (allowlist + hourly rate) ALL run before the
@@ -486,6 +547,24 @@ class Relay:
                     WorkflowVerbs.check_shape(action, canonical, canonical["repo"])
                 else:
                     canonical = _validate_args(action, args)
+                if action == "open_pr" or (
+                    action == "edit_pr" and canonical.get("title") is not None
+                ):
+                    # Jay's 2026-11-20 bracketed-heading convention:  the
+                    # seat's tag leads the title at creation, and a retitle
+                    # through edit_pr cannot strip it.  Applied to the
+                    # canonical args so the upstream write and the audit row
+                    # agree;  the idempotency key below still binds the seat's
+                    # ORIGINAL title, so a pre-convention pending/unknown row
+                    # matches its post-deploy retry instead of duplicating.
+                    key_title = canonical["title"]
+                    canonical["title"], title_prefixed = self.policy.apply_title_tag(
+                        seat, canonical["title"]
+                    )
+                    if len(canonical["title"]) > MAX_TEXT_FIELD:
+                        # The prefix itself may not push the field past the
+                        # bound _validate_args enforced on the original.
+                        raise ValueError("title exceeds the 32 KiB bound")
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
@@ -509,7 +588,12 @@ class Relay:
                 # by persisting that credential in the store, which is worse) and
                 # a duplicate mint is benign - installation tokens expire within
                 # the hour and the minter's per-key lock dedups concurrent calls.
-                key = key_for(seat, action, canonical)
+                key_args = {k: v for k, v in canonical.items() if not k.startswith("origin_")}
+                key = key_for(
+                    seat,
+                    action,
+                    {**key_args, "title": key_title} if key_title is not None else key_args,
+                )
                 try:
                     attempt_corr = uuid.uuid4().hex
                     prior = self.outcomes.begin(
@@ -570,8 +654,25 @@ class Relay:
                         "retryable": False,
                     }
             try:
+                if action == "open_pr" and self.pr_owners is not None:
+                    # The creation fence is durable BEFORE the upstream
+                    # create, so even total disk failure after a known
+                    # create cannot hide a missing row across a restart.
+                    # The fence binds to the outcome row the idempotency
+                    # gate just wrote, so it uses that row's own
+                    # correlation id:  a second key computation could drift
+                    # from the key the gate used and would fence nothing.
+                    try:
+                        self.pr_owners.begin_creation(attempt_corr)
+                    except (OSError, ValueError):
+                        raise ServerUnavailable("creation index fence unavailable") from None
                 result = self._dispatch(
-                    seat, action, canonical, canonical["repo"], caller_token=token
+                    seat,
+                    action,
+                    canonical,
+                    canonical["repo"],
+                    caller_token=token,
+                    corr=attempt_corr,
                 )
             except PolicyDenied as exc:
                 self._release(key, "refused")
@@ -703,6 +804,9 @@ class Relay:
                     if unconfirmed is not None:
                         detail["unconfirmed_number"] = unconfirmed
                         if action == "open_pr":
+                            # The create's outcome is unknown:  record the
+                            # seat's claim on this number as unconfirmed so
+                            # the index can say so honestly.
                             detail["owner_recorded"] = self._record_pr_owner(
                                 seat, canonical, unconfirmed, attempt_corr, confirmed=False
                             )
@@ -758,6 +862,8 @@ class Relay:
                 self.outcomes.finish(key, "ok", result)
             owner_recorded = None
             if action == "open_pr" and type(result.get("number")) is int:
+                # Bind the returned PR to the authenticated seat in the
+                # queryable ownership index.
                 owner_recorded = self._record_pr_owner(
                     seat, canonical, result["number"], attempt_corr, confirmed=True
                 )
@@ -772,6 +878,9 @@ class Relay:
                 detail = _workflow_audit_detail(canonical, result)
             else:
                 detail = {**canonical, **result}
+                if title_prefixed:
+                    # The seat sent no conforming heading;  the relay added it.
+                    detail["title_prefixed"] = True
                 if owner_recorded is not None:
                     detail["owner_recorded"] = owner_recorded
             return 200, result
@@ -831,7 +940,13 @@ class Relay:
         if key is not None:
             self.outcomes.finish(key, state)
 
-    def _record_pr_owner(self, seat, canonical, number, corr, confirmed):
+    def _record_pr_owner(
+        self, seat: str, canonical: dict, number: int, corr: str | None, confirmed: bool
+    ) -> bool | None:
+        """Best-effort ownership-index write;  the audit row stays the source of truth.
+
+        Returns True or False when a store is wired, None when none is.
+        """
         if self.pr_owners is None:
             return None
         try:
@@ -843,16 +958,28 @@ class Relay:
                 base=canonical["base"],
                 corr=corr,
                 confirmed=confirmed,
-                origin=service_read.origin_claims(canonical),
+                origin_session_claim=canonical.get("origin_session_claim"),
+                origin_letter_claim=canonical.get("origin_letter_claim"),
+                origin_generation_claim=canonical.get("origin_generation_claim"),
             )
         except Exception:
-            # Creation is already known. Never turn an index failure into a
-            # retriable create or invent a creation-time origin on replay.
+            # A failed index write never fails or reclassifies the creation:
+            # the PR exists at this point, the outcome row already finished
+            # "ok", and this attempt's audit row still binds it.  Any
+            # unexpected store failure (not just OSError/ValueError) degrades
+            # to owner_recorded False;  `python3 -m git_relay.pr_owners
+            # rebuild` repairs the index from the audit log.
             return False
         return True
 
     def _dispatch(
-        self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+        self,
+        seat: str,
+        action: str,
+        args: dict,
+        repo: str,
+        caller_token: str | None = None,
+        corr: str | None = None,
     ) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
@@ -863,16 +990,11 @@ class Relay:
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
-            # This correlation is already durable in the normal outcome store.
-            # Fence the derived index BEFORE the upstream side effect so even
-            # total disk failure after a known create cannot hide a missing row
-            # across process restart. No new origin is obtained on retry.
-            corr = self.outcomes.corr_of(key_for(seat, action, args))
-            if self.pr_owners is not None:
-                try:
-                    self.pr_owners.begin_creation(corr)
-                except (OSError, ValueError):
-                    raise ServerUnavailable("creation index fence unavailable") from None
+            # The creation fence was already written by handle(), before
+            # this call:  the owner index is fenced durably before the
+            # upstream side effect, and no new origin is obtained on retry.
+            # The correlation id is the one the idempotency gate wrote, so
+            # the refusal below resolves exactly that fence.
             try:
                 return self.client.open_pr(
                     repo,
@@ -1278,7 +1400,7 @@ class _OperatorBootstrapRelay:
         return self._relay.handle(token, action, args, proof=proof, operator_bootstrap=True)
 
 
-def make_handler(relay: Relay, operator_bootstrap: bool = False):
+def make_handler(relay: Relay, operator_bootstrap: bool = False, service_read_only: bool = False):
     # Bootstrap admission is bound to the LISTENER, never to the peer
     # address:  the tunnel and any local client reach the public listener
     # alike, so remote_addr cannot distinguish an operator from the edge.
@@ -1307,7 +1429,7 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
             elif git_read.is_git_path(self.path):
-                if operator_bootstrap:
+                if operator_bootstrap or service_read_only:
                     # The operator listener serves the v1 API only:  Git
                     # smart-HTTP needs the full Relay interface and is not
                     # part of bootstrap admission, so it is refused outright
@@ -1319,6 +1441,9 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if service_read_only and self.path != "/v1/service_read":
+                self._send(404, {"error": "not found"})
+                return
             if git_read.is_git_path(self.path):
                 if operator_bootstrap:
                     self._send(404, {"error": "not found"})
@@ -1720,6 +1845,8 @@ def from_env() -> Relay:
         client,
         audit,
         app_minter=app_minter,
+        service_read_token=_service_read_token_from_file(),
+        service_read_repos=_service_read_repos_from_env(),
         outcomes=outcomes,
         workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
         typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
@@ -1782,8 +1909,84 @@ def _owner_token_from_cli() -> str:
         raise RuntimeError(f"git-relay config: owner token:  {exc}") from None
 
 
+def _report_pr_owner_binding(relay):
+    # Startup-only, nonsecret activation receipt. Bound by journald to this
+    # service invocation/PID; not an HTTP endpoint or an ownership backfill.
+    store = relay.pr_owners
+    owners_parent = os.path.dirname(os.path.abspath(store._path))
+    print(
+        json.dumps(
+            {
+                "event": "pr_owners_bound_v1",
+                "pid": os.getpid(),
+                "module": type(store).__module__,
+                "type": type(store).__name__,
+                "path": os.path.realpath(store._path),
+                "absolute": os.path.isabs(store._path),
+                "parent_writable": os.path.isdir(owners_parent)
+                and os.access(owners_parent, os.W_OK),
+                "load_error": store.load_error,
+            }
+        ),
+        flush=True,
+    )
+
+
+def _service_read_repos_from_env() -> frozenset:
+    """The service-read repo allowlist:  GIT_RELAY_SERVICE_READ_REPOS as a
+    comma list of owner/name;  empty means the lane answers 503 to all."""
+    out = set()
+    for part in os.environ.get("GIT_RELAY_SERVICE_READ_REPOS", "").split(","):
+        part = part.strip()
+        if part:
+            if not service_read.LANE_REPO.fullmatch(part):
+                raise SystemExit("git-relay config: bad repo in GIT_RELAY_SERVICE_READ_REPOS")
+            out.add(part)
+    return frozenset(out)
+
+
+def _service_read_token_from_file() -> str | None:
+    """The service lane's dedicated bearer, from its own credential file
+    (LoadCredential git-relay-service-read or GIT_RELAY_SERVICE_READ_CREDENTIAL_FILE);
+    never the process environment.  None when the lane is not configured."""
+    if not _service_read_repos_from_env():
+        return None
+    path = _credential_file_for(
+        "service-read", "GIT_RELAY_SERVICE_READ_CREDENTIAL_FILE", "git-relay-service-read"
+    )
+    try:
+        value = open(path, "r", encoding="utf-8").read().strip()
+    except OSError as exc:
+        raise SystemExit("git-relay config: service-read credential file unreadable") from exc
+    if len(value) < 32:
+        raise SystemExit("git-relay config: service-read credential is too short")
+    return value
+
+
+def _service_read_listener_address(env):
+    """Optional private bridge socket. Never wildcard, public or bootstrap-capable."""
+    import ipaddress
+
+    raw = env.get("GIT_RELAY_SERVICE_READ_BIND", "")
+    if not raw:
+        return None
+    try:
+        address = ipaddress.ip_address(raw)
+        allowed = address.is_loopback or any(
+            address in ipaddress.ip_network(net)
+            for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        )
+        port = int(env.get("GIT_RELAY_SERVICE_READ_PORT", "8473"))
+        if not allowed or not 1024 <= port <= 65535:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise SystemExit("git-relay config: invalid private service-read listener") from None
+    return str(address), port
+
+
 def main() -> None:
     relay = from_env()
+    _report_pr_owner_binding(relay)
     host = os.environ.get("GIT_RELAY_HOST", DEFAULT_HOST)
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
     server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
@@ -1807,9 +2010,24 @@ def main() -> None:
         )
         threading.Thread(target=operator_server.serve_forever, daemon=True).start()
         print(f"git-relay operator listener on 127.0.0.1:{operator_port}")
+    service_server = None
+    service_address = _service_read_listener_address(os.environ)
+    if service_address:
+        if not relay.service_read_token or not relay.service_read_repos:
+            raise SystemExit(
+                "git-relay config: service-read listener needs dedicated auth and repos"
+            )
+        service_server = BoundedThreadingHTTPServer(
+            service_address, make_handler(relay, service_read_only=True)
+        )
+        threading.Thread(target=service_server.serve_forever, daemon=True).start()
+        print("git-relay private service-read listener active")
     try:
         server.serve_forever()
     finally:
+        if service_server is not None:
+            service_server.shutdown()
+            service_server.server_close()
         if operator_server is not None:
             operator_server.shutdown()
             operator_server.server_close()

@@ -19,7 +19,10 @@ ARGS = {
     "repo": "example/fixture",
     "base": "main",
     "head": "feature",
-    "title": "Title",
+    # The seat-tag title convention prefixes any unbracketed title with the
+    # authenticated seat's tag;  the fixture already carries it, so these
+    # tests keep asserting the exact wire payload.
+    "title": "[CODEX] Title",
     "body": "Body",
 }
 TOKEN = "s" * 32

@@ -147,6 +147,18 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
         self.assertFalse(self.reg.close(a["record_id"], actor="MM", source="test"))
 
+    def test_close_snapshot_keeps_the_label(self):
+        # close() retires the alias before it queues the final session snapshot,
+        # so a snapshot rebuilt from the live alias exports Label="" and the
+        # sheet's last row for the session loses which letter it was.
+        a = self.reg.resolve_or_register(ident())
+        self.assertEqual(a["label"], "AA")
+        self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
+        upserts = [p for p in R.pending_outbox(self.db) if p["kind"] == "session_upsert"]
+        cells = json.loads(upserts[-1]["payload"])["cells"]
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("Label")], "AA")
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("State")], "closed")
+
     def test_resumed_closed_is_explicit(self):
         a = self.reg.resolve_or_register(ident())
         self.reg.close(a["record_id"], actor="MM", source="test")
