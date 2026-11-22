@@ -20,7 +20,6 @@ if [[ ! -x "$PYTHON" ]]; then
   echo "grok-acp:  ${PYTHON} is not executable on this host,  so the scoped reader cannot run" >&2
   exit 1
 fi
-if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
   # A reader that could not answer is not a missing secret:  the two failures name
   # different components,  so an operator repairs the one that is broken.
   if GROK_AGENT_SECRET="$("$PYTHON" -I "${SCOPED_READER}" get GROK_AGENT_SECRET \
@@ -37,7 +36,6 @@ if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
     echo "missing GROK_AGENT_SECRET in Infisical /grok-acp:  the scoped reader at ${SCOPED_READER} could not read it with the ${TOKEN_ACCOUNT} scoped service token (${reason})" >&2
     exit 1
   fi
-fi
 if [[ -z "${GROK_AGENT_SECRET}" ]]; then
   echo "GROK_AGENT_SECRET is empty in Infisical /grok-acp" >&2
   exit 1
