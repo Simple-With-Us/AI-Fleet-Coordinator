@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from .deploy_guard import freeze_qualified
+from .deploy_guard import freeze_failures
 from .deploy_transaction import TransactionError, read_regular
 
 # Loopback readiness is bounded but must cover a cold start: on the
@@ -38,6 +38,16 @@ class StartingProcess(TransactionError):
     def __init__(self, identity):
         super().__init__("relay executable not ready")
         self.identity = identity
+
+
+class FrozenBusyRefusal(TransactionError):
+    """Structured diagnostic with the exact retry-compatible legacy message."""
+
+    def __init__(self, failed_predicates):
+        super().__init__("busy recovery image; no unsafe stop")
+        self.failed_predicates = tuple(failed_predicates)
+        if hasattr(self, "add_note"):
+            self.add_note("freeze predicates=" + ",".join(self.failed_predicates))
 
 
 class LinuxHost:
@@ -447,7 +457,7 @@ class LinuxHost:
         try:
             self.freeze(expected)
             tasks, children = self.tasks_and_children(expected)
-            if not freeze_qualified(
+            failed = freeze_failures(
                 expected,
                 self.process_identity(),
                 self.process_identity(),
@@ -455,8 +465,9 @@ class LinuxHost:
                 children,
                 self.pending_count(),
                 self.stop_job_exists(),
-            ):
-                raise TransactionError("busy recovery image; no unsafe stop")
+            )
+            if failed:
+                raise FrozenBusyRefusal(failed)
             self.stop_without_kill(expected)
         except BaseException as original:
             result = self.reconcile_frozen_stop(expected)

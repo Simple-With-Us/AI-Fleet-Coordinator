@@ -104,7 +104,8 @@ It returns a `Delivery` whose `outcome` is one of:
     busy         the chat cannot take it yet;  the wake waits, and this uses up no attempt
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
     failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
-    refused      it can never work, or a retry could run the turn twice;  no retry
+    refused      it can never work, or a retry could run the turn twice;  no retry except for a
+                 classified target-ineligible never-run refusal on an unaddressed pick
     unknown      it may have run the wake and nobody can tell;  it is not retried (a retry could
                  run the turn twice) and not recorded as delivered;  the receipt keeps it visible
 
@@ -113,7 +114,10 @@ its own errors from that point on and return `refused`.  `route`, `code` and `no
 codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
 for a refusal only when its code is in `NEVER_RAN` or in the seat's own module's `NEVER_RAN` (the
 Router's `never_ran`):  any other refusal may follow a turn that started, so it says
-`delivered: null`, because nobody knows.
+`delivered: null`, because nobody knows.  One classified never-run refusal, `session-subagent`,
+means the selected binding cannot receive a chat wake.  An unaddressed pick may exclude that exact
+binding and pick again within the same attempt and age caps; an addressed pick and every other
+refusal stay final.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -151,6 +155,45 @@ chat until that one is settled;  it is not failed as busy.  A wake that still ca
 or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
 seat's state directory and at GET /receipt/<SEAT>/<id>, and its message is in the seat inbox
 regardless.
+
+Turns (AFC-831).  One idle turn of a chat may carry several of its pending wakes:  a head and up
+to seven riders, so a chat that was busy for an hour is not woken twenty times when it goes idle.
+It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn`,
+
+    def deliver_turn(target: Target, head: Wake, riders: tuple[Wake, ...], turn_id: str) -> Turn
+
+with the same rules as `deliver` (an exception is `failed`), and only while the setting
+`turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1 is off, and unset counts as not set) is 2 or more;  the core
+never goes past TURN_MAX_WAKES.  Every other seat, and every wake that cannot ride, takes the path
+above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply or a session id) and
+only to the same session, letter, generation and host as the head, so a pick the router is not
+sure of is delivered alone, as before, and a turn never makes it certain.  The pick is the
+router's own, made on the addressing without the sender's own quoted tags, so a sender quoting
+itself never makes a wake ride.  A run is contiguous:  the walk from the head stops at the first
+wake of that chat that cannot ride, so one chat's wakes still run in the order they came.  A head
+whose chat has answered it `busy` goes alone from then on (`busy_seen`, kept in its pending
+file):  riders are not marked for every try at a chat that is in a live turn, and the wakes
+behind that head ride the next turn.  A registry outage is answered as it is for a wake alone:
+the check before delivery runs before any rider is marked, and an outage there or in the turn's
+answer sends the head back with no attempt spent and no `busy_seen`, and every rider back with
+nothing used (`_settle_turn`).  Membership is fixed before any
+effect:  each rider's pending file is marked first (an attempt, the in-flight mark and `ride`),
+then the head's file takes the manifest (`turn`) with its in-flight mark as the last write before
+`deliver_turn`.  A crash after that commit closes every member the turn may have carried through
+the replay rule above, as `unknown` with the code `interrupted-during-delivery` (a wake outside a
+turn keeps `dead`), and never runs one twice.  A rider whose head holds no committed manifest of
+its turn, or whose settled head says the turn did not carry it, ran nothing:  the replay takes its
+marks back with nothing used.  A rider counts as carried only when the far side names it, in
+order, in a readable echo of the offer (`Turn.carried`):  no echo means only the head was
+carried, and an echo that cannot be read after a turn ran closes the riders `unknown` with
+`turn-unconfirmed`.  A rider not carried goes back to pending with nothing used, and leads or
+rides a later turn.  Each member keeps its own receipt id, done file and ledger row, and its
+receipt adds a `turn` object:  its id and role, and for the head the members, their message ids
+and what was carried (`[]` when nothing was, null when the answer could not say).  The prompt is
+one fixed core text (`turn_text`):  ids and the router's own notes only, at most
+TURN_MAX_PROMPT_CHARS long.  A platform gives a turn its one-wake time limit once per member, so a
+turn can outlast `shutdown_wait_seconds`:  a restart during one closes its members as above and
+never runs one twice.
 
 A delivery can run for many minutes, so it does not keep a place in the worker pool:  a worker that
 starts one hands its place to a fresh thread and ends once that wake is settled, and a chat that
@@ -200,6 +243,16 @@ from . import registry_api, secretscan
 CONTRACT = "simple-tools-wake/1"
 MAX_BODY = 64 * 1024
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: The fleet session-id shape (fleet-apps.json `sessionIds`):  a `require_session` wake
+#: field must carry a full id in this shape, never a fragment.
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")
+#: A `require_letter` wake field carries exactly the letter shape:  two capitals.
+REQUIRE_LETTER_RE = re.compile(r"^[A-Z]{2}$")
+#: A `require_pr` wake field names one pull request:  owner/name#number.  The origin
+#: registry row must carry that binding (the session's own seat-lane write).
+REQUIRE_PR_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,8}$"
+)
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
@@ -242,6 +295,10 @@ FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
 FRAGMENT_MAX_PLAIN = 12
 MAX_FRAGMENTS = 8
+# Durable per-wake exclusions are bounded even if a pending file is malformed or edited.
+MAX_REJECTED_TARGETS = 64
+REJECTED_TARGET_CODES = frozenset({"session-subagent"})
+REJECTED_TARGET_PICK_KINDS = frozenset({"linear-issue", "topic-match", "consultant", "most-recent"})
 # The registry's times for a row, best first.  letter_history returns only `assigned_at` today.
 RECENCY_FIELDS = ("last_seen_at", "assigned_at")
 HISTORY_LIMIT = 200
@@ -328,6 +385,7 @@ NEVER_RAN = frozenset(
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
 LINK_NOTES = {
+    "required-session": "This wake is for the exact originating session.",
     "letter": "The router linked this wake to this chat because the sender addressed its letter.",
     "reply": "This wake was linked by reply.",
     "session-id": "This wake was linked by session id.",
@@ -354,6 +412,31 @@ COMMAND_TEXT = (
     "act:  zulip_get_message with message_id {message_id}.  Answer in that thread under your "
     "seat's rules."
 )
+# Turns (module docstring, Turns):  one idle turn of a chat carrying several of its wakes.
+TURN_CONTRACT = "simple-tools-turn/1"
+TURN_MAX_WAKES = 8  # head + at most 7 riders;  the knob can only lower it
+TURN_MAX_PROMPT_CHARS = 3500  # turn_text() with a prefix of up to TURN_PREFIX_MAX
+TURN_PREFIX_MAX = 40
+TURN_ID_RE = re.compile(r"^t-[0-9a-f]{16}$")
+MESSAGE_ID_MAX = 2**63 - 1
+# The picks that are exact addresses:  the sender or the listener named the chat.  Nothing the
+# router inferred (an issue, a topic, a tie, a decider, recency) rides.
+CERTAIN_REASONS = frozenset({"letter", "reply", "session-id"})
+# A turn ran and its answer cannot say which riders it carried.
+TURN_UNCONFIRMED = "turn-unconfirmed"
+# An answer that names riders as carried by a turn that ran nothing.
+TURN_CONFLICT = "turn-answer-conflict"
+# A `deliver_turn` that answered something that is not a Turn.
+TURN_BAD_ANSWER = "deliver-bad-turn"
+# What an offer says of each rider:  the router's own values, nothing Zulip-authored.
+TURN_MEMBER_FIELDS = ("wake_id", "message_id", "picked", "reason", "link_note")
+TURN_TEXT = (
+    "You were tagged in Zulip {count} times (turn {turn_id}).  The message text is not quoted "
+    "here on purpose.  Read each message in Zulip before you act on it, one at a time:  "
+    "zulip_get_message with its message_id, at the default length first and with full: true "
+    "only when you need the rest.  Answer each in its own thread under your seat's rules."
+)
+TURN_LINE = "- wake id {wake_id}:  message_id {message_id}.  {note}"
 
 # The settings a router reads and what each one is if nothing sets it.  Their values come from
 # Infisical through wake_settings;  fleet_knobs/registry.py holds the same defaults, and a test keeps
@@ -372,6 +455,10 @@ ROUTER_DEFAULTS: dict[str, Any] = {
     # can start, and the unit's TimeoutStopSec is longer than this.  A delivery still running at the
     # end of it is closed by the replay as interrupted, never run again.
     "shutdown_wait_seconds": 1000,
+    # Most wakes one idle turn may carry for one chat;  1 is off, and only a platform with
+    # deliver_turn uses more (module docstring, Turns).  `_turn_cap` treats anything that is
+    # not an int as off, so an unreadable knob also means single wakes.
+    "turn_max_wakes": 1,
 }
 
 
@@ -409,6 +496,76 @@ class Wake:
     session_fragments: tuple[str, ...] = ()
     sender_fragment: str = ""
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
+    # An exact-origin wake (the review-alert path) names one chat by full session id, with the
+    # letter and generation its creation attestation recorded as extra constraints.  It picks
+    # that chat or holds;  it never falls through to issue, topic or recency.
+    credential_scope: str = ""  # set by HTTP authentication, never parsed from payload
+    required_session: str = ""
+    require_letter: str = ""
+    require_generation: int = 0
+    require_pr: str = ""
+
+
+def workspace_root(configured: object) -> str:
+    """The host's workspace root, as a normalized absolute path, or "" when there is none.
+
+    The deployment names the root where this seat's chats live.  It is a root and not one
+    directory, because a seat works in several projects at once:  a chat in another project
+    under the root is the seat's own work, and a chat outside the root is not.
+
+    The path is normalized, so a `..` cannot climb out of the root it was named under."""
+    if not isinstance(configured, str):
+        return ""
+    text = configured.strip()
+    if not text or text.startswith("-"):
+        return ""
+    if not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def _under(root: str, path: str) -> bool:
+    """Whether the path is the root itself or lies inside it.
+
+    The root's own separator is never doubled, so the filesystem root ("/") holds every
+    path under it instead of holding none of them."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def workspace_allowed(recorded: object, configured: object) -> bool:
+    """Whether the selected session's own workspace is inside the host's workspace root.
+
+    The delivery runs in the session's own directory, so the session's own row is the
+    binding and the configured root is the bound:  a chat under the root is the seat's own
+    work, and a chat outside it is a wrong-chat delivery, so it is refused before anything
+    runs.
+
+    The two are compared as they are named and as they resolve, because a deployment names
+    its root one way and a session records its directory another:  a root that is itself a
+    symlink and a session row that holds the resolved path name one tree two ways, and a
+    lane that is a symlink to another volume is inside the root it was named under.
+
+    A host that has named no root has no bound, so nothing is allowed:  a delivery into an
+    unknown directory is not one."""
+    root = workspace_root(configured)
+    if not root:
+        return False
+    if not isinstance(recorded, str):
+        return False
+    path = recorded.strip()
+    if not path or path.startswith("-"):
+        return False
+    if not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if _under(root, path):
+        return True
+    resolved_root = os.path.realpath(root)
+    resolved_path = os.path.realpath(path)
+    if resolved_root == resolved_path:
+        return True
+    return _under(resolved_root, resolved_path)
 
 
 @dataclass(frozen=True)
@@ -423,6 +580,20 @@ class Delivery:
 
 
 @dataclass(frozen=True)
+class Turn:
+    """What a platform's deliver_turn did.  `delivery` is the head's, exactly as deliver returns
+    one.  `carried` lists the rider wake ids the far side put in the turn's prompt, in order;
+    None means no echo, so only the head was carried.  `confirmed` lists the riders the chat
+    itself recorded, a subset of `carried`.  `unreadable` means a turn was offered and the answer
+    cannot say what it carried."""
+
+    delivery: Delivery
+    carried: tuple[str, ...] | None = None
+    confirmed: tuple[str, ...] = ()
+    unreadable: bool = False
+
+
+@dataclass(frozen=True)
 class Platform:
     """What one platform supplies to the shared router."""
 
@@ -434,6 +605,9 @@ class Platform:
     # The session ids among the candidates that must never be picked (a sub-agent, a headless run).
     exclude: Callable[[list[Target]], set[str]] | None = None
     stop_words: frozenset[str] = frozenset()
+    # The opt-in to turns (module docstring, Turns), last so a positional Platform still builds:
+    # deliver_turn(target, head, riders, turn_id) -> Turn.  None, the default, is today's path.
+    deliver_turn: Callable[[Target, Wake, tuple[Wake, ...], str], Turn] | None = None
 
 
 #: The seam for an optional decider, off by default.  It receives the candidates and the wake's
@@ -840,6 +1014,14 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
+        required_session=str(payload.get("require_session") or ""),
+        require_letter=str(payload.get("require_letter") or ""),
+        require_generation=(
+            payload.get("require_generation")
+            if type(payload.get("require_generation")) is int
+            else 0
+        ),
+        require_pr=str(payload.get("require_pr") or ""),
     )
 
 
@@ -1031,6 +1213,222 @@ def command_platform(
     return Platform(seat, platform, mention, target_re, deliver, exclude, stop_words)
 
 
+# ---- turns:  the pure helpers the router, the Mac dispatcher and an opted-in module share ------
+
+
+def message_id_ok(value: object) -> bool:
+    """Whether this is a Zulip message id a turn may list:  a positive int, never a bool."""
+    return type(value) is int and 1 <= value <= MESSAGE_ID_MAX
+
+
+def certain(pick: Pick) -> bool:
+    """Whether a pick is an exact address (CERTAIN_REASONS) with the router's own note for it.
+    Every pick the router is not sure of, and every one it inferred, is not."""
+    return (
+        pick.target is not None
+        and pick.reason in CERTAIN_REASONS
+        and pick.picked == pick.reason
+        and pick.link_note == LINK_NOTES[pick.reason]
+        and UNSURE not in pick.link_note
+    )
+
+
+def turn_key(target: Target) -> tuple[str, str, int, str]:
+    """The exact chat a turn is for.  Title and thread link are left out on purpose:  they
+    describe the chat and do not name another one."""
+    return target.session_id, target.letter, target.generation, target.host
+
+
+def turn_text(prefix: str, head: Wake, riders: Sequence[Wake], turn_id: str) -> str:
+    """The one prompt of a turn:  the platform's fixed prefix, the fixed core text, and one line
+    per wake, head first.  Only router values reach it:  ids, int message ids and the router's
+    own link notes.  Topic, sender, channel and link never do.  The prefix is cut to
+    TURN_PREFIX_MAX, the length the router's prompt cap allows for."""
+    prefix = prefix[:TURN_PREFIX_MAX]
+    members = (head, *riders)
+    lines = [
+        TURN_LINE.format(
+            wake_id=wake.wake_id,
+            message_id=wake.message_id,
+            note=wake.link_note if link_note_ok(wake.link_note) else "",
+        ).rstrip()
+        for wake in members
+    ]
+    return prefix + TURN_TEXT.format(count=len(members), turn_id=turn_id) + "\n" + "\n".join(lines)
+
+
+def turn_member(wake: Wake) -> dict[str, Any]:
+    return {name: getattr(wake, name) for name in TURN_MEMBER_FIELDS}
+
+
+def turn_offer(turn_id: str, riders: Sequence[Wake]) -> dict[str, Any]:
+    """The riders a turn offers, as they go on the wire."""
+    return {
+        "contract": TURN_CONTRACT,
+        "id": turn_id,
+        "riders": [turn_member(wake) for wake in riders],
+    }
+
+
+def turn_riders_from(turn: object, head_id: object) -> tuple[Wake, ...]:
+    """The riders an offer names, as far as they are valid:  the longest valid prefix, or () when
+    the offer itself is not one.  The one validator, used by the router as a self-check, by the
+    Mac dispatcher and by every module that takes turns."""
+    if not isinstance(turn, dict) or turn.get("contract") != TURN_CONTRACT:
+        return ()
+    turn_id, records = turn.get("id"), turn.get("riders")
+    if not isinstance(turn_id, str) or not TURN_ID_RE.fullmatch(turn_id):
+        return ()
+    if not isinstance(records, list) or not 1 <= len(records) <= TURN_MAX_WAKES - 1:
+        return ()
+    if not isinstance(head_id, str) or not WAKE_ID_RE.fullmatch(head_id):
+        return ()
+    kept: list[Wake] = []
+    seen = {head_id}
+    for record in records:
+        if not isinstance(record, dict) or set(record) != set(TURN_MEMBER_FIELDS):
+            break
+        wake_id, reason = record["wake_id"], record["reason"]
+        if (
+            not isinstance(wake_id, str)
+            or not WAKE_ID_RE.fullmatch(wake_id)
+            or wake_id in seen
+            or not message_id_ok(record["message_id"])
+            or not isinstance(reason, str)
+            or reason not in CERTAIN_REASONS
+            or record["picked"] != reason
+            or record["link_note"] != LINK_NOTES[reason]
+        ):
+            break
+        seen.add(wake_id)
+        kept.append(
+            Wake(
+                wake_id=wake_id,
+                message_id=record["message_id"],
+                picked=reason,
+                reason=reason,
+                link_note=record["link_note"],
+            )
+        )
+    return tuple(kept)
+
+
+def turn_echo(turn_id: str, carried: Iterable[str], confirmed: Iterable[str]) -> dict[str, Any]:
+    """What the far side says a turn carried and what the chat recorded."""
+    return {
+        "contract": TURN_CONTRACT,
+        "id": turn_id,
+        "carried": list(carried),
+        "confirmed": list(confirmed),
+    }
+
+
+def turn_echo_read(
+    echo: object, turn_id: str, offered: Sequence[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """(carried, confirmed) from an echo of this turn, or None when it cannot be read:  carried
+    must be a prefix of what was offered, in order, and confirmed some of carried."""
+    if not isinstance(echo, dict) or echo.get("contract") != TURN_CONTRACT:
+        return None
+    unreadable = echo.get("unreadable", False)
+    if echo.get("id") != turn_id or (type(unreadable) is bool and unreadable):
+        return None
+    carried, confirmed = echo.get("carried"), echo.get("confirmed")
+    if not isinstance(carried, list) or not all(isinstance(i, str) for i in carried):
+        return None
+    if carried != list(offered[: len(carried)]):
+        return None
+    if not isinstance(confirmed, list) or not all(isinstance(i, str) for i in confirmed):
+        return None
+    if len(set(confirmed)) != len(confirmed) or not set(confirmed) <= set(carried):
+        return None
+    return tuple(carried), tuple(confirmed)
+
+
+def turn_result(delivery: Delivery, echo: object, turn_id: str, riders: Sequence[Wake]) -> Turn:
+    """A platform's Turn from the head's delivery and the echo its answer carried, if any."""
+    if echo is None:
+        return Turn(delivery)
+    read = turn_echo_read(echo, turn_id, [wake.wake_id for wake in riders])
+    if read is None:
+        return Turn(delivery, unreadable=True)
+    return Turn(delivery, read[0], read[1])
+
+
+def _carry_ok(carried: object, confirmed: object, offered: Sequence[str]) -> bool:
+    """Whether a Turn's own carry list fits what was offered (turn_echo_read, for a Turn a module
+    built itself):  a tuple of str that is a prefix of the offer, and confirmed some of it."""
+    return (
+        isinstance(carried, tuple)
+        and all(isinstance(i, str) for i in carried)
+        and list(carried) == list(offered[: len(carried)])
+        and isinstance(confirmed, tuple)
+        and all(isinstance(i, str) for i in confirmed)
+        and len(set(confirmed)) == len(confirmed)
+        and set(confirmed) <= set(carried)
+    )
+
+
+def _turn_record(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The `turn` object a member's receipt adds, or None for a wake outside a turn."""
+    turn, ride = entry.get("turn"), entry.get("ride")
+    if isinstance(turn, dict):
+        return {
+            "id": turn["id"],
+            "role": "head",
+            "members": [entry["wake"]["wake_id"], *turn["riders"]],
+            "message_ids": list(turn["message_ids"]),
+            "carried": turn.get("carried"),
+        }
+    if isinstance(ride, dict):
+        return {"id": ride["turn"], "role": "rider", "head": ride["head"], "index": ride["index"]}
+    return None
+
+
+REVIEW_ALERT_SCOPE = "review-alerts"
+REVIEW_ALERT_CREDENTIAL = "wake-router-review-alerts"
+
+
+def review_alert_key(env: Mapping[str, str]) -> tuple[str, str]:
+    """Own optional credential, never a routine/registry key or ambient bearer.
+
+    A missing selector/credential leaves this capability disabled without
+    changing the existing routine lane. The protected file is read fresh so
+    rotation does not require keeping a second secret cache.
+    """
+    import stat
+
+    explicit = env.get("WAKE_ROUTER_REVIEW_ALERTS_CREDENTIAL_FILE", "")
+    directory = env.get("CREDENTIALS_DIRECTORY", "")
+    if not explicit and not directory:
+        return "", "not-configured"
+    path = Path(explicit) if explicit else Path(directory) / REVIEW_ALERT_CREDENTIAL
+    if not path.is_absolute():
+        return "", "credential-path"
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in (0, os.geteuid())
+            or info.st_mode & 0o077
+        ):
+            return "", "credential-custody"
+        raw = os.read(fd, 4097)
+        if len(raw) > 4096:
+            return "", "credential-size"
+        value = raw.decode("ascii").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value):
+            return "", "credential-shape"
+        return value, ""
+    except (OSError, UnicodeError):
+        return "", "credential-unavailable"
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 class Router:
     """The pick, the durable queue, the workers and the receipts for one seat.  The service runs
     one per seat (`Seats`), and none shares a folder, a queue, a worker or a key with another."""
@@ -1045,6 +1443,7 @@ class Router:
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
         never_ran: Iterable[str] = (),
+        review_key: KeySource | None = None,
     ) -> None:
         self.platform = platform
         # The refusals known to come before anything ran:  this module's, and the platform's own
@@ -1054,6 +1453,8 @@ class Router:
         self.config = config
         self.state = state
         self._key = key
+        self._review_key = review_key or (lambda: review_alert_key(self.env))
+        self._review_key_status = ""
         self.consult = consult
         self.clock = clock
         self._entries: dict[str, dict[str, Any]] = {}
@@ -1065,6 +1466,30 @@ class Router:
         # The latest read of the platform's history:  (open chats left out only because their row
         # names another seat, when it was read).  None until one has been read in this process.
         self.other_seat_scan: tuple[int, float] | None = None
+
+    def review_key(self) -> tuple[str, str]:
+        try:
+            key, why = self._review_key()
+        except Exception:
+            key, why = "", "credential-unavailable"
+        allowed = {
+            "not-configured",
+            "credential-path",
+            "credential-custody",
+            "credential-size",
+            "credential-shape",
+            "credential-unavailable",
+        }
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", key):
+            key, why = "", why if why in allowed else "credential-unavailable"
+        else:
+            why = "ready"
+        # Log transitions only, using fixed reason tokens, never file paths or values.
+        if why != self._review_key_status:
+            self._review_key_status = why
+            if why != "not-configured":
+                self._log("review-credential-" + why, "")
+        return key, "" if key else why
 
     def routine_key(self) -> tuple[str, str]:
         """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
@@ -1101,7 +1526,14 @@ class Router:
         stop = STOP_WORDS | self.platform.stop_words | {self.platform.platform}
         return {w.lower() for w in WORD_RE.findall(text or "") if w.lower() not in stop}
 
-    def pick(self, wake: Wake, *, consult: bool = True, timeout: int = REGISTRY_TIMEOUT) -> Pick:
+    def pick(
+        self,
+        wake: Wake,
+        *,
+        consult: bool = True,
+        timeout: int = REGISTRY_TIMEOUT,
+        rejected_targets: Sequence[Mapping[str, Any]] = (),
+    ) -> Pick:
         """The rules, in order:  an addressed letter;  a session-id fragment;  a Linear issue;  the
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
@@ -1125,7 +1557,7 @@ class Router:
                 letter_other_seat=letter_other_seat,
             )
 
-        if wake.letter:
+        if wake.letter and not wake.required_session:
             answer = registry_api.call(
                 self.env,
                 "resolve",
@@ -1171,6 +1603,7 @@ class Router:
             )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
+        rows_by_sid: dict[str, Mapping[str, Any]] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
         others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
@@ -1186,13 +1619,59 @@ class Router:
             if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
+                rows_by_sid[target.session_id] = row
                 row_issues[target.session_id] = _issues_of(row)
         # One assignment, so a health read on another thread sees a whole pair.
         self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
-            t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
+            t
+            for sid, t in live.items()
+            if sid not in excluded
+            and not _is_sender(t, wake)
+            and not any(_same_target_binding(t, rejected) for rejected in rejected_targets)
         ]
+        if wake.required_session:
+            # An exact-origin wake names one chat by full session id.  Like an
+            # addressed letter it is that chat or a hold:  falling through
+            # would wake a chat not addressed.  The attested letter and
+            # generation, when carried, are constraints on the live row:  a
+            # re-generated or re-lettered chat is not the chat that opened
+            # the PR, so the wake holds rather than follow it.
+            fits = [t for t in candidates if t.session_id == wake.required_session]
+            if len(fits) == 1:
+                target = fits[0]
+                if wake.require_generation and target.generation != wake.require_generation:
+                    return Pick(
+                        reason="required-generation-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_letter and target.letter != wake.require_letter:
+                    return Pick(
+                        reason="required-letter-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_pr and not _pr_bound(
+                    rows_by_sid.get(target.session_id), wake.require_pr, target.generation
+                ):
+                    # The origin row does not carry this PR binding:  the
+                    # claim is unbound and the wake holds rather than wake a
+                    # chat whose link to the PR is unproven.
+                    return Pick(
+                        reason="required-pr-unbound",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                return chosen(target, "required-session", "required-session")
+            return Pick(
+                reason="required-session-ambiguous" if fits else "required-session-not-live",
+                retry=True,
+                letter_other_seat=letter_other_seat,
+                candidates=tuple(t.letter for t in fits),
+            )
+
         if not candidates:
             return Pick(
                 reason="no-live-session",
@@ -1289,9 +1768,13 @@ class Router:
         with self._cond:
             record = _read_json(self._done(wake.wake_id))
             if isinstance(record, dict):
+                if record.get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 200, record
             held = self._entries.get(wake.wake_id)
             if held is not None:
+                if held["wake"].get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 202, self._accepted(held)
             entry = {
                 "wake": asdict(wake),
@@ -1301,6 +1784,7 @@ class Router:
                 "attempts": 0,
                 "failures": 0,
                 "pick": None,
+                "rejected_targets": [],
             }
             try:
                 atomic_write(self._pending(wake.wake_id), entry)
@@ -1317,6 +1801,11 @@ class Router:
             "wake_id": entry["wake"]["wake_id"],
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
+            **(
+                {"credential_scope": entry["wake"]["credential_scope"]}
+                if entry["wake"].get("credential_scope")
+                else {}
+            ),
         }
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
@@ -1388,11 +1877,13 @@ class Router:
         """Load every pending file.  One with a final receipt finished just before a crash, so it
         is only removed.  One that is not a whole entry stays on disk, set aside and named on
         stderr, and is never run.  One still marked in flight may have run its turn, so it is
-        settled as interrupted and only its receipt is left to write."""
+        settled as interrupted and only its receipt is left to write, unless it is a rider whose
+        turn provably did not carry it (`_ride_released`):  that one is plain again."""
         self._prune()
         folder = self.state / "pending"
         loaded = 0
         with self._cond:
+            found: dict[str, dict[str, Any]] = {}
             for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
                 wake_id = path.name[: -len(".json")]
                 if self._done(wake_id).exists():
@@ -1402,9 +1893,21 @@ class Router:
                 if not _loadable(entry, wake_id):
                     self._log("pending-unreadable", wake_id)
                     continue
+                found[wake_id] = entry
+            # Decided on the files as they were found, before any of them is changed below.
+            released = {wake_id for wake_id, e in found.items() if self._ride_released(e, found)}
+            for wake_id, entry in found.items():
                 entry["wake"] = asdict(Wake(**entry["wake"]))
                 entry["replayed"] = True
                 entry["next_at"] = 0.0
+                if wake_id in released:
+                    self._log("ride-released", wake_id)
+                    entry["attempts"] = max(0, entry["attempts"] - 1)
+                    entry.pop("in_flight", None)
+                if not entry.get("in_flight") and entry.get("receipt") is None:
+                    # A turn mark with no in-flight mark ran nothing:  the wake is plain again.
+                    entry.pop("turn", None)
+                    entry.pop("ride", None)
                 if entry.get("in_flight") and entry.get("receipt") is None:
                     self._log(INTERRUPTED, wake_id)
                     entry["receipt"] = self._interrupted(entry)
@@ -1413,12 +1916,53 @@ class Router:
             self._cond.notify_all()
         return loaded
 
+    def _ride_released(self, entry: Mapping[str, Any], found: Mapping[str, Any]) -> bool:
+        """Whether a rider still marked in flight provably was not carried by its turn, read from
+        its head:  the head's pending file holds no manifest of that turn (it was never
+        committed, or its try came back with nothing run and the head was retried), or the
+        head's settled receipt of that turn lists what it carried and this rider is not in it.
+        Anything less certain (the head's file set aside, gone with no receipt, or a turn still
+        in flight) is no proof, and the rider is closed as interrupted."""
+        ride = entry.get("ride")
+        if not isinstance(ride, dict) or not entry.get("in_flight"):
+            return False
+        if entry.get("receipt") is not None:
+            return False
+        turn_id, head_id = ride["turn"], ride["head"]
+        if not TURN_ID_RE.fullmatch(turn_id) or not WAKE_ID_RE.fullmatch(head_id):
+            return False
+        wake_id = entry["wake"]["wake_id"]
+        head = found.get(head_id)
+        if head is not None:
+            turn = head.get("turn")
+            if not isinstance(turn, dict) or turn.get("id") != turn_id:
+                return True  # no manifest of this turn:  it never reached `deliver_turn`
+            record = head.get("receipt")
+            if record is None and not head.get("in_flight"):
+                return True  # a manifest with no in-flight mark ran nothing (`replay`)
+        elif self._pending(head_id).exists():
+            return False  # the head's file is there and could not be read
+        else:
+            record = _read_json(self._done(head_id))
+            if not isinstance(record, dict):
+                return False  # no head and no receipt:  nothing says what the turn did
+        if not isinstance(record, dict):
+            return False  # the head's turn is still in flight
+        told = record.get("turn")
+        if not isinstance(told, dict) or told.get("id") != turn_id:
+            return True  # the head was settled by another try:  this turn ran nothing
+        carried = told.get("carried")
+        return isinstance(carried, list) and wake_id not in carried
+
     def _interrupted(self, entry: Mapping[str, Any]) -> dict[str, Any]:
-        """The final receipt of a wake that may have run its turn:  dead, and delivered unknown."""
+        """The final receipt of a wake that may have run its turn:  dead, and delivered unknown.
+        A member of a turn is `unknown` instead (module docstring, Turns):  the head and every
+        rider alike, since none can tell what the turn carried."""
         record = entry.get("pick")
         pick = _pick_from(record) if record else Pick(reason=INTERRUPTED)
         result = Delivery("failed", code=INTERRUPTED)
-        return self._receipt(entry, pick, status="dead", delivered=None, result=result)
+        status = "unknown" if entry.get("turn") or entry.get("ride") else "dead"
+        return self._receipt(entry, pick, status=status, delivered=None, result=result)
 
     def _prune(self) -> None:
         folder = self.state / "done"
@@ -1530,7 +2074,8 @@ class Router:
             return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
-            pick = self.pick(wake)
+            rejected = entry.get("rejected_targets", [])
+            pick = self.pick(wake, consult=not rejected, rejected_targets=rejected)
             if pick.retry:
                 if pick.reason == REGISTRY_UNAVAILABLE:
                     # A registry that cannot be read is an outage, not a failed delivery.
@@ -1571,7 +2116,7 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale, stale_note = self._stale(pick.target)
+            stale, stale_note = self._stale(pick.target, wake)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
@@ -1588,6 +2133,15 @@ class Router:
                     result=Delivery("failed", code=stale, note=stale_note),
                 )
                 return
+            if self._turn_cap() >= 2 and not entry.get("busy_seen"):
+                # A platform that takes turns:  the riders this idle turn may carry, marked on
+                # disk before the head's commit (module docstring, Turns).  None, or a head
+                # whose chat has answered it busy, and the wake goes alone, exactly as below.
+                turn_id = "t-" + secrets.token_hex(8)
+                riders = self._board(self._gather(entry, pick, turn_id), wake.wake_id, turn_id)
+                if riders:
+                    self._deliver_turn(entry, pick, wake, riders, turn_id)
+                    return
             entry["attempts"] += 1
             entry["in_flight"] = True
             if not self._save(entry):
@@ -1609,7 +2163,7 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target) -> tuple[str, str]:
+    def _stale(self, target: Target, wake: Wake | None = None) -> tuple[str, str]:
         """The reason this chat must not be delivered to, and the note that says why.
 
         The reason is empty when the registry still has this letter on this session at the
@@ -1629,7 +2183,18 @@ class Router:
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
             return UNREADABLE_ROW, ""
-        return (RELEASED, "") if not held else ("", "")
+        if not held:
+            return RELEASED, ""
+        if (
+            wake is not None
+            and wake.require_pr
+            and not _pr_bound(answer, wake.require_pr, target.generation)
+        ):
+            # Delivery-time recheck:  the binding present at pick is gone (or
+            # its generation stamp went stale).  Do not deliver on a pick the
+            # registry no longer supports;  a bounded retry re-reads it.
+            return "required-pr-unbound", ""
+        return "", ""
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1647,6 +2212,7 @@ class Router:
             self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
+        wake = Wake(**entry["wake"])
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
         if result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused"):
             # A registry that cannot be read is an outage, not a failed delivery, whichever
@@ -1660,6 +2226,8 @@ class Router:
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
             delivered = False if result.code in self.never_ran else None
+            if delivered is False and self._repick_ineligible_target(entry, pick, wake, result):
+                return
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
@@ -1669,7 +2237,60 @@ class Router:
             # receipt keeps it visible, so an operator can see what is not settled.
             self._finish(entry, pick, status="unknown", delivered=None, result=result)
         else:
+            held = result is not None and result.code in ("chat-live", "chat-live-parked")
+            if outcome == "busy" and held and self._turn_cap() >= 2:
+                # Its chat is in a live turn:  this wake goes alone from now on, so no rider is
+                # marked for every try until the chat lets go (module docstring, Turns).  Only a
+                # held chat counts:  a transient busy may clear, but a parked wake must also go
+                # alone, because the hook may already have handed it over and batching it into a
+                # later turn would run it again.
+                entry["busy_seen"] = True
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
+
+    def _repick_ineligible_target(
+        self, entry: dict[str, Any], pick: Pick, wake: Wake, result: Delivery
+    ) -> bool:
+        """Durably exclude one proven never-run, ineligible binding and repick an unaddressed wake.
+
+        The current and next deliveries both consume the existing attempt budget.  The rejection
+        is written before clearing the pick or in-flight mark, so replay cannot select the same
+        target after a crash.  A failed write settles this refusal instead of risking a repeat.
+        """
+        if (
+            result.outcome != "refused"
+            or result.code not in REJECTED_TARGET_CODES
+            or result.code not in self.never_ran
+            or pick.target is None
+            or wake.letter
+            or wake.linked_by == "reply"
+            or wake.session_fragments
+            or pick.picked not in REJECTED_TARGET_PICK_KINDS
+        ):
+            return False
+
+        rejected = entry.setdefault("rejected_targets", [])
+        if not isinstance(rejected, list) or len(rejected) >= MAX_REJECTED_TARGETS:
+            return False
+        binding = _target_binding(pick.target, result.code)
+        if any(_same_target_binding(pick.target, prior) for prior in rejected):
+            return False
+        if not _valid_rejected_binding(binding):
+            return False
+
+        repicks = int(entry.get("repicks", 0)) + 1
+        entry["rejected_targets"] = [*rejected, binding]
+        entry["repicks"] = repicks
+        entry["pick"] = None
+        entry.pop("in_flight", None)
+        self._retry(
+            entry,
+            counted=True,
+            code=result.code,
+            pick=pick,
+            result=result,
+            ineligible_target=True,
+        )
+        return True
 
     def _retry_outage(
         self,
@@ -1710,12 +2331,14 @@ class Router:
         pick: Pick | None = None,
         result: Delivery | None = None,
         wait: float | None = None,
+        ineligible_target: bool = False,
     ) -> None:
         """Requeue a wake.
 
         `counted` says whether this try spends one of the wake's attempts:  a failed delivery
         does, and a dependency that is merely unavailable does not.  `wait` is for the caller
         that knows better than the defaults:  a counted retry uses the backoff."""
+        entry.pop("turn", None)  # a try that is tried again carried nobody
         now = self.clock()
         if counted:
             entry["failures"] += 1
@@ -1740,7 +2363,17 @@ class Router:
         entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
         # finish it, and a late save would bring its pending file back.
-        self._save(entry)
+        if not self._save(entry) and ineligible_target:
+            # The old pending file still has the in-flight mark.  Settle visibly rather than
+            # replaying with no durable rejection or failure charge.
+            self._finish(
+                entry,
+                pick or Pick(reason=code),
+                status="dead",
+                delivered=False,
+                result=result,
+            )
+            return
         with self._cond:
             entry["running"] = False
             self._cond.notify_all()
@@ -1758,6 +2391,285 @@ class Router:
             return False
         return True
 
+    # ---- turns (module docstring, Turns) ----------------------------------------------------
+
+    def _turn_cap(self) -> int:
+        """How many wakes one turn may carry for this seat:  1, today's path, unless the platform
+        declares deliver_turn and the setting is an int above 1;  never above TURN_MAX_WAKES."""
+        if not callable(self.platform.deliver_turn):
+            return 1
+        value = self.config.get("turn_max_wakes", 1)
+        if type(value) is not int:
+            return 1
+        return max(1, min(value, TURN_MAX_WAKES))
+
+    @staticmethod
+    def _told(entry: Mapping[str, Any]) -> Wake:
+        """A wake as its chat is told about it:  with its pick's reason and note."""
+        pick = _pick_from(entry["pick"])
+        return replace(
+            Wake(**entry["wake"]), picked=pick.picked, reason=pick.reason, link_note=pick.link_note
+        )
+
+    def _gather(self, entry: dict[str, Any], pick: Pick, turn_id: str) -> list[dict[str, Any]]:
+        """The wakes that may ride with this head, marked running so no worker claims them:  the
+        run of exact-address wakes for the same chat that comes next, in arrival order, within
+        the caps.  An unpicked wake that could want this chat, or one of this chat that cannot
+        ride, ends the run;  one addressed to another seat or letter is passed over like any
+        other chat's wake.  There is no deduplication by message id."""
+        target = pick.target
+        if (
+            entry["wake"].get("required_session")
+            or entry["wake"].get("require_pr")
+            or not certain(pick)
+            or not message_id_ok(entry["wake"]["message_id"])
+            or self._stopping
+        ):
+            return []
+        if target is None:  # certain() has said so already;  this only tells a type checker
+            return []
+        head = self._told(entry)
+        riders: list[dict[str, Any]] = []
+        with self._cond:
+            key, session = turn_key(target), target.session_id
+            now, cap, mine = self.clock(), self._turn_cap(), _order(entry)
+            for other in sorted(self._entries.values(), key=_order):
+                if other is entry or _order(other) <= mine or other.get("receipt") is not None:
+                    continue
+                if other["pick"] is None:
+                    # Unpicked:  it may want this chat, as in `_behind`, unless it is addressed
+                    # to another seat or letter (a missing letter never proves another chat).
+                    w = other.get("wake") or {}
+                    m = entry.get("wake") or {}
+                    wletter = w.get("letter") or ""
+                    mletter = m.get("letter") or ""
+                    if (
+                        wletter
+                        and mletter
+                        and (w.get("seat") != m.get("seat") or wletter != mletter)
+                    ):
+                        continue
+                    break
+                if _session_of(other) != session:
+                    continue
+                if not self._may_ride(other, key, now) or len(riders) + 2 > cap:
+                    break
+                told = [self._told(rider) for rider in [*riders, other]]
+                text = turn_text(" " * TURN_PREFIX_MAX, head, told, turn_id)
+                if len(text) > TURN_MAX_PROMPT_CHARS:
+                    break
+                riders.append(other)
+            # The wire's own validator agrees with the walk, or the turn is cut where it does not.
+            offer = turn_offer(turn_id, [self._told(rider) for rider in riders])
+            riders = riders[: len(turn_riders_from(offer, entry["wake"]["wake_id"]))]
+            for rider in riders:
+                rider["running"] = True
+        return riders
+
+    def _may_ride(
+        self, other: Mapping[str, Any], key: tuple[str, str, int, str], now: float
+    ) -> bool:
+        """Whether this pending wake may ride a turn for the chat `key` names now."""
+        if other.get("running") or other.get("receipt") is not None:
+            return False
+        if any(mark in other for mark in ("in_flight", "ride", "turn")):
+            return False
+        pick = _pick_from(other["pick"])
+        return (
+            not other["wake"].get("required_session")
+            and not other["wake"].get("require_pr")
+            and certain(pick)
+            and pick.target is not None
+            and turn_key(pick.target) == key
+            and message_id_ok(other["wake"]["message_id"])
+            and now - other["accepted_at"] < int(self.config["max_age_seconds"])
+        )
+
+    def _board(
+        self, riders: list[dict[str, Any]], head_id: str, turn_id: str
+    ) -> list[dict[str, Any]]:
+        """Mark each rider on disk, in order, before the head's commit:  an attempt, the in-flight
+        mark and `ride`.  The first mark that cannot be written cuts the turn there:  that rider
+        and every later one go back untouched.  Answers the riders whose marks landed."""
+        for index, rider in enumerate(riders, start=1):
+            rider["attempts"] += 1
+            rider["in_flight"] = True
+            rider["ride"] = {"turn": turn_id, "head": head_id, "index": index}
+            try:
+                saved = self._save(rider)
+            except Exception as exc:  # noqa: BLE001 - a mark that is not written is no mark
+                self._log("ride-mark-error-%s" % type(exc).__name__, rider["wake"]["wake_id"])
+                saved = False
+            if saved:
+                continue
+            rider["attempts"] -= 1
+            rider.pop("in_flight", None)
+            rider.pop("ride", None)
+            with self._cond:
+                for left in riders[index - 1 :]:
+                    left["running"] = False
+                self._cond.notify_all()
+            return riders[: index - 1]
+        return riders
+
+    def _unboard(self, riders: Iterable[dict[str, Any]]) -> None:
+        """Riders the turn did not carry go back to pending with nothing used.  A save that fails
+        leaves the marks in the file while memory is clear:  the wake's next save rewrites it,
+        and a crash before that closes it as interrupted, never a second run."""
+        for rider in riders:
+            rider["attempts"] -= 1
+            rider.pop("in_flight", None)
+            rider.pop("ride", None)
+            try:
+                self._save(rider)
+            except Exception as exc:  # noqa: BLE001 - logged;  the rider is released regardless
+                self._log("unboard-error-%s" % type(exc).__name__, rider["wake"]["wake_id"])
+            with self._cond:
+                rider["running"] = False
+                self._cond.notify_all()
+
+    def _deliver_turn(
+        self,
+        entry: dict[str, Any],
+        pick: Pick,
+        wake: Wake,
+        riders: list[dict[str, Any]],
+        turn_id: str,
+    ) -> None:
+        """The head's commit, then one `deliver_turn`, then every member's outcome.  The commit is
+        the last write before the effect:  without it nothing is delivered."""
+        called = False
+        try:
+            entry["attempts"] += 1
+            entry["in_flight"] = True
+            entry["turn"] = {
+                "id": turn_id,
+                "riders": [rider["wake"]["wake_id"] for rider in riders],
+                "message_ids": [entry["wake"]["message_id"]]
+                + [rider["wake"]["message_id"] for rider in riders],
+            }
+            if not self._save(entry):  # the commit point:  the last write before the effect
+                entry["attempts"] -= 1
+                entry.pop("in_flight", None)
+                entry.pop("turn", None)
+                self._unboard(riders)
+                waiting = Delivery("busy", code="in-flight-mark-failed")
+                self._retry(entry, counted=False, code=waiting.code, pick=pick, result=waiting)
+                return
+            head = replace(wake, picked=pick.picked, reason=pick.reason, link_note=pick.link_note)
+            told = tuple(self._told(rider) for rider in riders)
+            self._give_up_slot()
+            called = True
+            try:
+                # `_turn_cap` only allows a turn when deliver_turn is callable.
+                turn = self.platform.deliver_turn(pick.target, head, told, turn_id)
+            except Exception as exc:  # noqa: BLE001 - the write may already have been sent
+                # Indeterminate, never failed:  a platform's exception can come after the
+                # remote write, so retrying it as a failed try could run the turn twice.  The
+                # turn closes unknown and unreadable, and the receipt keeps it visible for
+                # reconciliation (claude_wake maps its own delivery errors the same way).
+                turn = Turn(
+                    Delivery("unknown", code="deliver-error-%s" % type(exc).__name__),
+                    unreadable=True,
+                )
+            if not isinstance(turn, Turn) or not isinstance(turn.delivery, Delivery):
+                turn = Turn(Delivery("refused", code=TURN_BAD_ANSWER), unreadable=True)
+            self._settle_turn(entry, pick, riders, turn)
+        except Exception:
+            self._abandon(riders, called)
+            if not called and entry.get("receipt") is None and entry.pop("in_flight", None):
+                # `deliver_turn` was never called, so nothing ran:  the head's commit is taken
+                # back and `_run` retries it as a failed try, instead of closing it unknown.
+                entry["attempts"] -= 1
+                entry.pop("turn", None)
+            raise  # `_run` closes a head that may have run, and retries any other
+
+    def _abandon(self, riders: Iterable[dict[str, Any]], called: bool) -> None:
+        """A worker's exception in a turn:  a rider still marked is closed as interrupted when
+        `deliver_turn` may have run, or goes back when it cannot have;  any other is let go."""
+        for rider in riders:
+            wake_id = rider["wake"]["wake_id"]
+            try:
+                if self._entries.get(wake_id) is not rider:
+                    continue  # settled and written
+                if rider.get("receipt") is None and rider.get("in_flight"):
+                    if called:
+                        self._log(INTERRUPTED, wake_id)
+                        rider["receipt"] = self._interrupted(rider)
+                        rider.pop("in_flight", None)
+                        self._save(rider)
+                        self._write_receipt(rider)
+                    else:
+                        self._unboard([rider])
+                    continue
+                with self._cond:
+                    rider["running"] = False
+                    self._cond.notify_all()
+            except Exception as exc:  # noqa: BLE001 - the next rider is still let go
+                self._log("turn-abandon-error-%s" % type(exc).__name__, wake_id)
+
+    def _settle_turn(
+        self, entry: dict[str, Any], pick: Pick, riders: list[dict[str, Any]], turn: Turn
+    ) -> None:
+        """Every member's outcome:  the riders in order, each closed or sent back, then the head
+        by today's rules (`_settle`).  A rider is acknowledged only when a readable carry list
+        names it, and none is ever recorded as carried by a turn that cannot have run."""
+        result = turn.delivery
+        outcome = result.outcome if result.outcome in OUTCOMES else "failed"
+        # An answer `_settle` waits out as a registry outage ran nothing, whatever its outcome
+        # says:  the head goes back with no attempt spent, so its riders go back with it.
+        outage = result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused")
+        ran = not outage and (
+            outcome in ("sent", "completed", "unknown")
+            or (outcome == "refused" and result.code not in self.never_ran)
+        )
+        ids = [rider["wake"]["wake_id"] for rider in riders]
+        # A module may build its Turn itself, so its carry list is checked here too.
+        unreadable = bool(turn.unreadable)
+        if turn.carried is not None and not _carry_ok(turn.carried, turn.confirmed, ids):
+            unreadable = True
+        readable = turn.carried is not None and not unreadable
+        carried = set(turn.carried or ()) if readable else set()
+        confirmed = set(turn.confirmed) if readable else set()
+
+        def close(rider: dict[str, Any], status: str, delivered: bool | None, ack: str, code: str):
+            final = Delivery(outcome, result.route, ack=ack, code=code, note=result.note)
+            self._finish(
+                rider, _pick_from(rider["pick"]), status=status, delivered=delivered, result=final
+            )
+
+        for rider, wake_id in zip(riders, ids, strict=True):
+            ack = "confirmed" if wake_id in confirmed else "unknown"
+            if not ran:
+                if wake_id in carried:  # an answer that claims what cannot have happened
+                    close(rider, "unknown", None, "unknown", TURN_CONFLICT)
+                else:
+                    self._unboard([rider])
+            elif unreadable:
+                close(rider, "unknown", None, "unknown", TURN_UNCONFIRMED)
+            elif wake_id not in carried:  # no echo at all, or not this far:  not carried
+                self._unboard([rider])
+            elif outcome in ("sent", "completed"):
+                if outcome == "completed" or wake_id in confirmed:
+                    close(rider, "delivered", True, ack, result.code)
+                else:
+                    close(rider, "unknown", None, ack, TURN_UNCONFIRMED)
+            elif outcome == "refused":
+                close(rider, "dead", None, ack, result.code)
+            else:
+                close(rider, "unknown", None, ack, result.code)
+        # What the head's receipt says was carried:  null only when the riders were closed
+        # because nobody can tell;  [] when none was carried and they went back, and always []
+        # when the turn cannot have run, even if its echo names riders.
+        if not ran:
+            carried_ids = []
+        elif unreadable:
+            carried_ids = None
+        else:
+            carried_ids = [i for i in ids if i in carried]
+        entry["turn"]["carried"] = carried_ids
+        self._settle(entry, pick, result)
+
     # ---- the receipt ------------------------------------------------------------------------
 
     def _receipt(
@@ -1771,8 +2683,13 @@ class Router:
     ) -> dict[str, Any]:
         wake = entry["wake"]
         target = pick.target
-        return {
+        receipt = {
             "receipt_id": entry["receipt_id"],
+            **(
+                {"credential_scope": wake["credential_scope"]}
+                if wake.get("credential_scope")
+                else {}
+            ),
             "wake_id": wake["wake_id"],
             "seat": self.platform.seat,
             "at": self.clock(),
@@ -1802,6 +2719,12 @@ class Router:
             "topic": wake["topic"],
             "zulip_link": wake["zulip_link"],
         }
+        turn = _turn_record(entry)  # only a member of a turn has one (module docstring, Turns)
+        if turn is not None:
+            receipt["turn"] = turn
+        if entry.get("rejected_targets"):
+            receipt["rejected_targets"] = list(entry["rejected_targets"])
+        return receipt
 
     def _finish(
         self,
@@ -2108,6 +3031,56 @@ def _session_of(entry: Mapping[str, Any]) -> str:
     return str(target.get("session_id") or "")
 
 
+def _target_binding(target: Target, code: str) -> dict[str, Any]:
+    """The exact registry binding a platform proved ineligible before starting a turn."""
+    return {
+        "host": target.host,
+        "session_id": target.session_id,
+        "letter": target.letter,
+        "generation": target.generation,
+        "code": code,
+    }
+
+
+def _valid_rejected_binding(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "host",
+        "session_id",
+        "letter",
+        "generation",
+        "code",
+    }:
+        return False
+    host, session_id, letter, generation, code = (
+        value["host"],
+        value["session_id"],
+        value["letter"],
+        value["generation"],
+        value["code"],
+    )
+    safe_host = isinstance(host, str) and (
+        host == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", host) is not None
+    )
+    return (
+        safe_host
+        and isinstance(session_id, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}", session_id) is not None
+        and isinstance(letter, str)
+        and re.fullmatch(r"[A-Z]{2}", letter) is not None
+        and type(generation) is int
+        and 1 <= generation <= 2**31 - 1
+        and isinstance(code, str)
+        and code in REJECTED_TARGET_CODES
+    )
+
+
+def _same_target_binding(target: Target, value: object) -> bool:
+    return _valid_rejected_binding(value) and all(
+        getattr(target, name) == value[name]
+        for name in ("host", "session_id", "letter", "generation")
+    )
+
+
 def _order(entry: Mapping[str, Any]) -> tuple[float, str]:
     """Arrival order, with the id breaking a tie so every check agrees on who is first."""
     return entry["accepted_at"], entry["wake"]["wake_id"]
@@ -2123,6 +3096,7 @@ def _loadable(entry: object, wake_id: str) -> bool:
         Wake(**entry["wake"])
         if entry["pick"] is not None:
             _pick_from(entry["pick"])
+        rejected = entry.get("rejected_targets", [])
         return (
             isinstance(entry["receipt_id"], str)
             and type(entry["accepted_at"]) in (int, float)
@@ -2130,10 +3104,46 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["attempts"]) is int
             and type(entry["failures"]) is int
             and type(entry.get("repicks", 0)) is int
+            and isinstance(rejected, list)
+            and len(rejected) <= MAX_REJECTED_TARGETS
+            and all(_valid_rejected_binding(binding) for binding in rejected)
             and isinstance(entry.get("receipt"), (dict, type(None)))
+            and _turn_marks_ok(entry)
         )
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _turn_marks_ok(entry: Mapping[str, Any]) -> bool:
+    """Whether a pending file's turn marks are absent or whole:  `ride` and `turn` are objects
+    of the shapes the router writes (module docstring, Turns), so a receipt can be made of them,
+    and `busy_seen` is a bool.  An older router ignores these keys and still reads the in-flight
+    mark beside them."""
+    ride, turn = entry.get("ride"), entry.get("turn")
+    if not isinstance(ride, (dict, type(None))) or not isinstance(turn, (dict, type(None))):
+        return False
+    if type(entry.get("busy_seen", False)) is not bool:
+        return False
+    if ride is not None and not (
+        isinstance(ride.get("turn"), str)
+        and isinstance(ride.get("head"), str)
+        and type(ride.get("index")) is int
+    ):
+        return False
+    if turn is None:
+        return True
+
+    def strings(value: object) -> bool:
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+    message_ids = turn.get("message_ids")
+    return (
+        isinstance(turn.get("id"), str)
+        and strings(turn.get("riders"))
+        and isinstance(message_ids, list)
+        and all(type(item) is int for item in message_ids)
+        and (turn.get("carried") is None or strings(turn.get("carried")))
+    )
 
 
 def _pick_from(record: Mapping[str, Any]) -> Pick:
@@ -2189,6 +3199,36 @@ def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
         if len(fits) == 1 and not _is_sender(live[fits[0]], wake):
             named.add(fits[0])
     return named.pop() if len(named) == 1 else ""
+
+
+def _pr_bound(row: Mapping[str, Any] | None, require_pr: str, generation: int = 0) -> bool:
+    """Whether the registry row binds this PR (repo#number) to its session.
+
+    The binding is written by the session's own seat lane (platform_letter's
+    bind-pr), never by the relay caller.  A malformed entry proves nothing.
+    An entry stamped with a generation counts only while the row is still on
+    that generation:  a binding written before a letter re-issue is stale.
+    """
+    if not isinstance(row, Mapping):
+        return False
+    repo, _, number = require_pr.partition("#")
+    for entry in row.get("bound_prs") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("repo") or "").casefold() != repo.casefold():
+            continue
+        try:
+            if int(entry.get("number") or 0) != int(number):
+                continue
+        except (TypeError, ValueError):
+            continue
+        # The generation stamp is mandatory:  an unstamped or malformed entry
+        # is not a wildcard, it proves nothing.
+        entry_generation = entry.get("generation")
+        if type(entry_generation) is not int or entry_generation != generation:
+            continue
+        return True
+    return False
 
 
 def _issues_of(row: Mapping[str, Any]) -> list[tuple[str, float | None]]:
@@ -2399,19 +3439,27 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(503, {"error": "the seat %s is not served (%s)" % (seat, reason)})
             return None
 
-        def _authorized(self, router: Router) -> bool:
-            """Checked against the bearer this seat's router asks its own KeySource for."""
+        def _authorized(self, router: Router) -> str:
+            """An authenticated capability, never a caller-selected scope."""
             key, why = router.routine_key()
-            if not key:
-                # Without the key nothing can be checked, so nothing is let in.
-                self._answer(503, {"error": "the routine key is unavailable (%s)" % why})
-                return False
+            service_key, _ = router.review_key()
             given = (self.headers.get("Authorization") or "").encode("utf-8")
-            # Constant time:  the bearer is the only thing between the network and a wake.
-            if not hmac.compare_digest(given, ("Bearer %s" % key).encode("utf-8")):
-                self._answer(401, {"error": "bad bearer"})
-                return False
-            return True
+            if service_key and hmac.compare_digest(given, ("Bearer " + service_key).encode()):
+                if key and hmac.compare_digest(key, service_key):
+                    self._answer(503, {"error": "service and routine credentials must differ"})
+                    return ""
+                return REVIEW_ALERT_SCOPE
+            if key and hmac.compare_digest(given, ("Bearer " + key).encode()):
+                return "routine"
+            self._answer(
+                401 if key or service_key else 503,
+                {
+                    "error": "bad bearer"
+                    if key or service_key
+                    else "the routine key is unavailable (%s)" % why
+                },
+            )
+            return ""
 
         def do_GET(self) -> None:
             path = self.path or ""
@@ -2430,9 +3478,17 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(404, {"error": "not found"})
                 return
             router = self._router_for(found.group(1) or LEGACY_RECEIPT_SEAT)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             record = router.receipt(found.group(2))
+            if scope == REVIEW_ALERT_SCOPE and (
+                record is None or record.get("credential_scope") != REVIEW_ALERT_SCOPE
+            ):
+                self._answer(404, {"error": "no such wake"})
+                return
             if record is None:
                 self._answer(404, {"error": "no such wake"})
             else:
@@ -2445,7 +3501,10 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             seat = found.group(1)
             router = self._router_for(seat)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             raw_length = (self.headers.get("Content-Length") or "").strip()
             if not raw_length.isdigit() or len(raw_length) > 9:
@@ -2473,7 +3532,43 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             if not WAKE_ID_RE.fullmatch(str(payload.get("wake_id") or "")):
                 self._answer(400, {"error": "wake_id missing or malformed"})
                 return
+            require_session = str(payload.get("require_session") or "")
+            if require_session and not SESSION_ID_RE.fullmatch(require_session):
+                self._answer(400, {"error": "require_session malformed"})
+                return
+            require_letter = str(payload.get("require_letter") or "")
+            if require_letter and not REQUIRE_LETTER_RE.fullmatch(require_letter):
+                self._answer(400, {"error": "require_letter malformed"})
+                return
+            require_generation = payload.get("require_generation")
+            if require_generation is not None and (
+                type(require_generation) is not int or require_generation < 1
+            ):
+                self._answer(400, {"error": "require_generation malformed"})
+                return
+            require_pr = str(payload.get("require_pr") or "")
+            if require_pr and not REQUIRE_PR_RE.fullmatch(require_pr):
+                self._answer(400, {"error": "require_pr malformed"})
+                return
+            reserved = str(payload.get("wake_id") or "").startswith("ra-")
+            if scope == REVIEW_ALERT_SCOPE:
+                if not (
+                    reserved
+                    and require_session
+                    and require_letter
+                    and type(require_generation) is int
+                    and require_generation > 0
+                    and require_pr
+                    and payload.get("channel") == REVIEW_ALERT_SCOPE
+                ):
+                    self._answer(403, {"error": "service requires exact-session generation wake"})
+                    return
+            elif reserved:
+                self._answer(403, {"error": "reserved service wake namespace"})
+                return
             wake = wake_from_payload(payload, router.platform.mention)
+            if scope == REVIEW_ALERT_SCOPE:
+                wake = replace(wake, credential_scope=REVIEW_ALERT_SCOPE)
             if payload.get("test") is True:
                 self._answer(200, router.test_answer(wake))
                 return

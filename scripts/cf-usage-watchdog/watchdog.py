@@ -7,12 +7,13 @@ day-to-date over a threshold, and a 5-minute rate over a threshold.  Two named p
 and enforce.  See README.md for the design, the stop action and the operating steps.
 
 Standard library only, plus this repo's stdlib-only fleet_knobs for the mode and the profile.
-Credentials come from fleet-secrets, live in memory only and never reach a log or a message.
+Credentials use direct scoped service-token reads, live in memory only and never reach a log or a message.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import fcntl
@@ -53,6 +54,8 @@ ACCOUNT_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
 MINUTE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z")
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+MAX_CREDENTIAL_BYTES = 8192
+CREDENTIAL_READ_TIMEOUT = 30
 ROW_LIMIT = 2000
 STORAGE_ROW_LIMIT = 500
 
@@ -597,12 +600,14 @@ class Connections:
         runner: Callable = subprocess.run,
         opener: Callable = NO_REDIRECT_OPENER.open,
         env: dict | None = None,
+        secret_reader: Callable | None = None,
     ) -> None:
         self.cfg = cfg
         self.runner = runner
         self.opener = opener
         self.env = dict(os.environ if env is None else env)
         self.timeout = cfg["limits"]["http_timeout_seconds"]
+        self.secret_reader = secret_reader
         self._token: str | None = None
         self._heartbeat_url: str | None = None
 
@@ -619,28 +624,68 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """One value from fleet-secrets, or None when it is absent.  Raises PollError on any other failure."""
+        """Named direct read using only this service's explicit scoped token.
+
+        The read runs under the one token this service's own store holds for it:  its grant
+        covers exactly the one folder this read declares,  and the client refuses a read
+        whose declared folders are not the grant's folders.  There is no PATH helper,
+        CLI login or machine identity in this path.
+        """
         conf = self.cfg["infisical"]
-        command = [
-            "fleet-secrets",
-            "get",
-            name,
-            "--path",
-            conf["path"],
-            "--project",
-            conf["project"],
-        ]
+        fi = None
         try:
-            done = self.runner(
-                command, capture_output=True, text=True, timeout=30, check=False, env=self.env
+            if self.secret_reader is not None:
+                return self.secret_reader(name)
+            # Use the checked, cached sibling-client loader; never a PATH helper.
+            if str(HERE.parent) not in sys.path:
+                sys.path.insert(0, str(HERE.parent))
+            from fleet_knobs import source as knob_source
+
+            expected_source = (HERE.parent / "fleet_knobs" / "source.py").resolve()
+            if Path(getattr(knob_source, "__file__", "")).resolve() != expected_source:
+                raise ImportError("foreign checked reader loader")
+            fi = knob_source.HELPER_LOADER()
+            if fi is None:
+                raise ImportError("shared reader unavailable")
+        except PollError:
+            raise
+        except Exception:
+            # Do not pass a binding to a module that did not come from the checked loader.
+            raise PollError("credential-fetch-reader-unavailable") from None
+
+        token = (self.env.get("INFISICAL_TOKEN") or "").strip()
+        if not token:
+            raise PollError("credential-binding-missing-INFISICAL_TOKEN")
+        try:
+            project = fi.infisical_project_id(self.env, fi.home_dir(self.env), conf["project"])
+            values = fi.bounded_fetch_project(
+                project,
+                conf["path"],
+                {
+                    "INFISICAL_ENVIRONMENT": "prod",
+                    "INFISICAL_READ_PATHS": conf["path"],
+                },
+                token=token,
+                names=(name,),
+                timeout=CREDENTIAL_READ_TIMEOUT,
+                max_output_bytes=MAX_CREDENTIAL_BYTES,
+                strict_records=True,
+                require_finite_expiry=True,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
-        if done.returncode == 3:
-            return None
-        if done.returncode != 0:
-            raise PollError(f"credential-fetch-exit-{done.returncode}")
-        return done.stdout.strip() or None
+        except PollError:
+            raise
+        except Exception as exc:
+            error_type = getattr(fi, "SecretsError", ())
+            if (
+                isinstance(error_type, type)
+                and isinstance(exc, error_type)
+                and getattr(exc, "failure_kind", None) == "unavailable"
+                and str(exc) == "bounded-read-timeout"
+            ):
+                raise PollError("credential-fetch-timeout") from None
+            # No provider error, response body, credential or URL reaches logs.
+            raise PollError("credential-fetch-failed") from None
+        return values.get(name) or None
 
     def token(self) -> str:
         if self._token is None:
@@ -715,14 +760,59 @@ class Connections:
             raise ApiError(200, error_codes(answer.get("errors")))
         return answer.get("result")
 
-    def zulip(self, text: str) -> bool | None:
-        # Posting is disabled until the watchdog has a dedicated service binding:  service
-        # automation cannot represent any agent seat.  None means not configured, as in page().
-        print(
-            json.dumps({"event": "zulip_failed", "error": "dedicated-service-binding-required"}),
-            flush=True,
-        )
-        return None
+    def zulip(self, text: str) -> bool:
+        """Only this service's explicitly bound Watchdog identity. Never a seat wrapper."""
+        conf = self.cfg["zulip"]
+        try:
+            email = self._secret(conf["email_key"])
+            key = self._secret(conf["api_key_key"])
+            if email != "watchdog-bot@simplewithus.zulipchat.com" or not key:
+                raise PollError("dedicated-service-binding-required")
+            auth = base64.b64encode(f"{email}:{key}".encode()).decode("ascii")
+            headers = {"Authorization": "Basic " + auth}
+            _, identity_raw = self._request(
+                "GET", "https://simplewithus.zulipchat.com/api/v1/users/me", headers=headers
+            )
+            identity = json.loads(identity_raw)
+            if (
+                not isinstance(identity, dict)
+                or identity.get("result") != "success"
+                or identity.get("user_id") != 1222575
+                or identity.get("email") != email
+                or identity.get("is_bot") is not True
+            ):
+                raise PollError("dedicated-service-identity-mismatch")
+            body = urllib.parse.urlencode(
+                {"type": "stream", "to": conf["channel"], "topic": conf["topic"], "content": text}
+            ).encode()
+            _, raw = self._request(
+                "POST",
+                "https://simplewithus.zulipchat.com/api/v1/messages",
+                body,
+                {
+                    "Authorization": "Basic " + auth,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            answer = json.loads(raw)
+            if not isinstance(answer, dict) or answer.get("result") != "success":
+                raise PollError("service-post-refused")
+            print(
+                json.dumps(
+                    {
+                        "event": "zulip_sent",
+                        "sender": email,
+                        "channel": conf["channel"],
+                        "topic": conf["topic"],
+                        "message_id": answer.get("id"),
+                    }
+                ),
+                flush=True,
+            )
+            return True
+        except Exception as exc:
+            print(json.dumps({"event": "zulip_failed", "error": type(exc).__name__}), flush=True)
+            return False
 
     def page(self, title: str, text: str) -> bool | None:
         """Pushover directly, the one path that does not go through a Worker on this account.
@@ -851,14 +941,10 @@ class Watchdog:
         zulip_ok = self.conn.zulip(text)
         paged = self.conn.page(title, "\n".join(shown)) if page else None
         self.store.event("notify", title=title, zulip=zulip_ok, page=paged)
-        # A disabled channel answers None, and that is not a failed delivery:  the event row is
-        # the record, and one-shot callers (the daily check) still persist their state.  Only an
-        # attempted channel that failed counts as undelivered.
-        attempted = zulip_ok is not None or paged is not None
         delivered = bool(zulip_ok or paged)
-        if attempted and not delivered:
+        if not delivered:
             self.undelivered = True
-        return delivered or not attempted
+        return delivered
 
     def describe(self, breach: dict, previous: dict) -> str:
         spec = self.cfg["metrics"][breach["metric"]]
@@ -1408,9 +1494,9 @@ class Watchdog:
         self.store.event("poll_failed", reason=reason, minutes=round((self.epoch - since) / 60, 1))
         if self.epoch - since < self.limits["poll_fail_alert_minutes"] * 60:
             return
-        if (
-            self.epoch - self.state.get("poll_fail_alerted", 0)
-            < self.limits["realert_minutes"] * 60
+        if self.state.get("poll_fail_alerted") and self.state.get("poll_fail_reason") in (
+            None,
+            reason,
         ):
             return
         minutes = round((self.epoch - since) / 60)
@@ -1421,6 +1507,7 @@ class Watchdog:
             ],
         ):
             self.state["poll_fail_alerted"] = self.epoch
+            self.state["poll_fail_reason"] = reason
 
     def run(self) -> int:
         try:
@@ -1499,15 +1586,17 @@ class Watchdog:
             breaches = evaluate(self.cfg, self.profile, usage)
         self.apply_breaches(breaches, inventory)
         self.daily_check_if_due(inventory)
-        # Last, so a crash above still counts toward the blind alert.
-        if (
-            self.state.pop("poll_failed_since", None) is not None
-            and self.state.pop("poll_fail_alerted", None) is not None
+        # A successful read closes the active blind incident even if its recovery
+        # message is not delivered. Keep delivery pending separately, so a later
+        # outage with the same cause starts a new five-minute alert window.
+        if self.state.pop("poll_failed_since", None) is not None:
+            if self.state.pop("poll_fail_alerted", None):
+                self.state["poll_recovery_pending"] = True
+            self.state.pop("poll_fail_reason", None)
+        if self.state.get("poll_recovery_pending") and self.notify(
+            "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
         ):
-            self.notify(
-                "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
-            )
-        self.state.pop("poll_fail_alerted", None)
+            self.state.pop("poll_recovery_pending", None)
         self.prune()
         self.store.save(self.state)
         failed = self.undelivered or self.worker_failed or self.state.get("inventory_failed")

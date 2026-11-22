@@ -1,4 +1,4 @@
-"""Exact reviewed fixture preservation. Proposal only: registry is empty.
+"""Exact reviewed fixture preservation, scoped to approved source/output pairs.
 
 No raw-upload exemption. The server must fetch the pinned same-path base.
 Dedicated content stays refused unless an immutable source/output pair is
@@ -16,7 +16,32 @@ from .provenance_patch import MAX_BYTES, apply_patch
 
 # (repository, destination path, complete source SHA256, complete result SHA256).
 # Source review does not itself approve the security-policy change.
-REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset()
+REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset(
+    {
+        # Owner-approved AFC-797 public test signatures; complete review and
+        # provenance: docs/security/reviewed-muster-vector-preservation.md.
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fixtures/muster-vectors-v5.json",
+            "0fca2cb4b79206e4eca627bfa6b9632db743ef2c3ff0ada0152c4bdcead32ab0",
+            "73fd3d71ee62c617c802423e4dc7490387152776c0e8270c7d9cc3e87e43bc49",
+        ),
+        # Owner-approved AFC-793 synthetic fixture test pairs; complete review:
+        # docs/security/reviewed-fixture-pairs-preservation.md.
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fleet_rag/tests/test_recall.py",
+            "b78c76d6927ad12c90972e39a336b38d38102cef823e0957194ca359729a65b4",
+            "d9cd1d0ac5529a2d7dbe81f595038c0210ca6c236a87947bdd8528034543ef73",
+        ),
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fleet_rag/tests/test_ingest.py",
+            "e970e451e414d3efd963abed5d544f0713fe2b2934901c032fe8b01898085d2e",
+            "1eaa804f7514122721888bd9f49c41a4088d827a28855391739d97c334008634",
+        ),
+    }
+)
 
 
 def reviewed_base(repo: str, path: str, base: bytes) -> bool:

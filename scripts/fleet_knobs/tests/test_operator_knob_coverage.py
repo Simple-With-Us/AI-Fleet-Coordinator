@@ -57,12 +57,13 @@ ALLOWLIST: dict[str, str] = {
     "OPERATOR_SEAT": "the seat one host's wake alerter speaks as, a per-host identity.",
     "OPERATOR_LINEAR_DRY_RUN": "the one tunable here: a switch that makes the Operator's Linear mirror write nothing, read once at engine build as the exact text 1; register it as a knob when the Eavesdropper reads knobs from Infisical and its folder is chosen (AFC-773).",
     # Where a secret or a credential is found:  names of locations and identities, never values.
+    "CREDENTIALS_DIRECTORY": "systemd's runtime credential directory, a protected credential location rather than an owner-tunable.",
+    "WAKE_ROUTER_REVIEW_ALERTS_CREDENTIAL_FILE": "host-bound path to the dedicated review service credential, not its value or tunable behavior.",
     "OPERATOR_ROUTINE_KEY_NAME": "name of the secret that holds the routine key, not the secret.",
     "OPERATOR_SECRET_PATH": "Infisical folder of a secret, not a value.",
     "OPERATOR_SECRET_PROJECT": "Infisical project of a secret, not a value.",
     "OPERATOR_LINEAR_INFISICAL_TOKEN": "bootstrap credential for reading Infisical itself;  cannot live in Infisical.",
     "OPERATOR_ZULIP_EMAIL": "the Operator bot's identity, resolved through the credential store.",
-    "FLEET_SECRETS_BIN": "path to the fleet-secrets binary on this host.",
     "GH_TOKEN": "set for a child process by the GitHub client, not read as a setting.",
     "ZULIP_SITE": "the Zulip site address, a host fact shared by every seat.",
     # Per-host paths and test seams, not owner-tunable behaviour.

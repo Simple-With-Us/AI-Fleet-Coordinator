@@ -59,6 +59,20 @@ reached yet.  Its older `wake-deliver` rejects the envelope before it does anyth
 `OLD_MAC_REFUSAL` and exit 2, so that is `failed`, a bounded retry.  The sender never falls back to
 the old request, which would skip the Mac's recheck and the ids.
 
+A turn (wake_router, Turns) adds one key to the request, `turn`:  the offer, `{"contract", "id",
+"riders": [{"wake_id", "message_id", "picked", "reason", "link_note"}, ...]}`, router values only.
+`deliver_remote_turn` sends it only while the whole request stays TURN_STDIN_MARGIN under
+STDIN_LIMIT, and otherwise sends the head alone.  It waits for the answer for the resume limit
+once per wake it carries, plus the margin, since the Mac gives the turn that long.  On the Mac,
+`_handle` sets the offer apart and drops any `turn_dispatch` the sender wrote.  Claude's own
+handler never sees a turn.
+`_module_delivery` hands it on, marked `turn_dispatch`, only to a module that declares `TURNS`
+and only with at least one valid rider (`wake_router.turn_riders_from`), and only then does the
+answer carry `turn`:  the handler's echo of what the prompt carried and what the chat recorded,
+read against the offer, or a mark that it cannot be read.  So a Mac or a module from before turns
+answers with no echo, which the sender reads as the head alone, and a handler that takes exactly
+the three keys (Codex, MiniMax) never sees a fourth.
+
 The Mac asks the registry again immediately before delivering, as the router did before sending.  A
 letter that no longer holds that session at that generation, or is closed, is `refused`.  A registry
 that cannot be read is `failed`, since nothing has run, and so a bounded retry, never a blind
@@ -117,6 +131,8 @@ SESSION_FILE_RE = re.compile(r"^[0-9]+\.json$")
 SESSION_FILE_BYTES = 64 * 1024
 TAIL_BYTES = 256 * 1024
 STDIN_LIMIT = 16 * 1024
+# A turn's request stays this far under STDIN_LIMIT, or it goes as the head alone.
+TURN_STDIN_MARGIN = 1024
 SOCKET_TIMEOUT = 5.0
 SOCKET_HOLD_SECONDS = 1.0
 CONFIRM_POLL_SECONDS = 1.0
@@ -570,6 +586,20 @@ def deliver_local(
         return WR.Delivery("busy", code="holder-unknown")
 
 
+def _envelope(platform: str, target: WR.Target, wake: WR.Wake) -> dict[str, Any]:
+    """The request for one wake (module docstring, The wire), in its key order on the wire."""
+    return {
+        "platform": platform,
+        "target": {
+            "session_id": target.session_id,
+            "letter": target.letter,
+            "host": target.host,
+            "generation": target.generation,
+        },
+        "wake": asdict(wake),
+    }
+
+
 def deliver_remote(
     env: Mapping[str, str],
     config: Mapping[str, Any],
@@ -581,17 +611,78 @@ def deliver_remote(
 ) -> WR.Delivery:
     """Deliver one wake to a chat on the Mac, through the one fixed command over ssh.  The
     destination is the setting `mac_ssh` (WAKE_ROUTER_MAC_SSH) alone."""
+    request = _envelope(platform, target, wake)
+    return _remote(env, config, target, wake, request, platform=platform, runner=runner)[0]
+
+
+def deliver_remote_turn(
+    env: Mapping[str, str],
+    config: Mapping[str, Any],
+    target: WR.Target,
+    head: WR.Wake,
+    riders: tuple[WR.Wake, ...],
+    turn_id: str,
+    *,
+    platform: str,
+    runner: Runner = subprocess.run,
+) -> WR.Turn:
+    """One idle turn for a chat on the Mac (wake_router, Turns):  the head's request with the
+    turn's offer beside it, through the same fixed command.  A request that would come too close
+    to the Mac's stdin limit goes as the head alone.  Only an echo in a readable answer names a
+    rider as carried:  nothing sent, or a Mac that says it needs the update, carried nobody, and
+    an answer lost after the send cannot say what it carried."""
+    request = {**_envelope(platform, target, head), "turn": WR.turn_offer(turn_id, riders)}
+    try:
+        size = len(json.dumps(request, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        size = STDIN_LIMIT  # not a request this route can send:  the head alone says why
+    if size > STDIN_LIMIT - TURN_STDIN_MARGIN:
+        single = deliver_remote(env, config, target, head, platform=platform, runner=runner)
+        return WR.Turn(single)
+    # The Mac gives the turn its one-wake time limit once per member, and so does this wait.
+    delivery, answer, sent = _remote(
+        env,
+        config,
+        target,
+        head,
+        request,
+        platform=platform,
+        runner=runner,
+        members=1 + len(riders),
+    )
+    if not sent or delivery.code == "remote-needs-update":
+        return WR.Turn(delivery)  # nothing reached a handler that takes turns:  the riders return
+    if answer is None:  # ssh-timeout, ssh-error-*, ssh-dropped, remote-exit-N, remote-mismatch
+        return WR.Turn(delivery, unreadable=True)
+    return WR.turn_result(delivery, answer.get("turn"), turn_id, riders)
+
+
+def _remote(
+    env: Mapping[str, str],
+    config: Mapping[str, Any],
+    target: WR.Target,
+    wake: WR.Wake,
+    request: Mapping[str, Any],
+    *,
+    platform: str,
+    runner: Runner,
+    members: int = 1,
+) -> tuple[WR.Delivery, Mapping[str, Any] | None, bool]:
+    """(the delivery, the Mac's answer when the delivery was read from it, whether the real
+    command was started) for this request.  The request goes on stdin as JSON, unchanged.  The
+    wait for the answer is the resume limit once per wake the request carries (`members`),
+    plus the margin."""
     from . import wake_service as SVC  # the router's own host, where it is always there
 
     entry = SVC.by_platform(platform)
     if entry is None:
-        return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM)
+        return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM), None, False
     session_id = target.session_id
     if not isinstance(session_id, str) or not entry.session_pattern.fullmatch(session_id):
-        return WR.Delivery("refused", "ssh", code="bad-session-id")
+        return WR.Delivery("refused", "ssh", code="bad-session-id"), None, False
     dest = str(config.get("mac_ssh") or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
-        return WR.Delivery("refused", "ssh", code="no-ssh-destination")
+        return WR.Delivery("refused", "ssh", code="no-ssh-destination"), None, False
     remote = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT]
     remote += ["--", dest]
     # Nothing can have run yet, so every failure of this preflight is safe to try again.
@@ -605,58 +696,51 @@ def deliver_remote(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return WR.Delivery("unreachable", "ssh", code="ssh-preflight-timeout")
+        return WR.Delivery("unreachable", "ssh", code="ssh-preflight-timeout"), None, False
     except OSError as exc:
-        return WR.Delivery("failed", "ssh", code="ssh-%s" % type(exc).__name__)
+        return WR.Delivery("failed", "ssh", code="ssh-%s" % type(exc).__name__), None, False
     if check.returncode == SSH_UNREACHABLE:
-        return WR.Delivery("unreachable", "ssh", code="ssh-unreachable")
+        return WR.Delivery("unreachable", "ssh", code="ssh-unreachable"), None, False
     if check.returncode != 0:
-        return WR.Delivery("failed", "ssh", code="ssh-preflight-exit-%d" % check.returncode)
-    request = json.dumps(
-        {
-            "platform": platform,
-            "target": {
-                "session_id": target.session_id,
-                "letter": target.letter,
-                "host": target.host,
-                "generation": target.generation,
-            },
-            "wake": asdict(wake),
-        },
-        ensure_ascii=False,
-    )
+        failed = WR.Delivery("failed", "ssh", code="ssh-preflight-exit-%d" % check.returncode)
+        return failed, None, False
+    text = json.dumps(request, ensure_ascii=False)
     try:
         proc = runner(
             remote + [REMOTE_COMMAND],
-            input=request,
+            input=text,
             capture_output=True,
             text=True,
-            timeout=int(config["resume_timeout_seconds"]) + SSH_MARGIN_SECONDS,
+            timeout=int(config["resume_timeout_seconds"]) * members + SSH_MARGIN_SECONDS,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return WR.Delivery("refused", "ssh", code="ssh-timeout")
+        return WR.Delivery("refused", "ssh", code="ssh-timeout"), None, True
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         # An OSError too:  subprocess.run raises one from communicate(), after ssh has spawned.
-        return WR.Delivery("refused", "ssh", code="ssh-error-%s" % type(exc).__name__)
+        error = WR.Delivery("refused", "ssh", code="ssh-error-%s" % type(exc).__name__)
+        return error, None, True
     # From here the remote command may have started, so nothing unclear is ever retried.
     if proc.returncode == SSH_UNREACHABLE:
-        return WR.Delivery("refused", "ssh", code="ssh-dropped")
+        return WR.Delivery("refused", "ssh", code="ssh-dropped"), None, True
     answer = _last_json(str(proc.stdout or ""))
     if answer == OLD_MAC_REFUSAL and proc.returncode == BAD_REQUEST_EXIT:
-        return WR.Delivery("failed", "ssh", code="remote-needs-update")  # nothing ran on the Mac
+        # Nothing ran on the Mac.
+        return WR.Delivery("failed", "ssh", code="remote-needs-update"), None, True
     delivery = answer.get("delivery") if answer is not None else None
     if not isinstance(delivery, dict) or delivery.get("outcome") not in WR.OUTCOMES:
-        return WR.Delivery("refused", "ssh", code="remote-exit-%d" % proc.returncode)
-    if not _answers(answer, target, wake):
-        return WR.Delivery("refused", "ssh", code="remote-mismatch")
-    return WR.Delivery(
+        exited = WR.Delivery("refused", "ssh", code="remote-exit-%d" % proc.returncode)
+        return exited, None, True
+    if answer is None or not _answers(answer, target, wake):
+        return WR.Delivery("refused", "ssh", code="remote-mismatch"), None, True
+    read = WR.Delivery(
         str(delivery["outcome"]),
         "ssh:%s" % _short(delivery.get("route")),
         ack=_short(delivery.get("ack")) or "unknown",
         code=_short(delivery.get("code")),
         note=_short(delivery.get("note")),
     )
+    return read, answer, True
 
 
 def _answers(answer: Mapping[str, Any], target: WR.Target, wake: WR.Wake) -> bool:
@@ -824,8 +908,13 @@ def _correlation(request: object) -> dict[str, Any]:
     }
 
 
-def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
-    return {**_correlation(request), "delivery": asdict(delivery)}
+def _answer(
+    request: object, delivery: WR.Delivery, turn: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    answer = {**_correlation(request), "delivery": asdict(delivery)}
+    if turn is not None:
+        answer["turn"] = dict(turn)
+    return answer
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
@@ -924,11 +1013,19 @@ def _deliver_claude(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
 
 
 def _module_delivery(
-    entry: SVC.Builder, request: Mapping[str, Any], env: Mapping[str, str]
+    entry: SVC.Builder,
+    request: Mapping[str, Any],
+    env: Mapping[str, str],
+    turn: object = None,
 ) -> dict[str, Any]:
     """Another platform's delivery, by its module's handler, loaded only when a request names
     that platform.  The module's name comes from the table entry:  nothing from the request
-    reaches the import."""
+    reaches the import.
+
+    A turn (wake_router, Turns) reaches the handler only when its module says it takes them
+    (`TURNS`) and the offer has at least one valid rider;  only then is `turn_dispatch` set,
+    and only then does the answer carry an echo:  the handler's, read against the offer, or one
+    that says it cannot be read.  With no echo the sender knows only the head was carried."""
     try:
         module = importlib.import_module(entry.module)
     except ImportError:
@@ -944,23 +1041,40 @@ def _module_delivery(
         # delivery fails closed with the source named.  A loader that was read and holds
         # no address is a host that is not configured, and `registry_failure` answers that
         # one with the variable that is missing.  A registry that was configured and later
-        # became unreachable is the outage, and it is `busy`.
+        # became unreachable is the outage, and it is `busy`.  No handler ran, so a turn's
+        # answer carries no echo:  the riders go back with nothing used.
         return _answer(
             request, WR.Delivery("failed", code=WR.NOT_CONFIGURED, note=WR.REGISTRY_LOADER_SOURCE)
         )
+    riders: tuple[WR.Wake, ...] = ()
+    if turn is not None and getattr(module, "TURNS", None) == WR.TURN_CONTRACT:
+        riders = WR.turn_riders_from(turn, _correlation(request)["wake_id"])
+
+    def echo(answer: object) -> dict[str, Any] | None:
+        if not riders or not isinstance(turn, Mapping):
+            return None
+        said = answer.get("turn") if isinstance(answer, Mapping) else None
+        read = WR.turn_echo_read(said, turn["id"], [wake.wake_id for wake in riders])
+        if read is None:
+            return {"contract": WR.TURN_CONTRACT, "id": turn["id"], "unreadable": True}
+        return WR.turn_echo(turn["id"], *read)
+
     try:
-        answer = handler(request, env=registry_env)
+        if riders:
+            offered = {**request, "turn": turn, "turn_dispatch": WR.TURN_CONTRACT}
+            answer = handler(offered, env=registry_env)
+        else:
+            answer = handler(request, env=registry_env)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
-        return _answer(
-            request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
-        )
+        error = WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+        return _answer(request, error, echo(None))
     delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
     if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
-        return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
+        return _answer(request, WR.Delivery("refused", code="platform-bad-answer"), echo(answer))
     # Not just re-stamped with this request's ids:  an answer about something else says
     # nothing about whether this wake ran, so even one that reads as retryable is final.
     if not _same_ids(answer, _correlation(request)):
-        return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
+        return _answer(request, WR.Delivery("refused", code="platform-mismatch"), echo(answer))
     return _answer(
         request,
         WR.Delivery(
@@ -970,17 +1084,18 @@ def _module_delivery(
             code=_short(delivery.get("code")),
             note=_short(delivery.get("note")),
         ),
+        echo(answer),
     )
 
 
 def _dispatch(
-    entry: SVC.Builder, request: Mapping[str, Any], env: Mapping[str, str]
+    entry: SVC.Builder, request: Mapping[str, Any], env: Mapping[str, str], turn: object = None
 ) -> dict[str, Any]:
-    """Run the entry's handler.  Claude's is this module's own and runs as it always has;  any
-    other platform's goes through `_module_delivery` and its checks."""
+    """Run the entry's handler.  Claude's is this module's own and runs as it always has, and
+    never sees a turn;  any other platform's goes through `_module_delivery` and its checks."""
     if entry.module == __name__:
         return globals()[entry.handler](request, env)
-    return _module_delivery(entry, request, env)
+    return _module_delivery(entry, request, env, turn)
 
 
 def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
@@ -998,18 +1113,22 @@ def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
 def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     if "platform" not in request and "target" not in request and "session_id" in request:
         return _deliver_legacy(request, env)
+    # A turn's offer is set apart, and a `turn_dispatch` the sender wrote is dropped:  only
+    # `_module_delivery` marks a request for a module that takes turns (wake_router, Turns).
+    turn = request.get("turn")
+    body = {name: value for name, value in request.items() if name not in ("turn", "turn_dispatch")}
     if _table() is None:
         # The platform table cannot be imported here, so nothing can be looked up and nothing has
         # run:  `failed`, a bounded retry, and an answer the sender can read.
-        return _answer(request, WR.Delivery("failed", code=TABLE_UNAVAILABLE))
-    entry = _platform_of(request)
+        return _answer(body, WR.Delivery("failed", code=TABLE_UNAVAILABLE))
+    entry = _platform_of(body)
     if entry is None:
-        return _answer(request, WR.Delivery("refused", code=UNKNOWN_PLATFORM))
-    target = request.get("target")
+        return _answer(body, WR.Delivery("refused", code=UNKNOWN_PLATFORM))
+    target = body.get("target")
     session_id = target.get("session_id") if isinstance(target, Mapping) else None
     if not isinstance(session_id, str) or not entry.session_pattern.fullmatch(session_id):
-        return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))  # nothing has run
-    return _dispatch(entry, request, env)
+        return _answer(body, WR.Delivery("refused", code=BAD_REQUEST))  # nothing has run
+    return _dispatch(entry, body, env, turn)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

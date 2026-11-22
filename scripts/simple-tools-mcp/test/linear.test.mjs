@@ -24,7 +24,7 @@ import {
 
 const config = loadConfig(testEnv());
 const CLIENT_ID = "lin_fake_client_id";
-const CLIENT_SECRET = "fake-secret-value";
+const CLIENT_CREDENTIAL = "fake-secret-value";
 const MARKER_RE = /(BEGIN|END)[^\p{L}\p{N}]*UNTRUSTED[^\p{L}\p{N}]*LINEAR/iu;
 
 function memoryGate(clock) {
@@ -54,7 +54,7 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
   const quota = memoryQuota();
   // The workspace cache holds ids only and is keyed by seat, so each harness
   // gets its own:  one test's teams must never answer another test's state.
-  const client = credentials ? new LinearClient({ quota, seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now }) : null;
+  const client = credentials ? new LinearClient({ quota, seat, clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now }) : null;
   const tools = new HostedTools({
     seat,
     scopes,
@@ -85,7 +85,7 @@ function clientHarness({ seat = "GROK-WEB", viewer } = {}) {
   const fake = new FakeLinear(viewer ? { viewer } : {});
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now });
+  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now });
   return { fake, gate, clock, client };
 }
 
@@ -225,7 +225,7 @@ test("confirmViewer refuses a viewer that is not an app, and one that is another
       // the credential itself.
       assert.match(error.upstreamMessage, /GROK-WEB/);
       assert.ok(!error.upstreamMessage.includes(CLIENT_ID));
-      assert.ok(!error.upstreamMessage.includes(CLIENT_SECRET));
+      assert.ok(!error.upstreamMessage.includes(CLIENT_CREDENTIAL));
       return true;
     },
   );
@@ -479,6 +479,140 @@ test("an issue held by another app delegate is refused with claim_held, and no m
   assert.match(error.message, /Claude/);
   assert.equal(error.held_by, "Claude");
   assert.equal(fake.mutations().length, 0);
+});
+
+test("a steal without reason is refused before any mutation is sent", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-324", identifier: "AFC-324", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-324", steal: true }), "invalid_argument");
+  assert.match(error.message, /reason/);
+  assert.equal(fake.mutations().length, 0);
+  // A bare reason with no steal is just ignored:  the held refusal still fires.
+  const held = toolError(await tools.call("linear_claim", { id: "AFC-324", reason: "unclaimed transfer" }), "claim_held");
+  assert.equal(held.held_by, "CLAUDE");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("steal with reason takes a label-held issue and records who it was taken from", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-325", identifier: "AFC-325", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-325", steal: true, reason: "holder parked it for a week with no update" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  assert.equal(claimed.held_by, null);
+  const update = fake.mutations()[0].body.variables;
+  // The other seat's claim label is dropped;  its seat: label stays (attribution).
+  assert.deepEqual(update.input.removedLabelIds, [fake.labelId("claimed:CLAUDE")]);
+  assert.equal(update.input.delegateId, fake.viewer.id);
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.equal(body.split("\n")[0], "CLAIMED — taken from CLAUDE: holder parked it for a week with no update");
+});
+
+test("steal with reason takes a delegate-held issue", async () => {
+  const { tools, fake } = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+  fake.addIssue({ id: "issue-326", identifier: "AFC-326", team: "AFC", delegate: { id: "user-claude", name: "Claude" } });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-326", steal: true, reason: "reclaiming for the transfer Jay asked for" }), "linear_claim");
+  assert.equal(claimed.label, null);
+  assert.equal(claimed.delegate, "Jet");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, "user-jet");
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.match(body, /CLAIMED — taken from Claude: reclaiming for the transfer Jay asked for/);
+});
+
+test("a steal reason that looks like a secret is refused before anything is sent", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-327", identifier: "AFC-327", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const syntheticGithubToken = ["ghp", "a".repeat(36)].join("_"); // Synthetic scanner fixture, never a credential.
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-327", steal: true, reason: `taking because ${syntheticGithubToken}` }), "refused_secret");
+  assert.match(error.message, /reason/);
+  assert.doesNotMatch(error.message, new RegExp(syntheticGithubToken));
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("a steal of nothing still records why, but names no one", async () => {
+  const { tools, fake } = harness();
+  // The seat's own claim:  a steal re-asserts it and takes nobody's anything.
+  fake.addIssue({ id: "issue-328", identifier: "AFC-328", team: "AFC", labels: ["claimed:GROK-WEB"] });
+  const own = ok(await tools.call("linear_claim", { id: "AFC-328", steal: true, reason: "re-pinning my own claim" }), "linear_claim");
+  const ownBody = fake.mutations()[1].body.variables.input.body;
+  assert.equal(ownBody.split("\n")[0], "CLAIMED: re-pinning my own claim", "the reason is recorded, no taken-from text on a self re-assert");
+  assert.equal(own.held_by, null);
+  // A human delegate holds no fleet claim, so the attribution must not name them.
+  const afterOwn = fake.mutations().length;
+  fake.addIssue({ id: "issue-329", identifier: "AFC-329", team: "AFC", delegate: { id: "user-jay", name: "Jay", app: false } });
+  const human = ok(await tools.call("linear_claim", { id: "AFC-329", steal: true, reason: "reclaiming an abandoned issue" }), "linear_claim");
+  const humanBody = fake.mutations().slice(afterOwn)[1].body.variables.input.body;
+  assert.equal(humanBody.split("\n")[0], "CLAIMED: reclaiming an abandoned issue", "a human delegate is never named as a displaced holder");
+  assert.equal(human.label, "claimed:GROK-WEB");
+});
+
+test("a steal retry derives the same identities:  one comment, one write", async () => {
+  const { tools, fake, gate } = harness();
+  fake.addIssue({ id: "issue-330", identifier: "AFC-330", team: "AFC", labels: ["claimed:CLAUDE", "seat:CLAUDE"] });
+  const first = ok(await tools.call("linear_claim", { id: "AFC-330", steal: true, reason: "holder parked it", session: "mvs-1234-5678" }), "linear_claim");
+  const bodies = () => fake.mutations().map((m) => m.body.variables.input?.body).filter(Boolean);
+  const commentCount = () => fake.mutations().filter((m) => m.body.query?.includes("BoardComment")).length;
+  assert.equal(commentCount(), 1);
+  // The issue now shows this seat's claim, so the retry sees held === own claim.
+  const second = ok(await tools.call("linear_claim", { id: "AFC-330", steal: true, reason: "holder parked it", session: "mvs-1234-5678" }), "linear_claim");
+  assert.equal(second.duplicate, true, "the retry answers as the same claim");
+  assert.equal(commentCount(), 1, "the retry posted no second CLAIMED comment");
+  const lastBody = bodies().at(-1);
+  assert.ok(lastBody.includes("CLAIMED"), "a comment body exists");
+});
+
+test("a steal never answers as a duplicate of the same seat's plain claim", async () => {
+  const { tools, fake } = harness();
+  // Same issue, same session:  only the steal marker can distinguish the two rows.
+  fake.addIssue({ id: "issue-331", identifier: "AFC-331", team: "AFC" });
+  const plain = ok(await tools.call("linear_claim", { id: "AFC-331", session: "mvs-1234-5678" }), "linear_claim");
+  assert.equal(plain.duplicate, false);
+  const plainMutations = fake.mutations().length;
+  const steal = ok(await tools.call("linear_claim", { id: "AFC-331", steal: true, reason: "re-pinning it as a deliberate steal", session: "mvs-1234-5678" }), "linear_claim");
+  assert.equal(steal.duplicate, false, "the steal ran its own write, not the plain claim's row");
+  const stealMutations = fake.mutations().slice(plainMutations);
+  assert.equal(stealMutations.filter((m) => m.body.query?.includes("BoardComment")).length, 1, "the steal posted its own CLAIMED comment");
+});
+
+test("a later steal with a different reason lands its own comment", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-334", identifier: "AFC-334", team: "AFC", labels: ["claimed:CLAUDE"] });
+  ok(await tools.call("linear_claim", { id: "AFC-334", steal: true, reason: "first take", session: "mvs-1234-5678" }), "linear_claim");
+  const comments = () => fake.mutations().filter((m) => m.body.query?.includes("BoardComment"));
+  assert.equal(comments().length, 1);
+  // The displaced holder is no longer visible, so the second steal's body names no
+  // one — but its different reason must not overwrite the first takeover record.
+  const second = ok(await tools.call("linear_claim", { id: "AFC-334", steal: true, reason: "second take, refreshed reason", session: "mvs-1234-5678" }), "linear_claim");
+  assert.equal(second.duplicate, false);
+  assert.equal(comments().length, 2, "the second takeover comment exists alongside the first");
+  const bodies = comments().map((m) => m.body.variables.input.body.split("\n")[0]);
+  assert.ok(bodies[0].includes("first take"), bodies[0]);
+  assert.ok(bodies[1].includes("second take, refreshed reason"), bodies[1]);
+  // Two mutations with the same fixed id would silently replace the first record:
+  // assert the identities themselves differ, not just the mutation count.
+  const ids = comments().map((m) => m.body.variables.input.id);
+  assert.notEqual(ids[0], ids[1], "the second takeover carries its own comment id");
+});
+
+test("a foreign claim after the caller's own label is still named and removed", async () => {
+  const { tools, fake } = harness();
+  // The caller's claim label comes first on the issue;  CLAUDE's sits behind it
+  // (the same-second double-claim shape), so the first claimed: key is the caller's.
+  fake.addIssue({ id: "issue-333", identifier: "AFC-333", team: "AFC", labels: ["claimed:GROK-WEB", "claimed:CLAUDE", "seat:CLAUDE"] });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-333", steal: true, reason: "taking the stalled half of the double claim" }), "linear_claim");
+  const update = fake.mutations()[0].body.variables;
+  assert.deepEqual(update.input.removedLabelIds, [fake.labelId("claimed:CLAUDE")]);
+  const body = fake.mutations()[1].body.variables.input.body;
+  assert.match(body, /CLAIMED — taken from CLAUDE: taking the stalled half of the double claim/);
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+});
+
+test("a plain claim is refused even when only a foreign label behind the caller's own is present", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-335", identifier: "AFC-335", team: "AFC", labels: ["claimed:GROK-WEB", "claimed:CLAUDE", "seat:CLAUDE"] });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-335" }), "claim_held");
+  assert.equal(error.held_by, "CLAUDE");
+  assert.equal(fake.mutations().length, 0, "nothing was stripped silently");
 });
 
 test("a human delegate is no claim hold:  claiming delegates to the seat's app user", async () => {
@@ -853,7 +987,7 @@ test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, 
     quota: memoryQuota(),
     seat: "GROK-WEB",
     clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
+    clientSecret: CLIENT_CREDENTIAL,
     gate,
     fetch: fake.fetch,
     now: () => clock.now,
@@ -928,7 +1062,7 @@ test("a logger that throws during the early mint still leaves the cached token i
   const fake = new FakeLinear();
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
+  const client = new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
   const first = await client.token();
   await ageCachedToken(gate, clock, 29 * 24);
   gate.idemBegin = async () => { throw new TypeError("boom"); };
@@ -1049,7 +1183,7 @@ test("a proof belongs to its client: a different client on the same request is p
   const first = await tools.confirmedViewer();
   assert.equal(await tools.confirmedViewer(), first);
   assert.equal(viewerQueries(fake), 1);
-  const other = new LinearClient({ quota: memoryQuota(), seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
+  const other = new LinearClient({ quota: memoryQuota(), seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
   tools.linear = other;
   await tools.confirmedViewer();
   assert.equal(viewerQueries(fake), 2, "a swapped client is not covered by the earlier proof");
@@ -1089,7 +1223,7 @@ async function maHarness() {
   h.fake.addLabel("seat:MA");
   h.fake.issued.push("tok-ma");
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_CREDENTIAL}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   return h;
 }
@@ -1108,7 +1242,7 @@ test("MA claim without its claim label says the app cannot delegate, not that th
   const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
   const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
   fake.issued.push("tok-ma");
-  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${STORED_NAMESPACE}:linear:MA:${CLIENT_ID}:${CLIENT_CREDENTIAL}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
   await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
   fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
   const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");

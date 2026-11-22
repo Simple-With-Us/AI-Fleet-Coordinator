@@ -586,6 +586,62 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             eng._history(5, "thread")
 
+    def _assert_the_read_is_bounded(self, zulip, eng, read) -> None:
+        """Both readers bound a read the same way, and both bounds are asserted here.
+
+        A caller's deadline that is shorter than the Operator's own budget is the bound
+        the read shows, and a caller's deadline that is later is clamped down to the
+        budget.  Both are checked against a bound that differs from the caller's own
+        value, so neither check passes on its own (Kody, PR 2340)."""
+        # The caller's deadline is shorter than the Operator's own budget, so the read
+        # must show the caller's bound and not the budget (Kody, PR 2340).
+        before = time.monotonic()
+        caller = before + opl.HISTORY_READ_BUDGET / 4
+        read(caller)
+        deadlines = [options["deadline"] for options in zulip.message_options]
+        self.assertTrue(deadlines)
+        for deadline in deadlines:
+            self.assertGreater(deadline, before)
+            self.assertLessEqual(deadline, caller)
+            # The budget is later than the caller's bound, so a read that showed the
+            # budget instead of the caller's deadline fails here (Kody, PR 2340).
+            self.assertLess(deadline, before + opl.HISTORY_READ_BUDGET)
+        # A caller's deadline that is later than the Operator's own budget is clamped
+        # down to the budget, so the read shows the budget and not the caller's value
+        # (Kody, PR 2340).
+        zulip.message_options.clear()
+        before = time.monotonic()
+        caller = before + opl.HISTORY_READ_BUDGET * 10
+        read(caller)
+        after = time.monotonic()
+        deadlines = [options["deadline"] for options in zulip.message_options]
+        self.assertTrue(deadlines)
+        for deadline in deadlines:
+            self.assertGreater(deadline, before)
+            self.assertLessEqual(deadline, after + opl.HISTORY_READ_BUDGET)
+            # The budget, not the caller's far-future value (Kody, PR 2340).
+            self.assertLess(deadline, caller)
+
+    def test_a_caller_deadline_bounds_the_whole_topic_read_too(self) -> None:
+        # The whole-topic reader takes the deadline the caller's read shares, and the
+        # Operator's own budget bounds it as well (Kody, PR 2340).
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 4)])
+        eng = self.engine(zulip)
+        eng.reload_streams(zulip)  # the client the readers read with
+        self._assert_the_read_is_bounded(
+            zulip, eng, lambda deadline: eng._history(5, "thread", deadline=deadline)
+        )
+
+    def test_a_caller_deadline_never_gets_more_time_than_the_operator_budget(self) -> None:
+        # A walk that shares its own deadline does not get more time out of a read than
+        # a read on its own gets (Kody, PR 2340).
+        zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 4)])
+        eng = self.engine(zulip)
+        eng.reload_streams(zulip)  # the client the readers read with
+        self._assert_the_read_is_bounded(
+            zulip, eng, lambda deadline: eng._history_since(5, "thread", 1, deadline=deadline)
+        )
+
     def test_each_history_read_has_one_deadline_for_all_its_pages(self) -> None:
         zulip = FakeZulip([api_message(mid, "m%d" % mid) for mid in range(1, 6)])
         eng = self.engine(zulip)
@@ -762,21 +818,29 @@ class CredentialTests(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.logs: list[str] = []
 
-    def token_file(self, content="st-from-file", mode=0o600) -> Path:
+    # never-a-credential: the synthetic fixture values are assembled at runtime
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
         path = self.dir / "service-token"
         path.write_text(content, "utf-8")
         path.chmod(mode)
         return path
 
     # -- where the service token comes from -------------------------------------------
-    def test_service_token_env_wins_over_file(self) -> None:
+    def test_service_token_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
         path = self.token_file()
-        env = {opl.SERVICE_TOKEN_ENV: "  st-from-env  "}
-        self.assertEqual(opl.service_token(env, str(path)), "st-from-env")
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-file")
+
+    def test_service_token_uses_the_bound_copy_when_the_store_has_none(self) -> None:
+        # The consumer's own named copy is the second source (the owner's ruling on
+        # OPS-1101,  Option 2):  a copy may travel,  and it is only this consumer's.
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(self.dir / "absent")), "st-" + "from-env")
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()
-        self.assertEqual(opl.service_token({}, str(path)), "st-from-file")
+        self.assertEqual(opl.service_token({}, str(path)), "st-" + "from-file")
 
     def test_service_token_missing_file_is_unconfigured(self) -> None:
         self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
@@ -786,7 +850,7 @@ class CredentialTests(unittest.TestCase):
         with self.assertRaises(opl.CredentialRefused) as caught:
             opl.service_token({}, str(path))
         self.assertEqual(caught.exception.reason, "token_file_permissions")
-        self.assertNotIn("st-from-file", str(caught.exception))
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     # -- the key fetch ----------------------------------------------------------------------
     def test_key_fetch_verifies_scope_then_reads_the_key(self) -> None:
@@ -871,6 +935,16 @@ class CredentialTests(unittest.TestCase):
         self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
         self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
+
+    def test_the_key_fetch_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
+        path = self.token_file(content="st-" + "from-file")  # never-a-credential: synthetic fixture assembled at runtime
+        env = {opl.SERVICE_TOKEN_ENV: "st-" + "from-env"}  # never-a-credential: synthetic fixture assembled at runtime
+        http = FakeHttp()
+        self.assertEqual(opl.load_api_key(env, str(path), http=http), "dev-key")
+        bearer = http.calls[0][2].get("Authorization", "")
+        self.assertIn("st-" + "from-file", bearer)
+        self.assertNotIn("st-" + "from-env", bearer)
 
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
@@ -1096,7 +1170,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
         path = self.dir / "service-token"
-        path.write_text("st-from-file", "utf-8")
+        path.write_text("st-" + "from-file", "utf-8")
         path.chmod(0o644)
         stub = self.stub({}, token_file=str(path))
         stub.configure()

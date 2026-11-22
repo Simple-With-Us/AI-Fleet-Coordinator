@@ -48,10 +48,11 @@ What it promises:
     with "already started" and starts nothing, and an application pm2 no longer remembers
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
-    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    the adjacent shared Infisical reader into memory, sent in one request header and never
-    printed, logged or passed in an argv.  The reader accepts only the control consumer's
-    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
+    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
+    the shared Infisical client with this service's own scoped token, into memory, sent in
+    one request header and never printed, logged or passed in an argv.  A forced command
+    has only the environment sshd gives it, so the token comes from `ops-control.env`
+    (0600).
     `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
@@ -315,6 +316,8 @@ SETTINGS_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
 SETTINGS_STORE = "operator-settings.env"
 SETTINGS_IMAGE = "operator-settings-image.json"
 SETTINGS_BOOTSTRAP_MAX = 64 * 1024
+SETTINGS_BOOTSTRAP_DEPTH = 16
+SETTINGS_BOOTSTRAP_NODES = 1000
 SETTINGS_IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
 SETTINGS_CID_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
@@ -810,10 +813,11 @@ INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
-# The control consumer's Infisical binding, and nothing else from its credential file.
+# The Infisical identity this service may be handed from the credential file, and nothing
+# else from it.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this custody boundary independent of the optional shared reader.
+
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -1912,8 +1916,22 @@ def _load_eavesdropper_settings_editor(ctx):
     return module
 
 
-def _settings_refusal():
-    return Refused("the settings bootstrap is unavailable", error_code="bootstrap_unavailable")
+def _settings_refusal(source="operator_settings_bootstrap"):
+    sources = {
+        SETTINGS_PROJECT,
+        SETTINGS_WRITER,
+        "operator_settings_bootstrap",
+        "operator_settings_store",
+        "operator_settings_image",
+        "operator_settings_grant",
+        "fleet_infisical.py",
+    }
+    source = source if source in sources else "operator_settings_bootstrap"
+    refusal = Refused(
+        "the settings bootstrap is unavailable: " + source, error_code="bootstrap_unavailable"
+    )
+    refusal.settings_source = source
+    return refusal
 
 
 def _settings_json(raw):
@@ -1926,7 +1944,21 @@ def _settings_json(raw):
         return result
 
     try:
-        return json.loads(raw, object_pairs_hook=pairs)
+        if len(raw) > SETTINGS_BOOTSTRAP_MAX:
+            raise _settings_refusal()
+        value = json.loads(raw, object_pairs_hook=pairs)
+        pending = [(value, 0)]
+        count = 0
+        while pending:
+            item, depth = pending.pop()
+            count += 1
+            if depth > SETTINGS_BOOTSTRAP_DEPTH or count > SETTINGS_BOOTSTRAP_NODES:
+                raise _settings_refusal()
+            if isinstance(item, dict):
+                pending.extend((child, depth + 1) for pair in item.items() for child in pair)
+            elif isinstance(item, list):
+                pending.extend((child, depth + 1) for child in item)
+        return value
     except (ValueError, UnicodeError, RecursionError):
         raise _settings_refusal() from None
 
@@ -2029,11 +2061,15 @@ def _settings_values(raw):
                 not separator
                 or key not in (SETTINGS_PROJECT, SETTINGS_WRITER)
                 or key in values
-                or not value
                 or any(c.isspace() or c in "\"'" for c in value)
             ):
                 raise _settings_refusal()
+            if not value:
+                raise _settings_refusal(key)
             values[key] = value
+        for name in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            if not values.get(name):
+                raise _settings_refusal(name)
         if (
             set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
             or not re.fullmatch(
@@ -2074,8 +2110,10 @@ def _settings_container(ctx, target=EAVESDROPPER_CONTAINER):
 def _settings_writer_request(ctx, request):
     """Image/CID qualification precedes the only writer-store open."""
     values = {}
+    source = "operator_settings_store"
     try:
         with _settings_directory(ctx) as parent:
+            source = "operator_settings_image"
             raw, _ = _settings_read(parent, SETTINGS_IMAGE, ctx.uid)
             image = _settings_json(raw)
             if (
@@ -2087,13 +2125,14 @@ def _settings_writer_request(ctx, request):
                 or type(image["storeInode"]) is not int
                 or image["storeInode"] <= 0
             ):
-                raise _settings_refusal()
+                raise _settings_refusal(source)
             cid, actual_image = _settings_container(ctx)
             if actual_image != image["imageID"]:
-                raise _settings_refusal()
+                raise _settings_refusal(source)
+            source = "operator_settings_store"
             raw, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
             if inode != image["storeInode"]:
-                raise _settings_refusal()
+                raise _settings_refusal(source)
             values = _settings_values(raw)
             if _settings_container(ctx, cid) != (cid, actual_image):
                 raise _settings_refusal()
@@ -2104,8 +2143,11 @@ def _settings_writer_request(ctx, request):
             if len(envelope) > SETTINGS_BOOTSTRAP_MAX:
                 raise _settings_refusal()
             return cid, envelope
-    except OSError:
-        raise _settings_refusal() from None
+    except (OSError, Refused) as exc:
+        reported = getattr(exc, "settings_source", source)
+        raise _settings_refusal(
+            source if reported == "operator_settings_bootstrap" else reported
+        ) from None
     finally:
         values.clear()
         raw = envelope = b""
@@ -2115,6 +2157,7 @@ def receive_settings_bootstrap(ctx):
     """Local installer only; credentials remain unusable until grant/image checks pass."""
     values = {}
     raw = None
+    source = "operator_settings_bootstrap"
     try:
         raw = ctx.stdin()
         if not ctx.platform.startswith("linux") or ctx.uid == 0:
@@ -2129,19 +2172,26 @@ def receive_settings_bootstrap(ctx):
             or not isinstance(envelope["imageID"], str)
             or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
             or not isinstance(envelope["bootstrap"], dict)
-            or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
             or any(not isinstance(value, str) for value in envelope["bootstrap"].values())
         ):
+            raise _settings_refusal()
+        for name in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            if not envelope["bootstrap"].get(name):
+                raise _settings_refusal(name)
+        if set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}:
             raise _settings_refusal()
         payload = "".join(
             key + "=" + envelope["bootstrap"][key] + "\n"
             for key in (SETTINGS_PROJECT, SETTINGS_WRITER)
         ).encode("ascii")
         values = _settings_values(payload)
+        source = "operator_settings_image"
         cid, image = _settings_container(ctx)
         if image != envelope["imageID"]:
             raise _settings_refusal()
+        source = "fleet_infisical.py"
         reader = _load_infisical_reader(ctx)
+        source = "operator_settings_store"
         with _settings_directory(ctx, create=True) as parent:
             # Do not overwrite either half of an existing or incomplete handoff.
             for name in (SETTINGS_STORE, SETTINGS_IMAGE):
@@ -2166,6 +2216,7 @@ def receive_settings_bootstrap(ctx):
                 ):
                     raise _settings_refusal()
 
+            source = "operator_settings_grant"
             reader.validate_service_metadata = finite_grant
             try:
                 reader.verify_service_token(
@@ -2178,13 +2229,26 @@ def receive_settings_bootstrap(ctx):
                 )
             finally:
                 reader.validate_service_metadata = original
+            source = "operator_settings_image"
             if _settings_container(ctx, cid) != (cid, image):
                 raise _settings_refusal()
             metadata = dict(protocol="operator-settings-image/1", imageID=image, storeInode=inode)
             _settings_publish(parent, SETTINGS_IMAGE, json.dumps(metadata).encode())
         return {"ok": True, "result": "installed"}, 0
-    except Exception:  # noqa: BLE001 - no input, provider prose or credential can become an answer
-        return {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+    except Exception as exc:  # noqa: BLE001 - only fixed source names become an answer
+        reported = getattr(exc, "settings_source", source)
+        refusal = _settings_refusal(
+            source if reported == "operator_settings_bootstrap" else reported
+        )
+        answer = {
+            "ok": False,
+            "result": "refused",
+            "errorCode": "bootstrap_unavailable",
+            "unavailableSource": refusal.settings_source,
+        }
+        if refusal.settings_source in (SETTINGS_PROJECT, SETTINGS_WRITER):
+            answer["requiredBinding"] = refusal.settings_source
+        return answer, 2
     finally:
         values.clear()
         raw = payload = stored = b""
@@ -4152,49 +4216,49 @@ def _load_infisical_reader(ctx):
             module = None
     if module is None or not all(
         callable(getattr(module, name, None))
-        for name in ("bounded_fetch_project", "infisical_project_id")
+        for name in ("bounded_fetch_project", "infisical_project_id", "fetch_verified")
     ):
         raise Failed("fleet_infisical.py is not available")
     return module
 
 
 def read_coolify_token(ctx):
-    """One strict named read through this control consumer's own binding.  Raises Failed."""
-    reader = _load_infisical_reader(ctx)
-    env = secrets_env(ctx)
-    binding = env.pop("INFISICAL_TOKEN", "")
-    if not binding:
-        raise Failed("the Coolify token is not available")
+    """The Coolify API token, through this service's own scoped token, into memory only.
+
+    The token's grant names exactly the /coolify folder, and the shared client checks the
+    answer's own provenance before the value is used.  No child process starts and no
+    other credential source is consulted.  Raises Failed."""
+    token = scoped_token(ctx)
+    client = _load_infisical_reader(ctx)
+    env = {
+        key: value
+        for key, value in ctx.environ.items()
+        if key not in SHARED_AUTH_ENV_NAMES and key != SCOPED_TOKEN_NAME
+    }
+    env["HOME"] = str(ctx.home)
+    env[client.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
     try:
-        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
-        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
-        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
-        values = reader.bounded_fetch_project(
-            project,
-            COOLIFY_TOKEN_PATH,
-            scoped,
-            token=binding,
-            names=(COOLIFY_TOKEN_NAME,),
-            timeout=SECRET_TIMEOUT,
-            writer=False,
-            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
-            strict_records=True,
+        value = client.fetch_verified(
+            COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token, timeout=SECRET_TIMEOUT
         )
-        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
-    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
-        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+    except TimeoutError:
+        # A hung read is a timeout,  not an absent token:  it keeps its own signal so
+        # the caller can retry instead of treating the credential as broken.  The read
+        # itself was never sent,  so this is not an unknown end:  nothing was started.
+        raise Failed("the Coolify token read timed out", error_code="timeout") from None
+    except client.SecretsError:
         raise Failed("the Coolify token is not available") from None
-    if not token or any(c.isspace() or ord(c) < 33 for c in token):
+    if not value or any(c.isspace() or ord(c) < 33 for c in value):
         raise Failed("the Coolify token is not available")
-    return token
+    return value
 
 
-def secrets_env(ctx):
-    """Resolve this control consumer's private reader binding.  Raises Failed.
+def scoped_token(ctx):
+    """This service's own scoped Infisical token, from its credential file or the process.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
-    Inherited shared token and machine-identity bindings are discarded."""
+    as the bearer of one request, never put in an argv or in a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:
@@ -4210,8 +4274,7 @@ def secrets_env(ctx):
                 or any(c.isspace() for c in value)
             ):
                 raise Failed("the scoped Infisical token is malformed")
-            env["INFISICAL_TOKEN"] = value
-        return env
+        return value
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
     try:
@@ -4255,9 +4318,7 @@ def secrets_env(ctx):
         or any(c.isspace() for c in token)
     ):
         raise Failed("the Infisical credential file is malformed")
-    if token:
-        env["INFISICAL_TOKEN"] = token
-    return env
+    return token
 
 
 def check_token(ctx):
@@ -5533,7 +5594,17 @@ def main(argv=None, ctx=None, out=None, muster=None):
         out = out or sys.stdout
         environment = os.environ if ctx is None else ctx.environ
         if argv != [SETTINGS_RECEIVE] or "SSH_ORIGINAL_COMMAND" in environment:
-            out.write('{"ok":false,"result":"refused","errorCode":"bootstrap_unavailable"}\n')
+            out.write(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "result": "refused",
+                        "errorCode": "bootstrap_unavailable",
+                        "unavailableSource": "operator_settings_bootstrap",
+                    }
+                )
+                + "\n"
+            )
             return 2
         if ctx is None:
             import pwd
@@ -5549,7 +5620,12 @@ def main(argv=None, ctx=None, out=None, muster=None):
             answer, code = receive_settings_bootstrap(ctx)
         except Exception:  # noqa: BLE001 - the local receiver never emits input or provider text
             answer, code = (
-                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                {
+                    "ok": False,
+                    "result": "refused",
+                    "errorCode": "bootstrap_unavailable",
+                    "unavailableSource": "operator_settings_bootstrap",
+                },
                 2,
             )
         finally:

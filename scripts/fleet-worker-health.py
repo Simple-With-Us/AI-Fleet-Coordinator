@@ -4,8 +4,8 @@
 POSTs a signed request to https://agents.simplewithus.com/internal/health/linear
 (src/health.js) and writes ~/.local/state/fleet-tools/worker-health.json, mode 0600,
 atomically.  The answer holds ages, counts and fixed codes only.  The signing key is
-HEALTH_HMAC_KEY from Fleet-OPS (`fleet-secrets get`), read into memory and never printed
-or written.  A reader treats a file older than 45 minutes, missing, malformed or with
+HEALTH_HMAC_KEY from Fleet-OPS, read into memory through this script's own scoped read-only
+service token and never printed or written.  A reader treats a file older than 45 minutes, missing, malformed or with
 another schemaVersion as unknown.  Python 3.9, standard library only.
 
   fleet-worker-health.py [--url URL] [--write PATH] [--dry-run]
@@ -22,12 +22,13 @@ import hmac
 import json
 import os
 import secrets
-import shutil
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 CONTRACT = "simple-tools-health/1"
 SIGNATURE_HEADER = "x-simple-tools-health-signature"
@@ -35,6 +36,12 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
+TOKEN_ACCOUNT = "worker-health-ro"
+SECRET_FOLDER = "/"
+# The canonical Infisical command source beside this script.  It is the
+# reviewed reader this host's fleet tools share,  so its absence means this
+# host has no reader at all.
+INFISICAL_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py")
 
 
 def sign(key, body):
@@ -49,17 +56,77 @@ def request_body(now=None):
 
 
 def read_key():
-    key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
-    if key:
-        return key
-    binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    try:
-        out = subprocess.run(
-            [binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
+    """The signing key:  this script's own scoped token against Infisical Fleet-OPS
+    prod root.  "" when the folder holds no such name.
+
+    A source that failed is not a missing value:  the shared client,  the token store and
+    the read itself each raise,  naming the reader and the account,  so the source that
+    must be repaired stays visible.  The key is never logged,  and it is never taken
+    from the environment either.
+
+    A hung read says it hung:  the shared client lets a socket timeout through as a
+    `TimeoutError`,  and a timeout is not a broken credential,  so it keeps its own
+    message and the repair that follows it is the right one.
+    """
+    # The scoped grant is the only source:  a value the environment happens to hold
+    # never replaces it,  so the reviewed grant is what signs the answer.
+    if not os.path.isfile(INFISICAL_CLI):
+        # A reader that is not there is a broken reader,  not a missing value:  the
+        # source that must be repaired is named,  so it stays visible.
+        raise RuntimeError(
+            "the Infisical reader (fleet_infisical_cli.py) is missing beside this script,  "
+            "so the " + TOKEN_ACCOUNT + " scoped service token cannot be read"
         )
-    except (OSError, subprocess.SubprocessError):
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        raise RuntimeError(
+            "the shared Infisical client (fleet_infisical.py) is not importable,  so the "
+            + TOKEN_ACCOUNT
+            + " scoped service token cannot be read"
+        ) from None
+    env = dict(os.environ)
+    # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API never
+    # redirects the read,  so the bearer never travels to another origin.
+    env[FI.ENV_API] = FI.API_BASE
+    env[FI.ENV_READ_PATHS] = SECRET_FOLDER
+    try:
+        value, status = FI.fetch_scoped(
+            "HEALTH_HMAC_KEY",
+            SECRET_FOLDER,
+            TOKEN_ACCOUNT,
+            env,
+            require_finite_expiry=True,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token timed out ("
+            + type(exc).__name__
+            + ")"
+        ) from None
+    except Exception as exc:
+        raise RuntimeError(
+            "the Infisical read for the "
+            + TOKEN_ACCOUNT
+            + " scoped service token could not run ("
+            + type(exc).__name__
+            + ")"
+        ) from None
+    if status == "absent":
+        # The folder holds no such name:  that is a missing value,  and the caller
+        # sees it as one.
         return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    if status != "ok":
+        raise RuntimeError(
+            "the "
+            + TOKEN_ACCOUNT
+            + " scoped service token store is unavailable or refused ("
+            + status
+            + ")"
+        )
+    return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -186,7 +253,13 @@ def main(argv=None):
     parser.add_argument("--write", default=DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    key = read_key()
+    try:
+        key = read_key()
+    except RuntimeError as exc:
+        # The source that must be repaired is named,  and the run stops:  a report
+        # written without the key would say nothing about why.
+        sys.stderr.write("fleet-worker-health: %s\n" % exc)
+        return 2
     if not key:
         status, answer = 0, None
         doc = document(status, answer)

@@ -190,11 +190,14 @@ else:
             (server / "Dockerfile.dockerignore").read_text().splitlines(),
         )
 
-    def test_legacy_import_is_an_alias_to_one_client(self):
-        from fleet_secrets import core
-
-        self.assertIs(core, fleet_infisical)
-        self.assertIs(core.SecretsError, fleet_infisical.SecretsError)
+    def test_there_is_one_client_and_no_legacy_alias_package(self):
+        scripts = Path(__file__).resolve().parents[2]
+        # The shared reader has one implementation and one name.  The legacy alias package is gone,
+        # so no consumer can reach a second copy of the client.
+        self.assertFalse((scripts / "fleet_secrets").exists())
+        self.assertTrue((scripts / "fleet_infisical.py").is_file())
+        self.assertTrue(hasattr(fleet_infisical, "fetch_verified"))
+        self.assertTrue(hasattr(fleet_infisical, "SecretsError"))
 
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
         scripts = str(Path(__file__).resolve().parents[2])
@@ -363,9 +366,85 @@ class NamesOnlyTests(unittest.TestCase):
                         )
                 api.assert_not_called()
 
-    def test_every_route_requires_future_timezone_aware_expiry_before_values(self):
+    def test_explicit_null_expiry_allows_read_only_names_and_values(self):
+        metadata = dict(self.metadata, expiresAt=None)
+        for route in ("names", "reader"):
+            with self.subTest(route=route):
+                records = (
+                    self.records
+                    if route == "names"
+                    else [
+                        self.record("A_KEY", secretValue="fixture-value", secretValueHidden=False)
+                    ]
+                )
+                with mock.patch.object(
+                    fleet_infisical,
+                    "_api_json",
+                    side_effect=[
+                        (200, metadata),
+                        (200, {"secrets": records} if route == "names" else {"secret": records[0]}),
+                    ],
+                ) as api:
+                    if route == "names":
+                        self.assertEqual(
+                            fleet_infisical.list_project_names(
+                                self.project,
+                                self.path,
+                                self.env,
+                                token=self.token,
+                            ),
+                            ("A_KEY", "B_KEY"),
+                        )
+                    else:
+                        self.assertEqual(
+                            fleet_infisical.fetch_project(
+                                self.project,
+                                self.path,
+                                self.env,
+                                token=self.token,
+                                names=("A_KEY",),
+                            ),
+                            {"A_KEY": "fixture-value"},
+                        )
+                self.assertEqual(api.call_count, 2)
+
+    def test_explicit_null_expiry_still_refuses_writer_and_foreign_scope(self):
+        for change, writer, reason in (
+            ({"permissions": ["read", "write"]}, True, "token-expired-or-invalid"),
+            ({"workspace": "foreign"}, False, "token-scope-mismatch"),
+            ({"projectId": "foreign"}, False, "token-scope-mismatch"),
+            ({"permissions": ["read", "write"]}, False, "token-scope-mismatch"),
+            (
+                {"scopes": [{"environment": "dev", "secretPath": self.path}]},
+                False,
+                "token-scope-mismatch",
+            ),
+            (
+                {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
+                False,
+                "token-scope-mismatch",
+            ),
+        ):
+            with self.subTest(change=change, writer=writer):
+                metadata = dict(self.metadata, expiresAt=None, **change)
+                with (
+                    mock.patch.object(
+                        fleet_infisical, "_api_json", return_value=(200, metadata)
+                    ) as api,
+                    self.assertRaisesRegex(fleet_infisical.SecretsError, reason),
+                ):
+                    fleet_infisical.fetch_project(
+                        self.project,
+                        self.path,
+                        self.env,
+                        token=self.token,
+                        writer=writer,
+                        names=("A_KEY",),
+                    )
+                self.assertEqual(api.call_count, 1)
+
+    def test_every_route_rejects_missing_or_invalid_expiry_before_values(self):
         invalid = (
-            None,
             "",
             False,
             1,

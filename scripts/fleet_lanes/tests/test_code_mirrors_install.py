@@ -1,5 +1,7 @@
 """Installed closure runs independently and refuses unsafe replacement input."""
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -65,6 +67,48 @@ class InstalledRuntimeTests(unittest.TestCase):
             result = installer.install(SCRIPTS.parent, dest, "1" * 40)
             self.assertTrue((dest / "scripts/fleet_docs/__main__.py").is_file())
             self.assertTrue(Path(result["backup"]).is_dir())
+
+    def test_previous_full_docs_closure_upgrades_and_preserves_exact_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "installed"
+            # The retired reader's own two files are gone from the repo,  so they cannot be part of
+            # a closure this installer can produce:  the historical set is 21 files,  not 23.
+            self.assertEqual(len(installer.LEGACY_DOCS_FILES), 21)
+            with mock.patch.object(installer, "FILES", installer.LEGACY_DOCS_FILES):
+                installer.install(SCRIPTS.parent, dest, "0" * 40)
+            before = {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+            self.assertTrue((dest / "scripts/fleet_docs/__main__.py").is_file())
+            self.assertFalse((dest / "scripts/fleet_infisical.py").exists())
+            result = installer.install(SCRIPTS.parent, dest, "1" * 40)
+            self.assertTrue((dest / "scripts/fleet_infisical.py").is_file())
+            self.assertEqual(set(json.loads((dest / "manifest.json").read_text())["files"]), set(installer.FILES))
+            backup = Path(result["backup"])
+            self.assertEqual({p.relative_to(backup): p.read_bytes() for p in backup.rglob("*") if p.is_file()}, before)
+
+    def test_previous_docs_subset_and_extra_entries_are_refused_and_preserved(self):
+        for change in ("subset", "extra"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "installed"
+                with mock.patch.object(installer, "FILES", installer.LEGACY_DOCS_FILES):
+                    installer.install(SCRIPTS.parent, dest, "0" * 40)
+                manifest_path = dest / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if change == "subset":
+                    removed = "fleet_docs/snapshot.py"
+                    (dest / "scripts" / removed).unlink()
+                    del manifest["files"][removed]
+                else:
+                    extra = dest / "scripts/unrecognized.py"
+                    extra.write_bytes(b"# synthetic unrelated content\n")
+                    extra.chmod(0o600)
+                    manifest["files"]["unrecognized.py"] = hashlib.sha256(extra.read_bytes()).hexdigest()
+                manifest_path.write_text(json.dumps(manifest))
+                before = {p.relative_to(dest): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode)) for p in dest.rglob("*") if p.is_file()}
+                with self.assertRaisesRegex(ValueError, "not recognized|Unknown existing bundle entry"):
+                    installer.install(SCRIPTS.parent, dest, "1" * 40)
+                self.assertEqual({p.relative_to(dest): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode)) for p in dest.rglob("*") if p.is_file()}, before)
+                self.assertFalse(list(Path(tmp).glob("installed.backup-*")))
+                self.assertFalse(list(Path(tmp).glob(".code-mirrors-stage-*")))
 
     def test_installed_help_and_local_ref_sweep_need_no_other_packages(self):
         with tempfile.TemporaryDirectory() as tmp:

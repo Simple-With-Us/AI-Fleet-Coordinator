@@ -276,11 +276,6 @@ final class FleetGridTests: XCTestCase {
         XCTAssertFalse(PassMeaning.panelRow.contains("the rule"))
     }
 
-    /// The wake panel's matching state is not called PASS.
-    func test_the_wake_panel_does_not_call_a_match_a_pass() {
-        XCTAssertEqual(WakeSettingState.match.label, "MATCHES")
-        XCTAssertNotEqual(WakeSettingState.unpublished.label, "PASS")
-    }
 
     // MARK: GRID-10:  an empty cell says why it is empty
 

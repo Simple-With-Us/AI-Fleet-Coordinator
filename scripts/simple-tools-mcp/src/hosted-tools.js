@@ -1,3 +1,5 @@
+import { resolveNativeOriginClaims } from "./native-origin-context.js";
+import { nativeOriginResolver } from "./native-origin-client.js";
 import { withServiceTitle } from "./tool-titles.js";
 import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
@@ -552,7 +554,7 @@ export class HostedTools {
   // ---------------------------------------------------------------- entry
 
   /** Run one tool.  Returns a CallToolResult.  Throws UnknownTool. */
-  async call(name, rawArgs) {
+  async call(name, rawArgs, invocation = null) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
     if (!spec) {
       await this.safely(() => this.auditRow(this.gate, {
@@ -627,7 +629,7 @@ export class HostedTools {
         ? callLinearMcp(this, publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_NAMED_BY_NAME, publicName)
           ? callNamedLinear(this, publicName, preparedArgs, audit)
-          : this[`tool_${legacyZulipName}`](preparedArgs, audit), gapNotices);
+          : this[`tool_${legacyZulipName}`](preparedArgs, audit, invocation), gapNotices);
       // AFC-722 review:  a gap the server could not write is reported, never dropped silently.
       if (gapNotices.length && Array.isArray(result?.content)) {
         result = { ...result, content: [...result.content, ...gapNotices.map((text) => ({ type: "text", text }))] };
@@ -1715,7 +1717,19 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_open_pr(args, _extra, invocation) {
+    // Missing context retains explicit-claim compatibility, not verified per-call custody.
+    // Claims still require the protected creation receipt and independent canonical binder.
+    if (this.seat === "CODEX" && invocation && invocation.state !== "missing") {
+      const origin = await resolveNativeOriginClaims("CODEX", invocation, nativeOriginResolver(this.workerEnv));
+      if (origin.state !== "resolved") throw new ToolError("origin_held", "Native PR origin could not be verified. Nothing was created.");
+      if (Object.entries(origin.claims).some(([name, value]) => Object.hasOwn(args, name) && args[name] !== value)) {
+        throw new ToolError("origin_held", "Native PR origin conflicts with the current thread. Nothing was created.");
+      }
+      args = { ...args, ...origin.claims };
+    }
+    return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) }));
+  }
   async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
@@ -1746,6 +1760,13 @@ export class HostedTools {
     const recall = this.requireRecall();
     const query = args.query.trim();
     if (!query) throw new ToolError("invalid_argument", "argument 'query' must not be blank");
+    // The same pre-upstream gate the recall writes run:  a query, app or category that
+    // looks like it holds a secret is refused here, before anything is sent anywhere,
+    // and the refusal names the field and kind, never the value.
+    for (const [field, value] of Object.entries({ query, app: args.app?.trim() ?? "", category: args.category?.trim() ?? "" })) {
+      const kind = value ? scanSecret(value, this.known) : null;
+      if (kind) throw new ToolError("refused_secret", `refusing to search:  the ${field} looks like it contains ${kind}`);
+    }
     await this.reserve("read");
     const body = { query, limit: args.limit };
     if (args.app) body.app = args.app;
@@ -2359,16 +2380,31 @@ export class HostedTools {
     const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
-    if (held && held !== claimName) {
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
+    const stealing = args.steal === true;
+    const steal_reason = String(args.reason ?? "").trim();
+    if (stealing && !steal_reason) {
+      throw new ToolError("invalid_argument", "steal requires reason:  one sentence naming why the claim is being taken.");
+    }
+    // The steal reason reaches Linear in the CLAIMED comment, so it runs the same
+    // scan as the optional note:  a credential-shaped value is refused having sent
+    // nothing, and the refusal names the field, never the value.
+    if (steal_reason) {
+      this.scanLinearText(steal_reason, args.session, { field: "reason" });
+    }
+    // Any foreign claim label is a hold, not just the first `claimed:` label on the
+    // issue:  an issue carrying the caller's own label first and another seat's
+    // behind it (the same-second double-claim shape) is still another seat's claim.
+    const foreignClaimKey = keys.find((n) => n.startsWith(CLAIM_PREFIX) && n !== claimName);
+    if (foreignClaimKey && !stealing) {
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${foreignClaimKey.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: foreignClaimKey.slice(CLAIM_PREFIX.length) } });
     }
     const delegate = issue?.delegate ?? null;
     // Only an app delegate is a fleet claim marker, exactly as on the release
     // path:  a human delegation (Jay's triage, a colleague's) never holds a
     // claim, and claiming the issue delegates it to this seat's app user.
-    if (delegate?.id && delegate.app === true && delegate.id !== viewerId) {
+    if (delegate?.id && delegate.app === true && delegate.id !== viewerId && !stealing) {
       const heldBy = delegate.name || "another seat";
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: heldBy } });
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress, or set steal with reason to take it anyway.`, { extra: { held_by: heldBy } });
     }
     const workspace = await this.linearWorkspace();
     // A claim is In Progress plus the claimed:<seat> and seat:<seat> labels
@@ -2394,9 +2430,32 @@ export class HostedTools {
       }
     }
     const state = await this.linearState(workspace, issue.team?.id ?? null, "in_progress");
-    const body = this.linearBody(`CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session);
+    // The takeover attribution names only a holder this steal actually displaced:
+    //  the foreign claim label found above, or the app delegate of another seat —
+    //  never the caller's own claim (a re-assert takes nothing) and never a human
+    //  delegate, who holds no fleet claim.
+    const foreignLabel = foreignClaimKey ? foreignClaimKey.slice(CLAIM_PREFIX.length) : "";
+    const foreignDelegate = delegate?.id && delegate.app === true && delegate.id !== viewerId ? delegate.name || "another seat" : "";
+    const stolen_from = stealing ? foreignLabel || foreignDelegate : "";
+    // A steal always records why, even when nobody was displaced (a re-assert or a
+    // reclaim of an abandoned issue):  the takeover text names the displaced holder
+    // when there was one and carries the reason in every case.  The idempotency key
+    // comes from the stable part of the body — so a retry after a successful steal,
+    // which no longer sees the displaced holder on the issue, still derives the same
+    // key and answers duplicate — with the steal marker and reason riding alongside,
+    // so a takeover never answers as a duplicate of the same seat's plain claim in
+    // the idempotency window.  The fixed comment id is derived from the full
+    // attributed body instead, so a later steal with a different reason lands as its
+    // own comment and never overwrites the earlier takeover record.
+    const stable = this.linearBody(
+      `CLAIMED${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`,
+      args.session,
+    );
+    const body = stealing
+      ? this.linearBody(`CLAIMED${stolen_from ? ` — taken from ${stolen_from}` : ""}: ${steal_reason}${args.comment?.trim() ? `\n\n${args.comment.trim()}` : ""}`, args.session)
+      : stable;
     audit.body_len = [...body].length;
-    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
+    const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, stable, stealing, steal_reason]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
     const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };

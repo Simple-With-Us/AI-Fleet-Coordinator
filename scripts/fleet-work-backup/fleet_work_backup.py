@@ -41,6 +41,9 @@ Docs:  scripts/fleet-work-backup/README.md and RESTORE.md.
 
 from __future__ import annotations
 
+import importlib.util
+import stat
+import threading
 import argparse
 import base64
 import concurrent.futures as cf
@@ -69,6 +72,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+# The shared scoped Infisical client is installed beside this module,  and in a checkout it
+# lives one directory up (scripts/fleet_infisical.py),  so both layouts are importable
+# without an install step.
+_HERE = Path(__file__).resolve().parent
+for _candidate in (_HERE, _HERE.parent):
+    if str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
 
 VERSION = "2"
 TAG = "fleet-work"
@@ -381,9 +392,6 @@ class Config:
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
     simple_tools_bin: str = ""  # '' is <home>/.local/bin/simple-chat (launchd's PATH does not have it)
-    fleet_secrets_bin: str = (
-        ""  # '' is <home>/.local/bin/fleet-secrets (launchd's PATH does not have it)
-    )
     alert_seat: str = "CLAUDE"
     alert_topic: str = ALERT_TOPIC
     alert_to: tuple = ()  # seats or people to @-mention;  none means the post wakes nobody
@@ -469,7 +477,6 @@ def config_from_env() -> Config:
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
     cfg.simple_tools_bin = os.environ.get("FLEET_WORK_BACKUP_SIMPLE_CHAT", cfg.simple_tools_bin)
-    cfg.fleet_secrets_bin = os.environ.get("FLEET_WORK_BACKUP_FLEET_SECRETS", cfg.fleet_secrets_bin)
     cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
     cfg.alert_topic = os.environ.get("FLEET_WORK_BACKUP_ALERT_TOPIC", cfg.alert_topic)
@@ -2778,71 +2785,146 @@ CRED_NAMES = {
 MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTER_APPLICATION_KEY"}
 
 
-# Child run by `fleet-secrets run`:  prints only the wanted names, as JSON, on the pipe back to this process.
-_PICK_CREDENTIALS = (
-    "import json,os,sys;"
-    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
-)
+# The job's own scoped token:  one read-only grant on the one folder that holds this job's
+# credentials.  The account is the token's registry name in the host's approved store (the
+# owner's keychain on the Mac, a private file on a server).  The store is the authority:  a
+# token bound in the environment is only a copy of that same grant,  and it is used when the
+# store has none.
+CREDENTIAL_TOKEN_ACCOUNT = "fleet-work-backup-ro"
+# The folder the job's own names live in.
+CREDENTIAL_FOLDER = "/"
+
+_READER_LOCK = threading.RLock()
+_READER_CACHE = None
+_READER_NAME = "_fleet_work_backup_fleet_infisical"
+_MAX_READER_BYTES = 2 * 1024 * 1024
 
 
-def fleet_secrets_path(cfg: Config) -> str:
-    return cfg.fleet_secrets_bin or str(cfg.home / ".local" / "bin" / "fleet-secrets")
+def _infisical_reader():
+    """Execute only the fixed canonical sibling source, never an import-path candidate."""
+    global _READER_CACHE
+    expected = Path(__file__).resolve().parents[1] / "fleet_infisical.py"
+    with _READER_LOCK:
+        helper = None
+        try:
+            directory_fd = os.open(expected.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                directory = os.fstat(directory_fd)
+                fd = os.open(
+                    expected.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_READER_BYTES:
+                        raise ValueError()
+                    raw = source.read(_MAX_READER_BYTES + 1)
+                    after = os.fstat(source.fileno())
+                current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
+                current_directory = expected.parent.lstat()
+                if (directory.st_dev, directory.st_ino) != (
+                    current_directory.st_dev,
+                    current_directory.st_ino,
+                ):
+                    raise ValueError()
+            finally:
+                os.close(directory_fd)
+            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            identities = [
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
+            ]
+            if len(raw) > _MAX_READER_BYTES or not identities[0] == identities[1] == identities[2]:
+                raise ValueError()
+            identity = (str(expected), identities[0], hashlib.sha256(raw).digest())
+            if _READER_CACHE is not None and _READER_CACHE[0] == identity:
+                sys.modules[_READER_NAME] = _READER_CACHE[1]
+                return _READER_CACHE[1]
+            spec = importlib.util.spec_from_file_location(_READER_NAME, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            helper = importlib.util.module_from_spec(spec)
+            sys.modules[_READER_NAME] = helper
+            exec(compile(raw, str(expected), "exec"), vars(helper))
+            if not callable(helper.bounded_fetch_project):
+                raise ValueError()
+            _READER_CACHE = (identity, helper)
+            return helper
+        except BaseException as exc:
+            cached = None if _READER_CACHE is None else _READER_CACHE[1]
+            _READER_CACHE = None
+            for owned in (helper, cached):
+                if owned is not None and sys.modules.get(_READER_NAME) is owned:
+                    del sys.modules[_READER_NAME]
+            if isinstance(exc, Exception):
+                raise ImportError("canonical Infisical reader unavailable") from None
+            raise
+
+
+def _own_token(client):
+    """The job's own scoped token:  its own store first,  the host's bound copy second.
+
+    The store is the authority:  it is the home the process was given,  so a process
+    with no home has no store and falls back to the copy the host bound.  The client
+    still checks the token's own grant,  so a copy is only ever used for the folder
+    that grant names."""
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        try:
+            token, _status = client.token_from_store(
+                CREDENTIAL_TOKEN_ACCOUNT, dict(os.environ), Path(home)
+            )
+        except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+            raise RuntimeError(
+                "the %s scoped token store could not be read (%s)"
+                % (CREDENTIAL_TOKEN_ACCOUNT, type(exc).__name__)
+            ) from None
+        if token:
+            return token
+    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
+
+
+def _read_infisical_names(names, folder):
+    """Read only this caller's named values through the pinned canonical worker."""
+    try:
+        client = _infisical_reader()
+        declared = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+        if not declared:
+            return {}
+        project = client.infisical_project_id(
+            {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
+        )
+        token = _own_token(client)
+        if not token:
+            return {}
+        return client.bounded_fetch_project(
+            project,
+            folder,
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder},
+            token=token,
+            names=tuple(names),
+            timeout=30,
+            max_output_bytes=65536,
+            strict_records=True,
+        )
+    except Exception:
+        return {}
 
 
 def read_credentials(cfg: Config) -> dict[str, str]:
-    """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the old flat
-    credentials file is retired).  Callers overlay the environment on top.  A missing command or any
-    failure is an empty dict, so the caller reports the missing NAMES.  Skipped when the environment
-    already holds all four job credentials.  Values stay in this process.
-
-    Least privilege:  one ``run --only`` fetch injects just the job's own names into the child (a plain
-    ``run`` would inject every secret the token can read), and the B2 master key names are asked for only
-    when FLEET_WORK_BACKUP_ALLOW_MASTER=1, the same gate ``restic_env`` applies before it uses them.
-    ``--only`` exits non-zero when any one name is absent, so a failure falls back to one ``get`` per name:
-    the names that do exist still come back and the caller reports the rest."""
-    if all(os.environ.get(n) for n in CRED_NAMES.values()):
-        return {}
-    binary = fleet_secrets_path(cfg)
-    if not os.access(binary, os.X_OK):
+    """Read only missing job names; master names retain the explicit restore gate."""
+    if all(os.environ.get(name) for name in CRED_NAMES.values()):
         return {}
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    try:
-        p = subprocess.run(
-            [
-                binary,
-                "run",
-                "--only",
-                ",".join(wanted),
-                "--",
-                sys.executable,
-                "-c",
-                _PICK_CREDENTIALS,
-                *wanted,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-        )
-        if p.returncode == 0:
-            got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
-            return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
-        out: dict[str, str] = {}
-        for name in wanted:
-            g = subprocess.run(
-                [binary, "get", name],
-                stdin=subprocess.DEVNULL,  # a terminal's stdin would let `get` use a person's own login
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=30,  # a timeout ends the whole read (the except below), never four in a row
-            )
-            value = g.stdout.decode("utf-8", "replace").strip() if g.returncode == 0 else ""
-            if value:
-                out[name] = value
-        return out
-    except (OSError, subprocess.SubprocessError, ValueError):
+    wanted = tuple(name for name in wanted if not os.environ.get(name))
+    if not wanted:
         return {}
+    values = _read_infisical_names(wanted, CREDENTIAL_FOLDER)
+    return {
+        name: value
+        for name, value in values.items()
+        if name in wanted and isinstance(value, str) and value
+    }
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:
@@ -3120,14 +3202,14 @@ def infisical_get(cfg: Config, name: str) -> tuple[int, str]:
 
 def cmd_new_password(cfg: Config, args) -> int:
     """Generate the repository password and write it to Infisical, never printing it.  Write-once:  it refuses when
-    fleet-secrets, the environment or Infisical already has one (a replaced password locks every snapshot), and
+    the secret store, the environment or Infisical already has one (a replaced password locks every snapshot), and
     any read it cannot make is a refusal, never 'absent'.  The value reaches the CLI as a file path (``NAME=@file``,
     a 0600 file in a 0700 folder, removed afterwards), never in argv;  the CLI's output is discarded;  the value is
     read back and compared in memory, and only 'matched' and its length are reported."""
     name = CRED_NAMES["password"]
     if read_credentials(cfg).get(name) or os.environ.get(name):
         say(
-            f"{name} is already in fleet-secrets or the environment:  the repository has its password;  "
+            f"{name} is already in the secret store or the environment:  the repository has its password;  "
             f"it is never replaced (README, Credentials).  Nothing written."
         )
         return 1
@@ -3951,7 +4033,7 @@ def _run(cfg: Config, args, held: list[int]) -> int:
 # Two verbs for the Plumbers (BF-Plumber and the F7 publisher run them).  Neither touches the run path.
 # ``health`` reads the state file, the newest run line, the installed files and ``launchctl print``;  it writes
 # nothing.  ``repair --reload`` is the one repair that needs no secret:  it loads the installed LaunchAgent when it
-# is not loaded.  Neither reads the credential names, fleet-secrets, restic or B2.
+# is not loaded.  Neither reads the credential names, the secret store, restic or B2.
 HEALTH_SCHEMA = 1
 HEALTH_WARN_AFTER_S = 12 * 3600  # no complete backup for longer than this:  verdict warn
 HEALTH_UNHEALTHY_AFTER_S = 24 * 3600  # ... for longer than this:  verdict unhealthy
@@ -4245,7 +4327,7 @@ def cmd_init(cfg: Config, args) -> int:
         return 2
     env, missing = restic_env(cfg)
     if env is None:
-        say(f"missing credentials in fleet-secrets or the environment: {', '.join(missing)}")
+        say(f"missing credentials in the secret store or the environment: {', '.join(missing)}")
         return 2
     probs = check_b2_setup(cfg)
     for hard, text in probs:

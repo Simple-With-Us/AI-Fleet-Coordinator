@@ -101,8 +101,8 @@ CURSOR_TOKEN_ENV = "CURSOR_LETTERS_INFISICAL_TOKEN"
 KNOBS_TOKEN_ENV = "FLEET_KNOBS_INFISICAL_TOKEN"
 CURSOR_KEY_FOLDER = "/cursor-cloud-letters"
 CURSOR_KEY_NAME = "CURSOR_SYNC_API_KEY"
-# A reason from fleet_secrets is a short hyphenated token such as token-scope-mismatch;  only that token is ever
-# reported.  A message that opens with plain words instead (such as "key ... is not in Infisical") reports "refused".
+# A reason from the shared Infisical client is a short hyphenated token such as token-scope-mismatch;  only that
+# token is ever reported.  A message that opens with plain words instead (such as "key ... is not in Infisical") reports "refused".
 REASON = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?=$|[:\s])")
 
 Runner = Callable[..., Any]
@@ -355,7 +355,7 @@ class KeyUnavailable(Exception):
 
 
 def _reason(exc: BaseException) -> str:
-    """A fleet_secrets refusal as its leading reason token (token-scope-mismatch, fetch-failed), never more."""
+    """An Infisical-client refusal as its leading reason token (token-scope-mismatch, fetch-failed), never more."""
     text = str(getattr(exc, "message", "") or exc or "")
     match = REASON.match(text.strip())
     return match.group(0)[:48] if match else "refused"
@@ -407,7 +407,7 @@ def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
 
 class KeyedSurfaces:
     """The Cursor API helper with its key supplied here:  the transport asks `load_api_key`, which answers the key read
-    with the sweep's own token, so no environment variable and no `fleet-secrets get` is consulted."""
+    with the sweep's own token, so no environment variable and no other secret source is consulted."""
 
     def __init__(self, base: Any, key: str) -> None:
         self._base = base
@@ -531,7 +531,7 @@ def sweep(
             # The key is read once, with the sweep's own token, before any agent is touched.  Under --api-only (the
             # shared unit) the token is required:  with none, read_cursor_key stops the run with
             # service-token-required, so the transport's own fallbacks (CURSOR_API_KEY, CURSOR_SYNC_API_KEY or
-            # `fleet-secrets get` under whatever binding the host has) are never reached.
+            # the transport's own fallbacks) are never reached.
             extra["surfaces"] = KeyedSurfaces(CT._surfaces, read_cursor_key(env))
         cloud = CursorCloudTransport(timeout_seconds=API_TIMEOUT, **extra)
         discover = cloud.discover
