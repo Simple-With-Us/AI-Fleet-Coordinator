@@ -63,6 +63,7 @@ def _row(
     origin: dict | None = None,
 ) -> dict:
     from .service_read import origin_claims
+
     claims = origin_claims(origin or {})
     return {
         **claims,
@@ -170,10 +171,12 @@ class PROwnerStore:
         return self._append_entry(row, key)
 
     def _fold_health(self, row):
-        if (set(row) != {"owner_index_event", "corr"}
-                or row["owner_index_event"] not in ("creation_pending", "creation_refused")
-                or not isinstance(row["corr"], str)
-                or not re.fullmatch(r"[0-9a-f]{32}", row["corr"])):
+        if (
+            set(row) != {"owner_index_event", "corr"}
+            or row["owner_index_event"] not in ("creation_pending", "creation_refused")
+            or not isinstance(row["corr"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", row["corr"])
+        ):
             raise ValueError("invalid owner index health event")
         if row["owner_index_event"] == "creation_pending":
             self._pending_creations.add(row["corr"])
@@ -274,11 +277,15 @@ class PROwnerStore:
     def protected_for_repo(self, repo: str) -> list[dict]:
         """Fail closed on incomplete census; never infer native claims."""
         from .service_read import origin_claims
+
         with self._lock:
             if self.load_error or self.skipped_lines or self._torn_tail or self._pending_creations:
                 raise ValueError("protected creation index incomplete")
-            rows = [dict(row) for row in self._by_pr.values()
-                    if row.get("repo", "").casefold() == repo.casefold()]
+            rows = [
+                dict(row)
+                for row in self._by_pr.values()
+                if row.get("repo", "").casefold() == repo.casefold()
+            ]
             if len(rows) > 1000:
                 raise ValueError("protected creation census exceeds bound")
             for row in rows:
@@ -333,11 +340,7 @@ def rebuild(audit_path: str, store: PROwnerStore) -> dict:
                 continue
             existing = store.lookup(repo, number)
             if existing is not None and (existing.get("confirmed") or not confirmed):
-                if (
-                    confirmed
-                    and existing.get("confirmed")
-                    and existing.get("seat") != seat
-                ):
+                if confirmed and existing.get("confirmed") and existing.get("seat") != seat:
                     counts["conflicts"] += 1
                 counts["skipped"] += 1
                 continue

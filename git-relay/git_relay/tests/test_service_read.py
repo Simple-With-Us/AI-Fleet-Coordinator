@@ -303,6 +303,7 @@ class Reads(unittest.TestCase):
         import importlib.util
         import threading
         from http.server import ThreadingHTTPServer
+
         from git_relay.server import make_handler
 
         source = Path(__file__).resolve().parents[3] / "scripts/review_alerts/github_read.py"

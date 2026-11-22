@@ -35,7 +35,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import git_read
+from . import git_read, service_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import (
@@ -54,7 +54,6 @@ from .policy import (
 )
 from .policy_input import seats_json_from_env
 from .pr_owners import PROwnerStore
-from . import service_read
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -837,9 +836,14 @@ class Relay:
             return None
         try:
             self.pr_owners.record(
-                seat=seat, repo=canonical["repo"], number=number,
-                head=canonical["head"], base=canonical["base"], corr=corr,
-                confirmed=confirmed, origin=service_read.origin_claims(canonical),
+                seat=seat,
+                repo=canonical["repo"],
+                number=number,
+                head=canonical["head"],
+                base=canonical["base"],
+                corr=corr,
+                confirmed=confirmed,
+                origin=service_read.origin_claims(canonical),
             )
         except Exception:
             # Creation is already known. Never turn an index failure into a
