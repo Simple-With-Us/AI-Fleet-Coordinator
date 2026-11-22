@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from .historical_recovery_fixture import historical_source_root
+
 HERE = Path(__file__).resolve().parents[2] / "deploy" / "workflow-1614"
 
 
@@ -24,6 +26,19 @@ proof = load("workflow1614_proof", "runtime_proof.py")
 
 
 class BuilderTests(unittest.TestCase):
+    def test_current_modified_modules_refuse_before_output_creation(self):
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as temporary:
+            before = Path(temporary) / "before"
+            before.write_bytes(b"fixture")
+            output = Path(temporary) / "must-not-exist"
+            with (
+                patch.object(builder, "image", return_value=b"candidate"),
+                self.assertRaisesRegex(ValueError, "finite recovery module drift: deploy_guard.py"),
+            ):
+                builder.build(root, before, output)
+            self.assertFalse(output.exists())
+
     def test_baseline_drift_refuses(self):
         with self.assertRaisesRegex(ValueError, "baseline drift"):
             builder.image(b"changed", b"candidate")
@@ -65,7 +80,7 @@ class BuilderTests(unittest.TestCase):
                 builder.render_entry(changed, b"manifest", {"a": b"content"})
 
     def test_build_has_only_one_exact_file_and_fixed_bindings(self):
-        root = Path(__file__).resolve().parents[3]
+        root = historical_source_root(self, builder)
         # The historical fixture is the exact live baseline. The builder also
         # requires the isolated merged 1614 candidate, never evolving main.
         historical = Path(__file__).parent / "fixtures" / "workflow-1549.py.txt"
@@ -297,7 +312,7 @@ class ProofTests(unittest.TestCase):
         )
 
     def test_proof_pin_tamper_refuses_build(self):
-        root = Path(__file__).resolve().parents[3]
+        root = historical_source_root(self, builder)
         before = Path(__file__).parent / "fixtures" / "workflow-1549.py.txt"
         with (
             tempfile.TemporaryDirectory() as tmp,

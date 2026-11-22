@@ -24,6 +24,8 @@ MAX_BODY = 1024 * 1024
 # so the 1 MiB bound refused ordinary pages (BotFleet page 11 at per_page 50) as unreadable.  Fifty
 # rows of GitHub's largest objects (65,536-character bodies) stay well under this.
 MAX_PAGE_BODY = 8 * 1024 * 1024
+# Complete immutable tree proofs may exceed1MiB; never widen ordinary reads or compares.
+MAX_RECURSIVE_TREE_BODY = 2 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 # open_pr's read-back runs after the create already answered, inside the same caller wait.
@@ -303,16 +305,19 @@ def _retry_after_seconds(headers) -> int | None:
 # A compare answer pages only its commits:  the whole file list, patches included, comes with every
 # page, so ``per_page`` does not bound it and it keeps the plain bound.
 _COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
+_RECURSIVE_TREE_ROUTE = re.compile(r"/repos/[^/?#]+/[^/?#]+/git/trees/[0-9a-f]{40}")
 
 
 def response_limit(method: str, path: str) -> int:
-    """The response bound for one call:  MAX_PAGE_BODY for a paged GET, else MAX_BODY.
+    """2MiB for exact immutable recursive trees,8MiB paged GETs, else1MiB.
 
     Paged means ``per_page`` is a key of the query after the first ``?``.  A file name that
     contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
     """
     if method == "GET":
         route, _, query = path.partition("?")
+        if query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route):
+            return MAX_RECURSIVE_TREE_BODY
         if not _COMPARE_ROUTE.match(route) and any(
             key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)
         ):

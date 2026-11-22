@@ -1,9 +1,15 @@
 """The actual update-branch guard proves an immutable named-ref snapshot before writing."""
 
 import copy
+import json
 import unittest
 
-from git_relay.github_client import RelayGitHubError
+from git_relay.github_client import (
+    MAX_BODY,
+    MAX_RECURSIVE_TREE_BODY,
+    GitHubClient,
+    RelayGitHubError,
+)
 from git_relay.server import PreReadUnavailable
 from git_relay.workflow_verbs import CeilingDenied, Refused, WorkflowVerbs
 
@@ -208,6 +214,71 @@ class UpdateBranchBaseSnapshotTests(unittest.TestCase):
                 with self.assertRaises(CeilingDenied):
                     handle.run("wf_update_branch", args)
                 self.assert_no_write_or_elevation(client, minter)
+
+    def test_real_http_bound_allows_complete_tree_but_keeps_proof_guards(self):
+        class Reply:
+            def __init__(self, raw):
+                self.raw = raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, count):
+                return self.raw[:count]
+
+        for problem in (None, "truncated", "wrong-sha", "invalid-row", "overflow"):
+            with self.subTest(problem=problem):
+                outer = self
+
+                class SizeClient(RoutedClient):
+                    def _call(self, method, path, payload=None, bearer=None, **options):
+                        if method == "GET" and ("/compare/" in path or "/git/trees/" in path):
+                            self.calls.append((method, path, payload, bearer))
+                            if "/compare/" in path:
+                                raw = b" " * (MAX_BODY + 1)
+                            else:
+                                sha = path.split("/trees/", 1)[1].split("?", 1)[0]
+                                rows = [
+                                    {
+                                        "path": f"docs/{i:05d}-" + "x" * 100 + ".md",
+                                        "type": "blob",
+                                        "mode": "100644",
+                                        "sha": "3" * 40,
+                                    }
+                                    for i in range(5500)
+                                ]
+                                value = {"sha": sha, "truncated": False, "tree": rows}
+                                if problem == "truncated":
+                                    value["truncated"] = True
+                                if problem == "wrong-sha":
+                                    value["sha"] = "4" * 40
+                                if problem == "invalid-row":
+                                    rows[-1]["mode"] = "040000"
+                                raw = json.dumps(value).encode()
+                                outer.assertGreater(len(raw), MAX_BODY)
+                                outer.assertLess(len(raw), MAX_RECURSIVE_TREE_BODY)
+                                if problem == "overflow":
+                                    raw = b" " * (MAX_RECURSIVE_TREE_BODY + 1)
+                            return GitHubClient(
+                                "fixture", opener=lambda *_args, **_kw: Reply(raw)
+                            )._call(method, path, payload, bearer=bearer)
+                        return super()._call(method, path, payload, bearer=bearer, **options)
+
+                client = SizeClient()
+                handle, args, minter = self.handle(client)
+                if problem is None:
+                    self.assertTrue(handle.run("wf_update_branch", args)["accepted"])
+                    self.assertEqual(client.calls[-1][:2], ("PUT", PR + "/update-branch"))
+                    self.assertEqual(client.calls[-1][2], {"expected_head_sha": SHA})
+                    self.assertEqual(minter.calls[-1][2]["workflows"], "write")
+                    self.assertEqual([c[1] for c in client.calls].count(REF), 2)
+                else:
+                    with self.assertRaises(Refused):
+                        handle.run("wf_update_branch", args)
+                    self.assert_no_write_or_elevation(client, minter)
 
     def test_full_tree_fallback_proves_current_tip_not_stale_snapshot(self):
         capped = {"files": [{"filename": f"docs/{index}.md"} for index in range(300)]}

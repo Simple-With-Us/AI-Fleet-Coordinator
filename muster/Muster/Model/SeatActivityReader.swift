@@ -677,9 +677,9 @@ final class SeatRosterFileCache: @unchecked Sendable {
         lock.unlock()
 
         var registry: FleetRegistryDocument?
-        if stamp.size <= UInt64(WakeSettingsReader.maximumFileBytes),
+        if stamp.size <= UInt64(LedgerParseCache.maximumFileBytes),
            let data = try? Data(contentsOf: url),
-           data.count <= WakeSettingsReader.maximumFileBytes {
+           data.count <= LedgerParseCache.maximumFileBytes {
             registry = try? JSONDecoder().decode(FleetRegistryDocument.self, from: data)
         }
         lock.lock()
@@ -948,7 +948,7 @@ struct SeatActivityReader {
         if let url,
            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
            let size = attributes[.size] as? Int,
-           size > WakeSettingsReader.maximumFileBytes {
+           size > LedgerParseCache.maximumFileBytes {
             sources.partition = ListenerPartition(unreadable: "The file at \(url.path) is larger than Muster reads.")
         } else {
             sources.partition = ListenerPartition.load(from: url)
@@ -956,7 +956,7 @@ struct SeatActivityReader {
         sources.partitionPath = url?.path ?? ""
         let configPath = location.configURL.path
         if let data = try? Data(contentsOf: location.configURL),
-           data.count <= WakeSettingsReader.maximumFileBytes {
+           data.count <= LedgerParseCache.maximumFileBytes {
             sources.config = ListenerConfigDocument(text: String(decoding: data, as: UTF8.self))
         } else if FileManager.default.fileExists(atPath: configPath) {
             // No file is normal:  the eavesdropper then has no seat sections to refuse.  A
