@@ -27,8 +27,6 @@ FILES = (
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
     "fleet_infisical.py",
-    "fleet_secrets/__init__.py",
-    "fleet_secrets/core.py",
     "collect-repo-documents.py",
     "export-repo-git-source.py",
     "remote_git_source.py",
@@ -41,6 +39,9 @@ FILES = (
 # The first shared runtime shipped this exact closure before Docs was added.
 # Named explicitly:  deriving it positionally lets any middle-of-list addition move the
 # boundary and break existing-bundle recognition on hosts that hold the original set.
+# The retired reader's own files are gone from the repo, so they cannot be part of a
+# closure this installer can produce;  a host that still holds them is recognized by the
+# allowed directory list below and its bundle is replaced, not refused.
 LEGACY_FILES = (
     "code-main-keeper.sh",
     "fleet_lanes/__init__.py",
@@ -55,8 +56,6 @@ LEGACY_FILES = (
     "fleet_knobs/registry.json",
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
-    "fleet_secrets/__init__.py",
-    "fleet_secrets/core.py",
 )
 # Exact full Docs closure shipped at 43eba4633, before the shared Infisical module.
 # Keep this historical set immutable instead of accepting arbitrary current subsets.
@@ -74,8 +73,6 @@ LEGACY_DOCS_FILES = (
     "fleet_knobs/registry.json",
     "fleet_knobs/source.py",
     "fleet_knobs/values.py",
-    "fleet_secrets/__init__.py",
-    "fleet_secrets/core.py",
     "collect-repo-documents.py",
     "export-repo-git-source.py",
     "remote_git_source.py",
@@ -156,6 +153,8 @@ def install(source, destination, source_commit):
             "scripts",
             "scripts/fleet_lanes",
             "scripts/fleet_knobs",
+            # The retired reader's directory stays allowed here, so a host that still holds
+            # the first shared runtime is recognized and its bundle is replaced, not refused.
             "scripts/fleet_secrets",
             "scripts/fleet_docs",
         }

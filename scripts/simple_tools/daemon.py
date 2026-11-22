@@ -600,7 +600,7 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     if not names:
         return []
     if fetch is None:
-        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
+        fetch = lambda ns: Z._fetch_from_infisical(ns, env, home)
     try:
         got = dict(fetch(tuple(names)))
     except Z.CredentialError as exc:
@@ -1356,6 +1356,9 @@ class Daemon:
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
+            # The consumer's own store (the configured token file) is the authority:  a
+            # host-bound variable is only a copy of that same grant,  and it is used
+            # when the store has none.
             service = OPL.service_token(self.env, token_file)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names

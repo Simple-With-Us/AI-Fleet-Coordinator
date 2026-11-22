@@ -48,14 +48,15 @@ from fleet_infisical import SecretsError, UsageError
 MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
 
 USAGE = (
-    "usage: fleet-secrets run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
-    "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator] [--require-finite-expiry]\n"
-    "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
-    "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
-    "       fleet-secrets set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
+    "usage: fleet-infisical run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
+    "       fleet-infisical get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "           [--account NAME] [--require-finite-expiry]\n"
+    "       fleet-infisical get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
+    "       fleet-infisical names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-infisical set NAME --path /linear [--state-dir ABS] [--purpose SLUG]\n"
     "           [--request-id UUID --request-created-at EPOCH_MS] [--reconcile|--clear-unsettled]\n"
     "           (value on standard input; reconcile and clear-unsettled read no value)\n"
-    "       fleet-secrets doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
+    "       fleet-infisical doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
 )
 
 
@@ -153,7 +154,32 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     path = core.check_path(str(opts["path"]))
     project_id = core.infisical_project_id(env, core.home_dir(env), project)
     policy = {"require_finite_expiry": True} if opts.get("require_finite_expiry") else {}
-    secrets = core.fetch_project(project_id, path, env, names=tuple(names), **policy)
+    account = opts.get("account")
+    if account:
+        # An explicit account is this consumer's own scoped service token,  read from
+        # its own store:  the grant covers one folder,  and the answer's own
+        # provenance is checked against it.  No ambient token is consulted.
+        scoped = dict(env)
+        scoped[core.ENV_READ_PATHS] = path
+        scoped[core.ENV_PROJECT] = project_id
+        secrets = {}
+        for name in names:
+            value, status = core.fetch_scoped(
+                name, path, str(account), scoped, timeout=core.EXPORT_TIMEOUT, **policy
+            )
+            if status == "ok":
+                secrets[name] = value
+                continue
+            if status == "absent":
+                raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
+            raise SecretsError(
+                "the {} scoped service token could not read {} from Infisical at {} ({})".format(
+                    account, name, opts["path"], status
+                ),
+                4,
+            )
+    else:
+        secrets = core.fetch_project(project_id, path, env, names=tuple(names), **policy)
     # Bound token reads request only the named keys, never the rest of the folder.
     # Nothing is printed unless every requested name resolves.
     missing = [n for n in names if n not in secrets]
@@ -349,7 +375,7 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
 def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if "--" not in args:
         raise UsageError(
-            "run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]"
+            "run needs `--` before the command:  fleet-infisical run --only NAME -- CMD [ARG...]"
         )
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
@@ -498,14 +524,14 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
     *,
-    prog: str = "fleet-secrets",
+    prog: str = "fleet-infisical",
 ) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
     if not argv or argv[0] in ("-h", "--help", "help"):
-        (out if argv else err).write(USAGE.replace("fleet-secrets", prog))
+        (out if argv else err).write(USAGE.replace("fleet-infisical", prog))
         return 0 if argv else 2
     cmd, rest = argv[0], argv[1:]
     try:
@@ -525,7 +551,7 @@ def main(
     except SecretsError as exc:
         err.write(f"{prog}: {exc.message}\n")
         if isinstance(exc, UsageError):
-            err.write(USAGE.replace("fleet-secrets", prog))
+            err.write(USAGE.replace("fleet-infisical", prog))
         return exc.code
 
 

@@ -69,7 +69,7 @@ LAND YOUR WORK
 
 SECRETS
 - Infisical is the sole source of truth for this app's secrets and settings knobs.  Read a value
-  with `fleet-secrets get NAME`, and never read, copy or print a credential, never `cat` a
+  with the consumer's own scoped Infisical service token, and never read, copy or print a credential, never `cat` a
   secrets file, and never put a token in chat or in a command argument.  The owner hands you a
   new secret as the path to a `chmod 600` file, never as chat text.
 
@@ -101,7 +101,7 @@ The text this replaces was a generic per-task preamble.  It was correct about t
 | "Follow the selected engine's assigned identity; never impersonate another fleet seat." | The same rule, with the identity ladder spelled out, the launcher variables named, and the `whoami` check required before the first fleet action. | The identity order is in `FLEET-PROTOCOL.md` § How a Session Names Its Seat, and one bearer per seat and platform on Oct 28, 2026. |
 | Nothing about the seat. | The seat keeps its own tag, branch prefix, lane token and credential; the container is never a seat. | Jay, Nov 3, 2026: Bitrig runs one seat at a time and that seat uses its own identity. |
 | Nothing about coordination, review findings or landing work. | Linear first, then Zulip, then code; read every review finding yourself; do not assume; commit, push, PR, land. | The three owner working rules of Oct 21, 2026 in every repo's `AGENTS.md`, and the superseded-PR ruling of Nov 3, 2026. |
-| Nothing about secrets or Infisical. | Infisical is the sole source of truth, values come from `fleet-secrets get NAME`, and no credential is ever printed or placed in chat. | The Infisical directive in `AGENTS.md`, and the one-bearer-per-seat rule of Oct 28, 2026. |
+| Nothing about secrets or Infisical. | Infisical is the sole source of truth, values come from the consumer's own scoped Infisical service token, and no credential is ever printed or placed in chat. | The Infisical directive in `AGENTS.md`, and the one-bearer-per-seat rule of Oct 28, 2026. |
 | Nothing about dates, Title Case or the language. | The owner's date and time format, Title Case UI text, and English only. | The owner style rules, and the language rule. |
 | Nothing about CI runners or simulators. | The local-runner ban, and never leaving a simulator booted except the one this app may keep. | The runner ban in `AGENTS.md`, and the owner rule that a turn never ends with a simulator booted.  `scripts/sim-idle-reaper.py` exempts exactly one booted simulator while this app runs. |
 

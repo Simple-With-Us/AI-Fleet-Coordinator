@@ -180,7 +180,11 @@ function hostOf(url) {
 async function fetchUsageMonitorMix() {
   const token = resolveSecret(["USAGE_READ_TOKEN"]);
   if (!token) {
-    return { available: false, data: null, error: "USAGE_READ_TOKEN not found" };
+    return {
+      available: false,
+      data: null,
+      error: "USAGE_READ_TOKEN not found",
+    };
   }
   try {
     const data = await fetchJson(UM_MIX_URL, { authorization: `Bearer ${token}` });

@@ -14,7 +14,9 @@ def main() -> int | None:
         load_token()  # fail fast, naming the Infisical key, when the token is missing
     except RuntimeError as exc:
         sys.stderr.write("seat-mcp: %s\n" % exc)
-        return 2
+        # A timeout ends with 124 and a missing interpreter with 127;  every other
+        # refusal ends with 2.
+        return int(getattr(exc, "exit_code", 2))
     ensure_jobs_dir()
     serve()
     return None

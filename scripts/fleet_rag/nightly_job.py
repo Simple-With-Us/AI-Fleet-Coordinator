@@ -49,7 +49,7 @@ from simple_tools.secretscan import scan as scan_secrets
 from fleet_rag import core, ingest, mirror
 from fleet_rag.core import FleetRagError, infisical_api, infisical_project
 
-# The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets.
+# The command the timer runs.  --no-heartbeat keeps the process off the Infisical reads.
 # Apple Notes are not in the source list.  Credentials come from scoped service tokens.
 INGEST_ARGV = ["--source", "linear,doc,skill,memory", "--prune", "--no-heartbeat"]
 INGEST_SOURCES = ("linear", "doc", "skill", "memory")
@@ -71,7 +71,7 @@ TOKEN_FILE_RECALL = "FLEET_RECALL_INFISICAL_TOKEN_FILE"
 TOKEN_FILE_LINEAR = "FLEET_RAG_LINEAR_INFISICAL_TOKEN_FILE"
 # The seat Linear app pairs live in AI Fleet Coordinator prod /linear, not in the shared
 # project that holds the Qdrant and TEI keys.  The id is not committed:  it comes from this
-# variable, else from the fleet_secrets AI Fleet Coordinator source (env or ~/.simple-tools).
+# variable, else from the shared client's AI Fleet Coordinator source (env or ~/.simple-tools).
 LINEAR_PROJECT_ENV = "FLEET_RAG_LINEAR_INFISICAL_PROJECT"
 RECALL_PROJECT_ENV = "FLEET_RAG_INFISICAL_PROJECT"
 TOKEN_FILE_ZULIP = "FLEET_RAG_ZULIP_INFISICAL_TOKEN_FILE"

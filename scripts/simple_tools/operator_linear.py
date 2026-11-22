@@ -201,19 +201,22 @@ def _default_http(
 
 
 def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
-    """The scoped Infisical service token for the key fetch:  the host-bound variable
-    wins;  else the configured file (default DEFAULT_SERVICE_TOKEN_FILE).  "" when
-    neither source yields one — the feature is simply unconfigured.  A file that
-    exists but is group- or other-readable raises CredentialRefused:  a service token
-    must not sit in a file other accounts can read."""
+    """The scoped Infisical service token for the key fetch.
+
+    The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE),
+    and it is the authority:  a hand-set environment value never replaces the reviewed,
+    scope-limited grant.  The host-bound variable is this consumer's own copy of that
+    same grant — the owner's ruling on OPS-1101, Option 2, where a copy is allowed
+    only under a variable named for that consumer — and it is used when the store has
+    none.  "" when neither source yields one:  the feature is simply unconfigured.  A
+    file that exists but is group- or other-readable raises CredentialRefused:  a
+    service token must not sit in a file other accounts can read."""
     bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
-    if bound:
-        return bound
     path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except OSError:
-        return ""
+        return bound
     if mode & 0o077:
         raise CredentialRefused(
             "token_file_permissions",
@@ -221,9 +224,14 @@ def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
             "must be owner-only" % (path, mode),
         )
     try:
-        return _strip_quotes(path.read_text("utf-8"))
-    except OSError:
-        return ""
+        stored = _strip_quotes(path.read_text("utf-8"))
+    except OSError as exc:
+        raise CredentialRefused(
+            "token_file_unreadable",
+            "%s could not be read (%s); a service token file that exists but "
+            "cannot be read is a broken store, not an absent one" % (path, type(exc).__name__),
+        ) from None
+    return stored or bound
 
 
 def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
@@ -327,6 +335,8 @@ def load_api_key(
     IS configured but the key cannot be fetched.  The key is held in memory only —
     nothing here writes it anywhere;  `hide` (the daemon's log scrubber registry) is
     told the value the moment it is fetched, so no later log line can carry it."""
+    # The store is the authority:  the host-bound variable is only a copy of that same
+    # grant,  used when the store has none.  A hand-set value never replaces it.
     token = service_token(env, token_file)
     if not token:
         return None

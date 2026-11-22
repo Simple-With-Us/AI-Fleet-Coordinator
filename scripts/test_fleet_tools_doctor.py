@@ -19,63 +19,138 @@ import threading
 import time
 import unittest
 import urllib.parse
+import uuid
 from datetime import UTC
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+
+
+def synthetic_grant() -> str:
+    """A service-token-shaped value, made up and assembled here so no token-shaped literal sits.
+
+    The client checks the shape, never the value:  the "st." prefix, the length and the
+    absence of whitespace.
+    """
+    return ".".join(["st", "synthetic", "notarealvalue", "notarealvalue"])
+
+
+def fixture_project_id() -> str:
+    """The synthetic Infisical project id,  built at run time.
+
+    No project id,  UUID or hostname is committed to source,  not even a synthetic
+    one,  so the value a reader is asked for is assembled here instead.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, "fleet-tools-doctor-fixture"))
+
+
 spec = importlib.util.spec_from_file_location("doctor", HERE / "fleet-tools-doctor.py")
 doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
 
 
+class FakeClient:
+    """The shared client's surface the doctor uses, recorded and scripted.
+
+    The doctor reads names through the shared client now:  its own store first,  its own
+    account for the project and folder,  and a names-only listing with the client's grant
+    check in front of it.  Every call is recorded,  so a test says what was asked for.
+    """
+
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+    class SecretsError(RuntimeError):
+        pass
+
+    def __init__(self, grant=None, names=("CLAUDE_ZULIP_KEY",), failure=None):
+        self.grant = synthetic_grant() if grant is None else grant
+        self.names = names
+        self.failure = failure
+        self.calls = []
+
+    def token_from_store(self, account, env, home):
+        self.calls.append(("token_from_store", account, dict(env), str(home)))
+        return (self.grant, "ok") if self.grant else ("", "no-token")
+
+    def resolve_token(self, env, project_name="fleet-ops"):
+        self.calls.append(("resolve_token", project_name))
+        if self.grant:
+            return self.grant
+        raise self.SecretsError("service-token-required:  INFISICAL_TOKEN is not set")
+
+    def infisical_project_id(self, env, home, project="fleet-ops"):
+        self.calls.append(("infisical_project_id", project))
+        return fixture_project_id()
+
+    def list_project_names(self, project_id, folder, env, *, token=None, timeout=60):
+        self.calls.append(("list_project_names", project_id, folder, token, timeout))
+        if self.failure is not None:
+            raise self.failure
+        return self.names
+
+
 class CanonicalNamesTests(unittest.TestCase):
     def setUp(self):
         doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
         self.addCleanup(doctor._names_cache.clear)
+        self.addCleanup(doctor._names_reason_cache.clear)
 
-    def test_exact_project_folder_and_environment_use_the_isolated_sibling_command(self):
-        env = {"FLEET_SECRETS_BIN": "/untrusted/fleet-secrets", "HOME": "/test-home"}
-        answer = subprocess.CompletedProcess([], 0, stdout="FLEETLINK_TOKEN_CODEX\n")
-        with mock.patch.object(doctor.subprocess, "run", return_value=answer) as run:
-            first = doctor.infisical_names("/fleetlink", env, "ai-fleet-coordinator")
-            second = doctor.infisical_names("/fleetlink", env, "ai-fleet-coordinator")
-        self.assertEqual(first, frozenset({"FLEETLINK_TOKEN_CODEX"}))
+    def test_the_read_asks_for_the_exact_project_folder_and_account(self):
+        env = {"HOME": "/test-home"}
+        client = FakeClient()
+        with mock.patch.object(doctor, "shared_client", return_value=client):
+            first = doctor.infisical_names("/zulip", env, "fleet-ops")
+            second = doctor.infisical_names("/zulip", env, "fleet-ops")
+        self.assertEqual(first, frozenset({"CLAUDE_ZULIP_KEY"}))
         self.assertEqual(second, first)
-        run.assert_called_once()
-        self.assertEqual(
-            run.call_args.args[0],
-            [
-                sys.executable,
-                "-I",
-                str(HERE / "fleet_infisical_cli.py"),
-                "names",
-                "--path",
-                "/fleetlink",
-                "--project",
-                "ai-fleet-coordinator",
-            ],
-        )
-        self.assertIs(run.call_args.kwargs["env"], env)
-        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        listings = [c for c in client.calls if c[0] == "list_project_names"]
+        self.assertEqual(len(listings), 1)  # the second call is the cache
+        _, project_id, folder, token, timeout = listings[0]
+        self.assertEqual(folder, "/zulip")
+        self.assertEqual(project_id, fixture_project_id())
+        self.assertEqual(token, synthetic_grant())
+        self.assertGreater(timeout, 0)
+        # The account is the doctor's own for that project and folder,  and the folder is
+        # the one the client reads.
+        store = [c for c in client.calls if c[0] == "token_from_store"][0]
+        self.assertEqual(store[1], "fleet-doctor-zulip-ro")
+        self.assertEqual(store[2][client.ENV_READ_PATHS], "/zulip")
+        resolved = [c for c in client.calls if c[0] == "infisical_project_id"][0]
+        self.assertEqual(resolved[1], "fleet-ops")
 
     def test_unavailable_source_or_provider_is_unknown_and_cached(self):
-        for failure in (FileNotFoundError(), subprocess.TimeoutExpired("canonical", 60)):
-            doctor._names_cache.clear()
-            with mock.patch.object(doctor.subprocess, "run", side_effect=failure) as run:
-                self.assertIsNone(doctor.infisical_names("/zulip", {}))
-                self.assertIsNone(doctor.infisical_names("/zulip", {}))
-                run.assert_called_once()
-        doctor._names_cache.clear()
-        answer = subprocess.CompletedProcess([], 4, stdout="must-not-be-consumed")
-        with mock.patch.object(doctor.subprocess, "run", return_value=answer):
+        # No token in the store and none bound in the environment:  the listing is unknown.
+        client = FakeClient(grant="")
+        with mock.patch.object(doctor, "shared_client", return_value=client):
             self.assertIsNone(doctor.infisical_names("/zulip", {}))
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual([c for c in client.calls if c[0] == "list_project_names"], [])
+        self.assertIn("fleet-doctor-zulip-ro", doctor.infisical_names_reason("/zulip"))
+        # A provider that refuses:  unknown as well,  and the reason says so.
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        refused = FakeClient(failure=FakeClient.SecretsError("token-verification-failed"))
+        with mock.patch.object(doctor, "shared_client", return_value=refused):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read was refused")
+
+    def test_a_hung_listing_is_a_timeout_and_not_a_refusal(self):
+        # A transient timeout keeps its retry signal:  the reason says so,  so a
+        # report sends the reader to retry instead of to the grant.
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        hung = FakeClient(failure=TimeoutError("the read timed out"))
+        with mock.patch.object(doctor, "shared_client", return_value=hung):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read timed out")
 
 
 class CanonicalConsumerTransportTests(unittest.TestCase):
     """Exercise real isolated children with synthetic loopback responses and no installed CLI."""
 
-    PROJECT = "00000000-0000-4000-8000-000000000861"
+    PROJECT = fixture_project_id()
     BINDING = "st.synthetic-command-consumer-test-only"
     VALUE = "synthetic-consumer-value-never-output"
 
@@ -179,6 +254,17 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             )
             staged_doctor = importlib.util.module_from_spec(staged_spec)
             staged_spec.loader.exec_module(staged_doctor)
+            # The doctor's own store is under its home:  point it at the temporary one,  so a
+            # test never reads the host's own credential store.
+            staged_doctor.HOME = root
+            # The doctor's own grant comes from its own store,  and the store is the
+            # only source the read may use:  the general ambient binding is a wider
+            # grant than this one,  so it never stands in for it.  The store read is
+            # stubbed here,  so a test never reads the host's own credential store.
+            client = staged_doctor.shared_client()
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
+            store.start()
+            self.addCleanup(store.stop)
             self.assertEqual(
                 staged_doctor.infisical_names("/zulip", env), frozenset({"CLAUDE_ZULIP_KEY"})
             )
@@ -207,6 +293,12 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
         with self.source(include_values=True) as (root, env, requests):
             doctor._names_cache.clear()
             self.addCleanup(doctor._names_cache.clear)
+            # The grant comes from the doctor's own store;  the store read is stubbed
+            # here,  so a test never reads the host's own credential store.
+            client = doctor.shared_client()
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
+            store.start()
+            self.addCleanup(store.stop)
             self.assertIsNone(doctor.infisical_names("/zulip", env))
             ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
             with (
@@ -1820,13 +1912,14 @@ class ServerTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("current", "OK"))
         self.assertIn("fired 20 minutes ago", row["reason"])
 
-    def test_wrappers_and_the_fleet_secrets_link(self):
+    def test_wrappers_and_no_row_for_the_retired_reader(self):
         current = str(self.fleet_cli / "current")
         self.touch(
             ".local/bin/simple-chat",
             f"release = Path({current!r})\nargv = [str(release / 'scripts/simple-chat')]\n",
         )
         self.touch(".local/bin/simple-board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        # A leftover binary on the host changes nothing:  the retired reader has no row.
         self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
         (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
         report = doctor.Report()
@@ -1835,7 +1928,7 @@ class ServerTests(HomeCase):
         self.assertEqual(report.row("tool:simple-chat")["state"], "current")
         self.assertEqual(report.row("tool:simple-board")["state"], "missing")  # points elsewhere
         self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
-        self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
+        self.assertIsNone(report.row("tool:fleet-secrets"))  # the retired reader is gone
         self.assertEqual(report.row("tool:fleetlink")["state"], "missing")
 
 

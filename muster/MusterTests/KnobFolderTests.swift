@@ -290,10 +290,10 @@ final class KnobFolderTests: XCTestCase {
 
     /// The knob folders' names are read from the knobs' own project,  through `names`.
     func test_knob_folder_names_are_read_from_the_knobs_project() throws {
-        XCTAssertEqual(try FleetSecrets.namesArguments(path: "/", project: nil), ["names", "--path", "/"])
+        XCTAssertEqual(try FleetSecrets.namesArguments(path: "/", project: nil), ["names", "--folder", "/"])
         XCTAssertEqual(
             try FleetSecrets.namesArguments(path: "/wake-router", project: FleetSecrets.knobProject),
-            ["names", "--path", "/wake-router", "--project", "ai-fleet-coordinator"]
+            ["names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator"]
         )
         XCTAssertThrowsError(try FleetSecrets.namesArguments(path: "/wake-router", project: "--other"))
         XCTAssertThrowsError(try FleetSecrets.namesArguments(path: "wake-router", project: nil))
@@ -303,7 +303,7 @@ final class KnobFolderTests: XCTestCase {
         let secrets = FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example", isDirectory: true))
         let groups = try secrets.secretNamesGrouped(paths: ["/wake-router"], project: FleetSecrets.knobProject)
         XCTAssertEqual(groups, [SecretNameGroup(path: "/wake-router", names: ["WAKE_ROUTER_CLAUDE_KEY"])])
-        XCTAssertEqual(fake.calls.map(\.1), [["names", "--path", "/wake-router", "--project", "ai-fleet-coordinator"]])
+        XCTAssertEqual(fake.calls.map(\.1), [["names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator"]])
     }
 }
 

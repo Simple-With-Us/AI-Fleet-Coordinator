@@ -219,7 +219,7 @@ class ReaderTests(unittest.TestCase):
             mock.patch.object(C.SR, "load", return_value=r),
             mock.patch.object(C, "base_url", side_effect=AssertionError("legacy URL path")),
             mock.patch.object(
-                C, "fleet_secrets_get", side_effect=AssertionError("legacy key path")
+                C, "scoped_read", side_effect=AssertionError("legacy key path")
             ),
         ):
             c = C.operator_client({})

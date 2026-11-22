@@ -52,7 +52,7 @@ python3 ~/apps/cursor-chat-surfaces/cursor_chat_surfaces.py list-cloud
 ### One-time API key
 
 Cloud Agents API is **not** the CLI login cookie.  Prefer **`CURSOR_SYNC_API_KEY`**
-from Infisical Fleet-OPS (`fleet-secrets get CURSOR_SYNC_API_KEY`;  the CLI no longer reads the
+from Infisical Fleet-OPS (a scoped Infisical read of `CURSOR_SYNC_API_KEY`;  the CLI no longer reads the
 flat `global-api-keys` file, OPS-818, or any file in the old secrets folder, AFC-359).  Also accepted:
 `CURSOR_API_KEY` in the environment.
 
@@ -67,7 +67,7 @@ Until one of those exists, `status` exits 2 and Shellular Cursor stays local ACP
 **Shellular DeepSeek:** pick **DeepSeek** (id `deepseek`).  That spawn is
 `~/apps/dsh-runtime/dsh-acp.sh` (pinned Harness ACP, not `npx` and not `dsh acp`).
 Auth comes from `~/.dsh/.credentials.yaml` or `DEEPSEEK_API_KEY` in the
-environment (`fleet-secrets get DEEPSEEK_API_KEY` to read it) — never from `agents.json`.
+environment (a scoped Infisical read of `DEEPSEEK_API_KEY`) — never from `agents.json`.
 
 **Shellular Cursor:** pick **Cursor** / **Cursor Cloud** (id `cursor`).  That spawn is the bridge.  The first message creates a Cloud Agent, prints its `https://cursor.com/agents/bc-…` URL into the Shellular thread, and opens that URL on the Mac.  Desktop Agents Window and iOS can follow and send follow-ups on the **same** agent.  **Cursor local** (id `cursor-local`) is stock `cursor-agent acp` for when you explicitly want a phone-only CLI session.
 
@@ -96,7 +96,7 @@ CURSOR_ACP_LOCAL=1
 
 ## Remaining manual steps
 
-1. Confirm `CURSOR_SYNC_API_KEY` is in Infisical Fleet-OPS (`fleet-secrets names`) if `status` says MISSING.
+1. Confirm `CURSOR_SYNC_API_KEY` is in Infisical Fleet-OPS (a names-only scoped Infisical read) if `status` says MISSING.
 2. Run `install --shellular` once per machine, then `pm2 restart shellular`.
 3. On desktop, use **Agents Window** for cloud threads.  The classic per-workspace chat history will not list CLI/ACP chats.
 4. On iOS, install Cursor, sign in as `mail@jaywedgeworth.com` (same account as CLI/`agent status`).

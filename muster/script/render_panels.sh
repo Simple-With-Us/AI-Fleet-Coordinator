@@ -7,7 +7,7 @@ set -euo pipefail
 # size.  No baselines, but it is a layout gate:  a blank PNG, a wrong size or a split view
 # outside the window fails it.  It is inert:  the test bundle stops every process launch and
 # every URLSession.shared request a panel makes (MusterPanelTests/InertProcess.swift), so no
-# fleet-secrets, ssh or recall read runs, on this Mac or in CI.
+# the scoped Infisical read, the ssh read or the recall read run, on this Mac or in CI.
 #
 # Usage:  script/render_panels.sh [--any-folder] [output-folder]
 # The folder defaults to muster/.build/panel-screenshots, which git ignores, and CI uploads it

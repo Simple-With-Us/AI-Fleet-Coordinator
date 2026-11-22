@@ -39,6 +39,20 @@ class AllowlistTests(unittest.TestCase):
         with self.assertRaises(CommandRefused):
             check_cli_allowed(["/bin/sh", "-c", "echo hello"])
 
+    def test_the_retired_reader_command_is_refused(self):
+        with self.assertRaises(CommandRefused):
+            check_cli_allowed(["fleet-secrets", "names", "--path", "/zulip"])
+
+    def test_the_retired_reader_command_is_refused_by_path(self):
+        with self.assertRaises(CommandRefused):
+            check_cli_allowed(["/opt/fleet/bin/fleet-secrets", "names"])
+
+    def test_the_keychain_tool_is_allowed(self):
+        self.assertEqual(
+            check_cli_allowed(["security", "find-certificate", "-a", "-c", "name", "-p"]),
+            "security",
+        )
+
     def test_the_canonical_names_command_is_allowed(self):
         self.assertEqual(
             check_cli_allowed([sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip"]),
