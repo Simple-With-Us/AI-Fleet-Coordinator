@@ -1,5 +1,5 @@
 import { resolveNativeOriginClaims } from "./native-origin-context.js";
-import { nativeOriginResolver } from "./native-origin-client.js";
+import { nativeOriginResolverFromSecrets } from "./native-origin-client.js";
 import { withServiceTitle } from "./tool-titles.js";
 import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
@@ -1738,7 +1738,7 @@ export class HostedTools {
     // Missing context retains explicit-claim compatibility, not verified per-call custody.
     // Claims still require the protected creation receipt and independent canonical binder.
     if (this.seat === "CODEX" && invocation && invocation.state !== "missing") {
-      const origin = await resolveNativeOriginClaims("CODEX", invocation, nativeOriginResolver(this.workerEnv));
+      const origin = await resolveNativeOriginClaims("CODEX", invocation, nativeOriginResolverFromSecrets(this.workerEnv));
       if (origin.state !== "resolved") throw new ToolError("origin_held", "Native PR origin could not be verified. Nothing was created.");
       if (Object.entries(origin.claims).some(([name, value]) => Object.hasOwn(args, name) && args[name] !== value)) {
         throw new ToolError("origin_held", "Native PR origin conflicts with the current thread. Nothing was created.");
