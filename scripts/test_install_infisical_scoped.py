@@ -18,7 +18,7 @@ class DestinationIsAPathTests(unittest.TestCase):
     def test_a_destination_that_begins_with_a_dash_is_installed_as_a_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(
-                ["bash", str(INSTALLER), "-weird"],
+                ["bash", "--", str(INSTALLER), "-weird"],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -35,7 +35,7 @@ class DestinationIsAPathTests(unittest.TestCase):
         # the current directory,  and the child prints no option complaint.
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(
-                ["bash", str(INSTALLER), "--help"],
+                ["bash", "--", str(INSTALLER), "--help"],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
