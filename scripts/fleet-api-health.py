@@ -37,13 +37,13 @@ AFC-441 discipline, applied throughout:
 The mapping contract (Jet's sign-off for AFC-398, 2026-10-23) is pinned
 in ``map_st_live`` and ``map_ct_health``:
 
-  * ST ``/api/live`` is liveness only.  Green (``ok``) requires
-    ``mango.reachable`` to be exactly true AND the last observation to be
-    fresh (age at most ``ST_OBSERVATION_MAX_AGE_SECONDS``).  HTTP 200 and
+  * ST ``/api/proxy-use`` reports the cached Mango reachability probe.  Green (``ok``) requires
+    ``mango.reachable`` to be exactly true AND the last reachability probe to be
+    fresh by ``mango.checkedAt`` (age at most ``ST_OBSERVATION_MAX_AGE_SECONDS``).  HTTP 200 and
     the body's ``ok`` flag alone never make ST green.
   * CT keeps its upstream aggregate and its components.  A direct
-    ``senate_efd`` failure does not mean ingestion stopped:  while the
-    ``ingestion`` component is observed alive, a failing non-ingestion
+    ``senate_efd`` failure does not mean ingestion stopped:  while all
+    three chamber polls are observed alive, a failing non-ingestion
     component degrades CT to ``warn``, never to ``fail``.
   * A missing optional check is ``unknown``, never zero and never green:
     a component the upstream did not report keeps state ``unknown``, and
@@ -64,6 +64,7 @@ standard library only.
 
 import argparse
 import json
+import math
 import os
 import socket
 import sys
@@ -82,7 +83,7 @@ USER_AGENT = "fleet-api-health/1 (AI-Fleet-Coordinator; AFC-398)"
 
 # The only destinations this collector may ever fetch.  The path is part
 # of the pin:  another route on the same host is still another route.
-ST_LIVE_URL = "https://socratictrade.com/api/live"
+ST_LIVE_URL = "https://socratictrade.com/api/proxy-use"
 CT_HEALTH_URL = "https://congress.trade/api/health"
 ALLOWED_URLS = frozenset({ST_LIVE_URL, CT_HEALTH_URL})
 
@@ -93,9 +94,9 @@ MAX_RESPONSE_BYTES = 256 * 1024
 # Mac's /usr/bin/python3 is 3.9, where it is a plain OSError and would read as `unreachable`.
 TIMEOUTS = (TimeoutError, socket.timeout)
 
-# ST green needs an observation at most this old.  Two minutes covers a
-# live loop that observes about once a minute while still refusing to
-# call a wedged loop current.
+# ST green needs an observation at most this old.  Two minutes covers
+# the cached probe, which refreshes about once a minute, while still
+# refusing to call a wedged probe current.
 ST_OBSERVATION_MAX_AGE_SECONDS = 120
 
 # The window Muster grants every collector's file (three 15-minute runs).
@@ -171,7 +172,9 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
         raise ValueError("refused url: %r" % (url,))
     timeout = max(1, min(int(timeout), MAX_TIMEOUT_SECONDS))
     request = urllib.request.Request(
-        url, method="GET", headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+        url,
+        method="GET",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
     )
     build = opener if opener is not None else urllib.request.build_opener(_NoRedirect)
     try:
@@ -193,7 +196,9 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
         return status, None, "unparseable"
     try:
         payload = json.loads(body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # A body under the size cap can still nest past the recursion
+        # limit;  that is an unparseable answer, not a crashed run.
         return status, None, "unparseable"
     if not isinstance(payload, dict):
         return status, None, "unparseable"
@@ -201,32 +206,26 @@ def fetch_json(url, timeout=DEFAULT_TIMEOUT_SECONDS, opener=None):
 
 
 def _observation_age(payload, now):
-    """ST's observation age in seconds, or None when unproved.
+    """Age of the source-native Mango probe; missing is never guessed.
 
-    The observation stamp is read from the first of these the payload
-    carries:  ``mango.observedAt``, ``observedAt``,
-    ``lastObservationAt``, or an explicit ``observationAgeSeconds`` /
-    ``mango.observationAgeSeconds`` number.  A future stamp is not fresh:
-    it yields a negative age, which the caller treats as unproved.
+    The public proxy-use route emits mango.checkedAt. Other observation
+    timestamps describe a different contract and cannot make it green.
     """
     mango = payload.get("mango") if isinstance(payload.get("mango"), dict) else {}
-    for stamp in (
-        mango.get("observedAt"),
-        payload.get("observedAt"),
-        payload.get("lastObservationAt"),
-        payload.get("observation_at"),
-    ):
-        epoch = parse_iso(stamp)
-        if epoch is not None:
-            return int(now - epoch)
-    for age in (payload.get("observationAgeSeconds"), mango.get("observationAgeSeconds")):
-        if isinstance(age, (int, float)) and not isinstance(age, bool):
-            return int(age)
-    return None
+    raw = mango.get("checkedAt")
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return now - parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def map_st_live(payload, http_status, now):
-    """Map one ST /api/live answer to its store row (minus provenance).
+    """Map one ST /api/proxy-use answer to its store row (minus provenance).
 
     Green is the conjunction, and only the conjunction:  the route
     answered 200, Mango is explicitly reachable, and the observation is
@@ -254,17 +253,24 @@ def map_st_live(payload, http_status, now):
         return row
     row["mangoReachable"] = mango["reachable"]
     age = _observation_age(payload, now)
-    row["observationAgeSeconds"] = age
     if mango["reachable"] is not True:
+        row["observationAgeSeconds"] = None if age is None else int(age)
         row["state"] = "fail"
         row["reason"] = "mango_unreachable"
         return row
     if age is None:
+        row["observationAgeSeconds"] = None
         row["reason"] = "observation_unreported"
         return row
     if age < 0:
+        row["observationAgeSeconds"] = int(age)
         row["reason"] = "observation_in_future"
         return row
+    # Ceil once so the stored seconds and the freshness gate agree, and so
+    # any fraction past the cap (120.001, 120.9) stays stale the way the
+    # unrounded comparison did.  round() would snap 120.001 back to 120.
+    age = math.ceil(age)
+    row["observationAgeSeconds"] = age
     if age > ST_OBSERVATION_MAX_AGE_SECONDS:
         # A stale observation proves the loop once ran, not that it runs.
         row["reason"] = "observation_stale"
@@ -298,13 +304,89 @@ def _component_state(value):
             return "ok"
         if word in ("warn", "warning", "degraded"):
             return "warn"
-        if word in ("fail", "failed", "down", "error", "unhealthy", "critical"):
+        if word in (
+            "fail",
+            "failed",
+            "down",
+            "error",
+            "unhealthy",
+            "critical",
+            "stalled",
+        ):
             return "fail"
     return "unknown"
 
 
+def _native_ct_state(value):
+    """Exact upstream enum, never a legacy truthy/alias decoder."""
+    if not isinstance(value, str):
+        return "unknown"
+    return {
+        "ok": "ok",
+        "degraded": "warn",
+        "critical": "fail",
+        "stalled": "fail",
+        "unknown": "unknown",
+    }.get(value, "unknown")
+
+
+def _ct_pipeline_components(payload):
+    """Source-native CT checks, without conflating backlog and liveness.
+
+    All three chamber polls must explicitly be ok to prove discovery-poll
+    liveness (not end-to-end ingestion).  A failed poll proves that lane stopped.  An empty outbox does
+    not prove any poll ran.  The separate senate_efd canary is not Senate
+    polling: a canary failure alone never declares ingestion stopped.
+    Duplicate IDs are ambiguous and therefore unknown, never first-wins.
+    """
+    if "pipeline" not in payload:
+        return None
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, dict):
+        raise ValueError("CT pipeline must be a dict, got %s" % type(pipeline).__name__)
+    if "checks" not in pipeline:
+        return {}
+    checks = pipeline.get("checks")
+    if not isinstance(checks, list):
+        raise ValueError("CT pipeline checks must be a list, got %s" % type(checks).__name__)
+    by_id = {}
+    for entry in checks:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        name = entry["id"]
+        by_id[name] = "unknown" if name in by_id else _native_ct_state(entry.get("status"))
+    found = {}
+    for target, source in (
+        ("house", "polling_house"),
+        ("oge", "polling_executive"),
+        ("senate_efd", "senate_efd"),
+    ):
+        if source in by_id:
+            found[target] = by_id[source]
+    poll_names = ("polling_house", "polling_senate", "polling_executive")
+    if any(name in by_id for name in poll_names):
+        # The derived ingestion verdict exists only when at least one
+        # chamber poll was actually reported.  A payload carrying no
+        # polling checks at all (CT's no-poll-data shape) leaves
+        # ingestion unreported instead of reported-but-unknown.
+        polls = [
+            (by_id.get(name, "unknown") if by_id.get(name) != "warn" else "unknown")
+            for name in poll_names
+        ]
+        if "fail" in polls:
+            found["ingestion"] = "fail"
+        elif all(state == "ok" for state in polls):
+            found["ingestion"] = "ok"
+        else:
+            found["ingestion"] = "unknown"
+    return found
+
+
 def _ct_components(payload):
     """CT's components as {name: raw value}, from wherever upstream puts them."""
+    native = _ct_pipeline_components(payload)
+    if native is not None:
+        return native
     found = {}
     for container_key in ("components", "checks", "upstreams"):
         container = payload.get(container_key)
@@ -353,7 +435,13 @@ def map_ct_health(payload, http_status, now):
         row["reason"] = "http_%d" % http_status if http_status else "no_answer"
         return row
     row["upstreamStatus"] = _ct_aggregate(payload)
-    found = _ct_components(payload)
+    try:
+        found = _ct_components(payload)
+    except ValueError as exc:
+        # Fail closed without taking down the collector: name the type error
+        # and do not fall back to the legacy component parser.
+        row["reason"] = "pipeline_invalid:%s" % exc
+        return row
     components = []
     for name in CT_COMPONENTS:
         if name in found:
@@ -401,13 +489,41 @@ def map_ct_health(payload, http_status, now):
         row["state"] = "warn"
         row["reason"] = "components_degraded:%s" % ",".join(warning)
         return row
+    # Legacy payloads may omit an aggregate; do not treat a missing
+    # status as unknown-not-ok when every displayed component is ok.
+    if row["upstreamStatus"] is not None:
+        # A native payload's aggregate is decoded with the same exact
+        # enum as its checks:  a legacy alias ("Healthy", "UP", "pass")
+        # must not read as ok and hide upstream degradation.  The loose
+        # legacy decoder remains for legacy payloads only.
+        if "pipeline" in payload:
+            aggregate = _native_ct_state(row["upstreamStatus"])
+            if aggregate == "unknown" and row["upstreamStatus"] == "down":
+                aggregate = "fail"
+        else:
+            aggregate = _component_state(row["upstreamStatus"])
+        if aggregate != "ok":
+            # Other source checks may degrade the aggregate even when the
+            # displayed subset is current.  A critical/failed aggregate
+            # stays fail; a warning stays warn; anything else is unknown.
+            row["state"] = aggregate if aggregate in ("warn", "fail") else "unknown"
+            row["reason"] = "upstream_aggregate_not_ok"
+            return row
     row["state"] = "ok"
     row["reason"] = "all_components_ok"
     return row
 
 
-def _app_row(mapper, url, timeout, now, fetcher):
-    """Fetch one app and finish its row with provenance and freshness."""
+def _app_row(mapper, url, timeout, now, fetcher, clock=None):
+    """Fetch one app and finish its row with provenance and freshness.
+
+    Freshness is judged against ``clock()`` read when the answer
+    arrives, not the ``now`` from before the request:  an upstream
+    that stamps its observation while answering (ST's cold-cache
+    probe) would otherwise read as an observation from the future.
+    Without a clock, the pre-request ``now`` is used, which keeps
+    fixture runs exact.
+    """
     fetched_at = utc_stamp(now)
     try:
         status, payload, error = fetcher(url, timeout)
@@ -421,8 +537,12 @@ def _app_row(mapper, url, timeout, now, fetcher):
         row["reason"] = error if error in FETCH_ERROR_CODES else (error or "no_answer")
         row["error"] = row["reason"]
     else:
-        row = mapper(payload, status, now)
-    row["provenance"] = {"source": url, "fetchedAt": fetched_at, "httpStatus": status or 0}
+        row = mapper(payload, status, now if clock is None else clock())
+    row["provenance"] = {
+        "source": url,
+        "fetchedAt": fetched_at,
+        "httpStatus": status or 0,
+    }
     return row
 
 
@@ -436,18 +556,23 @@ def worst_of(rows):
     return worst
 
 
-def collect(now=None, timeout=DEFAULT_TIMEOUT_SECONDS, fetcher=None):
+def collect(now=None, timeout=DEFAULT_TIMEOUT_SECONDS, fetcher=None, clock=None):
     """Fetch both apps and build the store document.
 
     ``fetcher`` is injectable so tests drive every mapping with fixtures
     and no network:  it takes (url, timeout) and returns the
-    ``fetch_json`` triple.
+    ``fetch_json`` triple.  ``clock`` supplies the post-fetch readings
+    freshness is judged against:  a run with no injected ``now`` reads
+    the wall clock, while an injected ``now`` without a clock keeps
+    fixture runs deterministic.
     """
-    now = time.time() if now is None else now
+    if now is None:
+        clock = time.time if clock is None else clock
+        now = clock()
     fetcher = fetch_json if fetcher is None else fetcher
     rows = [
-        _app_row(map_st_live, ST_LIVE_URL, timeout, now, fetcher),
-        _app_row(map_ct_health, CT_HEALTH_URL, timeout, now, fetcher),
+        _app_row(map_st_live, ST_LIVE_URL, timeout, now, fetcher, clock=clock),
+        _app_row(map_ct_health, CT_HEALTH_URL, timeout, now, fetcher, clock=clock),
     ]
     return {
         "schemaVersion": SCHEMA_VERSION,

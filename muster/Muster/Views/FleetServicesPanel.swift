@@ -13,6 +13,7 @@ import SwiftUI
 struct FleetServicesPanel: View {
     @EnvironmentObject private var admin: FleetAdmin
     @EnvironmentObject private var router: ServiceActionRouter
+    @StateObject private var processModel = FleetProcessModel()
     @AppStorage(MusterSettings.keepServicesRunningDefaultsKey) private var keepServicesRunning = true
 
     var body: some View {
@@ -30,6 +31,7 @@ struct FleetServicesPanel: View {
                                                                                adminProblemIsNotKnown: admin.problemIsNotKnown))
                 }
                 servicesSection
+                processesSection
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -39,6 +41,7 @@ struct FleetServicesPanel: View {
             // A return to the panel shows the read on hand when it is fresh, rather than running
             // pm2 and launchctl again;  the Check button below always reads.
             await admin.refreshIfOlder()
+            await processModel.refreshIfNeeded()
         }
     }
 
@@ -280,6 +283,144 @@ struct FleetServicesPanel: View {
         guard routes.contains(where: { $0 == nil }) else { return nil }
         return MachineMenuCopy.noRouteSentence(allowlist: router.allowlist,
                                                someRouted: routes.contains(where: { $0 != nil }))
+    }
+
+    // MARK: The fleet's processes and ports
+
+    /// The census the service rows cannot take:  every BotFleet process on the Mac,
+    /// including the helpers no manager is driving any more,  and the ports they hold.
+    ///
+    /// A service row probes its service through the manager that owns it,  so a helper
+    /// left behind when its driver stopped is invisible there.  This section reads the
+    /// system instead — `ps` and `lsof`,  through `FleetProcessMonitor` — and offers the
+    /// two changes that census supports:  stop a process,  or free the port it holds.
+    /// Both go through the monitor's own guards,  which refuse PID 1,  this app,  and
+    /// any port the fleet does not hold.
+    private var processesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Fleet Processes And Ports \(FleetHost.mac.onTitle)")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task { await processModel.checkProcesses() }
+                } label: {
+                    Label("Check Processes", systemImage: "arrow.clockwise")
+                }
+                .disabled(processModel.reading)
+                .help("Reads every process and listening port on the Mac and picks out the fleet's.")
+            }
+            Text("The services above are read through the managers that run them.\u{00A0} A helper whose manager has stopped is reported by nobody, so this census reads the Mac itself:  the fleet's processes, the ones nothing is driving any more, and the ports they are holding.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let problem = processModel.problem {
+                problemBox(problem, heading: "A Process Could Not Be Changed")
+            }
+            if !processModel.hasRead {
+                Text(processModel.reading
+                     ? "Reading the Mac\u{2026}"
+                     : "The fleet's processes have not been read yet.\u{00A0} Check Processes to read them.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if processModel.snapshot.processes.isEmpty {
+                Text("No BotFleet process is running \(FleetHost.mac.inProse) that this census can see.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                if !processModel.orphans.isEmpty {
+                    Text("Left Behind — Nothing Is Driving These")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    ForEach(processModel.orphans) { process in
+                        processRow(process)
+                    }
+                }
+                let driven = processModel.snapshot.processes.filter { !$0.isOrphan }
+                if !driven.isEmpty {
+                    Text("Driven By The Fleet")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(driven) { process in
+                        processRow(process)
+                    }
+                }
+                if !processModel.snapshot.listeners.isEmpty {
+                    Text("Ports The Fleet Holds")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(processModel.snapshot.listeners) { listener in
+                        portRow(listener)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One process from the census,  with the stop the census supports.
+    private func processRow(_ process: FleetProcess) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(process.name)
+                        .font(.body.weight(.medium))
+                    Text(process.isOrphan ? "left behind" : "fleet")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(process.isOrphan ? Color.orange : Color.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background((process.isOrphan ? Color.orange : Color.secondary).opacity(0.12), in: Capsule())
+                }
+                Text(processDetail(process))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(process.command)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Stop Process") {
+                Task { await processModel.stop(process) }
+            }
+            .disabled(processModel.reading)
+            .help("Stops \(process.summary).")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(8)
+    }
+
+    /// A process's PID,  its ports and its working directory,  in one line.
+    private func processDetail(_ process: FleetProcess) -> String {
+        var parts = ["PID \(process.pid)"]
+        if !process.ports.isEmpty {
+            parts.append(process.ports.count == 1
+                         ? "port \(process.ports[0])"
+                         : "ports \(process.ports.map(String.init).joined(separator: ", "))")
+        }
+        if let workingDirectory = process.workingDirectory, !workingDirectory.isEmpty {
+            parts.append("working in \(workingDirectory)")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// One port the fleet holds,  with the action that frees it.
+    private func portRow(_ listener: PortListener) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(listener.summary)
+                .font(.callout)
+            Spacer()
+            Button("Free Port") {
+                Task { await processModel.freePort(listener) }
+            }
+            .disabled(processModel.reading || listener.pid == nil)
+            .help("Stops the fleet process holding port \(listener.port).")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(8)
     }
 
     // MARK: A refusal

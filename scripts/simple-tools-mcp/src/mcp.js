@@ -13,6 +13,7 @@
 // this same authenticated endpoint.  They are not spec request methods in the
 // SDK, so each is registered with a zod params schema.
 
+import { nativeOriginContext } from "./native-origin-context.js";
 import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, hostedInstructions, wakeOnlyInstructions } from "./hosted-tools.js";
@@ -90,7 +91,7 @@ export function buildServer(tools, events = null) {
     const name = request.params?.name;
     let result;
     try {
-      result = await router.call(name, request.params?.arguments);
+      result = await router.call(name, request.params?.arguments, nativeOriginContext(request.params?._meta));
     } catch (error) {
       if (error instanceof UnknownTool) throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool");
       throw error;
