@@ -2997,6 +2997,15 @@ class CredentialTests(Base):
         )
         self.assertEqual(self.http_calls, [])
 
+    def test_a_status_that_is_not_a_status_is_a_no_answer(self):
+        """An unexpected value from the HTTP seam must not crash the helper (Kody)."""
+        self.credentials(self.pair_text())
+        for status in (None, "oops", object()):
+            with self.subTest(status=type(status).__name__):
+                code, ans = self.run_main(["--check-token"], self.ctx(http_status=status))
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(ans["detail"], "Coolify did not answer")
+
     def test_a_truncated_error_body_still_answers_its_status(self):
         """A cut error body must not escape the request helper:  the status is what it needs."""
         import http.client

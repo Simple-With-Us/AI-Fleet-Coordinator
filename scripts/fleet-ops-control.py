@@ -4403,6 +4403,9 @@ def scoped_token(ctx):
 
 def _coolify_http_failure(status) -> str:
     """Coolify's own answer when it refuses the deploy token, with the remedy it needs."""
+    if type(status) is not int or not status:
+        # Anything that is not an HTTP status is no answer at all.
+        return "Coolify did not answer"
     if status in (401, 403):
         return (
             f"Coolify refused the {COOLIFY_TOKEN_NAME} token (HTTP {status}); "
@@ -4410,7 +4413,7 @@ def _coolify_http_failure(status) -> str:
         )
     if status in (408, 429):
         return f"Coolify answered a retryable HTTP {status}; the deploy may be retried"
-    return f"Coolify answered HTTP {status}" if status else "Coolify did not answer"
+    return f"Coolify answered HTTP {status}"
 
 
 def _coolify_failed(status) -> Failed:
@@ -4420,11 +4423,12 @@ def _coolify_failed(status) -> Failed:
     applied it,  so the run is retryable and not terminal.  A server error may follow a
     deploy that was already applied,  so the action had begun or may have,  and that is
     `unknown`,  never `failed` (server-route-spec section 13)."""
-    if status in (408, 429):
+    if type(status) is int and status in (408, 429):
         return Failed(_coolify_http_failure(status), error_code="retryable")
     return Failed(
         _coolify_http_failure(status),
-        timed_out=bool(getattr(status, "sent", False)) or 500 <= status < 600,
+        timed_out=bool(getattr(status, "sent", False))
+        or (type(status) is int and 500 <= status < 600),
     )
 
 
@@ -4448,7 +4452,9 @@ def check_token(ctx):
         # The nil uuid names no resource, so a route that answers it proves the token is
         # accepted for a deploy.  A not-found from another cause (a route that moved, a
         # proxy) answers differently, and only Coolify's own answer counts as accepted.
-        accepted = status == 200 or (status == 404 and COOLIFY_NO_RESOURCE in body)
+        accepted = status == 200 or (
+            status == 404 and isinstance(body, str) and COOLIFY_NO_RESOURCE in body
+        )
         if not accepted:
             raise _coolify_failed(status)
     except Refused as exc:
