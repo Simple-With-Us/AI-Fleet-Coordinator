@@ -43,9 +43,7 @@ def scoped_secret_get(path, name):
 
         env = dict(os.environ)
         env[FI.ENV_READ_PATHS] = path
-        value, status = FI.fetch_scoped(
-            name, path, account, env, timeout=LOOKUP_TIMEOUT_SECONDS
-        )
+        value, status = FI.fetch_scoped(name, path, account, env, timeout=LOOKUP_TIMEOUT_SECONDS)
     except TimeoutError:
         raise RoutingError(
             name + " unavailable: Infisical lookup timed out", outcome="retryable"

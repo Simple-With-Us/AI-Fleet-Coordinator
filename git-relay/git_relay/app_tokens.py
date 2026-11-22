@@ -118,7 +118,7 @@ def _names_an_app_secret(text: str, prefix: str) -> bool:
     """True when the reader's message names one of this relay's own App secrets."""
     if not text.startswith(prefix):
         return False
-    return bool(_APP_SECRET_NAME.match(text[len(prefix):]))
+    return bool(_APP_SECRET_NAME.match(text[len(prefix) :]))
 
 
 def missing_app_credential(exc: BaseException) -> bool:
@@ -396,6 +396,7 @@ class InfisicalSource:
         if wanted:
             self._fetch(wanted)
         return {name: self._cache[name] for name in names}
+
 
 # The name this source had while the retired shared reader was still in the
 # tree.  It stays as an alias so a caller that still imports it keeps working;

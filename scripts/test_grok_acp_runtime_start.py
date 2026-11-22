@@ -32,18 +32,19 @@ def synthetic_token() -> str:
     """A service-token-shaped value, made up and assembled here so no token-shaped literal sits."""
     return ".".join(["st", "synthetic", "notarealvalue", "notarealvalue"])
 
+
 # The reader the runtime must use,  as the shared installer places it.
 READER_RELATIVE = "apps/infisical-scoped/infisical-scoped.py"
 
 # A reader that records what it was asked and refuses the read.
-FAKE_READER = '''#!/usr/bin/env python3
+FAKE_READER = """#!/usr/bin/env python3
 import json, os, sys
 record = os.environ.get("FAKE_READER_RECORD")
 if record:
     with open(record, "w", encoding="utf-8") as handle:
         json.dump(sys.argv[1:], handle)
 sys.exit(int(os.environ.get("FAKE_READER_EXIT", "4")))
-'''
+"""
 
 
 class GrokRuntimeReaderTests(unittest.TestCase):

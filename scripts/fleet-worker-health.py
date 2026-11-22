@@ -41,9 +41,7 @@ SECRET_FOLDER = "/"
 # The canonical Infisical command source beside this script.  It is the
 # reviewed reader this host's fleet tools share,  so its absence means this
 # host has no reader at all.
-INFISICAL_CLI = os.path.join(
-    os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py"
-)
+INFISICAL_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fleet_infisical_cli.py")
 
 
 def sign(key, body):
@@ -73,9 +71,7 @@ def read_key():
         # source that must be repaired is named,  so it stays visible.
         raise RuntimeError(
             "the Infisical reader (fleet_infisical_cli.py) is missing beside this script,  "
-            "so the "
-            + TOKEN_ACCOUNT
-            + " scoped service token cannot be read"
+            "so the " + TOKEN_ACCOUNT + " scoped service token cannot be read"
         )
     try:
         import fleet_infisical as FI

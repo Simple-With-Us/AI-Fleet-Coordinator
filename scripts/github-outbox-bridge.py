@@ -536,9 +536,7 @@ def _own_token(client):
     home = os.environ.get("HOME", "").strip()
     if home:
         try:
-            token, _status = client.token_from_store(
-                TOKEN_ACCOUNT, dict(os.environ), Path(home)
-            )
+            token, _status = client.token_from_store(TOKEN_ACCOUNT, dict(os.environ), Path(home))
         except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
             raise RuntimeError(
                 "the %s scoped token store could not be read (%s)"
@@ -574,8 +572,6 @@ def _read_infisical_names(names, folder):
         )
     except Exception:
         return {}
-
-
 
 
 class ZulipClient:

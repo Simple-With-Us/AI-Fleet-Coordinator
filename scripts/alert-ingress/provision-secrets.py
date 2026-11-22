@@ -268,9 +268,7 @@ def scoped_values(names, project, path):
         # a hung read is a timeout,  not a broken credential.
         raise ReadError("the scoped Infisical read timed out", EXIT_TIMEOUT) from None
     except scoped_secrets.SecretsError as exc:
-        raise ReadError(
-            "the scoped Infisical read failed (%s)" % _refusal_reason(exc)
-        ) from None
+        raise ReadError("the scoped Infisical read failed (%s)" % _refusal_reason(exc)) from None
 
 
 def batch_values(names, project, path):

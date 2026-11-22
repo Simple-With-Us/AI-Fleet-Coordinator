@@ -639,9 +639,7 @@ class LaunchTests(unittest.TestCase):
         ):
             launch.run_with_secrets(command, {})
         self.assertEqual(seen, ["/jet"])
-        self.assertEqual(
-            execute.call_args[0][2]["WHATSAPP_API_KEY"], "synthetic"
-        )
+        self.assertEqual(execute.call_args[0][2]["WHATSAPP_API_KEY"], "synthetic")
         self.assertNotIn("OTHER_SECRET", execute.call_args[0][2])
 
     def test_poller_and_binder_strip_bootstrap_before_exec(self):
