@@ -15,6 +15,7 @@ import shlex
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import listener_api as API
 from simple_tools import listener_registry as RG
@@ -74,13 +75,15 @@ class Base(unittest.TestCase):
         return env
 
     def add_session(self, sid: str, *, parent: str = "", task: str = "interactive",
-                    title: str = "", title_source: str = "first_input") -> None:
+                    title: str = "", title_source: str = "first_input",
+                    age: float = 3600.0) -> None:
+        stamp = int((time.time() - age) * 1000)
         conn = sqlite3.connect(self.store)
         with conn:
             conn.execute(
                 "INSERT INTO session (id, parent_id, task_type, title, title_source, directory,"
                 " time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, parent or None, task, title, title_source, "/tmp/work", 1, 1),
+                (sid, parent or None, task, title, title_source, "/tmp/work", stamp, stamp),
             )
         conn.close()
 
@@ -119,6 +122,8 @@ class Spec(Base):
         self.assertEqual(spec.events["Stop"], "turn")
         self.assertEqual(spec.close_reasons, ())
         self.assertIn("Stop", spec.quiet_events)
+        self.assertIs(spec.unlettered_sessions, Z.zcode_unlettered_sessions)
+        self.assertIs(spec.child_sessions, Z.zcode_child_sessions)
 
 
 class Accessors(Base):
@@ -213,6 +218,257 @@ class HookFlow(Base):
     def test_hook_never_fails_the_chat(self) -> None:
         code, out = self.run_hook({"hook_event_name": "SessionStart", "session_id": "not-a-session"})
         self.assertEqual(code, 0)
+
+
+class ChildEnrollment(Base):
+    """A lettered parent's own turn end enrolls the sub-agent children the store names for it:  ZCode runs no
+    hook inside a sub-agent session, so the parent's Stop pass is the only start a child ever gets.  Every
+    store this class touches is the fixture's temporary one;  the live store is never opened for writing."""
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "ZC", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def child_labels(self, sids: list[str]) -> dict[str, str | None]:
+        registry = OR.SessionRegistry(self.db)
+        return {sid: (registry.lookup("zcode", "mac", "default", sid) or {}).get("label") for sid in sids}
+
+    def test_a_parents_stop_enrolls_its_child_in_the_parents_row(self) -> None:
+        parent, child = sess(70), sess(71)
+        self.add_session(parent, title="Search the store")
+        self.add_session(child, parent=parent, task="subagent_child", title="Find the wake path")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        registry = OR.SessionRegistry(self.db)
+        mom = registry.lookup("zcode", "mac", "default", parent)
+        kid = registry.lookup("zcode", "mac", "default", child)
+        self.assertTrue(kid)
+        self.assertEqual(kid["label"][0], mom["label"][0])  # the child sits in the parent's row
+        self.assertNotEqual(kid["label"], mom["label"])
+        rows = dict((r[0], (r[1], r[2])) for r in self.rows())
+        self.assertEqual(rows[child], ("%s: Find the wake path" % kid["label"], "custom"))
+
+    def test_a_letterless_parent_enrolls_nothing(self) -> None:
+        parent, child = sess(72), sess(73)
+        self.add_session(parent, title="Parent work")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work")
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        registry = OR.SessionRegistry(self.db)
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", parent))
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", child))
+
+    def test_a_letter_that_comes_at_the_turn_end_enrolls_the_children_too(self) -> None:
+        parent, child = sess(74), sess(75)
+        self.add_session(parent, title="Late letter")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work")
+        down = self.env()
+        down.pop("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", None)
+        t0 = time.time()
+        self.run_hook(
+            {"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"},
+            env=down, now=t0,
+        )
+        self.assertIsNone(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", child))
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"},
+                                now=t0 + PL.RETRY_SECONDS + 1)
+        self.assertEqual(code, 0)
+        kid = OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", child)
+        self.assertTrue(kid)
+        self.assertTrue(self.note(child).get("label"))
+
+    def test_a_lettered_child_is_not_replayed_every_turn(self) -> None:
+        parent, child = sess(76), sess(77)
+        self.add_session(parent, title="Steady work")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=time.time() + 1)
+        before = self.note(child)
+        self.assertTrue(before.get("label"))
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=time.time() + 61)
+        self.assertEqual(self.note(child), before)  # one note read, no replay, no new write
+
+    def test_a_refused_child_is_logged_and_not_retried_in_a_storm(self) -> None:
+        parent = sess(78)
+        self.add_session(parent, title="Row fill")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        for i in range(25):  # the parent's row holds exactly 25 child pairs
+            sid = sess(200 + i)
+            self.add_session(sid, parent=parent, task="subagent_child",
+                             title="Child %02d" % i, age=7200 + i)
+            self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"})
+        extra = sess(300)
+        self.add_session(extra, parent=parent, task="subagent_child", title="Overflow")
+        t0 = time.time()
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=t0)
+        self.assertEqual(code, 0)  # the refusal never fails the parent's chat
+        note = self.note(extra)
+        self.assertEqual(note.get("state"), "failed")
+        # The assigner's row-full refusal reaches the client as the shared exhausted-refusal text
+        # (the parent's row is full, which the client words as the pairs being live).
+        self.assertIn("main-chat pairs", str(note.get("error") or ""))
+        self.assertIn(PL.REFUSED_TAIL, str(note.get("error") or ""))
+        self.assertIsNone(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", extra))
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=t0 + 60)
+        self.assertEqual(self.note(extra), note)  # inside the retry window:  not asked again
+
+    def test_the_pass_bounds_itself_per_turn_end(self) -> None:
+        parent = sess(79)
+        children = [sess(310 + i) for i in range(9)]
+        self.add_session(parent, title="Many children")
+        for i, sid in enumerate(children):
+            self.add_session(sid, parent=parent, task="subagent_child",
+                             title="Child %02d" % i, age=7200 + i)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=time.time() + 1)
+        first = [sid for sid, label in self.child_labels(children).items() if label]
+        self.assertEqual(len(first), PL.CHILD_ENROLL_MAX)
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=time.time() + 61)
+        self.assertEqual(len([sid for sid, label in self.child_labels(children).items() if label]),
+                         len(children))
+
+    def test_grandchildren_wait_for_their_own_parents_pass(self) -> None:
+        parent, child, grand = sess(80), sess(81), sess(82)
+        self.add_session(parent, title="Top work")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work")
+        self.add_session(grand, parent=child, task="subagent_child", title="Grandchild work")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"}, now=time.time() + 1)
+        registry = OR.SessionRegistry(self.db)
+        self.assertTrue(registry.lookup("zcode", "mac", "default", child))
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", grand))
+
+    def test_an_unreadable_child_note_does_not_stop_the_pass(self) -> None:
+        parent, corrupt, healthy = sess(100), sess(101), sess(102)
+        self.add_session(parent, title="Two children")
+        self.add_session(corrupt, parent=parent, task="subagent_child",
+                         title="Corrupt note", age=7200)
+        self.add_session(healthy, parent=parent, task="subagent_child",
+                         title="Healthy child", age=7100)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        with open(os.path.join(self.state, "ZC", "letters", corrupt + ".json"), "w") as fh:
+            fh.write("{ not json")  # a note no reader can parse:  one child's problem
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)  # the corrupt note neither fails the hook nor starves the sibling
+        registry = OR.SessionRegistry(self.db)
+        # A note no reader can parse holds nothing, so the child is treated as one that never had
+        # a note:  its start is replayed, it takes a letter, and a fresh note replaces the corrupt
+        # file.  The failure stays inside that one child's own try, never the pass or the chat.
+        self.assertTrue(registry.lookup("zcode", "mac", "default", corrupt))
+        self.assertTrue(registry.lookup("zcode", "mac", "default", healthy))
+        self.assertTrue(self.note(corrupt).get("label"))
+
+    def test_a_crafted_child_id_is_left_unread(self) -> None:
+        parent, child = sess(103), sess(104)
+        self.add_session(parent, title="Traversal guard")
+        self.add_session("../escape", parent=parent, task="subagent_child",
+                         title="Crafted id", age=100)
+        self.add_session(child, parent=parent, task="subagent_child", title="Real child", age=101)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        # The store row's id is not a session id, so the listing never builds a note path from it,
+        # and the parent's own Stop pass enrolls only the child it can name safely.
+        self.assertEqual(Z.zcode_child_sessions(self.env(), parent), [child])
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.state, "ZC", "letters"))),
+                         sorted([parent + ".json", child + ".json"]))
+        self.assertTrue(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", child))
+
+    def test_a_store_of_lettered_children_costs_bounded_reads(self) -> None:
+        parent, late = sess(105), sess(106)
+        self.add_session(parent, title="Cap work")
+        letters = os.path.join(self.state, "ZC", "letters")
+        os.makedirs(letters, exist_ok=True)
+        for i in range(120):  # newest first:  every lettered row sits ahead of the old unlettered one
+            sid = sess(400 + i)
+            self.add_session(sid, parent=parent, task="subagent_child", title="L %02d" % i,
+                             age=100 + i)
+            with open(os.path.join(letters, sid + ".json"), "w") as fh:
+                json.dump({"state": "open", "label": "ZZ:"}, fh)
+        self.add_session(late, parent=parent, task="subagent_child", title="Late child", age=9000)
+        reads = {"n": 0}
+        real = Z._note_dict
+
+        def counting(env, sid):
+            reads["n"] += 1
+            return real(env, sid)
+
+        with mock.patch.object(Z, "_note_dict", counting):
+            listed = Z.zcode_child_sessions(self.env(), parent)
+        # The examination cap stops the walk at 4 * CHILD_SCAN rows:  the reads are bounded even
+        # when the whole table is lettered, and the old unlettered row waits for the repair pass.
+        self.assertEqual(listed, [])
+        self.assertLessEqual(reads["n"], 4 * Z.CHILD_SCAN)
+
+    def test_a_string_failed_at_never_aborts_a_scan(self) -> None:
+        parent, child = sess(107), sess(108)
+        self.add_session(parent, title="String stamp")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work", age=7200)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertTrue(self.note(child).get("label"))  # the pass enrolled it once
+        work = self.note(child)
+        work.update({"state": "failed", "failed_at": "not-a-number", "error": "row full"})
+        work.pop("label", None)
+        with open(os.path.join(self.state, "ZC", "letters", child + ".json"), "w") as fh:
+            json.dump(work, fh)
+        # A retry stamp that is not a number reads as no refusal at all (the shared _seconds helper),
+        # so neither scan raises and the child is offered again instead of being stuck forever.
+        self.assertIn(child, Z.zcode_unlettered_sessions(self.env()) or [])
+        self.assertEqual(Z.zcode_child_sessions(self.env(), parent), [child])
+
+
+class RepairChildren(Base):
+    """The repair pass enrolls a sub-agent child whose parent's note holds a letter, and leaves a child of a
+    parent nobody ever lettered alone:  its replay would register the long-gone parent first."""
+
+    def test_a_child_of_a_lettered_parent_is_enrolled_by_the_pass(self) -> None:
+        parent, child, orphan = sess(90), sess(91), sess(92)
+        gone = sess(93)
+        self.add_session(parent, title="Repaired parent")
+        self.add_session(child, parent=parent, task="subagent_child", title="Repaired child")
+        self.add_session(orphan, parent=gone, task="subagent_child", title="Orphan child")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        done = PL.repair_unlettered(Z.SPEC, self.env(), "ZC", "mac", now=time.time(), force=True)
+        self.assertIn(child, done["asked"], done)
+        self.assertNotIn(orphan, done["asked"], done)
+        registry = OR.SessionRegistry(self.db)
+        mom = registry.lookup("zcode", "mac", "default", parent)
+        kid = registry.lookup("zcode", "mac", "default", child)
+        self.assertTrue(kid)
+        self.assertEqual(kid["label"][0], mom["label"][0])
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", orphan))
+
+    def test_a_letterless_parent_and_an_ancient_child_are_left_alone(self) -> None:
+        parent, present, ancient = sess(94), sess(95), sess(96)
+        quiet = sess(97)
+        self.add_session(parent, title="Quiet work")  # in the store, but no letter of its own
+        self.add_session(present, parent=parent, task="subagent_child", title="Recent child")
+        self.add_session(quiet, title="??: Quiet work")  # an unlettered chat, for the same pass
+        self.run_hook({"session_id": sess(98), "hook_event_name": "SessionStart", "source": "startup"})
+        self.add_session(ancient, parent=sess(98), task="subagent_child",
+                         title="Ancient child", age=30 * 86400)
+        done = PL.repair_unlettered(Z.SPEC, self.env(), "ZC", "mac", now=time.time(), force=True)
+        self.assertNotIn(present, done["asked"], done)  # its parent holds no letter
+        self.assertNotIn(ancient, done["asked"], done)  # older than the pass's own window
+        self.assertIn(quiet, done["asked"], done)  # the "??" chat of the same pass still repairs
+        registry = OR.SessionRegistry(self.db)
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", present))
+        self.assertIsNone(registry.lookup("zcode", "mac", "default", ancient))
+
+    def test_a_throttled_child_takes_no_repair_slot(self) -> None:
+        parent, refused, quiet = sess(103), sess(104), sess(105)
+        self.add_session(parent, title="Throttled parent")
+        self.add_session(refused, parent=parent, task="subagent_child", title="Refused child")
+        self.add_session(quiet, title="??: Quiet work")  # a healthy candidate for the same slot
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        with open(os.path.join(self.state, "ZC", "letters", refused + ".json"), "w") as fh:
+            json.dump({"state": "failed", "failed_at": time.time() - 60}, fh)
+        done = PL.repair_unlettered(Z.SPEC, self.env(), "ZC", "mac", now=time.time(), force=True)
+        self.assertNotIn(refused, done["asked"], done)  # inside its retry window:  no replay slot
+        self.assertIn(quiet, done["asked"], done)  # the slot goes to the healthy candidate
+        self.assertIsNone(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", refused))
 
 
 class ServerLocation(Base):
