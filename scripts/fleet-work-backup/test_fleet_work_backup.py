@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -755,20 +756,37 @@ class RunBase(unittest.TestCase):
         os.environ["STUB_DIR"] = str(self.stubdir)
         os.environ.pop("STUB_FAIL", None)
         self.cfg.restic_bin = str(stub)
-        fs_stub = (
-            self.stubdir / "fleet-secrets"
-        )  # `run [--only X] -- CMD`:  CMD with the fake creds as env
-        fs_stub.write_text(
-            "#!/bin/bash\n"
-            f'set -a; . "{self.creds_file}"; set +a\n'
-            'if [ "$1" = get ]; then [ -n "${!2:-}" ] || exit 3; printf %s "${!2}"; exit 0; fi\n'
-            '[ "$1" = run ] || exit 2\n'
-            'shift; [ "$1" = --only ] && shift 2\n'
-            '[ "$1" = -- ] && shift\n'
-            'exec "$@"\n'
-        )
-        fs_stub.chmod(0o755)
-        self.cfg.fleet_secrets_bin = str(fs_stub)
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        self.reader_api = ScopedReadAPI({}, project=str(uuid.uuid4()), path="/")
+        self.reader_api.__enter__()
+        self.addCleanup(self.reader_api.__exit__)
+        client = fwb._infisical_reader()
+        original_read = client.bounded_fetch_project
+        def read(project, folder, env, **options):
+            # The existing synthetic provider fixture is mutable so key-change tests
+            # still cross the real reader/cache/validation path on every call.
+            try:
+                rows = self.creds_file.read_text().splitlines()
+            except OSError:
+                rows = []
+            self.reader_api.values = {
+                name: value.strip().strip('"').strip("'")
+                for row in rows
+                for name, sep, value in (row.partition("="),)
+                if sep and value.strip()
+            }
+            return original_read(project, folder,
+                {**env, "FLEET_SECRETS_API": self.reader_api.env["FLEET_SECRETS_API"]}, **options)
+        reader_patch = mock.patch.object(client, "bounded_fetch_project", side_effect=read)
+        reader_patch.start()
+        self.addCleanup(reader_patch.stop)
+        binding_patch = mock.patch.dict(os.environ, {
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.reader_api.project,
+            "INFISICAL_TOKEN": self.reader_api.token,
+        })
+        binding_patch.start()
+        self.addCleanup(binding_patch.stop)
         self.set_creds()
         self.cfg.b2_http = self.fake_b2()  # never the real B2 API
         self.cfg.infisical_bin = str(
@@ -858,7 +876,7 @@ class RunBase(unittest.TestCase):
 
     @property
     def creds_file(self) -> Path:
-        """What the fake ``fleet-secrets`` serves (a test double for Infisical Fleet-OPS)."""
+        """Synthetic loopback provider values for Infisical Fleet-OPS."""
         return self.tmp / "fake-fleet-secrets.env"
 
     def log(self) -> str:
@@ -3379,101 +3397,74 @@ class MiscCase(unittest.TestCase):
         ts = _t.mktime((2026, 10, 10, 0, 7, 0, 0, 0, -1))
         self.assertEqual(fwb.stamp(ts), "2026-10-10 12:07am")
 
-    def test_read_credentials_asks_fleet_secrets_once_and_tolerates_absence(self):
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        head = (
-            '#!/bin/bash\n[ "$1" = run ] || exit 2\n'
-            'shift; [ "$1" = --only ] && shift 2\n[ "$1" = -- ] && shift\n'
-        )
-        with tempfile.TemporaryDirectory() as d:
-            stub = Path(d) / "fleet-secrets"
-            stub.write_text(head + 'A=x exec "$@"\n')
-            stub.chmod(0o755)
-            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
-            with mock.patch.dict(os.environ, names):
-                self.assertEqual(fwb.read_credentials(cfg), {})  # none of the job's names is held
-            stub.write_text(
-                head + 'B2_FLEET_WORK_KEY_ID=kid RESTIC_FLEET_WORK_PASSWORD=pw OTHER=1 exec "$@"\n'
-            )
-            with mock.patch.dict(os.environ, names):
-                self.assertEqual(
-                    fwb.read_credentials(cfg),
-                    {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"},
-                )
-            stub.write_text(
-                "#!/bin/bash\n"
-                'if [ "$1" = get ]; then [ "$2" = B2_FLEET_WORK_KEY_ID ] && printf kid && exit 0; exit 3; fi\n'
-                "exit 3\n"
-            )
-            # --only exits 3 on an absent name:  per-name get
-            with mock.patch.dict(os.environ, names):
-                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
-            stub.write_text("#!/bin/bash\nexit 4\n")  # an Infisical or auth failure
-            with mock.patch.dict(os.environ, names):
-                self.assertEqual(fwb.read_credentials(cfg), {})
-            cfg.fleet_secrets_bin = str(Path(d) / "absent")  # not installed
-            with mock.patch.dict(os.environ, names):
-                self.assertEqual(fwb.read_credentials(cfg), {})
-            stub.write_text("#!/bin/bash\nexit 9\n")
-            cfg.fleet_secrets_bin = str(stub)
-            with mock.patch.dict(os.environ, {n: "v" for n in fwb.CRED_NAMES.values()}):
-                self.assertEqual(
-                    fwb.read_credentials(cfg), {}
-                )  # the environment has all four:  no fetch
+    def test_read_credentials_crosses_real_worker_and_keeps_present_subset(self):
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "RESTIC_FLEET_WORK_PASSWORD": "fixture password"}
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token, "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertNotIn("B2_FLEET_WORK_BUCKET_NAME", calls[0])
+                self.assertEqual(len(calls), 1)
+                api.status = 503
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                with mock.patch.dict(os.environ, {n: "synced" for n in fwb.CRED_NAMES.values()}):
+                    before = len(calls)
+                    self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                    self.assertEqual(len(calls), before)
 
-    def test_read_credentials_asks_only_for_its_own_names(self):
-        """Least privilege:  `run --only` carries just the job's names, and the B2 master key names only
-        when FLEET_WORK_BACKUP_ALLOW_MASTER=1.  The stub refuses a `run` without `--only`."""
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        job = ",".join(fwb.CRED_NAMES.values())
-        both = ",".join(list(fwb.CRED_NAMES.values()) + list(fwb.MASTER_NAMES.values()))
-        with tempfile.TemporaryDirectory() as d:
-            log = Path(d) / "argv.log"
-            stub = Path(d) / "fleet-secrets"
-            stub.write_text(
-                "#!/bin/bash\n"
-                f'echo "$*" | cut -d" " -f1-3 >> "{log}"\n'
-                '[ "$1" = run ] && [ "$2" = --only ] && [ "$4" = -- ] || exit 2\n'
-                "shift 4\n"
-                'B2_FLEET_WORK_KEY_ID=kid BACKBLAZE_MASTER_KEY_ID=mk exec "$@"\n'
-            )
-            stub.chmod(0o755)
-            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
-            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": ""}):
-                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
-            self.assertEqual(log.read_text().strip(), f"run --only {job}")
-            log.unlink()
-            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
-                self.assertEqual(
-                    fwb.read_credentials(cfg),
-                    {"B2_FLEET_WORK_KEY_ID": "kid", "BACKBLAZE_MASTER_KEY_ID": "mk"},
-                )
-            self.assertEqual(log.read_text().strip(), f"run --only {both}")
 
-    def test_the_per_name_get_never_inherits_standard_input(self):
-        """`get` may fall back to a person's own CLI login when its stdin is a terminal, so the fallback
-        gives it none.  The stub echoes one byte of its stdin;  the process's stdin holds a byte."""
-        names = {n: "" for n in fwb.CRED_NAMES.values()}
-        with tempfile.TemporaryDirectory() as d:
-            stub = Path(d) / "fleet-secrets"
-            stub.write_text(
-                "#!/bin/bash\n"
-                '[ "$1" = get ] && [ "$2" = B2_FLEET_WORK_KEY_ID ] && { head -c1; exit 0; }\n'
-                "exit 3\n"
-            )
-            stub.chmod(0o755)
-            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
-            read_end, write_end = os.pipe()
-            os.write(write_end, b"x")
-            saved = os.dup(0)
-            try:
-                os.dup2(read_end, 0)
-                with mock.patch.dict(os.environ, names):
-                    self.assertEqual(fwb.read_credentials(cfg), {})
-            finally:
-                os.dup2(saved, 0)
-                for fd in (saved, read_end, write_end):
-                    os.close(fd)
+    def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "BACKBLAZE_MASTER_KEY_ID": "fixture master"}
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {"B2_FLEET_WORK_KEY_ID": "public fixture"})
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()))
+                os.environ["FLEET_WORK_BACKUP_ALLOW_MASTER"] = "1"
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()) | set(fwb.MASTER_NAMES.values()))
+
+
+    def test_missing_canonical_source_refuses_before_token_lookup_or_external_app(self):
+        class Environment(dict):
+            token_read = False
+            def get(self, name, default=None):
+                if name == "INFISICAL_TOKEN":
+                    self.token_read = True
+                return super().get(name, default)
+        env = Environment(INFISICAL_FLEET_OPS_PROJECT_ID=str(uuid.uuid4()), INFISICAL_TOKEN="synthetic")
+        with (
+            mock.patch.object(fwb, "_infisical_reader", side_effect=ImportError("unavailable")),
+            mock.patch.object(fwb.os, "environ", env),
+            mock.patch.object(fwb.subprocess, "run", side_effect=AssertionError("external app")),
+        ):
+            self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+        self.assertFalse(env.token_read)
+
 
     def test_plist_and_installer_agree_with_the_module(self):
         plist = (HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist").read_text()

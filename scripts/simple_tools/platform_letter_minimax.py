@@ -41,7 +41,6 @@ import json
 import os
 import re
 import sqlite3
-import sys
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -402,7 +401,7 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
 # --------------------------------------------------------------------------------------------
 #
 # The repair pass (`repair_unlettered`) replays the start of the chats this row names, so a chat
-# whose letter never landed is lettered and titled.  One kind of chat is named here, and one kind is
+# whose letter never landed is lettered and titled.  Two kinds of chat are named here, and one kind is
 # deliberately not.
 #
 # - A sub-thread the hook never lettered:  a task row with a parent whose title carries no letter.
@@ -410,6 +409,11 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
 #   ends never prompts again, so nothing else ever asks for its letter.  The pass replays its start,
 #   the store holds its row by then, and the parent is known:  the chat takes the pair after its
 #   parent's and its title carries it.
+#
+# - A chat whose note holds a letter and whose title no longer carries it:  the app's own title
+#   service puts its title back over the lettered one.  The note still holds the letter, so the
+#   letter goes back where it was, with no registry call:  a letter the registry has since retired
+#   is never handed out a second time (AFC-858).
 #
 # A chat still titled "??: " is NOT named.  It holds no letter, which is the state the owner defined for
 # a chat that asked for one and got none (owner, Nov 11, 2026:  "a chat with no letter titles itself
@@ -429,6 +433,15 @@ UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
 #: chats cannot spend it.
 UNLETTERED_BATCH = 200
 UNLETTERED_NOTES = 500
+#: Single-fetch cap for noteless top-level chats, large enough that already-lettered
+#: rows cannot starve a later candidate without re-issuing OFFSET pages.
+UNLETTERED_READ = 2000
+#: One absolute budget for both unlettered-session reads.
+UNLETTERED_DEADLINE_SECONDS = 2.0
+#: How long a read of the session store waits for a locked one before it reads nothing.
+STORE_WAIT = 0.5
+#: Age window for top-level chats that predate the hook (wider than the sub-thread window).
+CHAT_UNLETTERED_MAX_AGE_SECONDS = 90 * 86400
 #: The hook's own no-letter mark, as a SQL pattern.  LIKE reads only % and _ as wildcards, so the two
 #: question marks are the mark itself.
 UNLETTERED_MARK = PL.UNLETTERED + ": %"
@@ -438,14 +451,14 @@ LETTER_GLOB_ONE = "[A-Z]: *"
 LETTER_GLOB_TWO = "[A-Z][A-Z]: *"
 
 
-def _skipped_sids(env: Mapping[str, str]) -> set[str]:
-    """The session ids the repair pass will not touch:  the chats whose own note holds a letter, and
-    the chats whose note is settled (closed or mismatched).
+def _note_sids(env: Mapping[str, str]) -> tuple[dict[str, str], set[str]]:
+    """(the letter each chat that holds one holds, keyed by session id, the session ids the pass will
+    not touch).
 
     The pass reads a chat's note and skips the chat when the note says closed or mismatch, or when
-    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every
-    candidate it names is a chat the pass will really replay, and no slot of the twenty is spent on
-    a chat the pass skips.
+    the note holds a letter (`lettered`).  The scan leaves out exactly those chats, so every candidate
+    it names is a chat the pass will really work on, and no slot of the twenty is spent on a chat the
+    pass skips.
 
     The letter is in the note and the note is a file, so the lettered chats are read from the
     folder:  a listing and one read per note, at most UNLETTERED_NOTES of them.  The ids come from
@@ -461,7 +474,7 @@ def _skipped_sids(env: Mapping[str, str]) -> set[str]:
     try:
         names = os.listdir(folder)
     except OSError:
-        return set()
+        return {}, set()
     notes: list[tuple[float, str, str]] = []
     for name in names:
         if not name.endswith(".json"):
@@ -472,6 +485,7 @@ def _skipped_sids(env: Mapping[str, str]) -> set[str]:
         except OSError:
             continue
     notes.sort(reverse=True)
+    lettered: dict[str, str] = {}
     skipped: set[str] = set()
     for _, path, sid in notes[:UNLETTERED_NOTES]:
         try:
@@ -487,21 +501,26 @@ def _skipped_sids(env: Mapping[str, str]) -> set[str]:
             continue
         if not isinstance(note, dict):
             continue
-        if note.get("state") in ("closed", "mismatch") or PL.lettered(note):
-            skipped.add(ident)  # the pass skips this chat:  a closed, a mismatched or a lettered note
-    return skipped
+        if note.get("state") in ("closed", "mismatch"):
+            skipped.add(ident)  # the pass skips this chat:  a closed or a mismatched note
+        elif PL.lettered(note):
+            skipped.add(ident)  # the pass holds this chat's letter:  it is not replayed
+            labels = PL.held(note)
+            if labels:
+                # A real letter, so a title that lost it can be repaired:  the letter is kept, because
+                # the title is compared with the letter this chat holds, not with any letter.
+                lettered[ident] = labels[0]
+    return lettered, skipped
 
 
-def _unlettered_children(
-    conn: sqlite3.Connection, now: float, skipped: set[str]
-) -> tuple[list[str], int]:
+def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]) -> list[str]:
     """The sub-threads of this host that hold no letter, newest first, and how many rows of the
-    store could not be named.
+    store holds.
 
     The chats the repair pass would skip are left out in the query, so the bound counts the
     candidates and not the rows:  a host whose newest sub-threads are all lettered cannot spend the
     scan's bound on them and starve a genuinely unlettered older row.  A row that names no session
-    id is skipped and counted:  a corrupt row must not read as a chat that was considered and left
+    id raises ValueError:  a corrupt row must not read as a chat that was considered and left
     alone, and only a well-formed id is ever named (the library's own check), so a name the store
     holds can never place anything outside the notes folder.
 
@@ -527,8 +546,7 @@ def _unlettered_children(
         " AND title IS NOT NULL AND title != ''"
         " AND title NOT LIKE ?"
         " AND title NOT GLOB ?"
-        " AND title NOT GLOB ?" + clause +
-        " ORDER BY updated_at_ms DESC LIMIT ?",
+        " AND title NOT GLOB ?" + clause + " ORDER BY updated_at_ms DESC LIMIT ?",
         [
             "task",
             (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
@@ -541,43 +559,43 @@ def _unlettered_children(
         ],
     ).fetchall()
     found: list[str] = []
-    malformed = 0
     for (sid,) in rows:
         if not isinstance(sid, str) or not sid:
-            malformed += 1
-            continue
-        try:
-            checked = PL.SI.check(sid, "a listed session id")
-        except ValueError:
-            malformed += 1
-            continue
+            raise ValueError("session_id must be a non-empty string, got %s" % type(sid).__name__)
+        checked = PL.SI.check(sid, "a listed session id")
         if checked in skipped:
             continue  # a chat the pass skips, whose id the store writes with spaces around it
         found.append(checked)
-    return found, malformed
+    return found
 
 
-def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
-    """This host's MiniMax sub-threads that hold no letter on their title, for the repair pass
-    (`repair_unlettered`):  the ones the hook refused at their start because the store did not hold
-    their row yet.  Ids only, newest first, at most UNLETTERED_SCAN of them.
+def _expired(deadline: float):
+    def handler() -> int:
+        return 1 if time.monotonic() >= deadline else 0
 
-    Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the
-    columns it needs) answers None:  no pass this time.  A row whose session id is malformed is skipped
-    and said out loud on stderr, so one corrupt row neither stops the pass nor passes unnoticed.  A
-    chat's title is read again in its own replayed start before anything changes."""
+    return handler
+
+
+def _unlettered_subthreads(
+    env: Mapping[str, str], deadline: float, skipped: set[str]
+) -> list[str] | None:
+    """This host's MiniMax sub-threads that hold no letter on their title, newest first."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return None
+    if time.monotonic() >= deadline:
+        return None
     now = time.time()
     found: list[str] = []
-    malformed = 0
     try:
         conn = _read_only(path)
         try:
-            children, broken = _unlettered_children(conn, now, _skipped_sids(env))
-            malformed += broken
+            if hasattr(conn, "set_progress_handler"):
+                conn.set_progress_handler(_expired(deadline), 1000)
+            children = _unlettered_children(conn, now, skipped)
             for sid in children:
+                if time.monotonic() >= deadline:
+                    return None
                 if sid not in found:
                     found.append(sid)
                 if len(found) >= UNLETTERED_SCAN:
@@ -586,10 +604,6 @@ def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             conn.close()
     except sqlite3.Error:
         return None  # a store this old cannot say what it holds:  no pass
-    if malformed:
-        sys.stderr.write(
-            "platform-letter minimax: %d malformed session id(s) skipped\n" % malformed
-        )
     return found[:UNLETTERED_SCAN]
 
 
@@ -667,6 +681,192 @@ def minimax_chat_payload(sid: str) -> Mapping[str, Any]:
     return {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
 
 
+def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[str] | None:
+    """Top-level chats that hold no letter note: unknown-age rows first, then dated newest first."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return None
+    if time.monotonic() >= deadline:
+        return None
+    now = time.time()
+    try:
+        conn = sqlite3.connect(
+            Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        if hasattr(conn, "set_progress_handler"):
+            conn.set_progress_handler(_expired(deadline), 1000)
+        rows = conn.execute(
+            "SELECT session_id FROM local_runtime_sessions"
+            " WHERE session_kind IN (?, ?)"
+            " AND (parent_session_id IS NULL OR parent_session_id = '')"
+            " AND (archived IS NULL OR archived = 0)"
+            " AND (created_at_ms IS NULL"
+            " OR (created_at_ms >= ? AND created_at_ms <= ?))"
+            " AND (title IS NULL OR (title NOT LIKE ? AND title NOT GLOB ? AND title NOT GLOB ?))"
+            " ORDER BY created_at_ms IS NULL DESC, created_at_ms DESC"
+            " LIMIT ?",
+            (
+                *CHAT_KINDS,
+                (now - CHAT_UNLETTERED_MAX_AGE_SECONDS) * 1000,
+                (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+                UNLETTERED_MARK,
+                LETTER_GLOB_ONE,
+                LETTER_GLOB_TWO,
+                UNLETTERED_READ,
+            ),
+        ).fetchall()
+        found: list[str] = []
+        for (sid,) in rows:
+            if time.monotonic() >= deadline:
+                return None
+            if not isinstance(sid, str) or not sid:
+                raise ValueError(
+                    "session_id must be a non-empty string, got %s" % type(sid).__name__
+                )
+            ident = PL.SI.check(sid, "a listed session id")
+            if os.path.isfile(PL.note_path(env, SEAT, ident)):
+                continue  # lettered already:  the pass has nothing to do for it
+            found.append(ident)
+            if len(found) >= UNLETTERED_SCAN:
+                break
+        return found
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _letter_lost_chats(
+    env: Mapping[str, str], deadline: float, lettered: Mapping[str, str]
+) -> list[str] | None:
+    """Top-level chats whose own note holds a letter and whose title no longer carries it.
+
+    The letter is in the note and the title is in the store, so the chats whose title lost the letter
+    are the rows where the two disagree:  the note says which letter the chat holds,  and the store says
+    the title does not carry it.  They are named so the pass can put the letter back,  with no registry
+    call:  a letter the registry has since retired is never handed out a second time (AFC-858).
+
+    The title is read with the chat's own letter in hand and the library's own check decides:  a title
+    that carries another letter is named too (the chat was renamed with a letter of its own), and a title
+    that carries this chat's letter is not (there is nothing to restore).  A title on the no-letter mark
+    ("??: ") belongs to another rule, and the check leaves it out.
+
+    The age window is the one the chats that hold no letter note use,  so a chat that predates the hook
+    and a chat the app renamed are read the same way.  A sub-thread is in this group too:  a sub-thread
+    is a lettered chat in its own right,  so its title can lose its letter the same way."""
+    if not lettered:
+        return []
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return None
+    if time.monotonic() >= deadline:
+        return None
+    now = time.time()
+    try:
+        conn = sqlite3.connect(
+            Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        if hasattr(conn, "set_progress_handler"):
+            conn.set_progress_handler(_expired(deadline), 1000)
+        rows = conn.execute(
+            "SELECT session_id, title FROM local_runtime_sessions"
+            " WHERE session_kind IN (?, ?)"
+            " AND (archived IS NULL OR archived = 0)"
+            " AND (created_at_ms IS NULL"
+            " OR (created_at_ms >= ? AND created_at_ms <= ?))"
+            " AND TRIM(session_id) IN (%s)" % ",".join("?" * len(lettered)),
+            (
+                *CHAT_KINDS,
+                (now - CHAT_UNLETTERED_MAX_AGE_SECONDS) * 1000,
+                (now - UNLETTERED_MIN_AGE_SECONDS) * 1000,
+                *sorted(lettered),
+            ),
+        ).fetchall()
+        found: list[str] = []
+        for sid, title in rows:
+            if time.monotonic() >= deadline:
+                return None
+            if not isinstance(sid, str) or not sid:
+                raise ValueError(
+                    "session_id must be a non-empty string, got %s" % type(sid).__name__
+                )
+            ident = PL.SI.check(sid, "a listed session id")
+            label = lettered.get(ident)
+            if not label:
+                continue  # the store writes the id with spaces around it
+            if not PL.letter_lost({"state": "open", "label": label}, title):
+                continue  # the title carries the letter this chat holds, or the no-letter mark
+            found.append(ident)
+            if len(found) >= UNLETTERED_SCAN:
+                break
+        return found
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _interleave(*groups: list[str], limit: int) -> list[str]:
+    """The groups in turn, so one busy group cannot starve the others, and every id once."""
+    found: list[str] = []
+    seen: set[str] = set()
+    index = 0
+    while len(found) < limit:
+        added = False
+        for group in groups:
+            if index >= len(group):
+                continue
+            added = True
+            sid = group[index]
+            if sid not in seen:
+                seen.add(sid)
+                found.append(sid)
+                if len(found) >= limit:
+                    break
+        if not added:
+            break
+        index += 1
+    return found
+
+
+def minimax_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's MiniMax chats whose title carries no letter, for the repair pass
+    (`repair_unlettered`).
+
+    Three groups are named, then capped at UNLETTERED_SCAN: sub-threads whose title carries no
+    letter (newest first by updated_at_ms), then top-level chats that hold no letter note, with
+    `created_at_ms IS NULL` rows before dated rows ordered newest first, then the chats whose own
+    note holds a letter and whose title no longer carries it (AFC-858:  the letter goes back where
+    it was, with no registry call).
+
+    The groups are taken in turn, so one busy group cannot starve the others.
+
+    Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store without the
+    columns it needs) answers None:  no pass this time.  A row whose session_id is malformed
+    raises ValueError naming the field and type rather than returning a partial inventory.
+    All three reads share one absolute deadline; an expired deadline discards partial results and
+    answers None.  Eligible top-level rows are fetched once (no OFFSET pages).  A chat's note
+    or title is read again in its own replayed start before anything changes."""
+    deadline = time.monotonic() + UNLETTERED_DEADLINE_SECONDS
+    lettered, skipped = _note_sids(env)
+    children = _unlettered_subthreads(env, deadline, skipped)
+    chats = _unlettered_noteless_chats(env, deadline)
+    lost = _letter_lost_chats(env, deadline, lettered)
+    if children is None or chats is None or lost is None:
+        # One half could not be read, so this is not a complete inventory:  the pass answers None
+        # and the half that failed is repaired on the next pass, rather than a list that hides it.
+        return None
+    if time.monotonic() >= deadline:
+        return None
+    return _interleave(children, chats, lost, limit=UNLETTERED_SCAN)
+
+
 #: The wrappers the retired MiniMax client left on a host, under the home folder.  Nothing runs them any more;
 #: `install --check` names the ones still there and no installer deletes them.
 RETIRED_FILES = (".local/bin/mm-session-letter", ".local/bin/mm-registry-env")
@@ -687,9 +887,9 @@ SPEC = PL.PlatformSpec(
     output="text",
     quiet_events=("Stop",),
     chat_payload=minimax_chat_payload,
+    unlettered_sessions=minimax_unlettered_sessions,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     gone_sessions=minimax_gone,
-    unlettered_sessions=minimax_unlettered_sessions,
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,

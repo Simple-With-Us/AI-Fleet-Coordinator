@@ -4,7 +4,9 @@
 // Run: node --test scripts/test_operator_sheets_drain.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +15,7 @@ import {
 } from "./simple_tools/operator_sheets_export.mjs";
 import { OperatorSheetsError, OperatorSheetsGoogle } from "./simple_tools/operator_sheets_google.mjs";
 import {
-  acquireLease, drainExitCode, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
+  acquireLease, createSheetsReadGate, drainExitCode, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
   REGISTRY_CALL_TIMEOUT_MS, RUN_DEADLINE_MS, runOnce, SESSION_SURFACE, syncThreadsOnce, TABLES,
   THREAD_EXPORT_MAX_BYTES, THREAD_SURFACE, THREAD_SYNC_BUDGET_MS, THREAD_SYNC_MAX_WRITES,
   workbookProfileFromEnv,
@@ -65,19 +67,226 @@ test("systemd unit: the service passes no flags the runner ignores", async () =>
   assert.doesNotMatch(unit, /--once/);
 });
 
-test("writer lease: a live holder excludes, a stale lock is stolen", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
+const leaseModuleUrl = new URL("./simple_tools/operator_sheets_drain.mjs", import.meta.url).href;
+
+function startLeaseProcess(lock, mode) {
+  const source = `
+import { acquireLease } from ${JSON.stringify(leaseModuleUrl)};
+const lease = await acquireLease(process.argv[1]);
+if (!lease) process.exit(75);
+process.stdout.write("locked\\n");
+if (process.argv[2] === "exit") process.exit(0);
+setInterval(() => {}, 60_000);
+`;
+  return spawn(process.execPath, ["--input-type=module", "-e", source, lock, mode], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function withTimeout(promise, label, timeoutMs = 10_000) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function waitForLockMessage(child) {
+  return withTimeout(new Promise((resolve, reject) => {
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("locked\n")) resolve();
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (!output.includes("locked\n")) reject(new Error(`lease child exited early: ${code}`));
+    });
+  }), "lease child lock message");
+}
+
+function waitForClose(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return withTimeout(new Promise((resolve) => child.once("close", resolve)), "lease child close");
+}
+
+test("writer lease: a second process is excluded until the owner exits", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-process-"));
   const lock = join(dir, "drain.lock");
-  const first = await acquireLease(lock);
-  assert.ok(first);
-  assert.equal(await acquireLease(lock), null); // our own pid is alive
-  await first.close();
-  // Simulate a crashed holder: lock file names a pid that cannot exist.
+  const holder = startLeaseProcess(lock, "hold");
+  try {
+    await waitForLockMessage(holder);
+    const before = await readFile(lock);
+    const inodeBefore = await stat(lock);
+    const busy = await acquireLease(lock);
+    assert.equal(busy, null);
+    assert.deepEqual(await readFile(lock), before);
+    const inodeWhileHeld = await stat(lock);
+    assert.equal(inodeWhileHeld.dev, inodeBefore.dev);
+    assert.equal(inodeWhileHeld.ino, inodeBefore.ino);
+
+    holder.kill("SIGKILL"); // Process death releases the kernel lock without close().
+    await waitForClose(holder);
+    const released = await acquireLease(lock);
+    assert.ok(released);
+    await released.close();
+    assert.deepEqual(await readFile(lock), before); // Keep the canonical lock inode stable.
+    const inodeAfterRelease = await stat(lock);
+    assert.equal(inodeAfterRelease.dev, inodeBefore.dev);
+    assert.equal(inodeAfterRelease.ino, inodeBefore.ino);
+  } finally {
+    holder.kill("SIGKILL");
+    await waitForClose(holder);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writer lease: only the O_EXCL creator may initialize a new empty inode", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-init-window-"));
+  const lock = join(dir, "drain.lock");
+  let signalOpened;
+  let releaseFirst;
+  const opened = new Promise((resolve) => { signalOpened = resolve; });
+  const gate = new Promise((resolve) => { releaseFirst = resolve; });
+  const first = acquireLease(lock, {
+    openFile: async (...args) => {
+      const handle = await open(...args);
+      signalOpened();
+      await gate;
+      return handle;
+    },
+  });
+  try {
+    await opened;
+    await assert.rejects(
+      acquireLease(lock),
+      /writer lease has ambiguous empty initialization/,
+    );
+    assert.equal((await stat(lock)).size, 0);
+    releaseFirst();
+    const firstLease = await first;
+    assert.ok(firstLease);
+    assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+    await firstLease.close();
+  } finally {
+    releaseFirst();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writer lease: preexisting empty inode is ambiguous and remains untouched", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-empty-existing-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "");
+  await chmod(lock, 0o600);
+  const before = await stat(lock);
+  await assert.rejects(
+    acquireLease(lock),
+    /writer lease has ambiguous empty initialization/,
+  );
+  const after = await stat(lock);
+  assert.equal(after.dev, before.dev);
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.size, 0);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: stale PID-only lock content does not block a free kernel lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-stale-"));
+  const lock = join(dir, "drain.lock");
   await writeFile(lock, "999999999");
-  const stolen = await acquireLease(lock);
-  assert.ok(stolen);
-  assert.equal((await readFile(lock, "utf8")).trim(), String(process.pid));
-  await stolen.close();
+  await chmod(lock, 0o600);
+  const original = await readFile(lock);
+  const lease = await acquireLease(lock);
+  assert.ok(lease);
+  assert.notDeepEqual(await readFile(lock), original);
+  assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+  await lease.close();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a live legacy PID-only holder is preserved during rollout", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-legacy-live-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, String(process.pid));
+  await chmod(lock, 0o600);
+  const original = await readFile(lock);
+  assert.equal(await acquireLease(lock), null);
+  assert.deepEqual(await readFile(lock), original);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: symlink lock paths fail closed without touching their targets", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-symlink-"));
+  const lock = join(dir, "drain.lock");
+  const target = join(dir, "target");
+  await writeFile(target, "preserve");
+  await symlink(target, lock);
+  await assert.rejects(acquireLease(lock), { code: "ELOOP" });
+  assert.equal(await readFile(target, "utf8"), "preserve");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a permissive preexisting lock mode fails closed without repair", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-mode-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "flock-v1");
+  await chmod(lock, 0o644);
+  await assert.rejects(acquireLease(lock), /writer lease path is not the expected private regular file/);
+  assert.equal((await readFile(lock, "utf8")).trim(), "flock-v1");
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: arbitrary file content fails closed without clobbering it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-content-"));
+  const lock = join(dir, "drain.lock");
+  await writeFile(lock, "operator data");
+  await chmod(lock, 0o600);
+  const before = await readFile(lock);
+  await assert.rejects(acquireLease(lock), /writer lease has an invalid legacy owner marker/);
+  assert.deepEqual(await readFile(lock), before);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a lock-helper timeout kills the helper and fails closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-timeout-"));
+  const lock = join(dir, "drain.lock");
+  let killed = false;
+  const spawnProcess = (_file, _args, options) => {
+    assert.ok(Number.isInteger(options.stdio[3]), "the open lock fd is passed as child fd 3");
+    const child = new EventEmitter();
+    child.kill = (signal) => {
+      assert.equal(signal, "SIGKILL");
+      killed = true;
+      return true;
+    };
+    return child;
+  };
+  await assert.rejects(
+    acquireLease(lock, { spawnProcess, timeoutMs: 5 }),
+    /writer lease lock helper timed out/,
+  );
+  assert.equal(killed, true);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("writer lease: a lock-helper spawn error fails closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "drain-lease-helper-error-"));
+  const lock = join(dir, "drain.lock");
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.kill = () => true;
+    setImmediate(() => child.emit("error", new Error("synthetic helper failure")));
+    return child;
+  };
+  await assert.rejects(
+    acquireLease(lock, { spawnProcess }),
+    /writer lease lock helper failed/,
+  );
+  await rm(dir, { recursive: true, force: true });
 });
 
 // ---- write pacing and HTTP 429 back-off (no real sleeping) ----
@@ -162,6 +371,48 @@ test("429: reads refused for quota are retried too, without write pacing", async
   assert.deepEqual(clock.sleeps, [2_000]);
 });
 
+test("429: stopping during a read back-off is a stop signal, not a failed row", async () => {
+  const clock = fakeClock();
+  let stop = false;
+  const { adapter, calls } = scriptedAdapter({ inspect: [quota(), { sessions: { rowCount: 1 } }] });
+  const paced = pacedAdapter(adapter, {
+    sleep: async (ms) => { await clock.sleep(ms); stop = true; },
+    now: clock.now,
+    shouldStop: () => stop,
+  });
+  await assert.rejects(paced.inspect(), { code: "stopped" });
+  assert.deepEqual(calls, ["inspect"]); // no retry after the stop
+  assert.deepEqual(clock.sleeps, [1_000]); // bounded stop polling interrupts the 2 s back-off
+});
+
+test("429: a read refusal arriving after stop is a stop signal before retry", async () => {
+  const clock = fakeClock();
+  let stop = false;
+  let calls = 0;
+  const adapter = {
+    inspect: async () => {
+      calls += 1;
+      stop = true;
+      throw quota();
+    },
+  };
+  const paced = pacedAdapter(adapter, {
+    sleep: clock.sleep, now: clock.now, shouldStop: () => stop,
+    surface: { reads: ["inspect"], writes: [] },
+  });
+  await assert.rejects(paced.inspect(), { code: "stopped" });
+  assert.equal(calls, 1);
+  assert.deepEqual(clock.sleeps, []);
+});
+
+test("429: exhausted read retries remain an HTTP failure", async () => {
+  const clock = fakeClock();
+  const { adapter, calls } = scriptedAdapter({ inspect: Array(6).fill(null).map(() => quota()) });
+  const paced = pacedAdapter(adapter, { sleep: clock.sleep, now: clock.now });
+  await assert.rejects(paced.inspect(), { code: "http_error", status: 429 });
+  assert.equal(calls.length, 6); // original request plus five retries
+});
+
 test("429: uncertain writes and every other failure go straight back to the drain", async () => {
   const failures = [
     new OperatorSheetsError("http_error", { status: 429, uncertain: true }), // never retried if uncertain
@@ -179,7 +430,7 @@ test("429: uncertain writes and every other failure go straight back to the drai
   }
 });
 
-test("pacing: writes are spaced by the interval; time already spent counts; reads are not paced", async () => {
+test("pacing: write spacing stays separate from fetch-level read pacing", async () => {
   const clock = fakeClock();
   const { adapter } = scriptedAdapter();
   const paced = pacedAdapter(adapter, { sleep: clock.sleep, now: clock.now });
@@ -195,7 +446,106 @@ test("pacing: writes are spaced by the interval; time already spent counts; read
   await paced.appendEvent(["e3"]);
   await paced.readRows("events", { startRow: 2, limit: 1 });
   await paced.validateHeaders();
-  assert.equal(clock.sleeps.length, 3); // past the interval, and reads go out unpaced
+  assert.equal(clock.sleeps.length, 3); // adapter methods do not pace reads; the shared GET gate does
+});
+
+test("shared read gate paces a real 250-page drain simulation under the run budget", async () => {
+  const clock = fakeClock(0);
+  const readTimes = [];
+  let writes = 0;
+  const sheetIds = { sessions: 11, events: 12 };
+  const rawFetch = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    const path = decodeURIComponent(new URL(url).pathname);
+    if (method === "POST") {
+      writes += 1;
+      return jsonResponse({ spreadsheetId: "wb_1", updates: {
+        updatedRange: "'Events'!A47473:I47473", updatedRows: 1, updatedColumns: 9, updatedCells: 9,
+      } });
+    }
+    readTimes.push(clock.now());
+    if (!path.includes("/values/")) return jsonResponse({ sheets: [
+      { properties: { sheetId: sheetIds.sessions, title: "Sessions", gridProperties: { rowCount: 2_248, columnCount: 16 } } },
+      { properties: { sheetId: sheetIds.events, title: "Events", gridProperties: { rowCount: 47_472, columnCount: 9 } } },
+    ] });
+    if (path.endsWith("!A1:P1")) return jsonResponse({ values: [SESSIONS_HEADERS] });
+    if (path.endsWith("!A1:I1")) return jsonResponse({ values: [EVENTS_HEADERS] });
+    return jsonResponse({ values: [] });
+  };
+  const readGate = createSheetsReadGate({ sleep: clock.sleep, now: clock.now });
+  const raw = new OperatorSheetsGoogle({
+    spreadsheetId: "wb_1", sheetIds, tables: TABLES, token: async () => "tok",
+    fetch: readGate.wrap(rawFetch),
+  });
+  const adapter = pacedAdapter(raw, { sleep: clock.sleep, now: clock.now });
+  const cells = EVENTS_HEADERS.map(() => "");
+  cells[0] = "event-1";
+  const marked = [];
+  const result = await drainOutbox({
+    adapter,
+    outbox: {
+      pending: async () => [{ outbox_id: "outbox-1", kind: "event_append", payload: { cells } }],
+      markExported: async (ids) => marked.push(...ids),
+    },
+  });
+
+  const pages = Math.ceil((2_248 - 1) / 200) + Math.ceil((47_472 - 1) / 200);
+  assert.equal(pages, 250);
+  assert.equal(readTimes.length, 256);
+  assert.ok(readTimes.every((at, i) => i === 0 || at - readTimes[i - 1] >= 1_100));
+  let peakPerMinute = 0;
+  for (const start of readTimes) {
+    peakPerMinute = Math.max(peakPerMinute,
+      readTimes.filter((at) => at >= start && at < start + 60_000).length);
+  }
+  assert.ok(peakPerMinute <= 55);
+  assert.equal(clock.t, 255 * 1_100);
+  assert.ok(clock.t < RUN_DEADLINE_MS);
+  assert.deepEqual(result, { exported: 1, failed: 0 });
+  assert.equal(writes, 1);
+  assert.deepEqual(marked, ["outbox-1"]);
+});
+
+test("read gate stop aborts reconciliation before another GET or any write", async () => {
+  const clock = fakeClock();
+  let stop = false;
+  let calls = 0;
+  const sheets = [
+    { properties: { sheetId: 11, title: "Sessions", gridProperties: { rowCount: 2, columnCount: 16 } } },
+    { properties: { sheetId: 12, title: "Events", gridProperties: { rowCount: 2, columnCount: 9 } } },
+  ];
+  const rawFetch = async (url, init = {}) => {
+    calls += 1;
+    if (init.method && init.method !== "GET") throw new Error("unexpected write");
+    const path = decodeURIComponent(new URL(url).pathname);
+    if (!path.includes("/values/")) {
+      if (calls === 4) stop = true;
+      return jsonResponse({ sheets });
+    }
+    if (path.endsWith("!A1:P1")) return jsonResponse({ values: [SESSIONS_HEADERS] });
+    if (path.endsWith("!A1:I1")) return jsonResponse({ values: [EVENTS_HEADERS] });
+    return jsonResponse({ values: [] });
+  };
+  const readGate = createSheetsReadGate({ sleep: clock.sleep, now: clock.now });
+  const raw = new OperatorSheetsGoogle({
+    spreadsheetId: "wb_1", sheetIds: { sessions: 11, events: 12 }, tables: TABLES,
+    token: async () => "tok", fetch: readGate.wrap(rawFetch, () => stop),
+  });
+  const adapter = pacedAdapter(raw, { sleep: clock.sleep, now: clock.now, shouldStop: () => stop });
+  const cells = SESSIONS_HEADERS.map(() => "");
+  cells[0] = "record-1";
+  const marked = [];
+  const result = await drainOutbox({
+    adapter,
+    outbox: {
+      pending: async () => [{ outbox_id: "outbox-1", kind: "session_upsert", payload: { cells } }],
+      markExported: async (ids) => marked.push(...ids),
+    },
+    shouldStop: () => stop,
+  });
+  assert.deepEqual(result, { exported: 0, failed: 0, stopped: true });
+  assert.equal(calls, 4); // next GET is refused locally after the stop
+  assert.deepEqual(marked, []);
 });
 
 // End to end through drainOutbox and the real transport, with a scripted Sheets API.
@@ -322,35 +672,6 @@ test("registry bridge: every docker exec carries a timeout", async () => {
     assert.equal(call.file, "docker");
     assert.equal(call.options.timeout, 120_000);
     assert.equal(call.options.killSignal, "SIGKILL");
-  }
-});
-
-test("writer lease: only ESRCH proves the holder gone; EPERM and any other probe error keep the lock", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "drain-lease-"));
-  const lock = join(dir, "drain.lock");
-  const realKill = process.kill;
-  const probeWith = (code) => {
-    process.kill = (pid, signal) => {
-      if (signal !== 0) return realKill.call(process, pid, signal);
-      const error = new Error("probe");
-      error.code = code;
-      throw error;
-    };
-  };
-  try {
-    await writeFile(lock, "4242");
-    // EPERM (another user's live process) and any other probe error keep the lease.
-    for (const code of ["EPERM", "EINVAL", "EACCES", undefined]) {
-      probeWith(code);
-      assert.equal(await acquireLease(lock), null, `probe error ${code} must not steal the lock`);
-      assert.equal((await readFile(lock, "utf8")).trim(), "4242");
-    }
-    probeWith("ESRCH");
-    const stolen = await acquireLease(lock);
-    assert.ok(stolen);
-    await stolen.close();
-  } finally {
-    process.kill = realKill;
   }
 });
 
@@ -632,6 +953,7 @@ async function syncThreads({ clock = fakeClock(0), ...options } = {}) {
   const logs = [];
   const result = await syncThreadsOnce({
     env: RUN_ENV, log: (m) => logs.push(m), now: clock.now, pacing: { sleep: clock.sleep },
+    readGate: options.readGate ?? createSheetsReadGate({ sleep: clock.sleep, now: clock.now }),
     ...options,
   });
   return { result, logs, clock };
@@ -681,7 +1003,7 @@ test("thread sync: one log line of counts, never topic or header text", async ()
 test("thread sync: a payload for another tab or layout is refused unsent", async () => {
   const good = [threadRow(1)];
   const cases = [
-    [null, "payload_destination_mismatch"],
+    [null, "payload_invalid"],
     [threadPayload(good, { tab: "Sessions" }), "payload_destination_mismatch"],
     [threadPayload(good, { spreadsheetId: "another_workbook" }), "payload_destination_mismatch"],
     [threadPayload(good, { headers: [...THREAD_HEADERS].reverse() }), "payload_headers_mismatch"],
@@ -696,6 +1018,38 @@ test("thread sync: a payload for another tab or layout is refused unsent", async
     assert.equal(result.error, code);
     assert.deepEqual(state.calls, [], `${code}: no sheet call`);
   }
+});
+
+test("thread sync: payload validation runs before destination and header fields are read", async () => {
+  const reads = [];
+  const malformed = new Proxy({}, {
+    get(_target, key) {
+      if (key === "then") return undefined;
+      reads.push(String(key));
+      throw new Error("invalid payload must be rejected before field access");
+    },
+  });
+  const bridge = {
+    threads: { exportRows: async () => malformed },
+    outbox: {}, attempts: {},
+  };
+  const { adapter, state } = threadSheet();
+  const { result } = await syncThreads({
+    bridge, adapter,
+    loadModule: async () => ({
+      SPREADSHEET_ID: SPREADSHEET_ID,
+      SHEET_TAB,
+      THREAD_HEADERS,
+      validatePayload: (payload) => {
+        reads.push("validatePayload");
+        assert.equal(payload, malformed);
+        throw new Error("synthetic malformed payload");
+      },
+    }),
+  });
+  assert.equal(result.error, "payload_invalid");
+  assert.deepEqual(reads, ["validatePayload"]);
+  assert.deepEqual(state.calls, []);
 });
 
 test("thread sync: a registry read failure is one fixed code and touches no sheet", async () => {
@@ -945,8 +1299,9 @@ test("thread sync: end to end through the thread module's real adapter", async (
     });
     assert.equal(result.appended, 2);
     assert.equal(result.failed, 0);
-    // The 3 s Retry-After in 1 s slices, then the 1.1 s spacing before the next write.
-    assert.deepEqual(clock.sleeps, [1_000, 1_000, 1_000, 1_100]);
+    // Three read gaps, the 3 s Retry-After in 1 s slices, then write spacing.
+    assert.deepEqual(clock.sleeps,
+      [1_000, 100, 1_000, 100, 1_000, 100, 1_000, 1_000, 1_000, 1_100]);
     const workbook = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`;
     for (const { url, init } of seen) {
       assert.ok(url.startsWith(`${workbook}/`) || url.startsWith(`${workbook}?`), url);
@@ -1018,6 +1373,35 @@ test("thread sync: a SIGTERM during the read stops it between pages the same way
   }
 });
 
+test("thread Sheets transport preserves the shared read gate stop as stopped", async () => {
+  const realFetch = globalThis.fetch;
+  const clock = fakeClock(0);
+  let stop = false;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    stop = true; // the next request is blocked by the shared gate
+    return jsonResponse({ values: [THREAD_HEADERS] });
+  };
+  try {
+    const readGate = createSheetsReadGate({ sleep: clock.sleep, now: clock.now });
+    const { result } = await syncThreads({
+      clock,
+      bridge: threadBridge(threadPayload([threadRow(1)])).bridge,
+      tokenProvider: async () => "fixture-access-token",
+      readGate,
+      shouldStop: () => stop,
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.stopped, "signal");
+    assert.equal(result.failed, 0);
+    assert.equal(result.error, undefined);
+    assert.equal(result.updated + result.appended, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("registry bridge: thread rows come from the image's export-rows, bounded", async () => {
   const seen = [];
   const exec = async (file, args, options) => {
@@ -1071,9 +1455,12 @@ test("runOnce: threads first, then Sessions and Events with the deadline left", 
   const { bridge: sBridge, state } = fakeRegistry(["r1", "r2"]);
   const { adapter: sSheet } = fakeSheet({ onWrite: () => order.push("session write") });
   let deadlineMs = null;
+  let threadReadGate = null;
+  let sessionReadGate = null;
   const out = await runOnce({
     env: RUN_ENV, log: () => {}, now: clock.now,
     threads: async (args) => {
+      threadReadGate = args.readGate;
       const res = await syncThreadsOnce({
         ...args, bridge: tBridge, adapter: thread.adapter, pacing: { sleep: clock.sleep },
       });
@@ -1082,6 +1469,7 @@ test("runOnce: threads first, then Sessions and Events with the deadline left", 
     },
     sessions: (args) => {
       deadlineMs = args.deadlineMs;
+      sessionReadGate = args.readGate;
       return sessionsOnly(sBridge, sSheet)(args);
     },
   });
@@ -1090,6 +1478,8 @@ test("runOnce: threads first, then Sessions and Events with the deadline left", 
   assert.deepEqual(state.marked, ["ob-r1", "ob-r2"]);
   assert.deepEqual(order, ["thread write", "session write", "session write"]);
   assert.equal(deadlineMs, RUN_DEADLINE_MS - 60_000);
+  assert.ok(threadReadGate);
+  assert.equal(sessionReadGate, threadReadGate);
 });
 
 test("runOnce: a failed or thrown thread sync leaves the drain as it runs alone", async () => {

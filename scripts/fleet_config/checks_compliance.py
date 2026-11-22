@@ -105,7 +105,6 @@ PROFILE_BUDGET_SECONDS = 60
 # edit cannot turn a read into a write.  ``security`` has none:  the keychain is read
 # only by the certificate check,  with its own fixed,  read-only arguments.
 COMMAND_SUBCOMMANDS: dict[str, frozenset[str]] = {
-    "fleet-secrets": frozenset({"doctor", "names", "status", "get"}),
     "security": frozenset(),
 }
 

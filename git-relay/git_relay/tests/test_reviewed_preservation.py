@@ -32,10 +32,86 @@ class ReviewedPreservationTests(unittest.TestCase):
         ):
             return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
 
-    def test_registry_empty_and_default_dedicated_refusal_unchanged(self):
-        self.assertEqual(candidate.REVIEWED_PRESERVATIONS, frozenset())
+    def test_default_dedicated_refusal_unchanged(self):
         with self.assertRaises(ValueError):
             candidate.apply_reviewed_patch(self.repo, self.path, self.base, [self.edit])
+
+    def test_approved_destination_does_not_admit_other_source_or_raw_upload(self):
+        repo = "Simple-With-Us/AI-Fleet-Coordinator"
+        path = "scripts/fixtures/muster-vectors-v5.json"
+        with self.assertRaises(ValueError):
+            candidate.apply_reviewed_patch(repo, path, self.base, [self.edit])
+        self.assertIsNotNone(scanner.scan(self.result.decode()))
+        self.assertIsNotNone(scanner.scan_file(repo, path, self.result.decode()))
+
+    def test_registry_contains_exactly_the_approved_pairs(self):
+        self.assertEqual(
+            candidate.REVIEWED_PRESERVATIONS,
+            frozenset(
+                {
+                    (
+                        "Simple-With-Us/AI-Fleet-Coordinator",
+                        "scripts/fixtures/muster-vectors-v5.json",
+                        "0fca2cb4b79206e4eca627bfa6b9632db743ef2c3ff0ada0152c4bdcead32ab0",
+                        "73fd3d71ee62c617c802423e4dc7490387152776c0e8270c7d9cc3e87e43bc49",
+                    ),
+                    (
+                        "Simple-With-Us/AI-Fleet-Coordinator",
+                        "scripts/fleet_rag/tests/test_recall.py",
+                        "b78c76d6927ad12c90972e39a336b38d38102cef823e0957194ca359729a65b4",
+                        "d9cd1d0ac5529a2d7dbe81f595038c0210ca6c236a87947bdd8528034543ef73",
+                    ),
+                    (
+                        "Simple-With-Us/AI-Fleet-Coordinator",
+                        "scripts/fleet_rag/tests/test_ingest.py",
+                        "e970e451e414d3efd963abed5d544f0713fe2b2934901c032fe8b01898085d2e",
+                        "1eaa804f7514122721888bd9f49c41a4088d827a28855391739d97c334008634",
+                    ),
+                }
+            ),
+        )
+
+    def test_approved_fixture_pair_destinations_refuse_other_source_or_raw_upload(self):
+        repo = "Simple-With-Us/AI-Fleet-Coordinator"
+        for path in (
+            "scripts/fleet_rag/tests/test_recall.py",
+            "scripts/fleet_rag/tests/test_ingest.py",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(ValueError):
+                    candidate.apply_reviewed_patch(repo, path, self.base, [self.edit])
+                self.assertIsNotNone(scanner.scan(self.result.decode()))
+                self.assertIsNotNone(scanner.scan_file(repo, path, self.result.decode()))
+
+    def test_exact_fixture_pair_record_admits_only_its_own_preservation(self):
+        repo = "Simple-With-Us/AI-Fleet-Coordinator"
+        path = "scripts/fleet_rag/tests/test_recall.py"
+        with patch.object(
+            candidate,
+            "REVIEWED_PRESERVATIONS",
+            frozenset({self.record(self.base, self.result, repo=repo, path=path)}),
+        ):
+            self.assertEqual(
+                candidate.apply_reviewed_patch(repo, path, self.base, [self.edit]),
+                self.result,
+            )
+
+    def test_fixture_pair_records_fail_closed_on_cross_path_and_result_mismatch(self):
+        repo = "Simple-With-Us/AI-Fleet-Coordinator"
+        path = "scripts/fleet_rag/tests/test_recall.py"
+        records = [
+            self.record(
+                self.base, self.result, repo=repo, path="scripts/fleet_rag/tests/test_ingest.py"
+            ),
+            self.record(self.base, self.result + b"x", repo=repo, path=path),
+        ]
+        for record in records:
+            with (
+                self.subTest(record=record),
+                patch.object(candidate, "REVIEWED_PRESERVATIONS", frozenset({record})),
+            ):
+                with self.assertRaises(ValueError):
+                    candidate.apply_reviewed_patch(repo, path, self.base, [self.edit])
 
     def test_exact_whole_source_line_and_digest_proof(self):
         self.assertEqual(self.run_candidate(self.base, [self.edit], self.result), self.result)
@@ -65,6 +141,10 @@ class ReviewedPreservationTests(unittest.TestCase):
         for known in [("a",), ("old",), ("new",)]:
             with self.subTest(known=known), self.assertRaises(ValueError):
                 self.run_candidate(self.base, [self.edit], self.result, known)
+
+    def test_loaded_values_iterator_is_not_consumed_before_result_check(self):
+        with self.assertRaisesRegex(ValueError, "loaded credential"):
+            self.run_candidate(self.base, [self.edit], self.result, iter(["new"]))
 
     def test_new_match_cannot_be_blessed_by_result_digest(self):
         base = b"ordinary\n"

@@ -58,6 +58,30 @@ def secret_word() -> str:
     return "ghp_" + "A1b2C3d4" * 5
 
 
+def prompt_safety_cases():
+    """Synthetic data only; callers label failures by case, never by the prompt or extracted data."""
+    value = "fixture" * 3 + "123"
+    opaque = "fixture7" * 7
+    alphabetic = "fixture" * 4
+    yield "quoted-label", json.dumps({"password": value}) + " fix login", value, "Password Fix Login"
+    yield "opaque-token", "rotate " + opaque + " today", opaque, "Rotate Today"
+    yield "alphabetic-opaque-token", "rotate " + alphabetic + " today", alphabetic, "Rotate Today"
+    yield "cut-token", " " * (PL.PROMPT_SCAN_CHARS - 12) + opaque, opaque[:12], ""
+    yield "cut-fence", "```\n" + value + "\n" + " " * PL.PROMPT_SCAN_CHARS + "```", value, ""
+    yield "open-fence", "```\n" + value, value, ""
+    for kind in ("PRIVATE KEY", "CERTIFICATE"):
+        for case, begin, end, header_kind, footer_kind in (
+            ("upper", "BEGIN", "END", kind, kind),
+            ("lower", "begin", "end", kind.lower(), kind.lower()),
+            ("mixed", "BeGiN", "eNd", kind.title(), kind.swapcase()),
+        ):
+            header = "-----" + begin + " " + header_kind + "-----\n"
+            footer = "\n-----" + end + " " + footer_kind + "-----"
+            name = case + "-" + kind
+            yield "closed-armor-" + name, header + value + footer + "\nfix login", value, "Fix Login"
+            yield "open-armor-" + name, header + value, value, ""
+
+
 class Base(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -122,6 +146,30 @@ class Base(unittest.TestCase):
 
 
 class TitleTests(unittest.TestCase):
+    def test_prompt_data_is_removed_before_title_word_splitting(self) -> None:
+        for name, prompt, marker, expected in prompt_safety_cases():
+            with self.subTest(case=name):
+                result = PL.title_from_prompt(prompt)
+                self.assertFalse(marker.casefold() in result.casefold())
+                self.assertTrue(result == expected, "unexpected safe title")
+
+    def test_quoted_assignment_labels_keep_their_context(self) -> None:
+        value = "fixture" * 3 + "123"
+        for opening, closing in (("\"", "\""), ("'", "'"), ("`", "`"), ("**", "**"), ("“", "”"), ("‘", "’")):
+            with self.subTest(quote=opening):
+                prompt = opening + "password" + closing + ": " + opening + value + closing
+                result = PL.title_from_prompt(prompt + "\nfix login")
+                self.assertFalse(value.casefold() in result.casefold())
+                self.assertTrue(result == "Fix Login", "credential-only line became the title")
+
+    def test_scan_boundary_keeps_complete_words_and_safe_prose(self) -> None:
+        safe = "fix login"
+        prefix = " " * (PL.PROMPT_SCAN_CHARS - len(safe))
+        self.assertEqual(PL.title_from_prompt(prefix + safe), "Fix Login")
+        self.assertEqual(PL.title_from_prompt(prefix + safe + " next"), "Fix Login")
+        self.assertEqual(PL.title_from_prompt("review AFC-870 and Python3.12"), "Review AFC-870 and Python3.12")
+        self.assertEqual(PL.title_from_prompt("fix the café's parser"), "Fix the Café's Parser")
+
     def test_bare_drops_only_what_it_is_told_to(self) -> None:
         self.assertEqual(PL.bare("BC: Fix Login"), "Fix Login")
         self.assertEqual(PL.bare("B: Fix Login"), "Fix Login")
@@ -1952,6 +2000,23 @@ class HookTests(Base):
             self.assertNotIn(value, fh.read())
         self.assertNotIn(value, json.dumps(ssh.calls))
 
+    def test_prompt_safety_survives_the_hook_registry_note_and_transport(self) -> None:
+        for index, (name, prompt, marker, expected) in enumerate(prompt_safety_cases()):
+            with self.subTest(case=name):
+                sid = "safe-prompt-%d" % index
+                transport = Calls(self)
+                self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
+                          transport=transport)
+                label = self.label(sid)
+                out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": sid,
+                                 "prompt": prompt, "session_title": label + ": New Chat"}, transport=transport)
+                row = self.lookup(sid)
+                note = self.note(sid)
+                for surface in (out, row, note, transport.calls):
+                    self.assertFalse(marker.casefold() in json.dumps(surface).casefold())
+                self.assertTrue(row["title"] == expected, "registry title differs from safe extraction")
+                self.assertTrue(bool(self.fake.requests), "fixture did not reach the real registry service")
+
     def test_a_fork_does_not_keep_the_letter_of_the_chat_it_was_made_from(self) -> None:
         self.start("s-0001")
         source = self.label("s-0001")
@@ -2893,6 +2958,227 @@ class RepairCliTests(Base):
         code, out = self.repair("--location", "server", now=1000.0)
         self.assertEqual(code, 0)
         self.assertIn("s-0202", out)
+
+
+class RestoreLetterTests(Base):
+    """A chat that holds a letter and whose title lost it gets the letter back (AFC-858):  the letter goes
+    where it was,  from the note's own label,  and the chat is never registered a second time."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+        self.written: list[PL.TitleRequest] = []
+        self.titles: dict[str, str] = {}
+
+        def writer(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            self.titles[request.session_id] = request.title
+            return True
+
+        def unlettered_sessions(env):
+            return list(self.unlettered)
+
+        def chat_payload(sid: str):
+            return {
+                "hook_event_name": "SessionStart",
+                "source": "resume",
+                "session_id": sid,
+                "title": self.titles.get(sid, ""),
+            }
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+            title_writer=writer,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+
+    def start(self, sid: str) -> None:
+        out = io.StringIO()
+        code = PL.hook(
+            self.spec, self.server_env(), io.StringIO(json.dumps(
+                {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
+            )), out, platform="linux", transport=Calls(self),
+        )
+        self.assertEqual(code, 0)
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def repair(self, sid: str, calls: Calls) -> dict:
+        self.unlettered.append(sid)
+        return PL.repair_unlettered(
+            self.spec, self.server_env(), "CODEX", "server", now=1000.0, transport=calls
+        )
+
+    def test_a_title_that_carries_its_letter_is_not_lost(self) -> None:
+        note = {"state": "open", "label": "AA"}
+        self.assertFalse(PL.letter_lost(note, "AA: Fix login"))
+        self.assertFalse(PL.letter_lost(note, "AA:"))
+        self.assertTrue(PL.letter_lost(note, "Fix login"))
+        self.assertTrue(PL.letter_lost(note, ""))
+        self.assertFalse(PL.letter_lost(note, "??: Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "open", "label": "??"}, "Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "failed", "label": "AA"}, "Fix login"))
+
+    def test_a_chat_whose_title_lost_its_letter_gets_it_back(self) -> None:
+        self.start("s-0300")
+        label = self.note("s-0300")["label"]
+        # The app put its own title over the lettered one.
+        self.titles["s-0300"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0300", calls)
+        self.assertEqual(done["repaired"], ["s-0300"])
+        # A restored letter is not a replay:  no start was replayed, so the chat is not a replay either.
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds:  no second registration,  so a letter the registry has
+        # since retired is never handed out again.
+        self.assertEqual(self.note("s-0300")["label"], label)
+        self.assertNotIn("register", calls.ops())
+
+    def test_a_chat_whose_title_still_carries_its_letter_is_left_alone(self) -> None:
+        self.start("s-0301")
+        label = self.note("s-0301")["label"]
+        calls = Calls(self)
+        done = self.repair("s-0301", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.note("s-0301")["label"], label)
+
+    def test_a_platform_with_no_title_writer_leaves_the_title_alone(self) -> None:
+        # A row with no writer cannot change the record the app shows,  so the letter stays where it
+        # is and the chat is not touched.
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0302")
+        self.titles["s-0302"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0302", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+
+
+    def write_note(self, sid: str, note: dict) -> None:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+    def test_a_writer_that_refuses_the_title_leaves_the_chat_alone(self) -> None:
+        # A writer that refuses the title (a name a person chose, or a chat with no descriptive name yet)
+        # leaves the chat as it is:  the pass does not count the chat as repaired, and the note keeps the
+        # pending stamp, so a later prompt tries the title again.
+        def refusing(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            return False
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            title_writer=refusing,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0303")
+        label = self.note("s-0303")["label"]
+        self.titles["s-0303"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0303", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds, and the note keeps the pending stamp.
+        self.assertEqual(self.note("s-0303")["label"], label)
+        self.assertTrue(self.note("s-0303").get("pending"))
+
+    def test_a_corrupt_retry_stamp_does_not_stop_the_restore(self) -> None:
+        # A stamp that is not a number reads as due:  the restore tries the title again instead of
+        # failing the chat.
+        self.start("s-0307")
+        label = self.note("s-0307")["label"]
+        note = self.note("s-0307")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "not a number"
+        self.write_note("s-0307", note)
+        self.titles["s-0307"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0307", calls)
+        self.assertEqual(done["repaired"], ["s-0307"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_a_retry_stamp_written_as_a_string_still_waits_out_its_backoff(self) -> None:
+        # A stamp that holds a time holds a time, whichever way it was written:  a retry stamp in a
+        # string still keeps the restore off the writer until the backoff is over.
+        self.start("s-0308")
+        label = self.note("s-0308")["label"]
+        note = self.note("s-0308")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "4000"
+        self.write_note("s-0308", note)
+        self.titles["s-0308"] = "Fix login"
+        before = len(self.written)
+        calls = Calls(self)
+        done = self.repair("s-0308", calls)
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(len(self.written), before)
+
+    def test_a_stored_title_that_carries_the_letter_is_not_prefixed_twice(self) -> None:
+        # A stored title that already carries the letter is the chat's own words, so the letter goes back
+        # once:  "AA: Fix login" and never "AA: AA: Fix login".
+        self.start("s-0306")
+        label = self.note("s-0306")["label"]
+        note = self.note("s-0306")
+        note["title"] = label + ": Fix login"
+        self.write_note("s-0306", note)
+        self.titles["s-0306"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0306", calls)
+        self.assertEqual(done["repaired"], ["s-0306"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_a_name_in_another_script_is_not_adopted(self) -> None:
+        # Every title this fleet writes is English, so a name the app put there in another script is never
+        # adopted:  the letter goes back over the chat's own English words.
+        self.start("s-0304")
+        label = self.note("s-0304")["label"]
+        note = self.note("s-0304")
+        note["title"] = "Fix login"
+        self.write_note("s-0304", note)
+        self.titles["s-0304"] = "\u4fee\u590d\u767b\u5f55"
+        calls = Calls(self)
+        done = self.repair("s-0304", calls)
+        self.assertEqual(done["repaired"], ["s-0304"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_the_placeholder_is_not_a_topic_of_its_own(self) -> None:
+        # A chat with no descriptive name yet carries the placeholder, and the letter goes over the words
+        # the chat has of its own.
+        self.start("s-0305")
+        label = self.note("s-0305")["label"]
+        note = self.note("s-0305")
+        note["title"] = "Fix login"
+        self.write_note("s-0305", note)
+        self.titles["s-0305"] = PL.PLACEHOLDER
+        calls = Calls(self)
+        done = self.repair("s-0305", calls)
+        self.assertEqual(done["repaired"], ["s-0305"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
 
 
 class GoneReportTests(Base):
@@ -4181,7 +4467,8 @@ class RetiredClientTests(Base):
             os.chmod(os.path.join(bin_dir, name), 0o755)
         old = os.path.join(bin_dir, "simple-chat") + " letter hook"
         entry = lambda command: [{"hooks": [{"type": "command", "command": command}]}]  # noqa: E731
-        settings = {"hooks": {"SessionStart": entry(old), "UserPromptSubmit": entry(old), "SessionEnd": entry(old),
+        settings = {"env": {"CLAUDE_LETTER_LOCATION": "server", "CLAUDE_LETTER_REMOTE": "fixture@mac"},
+                    "hooks": {"SessionStart": entry(old), "UserPromptSubmit": entry(old), "SessionEnd": entry(old),
                               "PreToolUse": entry(old), "Stop": entry("other-tool stop")}}
         path = os.path.join(self.home, ".claude", "settings.json")
         os.makedirs(os.path.dirname(path))
@@ -4204,7 +4491,12 @@ class RetiredClientTests(Base):
         self.assertNotIn("simple-chat letter hook", json.dumps(hooks))  # replaced in place, and the stray one gone
         self.assertNotIn("PreToolUse", hooks)
         self.assertEqual(json.dumps(hooks).count("platform-letter hook --platform claude"), 4)
+        for event in ("SessionStart", "UserPromptSubmit", "SessionEnd"):
+            command = PL.installed_command(hooks[event][0], "claude")
+            self.assertEqual(PL._flag(command, "--location"), "server")
+            self.assertEqual(PL._flag(command, "--mac-ssh"), "fixture@mac")
         self.assertEqual(run("--check")[0], 0)
+        self.assertEqual(run()[1]["changed"], [])
 
     def test_remove_takes_them_out_too_and_an_event_left_empty_goes(self) -> None:
         hooks = self.old_hooks()
@@ -4468,6 +4760,58 @@ class InstallTests(Base):
         with open(self.hooks_path(), "w") as fh:
             json.dump(doc, fh)
         os.chmod(self.hooks_path(), mode)
+
+    def test_legacy_metadata_is_adapter_declared_and_the_migrated_hook_registers(self) -> None:
+        spec = make_spec(retired_env={"--location": "OLD_LOCATION", "--mac-ssh": "OLD_DESTINATION"})
+        foreign = {"hooks": [{"type": "command", "command": "simple-chat letter hook"}]}
+        legacy = {"OLD_LOCATION": "server", "OLD_DESTINATION": "fixture@mac",
+                  "CLAUDE_LETTER_LOCATION": "mac", "CLAUDE_LETTER_REMOTE": "other@mac"}
+        self.seed({"env": legacy, "hooks": {"SessionStart": [foreign]}})
+        with mock.patch.dict(PL.SPECS, {"codex": spec}):
+            self.assertEqual(self.run_install()[0], 0)
+            doc = self.load()
+            self.assertEqual(doc["env"], legacy)
+            self.assertEqual(doc["hooks"]["SessionStart"][0], foreign)
+            command = PL.installed_command(doc["hooks"]["SessionStart"][1], "codex")
+            self.assertEqual(PL._flag(command, "--location"), "server")
+            self.assertEqual(PL._flag(command, "--mac-ssh"), "fixture@mac")
+            self.assertEqual(self.run_install()[1]["changed"], [])
+            out, err = io.StringIO(), io.StringIO()
+            transport = Calls(self)
+            self.assertEqual(PL.main(command[1:], env=self.env(SESSION_LETTER_RECONCILE="0"),
+                                     stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart",
+                                                                  "session_id": "migrated", "source": "startup"})),
+                                     stdout=out, stderr=err, transport=transport), 0)
+            self.assertEqual(err.getvalue(), "")
+            self.assertIsNotNone(self.lookup("migrated", location="server"))
+            self.assertIsNone(self.lookup("migrated", location="mac"))
+            self.assertTrue(self.fake.requests)
+
+    def test_explicit_and_installed_flags_win_over_legacy_metadata(self) -> None:
+        spec = make_spec(retired_env={"--location": "OLD_LOCATION", "--mac-ssh": "OLD_DESTINATION"})
+        self.seed({"env": {"OLD_LOCATION": "mac", "OLD_DESTINATION": "old@mac"}})
+        with mock.patch.dict(PL.SPECS, {"codex": spec}):
+            self.assertEqual(self.run_install(location="server", mac_ssh="current@mac")[0], 0)
+            self.assertEqual(self.run_install()[1]["changed"], [])
+            command = PL.installed_command(self.load()["hooks"]["SessionStart"][0], "codex")
+            self.assertEqual(PL._flag(command, "--location"), "server")
+            self.assertEqual(PL._flag(command, "--mac-ssh"), "current@mac")
+
+    def test_invalid_or_other_adapter_legacy_metadata_is_not_migrated(self) -> None:
+        declared = make_spec(retired_env={"--location": "OLD_LOCATION", "--mac-ssh": "OLD_DESTINATION"})
+        for index, (spec, legacy) in enumerate((
+            (declared, {"OLD_LOCATION": "elsewhere", "OLD_DESTINATION": "-oProxyCommand=bad"}),
+            (declared, {"OLD_LOCATION": ["server"], "OLD_DESTINATION": {"host": "mac"}}),
+            (declared, {"OLD_LOCATION": "SERVER", "OLD_DESTINATION": "one two"}),
+            (declared, {"CLAUDE_LETTER_LOCATION": "server", "CLAUDE_LETTER_REMOTE": "other@mac"}),
+            (make_spec(), {"OLD_LOCATION": "server", "OLD_DESTINATION": "other@mac", "": "server"}),
+        )):
+            with self.subTest(case=index), mock.patch.dict(PL.SPECS, {"codex": spec}):
+                self.seed({"env": legacy})
+                self.assertEqual(self.run_install()[0], 0)
+                command = PL.installed_command(self.load()["hooks"]["SessionStart"][0], "codex")
+                self.assertEqual(PL._flag(command, "--location"), "")
+                self.assertEqual(PL._flag(command, "--mac-ssh"), "")
 
 
     def test_the_installer_refuses_a_timeout_the_runtime_would_reject(self) -> None:

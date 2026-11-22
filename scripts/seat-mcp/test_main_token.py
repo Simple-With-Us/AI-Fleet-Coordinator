@@ -1,4 +1,4 @@
-"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback.  No real fleet-secrets."""
+"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback."""
 
 from __future__ import annotations
 
@@ -9,24 +9,31 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 from seat_mcp import __main__ as entry
+from seat_mcp import auth
 
 
 class MissingTokenTests(unittest.TestCase):
     def test_exit_2_with_a_one_line_message_that_names_the_folder(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
-        env["FLEET_SECRETS_BIN"] = "/nonexistent/fleet-secrets"
         err = io.StringIO()
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(entry, "serve") as serve,
+            mock.patch("seat_mcp.auth.subprocess.run") as reader,
             redirect_stderr(err),
         ):
+            reader.return_value.returncode = 2
             code = entry.main()
         self.assertEqual(code, 2)
         serve.assert_not_called()
         lines = err.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertIn("SEAT_MCP_TOKEN missing in Infisical /seat-mcp", lines[0])
+        argv = reader.call_args.args[0]
+        self.assertEqual(argv[:3], [auth.sys.executable, "-I", str(auth.FLEET_INFISICAL_CLI)])
+        self.assertEqual(
+            argv[3:], ["get", "SEAT_MCP_TOKEN", "--project", "fleet-ops", "--path", "/seat-mcp"]
+        )
 
     def test_token_in_the_environment_starts_the_server(self) -> None:
         with (

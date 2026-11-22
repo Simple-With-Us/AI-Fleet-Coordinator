@@ -202,6 +202,17 @@ PROMPT_SCAN_WORDS = 64
 # The scanner's context rules ("api_key: <value>", "authorization: bearer <value>", "Linear client secret = <value>")
 # span several words, so a prompt word is scanned together with the words kept before it, this many at most.
 SECRET_WINDOW = 12
+# Generated titles never need pasted keys, hashes or armored data.  These guards are local to prompt extraction;
+# they do not change the shared scanner's policy for source code or other fleet text.
+PROMPT_OPAQUE_RUN = re.compile(r"[A-Za-z0-9_+/=.-]{28,}")
+PROMPT_ARMOR = re.compile(
+    r"-----BEGIN (?P<kind>[A-Z0-9 ]+)-----.*?(?:-----END (?P=kind)-----|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+PROMPT_QUOTES = str.maketrans("", "", "\"'`\\*“”‘’")
+PROMPT_CREDENTIAL_WORDS = frozenset(
+    {"api", "key", "password", "token", "secret", "bearer", "authorization"}
+)
 STDIN_LIMIT = 1 << 20
 # What the registry side answers for a chat it has no registration for (the registry was restored from an older copy,
 # or never saw the chat), and what the hook reads as "register again".
@@ -455,8 +466,8 @@ class PlatformSpec:
     gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
     unlettered_sessions        for a platform whose own session store on this host lists its chats with the titles
-                               the hook put on them:  the ids of the ones still showing "??: ", for the repair a
-                               chat's start sets off (`repair_after_start`, `repair_unlettered`)
+                               the hook put on them:  the ids of the ones whose title carries no letter, for the
+                               repair a chat's start sets off (`repair_after_start`, `repair_unlettered`)
     unlettered_feed            for a row with no `unlettered_sessions`:  why it has none, in one line (the platform is
                                hook-only:  no store this host can list, or titles that never carry "??: ").  Every
                                row of the table says one or the other (test_platform_letter_feeds)
@@ -740,15 +751,21 @@ def title_case(words: list[str]) -> str:
 def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
     and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
-    words after a slash command still can)."""
-    text = str(prompt or "")[:PROMPT_SCAN_CHARS]
-    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    words after a slash command still can).  Partial tokens and unterminated blocks are discarded before scanning:
+    a scan-window cut must not turn data the scanner would refuse into an innocuous-looking fragment."""
+    whole = str(prompt or "")
+    text = whole[:PROMPT_SCAN_CHARS]
+    if len(whole) > len(text) and not whole[len(text)].isspace() and not text[-1:].isspace():
+        text = re.sub(r"\S+$", "", text)
+    text = re.sub(r"```.*?(?:```|\Z)", " ", text, flags=re.DOTALL)
+    text = PROMPT_ARMOR.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
         line = re.sub(r"^\s*/\S*", " ", line)
         words: list[str] = []
         kept: list[str] = []  # the line's tokens that are not secrets, in order
+        dropped = False
         # Each whitespace-delimited token is scanned whole, then split into words: a token such as ghp_<key> must
         # not reach the scanner as the two harmless halves an underscore would cut it into.  It is scanned as the
         # last of the tokens kept before it, because the scanner's context rules need the keyword and the value
@@ -756,13 +773,33 @@ def title_from_prompt(prompt: object) -> str:
         for scanned, token in enumerate(line.split()):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
                 break
-            if secretscan.scan(" ".join([*kept[-SECRET_WINDOW:], token])):
+            context = " ".join([*kept[-SECRET_WINDOW:], token])
+            opaque = any(
+                any(ch.isalpha() for ch in match.group())
+                for match in PROMPT_OPAQUE_RUN.finditer(token)
+            )
+            # A quoted JSON/Markdown label must carry the same context as an unquoted assignment.  Scan both
+            # forms before splitting words, while preserving the original spelling of ordinary title words.
+            if (
+                opaque
+                or secretscan.scan(context)
+                or secretscan.scan(context.translate(PROMPT_QUOTES))
+            ):
+                dropped = True
                 continue
             kept.append(token)
             words.extend(m.group() for m in WORD.finditer(token))
         del words[TITLE_WORDS:]
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
             words.pop()  # "... Addressed From" reads cut off; end on a word that carries meaning
+        if (
+            dropped
+            and words
+            and all(
+                word.translate(PROMPT_QUOTES).lower() in PROMPT_CREDENTIAL_WORDS for word in words
+            )
+        ):
+            continue
         if words:
             return clean_title(title_case(words))
     return ""
@@ -1731,6 +1768,35 @@ def lettered(note: Mapping[str, Any]) -> bool:
     return note.get("state") == "open" and bool(note.get("label"))
 
 
+def _label(note: Mapping[str, Any]) -> str:
+    """The letter the note holds, when it is one:  a note that names something else (a broken label) holds
+    no letter to put on a title."""
+    for label in held(note):
+        return label
+    return ""
+
+
+def letter_lost(note: Mapping[str, Any], current: object) -> bool:
+    """The chat holds a letter and the title on it no longer carries it.
+
+    A chat's letter lives in its own note and the platform shows the title, so a title that lost the letter (the
+    app renamed the chat, or a chat was carried into another one) still belongs to the chat that holds the letter:
+    the letter goes back where it was.  A chat with no title at all is in the same case, for the title it wanted
+    and never got.
+
+    The no-letter mark ("??: ") is another rule's business:  a chat showing it holds no letter to lose, and the
+    repair that gives a chat its first letter owns it."""
+    if not lettered(note):
+        return False
+    label = _label(note)
+    if not label:
+        return False
+    line = one_line(current)
+    if UNLETTERED_PREFIX.match(line):
+        return False
+    return not (line == label + ":" or line.startswith(label + ": "))
+
+
 def no_letter(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
     """The context line for a chat that holds no letter, worded by whether the hook can title the chat."""
     mark = (
@@ -2078,9 +2144,8 @@ def _transcript_strings(
     elif isinstance(value, Mapping):
         kind = value.get("type")
         role = value.get("role")
-        if (
-            (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES)
-            or (isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES)
+        if (isinstance(role, str) and role in _RUNTIME_CONTEXT_ROLES) or (
+            isinstance(kind, str) and kind in _RUNTIME_CONTEXT_TYPES
         ):
             return
         hidden = (
@@ -3952,10 +4017,23 @@ def _save_json(path: str, data: Mapping[str, Any]) -> bool:
 
 
 def _seconds(value: object) -> float:
-    """A time from a note or a stamp, or 0 when it is not a number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    """A time from a note or a stamp, or 0 when it is not a number.
+
+    A time written as digits in a string is a time as well:  a stamp that holds a time holds a time,
+    whichever way it was written, so a retry stamp written as a string still waits out its backoff.
+    A time that is not finite is no time at all."""
+    if isinstance(value, bool):
         return 0.0
-    return float(value)
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return 0.0
+    else:
+        return 0.0
+    return seconds if math.isfinite(seconds) else 0.0
 
 
 def adopted_note(
@@ -4346,6 +4424,56 @@ def _release(path: str) -> None:
         pass
 
 
+def _restore_letter(chat: Chat, note: Mapping[str, Any], data: Mapping[str, Any]) -> bool:
+    """Put the letter a chat holds back on the title the platform shows, with no registry call.
+
+    A chat that holds a letter is not replayed:  a replay registers the chat again, and a letter the registry has
+    since retired would be handed out a second time (AFC-858).  The letter is in the note, so the title is rebuilt
+    from the note's own label and the words the chat already carries, and the platform's own writer puts it back.
+    Only the letter is restored:  the owner's words stay as they are.
+
+    A chat that shows no words at all is titled with the title the note wanted ("WW: New Chat"), because that is
+    the one the fleet already asked for and never got.
+
+    The words under the letter are English, as every title this fleet writes is:  a name the app put there in
+    another script is not adopted, and the letter goes back over the chat's own English words instead.
+
+    A writer that refuses the title (a name a person chose, or a chat with no descriptive name yet) leaves the
+    chat as it is:  the restore says so, the note keeps the pending stamp for a later retry, and the pass does
+    not count the chat as repaired."""
+    spec = chat.spec
+    if spec.title_writer is None:
+        return False  # a row with no writer cannot change the record the app shows
+    current = chat_name(spec.current_title(data, chat.env))
+    if not letter_lost(note, current):
+        return False
+    label = _label(note)
+    words = bare(current, held(note))
+    topic = "" if words == PLACEHOLDER else lettered_topic(words)
+    if not topic:
+        # A name in another script is not a topic this chat holds (the words under a letter are English),
+        # so the name the platform put there is never adopted:  the letter goes back over the words the
+        # chat has of its own, the title it wanted, or the placeholder it was given.
+        want = str(note.get("want") or "")
+        topic = lettered_topic(bare(str(note.get("title") or ""), held(note))) or lettered_topic(
+            bare(want, held(note))
+        )
+    title = compose(label, topic)
+    if title == current:
+        return False
+    if note.get("pending") and str(note.get("want") or "") == title:
+        if chat.now < _seconds(note.get("retry_at")):
+            return False  # the writer refused this title already:  a later prompt tries it again
+    work = dict(note)
+    present(chat, work, title, current, data, "repair", settable=False)
+    chat.write(work)
+    if work.get("pending"):
+        # The writer refused:  the letter is not back on the chat, so the pass does not count it as
+        # repaired.  The note keeps the pending stamp, so a later prompt tries the title again.
+        return False
+    return True
+
+
 def repair_unlettered(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -4371,8 +4499,12 @@ def repair_unlettered(
     still knows resumes the letter it holds (nothing re-allocates), and one it does not know registers again.  A
     chat whose note already holds a letter is never replayed, even when the app's own record still shows "??: "
     (a row with no title writer cannot change that record):  replaying it every pass would keep a dormant chat
-    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  What the
-    repaired chats' starts print goes nowhere, and one pass replays at most REPAIR_MAX_CHATS."""
+    "seen" and out of the Eavesdropper's stale sweep, so its own next prompt titles it instead.  A chat whose
+    title lost its letter is not replayed either, but it is repaired:  a platform with a title writer puts the
+    letter the note holds back on the title, with no registry call, so a letter the registry has since retired is
+    never handed out a second time.  What the repaired chats' starts print goes nowhere, and one pass replays at
+    most REPAIR_MAX_CHATS.  A chat whose letter was restored is not a replay:  it is counted as lettered, not as
+    asked."""
     if (
         spec.unlettered_sessions is None
         or spec.chat_payload is None
@@ -4430,8 +4562,18 @@ def repair_unlettered(
             if held_note.get("state") in ("closed", "mismatch"):
                 continue  # a settled no-letter state:  replaying it would re-register it every pass
             if lettered(held_note):
-                continue  # it holds a letter:  a replay would only mark a dormant chat seen again
-            on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
+                # It holds a letter:  a replay would only mark a dormant chat seen again, and a second
+                # registration would hand out a letter the registry may have retired.  A title that lost the
+                # letter is a different matter:  the platform can write titles, so the letter the note holds
+                # goes back where it was, with no registry call at all.
+                if not _restore_letter(chat, held_note, payload):
+                    continue
+                # The letter is back on the title:  no start was replayed, so this chat is not a replay,
+                # and the pass says so instead of counting it as one.
+                repaired.append(sid)
+                continue
+            else:
+                on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
             failures.append({"sid": sid, "error": type(exc).__name__})
             continue
@@ -5269,8 +5411,20 @@ def install_json_hooks(
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
     inherited = next((w for w in already if w), [])
+    spec = load_spec(platform)
     where = opts.location or _flag(inherited, "--location")
     mac = opts.mac_ssh or _flag(inherited, "--mac-ssh")
+    # A retired hook can carry these nonsecret settings in the JSON env block instead of command flags.  The
+    # replacement names its platform explicitly, so retired_argv will no longer translate that environment.
+    # Read only this adapter's declared names, and only when no explicit/current command setting wins.
+    legacy = doc.get("env")
+    if spec is not None and isinstance(legacy, dict):
+        old_where = legacy.get(spec.retired_env.get("--location"))
+        old_mac = legacy.get(spec.retired_env.get("--mac-ssh"))
+        if not where and isinstance(old_where, str) and old_where.strip() in LOCATIONS:
+            where = old_where.strip()
+        if not mac and isinstance(old_mac, str) and MAC_SSH_RE.fullmatch(old_mac.strip()):
+            mac = old_mac.strip()
     command = command_for(home, platform, where, mac)
     have = {
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
@@ -5283,7 +5437,6 @@ def install_json_hooks(
         if ev not in installer.events and isinstance(entries, list)
     }
     stray = {ev: kept for ev, kept in stray.items() if kept != events[ev]}
-    spec = load_spec(platform)
     files = [
         os.path.join(home, name)
         for name in (spec.retired_files if spec is not None else ())

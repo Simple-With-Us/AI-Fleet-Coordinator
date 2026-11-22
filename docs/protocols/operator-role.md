@@ -231,6 +231,11 @@ A duplicate needs destination repair before draining resumes; skipping it or add
 a failure/quarantine state would require a separate ordering and schema design.
 Repeated full-grid scans are an explicit safety/performance tradeoff; a reusable
 index needs a separately qualified runner lease and destination-mutation contract.
+The shared drain paces every Sheets GET at its fetch boundary, including the multiple
+requests inside metadata and header checks, and shares that gate across the thread
+registry and Sessions/Events phases of one timer run.  The existing signal and run
+deadline stop new reads before reconciliation can reach any writes; pending rows
+remain for a fresh complete scan on the next run.
 
 **The citations for the pieces this discussion rests on.**
 
