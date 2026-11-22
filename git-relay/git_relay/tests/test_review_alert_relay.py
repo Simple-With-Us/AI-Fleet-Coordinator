@@ -19,11 +19,8 @@ from git_relay.audit import AuditLog
 from git_relay.outcomes import OutcomeStore
 from git_relay.policy import SeatPolicy
 from git_relay.pr_owners import PROwnerStore
-from git_relay.server import (
-    SERVICE_READ_APP_SLUG,
-    SERVICE_READ_GRANTS,
-    Relay,
-)
+from git_relay.server import Relay
+from git_relay.service_read import SERVICE_READ_APP_SLUG, SERVICE_READ_GRANTS
 
 ECHO_TOKEN = "e" * 32
 SERVICE_TOKEN = "s" * 48

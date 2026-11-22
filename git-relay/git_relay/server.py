@@ -115,7 +115,6 @@ DEFAULT_PORT = 8471
 _SESSION_CLAIM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
 #: A fleet session letter is exactly two capitals (wake-router letter rule).
 _LETTER_CLAIM_RE = re.compile(r"[A-Z]{2}")
-#: The one App identity a service read mints under (fixed;  not caller-chosen).
 
 
 def _text(value, field: str, required: bool = True) -> str | None:
