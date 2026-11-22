@@ -208,16 +208,32 @@ def _python_source_value_spans(text: str) -> frozenset[tuple[int, int]]:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return frozenset()
-    lines = text.splitlines(keepends=True)
+    # Python physical lines use only LF, CRLF or lone CR. str.splitlines()
+    # also splits Unicode separators inside valid literals, unlike the AST.
+    lines = re.split(r"(?<=\n)|(?<=\r)(?!\n)", text)
     starts = [0]
     for line in lines:
         starts.append(starts[-1] + len(line))
 
+    offsets_valid = True
+
     def offset(node, end=False):
-        line = node.end_lineno if end else node.lineno
-        column = node.end_col_offset if end else node.col_offset
-        # AST columns are UTF-8 bytes; scanner spans are Unicode characters.
-        return starts[line - 1] + len(lines[line - 1].encode("utf-8")[:column].decode("utf-8"))
+        nonlocal offsets_valid
+        try:
+            line = node.end_lineno if end else node.lineno
+            column = node.end_col_offset if end else node.col_offset
+            if type(line) is not int or type(column) is not int or not 1 <= line <= len(lines):
+                raise ValueError("invalid source location")
+            raw_line = lines[line - 1].encode("utf-8")
+            if not 0 <= column <= len(raw_line):
+                raise ValueError("invalid source column")
+            # AST columns are UTF-8 bytes; scanner spans are Unicode characters.
+            return starts[line - 1] + len(raw_line[:column].decode("utf-8"))
+        except (IndexError, TypeError, ValueError):
+            # Bad or undecodable locations invalidate the whole analysis,
+            # including any earlier spans, rather than crashing or guessing.
+            offsets_valid = False
+            return -1
 
     spans = set()
     for visited, node in enumerate(ast.walk(tree), 1):
@@ -254,7 +270,7 @@ def _python_source_value_spans(text: str) -> frozenset[tuple[int, int]]:
             # Other callable identifiers can themselves look like credentials
             # and retain the generic detector's conservative treatment.
             spans.add((offset(node.value.func), offset(node.value.func, True)))
-    return frozenset(spans)
+    return frozenset(spans) if offsets_valid else frozenset()
 
 
 def _scan(text: str, known: Iterable[str], source_spans: frozenset[tuple[int, int]]) -> str | None:

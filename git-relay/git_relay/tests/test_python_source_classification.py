@@ -3,6 +3,7 @@
 import secrets
 import string
 import unittest
+from unittest import mock
 
 from git_relay import patch_secretscan as scanner
 from git_relay.reviewed_fixtures import unreviewed_file_secret
@@ -152,6 +153,46 @@ class PythonSourceClassification(unittest.TestCase):
         text = 'title = "café"; ' + keyword_source(CALL)
         self.assertIsNone(self.check_file(text))
         self.assertIsNotNone(self.check_file(text + assignment_source("PASSWORD", synthetic())))
+
+    def test_unicode_literal_separators_do_not_change_physical_lines(self):
+        for separator in ("\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            # Use the actual Unicode characters, not escaped spellings.
+            prefix = 'banner = "' + separator + "é界😀" * 40 + '"\n'
+            for tail in (public_source(), keyword_source(CALL)):
+                with self.subTest(separator=ord(separator), tail_kind=tail.split("(")[0]):
+                    text = prefix + tail
+                    self.assertIsNone(self.check_file(text))
+                    self.assertIsNotNone(self.check_file(text + assignment_source("PASSWORD", synthetic())))
+
+    def test_python_physical_newline_forms_keep_correct_offsets(self):
+        for newline in ("\n", "\r\n", "\r"):
+            text = ('banner = "é界😀"\n' + public_source() + keyword_source(CALL)).replace("\n", newline)
+            with self.subTest(newline=repr(newline)):
+                self.assertIsNone(self.check_file(text))
+
+    def test_invalid_ast_locations_invalidate_all_spans(self):
+        import ast
+
+        text = public_source() + public_source()
+        for field, value in (("lineno", 0), ("lineno", 9999), ("col_offset", -1), ("col_offset", None), ("end_col_offset", 1000000)):
+            tree = ast.parse(text)
+            setattr(tree.body[1].value, field, value)
+            with self.subTest(field=field, value=value), mock.patch("ast.parse", return_value=tree):
+                self.assertEqual(scanner._python_source_value_spans(text), frozenset())
+                self.assertIsNotNone(self.check_file(text))
+
+    def test_undecodable_utf8_ast_column_fails_closed_not_exception(self):
+        import ast
+
+        text = public_source() + 'title="é"; ' + public_source()
+        tree = ast.parse(text)
+        tree.body[2].value.col_offset = len('title="'.encode()) + 1
+        with mock.patch("ast.parse", return_value=tree):
+            self.assertEqual(scanner._python_source_value_spans(text), frozenset())
+            self.assertIsNotNone(self.check_file(text))
+
+    def test_surrogate_source_parse_fails_closed(self):
+        self.assertEqual(scanner._python_source_value_spans("\ud800" + public_source()), frozenset())
 
     def test_analysis_node_budget_does_not_admit_partial_evidence(self):
         text = public_source() + "x = 0\n" * 3000
