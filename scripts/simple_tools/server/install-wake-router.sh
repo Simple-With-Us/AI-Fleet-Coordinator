@@ -746,7 +746,11 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
                 recovery = "stop and custody verified; explicit recovery decision required"
             except BaseException as recovery_error:
                 recovery = "%s: %s" % (type(recovery_error).__name__, recovery_error)
-            say("controlled upgrade failed (%s: %s); recovery outcome: %s; never blind replay" %
+            say("controlled upgrade failed (%s: %s); recovery outcome: %s; never blind replay; "
+                "before another attempt, pre-activation refusal requires verified old-service recovery; "
+                "after activation was requested, preserve final custody and require an explicit verified "
+                "recovery decision, never automatic rollback; terminal unknown receipts do not gain "
+                "a later acknowledgement" %
                 (type(original).__name__, original, recovery))
             if isinstance(original, (KeyboardInterrupt, SystemExit)):
                 raise
