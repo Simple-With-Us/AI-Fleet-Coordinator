@@ -448,7 +448,8 @@ def fetch(
         if keep is not None and item["secretKey"] not in keep:
             continue
         optional_projection = (
-            requested_path in (OPERATOR_PATH, ZULIP_PATH) and item["secretKey"] in OPTIONAL_PROJECTION_NAMES
+            requested_path in (OPERATOR_PATH, ZULIP_PATH)
+            and item["secretKey"] in OPTIONAL_PROJECTION_NAMES
         )
         if not isinstance(item.get("secretValue"), str) or item.get("secretValueHidden") is True:
             if optional_projection:
