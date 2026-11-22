@@ -36,13 +36,24 @@ MOD = _load()
 
 
 class PermissionTests(unittest.TestCase):
-    def test_secret_from_environment_skips_child_reader(self):
+    def test_a_host_without_the_grant_uses_its_own_binding(self):
+        # This host holds no grok-acp-ro grant,  so the value the host binds is a copy of
+        # the same scoped read:  it is used,  and nothing else is consulted.
         with (
             mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}),
+            mock.patch("fleet_infisical.fetch_scoped", return_value=("", "no-token")),
             mock.patch.object(MOD.subprocess, "run") as run,
         ):
             self.assertEqual(MOD.load_secret(), "env-secret")
         run.assert_not_called()
+
+    def test_the_store_grant_wins_over_an_inherited_value(self):
+        # The reviewed path is first:  an inherited value never replaces the grant.
+        with (
+            mock.patch.dict("os.environ", {"GROK_AGENT_SECRET": "env-secret"}),
+            mock.patch("fleet_infisical.fetch_scoped", return_value=("store-secret", "ok")),
+        ):
+            self.assertEqual(MOD.load_secret(), "store-secret")
 
     def test_secret_uses_this_runtimes_own_scoped_grant_and_not_the_ambient_binding(self):
         # The runtime's own grant comes from its own store,  and the general ambient

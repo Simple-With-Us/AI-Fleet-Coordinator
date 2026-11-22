@@ -130,6 +130,20 @@ class StoreFirst(ServiceTokenTestCase):
         self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
         self.assertEqual(read.calls, [])
 
+    def test_a_malformed_store_token_fails_closed_and_names_the_account(self):
+        # A store token that is not a service token is a refusal,  not a value:  the
+        # error names the account it came from,  and no read starts.
+        read = self.read({"A": "one"})
+        with mock.patch.object(
+            provision.scoped_secrets,
+            "token_from_store",
+            return_value=("not-a-service-token", "ok"),
+        ):
+            with self.assertRaises(provision.ReadError) as ctx:
+                provision.scoped_values(["A"], "fleet-ops", "/zulip")
+        self.assertIn("alert-ingress-fleetops-ro", str(ctx.exception))
+        self.assertEqual(read.calls, [])
+
     def test_an_unsupported_project_is_refused_before_a_read(self):
         read = self.read({"A": "one"})
         with self.assertRaises(provision.ReadError) as ctx:

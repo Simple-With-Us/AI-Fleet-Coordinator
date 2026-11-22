@@ -928,6 +928,16 @@ class CredentialTests(unittest.TestCase):
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
         self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
 
+    def test_the_key_fetch_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
+        path = self.token_file(content="st-from-file")
+        env = {opl.SERVICE_TOKEN_ENV: "st-from-env"}
+        http = FakeHttp()
+        self.assertEqual(opl.load_api_key(env, str(path), http=http), "dev-key")
+        bearer = http.calls[0][2].get("Authorization", "")
+        self.assertIn("st-from-file", bearer)
+        self.assertNotIn("st-from-env", bearer)
+
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
         self.assertIsNone(opl.load_api_key({}, str(self.dir / "absent"), http=http))

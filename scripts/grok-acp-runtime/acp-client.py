@@ -46,18 +46,20 @@ SECRET_FOLDER = "/grok-acp"
 
 
 def load_secret() -> str:
-    """The host's own binding of GROK_AGENT_SECRET,  else this runtime's own grant.
+    """This runtime's own scoped read first,  the host's own binding second.
 
-    The value the environment holds is the host's own binding,  and it is used first.
-    A value that is not bound is read through this runtime's own grok-acp-ro service
-    token,  from this host's own store,  and with no other credential.
+    The value comes from the reviewed path whenever this host holds the grant:  the
+    grok-acp-ro service token,  read from this host's own store,  fetches the value from
+    Infisical /grok-acp.  A host that carries no such grant binds the value itself,  and
+    that binding is a copy of the same scoped read,  so it is used only when the store
+    holds no grant at all.  A store that cannot answer is a failure,  not an absent grant.
     """
-    read_value = os.environ.get("GROK_AGENT_SECRET", "").strip()
-    if read_value:
-        return read_value
+    bound = os.environ.get("GROK_AGENT_SECRET", "").strip()
     try:
         import fleet_infisical as FI
     except ImportError:
+        if bound:
+            return bound
         sys.exit(
             "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the shared Infisical "
             "client is not importable,  so the scoped read cannot run"
@@ -74,12 +76,14 @@ def load_secret() -> str:
         sys.exit(
             "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read failed"
         )
-    if not read_value:
-        sys.exit(
-            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the %s scoped read "
-            "returned nothing (%s)" % (TOKEN_ACCOUNT, status)
-        )
-    return read_value
+    if read_value:
+        return read_value
+    if bound and status in ("no-token", "keychain-missing"):
+        return bound
+    sys.exit(
+        "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the %s scoped read "
+        "returned nothing (%s)" % (TOKEN_ACCOUNT, status)
+    )
 
 
 def is_rpc_response(msg: dict) -> bool:

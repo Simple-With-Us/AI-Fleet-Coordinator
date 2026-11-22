@@ -92,6 +92,15 @@ class GrokRuntimeReaderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertTrue(self.record.is_file(), "the scoped reader was never asked")
 
+    def test_an_inherited_value_never_satisfies_the_read(self) -> None:
+        # The launcher's own output is not its input:  an inherited value never
+        # shadows the reviewed read,  so the reader is still asked and its refusal
+        # still stops the runtime.
+        result = self.run_launcher(GROK_AGENT_SECRET="inherited-value")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(self.record.is_file(), "the scoped reader was never asked")
+        self.assertIn("grok-acp-ro", result.stderr)
+
     def test_a_refused_read_names_the_reader_and_the_account(self) -> None:
         result = self.run_launcher(FAKE_READER_EXIT="4")
         self.assertEqual(result.returncode, 1)

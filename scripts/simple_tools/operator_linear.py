@@ -334,7 +334,9 @@ def load_api_key(
     IS configured but the key cannot be fetched.  The key is held in memory only —
     nothing here writes it anywhere;  `hide` (the daemon's log scrubber registry) is
     told the value the moment it is fetched, so no later log line can carry it."""
-    token = service_token(env, token_file)
+    # The store is the authority:  the host-bound variable is only a copy of that same
+    # grant,  used when the store has none.  A hand-set value never replaces it.
+    token = service_token(env, token_file, store_first=True)
     if not token:
         return None
     key = fetch_api_key(token, http=http)
