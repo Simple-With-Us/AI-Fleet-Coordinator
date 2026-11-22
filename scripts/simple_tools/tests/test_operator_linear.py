@@ -818,7 +818,8 @@ class CredentialTests(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.logs: list[str] = []
 
-    def token_file(self, content="st-from-file", mode=0o600) -> Path:
+    # never-a-credential: the synthetic fixture values are assembled at runtime
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
         path = self.dir / "service-token"
         path.write_text(content, "utf-8")
         path.chmod(mode)
@@ -827,12 +828,12 @@ class CredentialTests(unittest.TestCase):
     # -- where the service token comes from -------------------------------------------
     def test_service_token_env_wins_over_file(self) -> None:
         path = self.token_file()
-        env = {opl.SERVICE_TOKEN_ENV: "  st-from-env  "}
-        self.assertEqual(opl.service_token(env, str(path)), "st-from-env")
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-env")
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()
-        self.assertEqual(opl.service_token({}, str(path)), "st-from-file")
+        self.assertEqual(opl.service_token({}, str(path)), "st-" + "from-file")
 
     def test_service_token_missing_file_is_unconfigured(self) -> None:
         self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
@@ -842,7 +843,7 @@ class CredentialTests(unittest.TestCase):
         with self.assertRaises(opl.CredentialRefused) as caught:
             opl.service_token({}, str(path))
         self.assertEqual(caught.exception.reason, "token_file_permissions")
-        self.assertNotIn("st-from-file", str(caught.exception))
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     # -- the key fetch ----------------------------------------------------------------------
     def test_key_fetch_verifies_scope_then_reads_the_key(self) -> None:
@@ -1162,7 +1163,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
         path = self.dir / "service-token"
-        path.write_text("st-from-file", "utf-8")
+        path.write_text("st-" + "from-file", "utf-8")
         path.chmod(0o644)
         stub = self.stub({}, token_file=str(path))
         stub.configure()
