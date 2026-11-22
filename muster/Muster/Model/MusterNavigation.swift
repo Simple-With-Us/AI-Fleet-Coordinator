@@ -161,7 +161,7 @@ extension MusterDestination {
         case .serverResourceLimits: return ["server", "memory", "cpu", "limits", "policy", "resources"]
         case .serverUpdates: return ["server", "update", "allowlist", "upgrade", "apt"]
         case .appsAndWork: return ["apps", "work", "lanes", "pull requests", "prs", "claims", "linear"]
-        case .seats: return ["seats", "sessions", "presence", "agents", "last post"]
+        case .seats: return ["seats", "sessions", "agents", "last post"]
         case .controls: return ["knobs", "secrets", "infisical", "settings", "values"]
         case .hosts: return ["tools", "worker", "workers", "doctor", "versions", "hosts"]
         case .appProcesses: return ["processes", "scan", "doctor", "apps"]
@@ -266,8 +266,8 @@ extension MusterDestination {
         case .appsAndWork:
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
-            // Zulip refuses presence for bot users,  so the panel no longer reads it.
-            return "Mac seats come from the Mac's listener, server seats from the server's eavesdropper, and the last post from Zulip."
+            // The Mac's listener is retired,  so no seat's facts come from it.
+            return "Seats come from the server's eavesdropper, and the last post from Zulip."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
