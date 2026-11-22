@@ -39,7 +39,7 @@ import sys
 import time
 from datetime import UTC, datetime
 
-from . import detect, events, github_read, wakes
+from . import detect, events, github_read, wakes, messages
 
 
 # Relay seat slug -> wake-router seat tag.  There is NO default and NO
@@ -134,6 +134,7 @@ class AlertService:
         owner_provider=None,
         origin_binder=None,
         cancelled=None,
+        message_poster=None,
     ):
         if not repos:
             raise ValueError("an explicit repo allowlist is required (no fleet-wide default)")
@@ -143,8 +144,10 @@ class AlertService:
             # dispatching, so there is no supported silent no-gate mode.
             raise ValueError("a gate seat is required for the per-cycle capability probe")
         self.cancelled = cancelled or (lambda: False)
+        self.message_poster = message_poster
         self.binding_holds = {}
         self.bound_this_cycle = set()
+        self.origins_this_cycle = {}
         self.owner_provider = owner_provider
         self.origin_binder = origin_binder
         self.store = store
@@ -175,6 +178,7 @@ class AlertService:
         if self.gate_seat:
             self.router.check_require_pr_support(self.gate_seat, probe_id=str(int(self.clock())))
         self.bound_this_cycle = set()
+        self.origins_this_cycle = {}
         self.binding_holds = {}
         owners = self.owner_provider() if self.owner_provider else load_owner_rows(self.owners_path)
         for row in owners:
@@ -186,7 +190,8 @@ class AlertService:
                 try:
                     if self.cancelled():
                         continue
-                    self.origin_binder(repo, number)
+                    origin = self.origin_binder(repo, number)
+                    self.origins_this_cycle[(repo, number)] = origin
                     self.bound_this_cycle.add((repo, number))
                 except Exception as exc:
                     if len(self.binding_holds) < 1000:
@@ -287,7 +292,8 @@ class AlertService:
         seat = seat_for(str(owner.get("seat") or ""), self.seat_map)
         head_note = "" if event["head_matches"] else " (against an older head)"
         topic = "%s#%s: %s%s" % (repo, number, event["summary"], head_note)
-        base = dict(event, epoch=epoch, status="held", wake_id=None, reason=None)
+        base = dict(event, epoch=epoch, status="held", wake_id=None, reason=None,
+                    message_id=event.get("message_id"), link=link or event.get("link") or "")
         if not session or not letter or type(generation) is not int or generation < 1:
             # Without all three claims there is nothing for the router to
             # check against the live row:  hold visibly, never guess.
@@ -295,6 +301,16 @@ class AlertService:
         elif not seat:
             base["reason"] = "no-seat-mapping"
         else:
+            if type(base.get("message_id")) is not int or base["message_id"] <= 0:
+                if self.message_poster is None:
+                    base["reason"] = "operator-message-unconfigured"
+                    self.store.append(base)
+                    counts["held"] += 1
+                    return
+                base.update(status="message-pending")
+                self.store.append(base)
+                self._post_message(owner, base, counts)
+                return
             wake_id = wakes.wake_id_for(repo, number, event["kind"], event["event_id"], epoch)
             try:
                 self.router.submit(
@@ -306,6 +322,7 @@ class AlertService:
                     "%s#%s" % (repo, number),
                     topic,
                     link,
+                    message_id=base["message_id"],
                 )
             except wakes.WakeRetryable:
                 # The wake may or may not have landed:  reconcile by receipt
@@ -326,13 +343,29 @@ class AlertService:
             row = self.store.get(
                 pending["repo"], pending["number"], pending["kind"], pending["event_id"]
             )
-            if row is None or not row.get("wake_id"):
+            if row is None or (not row.get("wake_id") and row.get("status") not in events.MESSAGE_PENDING):
                 continue
             owner = self._owner_row(owners, pending["repo"], pending["number"])
             owner_seat = seat_for(str((owner or {}).get("seat") or ""), self.seat_map)
             if not owner_seat:
                 continue
             age = now - self._row_epoch_seconds(row)
+            if row["status"] in events.MESSAGE_PENDING:
+                if row["status"] == "message-posting":
+                    # A crash after durable intent can have happened after send.
+                    self._finish(row, "held", "operator-message-outcome-unknown")
+                    counts["held"] += 1
+                elif self._effects_allowed(row["repo"], row["number"]):
+                    if row["status"] == "message-pending":
+                        self._post_message(owner, row, counts)
+                    else:
+                        self._dispatch(owner or {}, row, row.get("link") or "", counts,
+                                       epoch=int(row.get("epoch") or 0))
+                continue
+            if type(row.get("message_id")) is not int or row["message_id"] <= 0:
+                self._finish(row, "held", "legacy-wake-without-message")
+                counts["held"] += 1
+                continue
             try:
                 receipt = self.router.receipt(owner_seat, row["wake_id"])
             except wakes.WakeRetryable:
@@ -368,7 +401,7 @@ class AlertService:
                     # The wake record is certainly undelivered;  a fresh wake
                     # id (next epoch) may retry while the origin chat is away.
                     event = {
-                        k: row[k]
+                        k: row.get(k)
                         for k in (
                             "repo",
                             "number",
@@ -379,6 +412,8 @@ class AlertService:
                             "current_head",
                             "head_matches",
                             "summary",
+                            "message_id",
+                            "link",
                         )
                     }
                     self._dispatch(
@@ -388,6 +423,36 @@ class AlertService:
                 else:
                     self._finish(row, "held", reason)
                     counts["held"] += 1
+
+    def _post_message(self, owner: dict, row: dict, counts: dict) -> None:
+        if not self._effects_allowed(row["repo"], row["number"]):
+            return
+        if self.message_poster is None:
+            self._finish(row, "held", "operator-message-unconfigured")
+            counts["held"] += 1
+            return
+        # Persist intent before crossing the existing Operator post boundary.
+        posting = dict(row, status="message-posting", reason=None)
+        self.store.append(posting)
+        try:
+            posting_owner = dict(owner or {}, _review_origin=self.origins_this_cycle.get((row["repo"], row["number"])))
+            message_id = self.message_poster(posting_owner, row, row.get("link") or "")
+            if type(message_id) is not int or not 0 < message_id <= 2**63 - 1:
+                raise ValueError("invalid-message-id")
+        except messages.MessageDestinationUnresolved:
+            self._finish(posting, "message-pending", "operator-message-destination-unresolved")
+            return
+        except messages.MessageRetryable:
+            self._finish(posting, "message-pending", "operator-message-unavailable")
+            return
+        except Exception:
+            self._finish(posting, "held", "operator-message-outcome-unknown")
+            counts["held"] += 1
+            return
+        posted = dict(posting, status="message-posted", message_id=message_id)
+        self.store.append(posted)
+        self._dispatch(owner or {}, posted, posted.get("link") or "", counts,
+                       epoch=int(posted.get("epoch") or 0))
 
     def _effects_allowed(self, repo, number):
         return not self.cancelled() and (
@@ -417,7 +482,8 @@ class AlertService:
                 generation,
                 "%s#%s" % (row["repo"], row["number"]),
                 topic,
-                "",
+                row.get("link") or "",
+                message_id=row["message_id"],
             )
         except wakes.WakeRetryable:
             return  # still unsettled;  next cycle reconciles
@@ -459,7 +525,7 @@ class AlertService:
             "held": [
                 {
                     k: r.get(k)
-                    for k in ("repo", "number", "kind", "event_id", "epoch", "reason", "ts")
+                    for k in ("repo", "number", "kind", "event_id", "epoch", "reason", "ts", "message_id")
                 }
                 for r in self.store.held()
             ],
