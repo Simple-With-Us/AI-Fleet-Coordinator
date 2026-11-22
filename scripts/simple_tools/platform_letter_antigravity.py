@@ -473,30 +473,15 @@ def antigravity_rename(request: PL.TitleRequest) -> bool:
     else:
         known = [r for r in roots if _root_knows_conversation(r, cid)]
         target_roots = known or roots
-    wrote_ann = False
-    saw_db = False
-    db_updated = False
-    direct_ann_ok = False
-    direct_saw_db = False
-    direct_db_updated = False
+    all_ok = bool(target_roots)
     for root in target_roots:
         ann_ok = _write_annotation_title(root, cid, title)
-        if ann_ok:
-            wrote_ann = True
-        if root == direct:
-            direct_ann_ok = ann_ok
+        root_ok = ann_ok
         db = os.path.join(root, "conversation_summaries.db")
         if os.path.isfile(db):
-            saw_db = True
-            updated = _update_summary_title(db, cid, title)
-            if updated:
-                db_updated = True
-            if root == direct:
-                direct_saw_db = True
-                direct_db_updated = updated
-    if direct:
-        return (direct_ann_ok and direct_db_updated) if direct_saw_db else direct_ann_ok
-    return (wrote_ann and db_updated) if saw_db else wrote_ann
+            root_ok = _update_summary_title(db, cid, title) and root_ok
+        all_ok = all_ok and root_ok
+    return all_ok
 
 
 # The repair pass (`platform_letter.repair_unlettered`) asks for the conversations still showing the "??: "

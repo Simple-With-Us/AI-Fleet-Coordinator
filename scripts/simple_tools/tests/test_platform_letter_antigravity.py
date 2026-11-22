@@ -536,6 +536,42 @@ class HookTests(Base):
         self.assertEqual(self.summary_row(cli_root), (expected, expected))
         self.assertIn(expected, Path(cli_root, "annotations", "%s.pbtxt" % CID).read_text(encoding="utf-8"))
 
+    def test_rename_fails_when_secondary_root_db_update_fails_and_clears_on_retry(self) -> None:
+        ag_root = os.path.join(self.home, ".gemini", "antigravity")
+        cli_root = os.path.join(self.home, ".gemini", "antigravity-cli")
+        for r in (ag_root, cli_root):
+            os.makedirs(os.path.join(r, "brain"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(r, "conversation_summaries.db"))
+            with conn:
+                conn.execute(
+                    "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT)"
+                )
+            conn.close()
+        self.insert_summary(ag_root, CID, title="Direct Chat")
+        ann_dir = os.path.join(cli_root, "annotations")
+        os.makedirs(ann_dir, exist_ok=True)
+        Path(ann_dir, "%s.pbtxt" % CID).write_text('title:"Old"', encoding="utf-8")
+
+        req = PL.TitleRequest(
+            platform=PA.PLATFORM,
+            session_id=CID,
+            label="AA",
+            title="AA: Direct Chat",
+            words="Direct Chat",
+            current="Direct Chat",
+            reason="start",
+            data=self.payloads(ag_root)[0],
+            env=self.env(),
+        )
+        self.assertFalse(PA.antigravity_rename(req))
+        self.assertEqual(self.summary_row(ag_root), ("AA: Direct Chat", "AA: Direct Chat"))
+        self.assertIsNone(self.summary_row(cli_root))
+
+        self.insert_summary(cli_root, CID, title="", preview="")
+        self.assertTrue(PA.antigravity_rename(req))
+        self.assertEqual(self.summary_row(cli_root), ("AA: Direct Chat", "AA: Direct Chat"))
+        self.assertIn("AA: Direct Chat", Path(ann_dir, "%s.pbtxt" % CID).read_text(encoding="utf-8"))
+
     def test_rename_handles_minimal_schema_ide_root_and_transient_sqlite_lock(self) -> None:
         # Minimal schema without `preview` column still updates `title` and succeeds.
         root = os.path.join(self.home, ".gemini", "antigravity")
