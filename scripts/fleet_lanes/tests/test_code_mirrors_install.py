@@ -71,7 +71,9 @@ class InstalledRuntimeTests(unittest.TestCase):
     def test_previous_full_docs_closure_upgrades_and_preserves_exact_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "installed"
-            self.assertEqual(len(installer.LEGACY_DOCS_FILES), 23)
+            # The retired reader's own two files are gone from the repo,  so they cannot be part of
+            # a closure this installer can produce:  the historical set is 21 files,  not 23.
+            self.assertEqual(len(installer.LEGACY_DOCS_FILES), 21)
             with mock.patch.object(installer, "FILES", installer.LEGACY_DOCS_FILES):
                 installer.install(SCRIPTS.parent, dest, "0" * 40)
             before = {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}

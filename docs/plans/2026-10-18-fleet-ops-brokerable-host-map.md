@@ -1,5 +1,7 @@
 # Fleet-OPS credentials mapped to brokerable hosts, and the Agent Vault versus Agent Proxy decision
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 Linear:  OPS-969 (`[AFC][MM]`), a Phase 2 preparation slice of OPS-818.  Seat:  MM.  Sun, Oct 18.
 Continues Antigravity's `~/.secrets & global-api-keys Deprecation & Migration Catalog` (chat `181cffaf-ac9d-45fc-b0b3-ba5e29175f3e`) and reads the CLAUDE plan `2026-10-18-infisical-agent-proxy-adoption.md`.
 
@@ -87,7 +89,7 @@ Two shapes need splitting before they can be configured:
 | `/google-sheets-sa` | 1 | a service-account JSON document, not a token | mint an OAuth access token at start and broker that |
 | `/agents-gmail`, `/usage-monitor-receipt-inbox-addresses`, `/usage-monitor-receipt-inbox-secrets`, `/receipt-inbox-forward-to` | 6 | Google OAuth refresh tokens | same:  mint, then broker the access token |
 
-The p8 private keys, the service-account JSON and the refresh tokens are the real prize and the real risk, and **none of them can be a brokered credential**.  They are Phase 3 (`infisical run` / `fleet-secrets run`), not Phase 2.
+The p8 private keys, the service-account JSON and the refresh tokens are the real prize and the real risk, and **none of them can be a brokered credential**.  They are Phase 3 (a direct scoped read), not Phase 2.
 
 ### C.  Not brokerable at all
 
@@ -120,7 +122,7 @@ Every key in Fleet-OPS `prod` was classified, and the arithmetic closes at 667:
 
 And even inside bucket A most of the 32 Backblaze keys are bucket names, endpoints and download URLs rather than credentials, so the true count of individual brokered secrets is well under 320.
 
-**So the broker cannot be the thing that retires `~/.secrets`.**  It covers roughly the half that matters most for a prompt injection, `fleet-secrets run` covers the rest, and the p8 private keys, service-account JSON and OAuth refresh tokens — the ones worth stealing most — cannot be brokered at all.  That is worth stating plainly now, because Phase 5 of the OPS-818 plan gates the cutover on retiring the directory, and the directory is not retiring through the proxy.
+**So the broker cannot be the thing that retires `~/.secrets`.**  It covers roughly the half that matters most for a prompt injection, a direct scoped read covers the rest, and the p8 private keys, service-account JSON and OAuth refresh tokens — the ones worth stealing most — cannot be brokered at all.  That is worth stating plainly now, because Phase 5 of the OPS-818 plan gates the cutover on retiring the directory, and the directory is not retiring through the proxy.
 
 ## The first three services
 
@@ -134,7 +136,7 @@ Proof for each:  run the seat through the proxy and confirm the API returns 200 
 
 ## What I did not do
 
-No Fleet-OPS writes, no folder or service created, no identity changed, no key rotated, no LaunchAgent touched, no `~/.secrets` file read.  Reading was names-only through `fleet-secrets names`, which is the same access any migrated job now has.
+No Fleet-OPS writes, no folder or service created, no identity changed, no key rotated, no LaunchAgent touched, no `~/.secrets` file read.  Reading was names-only through a names-only scoped Infisical read, which is the same access any migrated job now has.
 
 ## Next
 

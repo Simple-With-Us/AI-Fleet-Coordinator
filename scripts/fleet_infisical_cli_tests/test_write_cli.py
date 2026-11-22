@@ -22,7 +22,7 @@ class WriteCallerTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.home = Path(temporary.name)
+        self.home = Path(temporary.name).resolve()
         self.env = {"HOME": str(self.home), core.ENV_PROJECT: str(uuid.uuid4())}
         self.intent = cli.write_intent_for_cli(self.env, "fleet-infisical-cli")
 

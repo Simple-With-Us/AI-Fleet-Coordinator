@@ -36,6 +36,8 @@ EVENT_FIELDS = (
     "status",
     "wake_id",
     "reason",
+    "message_id",
+    "link",
 )
 
 KINDS = ("review_submitted", "review_completed", "findings_added")
@@ -43,7 +45,8 @@ TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is
 #: retried or reconciled by receipt, never re-detected.
-NONTERMINAL = ("submitted", "submit-pending")
+MESSAGE_PENDING = ("message-pending", "message-posting", "message-posted")
+NONTERMINAL = ("submitted", "submit-pending") + MESSAGE_PENDING
 
 
 def _utcnow() -> str:

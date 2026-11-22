@@ -48,10 +48,11 @@ What it promises:
     with "already started" and starts nothing, and an application pm2 no longer remembers
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
-    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    the adjacent shared Infisical reader into memory, sent in one request header and never
-    printed, logged or passed in an argv.  The reader accepts only the control consumer's
-    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
+    resource, so no uuid or host is kept in this repo.  The Coolify token is read through
+    the shared Infisical client with this service's own scoped token, into memory, sent in
+    one request header and never printed, logged or passed in an argv.  A forced command
+    has only the environment sshd gives it, so the token comes from `ops-control.env`
+    (0600).
     `--check-token` reads the token the same way and asks Coolify whether it accepts
     that token for a deploy, naming a uuid that can match no resource, so it proves the
     whole path and deploys nothing.
@@ -818,17 +819,18 @@ INFISICAL_READER_MAX_BYTES = 512 * 1024
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # Coolify 4.x answers the deploy route with POST only, and a deploy-scoped token has no
-# `read` permission, so the install check cannot ask Coolify for its version.  It asks
+# `read` permission, so the install check cannot ask Coolify for its version.  It asks
 # the deploy route about the nil uuid, which can name no resource:  the answer is a
 # not-found when the token is accepted for a deploy, and nothing is deployed.
 COOLIFY_CHECK_UUID = "00000000-0000-4000-8000-000000000000"
 # Coolify's own answer when the route answered and no resource carries the uuid.
 COOLIFY_NO_RESOURCE = "No resources found"
 COOLIFY_DEPLOY_PATH = "/api/v1/deploy?uuid=%s"
-# The control consumer's Infisical binding, and nothing else from its credential file.
+# The Infisical identity this service may be handed from the credential file, and nothing
+# else from it.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this custody boundary independent of the optional shared reader.
+
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -4250,47 +4252,52 @@ def _load_infisical_reader(ctx):
             module = None
     if module is None or not all(
         callable(getattr(module, name, None))
-        for name in ("bounded_fetch_project", "infisical_project_id")
+        for name in ("bounded_fetch_project", "infisical_project_id", "fetch_verified")
     ):
         raise Failed("fleet_infisical.py is not available")
     return module
 
 
 def read_coolify_token(ctx):
-    """One strict named read through this control consumer's own binding.  Raises Failed."""
-    reader = _load_infisical_reader(ctx)
-    env = secrets_env(ctx)
-    binding = env.pop("INFISICAL_TOKEN", "")
-    if not binding:
+    """The Coolify API token, through this service's own scoped token, into memory only.
+
+    The token's grant names exactly the /coolify-deploy-only-token folder, and the shared
+    client checks the answer's own provenance before the value is used.  No child process
+    starts and no other credential source is consulted.  Raises Failed."""
+    token = scoped_token(ctx)
+    if not token:
         raise Failed(
             "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
             "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
         )
+    client = _load_infisical_reader(ctx)
+    env = {
+        key: value
+        for key, value in ctx.environ.items()
+        if key not in SHARED_AUTH_ENV_NAMES and key != SCOPED_TOKEN_NAME
+    }
+    env["HOME"] = str(ctx.home)
+    env[client.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
     try:
-        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
-        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
-        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
-        values = reader.bounded_fetch_project(
-            project,
-            COOLIFY_TOKEN_PATH,
-            scoped,
-            token=binding,
-            names=(COOLIFY_TOKEN_NAME,),
-            timeout=SECRET_TIMEOUT,
-            writer=False,
-            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
-            strict_records=True,
+        value = client.fetch_verified(
+            COOLIFY_TOKEN_NAME, COOLIFY_TOKEN_PATH, env, token=token, timeout=SECRET_TIMEOUT
         )
-        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
+    except TimeoutError:
+        # A hung read is a timeout,  not an absent token:  it keeps its own signal so
+        # the caller can retry instead of treating the credential as broken.  The read
+        # itself was never sent,  so this is not an unknown end:  nothing was started.
+        raise Failed(
+            "the Infisical read of the Coolify token timed out", error_code="timeout"
+        ) from None
     except Exception as exc:  # noqa: BLE001 - provider/source text and values never become diagnostics
-        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
         raise Failed(_infisical_coolify_read_reason(exc)) from None
-    if not token or any(c.isspace() or ord(c) < 33 for c in token):
+    if not value or any(c.isspace() or ord(c) < 33 for c in value):
         raise Failed(
             "the Infisical read returned no usable Coolify token; "
             "check the /coolify-deploy-only-token folder grant"
         )
-    return token
+    return value
 
 
 def _infisical_coolify_read_reason(exc: BaseException) -> str:
@@ -4315,12 +4322,12 @@ def _infisical_coolify_read_reason(exc: BaseException) -> str:
     )
 
 
-def secrets_env(ctx):
-    """Resolve this control consumer's private reader binding.  Raises Failed.
+def scoped_token(ctx):
+    """This service's own scoped Infisical token, from its credential file or the process.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
-    Inherited shared token and machine-identity bindings are discarded."""
+    as the bearer of one request, never put in an argv or in a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:
@@ -4336,8 +4343,7 @@ def secrets_env(ctx):
                 or any(c.isspace() for c in value)
             ):
                 raise Failed("the scoped Infisical token is malformed")
-            env["INFISICAL_TOKEN"] = value
-        return env
+        return value
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
     try:
@@ -4381,15 +4387,11 @@ def secrets_env(ctx):
         or any(c.isspace() for c in token)
     ):
         raise Failed("the Infisical credential file is malformed")
-    if token:
-        env["INFISICAL_TOKEN"] = token
-    return env
+    return token
 
 
 def check_token(ctx):
-    """(answer, exit status) for `--check-token`: read the token as a redeploy would, then
-    ask Coolify whether it accepts that token for a deploy.   The probe names the nil
-    uuid, which matches no resource, so nothing is deployed and the token is not shown."""
+
     answer = _refusal("")
     answer["verb"] = "check-token"
     try:

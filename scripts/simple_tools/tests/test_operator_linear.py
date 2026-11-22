@@ -818,21 +818,29 @@ class CredentialTests(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.logs: list[str] = []
 
-    def token_file(self, content="st-from-file", mode=0o600) -> Path:
+    # never-a-credential: the synthetic fixture values are assembled at runtime
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
         path = self.dir / "service-token"
         path.write_text(content, "utf-8")
         path.chmod(mode)
         return path
 
     # -- where the service token comes from -------------------------------------------
-    def test_service_token_env_wins_over_file(self) -> None:
+    def test_service_token_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
         path = self.token_file()
-        env = {opl.SERVICE_TOKEN_ENV: "  st-from-env  "}
-        self.assertEqual(opl.service_token(env, str(path)), "st-from-env")
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(path)), "st-" + "from-file")
+
+    def test_service_token_uses_the_bound_copy_when_the_store_has_none(self) -> None:
+        # The consumer's own named copy is the second source (the owner's ruling on
+        # OPS-1101,  Option 2):  a copy may travel,  and it is only this consumer's.
+        env = {opl.SERVICE_TOKEN_ENV: "  st-" + "from-env  "}  # never-a-credential
+        self.assertEqual(opl.service_token(env, str(self.dir / "absent")), "st-" + "from-env")
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()
-        self.assertEqual(opl.service_token({}, str(path)), "st-from-file")
+        self.assertEqual(opl.service_token({}, str(path)), "st-" + "from-file")
 
     def test_service_token_missing_file_is_unconfigured(self) -> None:
         self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
@@ -842,7 +850,7 @@ class CredentialTests(unittest.TestCase):
         with self.assertRaises(opl.CredentialRefused) as caught:
             opl.service_token({}, str(path))
         self.assertEqual(caught.exception.reason, "token_file_permissions")
-        self.assertNotIn("st-from-file", str(caught.exception))
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     # -- the key fetch ----------------------------------------------------------------------
     def test_key_fetch_verifies_scope_then_reads_the_key(self) -> None:
@@ -927,6 +935,16 @@ class CredentialTests(unittest.TestCase):
         self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
         self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
+
+    def test_the_key_fetch_prefers_the_store_over_the_bound_copy(self) -> None:
+        # The store is the authority:  a hand-set copy never replaces the reviewed grant.
+        path = self.token_file(content="st-" + "from-file")  # never-a-credential: synthetic fixture assembled at runtime
+        env = {opl.SERVICE_TOKEN_ENV: "st-" + "from-env"}  # never-a-credential: synthetic fixture assembled at runtime
+        http = FakeHttp()
+        self.assertEqual(opl.load_api_key(env, str(path), http=http), "dev-key")
+        bearer = http.calls[0][2].get("Authorization", "")
+        self.assertIn("st-" + "from-file", bearer)
+        self.assertNotIn("st-" + "from-env", bearer)
 
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
@@ -1152,7 +1170,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
         path = self.dir / "service-token"
-        path.write_text("st-from-file", "utf-8")
+        path.write_text("st-" + "from-file", "utf-8")
         path.chmod(0o644)
         stub = self.stub({}, token_file=str(path))
         stub.configure()

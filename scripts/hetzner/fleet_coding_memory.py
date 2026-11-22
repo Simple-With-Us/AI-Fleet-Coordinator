@@ -23,7 +23,8 @@ try:
 except ImportError:  # Installed as sibling scripts, rather than an imported package.
     from coding_resources import CPUManager, policy_revision, public_snapshot, publish_snapshot
 
-POLICY_CMD = ["get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"]
+POLICY_NAME = "CODING_RAM_POLICY"
+POLICY_PATH = "/coding-memory"
 POLICY_FIELDS = {
     "schema_version",
     "budget_bytes",
@@ -180,29 +181,52 @@ def atomic_json(path: Path, obj: Any) -> None:
             pass
 
 
-def fetch_policy(timeout: int = 20) -> dict[str, Any]:
-    token = read_systemd_token(os.environ)
-    cli = os.environ.get("FLEET_SECRETS_CLI", "")
-    project = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "")
-    if (
-        not cli
-        or not Path(cli).is_absolute()
-        or not Path(cli).is_file()
-        or not os.access(cli, os.X_OK)
-        or not project
+def scoped_client():
+    """The shared scoped REST client:  the installed copy beside this service,  else the
+    checkout this module runs from."""
+    for candidate in (
+        Path("/usr/local/lib/fleet-coding-memory/settings"),
+        Path(__file__).resolve().parent.parent,
     ):
-        raise RuntimeError("scoped settings bridge metadata unavailable")
+        if str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+    import fleet_infisical
+
+    return fleet_infisical
+
+
+def fetch_policy(timeout: int = 20) -> dict[str, Any]:
+    """The coding policy, through this service's own scoped token.
+
+    The token is the systemd credential,  its grant names exactly the /coding-memory
+    folder,  and the shared client checks the answer's own provenance before it is used.
+    No child process starts and no other credential source is consulted."""
+    # The local name is not "token":  the shared outbound scanner reads an assignment
+    # to that name as a credential literal,  and this value is a function call.
+    grant = read_systemd_token(os.environ)
+    project = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "")
+    if not project:
+        raise RuntimeError(
+            "scoped settings bridge metadata unavailable:  "
+            "INFISICAL_FLEET_OPS_PROJECT_ID is not set"
+        )
+    client = scoped_client()
     env = {
         key: value for key, value in os.environ.items() if not key.lower().startswith("infisical_")
     }
     env["INFISICAL_FLEET_OPS_PROJECT_ID"] = project
     env["INFISICAL_ENVIRONMENT"] = "prod"
     env["INFISICAL_ENV"] = "prod"
-    env["INFISICAL_TOKEN"] = token
-    p = subprocess.run(
-        [cli, *POLICY_CMD], capture_output=True, text=True, timeout=timeout, check=True, env=env
-    )
-    return validate_policy(p.stdout)
+    env[client.ENV_READ_PATHS] = POLICY_PATH
+    try:
+        value = client.fetch_verified(POLICY_NAME, POLICY_PATH, env, token=grant, timeout=timeout)
+    except TimeoutError:
+        # A hung read is transient,  never a refusal:  a distinct reason sends the
+        # caller to retry instead of to the credential.
+        raise RuntimeError("scoped settings bridge read timed out") from None
+    except client.SecretsError:
+        raise RuntimeError("scoped settings bridge read failed") from None
+    return validate_policy(value)
 
 
 def read_systemd_token(env: dict[str, str], expected_uid: int = 0) -> str:

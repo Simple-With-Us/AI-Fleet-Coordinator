@@ -844,7 +844,7 @@ private struct SecretNamesPanel: View {
                 Spacer()
                 Button("Refresh") { Task { await load() } }.disabled(loading)
             }
-            Text("Names only, from the top folder of the fleet-ops project in Infisical, read through this Mac's fleet-secrets.\u{00A0} This does not show whether a value is set, and values are never read here.")
+            Text("Names only, from the top folder of the fleet-ops project in Infisical, read through this Mac's scoped Infisical reader.\u{00A0} This does not show whether a value is set, and values are never read here.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if loading { Text("Reading names\u{2026}").font(.callout).foregroundStyle(.secondary) }
@@ -864,7 +864,7 @@ private struct SecretNamesPanel: View {
             }
             if let problem { Text(problem).font(.caption).foregroundStyle(.orange) }
             Text("Knob Folders").font(.subheadline.weight(.semibold))
-            Text("Names only, from each folder the knob registry names, in the AI Fleet Coordinator project in Infisical, where the knobs live.\(ApplyCopy.sentenceGap)A folder this Mac's fleet-secrets cannot read says why.")
+            Text("Names only, from each folder the knob registry names, in the AI Fleet Coordinator project in Infisical, where the knobs live.\(ApplyCopy.sentenceGap)A folder this Mac's scoped reader cannot read says why.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(knobGroups, id: \.path) { group in
@@ -884,14 +884,14 @@ private struct SecretNamesPanel: View {
             ForEach(knobProblems, id: \.self) { line in
                 Text(line).font(.caption).foregroundStyle(.orange)
             }
-            Text("Doctor:  This Mac's fleet-secrets Setup").font(.subheadline.weight(.semibold))
+            Text("Doctor:  This Mac's Infisical Access").font(.subheadline.weight(.semibold))
             if let doctorProblem {
                 Text(doctorProblem).font(.caption).foregroundStyle(.orange)
             } else if doctor.isEmpty && !loading {
                 Text("The doctor has not answered.").font(.caption).foregroundStyle(.secondary)
             }
             if doctor["ok"] == "false" {
-                Label("The doctor found a problem with this Mac's fleet-secrets.", systemImage: "exclamationmark.triangle")
+                Label("The doctor found a problem with this Mac's Infisical access.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

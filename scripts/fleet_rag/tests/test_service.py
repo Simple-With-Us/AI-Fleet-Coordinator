@@ -946,10 +946,11 @@ class BootstrapTests(unittest.TestCase):
             "AI-Fleet-Coordinator-main/scripts/fleet_rag/__init__.py": b"__version__ = 'test'\n",
             "AI-Fleet-Coordinator-main/scripts/fleet-recall-service/server.py": b"# stub\n",
             "AI-Fleet-Coordinator-main/scripts/fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
-            **{"AI-Fleet-Coordinator-main/scripts/fleet_secrets/" + name:
-               (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
-               for name in ("__init__.py", "core.py")},
+            # The retired CLI package and its binary are in the source and must not ship.
+            "AI-Fleet-Coordinator-main/scripts/fleet_secrets/__init__.py": b"raise AssertionError('must not ship')\n",
+            "AI-Fleet-Coordinator-main/scripts/fleet_secrets/core.py": b"raise AssertionError('must not ship')\n",
             "AI-Fleet-Coordinator-main/scripts/fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
+            "AI-Fleet-Coordinator-main/scripts/fleet-secrets": b"must not ship\n",
             "AI-Fleet-Coordinator-main/README.md": b"not extracted\n",
         })
         _tgz(cls.www / "gitleaks_8.30.1_linux_arm64.tar.gz",
@@ -996,10 +997,21 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 5 files", proc.stdout)
-        self.assertEqual(sorted(p.name for p in (work / "app/fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertIn("bootstrap: extracted 3 files", proc.stdout)
+        # Only the shared verifier library, the service and fleet_rag ship.
+        shipped = sorted(
+            str(p.relative_to(work / "app"))
+            for p in (work / "app").rglob("*")
+            if p.is_file()
+        )
+        self.assertEqual(
+            shipped,
+            ["fleet-recall-service/server.py", "fleet_infisical.py", "fleet_rag/__init__.py"],
+        )
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
+        self.assertFalse((work / "app" / "fleet_secrets").exists())
+        self.assertFalse((work / "app" / "fleet-secrets").exists())
         self.assertFalse((work / "app" / "README.md").exists())
         exe = work / "bin" / "gitleaks"
         self.assertTrue(exe.is_file())
@@ -1032,8 +1044,8 @@ class BootstrapTests(unittest.TestCase):
             prefix + "fleet_rag/infisical_settings.py": (SERVICE_DIR.parent / "fleet_rag/infisical_settings.py").read_bytes(),
             prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
             prefix + "fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
-            **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
-               for name in ("__init__.py", "core.py")},
+            prefix + "fleet_secrets/__init__.py": b"raise AssertionError('must not ship')\n",
+            prefix + "fleet_secrets/core.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet_secrets/__main__.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet-secrets": b"must not ship\n",
@@ -1041,11 +1053,12 @@ class BootstrapTests(unittest.TestCase):
         proc, work = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         app = work / "app"
-        self.assertEqual(sorted(p.name for p in (app / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertTrue((app / "fleet_infisical.py").is_file())
+        self.assertFalse((app / "fleet_secrets").exists())
         self.assertFalse((app / "fleet-secrets").exists())
         boot = (
             "import os,sys;sys.path.insert(0,sys.argv[1]);"
-            "from fleet_rag import infisical_settings as settings;import fleet_secrets.core as verifier;"
+            "from fleet_rag import infisical_settings as settings;import fleet_infisical as verifier;"
             "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
             "settings.configure(project_id=sys.argv[2],environment='prod',managed_keys=('RECALL_API_TOKEN',),"
             "required_keys=('RECALL_API_TOKEN',),secret_keys=('RECALL_API_TOKEN',));"
@@ -1081,7 +1094,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("scoped verifier library missing from source", proc.stdout)
         docker = (SERVICE_DIR / "Dockerfile").read_text()
         copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
-        self.assertEqual(copies, ["COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/"])
+        self.assertEqual(copies, [])
         self.assertIn("COPY fleet_infisical.py /app/", docker)
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):

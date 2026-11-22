@@ -78,8 +78,9 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.dest / "fleet_knobs").iterdir() if p.suffix == ".py"), source)
         self.assertFalse((self.dest / "fleet_knobs" / "tests").exists())
         self.assertIn("knobs.py", source)
-        self.assertEqual(sorted(p.name for p in (self.dest / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((self.dest / "fleet_secrets").exists())
         self.assertFalse((self.dest / "fleet-secrets").exists())
+        self.assertTrue((self.dest / "fleet_infisical.py").is_file())
         # Under python3 -I, with nothing of the checkout on the path, `notify` finds fleet_knobs next to the package.
         # A refused Infisical environment stops it before any fetch, so no real CLI runs:  exit 1 and the reason.
         ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging"})
@@ -168,7 +169,6 @@ class InstallTests(unittest.TestCase):
     def test_an_update_replaces_a_changed_file_and_removes_a_stale_one(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
         (self.dest / "needs_owner" / "old_module.py").write_text("# gone from the source\n")
-        (self.dest / "fleet_secrets" / "cli.py").write_text("# must not ship\n")
         (self.dest / "needs_owner" / "text.py").write_text("# an old version\n")
         (self.dest / "state").mkdir()
         plan = self.install()
@@ -178,7 +178,7 @@ class InstallTests(unittest.TestCase):
         applied = self.install("--apply")
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertFalse((self.dest / "needs_owner" / "old_module.py").exists())
-        self.assertFalse((self.dest / "fleet_secrets" / "cli.py").exists())
+        self.assertFalse((self.dest / "fleet_secrets").exists())
         self.assertGreater((self.dest / "needs_owner" / "text.py").stat().st_size, 100)
         self.assertTrue((self.dest / "state").is_dir())
         self.assertEqual(self.isolated("--version").returncode, 0)
