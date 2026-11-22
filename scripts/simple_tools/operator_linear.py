@@ -206,9 +206,12 @@ def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
     The consumer's own store is the configured file (default DEFAULT_SERVICE_TOKEN_FILE),
     and it is the authority:  a hand-set environment value never replaces the reviewed,
     scope-limited grant.  The host-bound variable is this consumer's own copy of that
-    same grant — the owner's ruling on OPS-1101, Option 2, where a copy is allowed
-    only under a variable named for that consumer — and it is used when the store has
-    none.  "" when neither source yields one:  the feature is simply unconfigured.  A
+    same grant, and it is read only when the store has none; under the owner's ruling of
+    November 22, 2026 the environment is no longer a source at all, and this copy is
+    kept only until the consumer's store account is provisioned on that host.  Removing
+    it is the OPS-1102 conformance sweep, in the order the ruling sets:  provision the
+    store first, then drop the fallback.  "" when neither source yields one:  the
+    feature is simply unconfigured.  A
     file that exists but is group- or other-readable raises CredentialRefused:  a
     service token must not sit in a file other accounts can read."""
     bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
