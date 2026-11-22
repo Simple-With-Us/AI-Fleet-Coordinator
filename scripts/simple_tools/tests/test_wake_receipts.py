@@ -518,7 +518,7 @@ class ReceiptReaderTests(ReceiptHarness):
         dead_message = self.message_id
         self.assertEqual(LR.pending_inbox_view(self.root, "CLAUDE")["count"], 2)
         self.answer(delivered, self.receipt(delivered))
-        self.answer(dead, self.receipt(dead, status="dead", delivered=False, code="no-codex-desktop"))
+        self.answer(dead, self.receipt(dead, status="dead", delivered=False, code="not-live"))
         self.pass_at(daemon, 31)
         view = LR.pending_inbox_view(self.root, "CLAUDE")
         self.assertEqual(view["count"], 1, "a delivered wake's message still counted as pending")

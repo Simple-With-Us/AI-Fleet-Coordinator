@@ -49,7 +49,6 @@ NEVER_RAN = frozenset(
         "invalid-routing-metadata",
         "invalid-session",
         "invalid-wake-id",
-        "no-codex-desktop",
         "no-pinned-owner",
         "not-interactive-chat",
         "owner-mismatch",
@@ -60,6 +59,10 @@ NEVER_RAN = frozenset(
         "unknown-host",
     }
 )
+#: The receipt's route name per host kind:  the Mac's chats live in the Codex Desktop app,
+#: and every other host's live chats live in the app-server daemon.
+ROUTE_DESKTOP = "codex-desktop"
+ROUTE_DAEMON = "codex-daemon"
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 16
@@ -177,6 +180,7 @@ class CodexDelivery:
         hostname: Callable[[], str] = socket.gethostname,
         registry_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None,
         pins: Callable[[Mapping[str, str]], tuple[str, str, str]] | None = None,
+        route: str = ROUTE_DESKTOP,
     ):
         self.transport = transport
         self.env = env
@@ -188,52 +192,54 @@ class CodexDelivery:
         # status of that file, the profile this seat may read, and the owner account it may
         # wake for.
         self.pins = pins or local_pins
+        # The route the receipt names:  the Desktop app on the Mac, the daemon elsewhere.
+        self.route = route
 
     def __call__(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if self.local_host != "mac" or target.host != self.local_host:
-            return WR.Delivery("unreachable", route="codex-desktop", code="unsupported-host")
+        if target.host != self.local_host:
+            return WR.Delivery("unreachable", route=self.route, code="unsupported-host")
         sid = target.session_id
         if not isinstance(sid, str) or not SESSION_RE.fullmatch(sid):
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-session")
+            return WR.Delivery("refused", route=self.route, code="invalid-session")
         try:
             if str(uuid.UUID(sid)) != sid:
-                return WR.Delivery("refused", route="codex-desktop", code="invalid-session")
+                return WR.Delivery("refused", route=self.route, code="invalid-session")
         except (ValueError, AttributeError):
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-session")
+            return WR.Delivery("refused", route=self.route, code="invalid-session")
 
         if not isinstance(wake.wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake.wake_id):
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-wake-id")
+            return WR.Delivery("refused", route=self.route, code="invalid-wake-id")
         if type(wake.message_id) is not int or wake.message_id <= 0:
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-message-id")
+            return WR.Delivery("refused", route=self.route, code="invalid-message-id")
         routing = cleaned_routing_metadata(wake)
         if routing is None:
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-routing-metadata")
+            return WR.Delivery("refused", route=self.route, code="invalid-routing-metadata")
         generation = getattr(target, "generation", 0)
         if type(generation) is not int or generation <= 0:
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-generation")
+            return WR.Delivery("refused", route=self.route, code="invalid-generation")
         try:
             thread = PLC.thread_row(self.env, sid)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+            return WR.Delivery("busy", route=self.route, code="store-unavailable")
         if thread is None:
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+            return WR.Delivery("busy", route=self.route, code="store-unavailable")
         try:
             classification = PLC.classify(thread)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+            return WR.Delivery("busy", route=self.route, code="store-unavailable")
         if thread.id != sid or classification != "chat":
-            return WR.Delivery("refused", route="codex-desktop", code="not-interactive-chat")
+            return WR.Delivery("refused", route=self.route, code="not-interactive-chat")
         problem = self._owner_problem(thread)
         if problem:
             # The authority to enqueue is not granted to a target whose owner does not match,
             # and it is not granted at all while no owner is pinned.
-            return WR.Delivery("refused", route="codex-desktop", code=problem)
+            return WR.Delivery("refused", route=self.route, code=problem)
         try:
             meta = self.metadata_lookup(self.env, sid)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+            return WR.Delivery("busy", route=self.route, code="store-unavailable")
         if meta is None:
-            return WR.Delivery("busy", route="codex-desktop", code="store-unavailable")
+            return WR.Delivery("busy", route=self.route, code="store-unavailable")
         if (
             not isinstance(meta, Mapping)
             or meta.get("id") != sid
@@ -244,16 +250,16 @@ class CodexDelivery:
             or not isinstance(meta.get("rollout_path"), str)
             or not meta["rollout_path"]
         ):
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-binding")
+            return WR.Delivery("refused", route=self.route, code="invalid-binding")
         if meta["archived"] not in (0, False):
-            return WR.Delivery("refused", route="codex-desktop", code="archived")
+            return WR.Delivery("refused", route=self.route, code="archived")
         if not os.path.isdir(meta["cwd"]):
-            return WR.Delivery("busy", route="codex-desktop", code="workspace-unavailable")
+            return WR.Delivery("busy", route=self.route, code="workspace-unavailable")
 
         try:
             host = self.hostname()
         except Exception:  # noqa: BLE001 - hostname lookup is an injected platform boundary
-            return WR.Delivery("busy", route="codex-desktop", code="hostname-unavailable")
+            return WR.Delivery("busy", route=self.route, code="hostname-unavailable")
 
         binding = {
             "platform": PLATFORM,
@@ -267,24 +273,24 @@ class CodexDelivery:
         try:
             preflight = self.transport.preflight(binding)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="preflight-error")
+            return WR.Delivery("busy", route=self.route, code="preflight-error")
         if preflight == "invalid":
-            return WR.Delivery("refused", route="codex-desktop", code="invalid-binding")
+            return WR.Delivery("refused", route=self.route, code="invalid-binding")
         if preflight != "ready":
-            return WR.Delivery("busy", route="codex-desktop", code="unavailable")
+            return WR.Delivery("busy", route=self.route, code="unavailable")
 
         try:
             receipt = self.transport.receipt_state(binding, text)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
-            return WR.Delivery("busy", route="codex-desktop", code="receipt-unavailable")
+            return WR.Delivery("busy", route=self.route, code="receipt-unavailable")
         if receipt == "observed":
-            return WR.Delivery("sent", route="codex-desktop", ack="confirmed", code="observed")
+            return WR.Delivery("sent", route=self.route, ack="confirmed", code="observed")
         if receipt == "queued":
-            return WR.Delivery("sent", route="codex-desktop", ack="unknown", code="duplicate")
+            return WR.Delivery("sent", route=self.route, ack="unknown", code="duplicate")
         if receipt == "unavailable":
-            return WR.Delivery("busy", route="codex-desktop", code="receipt-unavailable")
+            return WR.Delivery("busy", route=self.route, code="receipt-unavailable")
         if receipt != "absent":
-            return WR.Delivery("busy", route="codex-desktop", code="receipt-unavailable")
+            return WR.Delivery("busy", route=self.route, code="receipt-unavailable")
 
         permit_result: list[WR.Delivery] = []
 
@@ -300,19 +306,19 @@ class CodexDelivery:
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
             if permit_result:
                 return permit_result[0]
-            return WR.Delivery("refused", route="codex-desktop", code="delivery-unknown")
+            return WR.Delivery("refused", route=self.route, code="delivery-unknown")
         if permit_result:
             return permit_result[0]
         if outcome == "accepted":
-            return WR.Delivery("sent", route="codex-desktop", ack="unknown", code="queued")
+            return WR.Delivery("sent", route=self.route, ack="unknown", code="queued")
         if outcome == "deferred":
-            return WR.Delivery("busy", route="codex-desktop", code="deferred")
+            return WR.Delivery("busy", route=self.route, code="deferred")
         if outcome == "failed":
-            return WR.Delivery("failed", route="codex-desktop", code="rejected")
+            return WR.Delivery("failed", route=self.route, code="rejected")
         if outcome == "held":
-            return WR.Delivery("refused", route="codex-desktop", code="held")
+            return WR.Delivery("refused", route=self.route, code="held")
         # Unknown acknowledgments are final: the native add may have succeeded.
-        return WR.Delivery("refused", route="codex-desktop", code="delivery-unknown")
+        return WR.Delivery("refused", route=self.route, code="delivery-unknown")
 
     def _owner_problem(self, thread: Any) -> str:
         """The code that refuses the delivery because the target's owner is not the pinned one.
@@ -367,15 +373,15 @@ class CodexDelivery:
             # The host's own configuration decides, as it does in every other platform:  a
             # host with no address or key fails closed and names the variable, and a host
             # that is configured answers the outage and spends no attempt.
-            return WR.registry_failure(self.env, route="codex-desktop")
+            return WR.registry_failure(self.env, route=self.route)
         if not isinstance(current, Mapping) or "error" in current:
-            return WR.registry_delivery(current, route="codex-desktop")
+            return WR.registry_delivery(current, route=self.route)
         found = current.get("found")
         if type(found) is not bool:
             # The registry answered, but its row is not a row:  a data fault, not an outage.
-            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
+            return WR.Delivery("failed", route=self.route, code=WR.UNREADABLE_ROW)
         if not found or WR._closed(current):
-            return WR.Delivery("refused", route="codex-desktop", code="target-released")
+            return WR.Delivery("refused", route=self.route, code="target-released")
 
         session_id = current.get("native_session_id")
         letter = current.get("label") or current.get("letter")
@@ -393,7 +399,7 @@ class CodexDelivery:
             or seat_value.strip() != seat_value
         ):
             # The registry answered, but its row is not a row:  a data fault, not an outage.
-            return WR.Delivery("failed", route="codex-desktop", code=WR.UNREADABLE_ROW)
+            return WR.Delivery("failed", route=self.route, code=WR.UNREADABLE_ROW)
         if (
             session_id != target.session_id
             or letter != target.letter
@@ -401,8 +407,31 @@ class CodexDelivery:
             or host != target.host
             or seat_value.upper() != SEAT
         ):
-            return WR.Delivery("refused", route="codex-desktop", code="target-released")
+            return WR.Delivery("refused", route=self.route, code="target-released")
         return None
+
+
+def native_route(local_host: str) -> str:
+    """The route the receipt names for a chat delivered on this host.
+
+    The Mac's chats live in the Codex Desktop app, and every other host's live chats
+    live in the app-server daemon, so the receipt says which of the two carried it.
+    """
+    return ROUTE_DESKTOP if local_host == "mac" else ROUTE_DAEMON
+
+
+def native_transport(env: Mapping[str, str], local_host: str) -> Any:
+    """The transport this host's own Codex chats need.
+
+    The Mac runs the Codex Desktop app, and its transport drives that app.  Every other
+    host runs the app-server daemon, and its transport asks the daemon which thread has a
+    live owner, then drives the same shared queue the Mac drives.
+    """
+    if local_host == "mac":
+        return CT.CodexChatTransport(home=env.get("HOME") or None)
+    from . import codex_server_transport as CST
+
+    return CST.CodexServerChatTransport(env=env)
 
 
 def make_platform(
@@ -451,11 +480,10 @@ def router_platform(
     function for seat CODEX).
 
     A chat on the Mac goes through the one fixed ssh route in `claude_wake.deliver_remote`,
-    exactly as the other Mac-hosted platforms do:  the router on the server has no Codex
-    Desktop, so a delivery that stayed there would answer every wake with a store it does
-    not have.  A chat on the router's own host is refused for that same reason, and the
-    refusal is terminal, so the receipt settles instead of retrying a delivery that can
-    never succeed.  Any other host is refused."""
+    exactly as the other Mac-hosted platforms do.  A chat on the router's own host is
+    delivered from here, with the transport that host runs:  the Codex Desktop app on the
+    Mac, and the app-server daemon on the server, whose live chats are the ones the
+    registry names `verified_host: server`.  Any other host is refused."""
     here = dict(env)
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
@@ -469,17 +497,14 @@ def router_platform(
             return CW.deliver_remote(here, config, target, wake, platform=PLATFORM, runner=runner)
         if target.host != local_host:
             return WR.Delivery("refused", code="unknown-host")
-        if local_host != "mac":
-            # This host has no Codex Desktop:  the app runs on the Mac only, so a chat hosted
-            # here cannot be delivered from here, now or later.
-            return WR.Delivery("refused", code="no-codex-desktop")
-        native = transport or CT.CodexChatTransport(home=here.get("HOME") or None)
+        native = transport or native_transport(here, local_host)
         return CodexDelivery(
             native,
             here,
             metadata_lookup,
             local_host=local_host,
             hostname=hostname,
+            route=native_route(local_host),
         )(target, wake)
 
     return WR.Platform(
@@ -488,17 +513,22 @@ def router_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
-        exclude=exclude_non_interactive(here),
+        exclude=exclude_non_interactive(
+            here, str(_config(settings).get("local_host") or "server")
+        ),
     )
 
 
-def exclude_non_interactive(env: Mapping[str, str]):
-    """Exclude known engine/subagent rows; an unreadable store is not proof of exclusion."""
+def exclude_non_interactive(env: Mapping[str, str], local_host: str = "mac"):
+    """Exclude known engine/subagent rows; an unreadable store is not proof of exclusion.
+
+    Only this host's own rows are read:  a row on another host is that host's to judge.
+    """
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         excluded = set()
         for target in targets:
-            if target.host != "mac":
+            if target.host != local_host:
                 continue
             try:
                 row = PLC.thread_row(env, target.session_id)
@@ -737,11 +767,11 @@ def deliver_request(
     """Deliver one already-parsed, fixed-schema CODEX request and return its correlated result."""
     correlation = _correlation(request)
     if not _bounded_json(request):
-        delivery = WR.Delivery("refused", route="codex-desktop", code="request-too-complex")
+        delivery = WR.Delivery("refused", route=ROUTE_DESKTOP, code="request-too-complex")
     else:
         target, wake, error = _request_objects(request)
         if error:
-            delivery = WR.Delivery("refused", route="codex-desktop", code=error)
+            delivery = WR.Delivery("refused", route=ROUTE_DESKTOP, code=error)
         else:
             native = (
                 transport
@@ -813,7 +843,7 @@ def _entry_failure(code: str) -> dict[str, Any]:
         "wake_id": "",
         "session_id": "",
         "generation": None,
-        "delivery": asdict(WR.Delivery("refused", route="codex-desktop", code=code)),
+        "delivery": asdict(WR.Delivery("refused", route=ROUTE_DESKTOP, code=code)),
     }
 
 

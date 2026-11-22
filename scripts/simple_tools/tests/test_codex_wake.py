@@ -14,6 +14,8 @@ from simple_tools import platform_letter_codex as PLC
 from simple_tools import wake_router as WR
 
 SID = "11111111-1111-4111-8111-111111111111"
+#: A second chat, so a test can tell one host's row from another's.
+SID2 = "22222222-2222-4222-8222-222222222222"
 #: The account that owns the chat the fixture delivers into.  It is synthetic:  a production
 #: account id is private inventory, so none is committed.
 OWNER_ACCOUNT = "user-fixture-owner-000000000000"
@@ -731,18 +733,53 @@ class CodexWakeTests(unittest.TestCase):
         self.assertTrue(any(argv[0] == "ssh" for argv in calls))
         self.assertEqual(self.transport.calls, [])  # the Mac-local adapter never ran
 
-    def test_the_router_refuses_a_chat_on_its_own_host(self):
+    def test_the_router_delivers_a_chat_on_its_own_host(self):
+        # The server's live chats live in the app-server daemon, so the router on the
+        # server delivers them from there, and the receipt names the route it took.
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            {"local_host": "server", "mac_ssh": "test@example.test"},
+            transport=self.transport,
+            metadata_lookup=lambda env, sid: self.meta,
+            hostname=lambda: "example.test",
+        )
+        target = TargetWithGeneration(SID, letter="BC", host="server", generation=7)
+        row = dict(self.registry_result, verified_host="server")
+        with patch.object(CW, "resolve_registry_target", return_value=row), self.with_chat():
+            delivery = platform.deliver(target, self.wake)
+        self.assertEqual((delivery.outcome, delivery.ack), ("sent", "unknown"))
+        self.assertEqual(delivery.route, "codex-daemon")
+        self.assertEqual(self.transport.queue_add_calls, 1)
+
+    def test_the_mac_delivers_its_own_chat_through_the_desktop_app(self):
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            {"local_host": "mac", "mac_ssh": "test@example.test"},
+            transport=self.transport,
+            metadata_lookup=lambda env, sid: self.meta,
+            hostname=lambda: "example.test",
+        )
+        target = TargetWithGeneration(SID, letter="BC", host="mac", generation=7)
+        with patch.object(
+            CW, "resolve_registry_target", return_value=self.registry_result
+        ), self.with_chat():
+            delivery = platform.deliver(target, self.wake)
+        self.assertEqual((delivery.outcome, delivery.ack), ("sent", "unknown"))
+        self.assertEqual(delivery.route, "codex-desktop")
+
+    def test_the_router_excludes_this_hosts_own_engine_rows_only(self):
         platform = CW.router_platform(
             {"HOME": self.tmp.name},
             {"local_host": "server", "mac_ssh": "test@example.test"},
             transport=self.transport,
         )
-        target = TargetWithGeneration(SID, letter="BC", host="server", generation=7)
-        delivery = platform.deliver(target, self.wake)
-        self.assertEqual((delivery.outcome, delivery.code), ("refused", "no-codex-desktop"))
-        # The refusal is terminal, so the receipt settles instead of retrying forever.
-        self.assertIn("no-codex-desktop", CW.NEVER_RAN)
-        self.assertEqual(self.transport.calls, [])
+        server_target = TargetWithGeneration(SID, letter="BC", host="server", generation=7)
+        mac_target = TargetWithGeneration(SID2, letter="BD", host="mac", generation=7)
+        row = PLC.Thread(SID, source="exec", originator="codex_exec", thread_source="user")
+        with patch.object(PLC, "thread_row", return_value=row):
+            excluded = platform.exclude([server_target, mac_target])
+        # The row on another host is that host's to judge, so it is left out here.
+        self.assertEqual(excluded, {SID})
 
     def test_the_server_refuses_a_host_it_cannot_reach(self):
         platform = CW.router_platform(
