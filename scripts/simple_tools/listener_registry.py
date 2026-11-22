@@ -127,6 +127,7 @@ WRITE_OPS = (
     "reopen",
     "mark-exported",
     "report-gone",
+    "report-live",
 )
 OPS = READ_OPS + WRITE_OPS
 _METHODS = {op: "GET" for op in READ_OPS} | {op: "POST" for op in WRITE_OPS}
@@ -137,6 +138,9 @@ Answer = tuple[int, dict[str, Any]]
 SOURCE_HOST_REPORT = "host-report"
 #: The most session ids one report-gone call may name.
 MAX_GONE_IDS = 500
+#: How many session ids one statement of the cross-host check names at a time:  SQLite's own
+#: limit on the variables of a statement is 999.
+REPORT_BATCH = 200
 #: The default share of a host's live rows (for one platform) a single report may close.
 DEFAULT_GONE_REPORT_MAX_SHARE = 0.5
 #: How lately a row must have been seen (its chat's hook touched it) for a gone report to leave it open.  A chat's
@@ -836,6 +840,124 @@ class RegistryService:
         }
 
 
+    def _report_mismatch(
+        self, platform: str, host: str, live: Mapping[str, Any]
+    ) -> str | None:
+        """Why this report may not speak for this host, or None when it may.
+
+        A report speaks for the host it files under.  A chat that another host holds open is a
+        cross-host attestation,  and it is refused rather than answered.  A chat the registry
+        never knew is not a mismatch:  the host may name every chat it holds,  registered or not.
+
+        A report that names no chat while this host has open rows contradicts them,  so it is
+        refused too:  a host that holds rows cannot also say it holds nothing.
+        """
+        named = sorted({str(sid or "").strip() for sid in live} - {""})
+        # The check only reads,  so it reads on a read-only connection:  a write transaction
+        # here would hold the registry's write lock for the whole validation.  The reads share
+        # one deferred read transaction,  so every chunk and the count below see the same
+        # snapshot:  a row that moves between two chunks cannot make the answer disagree with
+        # itself.  A deferred read takes no write lock,  so it blocks no writer.
+        registry = OR.SessionRegistry(self.db_path, read_only=True)
+        try:
+            conn = registry._conn
+            conn.execute("BEGIN DEFERRED")
+            try:
+                foreign: list[str] = []
+                for start in range(0, len(named), REPORT_BATCH):
+                    chunk = named[start : start + REPORT_BATCH]
+                    placeholders = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        "SELECT DISTINCT native_session_id FROM sessions"
+                        " WHERE platform = ? AND closed_at IS NULL"
+                        " AND (verified_host != ? OR verified_host IS NULL)"
+                        " AND native_session_id IN (%s)" % placeholders,
+                        [platform, host, *chunk],
+                    ).fetchall()
+                    foreign.extend(str(row[0]) for row in rows)
+                if foreign:
+                    return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
+                        len(foreign),
+                        host,
+                    )
+                if not named:
+                    held = conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                        " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
+                        (platform, host),
+                    ).fetchone()[0]
+                    if held:
+                        return (
+                            "the report names no chat,  but this host has %d open row(s),  so it "
+                            "contradicts them" % int(held)
+                        )
+            finally:
+                conn.rollback()
+        finally:
+            registry.close_db()
+        return None
+
+    def _op_report_live(self, principal: str, payload: Mapping[str, Any]) -> Answer:
+        """Store the host's own view of the chats it still holds open (OPERATOR only).
+
+        The body names one platform,  the host (`verified_host`,  or `location`:  mac,  server or
+        cloud),  and `live`:  an object of native session id to the host's own last-activity time
+        for that chat.  The report is what the sweep asks before it recycles a letter:  a chat the
+        host says it still holds open keeps its letter,  and a host that has gone silent is not
+        evidence that its chats ended (AFC-878).
+
+        The report is the host's own answer,  not the registry's:  a chat the host does not name is
+        a chat the host no longer holds,  and a chat it names with a time older than the window is
+        one it has not touched for longer than the window.  One report per (platform, host):  the
+        last one wins.
+
+        The report speaks for one host,  and the registry holds it to that:  a chat that belongs to
+        another host's open row is a cross-host attestation,  and the whole report is refused;  and
+        a report that names no chat while the host has open rows contradicts them,  so it is refused
+        too.  A chat the registry never knew is not a refusal:  the host may name every chat it
+        holds,  registered or not.
+
+        Trust:  every host-side client holds the one OPERATOR key,  so the host in the body is the
+        caller's claim,  as it is for register and report-gone.  What the report can do is kept
+        inside the registry's own power:  an attested host keeps a letter the sweep's idle test
+        would have recycled,  and an attested host never recycles a letter the idle test would have
+        kept.  So a report cannot free another host's letters,  and the residual risk is a report
+        that pins letters,  which lasts only as long as the report is fresh.
+        """
+        refused = self._operator_only(principal)
+        if refused:
+            return refused
+        self._require_store()
+        platform = OR.normalize_platform(str(payload.get("platform") or ""))
+        host = str(payload.get("verified_host") or payload.get("location") or "").strip().lower()
+        if not platform or host not in HOSTS:
+            return _error(
+                400,
+                "invalid_argument",
+                "platform is required and verified_host must be one of %s" % ", ".join(HOSTS),
+            )
+        live = payload.get("live")
+        if not isinstance(live, Mapping):
+            return _error(
+                400,
+                "invalid_argument",
+                "live must be an object of native session id to the host's last-activity time",
+            )
+        mismatch = self._report_mismatch(platform, host, live)
+        if mismatch:
+            return _error(400, "invalid_argument", mismatch)
+        try:
+            answer = OR.record_host_liveness(
+                self.db_path,
+                platform=platform,
+                verified_host=host,
+                live=live,
+            )
+        except ValueError as exc:
+            return _error(400, "invalid_argument", str(exc))
+        return 200, {"ok": True, **answer}
+
+
 def _instant(moment: datetime) -> str:
     """An instant in the registry's stored form (operator_registry._utcnow), so it compares as text."""
     return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -959,6 +1081,7 @@ class Sweeper:
             "platforms": {},
             "ended": 0,
             "refused": [],
+            "kept": [],
             "ok": True,
         }
         try:
@@ -973,6 +1096,7 @@ class Sweeper:
                 )
             result["ended"] = len(outcome["ended"])
             result["refused"] = outcome["refused"]
+            result["kept"] = outcome.get("kept", [])
             if outcome["refused"]:
                 result.update(ok=False, error="sweep_share_exceeded")
         self.last = result
@@ -998,6 +1122,9 @@ class Sweeper:
         cutoff = datetime.now(UTC) - timedelta(minutes=self.stale_after_minutes)
         ended: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
+        # The rows a host attested keep their letters (AFC-878).  They are not a
+        # share failure,  so they are counted apart from the pass's `refused`.
+        kept_rows: list[dict[str, Any]] = []
         with self._lock:
             registry = OR.SessionRegistry(self.service.db_path)
             try:
@@ -1025,6 +1152,29 @@ class Sweeper:
                             continue
                         for row in _stale_and_replaced(members, cutoff):
                             doomed.setdefault((pf, host), []).append(row)
+                    # The idle test is a guess about the chat;  the chat's own host knows better,
+                    # so a candidate is only retired when that host has attested (AFC-878).  A host
+                    # with no fresh report is not evidence that its chats ended:  those rows keep
+                    # their letters,  and the reason is named in the pass's answer.
+                    reports: dict[tuple[str, str], Mapping[str, Any]] = {}
+                    for pf, host in doomed:
+                        reports[(pf, host)] = OR._host_liveness_row(conn, pf, host)
+                    attested: dict[tuple[str, str], list[Any]] = {}
+                    for key, members in doomed.items():
+                        kept, held = OR.attested_retirement(
+                            members, reports, cutoff, now=datetime.now(UTC)
+                        )
+                        attested[key] = kept
+                        for row in held:
+                            kept_rows.append(
+                                {
+                                    "platform": key[0],
+                                    "host": key[1],
+                                    "record_id": row["record_id"],
+                                    "reason": row["reason"],
+                                }
+                            )
+                    doomed = attested
                     now = OR._utcnow()
                     for (pf, host), members in sorted(doomed.items()):
                         open_count = hosts.get((pf, host), 0)
@@ -1083,7 +1233,7 @@ class Sweeper:
                                 )
             finally:
                 registry.close_db()
-        return {"ended": ended, "refused": refused}
+        return {"ended": ended, "refused": refused, "kept": kept_rows}
 
 
 def _quietest_first(rows: list[Any]) -> list[Any]:
