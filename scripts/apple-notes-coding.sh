@@ -2337,7 +2337,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
@@ -2346,40 +2346,67 @@ if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
 fi
 
-# The installed Mac helper uses the shared scoped reader with this consumer's
-# own service token and grant. It receives one value on stdout and never reads
-# through the retired fleet-secrets CLI or a flat credential file.
+# The shared scoped reader is the one implementation of a scoped Infisical read:
+# the owner's shared client, the consumer's own service token, and the grant that
+# token actually holds.  It pins the API base,  checks the grant against the
+# folder asked for,  and checks the answer's own provenance,  so no token ever
+# reaches an argument list and no inherited API base can redirect it.  The
+# installed Mac helper receives one value on stdout and never reads through the
+# retired fleet-secrets CLI or a flat credential file.
 INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
 if [[ -z "$INFISICAL_SCOPED_READER" && -n "${HOME:-}" ]]; then
   INFISICAL_SCOPED_READER="${HOME}/apps/infisical-scoped/infisical-scoped.py"
 fi
 
+# One value on standard output.  The reader's own reason goes to standard error
+# and its exit code says whether the name was absent (3), the grant refused the
+# read (4) or the usage was wrong (2).
+# The reader runs under an isolated interpreter (-I),  the way the seat-mcp and
+# senate launchers run it:  an inherited PYTHONPATH or a user-site package must
+# not be able to see or replace the grant this read carries.
 _scoped_secret() {
   local name="$1" folder="$2" account="$3"
   [[ -f "$INFISICAL_SCOPED_READER" && -r "$INFISICAL_SCOPED_READER" ]] || {
     echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
     return 4
   }
-  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+  /usr/bin/python3 -I "$INFISICAL_SCOPED_READER" get "$name" \
     --folder "$folder" --project fleet-ops --account "$account"
 }
 
-# Preserve the host's bound value contract; when empty, use only the scoped reader.
+# One secret on stdout:  this consumer's own scoped token against Infisical
+# Fleet-OPS prod /global-api-keys, else nothing.  The scoped grant is the only
+# source:  a value already sitting in the environment is never read,  so a
+# hand-set value cannot replace the reviewed grant (OPS-1101).  A failed read
+# says which source was unavailable:  the reader, the account, or the folder.
 _pushover_secret() {
-  local name="$1" value="${!1:-}"
+  local name="$1" value=""
+  local err_file="" reason=""
+  err_file="$(mktemp)"
+  value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" 2>"$err_file")" || value=""
+  reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
   if [[ -z "$value" ]]; then
-    value="$(_scoped_secret "$name" "/global-api-keys" "apple-notes-ro" || true)"
+    echo "apple-notes: ${name} is not available:  the apple-notes-ro scoped service token could not return it from Infisical Fleet-OPS prod /global-api-keys through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})}" >&2
+    # The read failed,  so the helper does not report success:  the caller
+    # decides what a missing notification key means.
+    return 1
   fi
   printf '%s' "$value"
 }
 
 _send_pushover_notification() {
   local user_key token
-  # Environment value first, then this consumer's scoped reader (OPS-818; AFC-359).
-  user_key=$(_pushover_secret PUSHOVER_USER_KEY)
-  token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
-  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)
-  [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_CT_API_TOKEN)
+  # This consumer's own scoped token against Infisical Fleet-OPS prod
+  # /global-api-keys through the shared scoped reader (OPS-818;  the old
+  # flat secrets file is retired, AFC-359).
+  # A key the helper could not read is an empty key,  never a silent success:
+  # the Pushover call below is skipped and the macOS notification carries the
+  # owner instead.  The note itself never depends on a notification credential.
+  user_key=$(_pushover_secret PUSHOVER_USER_KEY) || user_key=""
+  token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN) || token=""
+  [[ -z "$token" ]] && { token=$(_pushover_secret PUSHOVER_ST_API_TOKEN) || token=""; }
+  [[ -z "$token" ]] && { token=$(_pushover_secret PUSHOVER_CT_API_TOKEN) || token=""; }
 
   local msg="${SUMMARY_TEXT:-Apple Note updated in Coding folder}"
   if [[ "$NEEDS_OWNER" == "1" ]]; then
@@ -2499,7 +2526,7 @@ stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 # Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
-# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
 # targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
 _ISO = re.compile(
     #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,

@@ -197,7 +197,11 @@ class Writes(unittest.TestCase):
         secret = blob(b"ghp_" + b"a" * 30)
         c = Client(secret)
         # Pin the message, so the test fails if the scan stops being what refuses it.
-        with self.assertRaisesRegex(Refused, "^credential-shaped content refused$"):
+        with self.assertRaisesRegex(
+            Refused,
+            r"^x\.txt looks like it contains a credential \(github_token\); "
+            "refusing to relay it$",
+        ):
             self.handle(c, a).run(a, {**base, "files": files_for(secret)})
         self.assertEqual(len(c.calls), 1)
         # non-utf-8 referenced content is refused (text trees only)
@@ -273,7 +277,11 @@ class Writes(unittest.TestCase):
             sha, blob = blob_of(raw)
             handle = self.handle(Client(blob), a)
             handle.loaded_known = ("caller-live-value-7", "own")
-            with self.assertRaisesRegex(Refused, "^credential-shaped content refused$"):
+            with self.assertRaisesRegex(
+                Refused,
+                r"^x\.txt looks like it contains a credential \(loaded_credential\); "
+                "refusing to relay it$",
+            ):
                 handle.run(
                     a,
                     {

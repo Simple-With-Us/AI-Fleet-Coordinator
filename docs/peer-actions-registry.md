@@ -21,7 +21,7 @@ The deployed logger may still emit the legacy zone suffix; this document is not 
 ## Credentials
 
 - **Google SA:** `GOOGLE_SHEETS_SA` in Infisical **Fleet-OPS** prod folder `/google-sheets-sa` (`fleet-sheets-sync@jay-wedgeworth.iam.gserviceaccount.com`).
-- **How tools load it:** a scoped **service token only** (no universal auth, no `fleet-secrets` machine identity).
+- **How tools load it:** a scoped **service token only** (no universal auth, no machine identity).
   - Env: `PEER_ACTIONS_INFISICAL_TOKEN` (cloud), or
   - File: `PEER_ACTIONS_INFISICAL_TOKEN_FILE` (path to a mode `0600` file holding `st....`).
   - Optional: `PEER_ACTIONS_INFISICAL_PROJECT_ID` or `INFISICAL_FLEET_OPS_PROJECT_ID`; otherwise `.simple-tools/fleet-ops-project-id` on the checkout.

@@ -6,7 +6,8 @@ module resolves the bearer to its identity by asking the Worker's HMAC-authed in
 verify route.  The raw bearer NEVER leaves this process:  only its SHA-256 hex travels,
 inside a body signed with the same X-Simple-Tools-Signature scheme as the wake listener
 (HMAC-SHA256 over the raw bytes, freshness window on sent_at).  The verify key itself
-is read through the fleet-secrets CLI only, like every other credential this service
+is read through the shared Infisical client and the relay's own scoped service
+token, like every other credential this service
 touches - never from the process environment.
 
 Failure shape:  fail closed.  resolve() returns None for a malformed token, an
@@ -87,7 +88,7 @@ class _VerifyUnavailable(Exception):
 class SharedBearerVerifier:
     """Resolves a presented bearer to its identity via the ST-MCP verify route.
 
-    `key_source` is anything with .secret(name) -> str (FleetSecretsSource in
+    `key_source` is anything with .secret(name) -> str (InfisicalSource in
     production, a fake in tests).  `transport(method, url, headers, body, timeout)`
     is injectable for tests;  it must return (status, response_bytes).
     """

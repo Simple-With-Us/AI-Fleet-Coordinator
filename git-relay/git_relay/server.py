@@ -1330,18 +1330,16 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         account = SeatPolicy.create_repo_account(owner)
         if account is None:
             raise ValueError("repository owner is not allowed")
-        issued_credential = None
+        app_token = None
         try:
-            issued_credential = self.app_minter.token_for_namespace(
-                app_slug, account[0], account[1]
-            )
+            app_token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
             try:
                 return self.client.create_repo(
                     repo,
                     args["visibility"],
                     description=args.get("description"),
                     license_template=args.get("license_template"),
-                    bearer=issued_credential,
+                    bearer=app_token,
                     kind=account[1],
                 )
             except RelayGitHubError as exc:
@@ -1349,8 +1347,8 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
                     raise PreReadUnavailable() from None
                 raise
         finally:
-            if issued_credential is not None:
-                self.app_minter.revoke_installation_token(issued_credential)
+            if app_token is not None:
+                self.app_minter.revoke_installation_token(app_token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
     if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
@@ -1723,7 +1721,7 @@ def _build_shared_verifier():
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
         return None
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
     from .shared_bearer import SharedBearerVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1734,7 +1732,7 @@ def _build_shared_verifier():
             # Preserve the existing file selector, without claiming its grant covers /tools.
             # The canonical verifier requires exactly this one folder; the legacy two-folder
             # grant cannot satisfy it.  Activation needs the verified dedicated tools binding.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1776,7 +1774,7 @@ def _build_assertion_verifier():
         raise SystemExit(
             "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
         )
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
     from .assertion import GrAssertionVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1786,7 +1784,7 @@ def _build_assertion_verifier():
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
             # Same existing file selector and dedicated-binding activation gate as the bearer
             # verify key above; this source change neither widens nor proves a grant.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1851,7 +1849,7 @@ def from_env() -> Relay:
     outcome_capacity = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # The existing source uses the canonical bounded reader with its own token file.
-        from .app_tokens import AppTokenError, AppTokenMinter, FleetSecretsSource
+        from .app_tokens import AppTokenError, AppTokenMinter, InfisicalSource
 
         # The Fleet-OPS prod folder the App keys are read from.  Defaults to
         # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
@@ -1865,7 +1863,7 @@ def from_env() -> Relay:
                 "unset it to use /github-apps"
             )
         try:
-            app_source = FleetSecretsSource(
+            app_source = InfisicalSource(
                 path=(raw_secrets_path or "/github-apps").strip(),
                 credential_file=_credential_file_for(
                     "the App-credentials source",
@@ -1958,9 +1956,9 @@ def _owner_token_from_cli() -> str:
     folder scope (_credential_file_for):  no ambient inheritance in
     production.
     """
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
 
-    source = FleetSecretsSource(
+    source = InfisicalSource(
         path="/git-relay-owner",
         credential_file=_credential_file_for(
             "the /git-relay-owner source",

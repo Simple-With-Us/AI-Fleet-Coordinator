@@ -109,16 +109,39 @@ _NO_APP_CREDENTIAL_EXACT = frozenset(
 )
 
 
+# This relay's own App material:  GH_APP_<SLUG>_ID and GH_APP_<SLUG>_PRIVATE_KEY.
+# The reader's absent and empty messages name one of them,  and nothing else.
+_APP_SECRET_NAME = re.compile(r"GH_APP_[A-Z0-9_]+(?:_ID|_PRIVATE_KEY)\Z")
+
+
+def _names_an_app_secret(text: str, prefix: str) -> bool:
+    """True when the reader's message names one of this relay's own App secrets."""
+    if not text.startswith(prefix):
+        return False
+    return bool(_APP_SECRET_NAME.match(text[len(prefix) :]))
+
+
 def missing_app_credential(exc: BaseException) -> bool:
     """True when the mint failed because the seat's own App id or key is absent or unusable."""
     text = str(exc)
     if text in _NO_APP_CREDENTIAL_EXACT:
         return True
-    if text.startswith(("Infisical has no value for ", "fleet-secrets has no value for ")):
+    # The reader's own wording for an absent name and for an empty one, in the
+    # two shapes the store answers with:  the canonical reader names Infisical,
+    # the store-scoped reader names the store.  Both are the same condition,  so
+    # both are a missing App credential and not a transient failure.
+    #
+    # The name after the wording must be this relay's own App material.  A wider
+    # prefix would take an unrelated provider or plumbing error that happens to
+    # start the same way as a missing App credential,  and would then retry it as
+    # a credential problem and hide the real failure.
+    if _names_an_app_secret(text, "Infisical has no value for "):
         return True
-    if text.startswith(
-        ("Infisical returned an empty value for ", "fleet-secrets returned an empty value for ")
-    ):
+    if _names_an_app_secret(text, "there is no value for "):
+        return True
+    if _names_an_app_secret(text, "Infisical returned an empty value for "):
+        return True
+    if _names_an_app_secret(text, "the store returned an empty value for "):
         return True
     if text.startswith("app id for ") and text.endswith(" is not an integer"):
         return True
@@ -318,7 +341,7 @@ def _open_systemd_source(path, scope, environ):
             os.close(fd)
 
 
-class FleetSecretsSource:
+class InfisicalSource:
     """The existing source protocol, backed by one canonical bounded named reader.
 
     Every source uses its own explicit protected token file and project declaration.  Only
@@ -470,6 +493,12 @@ class FleetSecretsSource:
         if wanted:
             self._fetch(wanted)
         return {name: self._cache[name] for name in names}
+
+
+# The name this source had while the retired shared reader was still in the
+# tree.  It stays as an alias so a caller that still imports it keeps working;
+# the source it names is the same canonical bounded reader.
+FleetSecretsSource = InfisicalSource
 
 
 class AppTokenMinter:
@@ -793,10 +822,10 @@ class AppTokenMinter:
         return token, expiry
 
     def token_for_namespace(self, slug: str, owner: str, kind: str) -> str:
-        """Mint one uncached installation issued_credential for creating a repository.
+        """Mint one uncached installation token for creating a repository.
 
         The permission object is the fixed pair for `kind`.  A caller cannot
-        pass its own permissions.  The issued_credential is not stored on this minter.
+        pass its own permissions.  The installation token is not stored on this minter.
         """
         permissions = _NAMESPACE_CREATE_PERMISSIONS.get(kind)
         if (
@@ -809,7 +838,7 @@ class AppTokenMinter:
         app_id, pem = self._app_credentials(slug)
         bearer = self._signer(app_id, pem, int(self._clock()))
         del pem
-        issued_credential = None
+        installation_token = None
         try:
             app = self._api("GET", "/app", bearer)
             if not isinstance(app, dict) or app.get("id") != app_id:
@@ -845,9 +874,9 @@ class AppTokenMinter:
             minted = data.get("token")
             if not isinstance(minted, str) or not minted:
                 raise AppTokenError("namespace mint failed")
-            issued_credential = minted
-            issued = issued_credential
-            issued_credential = None
+            installation_token = minted
+            issued = installation_token
+            installation_token = None
             return issued
         except AppTokenError:
             raise
@@ -855,8 +884,8 @@ class AppTokenMinter:
             raise AppTokenError("namespace mint failed") from None
         finally:
             del bearer
-            if issued_credential:
-                self.revoke_installation_token(issued_credential)
+            if installation_token:
+                self.revoke_installation_token(installation_token)
 
     def revoke_installation_token(self, token: str) -> bool:
         """Revoke one installation token.  Returns True when GitHub accepted
