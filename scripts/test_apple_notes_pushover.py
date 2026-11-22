@@ -90,14 +90,26 @@ class PushoverSecretTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIn("PUSHOVER_USER_KEY", result.stderr)
 
-    def test_an_environment_value_is_used_as_it_is(self) -> None:
+    def test_a_hand_set_environment_value_does_not_replace_a_refused_scoped_read(self) -> None:
         result = self.run_helper(
             "PUSHOVER_USER_KEY",
             PUSHOVER_USER_KEY="the-bound-value",
             FAKE_READER_EXIT="4",
         )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("PUSHOVER_USER_KEY", result.stderr)
+        self.assertIn("apple-notes-ro", result.stderr)
+        self.assertIn("/global-api-keys", result.stderr)
+
+    def test_a_scoped_read_wins_over_a_hand_set_environment_value(self) -> None:
+        result = self.run_helper(
+            "PUSHOVER_USER_KEY",
+            PUSHOVER_USER_KEY="the-bound-value",
+            FAKE_READER_EXIT="0",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "the-bound-value")
+        self.assertEqual(result.stdout, "a-value-the-reader-answered")
 
 
 if __name__ == "__main__":
