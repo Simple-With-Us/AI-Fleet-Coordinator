@@ -25,6 +25,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_minimax as PM
 from simple_tools.tests.test_listener_registry import OneWriterTest
 from simple_tools.tests.test_platform_letter_one_table import Base
@@ -147,6 +148,17 @@ class AttestedRetirementTests(unittest.TestCase):
         self.assertEqual(len(retirable), 1)
         self.assertEqual(refused, [])
 
+    def test_a_chat_the_host_named_with_an_unreadable_time_keeps_its_letter(self) -> None:
+        # A corrupt timestamp is not evidence that the chat ended:  the letter is kept and the
+        # reason is named,  the same way a stale report is kept.
+        now = datetime.now(UTC)
+        reports = {
+            ("minimax", "server"): {"reported_at": _iso(now), "live": {"m-1": "not a time"}}
+        }
+        retirable, refused = self.gate([self.row()], reports)
+        self.assertEqual(retirable, [])
+        self.assertEqual([row["reason"] for row in refused], ["host_unverified"])
+
 
 class ReportLiveOpTests(OneWriterTest):
     """The route:  one host's own view of its chats,  stored by the registry."""
@@ -186,6 +198,47 @@ class ReportLiveOpTests(OneWriterTest):
         self.create_store()
         status, answer = self.report(["m-1"])  # type: ignore[arg-type]
         self.assertEqual(status, 400, answer)
+
+    def test_a_report_naming_another_hosts_chat_is_refused(self) -> None:
+        # A report speaks for the host it files under:  a chat another host holds open is a
+        # cross-host attestation,  and the whole report is refused.
+        self.create_store()
+        self.register_at("CLAUDE", "mac-1", "mac")
+        self.register_at("CLAUDE", "server-1", "server")
+        now = _iso(datetime.now(UTC))
+        status, answer = self.report({"server-1": now})
+        self.assertEqual(status, 400, answer)
+        self.assertIn("another host", answer.get("message", ""))
+
+    def test_a_report_for_its_own_host_is_accepted(self) -> None:
+        self.create_store()
+        self.register_at("CLAUDE", "mac-1", "mac")
+        now = _iso(datetime.now(UTC))
+        status, answer = self.report({"mac-1": now})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["count"], 1)
+
+    def test_a_report_may_name_a_chat_the_registry_never_knew(self) -> None:
+        # The host may name every chat it holds,  registered or not.
+        self.create_store()
+        self.register_at("CLAUDE", "mac-1", "mac")
+        now = _iso(datetime.now(UTC))
+        status, answer = self.report({"mac-1": now, "mac-unknown": now})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["count"], 2)
+
+    def test_a_report_naming_no_chat_while_the_host_has_rows_is_refused(self) -> None:
+        self.create_store()
+        self.register_at("CLAUDE", "mac-1", "mac")
+        status, answer = self.report({})
+        self.assertEqual(status, 400, answer)
+        self.assertIn("contradicts", answer.get("message", ""))
+
+    def test_a_report_naming_no_chat_is_accepted_when_the_host_holds_none(self) -> None:
+        self.create_store()
+        status, answer = self.report({})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["count"], 0)
 
 
 class SweeperLivenessTests(OneWriterTest):
@@ -355,12 +408,14 @@ class MiniMaxLiveChatsTests(Base):
         self.assertTrue(live["m-0001"].endswith("Z"))
         self.assertTrue(live["m-0001"].startswith("2023-11-14T"))
 
-    def test_a_store_that_cannot_be_read_names_no_live_chats(self) -> None:
+    def test_a_store_that_cannot_be_read_says_nothing(self) -> None:
+        # A store that cannot be read is not a host that holds nothing:  the answer is None,
+        # so the host does not report,  and the registry keeps its letters.
         with open(self.store, "wb") as fh:
             fh.write(b"this is not a session store" * 8)
-        self.assertEqual(PM.minimax_live(self.env()), {})
+        self.assertIsNone(PM.minimax_live(self.env()))
 
-    def test_a_store_without_the_time_column_names_no_live_chats(self) -> None:
+    def test_a_store_without_the_time_column_says_nothing(self) -> None:
         os.remove(self.store)
         conn = sqlite3.connect(self.store)
         with conn:
@@ -369,7 +424,87 @@ class MiniMaxLiveChatsTests(Base):
                 " session_kind TEXT, parent_session_id TEXT, archived INTEGER NOT NULL DEFAULT 0)"
             )
         conn.close()
-        self.assertEqual(PM.minimax_live(self.env()), {})
+        self.assertIsNone(PM.minimax_live(self.env()))
+
+    def test_a_missing_store_says_nothing(self) -> None:
+        os.remove(self.store)
+        self.assertIsNone(PM.minimax_live(self.env()))
+
+    def test_a_host_with_more_chats_than_one_report_names_does_not_report(self) -> None:
+        # A partial report is worse than none:  a chat the report leaves out is a chat the host
+        # no longer holds,  so a host that cannot carry its whole list says nothing at all.
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.executemany(
+                "INSERT INTO local_runtime_sessions"
+                " (session_id, title, session_kind, parent_session_id, archived, updated_at_ms)"
+                " VALUES (?, '', 'conversation', NULL, 0, ?)",
+                [
+                    ("m-%05d" % n, 1_700_000_000_000 + n)
+                    for n in range(PM.MAX_LIVENESS_IDS + 1)
+                ],
+            )
+        conn.close()
+        self.assertIsNone(PM.minimax_live(self.env()))
+
+    def test_the_client_limit_is_the_registry_limit(self) -> None:
+        # One report names at most as many chats on the host as the registry will store.
+        self.assertEqual(PM.MAX_LIVENESS_IDS, OR.MAX_LIVENESS_IDS)
+
+
+class ReportLiveClientTests(Base):
+    """The client's `report-live`:  what it sends,  and what it does not send."""
+
+    def spec(self, live_chats):
+        import dataclasses
+
+        return dataclasses.replace(PM.SPEC, live_chats=live_chats)
+
+    def args(self, **extra):
+        import argparse
+
+        return argparse.Namespace(platform="minimax", location="mac", **extra)
+
+    def test_a_host_that_cannot_answer_reports_nothing(self) -> None:
+        for adapter in (lambda env: None, _raises):
+            with self.subTest(adapter=adapter):
+                self.assertIsNone(PL.live_report(self.spec(adapter), self.env()))
+
+    def test_a_platform_with_no_adapter_reports_nothing(self) -> None:
+        import dataclasses
+
+        spec = dataclasses.replace(PM.SPEC, live_chats=None)
+        self.assertIsNone(PL.live_report(spec, self.env()))
+
+    def test_a_host_that_cannot_answer_makes_no_call(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(PL, "load_spec", return_value=self.spec(lambda env: None)):
+            out = PL._report_live_api(self.env(), self.args())
+        self.assertIn("error", out)
+        self.assertFalse([r for r in self.fake.requests if "report-live" in r[1]])
+
+    def test_the_count_is_the_registrys_own(self) -> None:
+        # The registry drops an entry whose time it cannot read,  so the count the client
+        # answers is the count the registry stored.
+        from unittest import mock
+
+        good = _iso(datetime.now(UTC))
+
+        def adapter(env):
+            return {"m-1": good, "m-2": "not a time"}
+
+        with mock.patch.object(PL, "load_spec", return_value=self.spec(adapter)):
+            out = PL._report_live_api(self.env(), self.args())
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(len([r for r in self.fake.requests if "report-live" in r[1]]), 1)
+
+
+def _raises(env):
+    raise OSError("the store is locked")
+
+
 
 
 if __name__ == "__main__":

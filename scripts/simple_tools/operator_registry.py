@@ -2391,10 +2391,17 @@ def attested_retirement(
             continue
         live = report.get("live")
         live = live if isinstance(live, Mapping) else {}
-        activity = _parse_instant(str(live.get(str(row["native_session_id"])) or ""))
-        if activity is None:
+        sid = str(row["native_session_id"])
+        if sid not in live:
             # The host's report does not name this chat:  it no longer holds it.
             retirable.append(row)
+            continue
+        activity = _parse_instant(str(live.get(sid) or ""))
+        if activity is None:
+            # The host named this chat but its own time cannot be read.  A corrupt
+            # timestamp is not evidence that the chat ended,  so the letter is kept
+            # and the reason is named,  the same way a stale report is kept.
+            refused.append({"record_id": row["record_id"], "reason": "host_unverified"})
             continue
         if activity >= cutoff:
             # The host says it still holds the chat and touched it lately.
@@ -2463,7 +2470,9 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
+            candidates, _refused = attested_retirement(
+                candidates, reports, cutoff, now=moment
+            )
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:

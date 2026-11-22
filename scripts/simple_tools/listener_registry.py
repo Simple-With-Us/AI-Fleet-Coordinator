@@ -138,6 +138,9 @@ Answer = tuple[int, dict[str, Any]]
 SOURCE_HOST_REPORT = "host-report"
 #: The most session ids one report-gone call may name.
 MAX_GONE_IDS = 500
+#: How many session ids one statement of the cross-host check names at a time:  SQLite's own
+#: limit on the variables of a statement is 999.
+REPORT_BATCH = 200
 #: The default share of a host's live rows (for one platform) a single report may close.
 DEFAULT_GONE_REPORT_MAX_SHARE = 0.5
 #: How lately a row must have been seen (its chat's hook touched it) for a gone report to leave it open.  A chat's
@@ -836,6 +839,57 @@ class RegistryService:
             "kept_count": len(kept),
         }
 
+
+    def _report_mismatch(
+        self, platform: str, host: str, live: Mapping[str, Any]
+    ) -> str | None:
+        """Why this report may not speak for this host, or None when it may.
+
+        A report speaks for the host it files under.  A chat that another host holds open is a
+        cross-host attestation,  and it is refused rather than answered.  A chat the registry
+        never knew is not a mismatch:  the host may name every chat it holds,  registered or not.
+
+        A report that names no chat while this host has open rows contradicts them,  so it is
+        refused too:  a host that holds rows cannot also say it holds nothing.
+        """
+        named = sorted({str(sid or "").strip() for sid in live} - {""})
+        registry = OR.SessionRegistry(self.db_path)
+        try:
+            with registry._write_txn() as conn:
+                foreign: list[str] = []
+                for start in range(0, len(named), REPORT_BATCH):
+                    chunk = named[start : start + REPORT_BATCH]
+                    placeholders = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        "SELECT DISTINCT verified_host FROM sessions"
+                        " WHERE platform = ? AND closed_at IS NULL"
+                        " AND native_session_id IN (%s)" % placeholders,
+                        [platform, *chunk],
+                    ).fetchall()
+                    for (other,) in rows:
+                        name = str(other)
+                        if name != host and name not in foreign:
+                            foreign.append(name)
+                if foreign:
+                    return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
+                        len(foreign),
+                        host,
+                    )
+                if not named:
+                    held = conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                        " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
+                        (platform, host),
+                    ).fetchone()[0]
+                    if held:
+                        return (
+                            "the report names no chat,  but this host has %d open row(s),  so it "
+                            "contradicts them" % int(held)
+                        )
+        finally:
+            registry.close_db()
+        return None
+
     def _op_report_live(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         """Store the host's own view of the chats it still holds open (OPERATOR only).
 
@@ -850,8 +904,18 @@ class RegistryService:
         one it has not touched for longer than the window.  One report per (platform, host):  the
         last one wins.
 
+        The report speaks for one host,  and the registry holds it to that:  a chat that belongs to
+        another host's open row is a cross-host attestation,  and the whole report is refused;  and
+        a report that names no chat while the host has open rows contradicts them,  so it is refused
+        too.  A chat the registry never knew is not a refusal:  the host may name every chat it
+        holds,  registered or not.
+
         Trust:  every host-side client holds the one OPERATOR key,  so the host in the body is the
-        caller's claim,  as it is for register and report-gone.
+        caller's claim,  as it is for register and report-gone.  What the report can do is kept
+        inside the registry's own power:  an attested host keeps a letter the sweep's idle test
+        would have recycled,  and an attested host never recycles a letter the idle test would have
+        kept.  So a report cannot free another host's letters,  and the residual risk is a report
+        that pins letters,  which lasts only as long as the report is fresh.
         """
         refused = self._operator_only(principal)
         if refused:
@@ -872,6 +936,9 @@ class RegistryService:
                 "invalid_argument",
                 "live must be an object of native session id to the host's last-activity time",
             )
+        mismatch = self._report_mismatch(platform, host, live)
+        if mismatch:
+            return _error(400, "invalid_argument", mismatch)
         try:
             answer = OR.record_host_liveness(
                 self.db_path,

@@ -1211,20 +1211,27 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str]:
+def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str] | None:
     """The chats this host still holds open, with the host's own last-activity time for each.
 
     The adapter answers from its own store,  so the report is the host's own answer and not the
     registry's guess.  A chat the adapter leaves out is a chat it does not hold,  and a chat it
     names with an old time is one it has not touched for longer than the window.  A platform with
     no such adapter reports nothing at all:  the registry then treats the host as unverified and
-    keeps its letters,  which is the safe way round (AFC-878)."""
+    keeps its letters,  which is the safe way round (AFC-878).
+
+    None means the host could not answer:  it has no adapter,  its store cannot be read,  or its
+    store holds more chats than one report may name.  An empty map means the host answered and
+    holds nothing.  The two are not the same thing:  a report of nothing is a statement that
+    every chat on this host ended,  and a store that could not be read must never say that."""
     if spec.live_chats is None:
-        return {}
+        return None
     try:
         answer = spec.live_chats(env)
     except Exception:  # a store that cannot be read is a host that cannot answer
-        return {}
+        return None
+    if answer is None:  # the adapter read its store and could not answer
+        return None
     live: dict[str, str] = {}
     for sid, stamp in dict(answer or {}).items():
         key = str(sid or "").strip()
@@ -1249,11 +1256,15 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
     if spec is None:
         return {"error": "%r is not a platform this side writes" % args.platform}
     if spec.live_chats is None:
+        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
+    live = live_report(spec, env)
+    if live is None:
+        # The host could not answer,  so it does not report:  a report of nothing would tell
+        # the sweep that every chat on this host ended.
         return {
-            "error": "%s has no live-chat report,  so this host cannot say which chats are open"
+            "error": "%s could not read its chat store,  so this host cannot say which chats are open"
             % spec.platform
         }
-    live = live_report(spec, env)
     out = _call_api(
         env,
         "report-live",
@@ -1266,7 +1277,13 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
     )
     if "error" in out:
         return dict(out)
-    return {"ok": True, "count": len(live), "reported_at": out.get("reported_at", "")}
+    # The registry's own count is the one that says what was stored:  an entry whose time the
+    # registry could not read is dropped there,  so the client does not count it.
+    return {
+        "ok": True,
+        "count": int(out.get("count") or 0),
+        "reported_at": out.get("reported_at", ""),
+    }
 
 
 def _report_gone_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
