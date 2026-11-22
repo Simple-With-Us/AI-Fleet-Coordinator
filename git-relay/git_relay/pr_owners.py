@@ -79,6 +79,10 @@ def _row(
     ):
         if value is not None:
             claims[name] = value
+    # The merged set goes through the same shape checks as the shared
+    # origin dict:  a row can never hold a claim the protected census
+    # would reject later, which would fail-close every read for the repo.
+    claims = dict(origin_claims(claims))
     return {
         **claims,
         "ts": ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

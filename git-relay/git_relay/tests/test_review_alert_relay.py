@@ -524,6 +524,24 @@ class ServiceReadRevokeTests(unittest.TestCase):
             self.assertEqual(status, 502)
             self.assertEqual(minter.revokes, ["minted-token"])
 
+    def test_one_call_writes_exactly_one_row(self):
+        # Every exit from the lane writes exactly one row, so a call is
+        # never double-counted in review.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), FakeMinter(), service_repos=[ARGS["repo"]])
+            status, _ = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            self.assertEqual(status, 200)
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].get("result"), "ok")
+            self.assertEqual(rows[0].get("verb"), "pull")
+
     def test_revoke_failure_is_audited_secret_free(self):
         with tempfile.TemporaryDirectory() as directory:
             minter = FakeMinter(revoke_ok=False)
@@ -541,6 +559,9 @@ class ServiceReadRevokeTests(unittest.TestCase):
                 r for r in rows if r.get("result") == "error" and r.get("at") == "revoke"
             ]
             self.assertEqual(len(revoke_rows), 1)
+            # One call, one row:  the failed revocation updates the row the
+            # read already earned instead of adding a second one.
+            self.assertEqual(len(rows), 1)
             raw = (Path(directory) / "audit.jsonl").read_bytes()
             self.assertNotIn(b"minted-token", raw)
             self.assertNotIn(SERVICE_TOKEN.encode(), raw)

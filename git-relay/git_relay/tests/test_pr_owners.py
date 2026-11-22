@@ -155,6 +155,24 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(sorted(r["number"] for r in store.for_seat("swu-echo")), [1, 3])
             self.assertEqual([r["number"] for r in store.for_repo("o/s")], [3])
 
+    def test_an_invalid_direct_claim_is_refused_before_a_row_is_stored(self):
+        # The direct claim columns go through the same shape checks as the
+        # shared origin dict:  a row that held an invalid claim would make
+        # the protected census raise for the whole repository.
+        with tempfile.TemporaryDirectory() as directory:
+            store = PROwnerStore(str(Path(directory) / "owners.jsonl"))
+            with self.assertRaises(ValueError):
+                store.record(
+                    seat="swu-echo",
+                    repo="o/r",
+                    number=1,
+                    head="h",
+                    base="main",
+                    origin_session_claim="not a session",
+                )
+            self.assertEqual(len(store), 0)
+            self.assertIsNone(store.lookup("o/r", 1))
+
     def test_confirmed_for_repo_is_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             store = PROwnerStore(str(Path(directory) / "owners.jsonl"))
