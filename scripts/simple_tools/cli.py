@@ -3057,6 +3057,7 @@ _REMOTE_CODES = frozenset(
         "rate_limited",
         "not_configured",
         "outcome_unknown",
+        "origin_held",
         "paused",
         "linear_error",
         "internal",

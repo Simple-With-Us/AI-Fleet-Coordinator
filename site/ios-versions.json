@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-22T00:47:41Z",
+  "updatedAt": "2026-11-22T01:56:44Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -81,7 +81,7 @@
     },
     "com.socratictrade.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611181427",
+      "build": "202611211910",
       "appleId": 6815511597,
       "displayName": "Socratic-Trade"
     },
