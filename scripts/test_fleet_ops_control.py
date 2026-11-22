@@ -2742,13 +2742,26 @@ class RedeployResourceNameTests(Base):
         )
         self.assertNotIn("resourceName", answer)
 
-    def test_a_failed_redeploy_still_names_the_application(self):
+    def test_a_redeploy_with_a_server_error_is_unknown_and_names_the_application(self):
+        """A redeploy POST answered with a server error may have been applied (section 13)."""
         self.write_status([self.row("fleet-recall")])
         code, answer = self.run_main(
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=500)
         )
+        self.assertEqual((code, answer["result"]), (1, "unknown"))
+        self.assertEqual(answer["resourceName"], "fleet-recall")
+        rows = self.audit_rows()
+        self.assertEqual(rows[-1]["result"], "unknown")
+
+    def test_a_redeploy_refused_before_the_deploy_is_failed(self):
+        """A 4xx refused the request before anything began,  so it is a definite failure."""
+        self.write_status([self.row("fleet-recall")])
+        code, answer = self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=403)
+        )
         self.assertEqual((code, answer["result"]), (1, "failed"))
         self.assertEqual(answer["resourceName"], "fleet-recall")
+        self.assertEqual(self.audit_rows()[-1]["result"], "failed")
 
     def test_no_other_verb_carries_a_resource_name_or_a_logs_unit(self):
         for argv in (
@@ -2983,6 +2996,24 @@ class CredentialTests(Base):
             ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
         )
         self.assertEqual(self.http_calls, [])
+
+    def test_a_truncated_error_body_still_answers_its_status(self):
+        """A cut error body must not escape the request helper:  the status is what it needs."""
+        import http.client
+        import urllib.error
+
+        class Cut(urllib.error.HTTPError):
+            def read(self, *args):
+                raise http.client.IncompleteRead(b"")
+
+        error = Cut("http://127.0.0.1:8000/api/v1/deploy?uuid=x", 500, "Server Error", {}, None)
+        try:
+            with mock.patch("urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = error
+                status, body = foc.http_request("http://127.0.0.1:8000/x", {}, "POST", 1)
+        finally:
+            error.close()
+        self.assertEqual((status, body), (500, ""))
 
     def test_a_transient_coolify_answer_is_retryable_and_not_terminal(self):
         """A 408 or a 429 refused the deploy before it was applied,  so the run may be retried."""

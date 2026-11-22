@@ -1373,7 +1373,12 @@ def http_request(url, headers, method="GET", timeout=HTTP_TIMEOUT):
             raw = response.read(64 * 1024)
             return response.status, raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        raw = exc.read(64 * 1024)
+        try:
+            raw = exc.read(64 * 1024)
+        except (http.client.HTTPException, OSError):
+            # A truncated or reset error body is not the status:  the status is what the
+            # caller needs,  and an empty body is an empty body.
+            raw = b""
         return exc.code, raw.decode("utf-8", "replace")
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
@@ -5098,10 +5103,11 @@ def handle(
             answer["errorCode"] = exc.error_code
         if exc.completed is not None:
             answer["completedCommands"] = exc.completed
-        if exc.timed_out and require_approval:
+        if exc.timed_out and (require_approval or (scope == "server" and action == "redeploy")):
             # Started and killed at its time limit: the route's word is `unknown`, in the answer and
             # in the one audit row (section 13).  A caller without the route's switch still gets
-            # `failed`, as ever.
+            # `failed`, as ever,  except for a redeploy:  its POST may have been applied before
+            # the server error,  so `failed` would tell the operator that nothing was deployed.
             answer["result"] = "unknown"
         code = 1
     if mode == "yes" and not (scope == "server" and action == "update-status"):
