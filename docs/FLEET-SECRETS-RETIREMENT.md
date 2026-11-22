@@ -45,9 +45,11 @@ reader, used by many consumers, each of which should instead hold its own narrow
 
 4. **The consumer's own store is the authority for the token.**  The scoped service token is read from the
    consumer's own store, and it is the credential the read runs under.  The environment may carry a copy of
-   that same token, which is how a host transports a value it already synced from Infisical, and a copy is
-   used only when the scoped read populated it.  A hand-set environment value never replaces the reviewed,
-   scope-limited grant.  The read's own scope check still decides whether any token may read a folder at
+   that same token, which is how a host transports a value it already synced from Infisical, and such a copy
+   is allowed only under a variable named for that consumer;  the general ambient `INFISICAL_TOKEN` must not
+   silently stand in for a consumer's narrower grant (the owner's ruling on OPS-1101).  A hand-set
+   environment value never replaces the reviewed, scope-limited grant.  The read's own scope check still decides
+   whether any token may read a folder at
    all:  `validate_service_metadata` requires the token's granted folders to equal the declared folders
    exactly.
 

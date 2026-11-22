@@ -1150,15 +1150,22 @@ class SecretStoreCredentialTests(TempHome):
             self.api.close()
         super().tearDown()
 
-    def fake_store(self, names, *, permissions=("read",), status=200) -> FakeInfisicalAPI:
+    def fake_store(
+        self, names, *, permissions=("read",), status=200, store_token=None
+    ) -> FakeInfisicalAPI:
         """A loopback Infisical holding these key NAMES, bound as the check's scoped token."""
         self.api = FakeInfisicalAPI(
             names, project=self.PROJECT, permissions=permissions, status=status
         )
-        # The check reads its token from its own store first.  The store is stubbed here
-        # so a test never reads the host's own credential store,  and the copy in the
-        # environment is what the read falls back to.
-        store = mock.patch("fleet_infisical.token_from_store", return_value=("", "no-token"))
+        # The check reads its token from its own store,  and the store is the only
+        # source it may use:  the general ambient binding is a wider grant than this
+        # one,  so it never stands in for it.  The store is stubbed here so a test
+        # never reads the host's own credential store.
+        bound = self.api.token if store_token is None else store_token
+        store = mock.patch(
+            "fleet_infisical.token_from_store",
+            return_value=(bound, "ok" if bound else "no-token"),
+        )
         store.start()
         self.addCleanup(store.stop)
         self.ctx = self.ctx.__class__(
@@ -1207,6 +1214,15 @@ class SecretStoreCredentialTests(TempHome):
 
     def test_a_failing_read_is_a_failing_unknown(self):
         self.fake_store(["CLAUDE_ZULIP_KEY"], permissions=("read", "write"))
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
+
+    def test_an_ambient_general_token_does_not_stand_in_for_the_scoped_grant(self):
+        # The owner's ruling on OPS-1101:  the general ambient Infisical binding must
+        # not silently stand in for this consumer's narrower grant,  so a store with
+        # no token fails closed even when the environment holds one.
+        self.fake_store(["CLAUDE_ZULIP_KEY"], store_token="")
         result = check_credential_key_present(self.rule(), "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)

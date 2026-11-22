@@ -173,20 +173,21 @@ def _read_token(project):
     """This provisioner's own scoped read-only service token for one project.
 
     The consumer's own store (the owner's login keychain on the Mac, a private file on a
-    server) is the authority:  the token is read from there.  A token bound in the
-    environment is only a copy of that same grant,  and it is used when the store has
-    none;  it never replaces the reviewed, scope-limited grant.  There is no shared
-    reader and no cached copy.  The value never appears in a message.
+    server) is the authority:  the token is read from there,  and a store with no token
+    fails closed.  A token bound in the environment is a copy of that same grant,  and
+    the general ambient binding is a wider grant than this one,  so neither stands in
+    for it.  There is no shared reader and no cached copy.  The value never appears in
+    a message.
     """
     account = READ_TOKEN_ACCOUNTS.get(project)
     if not account:
         raise ReadError(f"unsupported Infisical project {project!r}", EXIT_MISSING_EXECUTABLE)
-    token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
     token, status = scoped_secrets.token_from_store(account)
     if not token:
-        token = (os.environ.get(token_name) or "").strip()
-    if not token:
-        raise ReadError(f"{token_name} is missing or unusable ({status})", EXIT_MISSING_EXECUTABLE)
+        raise ReadError(
+            f"the {account} service-token store is unavailable or refused ({status})",
+            EXIT_MISSING_EXECUTABLE,
+        )
     if (
         not token.startswith("st.")
         or not 20 <= len(token) <= 2048

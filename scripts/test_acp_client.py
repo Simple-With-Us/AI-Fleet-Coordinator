@@ -44,21 +44,45 @@ class PermissionTests(unittest.TestCase):
             self.assertEqual(MOD.load_secret(), "env-secret")
         run.assert_not_called()
 
-    def test_secret_uses_absolute_isolated_shared_cli_against_loopback_provider(self):
+    def test_secret_uses_this_runtimes_own_scoped_grant_and_not_the_ambient_binding(self):
+        # The runtime's own grant comes from its own store,  and the general ambient
+        # binding names a different folder's grant:  a read under it is refused,  so
+        # this also proves which credential the read runs under.
         with RuntimeInfisicalFixture() as provider, tempfile.TemporaryDirectory() as home:
             env = {
                 "HOME": home,
                 "PATH": "/usr/bin:/bin",
                 "PYTHONPATH": "/hostile",
                 "FLEET_SECRETS_API": provider.url,
+                "INFISICAL_TOKEN": "st.test-only-seat-key",
+                "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
+                "INFISICAL_ENVIRONMENT": "prod",
+            }
+            with mock.patch.dict("os.environ", env, clear=True):
+                with mock.patch(
+                    "fleet_infisical.token_from_store",
+                    return_value=("st.test-only-grok-key", "ok"),
+                ):
+                    self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
+        self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
+        self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
+
+    def test_a_store_with_no_grant_fails_closed(self):
+        with RuntimeInfisicalFixture() as provider, tempfile.TemporaryDirectory() as home:
+            env = {
+                "HOME": home,
+                "PATH": "/usr/bin:/bin",
+                "FLEET_SECRETS_API": provider.url,
                 "INFISICAL_TOKEN": "st.test-only-grok-key",
                 "INFISICAL_FLEET_OPS_PROJECT_ID": provider.project,
                 "INFISICAL_ENVIRONMENT": "prod",
             }
             with mock.patch.dict("os.environ", env, clear=True):
-                self.assertEqual(MOD.load_secret(), "fixture-grok-secret")
-        self.assertTrue(any("GROK_AGENT_SECRET" in call for call in provider.calls))
-        self.assertTrue(any("%2Fgrok-acp" in call for call in provider.calls))
+                with mock.patch(
+                    "fleet_infisical.token_from_store", return_value=("", "no-token")
+                ):
+                    with self.assertRaises(SystemExit):
+                        MOD.load_secret()
 
     def test_prefers_allow_always(self):
         params = {

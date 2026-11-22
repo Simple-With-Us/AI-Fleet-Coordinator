@@ -30,42 +30,55 @@ from pathlib import Path
 import websockets
 from mcp_catalog import CatalogError, expand_names
 
+# The shared Infisical client,  one directory up:  every read goes through it,  and
+# through no second reader.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
-FLEET_INFISICAL_CLI = Path(__file__).resolve().parent.parent / "fleet_infisical_cli.py"
+# This runtime's own read-only service token,  for the one folder it reads:  the
+# grok-acp-ro grant,  held in this host's own store.  The general ambient Infisical
+# binding is a wider grant than this one,  so it never stands in for it.
+TOKEN_ACCOUNT = "grok-acp-ro"
+SECRET_FOLDER = "/grok-acp"
 
 
 def load_secret() -> str:
-    """Use existing Infisical-synced transport, else read Fleet-OPS /grok-acp."""
+    """The host's own binding of GROK_AGENT_SECRET,  else this runtime's own grant.
+
+    The value the environment holds is the host's own binding,  and it is used first.
+    A value that is not bound is read through this runtime's own grok-acp-ro service
+    token,  from this host's own store,  and with no other credential.
+    """
     read_value = os.environ.get("GROK_AGENT_SECRET", "").strip()
+    if read_value:
+        return read_value
+    try:
+        import fleet_infisical as FI
+    except ImportError:
+        sys.exit(
+            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the shared Infisical "
+            "client is not importable,  so the scoped read cannot run"
+        )
+    try:
+        read_value, status = FI.fetch_scoped(
+            "GROK_AGENT_SECRET", SECRET_FOLDER, TOKEN_ACCOUNT, timeout=60
+        )
+    except TimeoutError:
+        sys.exit(
+            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read timed out"
+        )
+    except Exception:
+        sys.exit(
+            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the scoped read failed"
+        )
     if not read_value:
-        try:
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    str(FLEET_INFISICAL_CLI),
-                    "get",
-                    "GROK_AGENT_SECRET",
-                    "--project",
-                    "fleet-ops",
-                    "--path",
-                    "/grok-acp",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                read_value = proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            read_value = ""
-    if not read_value:
-        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
+        sys.exit(
+            "GROK_AGENT_SECRET missing in Infisical /grok-acp:  the %s scoped read "
+            "returned nothing (%s)" % (TOKEN_ACCOUNT, status)
+        )
     return read_value
 
 

@@ -429,12 +429,9 @@ def _probe_secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     env = dict(ctx.child_env())
     env["HOME"] = str(home)
     env[FI.ENV_READ_PATHS] = folder
+    # The consumer's own grant, from its own store,  and nothing else:  the general
+    # ambient binding is a wider grant than this one,  so it never stands in for it.
     read_token, status = FI.token_from_store(account, env, home)
-    if not read_token:
-        try:
-            read_token = FI.resolve_token(env)
-        except FI.SecretsError:
-            read_token = ""
     if not read_token:
         raise CheckError(
             "the %s service-token store for the secret-store folder %s is unavailable or "

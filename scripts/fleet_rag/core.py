@@ -276,10 +276,12 @@ def infisical_many(names: Iterable[str]) -> dict[str, str]:
 # read.  The public fallback and the ingest heartbeat need names that live in
 # Fleet-OPS,  and the recall-project token is never a fallback for them:  the two
 # routes have different projects,  different folders and different grants.
-FLEET_OPS_TOKEN_ENV = "INFISICAL_TOKEN"
 FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 # This reader's own account in the shared registry:  the token lives in the consumer's
-# own store,  and a token in the environment is only a copy of that same grant.
+# own store,  and it is the only source this route reads.  No token name is carried
+# here:  a copy of this grant is allowed only under a variable named for this consumer,
+#  and the general ambient binding is a wider grant than this one,  so neither stands
+#  in for it.
 FLEET_OPS_TOKEN_ACCOUNT = "fleet-rag-fleetops-ro"
 # The folder this reader's own names live in.  The Fleet-OPS project root is an alias
 # layer:  a name at the root is a reference to a name in a subfolder,  and the raw
@@ -287,7 +289,6 @@ FLEET_OPS_TOKEN_ACCOUNT = "fleet-rag-fleetops-ro"
 # where its literal is.
 FLEET_OPS_FOLDER = "/global-api-keys"
 FLEET_OPS_ENV_NAMES = (
-    FLEET_OPS_TOKEN_ENV,
     FLEET_OPS_PROJECT_ENV,
     # No API base name is carried:  this route's API base stays pinned to the
     # shared client's default,  so an environment value cannot redirect the
@@ -319,17 +320,16 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
         eprint("fleet_rag: the shared Infisical client is not importable")
         return {}
     # The store is the authority for the token:  a hand-set environment value never
-    # replaces the reviewed,  scope-limited grant.
+    # replaces the reviewed,  scope-limited grant,  and the general ambient binding is
+    # a wider grant than this one,  so it never stands in for it either.
     token, status = secrets.token_from_store(
         FLEET_OPS_TOKEN_ACCOUNT, source, secrets.home_dir(source)
     )
     if not token:
-        token = (source.get(FLEET_OPS_TOKEN_ENV) or "").strip()
-    if not token:
         eprint(
             "fleet_rag: the Fleet-OPS reader has no usable token:  the "
             f"{FLEET_OPS_TOKEN_ACCOUNT} service-token store is unavailable or refused "
-            f"({status})  and {FLEET_OPS_TOKEN_ENV} binds none"
+            f"({status})"
         )
         return {}
     # The API base is named in code and stays pinned to the shared client's own

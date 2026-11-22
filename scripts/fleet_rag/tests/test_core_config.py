@@ -86,10 +86,13 @@ class FleetOpsRootReaderTests(unittest.TestCase):
         self.base = mock.patch.object(fi, "API_BASE", self.api.env["FLEET_SECRETS_API"])
         self.base.start()
         self.addCleanup(self.base.stop)
-        # The root reader takes its token from its own store first.  The store is
-        # stubbed here so a test never reads the host's own credential store, and the
-        # environment copy is what the read falls back to.
-        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        # The root reader takes its token from its own store, and the store is the
+        # only source it may use:  the general ambient binding is a wider grant than
+        # this one, so it never stands in for it.  The store is stubbed here so a
+        # test never reads the host's own credential store.
+        self.store = mock.patch.object(
+            fi, "token_from_store", return_value=(self.api.token, "ok")
+        )
         self.store.start()
         self.addCleanup(self.store.stop)
 
@@ -149,7 +152,10 @@ class FleetOpsRootReaderTests(unittest.TestCase):
         }
         env["FLEET_RECALL_INFISICAL_TOKEN"] = self.api.token
         env["FLEET_RAG_INFISICAL_PROJECT"] = self.project
-        with mock.patch.dict(os.environ, env, clear=True):
+        with (
+            mock.patch.object(fi, "token_from_store", return_value=("", "no-token")),
+            mock.patch.dict(os.environ, env, clear=True),
+        ):
             self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
         self.assertEqual([path for path in self.api.requests if "/v3/secrets/raw/" in path], [])
 
@@ -171,9 +177,13 @@ class FleetOpsRootReaderTests(unittest.TestCase):
     def test_a_missing_binding_names_the_unavailable_source(self):
         env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
         stderr = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(stderr):
+        with (
+            mock.patch.object(fi, "token_from_store", return_value=("", "no-token")),
+            mock.patch.dict(os.environ, env, clear=True),
+            redirect_stderr(stderr),
+        ):
             self.assertEqual(core.fleet_ops_many(["TEI_URL"]), {})
-        self.assertIn("INFISICAL_TOKEN", stderr.getvalue())
+        self.assertIn(core.FLEET_OPS_TOKEN_ACCOUNT, stderr.getvalue())
         self.assertNotIn(self.api.token, stderr.getvalue())
 
     def test_an_invalid_name_never_reaches_the_provider(self):
@@ -230,9 +240,14 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             "INFISICAL_TOKEN": self.api.token_for(core.FLEET_OPS_FOLDER),
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
         }
-        # The Fleet-OPS root route takes its token from its own store first;  the
-        # store is stubbed so the test never reads the host's own credential store.
-        self.store = mock.patch.object(fi, "token_from_store", return_value=("", "no-token"))
+        # The Fleet-OPS root route takes its token from its own store, and the store
+        # is the only source it may use;  the store is stubbed so the test never reads
+        # the host's own credential store.
+        self.store = mock.patch.object(
+            fi,
+            "token_from_store",
+            return_value=(self.api.token_for(core.FLEET_OPS_FOLDER), "ok"),
+        )
         self.store.start()
         self.addCleanup(self.store.stop)
         # The Fleet-OPS route's API base stays pinned to the shared client's default and

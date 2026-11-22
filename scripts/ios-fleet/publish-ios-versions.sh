@@ -117,7 +117,7 @@ _scoped_secret() {
     echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
     return 4
   }
-  /usr/bin/python3 "$INFISICAL_SCOPED_READER" get "$name" \
+  /usr/bin/python3 -I "$INFISICAL_SCOPED_READER" get "$name" \
     --folder "$folder" --project fleet-ops --account "$account"
 }
 
