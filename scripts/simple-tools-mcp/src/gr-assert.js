@@ -208,12 +208,16 @@ export async function verifyGrAssertionToken({ key, token, action, bodySha256, n
   const expected = await hmacHex(key, parsed.payload);
   if (!safeEqual(parsed.signature, expected)) return { ok: false, reason: "bad_signature" };
   const { claims } = parsed;
-  if (claims.action !== action) return { ok: false, reason: "action_mismatch" };
-  if (claims.body !== bodySha256) return { ok: false, reason: "body_mismatch" };
+  // Past the signature check the claims are the Worker's own, so a refusal from here on
+  // names them (`seat`), and the verify route's diagnostics row can say whose call it was
+  // (AFC-844).  Before it, nothing in the token can be trusted, and nothing is named.
+  const seat = claims.seat;
+  if (claims.action !== action) return { ok: false, reason: "action_mismatch", seat };
+  if (claims.body !== bodySha256) return { ok: false, reason: "body_mismatch", seat };
   const nowS = Math.floor(now / 1000);
-  if (nowS >= claims.exp) return { ok: false, reason: "expired" };
-  if (nowS - claims.iat > GR_ASSERT_MAX_TTL_S) return { ok: false, reason: "stale" };
-  if (claims.iat - nowS > GR_ASSERT_SKEW_S) return { ok: false, reason: "future" };
+  if (nowS >= claims.exp) return { ok: false, reason: "expired", seat };
+  if (nowS - claims.iat > GR_ASSERT_MAX_TTL_S) return { ok: false, reason: "stale", seat };
+  if (claims.iat - nowS > GR_ASSERT_SKEW_S) return { ok: false, reason: "future", seat };
   return { ok: true, claims };
 }
 
