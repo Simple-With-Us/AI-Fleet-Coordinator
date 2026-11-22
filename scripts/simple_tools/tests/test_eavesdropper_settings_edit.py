@@ -1615,8 +1615,15 @@ class ControlVerbTests(Case):
         foc = self.foc
         corrupt = {"tables": {"notes_queue": {"server_seats": "not-a-spec"}}}
         self.assertIsNone(foc._strip_unknown_allowlist_entry(corrupt, "notes_queue.server_seats"))
-        # Only an entry of a type the host knows the editor learned later may be
-        # dropped at all, so the nested fixtures carry that type.
+        # Only a newly added type may be dropped:  a type the editor has always
+        # known keeps its refusal, and so does a type no editor ever had.  The
+        # editor's own answer names the entry, but it does not choose it.
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(
+                {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}}}}},
+                "seat.*.budget.future_cap",
+            )
+        )
         nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "seats"}}}}}
         stripped = foc._strip_unknown_allowlist_entry(nested, "seat.*.budget.future_cap")
         # The parent had no other sub-key, so it goes with it:  an empty parent
