@@ -1544,7 +1544,11 @@ class Daemon:
                 or "${" in review_origin_key
                 or review_origin_key in keys.values()
             ):
-                self.log.write("review-origin-projection-held", reason="invalid-or-reused-read-key")
+                self.log.write(
+                    "review-origin-projection-held",
+                    key_env=REVIEW_ORIGIN_KEY_ENV,
+                    reason="invalid-or-reused-read-key",
+                )
                 review_origin_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in

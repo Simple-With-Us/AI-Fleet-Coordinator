@@ -1,3 +1,11 @@
+import { z } from "zod";
+
+const OriginClaims = z.object({
+  origin_session_claim: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  origin_letter_claim: z.string().regex(/^[A-Z]{2}$/),
+  origin_generation_claim: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
 // A service-owned dedicated read credential. Never accept endpoint/key from tool args.
 export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = {}) {
   const endpoint = env?.REVIEW_ORIGIN_READ_URL;
@@ -38,6 +46,8 @@ export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = 
       }
       text += decoder.decode();
     } finally { await reader.cancel(); }
-    return JSON.parse(text);
+    const claims = OriginClaims.parse(JSON.parse(text));
+    if (claims.origin_session_claim !== session) throw new Error("lookup-session-mismatch");
+    return claims;
   };
 }
