@@ -63,7 +63,7 @@ export function nativeOriginResolverFromSecrets(env) {
       name, path: "/zulip", envName: name, optional: true, legacy: "",
     })));
     const resolver = nativeOriginResolver(Object.fromEntries(names.map((name, i) => [name, values[i]])));
-    if (!resolver) throw new Error("lookup-unconfigured");
+    if (!resolver) throw new Error("lookup-unconfigured: check REVIEW_ORIGIN_READ_URL and REVIEW_ORIGIN_CODEX_READ_KEY");
     return resolver(context);
   };
 }

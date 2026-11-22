@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes, webcrypto, createHmac } from "node:crypto";
+import { randomBytes, randomUUID, webcrypto, createHmac } from "node:crypto";
 import { nativeOriginResolverFromSecrets } from "../src/native-origin-client.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
 
 globalThis.crypto ??= webcrypto;
-const first = "019a1234-abcd-7123-8123-0123456789ab";
-const second = "019a1234-abcd-7123-8123-0123456789ac";
+const first = randomUUID();
+const second = randomUUID();
 const endpoint = "https://operator.example.test/registry/v1/review-origin";
 const names = ["REVIEW_ORIGIN_READ_URL", "REVIEW_ORIGIN_CODEX_READ_KEY"];
 const context = { seat: "CODEX", session: first };
@@ -71,7 +71,7 @@ test("off mode cannot use a direct Worker copy", async () => isolated(async () =
   globalThis.fetch = async () => { calls++; throw new Error("unexpected-fetch"); };
   const resolver = nativeOriginResolverFromSecrets({ ...envFor("off"),
     REVIEW_ORIGIN_READ_URL: endpoint, REVIEW_ORIGIN_CODEX_READ_KEY: randomBytes(32).toString("hex") });
-  await assert.rejects(resolver(context));
+  await assert.rejects(resolver(context), /lookup-unconfigured: check REVIEW_ORIGIN_READ_URL and REVIEW_ORIGIN_CODEX_READ_KEY/);
   assert.equal(calls, 0);
 }));
 
@@ -102,7 +102,7 @@ test("unsafe or incomplete store configuration holds before projection", async (
         const name = decodeURIComponent(url.pathname.split("/").at(-1));
         return Response.json({ secret: { secretValue: values[names.indexOf(name)] } });
       };
-      await assert.rejects(nativeOriginResolverFromSecrets(envFor())(context));
+      await assert.rejects(nativeOriginResolverFromSecrets(envFor())(context), /lookup-unconfigured: check REVIEW_ORIGIN_READ_URL and REVIEW_ORIGIN_CODEX_READ_KEY/);
       assert.equal(projectionCalls, 0);
     });
   }
