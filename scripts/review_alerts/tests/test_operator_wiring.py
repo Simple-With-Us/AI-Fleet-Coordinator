@@ -27,7 +27,7 @@ class Wiring(unittest.TestCase):
                 {"claude": "CLAUDE"},
                 {REPO},
                 gate_seat="CLAUDE",
-                    message_poster=lambda owner, event, link: 123,
+                message_poster=lambda owner, event, link: 123,
                 owner_provider=lambda: [claimed_owner()],
                 origin_binder=bind,
             )
@@ -53,9 +53,25 @@ class Wiring(unittest.TestCase):
             provider.rows()
 
     def test_operator_start_off_is_inert_and_active_requires_canonical_registry(self):
-        self.assertIsNone(operator_loop.start({}, None, threading.Event(), mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock()))
+        self.assertIsNone(
+            operator_loop.start(
+                {},
+                None,
+                threading.Event(),
+                mock.Mock(),
+                operator_send=mock.Mock(),
+                destination_for_origin=mock.Mock(),
+            )
+        )
         with self.assertRaises(Exception):
-            operator_loop.start({"RA_ENABLED": "true"}, None, threading.Event(), mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+            operator_loop.start(
+                {"RA_ENABLED": "true"},
+                None,
+                threading.Event(),
+                mock.Mock(),
+                operator_send=mock.Mock(),
+                destination_for_origin=mock.Mock(),
+            )
 
     def test_actual_thread_starts_and_stops_on_existing_operator_event(self):
         with tempfile.TemporaryDirectory() as d:
@@ -86,7 +102,14 @@ class Wiring(unittest.TestCase):
                 mock.patch.object(service.AlertService, "cycle", cycle),
                 mock.patch.object(operator_loop.wakes.WakeClient, "check_required_session_support"),
             ):
-                thread = operator_loop.start(env, mock.Mock(), stop, log, operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+                thread = operator_loop.start(
+                    env,
+                    mock.Mock(),
+                    stop,
+                    log,
+                    operator_send=mock.Mock(),
+                    destination_for_origin=mock.Mock(),
+                )
                 self.assertTrue(ran.wait(2))
                 thread.join(2)
             self.assertFalse(thread.is_alive())
@@ -144,7 +167,7 @@ class Wiring(unittest.TestCase):
                 {"claude": "CLAUDE"},
                 {REPO},
                 gate_seat="CLAUDE",
-                    message_poster=lambda owner, event, link: 123,
+                message_poster=lambda owner, event, link: 123,
                 owner_provider=lambda: [claimed_owner()],
                 origin_binder=lambda *a: stop.set(),
                 cancelled=stop.is_set,
@@ -180,10 +203,24 @@ class Wiring(unittest.TestCase):
                 mock.patch.object(service.AlertService, "cycle", cycle),
                 mock.patch.object(operator_loop.wakes.WakeClient, "check_required_session_support"),
             ):
-                t = operator_loop.start(env, mock.Mock(), stop, mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+                t = operator_loop.start(
+                    env,
+                    mock.Mock(),
+                    stop,
+                    mock.Mock(),
+                    operator_send=mock.Mock(),
+                    destination_for_origin=mock.Mock(),
+                )
                 self.assertTrue(entered.wait(2))
                 with self.assertRaises(Exception):
-                    operator_loop.start(env, mock.Mock(), threading.Event(), mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+                    operator_loop.start(
+                        env,
+                        mock.Mock(),
+                        threading.Event(),
+                        mock.Mock(),
+                        operator_send=mock.Mock(),
+                        destination_for_origin=mock.Mock(),
+                    )
                 fd = os.open(str(Path(d) / "lock"), os.O_RDWR)
                 with self.assertRaises(OSError):
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -193,7 +230,14 @@ class Wiring(unittest.TestCase):
                 os.close(fd)
             with mock.patch.object(service, "AlertService", side_effect=RuntimeError):
                 with self.assertRaises(RuntimeError):
-                    operator_loop.start(env, mock.Mock(), threading.Event(), mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+                    operator_loop.start(
+                        env,
+                        mock.Mock(),
+                        threading.Event(),
+                        mock.Mock(),
+                        operator_send=mock.Mock(),
+                        destination_for_origin=mock.Mock(),
+                    )
             fd = os.open(str(Path(d) / "lock"), os.O_RDWR)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.close(fd)
@@ -240,7 +284,14 @@ class Wiring(unittest.TestCase):
                     side_effect=probe,
                 ),
             ):
-                t = operator_loop.start(env, mock.Mock(), stop, log, operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+                t = operator_loop.start(
+                    env,
+                    mock.Mock(),
+                    stop,
+                    log,
+                    operator_send=mock.Mock(),
+                    destination_for_origin=mock.Mock(),
+                )
                 t.join(2)
             self.assertFalse(t.is_alive())
             self.assertTrue(ran.is_set())
@@ -251,4 +302,11 @@ class Wiring(unittest.TestCase):
 class Prerequisite(unittest.TestCase):
     def test_old_registry_is_explicitly_held_before_credential_or_network(self):
         with self.assertRaisesRegex(Exception, "canonical-pr-binding-capability-required"):
-            operator_loop.start({"RA_ENABLED": "true"}, object(), threading.Event(), mock.Mock(), operator_send=mock.Mock(), destination_for_origin=mock.Mock())
+            operator_loop.start(
+                {"RA_ENABLED": "true"},
+                object(),
+                threading.Event(),
+                mock.Mock(),
+                operator_send=mock.Mock(),
+                destination_for_origin=mock.Mock(),
+            )

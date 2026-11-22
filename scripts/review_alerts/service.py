@@ -39,7 +39,7 @@ import sys
 import time
 from datetime import UTC, datetime
 
-from . import detect, events, github_read, wakes, messages
+from . import detect, events, github_read, messages, wakes
 
 
 # Relay seat slug -> wake-router seat tag.  There is NO default and NO
@@ -292,8 +292,15 @@ class AlertService:
         seat = seat_for(str(owner.get("seat") or ""), self.seat_map)
         head_note = "" if event["head_matches"] else " (against an older head)"
         topic = "%s#%s: %s%s" % (repo, number, event["summary"], head_note)
-        base = dict(event, epoch=epoch, status="held", wake_id=None, reason=None,
-                    message_id=event.get("message_id"), link=link or event.get("link") or "")
+        base = dict(
+            event,
+            epoch=epoch,
+            status="held",
+            wake_id=None,
+            reason=None,
+            message_id=event.get("message_id"),
+            link=link or event.get("link") or "",
+        )
         if not session or not letter or type(generation) is not int or generation < 1:
             # Without all three claims there is nothing for the router to
             # check against the live row:  hold visibly, never guess.
@@ -343,7 +350,9 @@ class AlertService:
             row = self.store.get(
                 pending["repo"], pending["number"], pending["kind"], pending["event_id"]
             )
-            if row is None or (not row.get("wake_id") and row.get("status") not in events.MESSAGE_PENDING):
+            if row is None or (
+                not row.get("wake_id") and row.get("status") not in events.MESSAGE_PENDING
+            ):
                 continue
             owner = self._owner_row(owners, pending["repo"], pending["number"])
             owner_seat = seat_for(str((owner or {}).get("seat") or ""), self.seat_map)
@@ -359,8 +368,13 @@ class AlertService:
                     if row["status"] == "message-pending":
                         self._post_message(owner, row, counts)
                     else:
-                        self._dispatch(owner or {}, row, row.get("link") or "", counts,
-                                       epoch=int(row.get("epoch") or 0))
+                        self._dispatch(
+                            owner or {},
+                            row,
+                            row.get("link") or "",
+                            counts,
+                            epoch=int(row.get("epoch") or 0),
+                        )
                 continue
             if type(row.get("message_id")) is not int or row["message_id"] <= 0:
                 self._finish(row, "held", "legacy-wake-without-message")
@@ -435,7 +449,10 @@ class AlertService:
         posting = dict(row, status="message-posting", reason=None)
         self.store.append(posting)
         try:
-            posting_owner = dict(owner or {}, _review_origin=self.origins_this_cycle.get((row["repo"], row["number"])))
+            posting_owner = dict(
+                owner or {},
+                _review_origin=self.origins_this_cycle.get((row["repo"], row["number"])),
+            )
             message_id = self.message_poster(posting_owner, row, row.get("link") or "")
             if type(message_id) is not int or not 0 < message_id <= 2**63 - 1:
                 raise ValueError("invalid-message-id")
@@ -451,8 +468,13 @@ class AlertService:
             return
         posted = dict(posting, status="message-posted", message_id=message_id)
         self.store.append(posted)
-        self._dispatch(owner or {}, posted, posted.get("link") or "", counts,
-                       epoch=int(posted.get("epoch") or 0))
+        self._dispatch(
+            owner or {},
+            posted,
+            posted.get("link") or "",
+            counts,
+            epoch=int(posted.get("epoch") or 0),
+        )
 
     def _effects_allowed(self, repo, number):
         return not self.cancelled() and (
@@ -525,7 +547,16 @@ class AlertService:
             "held": [
                 {
                     k: r.get(k)
-                    for k in ("repo", "number", "kind", "event_id", "epoch", "reason", "ts", "message_id")
+                    for k in (
+                        "repo",
+                        "number",
+                        "kind",
+                        "event_id",
+                        "epoch",
+                        "reason",
+                        "ts",
+                        "message_id",
+                    )
                 }
                 for r in self.store.held()
             ],

@@ -303,7 +303,9 @@ class FakeRouter:
         self.receipts = {}
         self.fail_submit = None
 
-    def submit(self, seat, wake_id, session, letter, generation, require_pr, topic, link, *, message_id=0):
+    def submit(
+        self, seat, wake_id, session, letter, generation, require_pr, topic, link, *, message_id=0
+    ):
         if self.fail_submit is not None:
             raise self.fail_submit
         self.submitted.append(
@@ -662,7 +664,7 @@ class InstantParsingTests(unittest.TestCase):
                 {"claude": "CLAUDE"},
                 repos={REPO},
                 gate_seat="CLAUDE",
-            message_poster=lambda owner, event, link: 123,
+                message_poster=lambda owner, event, link: 123,
             )
             return svc.cycle()["events"]
 
@@ -705,7 +707,7 @@ class InstantParsingTests(unittest.TestCase):
                 {"claude": "CLAUDE"},
                 repos={REPO},
                 gate_seat="CLAUDE",
-            message_poster=lambda owner, event, link: 123,
+                message_poster=lambda owner, event, link: 123,
             )
             counts = svc.cycle()
             self.assertEqual(counts["events"], 1)

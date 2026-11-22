@@ -1493,15 +1493,20 @@ class Daemon:
 
     def _review_alert_destination(self, origin):
         from review_alerts.messages import side_chats_destination
+
         from . import dm_policy
 
         return side_chats_destination(
-            self.operator_voice.client(), origin, seat_tag_for,
-            dm_policy.SIDE_CHATS_STREAM_ID, dm_policy.side_chats_topic,
+            self.operator_voice.client(),
+            origin,
+            seat_tag_for,
+            dm_policy.SIDE_CHATS_STREAM_ID,
+            dm_policy.side_chats_topic,
         )
 
     def _review_alert_message_send(self, params):
         from review_alerts.messages import MessageRetryable
+
         try:
             return self._operator_send(params)
         except (OPV.OperatorUnavailable, OPV.OperatorRefused):
@@ -1519,7 +1524,10 @@ class Daemon:
             stop = threading.Event()
             self._review_alert_stop = stop
             self._review_alert_thread = start(
-                self.env, self.registry_service, stop, self.log.write,
+                self.env,
+                self.registry_service,
+                stop,
+                self.log.write,
                 operator_send=self._review_alert_message_send,
                 destination_for_origin=self._review_alert_destination,
             )

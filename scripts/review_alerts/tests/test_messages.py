@@ -174,49 +174,76 @@ class MessageDelivery(unittest.TestCase):
         self.assertEqual(client._call.call_args.args[2]["message_id"], 321)
 
     def destination_fixture(self, **changes):
-        origin = dict(seat="CLAUDE", platform="claude", verified_host="server",
-                      profile_scope="profile", session=fixtures.SESSION)
+        origin = dict(
+            seat="CLAUDE",
+            platform="claude",
+            verified_host="server",
+            profile_scope="profile",
+            session=fixtures.SESSION,
+        )
         stream = dict(stream_id=646987, name="renamed-by-admin", subscribers=[123])
         bot = dict(user_id=123, email="claude-bot@example.invalid", is_bot=True, is_active=True)
         client = mock.Mock()
         streams = changes.get("streams", [stream])
         bots = changes.get("bots", [bot])
         client.get.side_effect = [{"subscriptions": streams}, {"members": bots}]
+
         def resolve(value):
             return messages.side_chats_destination(
-                client, value, lambda row: "CLAUDE", 646987,
-                lambda seats: " <-> ".join(sorted(seats)))
+                client,
+                value,
+                lambda row: "CLAUDE",
+                646987,
+                lambda seats: " <-> ".join(sorted(seats)),
+            )
+
         return origin, client, resolve
 
     def test_operator_poster_uses_existing_side_chats_and_only_owner_mention(self):
         origin, client, resolve = self.destination_fixture()
         send = mock.Mock(return_value={"id": 321})
         poster = messages.OperatorMessages(send, resolve)
-        event = dict(repo=fixtures.REPO, number=7, kind="review_submitted",
-                     summary="untrusted summary should not be posted", head_matches=True)
+        event = dict(
+            repo=fixtures.REPO,
+            number=7,
+            kind="review_submitted",
+            summary="untrusted summary should not be posted",
+            head_matches=True,
+        )
         self.assertEqual(poster.post({"_review_origin": origin}, event, ""), 321)
-        self.assertEqual(client.get.call_args_list, [
-            mock.call("users/me/subscriptions", {"include_subscribers": "true"}),
-            mock.call("users")])
+        self.assertEqual(
+            client.get.call_args_list,
+            [
+                mock.call("users/me/subscriptions", {"include_subscribers": "true"}),
+                mock.call("users"),
+            ],
+        )
         params = send.call_args.args[0]
         self.assertEqual(params["type"], "stream")
         self.assertEqual(params["to"], "646987")
         self.assertEqual(params["topic"], "CLAUDE <-> OPERATOR")
-        self.assertEqual(params["content"], "@**CLAUDE|123** %s#7: review completed" % fixtures.REPO)
+        self.assertEqual(
+            params["content"], "@**CLAUDE|123** %s#7: review completed" % fixtures.REPO
+        )
         client.post.assert_not_called()
 
     def test_current_stream_and_exact_active_bot_membership_are_required(self):
         bot = dict(user_id=123, is_bot=True, is_active=True)
         stream = dict(stream_id=646987, subscribers=[123])
-        cases = [dict(streams=[]), dict(streams=[dict(stream, stream_id=9)]),
-                 dict(streams=[dict(stream, is_archived=True)]),
-                 dict(streams=[dict(stream, subscribers=[])]),
-                 dict(streams=[dict(stream, subscribers=["123"])]),
-                 dict(streams=[dict(stream, subscribers=None)]),
-                 dict(streams=[stream, stream]), dict(bots=[]),
-                 dict(bots=[bot, bot]), dict(bots=[dict(bot, is_bot=False)]),
-                 dict(bots=[dict(bot, is_active=False)]),
-                 dict(bots=[dict(bot, user_id=True)])]
+        cases = [
+            dict(streams=[]),
+            dict(streams=[dict(stream, stream_id=9)]),
+            dict(streams=[dict(stream, is_archived=True)]),
+            dict(streams=[dict(stream, subscribers=[])]),
+            dict(streams=[dict(stream, subscribers=["123"])]),
+            dict(streams=[dict(stream, subscribers=None)]),
+            dict(streams=[stream, stream]),
+            dict(bots=[]),
+            dict(bots=[bot, bot]),
+            dict(bots=[dict(bot, is_bot=False)]),
+            dict(bots=[dict(bot, is_active=False)]),
+            dict(bots=[dict(bot, user_id=True)]),
+        ]
         for changes in cases:
             with self.subTest(changes=changes):
                 origin, client, resolve = self.destination_fixture(**changes)
@@ -242,12 +269,20 @@ class MessageDelivery(unittest.TestCase):
         send.assert_not_called()
 
     def test_findings_check_and_old_head_are_factual_without_review_body(self):
-        for kind, status in (("findings_added", "new review findings"),
-                             ("review_completed", "review check completed")):
+        for kind, status in (
+            ("findings_added", "new review findings"),
+            ("review_completed", "review check completed"),
+        ):
             origin, client, resolve = self.destination_fixture()
             send = mock.Mock(return_value={"id": 321})
-            event = dict(repo=fixtures.REPO, number=7, kind=kind, head_matches=False,
-                         body="must not disclose", summary="must not disclose")
+            event = dict(
+                repo=fixtures.REPO,
+                number=7,
+                kind=kind,
+                head_matches=False,
+                body="must not disclose",
+                summary="must not disclose",
+            )
             messages.OperatorMessages(send, resolve).post({"_review_origin": origin}, event, "")
             content = send.call_args.args[0]["content"]
             self.assertIn(status, content)
@@ -260,7 +295,9 @@ class MessageDelivery(unittest.TestCase):
             svc, router = self.runner(d, poster)
             svc.cycle()
             self.assertEqual(router.submitted, [])
-            self.assertEqual(svc.store.pending()[0]["reason"], "operator-message-destination-unresolved")
+            self.assertEqual(
+                svc.store.pending()[0]["reason"], "operator-message-destination-unresolved"
+            )
             poster.side_effect = None
             poster.return_value = 321
             svc.cycle()
@@ -270,8 +307,13 @@ class MessageDelivery(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             poster = mock.Mock(return_value=321)
             svc, router = self.runner(d, poster)
-            origin = dict(platform="claude", verified_host="server", profile_scope="profile",
-                          session=fixtures.SESSION, seat="CLAUDE")
+            origin = dict(
+                platform="claude",
+                verified_host="server",
+                profile_scope="profile",
+                session=fixtures.SESSION,
+                seat="CLAUDE",
+            )
             svc.origin_binder = mock.Mock(return_value=origin)
             svc.cycle()
             self.assertEqual(poster.call_args.args[0]["_review_origin"], origin)

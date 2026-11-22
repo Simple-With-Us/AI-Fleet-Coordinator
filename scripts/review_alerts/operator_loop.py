@@ -13,7 +13,7 @@ import os
 import threading
 import time
 
-from . import events, github_read, service, wakes, messages
+from . import events, github_read, messages, service, wakes
 from .operator_origin_bridge import RegistryOriginBinder
 from .operator_pr_origin import Held
 
