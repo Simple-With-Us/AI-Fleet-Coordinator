@@ -8,8 +8,8 @@ from unittest import mock
 from git_relay import patch_secretscan as scanner
 from git_relay.reviewed_fixtures import unreviewed_file_secret
 
-REPO = "Simple-With-Us/AI-Fleet-Coordinator"
-PATH = "scripts/simple_tools/server/infisical_env.py"
+REPO = "Example-Org/classifier-fixture"
+PATH = "src/loader_fixture.py"
 CALL = "_wake_router_token(env)"
 BINDINGS = {
     "LISTENER_READ_TOKEN": "INFISICAL_LISTENER_READ_TOKEN",
@@ -162,11 +162,15 @@ class PythonSourceClassification(unittest.TestCase):
                 with self.subTest(separator=ord(separator), tail_kind=tail.split("(")[0]):
                     text = prefix + tail
                     self.assertIsNone(self.check_file(text))
-                    self.assertIsNotNone(self.check_file(text + assignment_source("PASSWORD", synthetic())))
+                    self.assertIsNotNone(
+                        self.check_file(text + assignment_source("PASSWORD", synthetic()))
+                    )
 
     def test_python_physical_newline_forms_keep_correct_offsets(self):
         for newline in ("\n", "\r\n", "\r"):
-            text = ('banner = "é界😀"\n' + public_source() + keyword_source(CALL)).replace("\n", newline)
+            text = ('banner = "é界😀"\n' + public_source() + keyword_source(CALL)).replace(
+                "\n", newline
+            )
             with self.subTest(newline=repr(newline)):
                 self.assertIsNone(self.check_file(text))
 
@@ -174,7 +178,13 @@ class PythonSourceClassification(unittest.TestCase):
         import ast
 
         text = public_source() + public_source()
-        for field, value in (("lineno", 0), ("lineno", 9999), ("col_offset", -1), ("col_offset", None), ("end_col_offset", 1000000)):
+        for field, value in (
+            ("lineno", 0),
+            ("lineno", 9999),
+            ("col_offset", -1),
+            ("col_offset", None),
+            ("end_col_offset", 1000000),
+        ):
             tree = ast.parse(text)
             setattr(tree.body[1].value, field, value)
             with self.subTest(field=field, value=value), mock.patch("ast.parse", return_value=tree):
@@ -186,13 +196,15 @@ class PythonSourceClassification(unittest.TestCase):
 
         text = public_source() + 'title="é"; ' + public_source()
         tree = ast.parse(text)
-        tree.body[2].value.col_offset = len('title="'.encode()) + 1
+        tree.body[2].value.col_offset = len(b'title="') + 1
         with mock.patch("ast.parse", return_value=tree):
             self.assertEqual(scanner._python_source_value_spans(text), frozenset())
             self.assertIsNotNone(self.check_file(text))
 
     def test_surrogate_source_parse_fails_closed(self):
-        self.assertEqual(scanner._python_source_value_spans("\ud800" + public_source()), frozenset())
+        self.assertEqual(
+            scanner._python_source_value_spans("\ud800" + public_source()), frozenset()
+        )
 
     def test_analysis_node_budget_does_not_admit_partial_evidence(self):
         text = public_source() + "x = 0\n" * 3000
