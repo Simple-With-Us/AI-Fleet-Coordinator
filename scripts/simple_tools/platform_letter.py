@@ -419,6 +419,11 @@ GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
 #: carry the "??: " placeholder title, newest first.  Ids only, bounded by the adapter, and any doubt leaves a
 #: chat out.
 UnletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
+#: An adapter's `live_chats`:  from the environment, the chats this host still holds open and the host's own
+#: last-activity time for each, as native session id to an ISO 8601 instant.  The host knows better than the
+#: sweep whether a chat is still open,  so this is what the liveness report carries (AFC-878).  Any doubt
+#: leaves a chat out,  and a host that cannot answer reports nothing at all.
+LiveChats = Callable[[Mapping[str, str]], Mapping[str, str] | None]
 
 
 @dataclass(frozen=True)
@@ -510,6 +515,7 @@ class PlatformSpec:
     gone_elsewhere: GoneElsewhere | None = None
     unlettered_sessions: UnletteredSessions | None = None
     unlettered_feed: str = ""
+    live_chats: LiveChats | None = None
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
     retired_env: Mapping[str, str] = field(default_factory=dict)
     retired_files: tuple[str, ...] = ()
@@ -1205,6 +1211,61 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str]:
+    """The chats this host still holds open, with the host's own last-activity time for each.
+
+    The adapter answers from its own store,  so the report is the host's own answer and not the
+    registry's guess.  A chat the adapter leaves out is a chat it does not hold,  and a chat it
+    names with an old time is one it has not touched for longer than the window.  A platform with
+    no such adapter reports nothing at all:  the registry then treats the host as unverified and
+    keeps its letters,  which is the safe way round (AFC-878)."""
+    if spec.live_chats is None:
+        return {}
+    try:
+        answer = spec.live_chats(env)
+    except Exception:  # a store that cannot be read is a host that cannot answer
+        return {}
+    live: dict[str, str] = {}
+    for sid, stamp in dict(answer or {}).items():
+        key = str(sid or "").strip()
+        if not key or len(key) > 200:
+            continue
+        text = str(stamp or "").strip()
+        if not text:
+            continue
+        live[key] = text
+    return live
+
+
+def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
+    """The `report-live` op:  one call that names the chats this host still holds open,  and has
+    the registry remember them.
+
+    The report is the host's own answer about its own chats,  so the sweep can ask it instead of
+    guessing that a quiet chat is over.  A platform with no live-chat adapter reports nothing,  and
+    says so:  the registry then keeps that host's letters rather than treating the silence as
+    evidence that the chats ended (AFC-878)."""
+    spec = load_spec(args.platform)
+    if spec is None:
+        return {"error": "%r is not a platform this side writes" % args.platform}
+    if spec.live_chats is None:
+        return {"error": "%s has no live-chat report,  so this host cannot say which chats are open" % spec.platform}
+    live = live_report(spec, env)
+    out = _call_api(
+        env,
+        "report-live",
+        {
+            "platform": args.platform,
+            "location": args.location,
+            "live": live,
+        },
+        timeout=timeout,
+    )
+    if "error" in out:
+        return dict(out)
+    return {"ok": True, "count": len(live), "reported_at": out.get("reported_at", "")}
+
+
 def _report_gone_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
     """The `report-gone` op:  one call that names the chats of one platform and host that are gone for good, and
     has the assigner close their rows.
@@ -1292,7 +1353,17 @@ def _make_parser() -> Any:
     parser = Parser(prog=ENTRY + " registry", add_help=False, allow_abbrev=False)
     parser.refused = Refused  # type: ignore[attr-defined]
     parser.add_argument(
-        "op", choices=("register", "title", "touch", "close", "show", "issues", "report-gone")
+        "op",
+        choices=(
+            "register",
+            "title",
+            "touch",
+            "close",
+            "show",
+            "issues",
+            "report-gone",
+            "report-live",
+        ),
     )
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", required=True, choices=REGISTRY_LOCATIONS)
@@ -1341,11 +1412,13 @@ def registry_main(
         return _emit(stdout, {"error": "a registration needs a seat"}, 2)
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
-    if args.op != "report-gone" and not args.session_id:
+    if args.op not in ("report-gone", "report-live") and not args.session_id:
         return _emit(stdout, {"error": "bad arguments"}, 2)
     try:
         if args.op == "report-gone":
             out = _report_gone_api(env, args, timeout=call_timeout)
+        elif args.op == "report-live":
+            out = _report_live_api(env, args, timeout=call_timeout)
         else:
             sid = SI.check(args.session_id, "the session id")
             if args.op == "register":

@@ -41,6 +41,7 @@ import json
 import os
 import re
 import sqlite3
+from datetime import UTC, datetime
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -308,6 +309,51 @@ def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set
     except sqlite3.Error:
         return set()
     return gone
+
+
+def minimax_live(env: Mapping[str, str]) -> dict[str, str]:
+    """The spec's `live_chats`:  the chats this host's store still holds open,  with the store's own
+    last-activity time for each.
+
+    The session store is the truth about this host's chats:  it holds every chat MiniMax Code made,
+    it says which ones are archived,  and it carries the time each chat was last touched.  The
+    registry's sweep cannot read any host's store,  so the host reports its own view here (AFC-878):
+    a chat the store still holds keeps its letter,  and a chat it has not touched for longer than
+    the window is one the sweep may recycle.  A store that cannot be read names nothing,  and the
+    registry then treats the host as unverified."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return {}
+    live: dict[str, str] = {}
+    try:
+        conn = _read_only(path)
+        try:
+            columns = _columns(conn)
+            if "archived" not in columns:
+                return {}
+            stamp = "updated_at_ms" if "updated_at_ms" in columns else ""
+            if not stamp:
+                return {}
+            rows = conn.execute(
+                "SELECT session_id, %s FROM local_runtime_sessions WHERE archived = 0" % stamp
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    for row in rows:
+        sid = str(row[0] or "").strip()
+        if not sid or len(sid) > 200:
+            continue
+        try:
+            millis = int(row[1])
+        except (TypeError, ValueError):
+            continue
+        if millis <= 0:
+            continue
+        moment = datetime.fromtimestamp(millis / 1000.0, UTC)
+        live[sid] = moment.isoformat().replace("+00:00", "Z")
+    return live
 
 
 def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
@@ -890,6 +936,7 @@ SPEC = PL.PlatformSpec(
     unlettered_sessions=minimax_unlettered_sessions,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     gone_sessions=minimax_gone,
+    live_chats=minimax_live,
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
     call_timeout=CALL_TIMEOUT,
