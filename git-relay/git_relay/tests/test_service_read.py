@@ -438,6 +438,7 @@ class Reads(unittest.TestCase):
     def test_verified_no_follow_repository_move_resolves_fence_across_restart(self):
         import io
         from urllib.error import HTTPError
+
         from git_relay.github_client import GitHubClient
 
         self.create(**CLAIMS)
