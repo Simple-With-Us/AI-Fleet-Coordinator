@@ -142,6 +142,42 @@ class RegistryTest(unittest.TestCase):
         with self.assertRaises(R.LabelExhausted):
             self.reg.resolve_or_register(ident(native="n26"))
 
+    def test_a_pair_closed_without_retiring_its_alias_is_reissued(self):
+        # A session closed by direct SQL (closed_at set, its alias never retired)
+        # reads as holding no letter, so allocation must not count its pair as
+        # live forever:  the orphan alias is retired and the pair is reissued.
+        holders = [
+            self.reg.resolve_or_register(ident(native=f"n{i}")) for i in range(26)
+        ]
+        first = holders[0]
+        self.assertEqual(first["label"], "AA")
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", first["record_id"]),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(R.candidates_for(self.db, "zulip", "AA"), [])
+        again = self.reg.resolve_or_register(ident(native="n26"))
+        self.assertEqual(again["label"], "AA")
+        self.assertEqual(again["generation"], 2)
+        conn = sqlite3.connect(self.db)
+        rows = conn.execute(
+            "SELECT record_id, retired_at FROM alias_assignments"
+            " WHERE letter = 'AA' ORDER BY generation"
+        ).fetchall()
+        live = conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments"
+            " WHERE letter = 'AA' AND retired_at IS NULL"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(live, 1)  # the partial unique index's one live holder
+        self.assertEqual(rows[0][0], first["record_id"])
+        self.assertIsNotNone(rows[0][1])  # the orphan alias was retired, not ignored
+        holders_now = R.candidates_for(self.db, "zulip", "AA")
+        self.assertEqual([h["record_id"] for h in holders_now], [again["record_id"]])
+
     def test_close_is_idempotent(self):
         a = self.reg.resolve_or_register(ident())
         self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
@@ -1905,6 +1941,19 @@ class RegistryTest(unittest.TestCase):
         history = R.letter_history(self.db, "minimax")
         retired = [row for row in history if row["letter"] == old["label"]]
         self.assertTrue(retired[0]["ended_at"])
+        self.assertFalse(retired[0]["live"])
+
+    def test_sweep_retires_the_alias_of_an_already_closed_session(self):
+        old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", old["record_id"]),
+        )
+        self.reg._conn.commit()
+        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        self.assertEqual([row["record_id"] for row in ended], [old["record_id"]])
+        history = R.letter_history(self.db, "minimax")
+        retired = [row for row in history if row["letter"] == old["label"]]
         self.assertFalse(retired[0]["live"])
 
     def test_missing_identity_fields_raise(self):

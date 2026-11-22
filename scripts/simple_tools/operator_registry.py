@@ -752,6 +752,66 @@ class SessionRegistry:
         ).fetchone()
         return text if live else ""
 
+    def _retire_closed_aliases(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        now: str,
+        seat: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retire the live alias rows of sessions that are already closed, in the caller's transaction.
+
+        A close that only set closed_at (a listener-SQL close, say) never retired the session's alias, so the row
+        still sits in idx_alias_active and its pair can never be issued again, while every read path already treats
+        a closed session as holding no letter.  Retire each such orphan the way close() retires an alias (the row,
+        a close event and the final session snapshot, with the letter captured first), so the pair is actually
+        freed rather than merely ignored.  Returns the retired rows, oldest assignment first.
+        """
+        reason = "session already closed; its alias was never retired"
+        query = (
+            "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+            " s.native_session_id AS native_session_id, s.title AS title, s.last_seen_at AS last_seen_at"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.retired_at IS NULL AND s.closed_at IS NOT NULL"
+        )
+        params: tuple[Any, ...] = (platform,)
+        if seat is not None:
+            query += " AND s.seat = ?"
+            params = (platform, seat)
+        orphans = conn.execute(query + " ORDER BY a.assigned_at ASC", params).fetchall()
+        retired: list[dict[str, Any]] = []
+        for orphan in orphans:
+            conn.execute(
+                "UPDATE alias_assignments SET retired_at = ?"
+                " WHERE platform = ? AND letter = ? AND generation = ? AND record_id = ?"
+                " AND retired_at IS NULL",
+                (now, platform, orphan["letter"], orphan["generation"], orphan["record_id"]),
+            )
+            self._insert_event(
+                conn,
+                orphan["record_id"],
+                orphan["letter"],
+                "close",
+                "registry",
+                "closed",
+                "orphan_alias_retire",
+                reason,
+                now,
+            )
+            self._enqueue_session_upsert(conn, orphan["record_id"], now, label=orphan["letter"])
+            retired.append(
+                {
+                    "record_id": orphan["record_id"],
+                    "label": orphan["letter"],
+                    "generation": orphan["generation"],
+                    "native_session_id": orphan["native_session_id"],
+                    "title": orphan["title"],
+                    "last_seen_at": orphan["last_seen_at"],
+                    "reason": reason,
+                }
+            )
+        return retired
+
     def _allocate(
         self,
         conn: sqlite3.Connection,
@@ -779,6 +839,10 @@ class SessionRegistry:
         the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
         live is taken.  When the parent's row is full, the subthread is refused a letter; it never moves to another row.
         A child never takes the doubled pair reserved for main chats."""
+        # A closed session holds no letter (every read path joins on closed_at IS NULL), so an alias
+        # its close never retired must not count as live here:  retire those orphans first, in this
+        # same transaction, which is also what frees their pairs in idx_alias_active for reissue.
+        self._retire_closed_aliases(conn, platform, now)
         members = frozenset(LETTER_SPACES["double"])
         live = {
             r["letter"]
@@ -2435,6 +2499,10 @@ def sweep_stale(
 
     The letters themselves stay in alias_assignments with their start and end times,
     so the history of the platform is complete after a sweep.
+
+    A session that is already closed but whose alias was never retired has its
+    alias retired too:  its letter already ended, and leaving the row live would
+    keep its pair out of allocation forever.
     """
     namespace = normalize_platform(platform)
     moment = now or datetime.now(UTC)
@@ -2443,6 +2511,9 @@ def sweep_stale(
     ended: list[dict[str, Any]] = []
     try:
         with registry._write_txn() as conn:
+            ended.extend(
+                registry._retire_closed_aliases(conn, namespace, _utcnow(), seat=seat)
+            )
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
                 " ORDER BY registered_at ASC",
