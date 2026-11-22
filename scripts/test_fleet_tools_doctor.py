@@ -249,6 +249,16 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
             # The doctor's own store is under its home:  point it at the temporary one,  so a
             # test never reads the host's own credential store.
             staged_doctor.HOME = root
+            # The doctor's own grant comes from its own store,  and the store is the
+            # only source the read may use:  the general ambient binding is a wider
+            # grant than this one,  so it never stands in for it.  The store read is
+            # stubbed here,  so a test never reads the host's own credential store.
+            client = staged_doctor.shared_client()
+            store = mock.patch.object(
+                client, "token_from_store", return_value=(self.BINDING, "ok")
+            )
+            store.start()
+            self.addCleanup(store.stop)
             self.assertEqual(
                 staged_doctor.infisical_names("/zulip", env), frozenset({"CLAUDE_ZULIP_KEY"})
             )
@@ -277,6 +287,14 @@ class CanonicalConsumerTransportTests(unittest.TestCase):
         with self.source(include_values=True) as (root, env, requests):
             doctor._names_cache.clear()
             self.addCleanup(doctor._names_cache.clear)
+            # The grant comes from the doctor's own store;  the store read is stubbed
+            # here,  so a test never reads the host's own credential store.
+            client = doctor.shared_client()
+            store = mock.patch.object(
+                client, "token_from_store", return_value=(self.BINDING, "ok")
+            )
+            store.start()
+            self.addCleanup(store.stop)
             self.assertIsNone(doctor.infisical_names("/zulip", env))
             ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
             with (

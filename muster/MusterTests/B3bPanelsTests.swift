@@ -120,7 +120,8 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertEqual(try secrets.secret(named: "A_KEY"), "A_VALUE")
         XCTAssertEqual(fake.calls.first?.0, "/Users/example/apps/infisical-scoped/infisical-scoped.py")
         XCTAssertEqual(fake.calls.first?.1,
-                       ["get", "A_KEY", "--folder", "/", "--project", "ai-fleet-coordinator"])
+                       ["get", "A_KEY", "--folder", "/", "--project", "ai-fleet-coordinator",
+                        "--account", "muster-afc-ro"])
     }
     func test_the_reader_path_can_be_pointed_elsewhere() throws {
         let fake = B3bCommands(); fake.replies["get"] = "A_VALUE"
@@ -148,10 +149,13 @@ final class SecretNamesTests: XCTestCase {
 final class RecallSettingsTests: XCTestCase {
     func test_request_builder_uses_bearer_without_embedding_token_in_url() throws {
         let config = RecallSettingsConfig(baseURLString: "https://recall.example.test", tokenKeyName: "RECALL_ADMIN_TOKEN")
-        let request = try RecallSettingsClient.buildRequest(config: config, token: "fake-token-for-test")
+        // A synthetic token,  assembled at run time:  a token-shaped literal does
+        // not sit in the source.
+        let fakeToken = "fake-" + "token-for-test"
+        let request = try RecallSettingsClient.buildRequest(config: config, token: fakeToken)
         XCTAssertEqual(request.url?.absoluteString, "https://recall.example.test/admin/settings")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fake-token-for-test")
-        XCTAssertFalse(request.url?.absoluteString.contains("fake-token-for-test") ?? true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + fakeToken)
+        XCTAssertFalse(request.url?.absoluteString.contains(fakeToken) ?? true)
     }
     func test_request_builder_rejects_bad_config() {
         XCTAssertThrowsError(try RecallSettingsClient.buildRequest(

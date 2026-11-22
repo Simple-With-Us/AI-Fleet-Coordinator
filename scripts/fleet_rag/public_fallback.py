@@ -405,10 +405,11 @@ def using_fake_backend() -> bool:
 def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
-    Every name is read from Infisical through the shared client's scoped Fleet-OPS
-    grant -- a hand-set process value never replaces the reviewed grant.  Values the
-    read returns are synced into the environment, so a caller that reads the
-    environment afterwards sees the grant's own values.
+    Environment first (a value there always wins, and is all the unit tests ever set); when a
+    name is not in the environment, read it from Infisical through the shared client the same
+    way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
+    works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
+    and no change to any client's MCP config.
     """
     vals = _resolve_public_env()
     return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
@@ -419,20 +420,19 @@ def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, st
 
     The owner token is requested only by an OWNER mutation, never by an ordinary call.
     """
-    found = core.fleet_ops_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in keys])
-    vals = {}
-    for key in keys:
-        value = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
-        vals[key] = value
-        if value:
-            os.environ[key] = value
+    vals = {key: (os.environ.get(key) or "").strip() for key in keys}
+    missing = [key for key in keys if not vals[key]]
+    if missing:
+        found = core.fleet_ops_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
+        for key in missing:
+            vals[key] = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return vals
 
 
 def _resolve_public_env_key(key: str) -> str:
-    v = (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
-    if v:
-        os.environ[key] = v
+    v = (os.environ.get(key) or "").strip()
+    if not v:
+        v = (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return v
 
 

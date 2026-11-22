@@ -1550,8 +1550,9 @@ def infisical_names(
     """Key NAMES in one Infisical folder, through the doctor's own scoped token.
 
     No value reaches this process:  the shared client asks for names only.  The token is
-    the doctor's own, read from its own store (the account below);  a token bound in the
-    environment is only a copy of that same grant, and it is used when the store has none.
+    the doctor's own, read from its own store (the account below), and it is the only
+    grant the read runs under:  the general ambient binding is a wider grant than this
+    one, so it never stands in for it.
     None when the folder cannot be read.  Fleet-OPS unless `project` says otherwise.  Once
     per folder per run."""
     cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
@@ -1570,11 +1571,6 @@ def infisical_names(
         read_token = ""
         if account:
             read_token, status = client.token_from_store(account, scoped, HOME)
-        if not read_token:
-            try:
-                read_token = client.resolve_token(scoped, project_name=project)
-            except client.SecretsError:
-                read_token = ""
         if read_token:
             try:
                 project_id = client.infisical_project_id(scoped, HOME, project)

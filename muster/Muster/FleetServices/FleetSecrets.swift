@@ -110,7 +110,8 @@ public struct FleetSecrets: SecretResolving {
         do {
             value = try commands.run(readerExecutable,
                                      ["get", name, "--folder", Self.valueFolder,
-                                      "--project", Self.valueProject],
+                                      "--project", Self.valueProject,
+                                      "--account", Self.valueAccount],
                                      environment: readerEnvironment, timeout: 20)
         } catch {
             // Exit 3 is "absent";  any other failure is not (AFC-592).
@@ -232,6 +233,9 @@ public extension FleetSecrets {
     /// no token at all.
     static let valueProject = "ai-fleet-coordinator"
     static let valueFolder = "/"
+    /// This app's own scoped service token, named here:  the read binds it explicitly
+    /// instead of leaving it to the reader's own table.
+    static let valueAccount = "muster-afc-ro"
 
     /// Names grouped by path, for the Controls panel.
     ///
