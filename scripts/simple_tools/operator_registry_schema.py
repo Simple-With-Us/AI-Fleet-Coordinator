@@ -9,7 +9,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -103,5 +103,14 @@ CREATE TABLE IF NOT EXISTS session_issues (
     record_id TEXT PRIMARY KEY REFERENCES sessions(record_id),
     issues TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
+);
+-- Version 4: explicitly self-registered PR bindings. No historical backfill.
+CREATE TABLE IF NOT EXISTS session_pr_bindings (
+    record_id TEXT NOT NULL REFERENCES sessions(record_id),
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY(record_id, repo, number)
 );
 """
