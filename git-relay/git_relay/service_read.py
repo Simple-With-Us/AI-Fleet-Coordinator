@@ -6,6 +6,7 @@ policy boundary. No GitHub credential or arbitrary API path crosses it.
 
 from __future__ import annotations
 
+import hmac
 import re
 
 from .github_client import GitHubClient, RelayGitHubError
@@ -203,3 +204,183 @@ def dispatch(relay, seat, args):
             )
         results.append(item)
     return {"body": {"check_runs": results} if verb == "check_runs" else results}
+
+
+# --------------------------------------------------------------------------
+# The dedicated-bearer lane
+#
+# A relay that configures the lane answers the review-alert client with its
+# own credential, its own repository allowlist and its own narrowed
+# one-repository App grant.  The client presents that credential
+# (scripts/review_alerts/service.py:  RA_SERVICE_TOKEN_FILE), so the lane
+# owns the action on such a relay;  a relay with no lane configured leaves
+# the action to the normal relay policy, where the seat's own grant,
+# repository scope and quota apply.
+# --------------------------------------------------------------------------
+
+#: The App identity the lane mints for:  the operator's own App.
+SERVICE_READ_APP_SLUG = "swu-operator"
+#: The one grant set a service read mints:  the narrowest the read verbs need.
+SERVICE_READ_GRANTS = {"pull_requests": "read", "checks": "read", "metadata": "read"}
+#: owner/name, each part 1-100 of the characters GitHub allows;  never a URL fragment.
+LANE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+#: A commit sha for the check_runs verb:  7-40 lowercase hex.
+LANE_SHA = re.compile(r"[0-9a-f]{7,40}")
+#: The fixed read verbs, each one GET path.  No caller-composed path ever leaves here.
+LANE_VERBS = {
+    "pull": "/repos/{repo}/pulls/{number}",
+    "reviews": "/repos/{repo}/pulls/{number}/reviews?per_page=100&page={page}",
+    "review_comments": "/repos/{repo}/pulls/{number}/comments?per_page=100&page={page}",
+    "check_runs": "/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}",
+}
+LANE_MAX_PAGE = 20
+#: The creation-receipt census bound:  the most eligible rows one answer may
+#: carry.  A repo with more fails closed instead of paging.
+LANE_RECEIPT_LIMIT = 1000
+
+
+def lane(relay, token, args) -> tuple[int, dict]:
+    """The alert service's fixed-shape read lane (no seat, no token export).
+
+    Every exit writes exactly one audit row.  The outcome and its detail
+    are tracked here and the single row is written in the finally block,
+    so a failed revocation updates that row instead of adding a second
+    one for the same call.  The unauthenticated path is the one exception:
+    its bounded row belongs to the unauthenticated auditor, which owns the
+    rate limit for a credential spray.
+    """
+    expected = relay.service_read_token
+    args = args if isinstance(args, dict) else {}
+    outcome = "error"
+    detail: dict = {}
+    repo = ""
+    bearer = None
+    row_written = False
+    try:
+        if expected is None:
+            # Every exit from this lane is audited, so an unconfigured-lane
+            # probe stays visible in review instead of a silent 503.
+            outcome = "error"
+            detail = {"cause": "not_configured"}
+            return 503, {"error": "service reads are not configured"}
+        if not isinstance(token, str) or not hmac.compare_digest(
+            # A crafted bearer, including one carrying a lone surrogate, is
+            # an unauthenticated request:  it must not escape as an
+            # exception and skip the audit row.
+            token.encode("utf-8", "surrogatepass"),
+            expected.encode("utf-8", "surrogatepass"),
+        ):
+            # The bounded unauthenticated row is the auditor's:  it owns the
+            # rate limit, so the lane writes no second row for this exit.
+            relay._unauth_auditor.record(relay.audit, "service_read")
+            row_written = True
+            return 401, {"error": "unauthenticated"}
+        repo = args.get("repo")
+        if not isinstance(repo, str) or not LANE_REPO.fullmatch(repo):
+            outcome = "bad_request"
+            detail = {"field": "repo"}
+            return 400, {"error": "repo must be owner/name"}
+        if repo.casefold() not in {allowed.casefold() for allowed in relay.service_read_repos}:
+            # GitHub repository names are case-insensitive, and the
+            # ownership index and the mint answer both fold case:  the
+            # allowlist must not make availability depend on the config's
+            # spelling.  The validated spelling is kept for the upstream path.
+            outcome = "denied"
+            detail = {"cause": "repo_not_allowed"}
+            return 403, {"error": "repo is not on the service-read allowlist"}
+        # Protected same-service creation receipts. No filesystem permission
+        # change, arbitrary path, caller envelope, App mint or token export.
+        if args.get("verb") == "creation_receipts":
+            if set(args) != {"repo", "verb"}:
+                outcome = "bad_request"
+                detail = {"field": "verb", "cause": "creation_receipt_args"}
+                return 400, {"error": "creation receipt query accepts repo and verb only"}
+            if relay.pr_owners is None:
+                outcome = "error"
+                detail = {"cause": "owners_unavailable"}
+                return 503, {"error": "creation receipts unavailable"}
+            # The store answers this query under the bound:  it stops at the
+            # limit and reports the overflow, so the per-repo history is never
+            # materialized in full and the refusal is decided first.
+            rows, overflow = relay.pr_owners.confirmed_for_repo(repo, LANE_RECEIPT_LIMIT)
+            if overflow:
+                outcome = "error"
+                detail = {"cause": "census_exceeded", "limit": LANE_RECEIPT_LIMIT}
+                return 503, {"error": "creation receipt census exceeds bounded query"}
+            outcome = "ok"
+            detail = {"verb": "creation_receipts", "count": len(rows)}
+            return 200, {"body": rows}
+        verb = args.get("verb")
+        if verb not in LANE_VERBS:
+            outcome = "bad_request"
+            detail = {"field": "verb"}
+            return 400, {"error": "unknown read verb"}
+        number = args.get("number")
+        if verb == "check_runs":
+            sha = args.get("sha")
+            if not isinstance(sha, str) or not LANE_SHA.fullmatch(sha):
+                outcome = "bad_request"
+                detail = {"field": "sha"}
+                return 400, {"error": "sha must be 7-40 lowercase hex"}
+            number = 0
+        elif type(number) is not int or not 1 <= number <= 99999999:
+            outcome = "bad_request"
+            detail = {"field": "number"}
+            return 400, {"error": "number must be a positive integer"}
+        page = args.get("page", 1)
+        if type(page) is not int or not 1 <= page <= LANE_MAX_PAGE:
+            outcome = "bad_request"
+            detail = {"field": "page"}
+            return 400, {"error": "page out of range"}
+        if relay.app_minter is None:
+            outcome = "error"
+            detail = {"cause": "minter_absent"}
+            return 503, {"error": "service reads are not wired"}
+        detail = {"verb": verb, "number": number, "page": page}
+        try:
+            # The strict lane only:  the minted token's grants and repository
+            # set are validated against the request before use, and a failed
+            # validation revokes it.  Legacy seat mints are untouched.
+            bearer, _expiry = relay.app_minter.token_for_service(
+                SERVICE_READ_APP_SLUG, repo, dict(SERVICE_READ_GRANTS)
+            )
+        except Exception:
+            outcome = "error"
+            detail = {**detail, "at": "mint"}
+            return 502, {"error": "read grant unavailable"}
+        path = LANE_VERBS[verb].format(repo=repo, number=number, page=page, sha=args.get("sha"))
+        try:
+            try:
+                body = relay.client._call("GET", path, bearer=bearer, timeout=30)
+            except RelayGitHubError as exc:
+                outcome = "error"
+                detail = {**detail, "at": "github", "github_code": exc.code}
+                return 502, {"error": "upstream read failed", "github_code": exc.code}
+            except Exception as exc:
+                # Every exit from this lane writes exactly one row, so an
+                # unexpected upstream failure is recorded before it escapes
+                # instead of hiding from review.  The exception still
+                # reaches the caller;  only the row is added here.
+                outcome = "error"
+                detail = {**detail, "at": "github", "exception": type(exc).__name__}
+                raise
+            outcome = "ok"
+            return 200, {"verb": verb, "repo": repo, "number": number, "page": page, "body": body}
+        finally:
+            # The fresh mint dies with the call:  success or failure, the
+            # token is revoked once the read is over.  A revocation GitHub
+            # does not accept leaves it live for up to an hour, so that
+            # failure is folded into this call's one row.
+            if bearer is not None and not relay.app_minter.revoke_installation_token(bearer):
+                outcome = "error"
+                if "at" in detail:
+                    # The read already named where it failed:  keep that
+                    # detail and flag the failed revocation beside it, so
+                    # review can tell a lone cleanup failure from a
+                    # combined read and cleanup failure.
+                    detail = {**detail, "revoke_failed": True}
+                else:
+                    detail = {**detail, "at": "revoke"}
+    finally:
+        if not row_written:
+            relay.audit.record("service-read", "service_read", repo, outcome, detail)

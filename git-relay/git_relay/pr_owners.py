@@ -61,10 +61,28 @@ def _row(
     source: str,
     ts: str | None = None,
     origin: dict | None = None,
+    origin_session_claim: str | None = None,
+    origin_letter_claim: str | None = None,
+    origin_generation_claim: int | None = None,
 ) -> dict:
     from .service_read import origin_claims
 
-    claims = origin_claims(origin or {})
+    claims = dict(origin_claims(origin or {}))
+    # The three creation-time native claims are the same values the shared
+    # validator produces.  A caller that already validated them (the
+    # creation path) passes them directly;  an absent claim stays absent,
+    # so a row never grows an empty claim column.
+    for name, value in (
+        ("origin_session_claim", origin_session_claim),
+        ("origin_letter_claim", origin_letter_claim),
+        ("origin_generation_claim", origin_generation_claim),
+    ):
+        if value is not None:
+            claims[name] = value
+    # The merged set goes through the same shape checks as the shared
+    # origin dict:  a row can never hold a claim the protected census
+    # would reject later, which would fail-close every read for the repo.
+    claims = dict(origin_claims(claims))
     return {
         **claims,
         "ts": ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -94,6 +112,9 @@ class PROwnerStore:
     def __init__(self, path: str):
         self._path = path
         self._by_pr: dict[tuple[str, int], dict] = {}
+        # A per-repo key list, in first-seen order, so a per-repo query never
+        # scans every row in the store.
+        self._by_repo: dict[str, list[tuple[str, int]]] = {}
         self._lock = threading.Lock()
         self.skipped_lines = 0
         self.load_error: str | None = None
@@ -155,6 +176,7 @@ class PROwnerStore:
         existing = self._by_pr.get(key)
         if existing is None:
             self._by_pr[key] = row
+            self._by_repo.setdefault(key[0], []).append(key)
             return True
         if existing.get("confirmed"):
             return False
@@ -242,6 +264,9 @@ class PROwnerStore:
         source: str = CONFIRMED,
         ts: str | None = None,
         origin: dict | None = None,
+        origin_session_claim: str | None = None,
+        origin_letter_claim: str | None = None,
+        origin_generation_claim: int | None = None,
     ) -> dict:
         """Append one creation row durably, then index it.  Raises OSError on write failure."""
         return self.append_row(
@@ -256,6 +281,9 @@ class PROwnerStore:
                 source=source,
                 ts=ts,
                 origin=origin,
+                origin_session_claim=origin_session_claim,
+                origin_letter_claim=origin_letter_claim,
+                origin_generation_claim=origin_generation_claim,
             )
         )
 
@@ -291,6 +319,32 @@ class PROwnerStore:
             for row in rows:
                 origin_claims(row)
             return rows
+
+    def confirmed_for_repo(self, repo: str, limit: int) -> tuple[list[dict], bool]:
+        """Bounded query: the confirmed open_pr rows for one repo, at most `limit`.
+
+        Returns (rows, overflow).  `overflow` is True when more eligible rows
+        exist than the bound allows, so the caller can fail closed.  The scan
+        stops at the bound:  the per-repo history is never materialized in full
+        and the refusal is decided before the rows are built.
+        """
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        folded = repo.casefold()
+        rows: list[dict] = []
+        overflow = False
+        with self._lock:
+            for key in self._by_repo.get(folded, ()):
+                row = self._by_pr.get(key)
+                if row is None:
+                    continue
+                if row.get("confirmed") is not True or row.get("source") != CONFIRMED:
+                    continue
+                if len(rows) >= limit:
+                    overflow = True
+                    break
+                rows.append(dict(row))
+        return rows, overflow
 
     def __len__(self) -> int:
         with self._lock:
@@ -345,7 +399,11 @@ def rebuild(audit_path: str, store: PROwnerStore) -> dict:
                 counts["skipped"] += 1
                 continue
             # The audit row's ts is the true creation time;  record() would
-            # stamp a fresh one, so pass it through.
+            # stamp a fresh one, so pass it through.  Claims and attestation
+            # survive a rebuild only when the existing store row already holds
+            # them (an unconfirmed -> confirmed upgrade):  the audit row keeps
+            # only hashes, so a row re-added from audit alone is unbound.
+            keep = existing if existing is not None else {}
             store.record(
                 seat=seat,
                 repo=repo,
@@ -356,6 +414,9 @@ def rebuild(audit_path: str, store: PROwnerStore) -> dict:
                 confirmed=confirmed,
                 source=BACKFILL,
                 ts=row.get("ts") if isinstance(row.get("ts"), str) else None,
+                origin_session_claim=keep.get("origin_session_claim"),
+                origin_letter_claim=keep.get("origin_letter_claim"),
+                origin_generation_claim=keep.get("origin_generation_claim"),
             )
             counts["added"] += 1
     return counts
