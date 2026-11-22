@@ -377,3 +377,10 @@ class ScopedReadStatus(unittest.TestCase):
     def test_an_unrelated_failure_is_still_failed(self):
         _value, status = self._status(core.SecretsError("fetch-failed"))
         self.assertEqual(status, "failed")
+
+    def test_a_message_that_merely_mentions_a_scope_or_a_grant_is_still_failed(self):
+        # The markers are exact:  an unrelated refusal is a failed read,  and it is retried.
+        _value, status = self._status(core.SecretsError("the scope question was not answered"))
+        self.assertEqual(status, "failed")
+        _value, status = self._status(core.SecretsError("the grant record is unreadable"))
+        self.assertEqual(status, "failed")

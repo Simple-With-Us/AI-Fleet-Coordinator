@@ -2435,8 +2435,8 @@ def fetch_scoped(
 
     Returns (value, status).  The value is "" for every failure, and the status says which:
     "ok", "absent" (the name is not in that folder), "forbidden" (the grant does not cover
-    it,  whatever the provider called that refusal), "no-token", "keychain-locked",
-    "keychain-timeout", "keychain-missing", "token-unreadable" or "failed".
+    it), "no-token", "keychain-locked", "keychain-timeout", "keychain-missing",
+    "token-unreadable" or "failed".
 
     A socket timeout is not a status:  it raises `TimeoutError`,  so a consumer that can
     retry says so instead of reading a hung lookup as a broken credential.
@@ -2473,11 +2473,11 @@ def fetch_scoped(
             "token-verification-failed" in message
             or "status-403" in message
             or "token-scope-mismatch" in message
-            or "scope" in message
-            or "grant" in message
         ):
             # A grant that does not cover the folder is a refusal to repair,  not a
             # failed read a retry would fix:  the repair is the grant,  so it says so.
+            # The markers are exact:  an unrelated message that merely mentions a
+            # scope or a grant is a failed read,  and it is retried.
             return "", "forbidden"
         return "", "failed"
 
