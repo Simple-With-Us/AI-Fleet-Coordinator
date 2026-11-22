@@ -3078,6 +3078,41 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
 
 EXPORT_OUTCOMES = ("exported", "already_present", "failed", "ambiguous")
 
+# AFC-822:  exported outbox rows and their audit attempts age out after this window.  The
+# exporter reconciles by id against the sheet itself, so an exported row is never read
+# again;  the window keeps recent attempts auditable (the store-side fence, OPS-1037).
+EXPORT_KEEP_SECONDS = 7 * 24 * 3600
+
+
+def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -> dict[str, int]:
+    """Delete export rows nothing reads again (AFC-822):  audit attempts older than the window,
+    then outbox rows exported before it whose attempts are all gone.  Pending rows and their
+    attempts are never touched, so the drain's own bookkeeping is unchanged;  the sheets write
+    reconciles by id against the sheet, so idempotency does not depend on these rows.  When the
+    trim deleted anything the file is vacuumed in the same call, so the store does not keep the
+    freed pages.  Returns the deleted counts."""
+    cutoff = (datetime.now(UTC) - timedelta(seconds=max(1, int(keep_seconds)))).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            attempts = conn.execute(
+                "DELETE FROM export_attempts WHERE attempted_at < ?", (cutoff,)
+            ).rowcount
+            outbox = conn.execute(
+                "DELETE FROM export_outbox WHERE exported_at IS NOT NULL AND exported_at < ?"
+                " AND NOT EXISTS (SELECT 1 FROM export_attempts a WHERE a.outbox_id = export_outbox.outbox_id)",
+                (cutoff,),
+            ).rowcount
+        deleted = {"attempts": max(0, attempts), "outbox": max(0, outbox)}
+        if deleted["attempts"] or deleted["outbox"]:
+            conn.isolation_level = None  # VACUUM cannot run inside a transaction
+            conn.execute("VACUUM")
+        return deleted
+    finally:
+        conn.close()
+
 
 def record_export_attempt(
     db_path: str,
@@ -3318,6 +3353,17 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
+    tr = sub.add_parser(
+        "trim-export-rows",
+        help="delete exported outbox rows and aged audit attempts, and vacuum (AFC-822)",
+    )
+    tr.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    tr.add_argument(
+        "--keep-seconds",
+        type=int,
+        default=EXPORT_KEEP_SECONDS,
+        help="how long exported rows and their attempts stay (default: 7 days)",
+    )
     ra = sub.add_parser(
         "record-export-attempt",
         help="record one export attempt in the store-side fence (OPS-1037)",
@@ -3519,6 +3565,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         "record-export-attempt",
         "record-export-attempts",
         "export-attempts",
+        "trim-export-rows",
         "plan-session-snapshot",
         "enqueue-session-snapshot",
     ):
@@ -3612,6 +3659,14 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         if args.command == "record-export-attempts":
             records = [json.loads(item) for item in args.record]
             print(json.dumps({"attempt_ids": record_export_attempts(db, records)}))
+            return 0
+        if args.command == "trim-export-rows":
+            try:
+                counts = trim_export_rows(db, keep_seconds=args.keep_seconds)
+            except sqlite3.Error:
+                print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
+                return 3
+            print(json.dumps(counts))
             return 0
         print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
         return 0
