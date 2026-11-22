@@ -429,7 +429,9 @@ class MinterServiceLaneTests(unittest.TestCase):
     """Adversarial validation of the strict service-lane mint."""
 
     def _minter(self, answer, revoke_fails=False, expected_permissions=None):
-        expected_permissions = dict(self.GRANTS if expected_permissions is None else expected_permissions)
+        expected_permissions = dict(
+            self.GRANTS if expected_permissions is None else expected_permissions
+        )
         from git_relay.app_tokens import AppTokenMinter
 
         revoked = []
@@ -481,9 +483,11 @@ class MinterServiceLaneTests(unittest.TestCase):
         for request in wrong:
             with self.subTest(request=request), self.assertRaises(AssertionError):
                 minter._mint_installation_token(*request)
-        for request in [("POST", "/unexpected", "jwt", {}),
-                        ("GET", "/repos/other/fixture/installation", "jwt", None),
-                        ("GET", "/app", "wrong", None)]:
+        for request in [
+            ("POST", "/unexpected", "jwt", {}),
+            ("GET", "/repos/other/fixture/installation", "jwt", None),
+            ("GET", "/app", "wrong", None),
+        ]:
             with self.subTest(request=request), self.assertRaises(AssertionError):
                 minter._api(*request)
 
