@@ -3334,9 +3334,7 @@ class Seats:
             state = dict(self.seat_health(seat)[1])
             state.pop("seat")
             every[seat] = state
-        counted = [
-            state for seat, state in every.items() if seat not in self.not_installed
-        ]
+        counted = [state for seat, state in every.items() if seat not in self.not_installed]
         healthy = bool(counted) and all(state["healthy"] for state in counted)
         answer = {"healthy": healthy, "seats": every}
         if hasattr(self, "upgrade_quiesced"):
@@ -3586,9 +3584,7 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(
-    target: Router | Seats, bind: str, port: int, *, start_quiesced: bool = False
-) -> int:
+def serve(target: Router | Seats, bind: str, port: int, *, start_quiesced: bool = False) -> int:
     """Run every seat's router on one port.  A seat starts without its routine key or its
     registry address, since both come from Infisical, which may be down at start.  Without the
     key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
@@ -3640,9 +3636,7 @@ def serve(
             **seats.down,
             **{seat: NOT_INSTALLED for seat in seats.not_installed},
         }
-        down = (
-            ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
-        )
+        down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
         print(
             "wake-router listening on %s:%d for seats %s;  not served:  %s"
             % (bind, port, served, down),

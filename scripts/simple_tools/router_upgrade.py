@@ -63,21 +63,15 @@ def census(roots):
             if log.is_symlink() or not log.is_file():
                 raise UpgradeRefused("redirected receipt log")
             try:
-                rows = [
-                    json.loads(line) for line in log.read_text().splitlines() if line
-                ]
+                rows = [json.loads(line) for line in log.read_text().splitlines() if line]
             except (ValueError, OSError):
                 raise UpgradeRefused("unreadable receipt log") from None
             result["logs"][seat] = rows
             for receipt in rows:
-                if not isinstance(receipt, dict) or not isinstance(
-                    receipt.get("wake_id"), str
-                ):
+                if not isinstance(receipt, dict) or not isinstance(receipt.get("wake_id"), str):
                     raise UpgradeRefused("malformed receipt log")
                 if receipt.get("test") is not True:
-                    _record(
-                        result["receipts"], seat + "/" + receipt["wake_id"], receipt
-                    )
+                    _record(result["receipts"], seat + "/" + receipt["wake_id"], receipt)
         else:
             result["logs"][seat] = []
     return result
@@ -117,10 +111,7 @@ def compare(before, after):
     for key, value in before["pending"].items():
         pending = after["pending"].get(key)
         if pending is not None:
-            if any(
-                pending.get(field) != value.get(field)
-                for field in ("wake", "receipt_id")
-            ):
+            if any(pending.get(field) != value.get(field) for field in ("wake", "receipt_id")):
                 raise UpgradeRefused("pending wake identity changed")
         elif key not in after["receipts"]:
             raise UpgradeRefused("unclaimed pending wake disappeared")
@@ -142,9 +133,7 @@ def tree_manifest(root):
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
             raise UpgradeRefused("release contains nonregular path")
         if path.is_file():
-            result[str(path.relative_to(root))] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
+            result[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
     return result
 
 
@@ -171,9 +160,7 @@ def health(port):
 
 
 def stopped(host, unit, proc_root):
-    code, previous_pid, _ = host.systemctl(
-        "show", "--property=MainPID", "--value", unit
-    )
+    code, previous_pid, _ = host.systemctl("show", "--property=MainPID", "--value", unit)
     if code or not previous_pid.strip().isdigit():
         raise UpgradeRefused("cannot establish prior unit process")
     if host.systemctl("stop", unit)[0] != 0:
@@ -202,12 +189,8 @@ class ControlledUpgrade:
         self.old_manifest = tree_manifest(base / self.current / "scripts")
         if not self.old_manifest or not self.candidate_manifest:
             raise UpgradeRefused("empty release manifest")
-        self.units = {
-            name: (unit_dir / name).read_bytes() for name in (self.router, self.front)
-        }
-        code, pid, _ = host.systemctl(
-            "show", "--property=MainPID", "--value", self.router
-        )
+        self.units = {name: (unit_dir / name).read_bytes() for name in (self.router, self.front)}
+        code, pid, _ = host.systemctl("show", "--property=MainPID", "--value", self.router)
         if code or not re.fullmatch(r"[1-9][0-9]*", pid.strip()):
             raise UpgradeRefused("controlled upgrade requires running router")
         process = proc_root / pid.strip()
@@ -254,9 +237,7 @@ class ControlledUpgrade:
             stdin=json.dumps(env),
         )
         if status:
-            raise UpgradeRefused(
-                "non-delivering configured candidate startup canary failed"
-            )
+            raise UpgradeRefused("non-delivering configured candidate startup canary failed")
         self.qualified = json.loads(output.strip().splitlines()[-1])
         if self.qualified.get("qualified") is not True:
             raise UpgradeRefused("candidate did not qualify")
@@ -307,10 +288,7 @@ class ControlledUpgrade:
             or tree_manifest(self.base / self.current / "scripts") != self.old_manifest
         ):
             raise UpgradeRefused("installed release changed")
-        if any(
-            (self.unit_dir / name).read_bytes() != data
-            for name, data in self.units.items()
-        ):
+        if any((self.unit_dir / name).read_bytes() != data for name, data in self.units.items()):
             raise UpgradeRefused("installed unit changed")
 
     def recover_stopped(self):
@@ -341,9 +319,7 @@ class ControlledUpgrade:
         except (UpgradeRefused, OSError):
             failures.append("custody-census")
         if failures:
-            raise UpgradeRefused(
-                "recovery stop or custody unverified for " + ",".join(failures)
-            )
+            raise UpgradeRefused("recovery stop or custody unverified for " + ",".join(failures))
         if hasattr(self, "after"):
             compare(self.after, final)
         if getattr(self, "activation_requested", False):
@@ -361,9 +337,7 @@ class ControlledUpgrade:
         text = unit.read_text()
         if text.count(" wake-router serve ") != 1:
             raise UpgradeRefused("unexpected candidate unit command")
-        text = text.replace(
-            " wake-router serve ", " wake-router serve --start-quiesced "
-        )
+        text = text.replace(" wake-router serve ", " wake-router serve --start-quiesced ")
         # The quiesced marker persists across an unexpected restart; only explicit activation runs workers.
         durable_write(unit, text, 0o644)
         if self.host.systemctl("daemon-reload")[0]:
@@ -371,17 +345,11 @@ class ControlledUpgrade:
         if self.host.systemctl("start", self.router)[0]:
             raise UpgradeRefused("candidate start failed; intake remains stopped")
         answer = wait_health(self.port, True)
-        if {
-            k: v for k, v in answer.items() if k != "upgrade_quiesced"
-        } != self.qualified["health"]:
-            raise UpgradeRefused(
-                "running health differs from qualified candidate readiness"
-            )
+        if {k: v for k, v in answer.items() if k != "upgrade_quiesced"} != self.qualified["health"]:
+            raise UpgradeRefused("running health differs from qualified candidate readiness")
         if self.after != census(self.roots):
             raise UpgradeRefused("stopped custody changed before activation")
-        code, pid, _ = self.host.systemctl(
-            "show", "--property=MainPID", "--value", self.router
-        )
+        code, pid, _ = self.host.systemctl("show", "--property=MainPID", "--value", self.router)
         argv = (
             (self.proc_root / pid.strip() / "cmdline").read_bytes().split(b"\0")
             if not code and pid.strip().isdigit()
@@ -393,9 +361,7 @@ class ControlledUpgrade:
         ):
             raise UpgradeRefused("candidate process identity or quiescence not proven")
         self.activation_requested = True
-        if self.host.systemctl(
-            "kill", "--kill-whom=main", "--signal=USR1", self.router
-        )[0]:
+        if self.host.systemctl("kill", "--kill-whom=main", "--signal=USR1", self.router)[0]:
             raise UpgradeRefused("explicit candidate activation failed")
         wait_health(self.port, False)
         # Remove the temporary startup hold only after activation is acknowledged.
@@ -520,17 +486,12 @@ def wait_health(port, quiesced):
     while True:
         try:
             answer = health(port)
-            if (
-                answer.get("upgrade_quiesced") is quiesced
-                and answer.get("healthy") is True
-            ):
+            if answer.get("upgrade_quiesced") is quiesced and answer.get("healthy") is True:
                 return answer
         except (OSError, ValueError):
             pass
         if time.monotonic() >= deadline:
-            raise UpgradeRefused(
-                "candidate readiness/quiescence acknowledgement timed out"
-            )
+            raise UpgradeRefused("candidate readiness/quiescence acknowledgement timed out")
         time.sleep(0.2)
 
 

@@ -373,9 +373,7 @@ def main(argv: list[str]) -> int:
     previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: group.kick())
     group.start_refresh()
     try:
-        return WR.serve(
-            served.seats, args.bind, args.port, start_quiesced=args.start_quiesced
-        )
+        return WR.serve(served.seats, args.bind, args.port, start_quiesced=args.start_quiesced)
     finally:
         group.stop_refresh()
         signal.signal(signal.SIGHUP, previous)
