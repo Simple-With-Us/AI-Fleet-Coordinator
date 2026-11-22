@@ -223,9 +223,7 @@ SERVICE_READ_APP_SLUG = "swu-operator"
 #: The one grant set a service read mints:  the narrowest the read verbs need.
 SERVICE_READ_GRANTS = {"pull_requests": "read", "checks": "read", "metadata": "read"}
 #: owner/name, each part 1-100 of the characters GitHub allows;  never a URL fragment.
-LANE_REPO = re.compile(
-    r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}"
-)
+LANE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 #: A commit sha for the check_runs verb:  7-40 lowercase hex.
 LANE_SHA = re.compile(r"[0-9a-f]{7,40}")
 #: The fixed read verbs, each one GET path.  No caller-composed path ever leaves here.
@@ -240,6 +238,7 @@ LANE_MAX_PAGE = 20
 #: carry.  A repo with more fails closed instead of paging.
 LANE_RECEIPT_LIMIT = 1000
 
+
 def lane(relay, token, args) -> tuple[int, dict]:
     """The alert service's fixed-shape read lane (no seat, no token export)."""
     expected = relay.service_read_token
@@ -247,9 +246,7 @@ def lane(relay, token, args) -> tuple[int, dict]:
     if expected is None:
         # Every exit from this lane is audited, so an unconfigured-lane
         # probe stays visible in review instead of a silent 503.
-        relay.audit.record(
-            "service-read", "service_read", "", "error", {"cause": "not_configured"}
-        )
+        relay.audit.record("service-read", "service_read", "", "error", {"cause": "not_configured"})
         return 503, {"error": "service reads are not configured"}
     if not isinstance(token, str) or not hmac.compare_digest(
         # A crafted bearer, including one carrying a lone surrogate, is
@@ -317,9 +314,7 @@ def lane(relay, token, args) -> tuple[int, dict]:
         return 200, {"body": rows}
     verb = args.get("verb")
     if verb not in LANE_VERBS:
-        relay.audit.record(
-            "service-read", "service_read", repo, "bad_request", {"field": "verb"}
-        )
+        relay.audit.record("service-read", "service_read", repo, "bad_request", {"field": "verb"})
         return 400, {"error": "unknown read verb"}
     number = args.get("number")
     if verb == "check_runs":
@@ -331,15 +326,11 @@ def lane(relay, token, args) -> tuple[int, dict]:
             return 400, {"error": "sha must be 7-40 lowercase hex"}
         number = 0
     elif type(number) is not int or not 1 <= number <= 99999999:
-        relay.audit.record(
-            "service-read", "service_read", repo, "bad_request", {"field": "number"}
-        )
+        relay.audit.record("service-read", "service_read", repo, "bad_request", {"field": "number"})
         return 400, {"error": "number must be a positive integer"}
     page = args.get("page", 1)
     if type(page) is not int or not 1 <= page <= LANE_MAX_PAGE:
-        relay.audit.record(
-            "service-read", "service_read", repo, "bad_request", {"field": "page"}
-        )
+        relay.audit.record("service-read", "service_read", repo, "bad_request", {"field": "page"})
         return 400, {"error": "page out of range"}
     if relay.app_minter is None:
         relay.audit.record(
@@ -355,13 +346,9 @@ def lane(relay, token, args) -> tuple[int, dict]:
             SERVICE_READ_APP_SLUG, repo, dict(SERVICE_READ_GRANTS)
         )
     except Exception:
-        relay.audit.record(
-            "service-read", "service_read", repo, "error", {**detail, "at": "mint"}
-        )
+        relay.audit.record("service-read", "service_read", repo, "error", {**detail, "at": "mint"})
         return 502, {"error": "read grant unavailable"}
-    path = LANE_VERBS[verb].format(
-        repo=repo, number=number, page=page, sha=args.get("sha")
-    )
+    path = LANE_VERBS[verb].format(repo=repo, number=number, page=page, sha=args.get("sha"))
     try:
         try:
             body = relay.client._call("GET", path, bearer=bearer, timeout=30)

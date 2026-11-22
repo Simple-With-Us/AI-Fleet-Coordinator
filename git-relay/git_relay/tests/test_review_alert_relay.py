@@ -229,12 +229,16 @@ class ClaimTests(unittest.TestCase):
             client = Client()
             relay = make_relay(directory, client)
             status, first = open_pr(
-                relay, origin_session_claim=SESSION, origin_letter_claim="AB",
+                relay,
+                origin_session_claim=SESSION,
+                origin_letter_claim="AB",
                 origin_generation_claim=1,
             )
             self.assertEqual(status, 200)
             status, second = open_pr(
-                relay, origin_session_claim=SESSION, origin_letter_claim="AB",
+                relay,
+                origin_session_claim=SESSION,
+                origin_letter_claim="AB",
                 origin_generation_claim=2,
             )
             self.assertEqual(status, 200)
