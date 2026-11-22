@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_relay import patch_secretscan as relay
-from git_relay.reviewed_fixtures import unreviewed_file_secret
 
 
 def review_record_admission(record):
@@ -121,6 +120,8 @@ class MatchPinnedReview(unittest.TestCase):
             frozenset({("assigned secret", 51282, 51325, 51290, 51325)}),
         )
         self.assertNotIn(server_key, relay._REVIEWED_GENERIC_FIXTURES)
+
+
 class ServerPyRetargetAdmissionTests(unittest.TestCase):
     """The edit_pr ref-validation server.py candidate 0b9d5296: exact bytes, exact census, stale metadata refuses."""
 
@@ -240,8 +241,6 @@ class UpgradeReviewedHubAdmissionTests(unittest.TestCase):
         key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
         with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
             self.assertEqual(relay.scan_file(key[0], key[1], body), "GitHub token")
-
-
 
 
 class ServerPyAdmissionTests(unittest.TestCase):
