@@ -54,7 +54,9 @@ class FakeClient:
     class SecretsError(RuntimeError):
         pass
 
-    def __init__(self, grant="st.fixture-doctor-grant-value", names=("CLAUDE_ZULIP_KEY",), failure=None):
+    def __init__(
+        self, grant="st.fixture-doctor-grant-value", names=("CLAUDE_ZULIP_KEY",), failure=None
+    ):
         self.grant = grant
         self.names = names
         self.failure = failure

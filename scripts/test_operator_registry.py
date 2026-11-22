@@ -1143,7 +1143,9 @@ class RegistryTest(unittest.TestCase):
         for _ in range(3):
             out = self._relabel("cl-1", platform="claude", force=True)
             self.assertEqual((out["outcome"], out["label"]), ("unchanged", "AA"))
-        self.assertEqual(self._register("cl-2")["label"], "BB")  # no issue was added by the no-op relabel.
+        self.assertEqual(
+            self._register("cl-2")["label"], "BB"
+        )  # no issue was added by the no-op relabel.
 
     def test_a_relabel_into_the_single_space_keeps_the_pair(self):
         self._register("cl-1")
