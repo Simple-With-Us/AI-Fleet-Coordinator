@@ -176,6 +176,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(prog="install-wake-router.sh", add_help=False)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--start", action="store_true")
+    parser.add_argument("--controlled-upgrade", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--tailnet-addr", default="")
     parser.add_argument("--tls-cert", default="")
@@ -607,11 +608,34 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
             except (OSError, ValueError) as exc:
                 plan.refuse("cannot render the units from origin/main:  %s" % exc)
             if token:
-                check_knobs(host, interpreter, scripts, token, plan, args.start)
+                check_knobs(host, interpreter, scripts, token, plan, args.start and not args.controlled_upgrade)
             else:
                 say("knobs: not checked (no usable token)")
         say("release: origin/main %s" % (sha or "unknown"))
 
+        upgrade = None
+        if args.controlled_upgrade:
+            try:
+                sys.path.insert(0, str(scripts))
+                from simple_tools.router_upgrade import ControlledUpgrade
+                upgrade = ControlledUpgrade(host, base, unit_dir, proc_root, scripts,
+                                            interpreter, router_port)
+                # Verify the running release against its exact git object, not its directory name.
+                old_sha = upgrade.current.split("/")[1]
+                status, archive, _ = host.run(["git", "-C", str(repo), "archive", old_sha, "scripts"], binary=True)
+                if status:
+                    raise ValueError("installed release git object unavailable")
+                old_root = workdir / "old-release"
+                old_root.mkdir()
+                safe_extract(archive, old_root)
+                from simple_tools.router_upgrade import tree_manifest
+                if tree_manifest(old_root / "scripts") != upgrade.old_manifest:
+                    raise ValueError("running installed bytes differ from immutable git object")
+                expected_units = render_units(old_root / "scripts", old_sha, args, tailnet, socat)
+                if any(upgrade.units[name] != text.encode() for name, text in expected_units.items()):
+                    raise ValueError("installed units differ from immutable rendered old release")
+            except Exception as exc:
+                plan.refuse("controlled upgrade preflight refused: %s" % type(exc).__name__)
         if plan.refusals:
             say("%d problem(s);  nothing was changed" % len(plan.refusals))
             return 3 if plan.dry else 1
@@ -622,6 +646,15 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
                    " and start them" if args.start else ""))
             return 0
 
+        if upgrade is not None:
+            try:
+                from simple_tools.router_upgrade import tree_manifest
+                existing = base / "releases" / sha / "scripts"
+                if existing.exists() and tree_manifest(existing) != upgrade.candidate_manifest:
+                    raise ValueError("existing release differs from fetched archive")
+                upgrade.quiesce()
+            except Exception as exc:
+                raise RuntimeError("controlled upgrade quiesce failed: %s" % type(exc).__name__) from exc
         # --- every check passed:  write ---------------------------------------------------------
         releases = base / "releases"
         releases.mkdir(parents=True, exist_ok=True)
@@ -672,6 +705,8 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
                 say("wrote %s" % path)
         host_ok = host.systemctl("daemon-reload")[0] == 0
         if not host_ok or host.systemctl("enable", *UNITS)[0] != 0:
+            if upgrade is not None:
+                raise RuntimeError("controlled upgrade reload/enable failed")
             say("systemctl --user could not reload or enable the units")
             return 1
         say("enabled %s" % " and ".join(UNITS))
@@ -679,6 +714,9 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
         if not args.start:
             say("not started;  run again with --start, or `systemctl --user start %s`" % " ".join(UNITS))
             prune_releases(host, proc_root, releases, sha)
+            return 0
+        if upgrade is not None:
+            upgrade.promote()
             return 0
         for unit in UNITS:
             active = host.systemctl("is-active", unit)[1].strip() == "active"
@@ -695,6 +733,19 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
             say("%s %s" % ("restarted" if verb == "restart" else "started", unit))
         prune_releases(host, proc_root, releases, sha)
         return 0
+    except BaseException as original:
+        if "upgrade" in locals() and upgrade is not None and upgrade.snapshot.exists():
+            try:
+                upgrade.recover_stopped()
+                recovery = "stop and custody verified; explicit recovery decision required"
+            except BaseException as recovery_error:
+                recovery = "%s: %s" % (type(recovery_error).__name__, recovery_error)
+            say("controlled upgrade failed (%s: %s); recovery outcome: %s; never blind replay" %
+                (type(original).__name__, original, recovery))
+            if isinstance(original, (KeyboardInterrupt, SystemExit)):
+                raise
+            return 1
+        raise
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -775,6 +826,9 @@ def main(argv, environ, uid):
     if uid == 0:
         plan.refuse("this runs as the jay user, never root (no sudo);  run it again as jay")
         return 3 if plan.dry else 1
+    if args.controlled_upgrade and (not args.start or args.uninstall or args.staged or args.tls_cert or args.tls_key):
+        plan.refuse("--controlled-upgrade requires --start and existing credentials/TLS, not uninstall or replacement inputs")
+        return 3 if plan.dry else 2
     if args.uninstall and args.start:
         plan.refuse("--uninstall and --start cannot be combined")
         return 3 if plan.dry else 2
