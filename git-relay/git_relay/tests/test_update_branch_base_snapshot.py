@@ -5,10 +5,10 @@ import json
 import unittest
 
 from git_relay.github_client import (
-    RelayGitHubError,
-    GitHubClient,
     MAX_BODY,
     MAX_RECURSIVE_TREE_BODY,
+    GitHubClient,
+    RelayGitHubError,
 )
 from git_relay.server import PreReadUnavailable
 from git_relay.workflow_verbs import CeilingDenied, Refused, WorkflowVerbs
