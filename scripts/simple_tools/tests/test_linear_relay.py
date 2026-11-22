@@ -2548,6 +2548,16 @@ class ReadablePostTests(WorkerCase):
         self.assertNotIn(sha, body)
         self.assertIn("(a hex run of 40 characters, masked)", body)
 
+    def test_an_embedded_hex_prefix_is_withheld_whole(self) -> None:
+        # A run that is only part of a longer opaque token is not masked:  the field is
+        # withheld whole, so the rest of the token never reaches Linear (kody, PR 2360).
+        run = "a" * 40
+        self.w.handle_event(message(1, "AFC-1 relay", "pasted %sZx+/=" % run))
+        body = self.lin.created[0][1]
+        self.assertIn(lr.WITHHELD, body)
+        self.assertNotIn(run, body)
+        self.assertNotIn("Zx+/=", body)
+
     def test_a_compound_credential_name_is_still_withheld_whole(self) -> None:
         # A compound name is an assignment too (Kody, PR 2360).
         sha = "c" * 40

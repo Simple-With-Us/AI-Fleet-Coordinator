@@ -279,6 +279,12 @@ def permalink(realm: str, mid: int) -> str:
     return "%s/#narrow/near/%d" % (realm.rstrip("/"), int(mid))
 
 
+# A hexadecimal run of 40 or 64 lowercase characters has the shape of a git commit id.  The
+# shape alone does not prove it is one:  it is also the shape of credential material, so the
+# run is masked rather than exempted, and the value itself never reaches the ledger or the
+# comment (AFC-834).
+_COMMIT_ID_WORD = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])")
+
 # Credential-shaped strings.  A Zulip field that matches any of them is withheld whole.
 _SECRET_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"),
@@ -290,6 +296,10 @@ _SECRET_PATTERNS = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}"),
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{40,}={0,2}\b"),
+    # A commit-id-shaped run that the mask did not touch:  it sits inside a longer opaque
+    # token, so it is credential material and the field is withheld whole, never partly
+    # redacted (AFC-834).
+    _COMMIT_ID_WORD,
 )
 # The names that turn an assignment into a credential.
 _CREDENTIAL_NAME = (
@@ -316,13 +326,6 @@ _URL_QUERY_VALUE = re.compile(r"[?&][A-Za-z0-9_.\-]{1,40}=[^\s]*$")
 _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
-# A hexadecimal run of 40 or 64 lowercase characters has the shape of a git commit id.  The
-# shape alone does not prove it is one:  it is also the shape of credential material, so the
-# run is masked rather than exempted, and the value itself never reaches the ledger or the
-# comment (AFC-834).
-_COMMIT_ID_WORD = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-f]{40}|[0-9a-f]{64})(?![0-9a-fA-F])")
-
-
 def _mask_commit_ids(text: str) -> str:
     """Mask every commit-id-shaped run in the text.
 
@@ -339,9 +342,12 @@ def _mask_commit_ids(text: str) -> str:
         # A 40/64 lowercase-hex prefix inside a longer token (base64, a mixed
         # credential) must stay unmasked so has_secret can withhold the field.
         # Hex neighbours are already excluded by _COMMIT_ID_WORD.
+        # A slash is not one of those neighbours:  it separates the segments of a URL
+        # path, so a run that is one whole segment stands on its own and is masked
+        # (AFC-834).
         prev = text[start - 1] if start else ""
         nxt = text[end] if end < len(text) else ""
-        tokenish = lambda ch: ch.isalnum() or ch in "_+/=-"
+        tokenish = lambda ch: ch.isalnum() or ch in "_+=-"
         if (prev and tokenish(prev)) or (nxt and tokenish(nxt)):
             return match.group(0)
         return "(a hex run of %d characters, masked)" % len(match.group(0))

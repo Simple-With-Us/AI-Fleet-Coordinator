@@ -68,8 +68,10 @@ Eavesdropper, and it hosts the mirror.
   credential inside one is still caught.  A run of 40 lowercase hex characters (SHA-1)  or 64
   (SHA-256) has the shape of a git commit id, and the shape alone does not prove it is one, 
   so the run is masked:  the post is carried and the value is neither stored nor relayed.  A
-  run in a credential assignment (`token=<id>`,  `"token": "<id>"`,  `client_secret=<id>`) or
-  inside a URL query (`?sig=<id>`) is not masked and is withheld whole.  A link is shown, not
+  run is masked wherever it stands on its own, inside the path of a URL as well as in prose, so a
+  commit link is carried with its id masked.  A run that is part of a longer opaque token, or that
+  is the value of a credential assignment (`token=<id>`,  `"token": "<id>"`,  `client_secret=<id>`)
+  or a URL query value (`?sig=<id>`), is not masked and is withheld whole.  A link is shown, not
   live.  The comments written
   before this change hold posts that were cut at 280 characters:  an entry records the
   format its quotes were rendered in, an entry without one is read from Zulip again and
