@@ -125,14 +125,15 @@ def run_with_secrets(command, prepared, optional=()):
         # not the folder or the secret list,  and reading past the separator would
         # take it for one and read the wrong folder.
         prefix = items[:split]
-        folder = prefix[prefix.index("--path") + 1]
-        wanted = [name for name in prefix[prefix.index("--only") + 1].split(",") if name]
+        folder = prefix[max(i for i, v in enumerate(prefix) if v == "--path") + 1]
+        wanted = [name for name in prefix[max(i for i, v in enumerate(prefix) if v == "--only") + 1].split(",") if name]
         executable = items[split + 1 :]
     except (ValueError, IndexError, AttributeError, TypeError):
         raise SecretsError("invalid command", 2) from None
     if not executable or not folder or not wanted:
         raise SecretsError("invalid command", 2)
-    secrets = core.fetch_all(core.check_path(folder), prepared)
+    project = core.infisical_project_id(prepared, core.home_dir(prepared))
+    secrets = core.fetch_project(project, core.check_path(folder), prepared, names=tuple(wanted))
     chosen = {}
     for name in wanted:
         if name in optional and name not in secrets:
