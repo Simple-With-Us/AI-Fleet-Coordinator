@@ -848,8 +848,7 @@ fi
 
 # Run a headless pin/unpin Shortcut with the note title as a text-file input.
 # Returns 0 on success, 2 when the Shortcut is not installed, 1 when the run
-# itself failed, 3 when the Shortcut list could not be read, 5 when the Shortcuts
-# app could not be started.  A failed list
+# itself failed, 3 when the Shortcut list could not be read.  A failed list
 # lookup is its own case:  it is not proof that the Shortcut is missing, and
 # sending an operator to recreate a Shortcut that exists is worse than saying
 # the list did not read.  First-ever run of each shortcut shows a one-time
@@ -885,23 +884,13 @@ _pin_retry_on() {
   [[ "$_PIN_RETRY" == "1" ]]
 }
 
-# The Shortcuts app has to be running before the shortcut runs.  Its "Find
-# Notes" action is an app intent served by the Shortcuts app itself, and when
-# that app is not running the intent cannot be dispatched: the shortcut fails
-# with "The action 'Find Notes' could not run because an unknown error
-# occurred", for every title, including one that does not exist.  Opening the
-# app in the background costs nothing and does not steal focus.
-_ensure_shortcuts_running() {
-  pgrep -x Shortcuts >/dev/null 2>&1 && return 0
-  open -g -a Shortcuts >/dev/null 2>&1 || return 1
-  local waited=0
-  while (( waited < 20 )); do
-    pgrep -x Shortcuts >/dev/null 2>&1 && return 0
-    sleep 0.25
-    (( waited++ ))
-  done
-  return 1
-}
+# No Shortcuts-app pre-launch before a pin or unpin run:  `shortcuts run`
+# dispatches the Pin/Unpin Coding Note shortcuts with the Shortcuts app fully
+# quit, and the run does not relaunch it.  Verified live 2026-11-22:  pin and
+# unpin of an existing coding note, app confirmed not running before and after
+# each run, both exit 0.  The earlier claim that the "Find Notes" action is an
+# app intent that needs the app running (AFC-436) no longer holds, and opening
+# the app on every note write was the visible pop-up the owner objected to.
 
 # Run a Shortcuts command under a bound.  macOS has no GNU "timeout",  so the bound is perl's
 # alarm,  the same idiom the runtime sync script uses for its git call.  The bound cannot rest on
@@ -1004,11 +993,6 @@ _run_note_shortcut_locked() {  # $1 = shortcut name;  the caller holds the pin l
     return 3
   fi
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
-  #  The Shortcuts app must be up before the run:  its Find Notes action is an app intent
-  #  served by that app,  and a closed app fails the run for every title (AFC-436).
-  #  Code 5:  it could not be started,  which is a different fault from a failed run and needs
-  #  its own message (AFC-431)  —  reporting it as "the run failed" hides the action that fixes it.
-  _ensure_shortcuts_running || return 5
   local tmp attempt stripped run_rc
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
@@ -1101,9 +1085,6 @@ if [[ "$MODE" == "unpin" ]]; then
     exit 4
   elif [[ "$_unpin_rc" == "3" ]]; then
     echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
-    exit 4
-  elif [[ "$_unpin_rc" == "5" ]]; then
-    echo "unpinned: no — the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry" >&2
     exit 4
   elif [[ "$_unpin_rc" == "6" ]]; then
     echo "unpinned: no — another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s, so this one was skipped; retry in a moment" >&2
@@ -2829,7 +2810,7 @@ fi
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
 # _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
 # 3 the Shortcut list could not be read, 4 pinning was disabled
-# (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436),
+# (APPLE_NOTES_PIN=0),
 # 6 another pin run held the lock for the whole wait, 7 the lock directory could not be made, 8 the lock
 # kept coming back stale.
 # These are different problems and must not be reported
@@ -2879,10 +2860,6 @@ case "$_pin_rc" in
     if [[ "$MODE" == "pin" ]]; then
       echo "pin skipped: pinning is disabled (APPLE_NOTES_PIN=0); $_pin_outcome" >&2
     fi
-    ;;
-  5)
-    echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry)"
-    echo "pin skipped: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry; $_pin_outcome" >&2
     ;;
   7)
     echo "pinned: skipped (the pin lock directory could not be made)"
