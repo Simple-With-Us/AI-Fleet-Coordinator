@@ -1,8 +1,10 @@
 # Direct Infisical Readers
 
+> **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
+
 Refs [AFC-785](https://linear.app/simple-with-us/issue/AFC-785).  Depends on [#2167](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2167), including its names-only API and server image payload.
 
-These consumers call the shared `fleet_infisical` library in process.  None invokes the fleet-secrets application to read credentials; hosted Notes bearer routing and seat credential precedence remain intact.
+These consumers call the shared `fleet_infisical` library in process.  None invokes a shared reader application to read credentials; hosted Notes bearer routing and seat credential precedence remain intact.
 
 | Consumer | Project | Exact folder | Explicit service-token binding | Cache behavior |
 | --- | --- | --- | --- | --- |
@@ -16,7 +18,7 @@ The existing project-id settings select the intended project.  The shared reade
 
 Legacy Python helper names and the Notes runner argument remain compatibility seams.  Their implementations perform direct library calls, with the existing safe error classifications and bounded deadlines.  The token values remain in memory and never appear in subprocess arguments or diagnostics.
 
-The server image and the test-owned minimal listener image must include `scripts/fleet_infisical.py`; the fleet-secrets package is unnecessary for these readers.  Existing hosted Notes requests continue to use the calling seat's fleet bearer and never fall back to a shared backend credential.
+The server image and the test-owned minimal listener image must include `scripts/fleet_infisical.py`; the retired reader package is unnecessary for these readers.  Existing hosted Notes requests continue to use the calling seat's fleet bearer and never fall back to a shared backend credential.
 
 Validation covers 240 focused tests across credentials, cache partitioning, Notes clients and hosted routes, FleetLink, MCP identity, and the minimal listener image.  Names-only discovery is tested with value reads forbidden; token rotation, project isolation, exact-folder pinning, transient failure backoff and missing bindings are covered.
 

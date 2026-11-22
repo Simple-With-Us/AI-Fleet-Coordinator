@@ -1475,7 +1475,7 @@ def verify_inner(args) -> int:
     with open(args.seats, encoding="utf-8") as fh:
         seats = json.load(fh)
     sys.path.insert(0, args.relay)
-    from git_relay.app_tokens import AppTokenMinter, FleetSecretsSource
+    from git_relay.app_tokens import AppTokenMinter, InfisicalSource
     from git_relay.github_client import GitHubClient
 
     creds = os.environ.get("CREDENTIALS_DIRECTORY", "").strip()
@@ -1493,7 +1493,7 @@ def verify_inner(args) -> int:
         return out
 
     apps_token = os.path.join(creds, APPS_CREDENTIAL)
-    source = FleetSecretsSource(path=args.secrets_path, credential_file=apps_token)
+    source = InfisicalSource(path=args.secrets_path, credential_file=apps_token)
     minter = AppTokenMinter(source, api)
     read_only = {"metadata": "read", "contents": "read"}
     print(f"App keys from {args.secrets_path}")

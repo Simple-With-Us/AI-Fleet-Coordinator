@@ -19,11 +19,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 from .github_token_router import permission_set, target_parts
 from .operator_github import signature
-from .zulip import fleet_secrets_bin
+
+# This seat's own scoped read-only service token:  the consumer holds it in its own
+# store (the owner's login keychain on the Mac, a private file on a server) and the
+# shared Infisical client checks its grant before the value is used.
+CALLER_SECRET_FOLDER = "/operator-github/callers"
+CALLER_TOKEN_ACCOUNT = "operator-github-callers-ro"
 
 
 class ClientError(Exception):
@@ -44,39 +48,54 @@ def caller_key_name(seat):
 def caller_key(seat):
     """Load THIS seat's caller signing key from the approved source only.
 
-    Owner decision 2026-10-21:  `fleet-secrets get` is the single credential
-    path - the process environment, .env files and caller-chosen local files
-    are never consulted.  Failures name the variable operators must
+    Owner decision 2026-10-21:  the consumer's own scoped service token is the single
+    credential path - the process environment, dotenv files and caller-chosen local
+    files are never consulted.  Failures name the variable operators must
     provision, never the value seen.
     """
     name = caller_key_name(seat)
     try:
-        result = subprocess.run(
-            [
-                fleet_secrets_bin(os.environ, Path.home()) or "fleet-secrets",
-                "get",
-                name,
-                "--path",
-                "/operator-github/callers",
-                "--project",
-                "fleet-ops",
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        # Distinct infrastructure signals:  a hung lookup is 124, a missing
-        # executable is 127, so operators can tell both from a refused lookup.
-        print(name + " unavailable: fleet-secrets lookup timed out", file=sys.stderr)
-        raise SystemExit(124) from None
-    except FileNotFoundError:
-        print(name + " unavailable: fleet-secrets executable not found", file=sys.stderr)
+        import fleet_infisical as FI
+
+        env = dict(os.environ)
+        # The approved origin is pinned in code:  an inherited FLEET_SECRETS_API
+        # never redirects the read,  so the bearer never travels to another origin.
+        env[FI.ENV_API] = FI.API_BASE
+        env[FI.ENV_READ_PATHS] = CALLER_SECRET_FOLDER
+        key, status = FI.fetch_scoped(name, CALLER_SECRET_FOLDER, CALLER_TOKEN_ACCOUNT, env)
+    except ImportError:
+        # The shared client is not importable:  that is a broken reader,  not a
+        # credential problem,  and it carries the missing-source exit code,  so
+        # the operator repairs the reader and not the grant.
+        print(name + " unavailable: Infisical reader missing", file=sys.stderr)
         raise SystemExit(127) from None
-    except OSError:
-        raise ClientError(name + " unavailable: fleet-secrets lookup failed") from None
-    if result.returncode:
-        raise ClientError(name + " unavailable: fleet-secrets lookup failed")
-    key = result.stdout.decode("utf-8", "replace").strip()
+    except TimeoutError:
+        # The shared client lets a socket timeout through as a `TimeoutError`.
+        # Distinct infrastructure signals:  a hung lookup is 124, a missing
+        # credential source is 127, so operators can tell both from a refused lookup.
+        print(name + " unavailable: Infisical lookup timed out", file=sys.stderr)
+        raise SystemExit(124) from None
+    except Exception:
+        raise ClientError(name + " unavailable: Infisical lookup failed") from None
+    if status != "ok":
+        if status in ("no-token", "keychain-locked", "token-unreadable", "keychain-missing"):
+            print(
+                name
+                + " unavailable: no scoped token "
+                + CALLER_TOKEN_ACCOUNT
+                + " ("
+                + status
+                + ")",
+                file=sys.stderr,
+            )
+            raise SystemExit(127) from None
+        if status == "keychain-timeout":
+            print(
+                name + " unavailable: the scoped token store did not answer in time",
+                file=sys.stderr,
+            )
+            raise SystemExit(124) from None
+        raise ClientError(name + " unavailable: Infisical lookup failed")
     if not 32 <= len(key) <= 4096:
         raise ClientError(name + " is missing or invalid")
     return key

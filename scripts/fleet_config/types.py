@@ -148,10 +148,11 @@ class CheckType(str, Enum):
     ``credential_stat`` is the only check that touches a credential file, and it reads
     ``stat`` data only (existence, mode, size, mtime).  It never opens the file.
 
-    ``credential_key_present`` never touches a file at all:  it asks the fleet's
-    ``fleet-secrets`` CLI for the KEY NAMES in one secret-store folder and reports which
-    of the rule's names are there.  A key name is an identifier,  never a value,  so the
-    check cannot carry a secret into a result even by accident.
+    ``credential_key_present`` never touches a file at all:  it asks the shared Infisical
+    client,  with the checker's own scoped token for that folder,  for the KEY NAMES in
+    one secret-store folder and reports which of the rule's names are there.  A key name
+    is an identifier,  never a value,  so the check cannot carry a secret into a result
+    even by accident.
 
     The three compliance check types serve the fleet-wide family.  ``command`` runs one
     allowlisted program and reads its exit code.  ``secrets_hygiene`` looks for a

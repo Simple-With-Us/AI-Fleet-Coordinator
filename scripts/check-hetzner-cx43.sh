@@ -31,19 +31,34 @@ if [ -z "$TOKEN" ]; then
   TOKEN="$(/usr/bin/python3 -I "$FLEET_INFISICAL_CLI" get HCLOUD_TOKEN --path / --project fleet-ops 2>/dev/null || true)"
 fi
 if [ -z "$TOKEN" ]; then
-  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"
+  echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty:  the shared Infisical reader could not return it from Infisical Fleet-OPS prod root through ${FLEET_INFISICAL_CLI}" >> "$LOG"
   exit 1
 fi
+
+# The API token goes into a curl config file, so it has to be one line of plain
+# characters:  a quote, a backslash or a space would mangle the header.
+case "$TOKEN" in
+  *[!A-Za-z0-9._~+/=-]*)
+    echo "$STAMP  ERROR: HCLOUD_TOKEN has characters the request header cannot carry" >> "$LOG"
+    exit 1
+    ;;
+esac
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-curl -sS --max-time 20 -H "Authorization: Bearer $TOKEN" \
+# The bearer token never reaches an argument list:  the auth header goes to curl
+# on standard input with curl --config -, so no process table shows it.
+curl -sS --max-time 20 --config - \
   'https://api.hetzner.cloud/v1/server_types?per_page=50' \
-  -o "$TMP/st.json" 2>/dev/null
-curl -sS --max-time 20 -H "Authorization: Bearer $TOKEN" \
+  -o "$TMP/st.json" 2>/dev/null <<HETZNER_HEADER
+header = "Authorization: Bearer ${TOKEN}"
+HETZNER_HEADER
+curl -sS --max-time 20 --config - \
   'https://api.hetzner.cloud/v1/datacenters' \
-  -o "$TMP/dc.json" 2>/dev/null
+  -o "$TMP/dc.json" 2>/dev/null <<HETZNER_HEADER
+header = "Authorization: Bearer ${TOKEN}"
+HETZNER_HEADER
 
 RESULT="$(/usr/bin/python3 - "$TMP/st.json" "$TMP/dc.json" "$DC" "$CURRENT_TYPE" <<'PY'
 import json, sys

@@ -67,13 +67,27 @@ UNRELATED = secrets.token_urlsafe(24).lstrip("-") or "x"
 
 
 class ScopedReadAPI:
-    """Loopback metadata and named rows for subprocesses using the real verifier."""
+    """Loopback metadata and named rows for subprocesses using the real verifier.
 
-    def __init__(self, values, *, project=source.PROJECT_ID, path="/", allow_bulk=False):
+    One token names one grant:  the folder it covers and the values it holds.  The
+    shared client requires a token's granted folders to equal the declared folders
+    exactly,  so a fake that serves two folders holds one token per folder.  The
+    default grant is the one above;  `grants` adds another folder with its own
+    values and its own token.
+    """
+
+    def __init__(
+        self, values, *, project=source.PROJECT_ID, path="/", allow_bulk=False, grants=None
+    ):
         self.values = dict(values)
         self.project, self.path = project, path
         self.allow_bulk = allow_bulk
         self.token = fixture_service_token()
+        # The extra grants, each with its own values and its own token.  The default
+        # grant keeps the values above,  so a caller that rebinds `values` still
+        # drives the folder it declared.
+        self.extra_values = {name: dict(found) for name, found in (grants or {}).items()}
+        self.extra_tokens = {name: fixture_service_token() for name in self.extra_values}
         self.metadata_override = {}
         self.record_override = {}
         self.record_omissions = ()
@@ -90,13 +104,14 @@ class ScopedReadAPI:
                 status, payload = 404, {}
                 parsed = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
-                if self.headers.get("Authorization") != "Bearer " + fake.token:
+                grant = fake.grant_for(self.headers.get("Authorization"))
+                if grant is None:
                     status = 401
                 elif parsed.path == "/api/v2/service-token":
                     status = fake.status
                     payload = {
                         "workspace": fake.project,
-                        "scopes": [{"environment": "prod", "secretPath": fake.path}],
+                        "scopes": [{"environment": "prod", "secretPath": grant[0]}],
                         "permissions": ["read"],
                         "expiresAt": "2099-01-01T00:00:00Z",
                     }
@@ -104,23 +119,23 @@ class ScopedReadAPI:
                 elif parsed.path.startswith("/api/v3/secrets/raw/") and query == {
                     "workspaceId": [fake.project],
                     "environment": ["prod"],
-                    "secretPath": [fake.path],
+                    "secretPath": [grant[0]],
                     "viewSecretValue": ["true"],
                     "expandSecretReferences": ["false"],
                     "recursive": ["false"],
                     "include_imports": ["false"],
                 }:
                     name = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
-                    if name in fake.values:
+                    if name in grant[1]:
                         status = 200
                         payload = {
                             "secret": {
                                 "secretKey": name,
-                                "secretValue": fake.values[name],
+                                "secretValue": grant[1][name],
                                 "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
-                                "secretPath": fake.path,
+                                "secretPath": grant[0],
                                 "type": "shared",
                             }
                         }
@@ -134,7 +149,7 @@ class ScopedReadAPI:
                     == {
                         "workspaceId": [fake.project],
                         "environment": ["prod"],
-                        "secretPath": [fake.path],
+                        "secretPath": [grant[0]],
                         "viewSecretValue": ["true"],
                         "expandSecretReferences": ["false"],
                         "recursive": ["false"],
@@ -150,10 +165,10 @@ class ScopedReadAPI:
                                 "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
-                                "secretPath": fake.path,
+                                "secretPath": grant[0],
                                 "type": "shared",
                             }
-                            for name, value in fake.values.items()
+                            for name, value in grant[1].items()
                         ]
                     }
                 data = json.dumps(payload).encode()
@@ -165,6 +180,37 @@ class ScopedReadAPI:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def grant_for(self, authorization):
+        """The grant a bearer names:  (folder, values),  or None when it names none."""
+        header = authorization or ""
+        if not header.startswith("Bearer "):
+            return None
+        token = header[len("Bearer ") :]
+        if token == self.token:
+            return (self.path, self.values)
+        for folder, other in self.extra_tokens.items():
+            if other == token:
+                return (folder, self.extra_values[folder])
+        return None
+
+    def token_for(self, path):
+        """The token that names the grant for this folder."""
+        if path == self.path:
+            return self.token
+        return self.extra_tokens[path]
+
+    def values_for(self, path):
+        """The live values the grant for this folder holds."""
+        if path == self.path:
+            return self.values
+        return self.extra_values[path]
+
+    def set_values(self, path, values):
+        """Replace the values the grant for this folder holds,  in place."""
+        held = self.values_for(path)
+        held.clear()
+        held.update(values)
 
     @property
     def env(self):

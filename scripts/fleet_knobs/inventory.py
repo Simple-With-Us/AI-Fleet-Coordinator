@@ -7,6 +7,7 @@ between the two marker comments differs from the file;  ``--write`` rewrites the
 from __future__ import annotations
 
 import json
+import re
 
 from . import values
 from .registry import REGISTRY, ROOT_FOLDER, Spec
@@ -62,6 +63,23 @@ def _what(spec: Spec) -> str:
     return f"in folder `{spec.folder}`;  {spec.note}"
 
 
+# The house sentence gap:  a real U+00A0 plus one normal space after a sentence end.
+# The generated table is prose a human reads,  so the gap goes in the generator and not
+# in a hand edit of the Markdown:  the file must match the generated block byte for
+# byte,  so a gap applied to the file alone would be lost on the next write.
+#
+# The escape is written out,  so this source file holds no U+00A0 byte.
+_GAP_RE = re.compile(
+    r"(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]\"\'\u2019\u201d])*) +"
+    r"(?=[A-Z0-9\"*`#@\'\u2018\u201c\[])"
+)
+
+
+def _gaps(text: str) -> str:
+    """One U+00A0 plus one normal space after every sentence end in the cell."""
+    return _GAP_RE.sub("\\1\\2\u00a0 ", text)
+
+
 def rows() -> list[str]:
     out = []
     for spec in REGISTRY:
@@ -74,7 +92,7 @@ def rows() -> list[str]:
             _local(spec),
             _what(spec),
         ]
-        out.append("| " + " | ".join(c.replace("|", "/") for c in cells) + " |")
+        out.append("| " + " | ".join(_gaps(c.replace("|", "/")) for c in cells) + " |")
     return out
 
 

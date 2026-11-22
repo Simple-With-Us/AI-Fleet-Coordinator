@@ -178,7 +178,7 @@ def parse_claims(token: str) -> dict | None:
 class GrAssertionVerifier:
     """Verifies Worker-minted per-call assertions via the Worker's verify route.
 
-    `key_source` is anything with .secret(name) -> str (FleetSecretsSource in
+    `key_source` is anything with .secret(name) -> str (InfisicalSource in
     production, a fake in tests);  the key is the SAME GR_BEARER_VERIFY_KEY the
     shared-bearer route uses - the relay needs no mint-capable secret, only the
     callback channel key.  `transport(method, url, headers, body, timeout)` is
