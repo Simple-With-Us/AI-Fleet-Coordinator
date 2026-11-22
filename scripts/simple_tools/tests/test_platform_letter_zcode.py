@@ -15,6 +15,7 @@ import shlex
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import listener_api as API
 from simple_tools import listener_registry as RG
@@ -357,6 +358,65 @@ class ChildEnrollment(Base):
         self.assertTrue(registry.lookup("zcode", "mac", "default", corrupt))
         self.assertTrue(registry.lookup("zcode", "mac", "default", healthy))
         self.assertTrue(self.note(corrupt).get("label"))
+
+    def test_a_crafted_child_id_is_left_unread(self) -> None:
+        parent, child = sess(103), sess(104)
+        self.add_session(parent, title="Traversal guard")
+        self.add_session("../escape", parent=parent, task="subagent_child",
+                         title="Crafted id", age=100)
+        self.add_session(child, parent=parent, task="subagent_child", title="Real child", age=101)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        # The store row's id is not a session id, so the listing never builds a note path from it,
+        # and the parent's own Stop pass enrolls only the child it can name safely.
+        self.assertEqual(Z.zcode_child_sessions(self.env(), parent), [child])
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.state, "ZC", "letters"))),
+                         sorted([parent + ".json", child + ".json"]))
+        self.assertTrue(OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", child))
+
+    def test_a_store_of_lettered_children_costs_bounded_reads(self) -> None:
+        parent, late = sess(105), sess(106)
+        self.add_session(parent, title="Cap work")
+        letters = os.path.join(self.state, "ZC", "letters")
+        os.makedirs(letters, exist_ok=True)
+        for i in range(120):  # newest first:  every lettered row sits ahead of the old unlettered one
+            sid = sess(400 + i)
+            self.add_session(sid, parent=parent, task="subagent_child", title="L %02d" % i,
+                             age=100 + i)
+            with open(os.path.join(letters, sid + ".json"), "w") as fh:
+                json.dump({"state": "open", "label": "ZZ:"}, fh)
+        self.add_session(late, parent=parent, task="subagent_child", title="Late child", age=9000)
+        reads = {"n": 0}
+        real = Z._note_dict
+
+        def counting(env, sid):
+            reads["n"] += 1
+            return real(env, sid)
+
+        with mock.patch.object(Z, "_note_dict", counting):
+            listed = Z.zcode_child_sessions(self.env(), parent)
+        # The examination cap stops the walk at 4 * CHILD_SCAN rows:  the reads are bounded even
+        # when the whole table is lettered, and the old unlettered row waits for the repair pass.
+        self.assertEqual(listed, [])
+        self.assertLessEqual(reads["n"], 4 * Z.CHILD_SCAN)
+
+    def test_a_string_failed_at_never_aborts_a_scan(self) -> None:
+        parent, child = sess(107), sess(108)
+        self.add_session(parent, title="String stamp")
+        self.add_session(child, parent=parent, task="subagent_child", title="Child work", age=7200)
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertTrue(self.note(child).get("label"))  # the pass enrolled it once
+        work = self.note(child)
+        work.update({"state": "failed", "failed_at": "not-a-number", "error": "row full"})
+        work.pop("label", None)
+        with open(os.path.join(self.state, "ZC", "letters", child + ".json"), "w") as fh:
+            json.dump(work, fh)
+        # A retry stamp that is not a number reads as no refusal at all (the shared _seconds helper),
+        # so neither scan raises and the child is offered again instead of being stuck forever.
+        self.assertIn(child, Z.zcode_unlettered_sessions(self.env()) or [])
+        self.assertEqual(Z.zcode_child_sessions(self.env(), parent), [child])
 
 
 class RepairChildren(Base):
