@@ -18,14 +18,22 @@ are compared with the requested session and the workspace root the deployment na
 a derived view and never authorizes a delivery.  A session the index does not know refuses
 (`session-not-found`);  one whose reported directory is gone refuses (`session-cwd-gone`);
 one marked `running` in the index is `busy` and retried;  a sub-agent child in the CLI store
-(`task_type = 'subagent_child'`) is refused (`session-subagent`).  Once `zcode` has started,
-any exit code other than 0 is final (`refused`), because the turn may have already run;  a
-timeout is `unknown`, because the turn may have run and nobody can tell;  exit 0 is `sent`
-only when the child's own output carries no documented failure signature, because the
-server's own log shows a failed turn exiting 0, and the receipt never records that hand-over
-as a confirmed delivery.  The signature is looked for in the tail of that output, the bounded
-tail the shared wake contract names, so a stale failure line the child carried on past never
-fails a turn that went on.
+(`task_type = 'subagent_child'`) is refused (`session-subagent`).  A timeout is `unknown`,
+because the turn may have run and nobody can tell.
+
+What a child's exit means.  A resume into a chat does not run the turn itself:  it writes the
+wake into the chat's own transcript, and the open chat takes it from there (a chat that is
+closed shows it when it is opened).  So the child's exit code is not the outcome;  the
+transcript is.  Once the child is gone the session's own store is asked whether that wake's
+prompt is there, by its wake id, in the session's input history or its messages:
+`sent` when it is (a hand-over with no proof it was acted on, never a confirmed delivery);
+`failed` when the store says it is not, because a prompt that never reached the session ran
+nothing and the try may be repeated.  A documented failure signature in the tail of the
+child's output types a `failed` (`model-auth-login-failed`);  the tail is the bounded one the
+shared wake contract names, so a stale failure line the child carried on past never fails a
+turn that went on.  When the store cannot say (unreadable, or a runtime without those tables)
+the exit code decides as it used to:  exit 0 with no signature is `sent`, a signature is
+`failed`, and any other exit is final (`refused`), because the turn may have already run.
 
 The legacy standalone bridge (`~/.local/state/zc-wake`, OPS-1048's first delivery) contends
 on the same per-session lock file during the cutover, so the two paths can never run one
@@ -94,9 +102,15 @@ MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 16
 MAX_REQUEST_NODES = 1000
 #: The failure the ZCode runtime documents for a turn that fails before any model response (it
-#: logs `model.request.failed` with that statusMessage).  A match means the turn failed even
-#: though the process exited 0, so the wake was not delivered and the try may be repeated.
+#: logs `model.request.failed` with that statusMessage).  A match types the outcome
+#: `model-auth-login-failed`;  whether the wake was handed over all the same is the session's
+#: own transcript's answer (`_prompt_persisted`), not this signature's.
 FAILURE_SIGNATURES = (("project_token_login_failed", "model-auth-login-failed"),)
+#: Where a resumed chat's transcript lives in zcode's own store:  the input history and the
+#: messages.  A wake's prompt carries its wake id, so one query per table answers whether that
+#: wake reached the session.  A `-p` prompt is written straight here and never passes through the
+#: interactive input queue, so a prompt is in one of these tables or nowhere.
+TRANSCRIPT_TABLES = (("input_history", "text"), ("message", "data"))
 
 DEFAULTS: Mapping[str, Any] = {
     **WR.ROUTER_DEFAULTS,
@@ -417,6 +431,50 @@ def _subagent_ids(env: Mapping[str, str], sids: list[str]) -> tuple[str, set[str
             pass
 
 
+def _prompt_persisted(env: Mapping[str, str], session_id: str, wake_id: str) -> bool | None:
+    """Did this wake's prompt reach the session's own transcript?  `True`, `False`, or `None`.
+
+    `True` when a row of this session's input history or of its messages carries the wake id,
+    which every wake's prompt does.  `False` only when both tables were read and neither holds
+    it:  a caller may repeat a try on that answer, because a prompt that is in neither ran
+    nothing.  `None` when the store cannot say (no store, unreadable, or a runtime without the
+    tables):  nothing is then known about the prompt, and a caller must not read `None` as no.
+
+    Read only, bounded by the session:  the wake id is matched as the literal string it is, so
+    no `_` or `%` in one can widen the match to another wake."""
+    if not wake_id or not cli_db_path(env).is_file():
+        return None
+    try:
+        conn = sqlite3.connect(
+            "file:" + urllib.parse.quote(str(cli_db_path(env))) + "?mode=ro", uri=True, timeout=2.0
+        )
+    except (OSError, sqlite3.Error):
+        return None
+    literal = wake_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = "%" + literal + "%"
+    found = False
+    readable = True
+    try:
+        for table, column in TRANSCRIPT_TABLES:
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM %s WHERE session_id = ? AND %s LIKE ? ESCAPE '\\'"
+                    " LIMIT 1" % (table, column),
+                    (session_id, pattern),
+                ).fetchone()
+            except sqlite3.Error:
+                readable = False
+                continue
+            if row:
+                found = True
+                break
+    finally:
+        conn.close()
+    if found:
+        return True
+    return False if readable else None
+
+
 def exclude_non_interactive(
     env: Mapping[str, str], local_host: str, workspace: str = ""
 ) -> Callable[[list[WR.Target]], set[str]]:
@@ -668,19 +726,38 @@ def deliver_local(
                 _unregister(child)
                 reader.join(timeout=OUTPUT_JOIN_SECONDS)
             output = bytes(tail)
-
-            if getattr(child, "returncode", 0) == 0:
-                failure = _failure_signature(output)
-                if failure:
-                    # The turn failed before any model response, so nothing ran and the try may
-                    # be repeated.
-                    return WR.Delivery("failed", "resume", code=failure)
+            returncode = getattr(child, "returncode", 0)
+            failure = _failure_signature(output)
+            if returncode == 0 and not failure:
+                # A clean exit is not the outcome either:  the transcript decides, so a prompt
+                # the store says is in neither table ran nothing and the try may be repeated.
+                # A store that cannot say keeps the exit-code answer this path has always given.
+                if _prompt_persisted(env, session_id, wake.wake_id) is False:
+                    return WR.Delivery("failed", "resume", code="resume-exit-0")
                 # The prompt reached the session, and nothing proves it was acted on:  the
                 # receipt records the hand-over without claiming a confirmed delivery.
                 return WR.Delivery("sent", "resume", ack="unknown", note="zcode-exit-0")
-            return WR.Delivery(
-                "refused", "resume", code="resume-exit-%d" % getattr(child, "returncode", 0)
-            )
+
+            # The child did not end well.  Its exit is not the outcome:  a resume writes the
+            # wake into the chat's own transcript and the open chat runs it from there, so the
+            # first question is whether the prompt reached that transcript at all.
+            code = failure or "resume-exit-%d" % returncode
+            persisted = _prompt_persisted(env, session_id, wake.wake_id)
+            if persisted:
+                # Handed over.  Nothing proves the chat acted on it, so this is never a confirmed
+                # delivery, and it is never repeated:  a second prompt would be a second turn.
+                return WR.Delivery(
+                    "sent", "resume", ack="unknown", note="zcode-prompt-persisted:" + code
+                )
+            if persisted is False:
+                # The prompt is in no table of this session, so no turn started from it:  the try
+                # may be repeated.
+                return WR.Delivery("failed", "resume", code=code)
+            # The store cannot say whether the prompt reached the session, so the exit decides
+            # as it did before the store was asked.
+            if returncode == 0:
+                return WR.Delivery("failed", "resume", code=failure)
+            return WR.Delivery("refused", "resume", code="resume-exit-%d" % returncode)
         finally:
             if legacy_lock is not None:
                 legacy_lock.close()
