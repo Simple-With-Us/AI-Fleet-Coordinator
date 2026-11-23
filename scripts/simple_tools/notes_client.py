@@ -95,13 +95,27 @@ def scoped_read(
     path: str,
     env: Mapping[str, str],
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    *,
+    strict: bool = False,
+    project: str | None = None,
 ) -> str:
-    """One direct, scoped Infisical read through this client's own service token."""
+    """One direct, scoped Infisical read through this client's own service token.
+
+    With `strict`, a binding refusal raises instead of returning nothing:  the message names the
+    account the consumer needs and which refusal it was,  so the operator knows what to provision.
+    `project` names the project id explicitly for a host that binds it under its own variable.
+    """
     scoped = dict(env)
     scoped[FI.ENV_READ_PATHS] = path
     try:
-        project = FI.infisical_project_id(scoped, FI.home_dir(scoped), W.KEY_PROJECT)
         binding = _binding(scoped, path)
+    except FI.SecretsError as exc:
+        if strict:
+            raise N.NotesError("not_configured", exc.message) from None
+        return ""
+    try:
+        if not project:
+            project = FI.infisical_project_id(scoped, FI.home_dir(scoped), W.KEY_PROJECT)
         values = FI.fetch_project(project, path, scoped, token=binding, names=(name,), timeout=30.0)
     except TimeoutError:
         # A hung lookup is not a missing value:  say so, so the caller does not go looking for a key that is there.
@@ -152,8 +166,11 @@ def base_url(
 
 
 class KeySource:
-    """A principal's key: the environment variable of its name, else a direct scoped Infisical read.
-    Kept in memory for KEY_CACHE_S, and dropped when the Operator answers 401 so a rotation is picked up."""
+    """A principal's key: a direct scoped Infisical read through this client's own grant.
+
+    The environment is not a source for the value:  the key resolves from the store,  and a refusal
+    names the account the consumer needs.  Kept in memory for KEY_CACHE_S, and dropped when the
+    Operator answers 401 so a rotation is picked up."""
 
     def __init__(
         self,
@@ -175,9 +192,7 @@ class KeySource:
         with self._lock:
             if self._value and self.clock() - self._at < KEY_CACHE_S:
                 return self._value
-            value = (self.env.get(self.name) or "").strip().strip('"').strip("'")
-            if not value:
-                value = self._fetch()
+            value = self._fetch()
             self._value = value if len(value) >= W.MIN_KEY_LEN else None
             self._at = self.clock()
             return self._value

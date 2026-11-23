@@ -691,7 +691,12 @@ class RuleTests(unittest.TestCase):
         }
         client = bridge._infisical_reader()
         original = client.bounded_fetch_project
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip") as api:
+        with ScopedReadAPI(
+            values,
+            project=str(uuid.uuid4()),
+            path="/zulip",
+            token_name=bridge.TOKEN_ACCOUNT,
+        ) as api:
             calls = []
 
             def read(project, folder, env, **options):
@@ -709,6 +714,7 @@ class RuleTests(unittest.TestCase):
                     {
                         "INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
                         "INFISICAL_TOKEN": api.token,
+                        "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
                         "CODEX_ZULIP_EMAIL": "ambient-bot@example.test",
                         "CODEX_ZULIP_KEY": "ambient fixture",
                         "CODEX_ZULIP_SITE": "https://foreign.example.test",
@@ -732,12 +738,21 @@ class RuleTests(unittest.TestCase):
                 )
                 self.assertIs(calls[0][3]["strict_records"], True)
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(len(api.requests), 4)
+                # The binding checks the token's own grant,  and the read checks it again.
+                self.assertEqual(len(api.requests), 5)
                 api.metadata_override = {
                     "scopes": [{"environment": "prod", "secretPath": "/tools"}]
                 }
                 api.requests.clear()
-                self.assertIsNone(bridge.ZulipClient(bot="CODEX").key)
+                # The token's own grant does not cover this folder,  so the binding
+                # refusal is raised and names the account the operator has to
+                # provision.  The ambient environment value is never used,  and the
+                # read never runs under a grant that does not cover the folder.
+                with self.assertRaises(bridge.BindingRefused) as caught:
+                    bridge.ZulipClient(bot="CODEX")
+                self.assertIn(bridge.TOKEN_ACCOUNT, str(caught.exception))
+                self.assertIn("token-scope-mismatch", str(caught.exception))
+                self.assertNotIn("ambient fixture", str(caught.exception))
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
 
     def test_mirror_body_clips_and_stamps(self):
@@ -759,11 +774,17 @@ class StandaloneReaderClosureTests(unittest.TestCase):
             with (
                 self.subTest(consumer=source.name),
                 tempfile.TemporaryDirectory() as temporary,
-                ScopedReadAPI(
-                    {"WANTED": "public fixture"}, project=str(uuid.uuid4()), path=folder
-                ) as api,
             ):
                 root = Path(temporary)
+                account = "fleet-work-backup-ro" if nested else "outbox-bridge-ro"
+                api = ScopedReadAPI(
+                    {"WANTED": "public fixture"},
+                    project=str(uuid.uuid4()),
+                    path=folder,
+                    token_name=account,
+                )
+                api.__enter__()
+                self.addCleanup(api.__exit__)
                 target = root / "consumer" / source.name if nested else root / source.name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
@@ -786,7 +807,7 @@ assert client is not foreign
 original=client.bounded_fetch_project
 client.bounded_fetch_project=lambda project,path,env,**options: original(project,path,{**env,"FLEET_SECRETS_API":endpoint},**options)
 os.environ.clear()
-os.environ.update(INFISICAL_FLEET_OPS_PROJECT_ID=project,INFISICAL_TOKEN=token)
+os.environ.update(INFISICAL_FLEET_OPS_PROJECT_ID=project,INFISICAL_TOKEN=token,FLEET_SECRETS_API=endpoint,HOME=str(pathlib.Path(source).parent))
 assert module._read_infisical_names(("WANTED",),folder)=={"WANTED":"public fixture"}
 assert module._infisical_reader() is client
 canonical=pathlib.Path(client.__file__)
@@ -819,7 +840,8 @@ assert not observed.touched
                     timeout=15,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(len(api.requests), 2)
+                # The binding checks the token's own grant,  and the read checks it again.
+                self.assertEqual(len(api.requests), 3)
 
     def test_backup_installer_declares_exact_parent_reader_bytes_and_mode(self):
         source = HERE / "fleet-work-backup/install.py"
