@@ -68,7 +68,9 @@ class T(unittest.TestCase):
         self.go(DOC_BAD, 1000)
         keys = [x for _, x in self.sent]
         self.assertTrue(any("ZC: credentials_missing (missing ZC_ZULIP_KEY)" in k for k in keys))
-        self.assertFalse(any("401" in k for k in keys))  # first poll: diagnostics only set the baseline
+        self.assertFalse(
+            any("401" in k for k in keys)
+        )  # first poll: diagnostics only set the baseline
         self.go({**DOC_BAD, "diagnostics": []}, 1300)  # same problem, no new growth
         alarms_before = len([1 for t, _ in self.sent if "alarm" in t])
         self.go({**DOC_BAD, "diagnostics": []}, 1400)
@@ -97,7 +99,9 @@ class T(unittest.TestCase):
         out = self.go({"rows": [], "diagnostics": grown}, 1200)  # no further growth: recovers
         self.assertEqual(out["alarms"], [])
         reset = [{**DIAG0[0], "count": 2}]
-        out = self.go({"rows": [], "diagnostics": reset}, 1600)  # evicted row began again: counts in full
+        out = self.go(
+            {"rows": [], "diagnostics": reset}, 1600
+        )  # evicted row began again: counts in full
         self.assertTrue(any("2 new /mcp 401" in x for _, x in self.sent))
 
     def test_no_login_and_refused_login_alarm_and_keep_identity_alarms(self):

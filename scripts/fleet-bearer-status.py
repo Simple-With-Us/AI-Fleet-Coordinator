@@ -92,7 +92,11 @@ def desired_alarms(doc, last_counts):
     for r in doc.get("rows", []):
         p = r.get("problem")
         if p and p != "ok":
-            miss = (r.get("missingRecords") or {}).get("names") if isinstance(r.get("missingRecords"), dict) else None
+            miss = (
+                (r.get("missingRecords") or {}).get("names")
+                if isinstance(r.get("missingRecords"), dict)
+                else None
+            )
             extra = f" (missing {', '.join(miss)})" if miss else ""
             alarms[f"problem:{r.get('identity')}:{p}"] = f"{r.get('identity')}: {p}{extra}"
     counts = {}
