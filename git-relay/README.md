@@ -385,7 +385,10 @@ or returned.
 
 ## Bounds and failure shape
 
-Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
+Request bodies are capped at 64 KiB, with narrow per-action envelopes above it (256 KiB for the
+binary release-asset upload, 6 MiB for the full-file writes `wf_file_put` and `wf_files_put` and
+the large-text git creates `wf_git_blob_create` and `wf_git_tree_create`, whose text the verbs
+bound at 700 KiB), text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
 paged GET other than a compare, whose raw rows are far larger than the rows the relay returns), and every
 GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
 values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client

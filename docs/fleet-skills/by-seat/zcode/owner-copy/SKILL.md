@@ -10,7 +10,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
-Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Sentence Gap, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
