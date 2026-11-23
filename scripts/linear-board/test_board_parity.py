@@ -535,10 +535,7 @@ class RunCliTests(ParityCliTest):
         for args, msg in (
             ('{"id": "d", "content_offset": -1}', "argument 'content_offset' must be at least 0"),
             ('{"id": "d", "content_length": 0}', "argument 'content_length' must be at least 1"),
-            (
-                '{"id": "d", "content_length": 1000001}',
-                "argument 'content_length' must be at most 1000000",
-            ),
+            ('{"id": "d", "content_length": 1000001}', "argument 'content_length' must be at most 1000000"),
         ):
             with self.subTest(args=args):
                 p = self.board("run", "linear_get_document", "--args-json", args, code=2)
@@ -570,13 +567,18 @@ class RunCliTests(ParityCliTest):
         self.assertEqual(sliced["document"]["content_total"], 17)
         self.assertEqual(sliced["document"]["content_offset"], 0)
         # A document read with no content (or a non-document root) passes through unchanged.
-        self.assertEqual(
-            CLI.slice_document_content({"other": 1}, {"content_offset": 1}, ""), {"other": 1}
-        )
-        self.assertEqual(
-            CLI.slice_document_content({"document": {"id": "d"}}, {"content_offset": 1}, ""),
-            {"document": {"id": "d"}},
-        )
+        self.assertEqual(CLI.slice_document_content({"other": 1}, {"content_offset": 1}, ""), {"other": 1})
+        self.assertEqual(CLI.slice_document_content({"document": {"id": "d"}}, {"content_offset": 1}, ""), {"document": {"id": "d"}})
+
+    def test_read_text_input_forwards_the_bound_to_private_files(self):
+        """The Kody finding on the first port:  read_text_input accepted max_bytes but its file
+        branch stayed at the 64 KB default, so a caller passing a larger bound got a spurious
+        refusal.  The bound now reaches read_private_file."""
+        data = "a" * 70000
+        path = self.private("big0600.md", data, 0o600)
+        self.assertEqual(CLI.read_text_input(path, "--vars", CLI.VAR_MAX_BYTES), data)
+        with self.assertRaises(SystemExit):
+            CLI.read_text_input(path, "--vars", CLI.INPUT_MAX_BYTES)
 
     def test_run_read_sends_the_named_document(self):
         p = self.board(

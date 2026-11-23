@@ -1413,9 +1413,9 @@ def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
 # ----------------------------------------------------------------- input files and flat labels
 
 
-def read_private_file(path: str, flag: str) -> bytes:
+def read_private_file(path: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> bytes:
     """The bytes of a file a seat handed over so its text stays out of argv:  a regular file owned by
-    the caller with mode exactly 0600 or 0400, at most INPUT_MAX_BYTES.  The checks run on the open
+    the caller with mode exactly 0600 or 0400, at most max_bytes.  The checks run on the open
     descriptor (O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from hanging), so the file cannot
     be swapped between the check and the read.  Anything else exits 2.  The text is never echoed."""
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
@@ -1438,11 +1438,11 @@ def read_private_file(path: str, flag: str) -> bytes:
                 f"run chmod 600 on it first",
                 EXIT_USAGE,
             )
-        if st.st_size > INPUT_MAX_BYTES:
-            die(f"{flag} {path}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+        if st.st_size > max_bytes:
+            die(f"{flag} {path}: more than {max_bytes // 1024} KB", EXIT_USAGE)
         data = b""
-        while len(data) <= INPUT_MAX_BYTES:
-            chunk = os.read(fd, INPUT_MAX_BYTES + 1 - len(data))
+        while len(data) <= max_bytes:
+            chunk = os.read(fd, max_bytes + 1 - len(data))
             if not chunk:
                 break
             data += chunk
@@ -1458,7 +1458,7 @@ def read_text_input(src: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> st
         data = sys.stdin.buffer.read(max_bytes + 1)
         where = "standard input"
     else:
-        data = read_private_file(src, flag)
+        data = read_private_file(src, flag, max_bytes)
         where = src
     if len(data) > max_bytes:
         die(f"{flag} {where}: more than {max_bytes // 1024} KB", EXIT_USAGE)
@@ -2219,6 +2219,7 @@ class Linear:
                         **fields,
                     )
                 token = self.auth.get(failed=token)
+                self.last_token = token  # the scrub's known set tracks the bearer in use
                 reminted = True
                 continue
             if status == 403:
@@ -4754,12 +4755,29 @@ def read_flag_text(raw: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> str
         die(f"{flag} {path}: not a regular file", EXIT_USAGE)
     if st.st_size > max_bytes:
         die(f"{flag} {path}: more than {max_bytes // 1024} KB", EXIT_USAGE)
+    # A bounded read rather than read_bytes-then-slice:  the cap applies to the I/O and the
+    # memory, and a file grown after the stat is rejected instead of silently truncated.
     try:
-        return Path(path).read_bytes()[: max_bytes + 1].decode("utf-8")
-    except UnicodeDecodeError:
-        die(f"{flag} {path}: not valid UTF-8", EXIT_USAGE)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except OSError as e:
+        die(f"{flag} {path}: cannot read it ({e.strerror or type(e).__name__})", EXIT_USAGE)
+    try:
+        data = b""
+        while len(data) <= max_bytes:
+            chunk = os.read(fd, max_bytes + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
     except OSError as e:
         die(f"{flag} {path}: cannot read it ({type(e).__name__})", EXIT_USAGE)
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        die(f"{flag} {path}: more than {max_bytes // 1024} KB", EXIT_USAGE)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"{flag} {path}: not valid UTF-8", EXIT_USAGE)
 
 
 def read_flag_json(raw: str | None, flag: str, default=None, max_bytes: int = INPUT_MAX_BYTES):
