@@ -76,6 +76,8 @@ def _hook_body(args, refused, create):
             raise refused("invalid url") from None
         if parts.scheme not in ("https", "http") or not parts.hostname:
             raise refused("invalid url")
+        if "secret" in args and parts.scheme != "https":
+            raise refused("a hook with a signing secret needs an https url")
         if parts.username or parts.password or "@" in parts.netloc:
             raise refused("the hook url must not carry credentials; use the hook secret field")
         if find_secret(url):
@@ -212,7 +214,7 @@ class HookVerbsMixin:
         body["name"] = "web"
         body.setdefault("active", True)
         data = self.client._call(
-            "POST", f"/repos/{repo}/hooks", body, bearer=self.bearer, expected_status=201
+            "POST", f"/repos/{repo}/hooks", body, bearer=self.bearer
         )
         return {"hook": _hook_receipt(data)}
 
@@ -237,6 +239,15 @@ class HookVerbsMixin:
             if exc.status != 404:
                 raise
             self._get(f"/repos/{repo}")  # a hidden scope also answers 404: confirm the repository
+            try:
+                self._get(path)  # the resource itself must also read as missing
+            except RelayGitHubError as probe:
+                if probe.status != 404:
+                    raise
+            else:
+                raise RelayGitHubError(
+                    502, "delete answered missing but the resource still reads"
+                ) from exc
             return {"completed": True, key: value, "already_absent": True}
         return {"completed": True, key: value}
 
@@ -298,6 +309,7 @@ class HookVerbsMixin:
             None,
             bearer=self.bearer,
             expected_status=202,
+            allow_empty_object=True,
         )
         return {"completed": True, "id": hook, "delivery_id": delivery}
 
@@ -339,7 +351,6 @@ class HookVerbsMixin:
             f"/orgs/{repo.split('/')[0]}/hooks",
             body,
             bearer=self.bearer,
-            expected_status=201,
         )
         return {"hook": _hook_receipt(data)}
 
@@ -430,7 +441,6 @@ class HookVerbsMixin:
             f"/repos/{repo}/keys",
             {"title": title, "key": key.strip(), "read_only": read_only},
             bearer=self.bearer,
-            expected_status=201,
         )
         return {"deploy_key": self._deploy_key_receipt(data)}
 

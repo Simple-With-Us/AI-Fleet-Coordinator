@@ -151,6 +151,81 @@ class HookVerbs(unittest.TestCase):
                 {"repo": REPO, "name": "prod", "variable": "GITHUB_X", "value": "1"},
             )
 
+    def test_delete_missing_confirms_repo_and_resource(self):
+        class Gone(Client):
+            def _call(
+                self,
+                method,
+                path,
+                payload=None,
+                bearer=None,
+                expected_status=None,
+                allow_empty_object=False,
+            ):
+                self.calls.append((method, path))
+                if path.endswith("/hooks/9"):
+                    raise RelayGitHubError(404, "not found")
+                return {}
+
+        c = Gone()
+        out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_hook_delete", REPO).run(
+            "wf_hook_delete", {"repo": REPO, "id": 9}
+        )
+        self.assertEqual(out, {"completed": True, "id": 9, "already_absent": True})
+        self.assertEqual([x[0] for x in c.calls], ["DELETE", "GET", "GET", "GET"][: len(c.calls)])
+
+    def test_delete_404_but_resource_still_reads_is_an_error(self):
+        class Hidden(Client):
+            def _call(
+                self,
+                method,
+                path,
+                payload=None,
+                bearer=None,
+                expected_status=None,
+                allow_empty_object=False,
+            ):
+                if method == "DELETE":
+                    raise RelayGitHubError(404, "not found")
+                return {}
+
+        c = Hidden()
+        with self.assertRaises(RelayGitHubError):
+            WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_hook_delete", REPO).run(
+                "wf_hook_delete", {"repo": REPO, "id": 9}
+            )
+
+    def test_secret_needs_https(self):
+        with self.assertRaises(Refused):
+            run(
+                "wf_hook_create", {"repo": REPO, "url": "http://example.invalid/h", "secret": "abc"}
+            )
+
+    def test_create_and_redeliver_accept_real_github_answers(self):
+        class Real(Client):
+            def _call(
+                self,
+                method,
+                path,
+                payload=None,
+                bearer=None,
+                expected_status=None,
+                allow_empty_object=False,
+            ):
+                self.kw = (expected_status, allow_empty_object)
+                return self.replies.pop(0)
+
+        c = Real(hook())
+        WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_hook_create", REPO).run(
+            "wf_hook_create", {"repo": REPO, "url": "https://example.invalid/h"}
+        )
+        self.assertIsNone(c.kw[0])
+        c = Real({})
+        WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_hook_redeliver", REPO).run(
+            "wf_hook_redeliver", {"repo": REPO, "id": 9, "delivery_id": 4}
+        )
+        self.assertEqual(c.kw, (202, True))
+
 
 if __name__ == "__main__":
     unittest.main()
