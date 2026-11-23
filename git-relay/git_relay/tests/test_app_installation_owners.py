@@ -108,5 +108,5 @@ class InstallationOwnerTests(unittest.TestCase):
     def test_permission_ceiling_still_refuses_admin(self):
         minter, calls = self.build()
         with self.assertRaisesRegex(AppTokenError, "outside the mint ceiling"):
-            minter.token_for("swu-wise", BOTL, {"administration": "write"})
+            minter.token_for("swu-wise", BOTL, {"organization_administration": "write"})
         self.assertEqual(calls, [])

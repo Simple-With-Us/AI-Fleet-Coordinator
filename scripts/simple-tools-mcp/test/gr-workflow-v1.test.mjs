@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs';
 import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args,parseWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const sv=readFileSync(new URL('../../../git-relay/git_relay/secret_verbs.py',import.meta.url),'utf8');
+const hv=readFileSync(new URL('../../../git-relay/git_relay/hook_verbs.py',import.meta.url),'utf8');
+const hookNames=[...hv.slice(hv.indexOf('HOOK_SPECS = {'),hv.indexOf('HOOK_READS')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const scopes=[...sv.matchAll(/^    "((?:org|repo|env)_[a-z]+)": \(/gm)].map(m=>m[1]);
 const secretNames=scopes.flatMap(s=>['wf_secrets_','wf_secret_key_','wf_secret_put_','wf_secret_delete_',...(s.startsWith('org_')?['wf_secret_repos_','wf_secret_repos_set_']:[])].map(p=>p+s)).concat(['wf_org_variables','wf_org_variable_set','wf_org_variable_delete','wf_org_variable_repos','wf_org_variable_repos_set']);
 const secretOnly=action=>{
@@ -13,9 +15,9 @@ const secretOnly=action=>{
     wf_org_variables:['repo','per_page','page'],wf_org_variable_set:['repo','name','value','visibility','selected_repository_ids'],wf_org_variable_delete:['repo','name'],wf_org_variable_repos:['repo','name','per_page','page'],wf_org_variable_repos_set:['repo','name','selected_repository_ids']};
   return (table[action]||table[k]||null)&&(table[action]||table[k]).slice().sort();
 };
-const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('from .secret_verbs')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]).concat(secretNames);
+const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('from .secret_verbs')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]).concat(secretNames,hookNames);
 const onlyOf=name=>{
-  const body=py.split(/\n    def /).find(b=>b.startsWith(name+'('));
+  const body=(py+hv).split(/\n    def /).find(b=>b.startsWith(name+'('));
   const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };

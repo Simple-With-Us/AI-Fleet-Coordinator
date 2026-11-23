@@ -50,6 +50,7 @@ MODULES = (
     "reviewed_preservation",
     "same_path_reuse",
     "seat_add_policy",
+    "hook_verbs",
     "secret_scan",
     "secret_verbs",
     "server",

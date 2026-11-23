@@ -1193,6 +1193,8 @@ class TestOutcomes(unittest.TestCase):
         worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
         # The Worker spreads the generated secret reads (gr-secrets-v1.js SECRET_READ_ACTIONS) into the list.
         worker |= {"wf_org_variables", "wf_org_variable_repos"}
+        # ... and the hook/deploy-key/environment reads (gr-hooks-v1.js HOOK_READ_ACTIONS).
+        worker |= {"wf_hook_get", "wf_hook_deliveries", "wf_org_hooks", "wf_org_hook_get", "wf_deploy_key_get", "wf_env_branch_policies", "wf_env_variables"}
         for scope, org in (
             ("org_actions", True), ("org_dependabot", True), ("org_codespaces", True),
             ("repo_actions", False), ("repo_dependabot", False), ("repo_codespaces", False),

@@ -43,20 +43,19 @@ MINT_PERMISSION_CEILING = (
     "codespaces_secrets",
     "organization_codespaces_secrets",
     "organization_actions_variables",
+    "organization_hooks",
+    "repository_hooks",
+    "administration",
     "statuses",
     "deployments",
     "metadata",
 )
 
-# Permission keys mintable only at read level.  These widen what the relay can
-# READ (repository webhooks, deploy keys, organization installations); the
-# level check below makes a write mint for any of them a hard error, so no
-# verb or seat can ever receive a write-scoped token for them.
-MINT_READ_ONLY_PERMISSIONS = (
-    "administration",
-    "repository_hooks",
-    "organization_administration",
-)
+# Permission keys mintable only at read level (organization administration).
+# Repository hooks, organization hooks and administration moved into the ceiling
+# for the wave 2 hook, deploy key and environment verbs (owner instruction: every
+# GitHub feature for every seat); each verb still requests its exact level.
+MINT_READ_ONLY_PERMISSIONS = ("organization_administration",)
 
 
 # Exact permission objects for create_repo.  Equality-checked.  These writes are
