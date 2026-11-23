@@ -253,7 +253,10 @@
         "wf_env_branch_policy_delete",
         "wf_env_variables",
         "wf_env_variable_set",
-        "wf_env_variable_delete"
+        "wf_env_variable_delete",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations"
       ],
       "mint_permissions": {
         "actions": "write",
@@ -264,9 +267,11 @@
         "contents": "write",
         "dependabot_secrets": "write",
         "deployments": "write",
+        "environments": "write",
         "issues": "write",
         "metadata": "read",
         "organization_actions_variables": "write",
+        "organization_administration": "read",
         "organization_codespaces_secrets": "write",
         "organization_dependabot_secrets": "write",
         "organization_hooks": "write",
@@ -547,7 +552,10 @@
         "wf_env_branch_policy_delete",
         "wf_env_variables",
         "wf_env_variable_set",
-        "wf_env_variable_delete"
+        "wf_env_variable_delete",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"
@@ -805,7 +813,10 @@
         "wf_env_branch_policy_delete",
         "wf_env_variables",
         "wf_env_variable_set",
-        "wf_env_variable_delete"
+        "wf_env_variable_delete",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"

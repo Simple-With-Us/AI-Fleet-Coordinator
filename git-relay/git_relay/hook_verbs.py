@@ -24,6 +24,7 @@ REPO_HOOK = "repository_hooks"
 ORG_HOOK = "organization_hooks"
 ADMIN = "administration"
 VARS = "actions_variables"
+ENVS = "environments"
 
 HOOK_SPECS = {
     "wf_hook_get": ({REPO_HOOK: "read"}, False),
@@ -48,9 +49,9 @@ HOOK_SPECS = {
     "wf_env_branch_policies": ({ADMIN: "read"}, False),
     "wf_env_branch_policy_create": ({ADMIN: "write"}, True),
     "wf_env_branch_policy_delete": ({ADMIN: "write"}, True),
-    "wf_env_variables": ({VARS: "read"}, False),
-    "wf_env_variable_set": ({VARS: "write"}, True),
-    "wf_env_variable_delete": ({VARS: "write"}, True),
+    "wf_env_variables": ({VARS: "read", ENVS: "read"}, False),
+    "wf_env_variable_set": ({VARS: "write", ENVS: "write"}, True),
+    "wf_env_variable_delete": ({VARS: "write", ENVS: "write"}, True),
 }
 HOOK_READS = tuple(a for a, (_, w) in HOOK_SPECS.items() if not w)
 HOOK_WRITES = tuple(a for a, (_, w) in HOOK_SPECS.items() if w)
