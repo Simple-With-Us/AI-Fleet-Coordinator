@@ -510,6 +510,132 @@ class LocalFile(Settings):
             settings.load()
 
 
+class SeatHostFacts(Settings):
+    def test_shared_map_uses_governed_loader_not_legacy_widening_loader(self) -> None:
+        self.local(workspace="/shared/fleet",
+                   seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}})
+        with self.assertRaises(SystemExit):
+            WR.load_config(self.local_path, SVC.file_defaults())
+        settings = self.opencode()
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.assertFalse(settings["delivery_enabled"])
+
+    def opencode(self) -> WS.WakeSettings:
+        from simple_tools import opencode_wake as OW
+
+        settings = WS.WakeSettings(
+            "OPENCODE", OW.DEFAULTS, self.local_path, file_defaults=SVC.file_defaults()
+        )
+        settings.load()
+        return settings
+
+    def test_only_named_seat_changes_and_every_sibling_keeps_global_fallback(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            pinned_profile="/profiles/codex",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        local = WS.read_local(self.local_path, SVC.file_defaults())
+        for seat, builder in SVC.BUILDERS.items():
+            with self.subTest(seat=seat):
+                defaults = importlib.import_module(builder.module).DEFAULTS
+                expected, _ = WS.narrowed(
+                    defaults,
+                    {"workspace": "/shared/fleet", "pinned_profile": "/profiles/codex"},
+                    seat,
+                )
+                actual, ignored = WS.narrowed(defaults, local, seat)
+                if seat == "OPENCODE":
+                    expected["workspace"] = "/native/opencode"
+                self.assertEqual(actual, expected)
+                self.assertEqual(ignored, [])
+
+    def test_per_seat_precedence_does_not_arm_delivery_or_change_caps(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            max_deliveries=2,
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.assertFalse(settings["delivery_enabled"])
+        self.assertEqual(settings["max_deliveries"], 2)
+
+    def test_removal_restores_global_fallback_and_other_seat_is_ignored(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.local(workspace="/shared/fleet", seat_host_facts={"MM": {"workspace": "/native/mm"}})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings["workspace"], "/shared/fleet")
+
+    def test_short_lived_reader_uses_the_same_precedence(self) -> None:
+        from simple_tools import opencode_wake as OW
+
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        self.assertEqual(
+            WS.read_once("OPENCODE", OW.DEFAULTS, self.local_path)["workspace"], "/native/opencode"
+        )
+
+    def test_malformed_maps_and_nested_governed_settings_refuse_startup(self) -> None:
+        bad = [
+            None,
+            [],
+            "OPENCODE",
+            {"opencode": {"workspace": "/native"}},
+            {"OPENCODE": []},
+            {"OPENCODE": {"workspace": None}},
+            {"OPENCODE": {"workspace": ""}},
+            {"OPENCODE": {"workspace": "  "}},
+            {"OPENCODE": {"workspace": 1}},
+            {"OPENCODE": {"workspace": {}}},
+            {"OPENCODE": {"unknown": "value"}},
+            {"OPENCODE": {"delivery_enabled": True}},
+            {"OPENCODE": {"max_deliveries": 64}},
+            {"OPENCODE": {"mac_ssh": "another-host"}},
+        ]
+        for value in bad:
+            with self.subTest(value=value):
+                self.local(seat_host_facts=value)
+                with self.assertRaises(SystemExit):
+                    self.opencode()
+
+    def test_bad_refresh_keeps_last_good_facts_even_when_fetch_succeeds(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.local(workspace="/shared/fleet", seat_host_facts={"OPENCODE": {"workspace": ""}})
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+
+    def test_outage_applies_valid_fact_change_and_keeps_it_on_bad_file(self) -> None:
+        self.local(workspace="/shared/fleet")
+        settings = self.opencode()
+        self.fake.set(mode="fail")
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.local(seat_host_facts={"OPENCODE": {"workspace": None}})
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+
+    def test_absent_platform_module_does_not_refuse_named_fact(self) -> None:
+        self.local(seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}})
+        with mock.patch.object(SVC.importlib, "import_module", side_effect=ImportError):
+            defaults = SVC.file_defaults()
+        local = WS.read_local(self.local_path, defaults)
+        self.assertEqual(local[WS.SEAT_HOST_FACTS]["OPENCODE"]["workspace"], "/native/opencode")
+
 class Service(Settings):
     def test_a_read_touches_memory_only(self) -> None:
         settings = self.loaded(**ARMED)
