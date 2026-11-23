@@ -548,6 +548,10 @@ CLOSING_STATUSES = ("completed", "deployed", "wontfix", "duplicate", "canceled")
 CLOSING_REMOVES = ("needs-owner", "ask-capture")
 # --desc-file, --fix-file and --text-file read at most this many bytes of UTF-8.
 INPUT_MAX_BYTES = 64 * 1024
+# `api --vars` reads at most this many:  GraphQL variables carry a whole document body by design
+# (this log's own body passed 70,000 characters), and the 64 KB number elsewhere is the hosted
+# front's arguments bound, which the direct route - Linear's own API - does not impose.
+VAR_MAX_BYTES = 256 * 1024
 # Flags and the verb only the Linear backend has;  BOARD_BACKEND=mac-collab refuses them.
 LINEAR_ONLY_FLAGS = ("--desc-file", "--fix-file", "--text-file", "--label", "--team", "--comment")
 LINEAR_ONLY_VERBS = ("label", "commands", "run", "api", "mcp")
@@ -1447,17 +1451,17 @@ def read_private_file(path: str, flag: str) -> bytes:
         os.close(fd)
 
 
-def read_text_input(src: str, flag: str) -> str:
+def read_text_input(src: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> str:
     """Text for --desc-file, --fix-file or --text-file:  the private file at `src`, or standard input
-    for `-`.  At most INPUT_MAX_BYTES of strict UTF-8, else exit 2."""
+    for `-`.  At most max_bytes of strict UTF-8, else exit 2."""
     if src == "-":
-        data = sys.stdin.buffer.read(INPUT_MAX_BYTES + 1)
+        data = sys.stdin.buffer.read(max_bytes + 1)
         where = "standard input"
     else:
         data = read_private_file(src, flag)
         where = src
-    if len(data) > INPUT_MAX_BYTES:
-        die(f"{flag} {where}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+    if len(data) > max_bytes:
+        die(f"{flag} {where}: more than {max_bytes // 1024} KB", EXIT_USAGE)
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -2170,6 +2174,7 @@ class Linear:
         deadline = time.time() + self.max_wait
         delay = self.base_delay
         token = self.auth.get()
+        self.last_token = token  # in-process only:  what a response scrub treats as known
         reminted = False
         for _ in range(12):
             try:
@@ -4734,10 +4739,10 @@ def coerce_arg(entry: dict, key: str, raw: str):
 # ----------------------------------------------------------------- inputs from flags
 
 
-def read_flag_text(raw: str, flag: str) -> str:
-    """A flag value, or `@PATH` (a regular file of at most 64 KB of UTF-8), or `-` for standard input."""
+def read_flag_text(raw: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> str:
+    """A flag value, or `@PATH` (a regular file of at most max_bytes of UTF-8), or `-` for standard input."""
     if raw == "-":
-        return read_text_input("-", flag)
+        return read_text_input("-", flag, max_bytes)
     if not raw.startswith("@"):
         return raw
     path = raw[1:]
@@ -4747,20 +4752,20 @@ def read_flag_text(raw: str, flag: str) -> str:
         die(f"{flag} {path}: cannot open it ({e.strerror or type(e).__name__})", EXIT_USAGE)
     if not stat.S_ISREG(st.st_mode):
         die(f"{flag} {path}: not a regular file", EXIT_USAGE)
-    if st.st_size > INPUT_MAX_BYTES:
-        die(f"{flag} {path}: more than {INPUT_MAX_BYTES // 1024} KB", EXIT_USAGE)
+    if st.st_size > max_bytes:
+        die(f"{flag} {path}: more than {max_bytes // 1024} KB", EXIT_USAGE)
     try:
-        return Path(path).read_bytes()[: INPUT_MAX_BYTES + 1].decode("utf-8")
+        return Path(path).read_bytes()[: max_bytes + 1].decode("utf-8")
     except UnicodeDecodeError:
         die(f"{flag} {path}: not valid UTF-8", EXIT_USAGE)
     except OSError as e:
         die(f"{flag} {path}: cannot read it ({type(e).__name__})", EXIT_USAGE)
 
 
-def read_flag_json(raw: str | None, flag: str, default=None):
+def read_flag_json(raw: str | None, flag: str, default=None, max_bytes: int = INPUT_MAX_BYTES):
     if raw is None:
         return default
-    text = read_flag_text(raw, flag)
+    text = read_flag_text(raw, flag, max_bytes)
     try:
         return json.loads(text)
     except ValueError:
@@ -5510,6 +5515,7 @@ def prepare_run(a) -> None:
     except ParityError as e:
         parity_fail(e)
     a.entry, a.prepared, a.max_chars = entry, prepared, args.get("max_chars", 24000)
+    a.call_args = args
 
 
 def prepare_api(a) -> None:
@@ -5520,7 +5526,7 @@ def prepare_api(a) -> None:
             die("--limit takes 1 to 100 and --offset 0 to 100000", EXIT_USAGE)
         return
     doc = read_flag_text(a.document, "DOCUMENT")
-    variables = read_flag_json(a.vars, "--vars", {})
+    variables = read_flag_json(a.vars, "--vars", {}, max_bytes=VAR_MAX_BYTES)
     if not 1000 <= a.max_chars <= 64000:
         die("--max-chars takes 1000 to 64000", EXIT_USAGE)
     if a.api_cmd == "mutation" and not (a.idempotency_key and IDEM_KEY_RE.match(a.idempotency_key)):
@@ -5617,6 +5623,32 @@ def print_api_result(a, data, duplicate: bool, operation: str, name: str, errors
     return 0
 
 
+def slice_document_content(data: dict, args: dict, known: str) -> dict:
+    """The hosted sliceDocumentContent (linear-named.js) for linear_get_document:  clean the whole
+    content before slicing, the same way an unsliced read is cleaned -- a secret that straddles a
+    slice boundary would otherwise pass the scan in both halves -- then return the requested slice
+    with content_total and content_offset so the caller can walk the document across calls."""
+    doc = data.get("document") if isinstance(data, dict) else None
+    if not isinstance(doc, dict) or not isinstance(doc.get("content"), str):
+        return data
+    offset = args.get("content_offset")
+    length = args.get("content_length")
+    if offset is None and length is None:
+        return data
+    offset = 0 if offset is None else offset
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        die("content_offset must be a non-negative integer.", EXIT_USAGE)
+    if length is not None and (
+        not isinstance(length, int) or isinstance(length, bool) or not 1 <= length <= 1000000
+    ):
+        die("content_length must be an integer between 1 and 1,000,000.", EXIT_USAGE)
+    scrubbed = doc["content"].replace(known, "[redacted]") if known else doc["content"]
+    full = "[redacted secret]" if _remote_scan_arguments(_remote_scanner(), {"content": scrubbed}, "") is not None else scrubbed
+    slice_at = offset + length if length is not None else None
+    doc = {**doc, "content": full[offset:slice_at], "content_total": len(full), "content_offset": offset}
+    return {**data, "document": doc}
+
+
 def cmd_run(L: "Linear", auth: "Auth", a, seat: str) -> int:
     entry, prepared = a.entry, a.prepared
     if entry["kind"] == "write":
@@ -5624,6 +5656,8 @@ def cmd_run(L: "Linear", auth: "Auth", a, seat: str) -> int:
         output_limited(data, a.max_chars, write=True)
         return print_api_result(a, data, duplicate, "mutation", entry["name"])
     data = clean_data(L.call(prepared["document"], prepared["variables"], allow_partial=True))
+    if entry["name"] == "linear_get_document":
+        data = slice_document_content(data, getattr(a, "call_args", {}) or {}, getattr(L, "last_token", ""))
     output_limited(data, a.max_chars)
     return print_api_result(a, data, False, "query", entry["name"], L.partial_errors)
 
