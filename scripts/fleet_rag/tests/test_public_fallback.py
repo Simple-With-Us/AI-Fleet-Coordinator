@@ -547,13 +547,11 @@ class PublicCredentialsInfisicalFallbackTests(unittest.TestCase):
         self.fs.stop()
         self.env.stop()
 
-    def test_the_store_is_read_first_and_the_environment_is_a_second_source(self):
-        # The store is the authority:  every name is looked up there first,  in one batch.
-        with (
-            mock.patch.dict(
-                os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
-            ),
-            mock.patch.object(core, "fleet_ops_bound", return_value=False),
+    def test_the_store_is_the_only_source_and_the_environment_is_never_one(self):
+        # The store is the authority:  every name is looked up there,  in one batch,  and a
+        # hand-set environment value is never a source for any of them.
+        with mock.patch.dict(
+            os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
         ):
             resolved = public_fallback._resolve_public_env()
         self.fleet_ops_many.assert_called_once_with(
@@ -563,19 +561,11 @@ class PublicCredentialsInfisicalFallbackTests(unittest.TestCase):
                 public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
             ]
         )
-        # Without this reader's own grant in place,  the environment is not a source at all.
+        # The grant holds nothing here,  so every name stays empty:  the environment value
+        # never stands in for the reviewed grant.
         self.assertEqual(resolved["RECALL_API_TOKEN"], "")
         self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "")
-        # With the grant in place,  a copy of the consumer's own value may be used.
-        with (
-            mock.patch.dict(
-                os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
-            ),
-            mock.patch.object(core, "fleet_ops_bound", return_value=True),
-        ):
-            resolved = public_fallback._resolve_public_env()
-        self.assertEqual(resolved["RECALL_API_TOKEN"], "from-env")
-        self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "id-env")
+        self.assertEqual(resolved["CF_ACCESS_CLIENT_SECRET"], "")
 
     def test_falls_back_to_infisical_when_env_is_blank(self):
         values = {
@@ -608,11 +598,22 @@ class CallPublicTests(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, PUBLIC_ENV, clear=False)
         self.env.start()
-        # Isolate from whatever Infisical holds on the machine running the suite -- these tests
-        # control credentials via os.environ only.
-        self.no_files = mock.patch.object(core, "fleet_ops_secret", return_value=None)
+        # Infisical is the only source for a value:  the credentials come from this reader's
+        # own scoped grant,  never from the environment.  Isolate from whatever Infisical holds
+        # on the machine running the suite,  and answer with these fixtures.
+        self.values = {
+            public_fallback.PUBLIC_INFISICAL_NAMES[key]: value
+            for key, value in PUBLIC_ENV.items()
+        }
+        self.no_files = mock.patch.object(
+            core, "fleet_ops_secret", side_effect=lambda name: self.values.get(name)
+        )
         self.no_files.start()
-        self.no_reader = mock.patch.object(core, "fleet_ops_many", return_value={})
+        self.no_reader = mock.patch.object(
+            core,
+            "fleet_ops_many",
+            side_effect=lambda names: {name: self.values.get(name, "") for name in names},
+        )
         self.no_reader.start()
 
     def tearDown(self):
@@ -820,9 +821,11 @@ class CallMutationRoutingTests(unittest.TestCase):
 
     def test_explicit_local_owner_mutation_with_owner_token_runs_local(self):
         os.environ[public_fallback.LOCAL_MUTATION_ENV] = "1"
-        os.environ["RECALL_OWNER_TOKEN"] = "owner-token"
         local = mock.Mock(return_value={"status": "completed"})
-        res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
+        # The owner token resolves from Infisical through this reader's own grant;  the
+        # environment is not a source for it.
+        with mock.patch.object(core, "fleet_ops_secret", return_value="owner-token"):
+            res = public_fallback.call_mutation("recall_retract", self.kwargs("OWNER"), local)
         self.assertEqual(res, {"status": "completed"})
         local.assert_called_once()
 

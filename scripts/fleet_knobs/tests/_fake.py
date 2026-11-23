@@ -67,15 +67,18 @@ def store_token(home: pathlib.Path, account: str, token: str) -> pathlib.Path:
     directory, in the consumer's own home.  The shared client reads it without a metadata call,
     so a test never has to name a grant it is not testing.
     """
-    directory = pathlib.Path(home) / ".config" / "infisical" / "tokens"
-    directory.mkdir(parents=True, exist_ok=True)
     for parent in (
         pathlib.Path(home) / ".config",
         pathlib.Path(home) / ".config" / "infisical",
-        directory,
+        pathlib.Path(home) / ".config" / "infisical" / "tokens",
     ):
-        parent.mkdir(parents=True, exist_ok=True)
+        # A symlinked directory would send the token to another location, so it is
+        # refused before anything is created,  and every directory is private.
+        if parent.is_symlink():
+            raise ValueError("refusing symlink: %s" % parent)
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         parent.chmod(0o700)
+    directory = pathlib.Path(home) / ".config" / "infisical" / "tokens"
     path = directory / (account + ".token")
     path.write_text(token, encoding="utf-8")
     path.chmod(0o600)

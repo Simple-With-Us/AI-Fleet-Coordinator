@@ -64,6 +64,7 @@ FLEET_OPS_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN"
 # the narrow grant.
 TOKEN_ACCOUNTS = {
     "/": "install-seat-key-ro",
+    "/zulip": "install-seat-key-zulip-ro",
 }
 
 
@@ -387,24 +388,30 @@ def infisical_pair(
         token_name = FLEET_OPS_TOKEN_ENV
     else:
         fail("unsupported Infisical project")
-    token = os.environ.get(token_name, "").strip()
-    if (
-        not token.startswith("st.")
-        or not 20 <= len(token) <= 2048
-        or any(c.isspace() for c in token)
-    ):
-        fail(f"{token_name} is missing or is not a valid service token")
+    account = TOKEN_ACCOUNTS.get(INFISICAL_PATH)
+    if not account:
+        fail(f"no scoped token covers {INFISICAL_PATH}")
     env = {
         key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS
     }
     env[scoped_secrets.ENV_API] = INFISICAL_API + "/api"
     env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
-    token_binding = (
-        scoped_secrets.COORDINATOR_READ_TOKEN_ENV_NAME
-        if project == INFISICAL_PROJECT
-        else scoped_secrets.ENV_TOKEN
-    )
-    env[token_binding] = token
+    home = os.environ.get("HOME", "").strip()
+    try:
+        # The store is the authority:  this consumer's own account token is read from the
+        # host's approved store first,  and a bound copy is used only when the token's own
+        # grant metadata proves it is this consumer's narrow grant.
+        token, _source = scoped_secrets.consumer_binding(
+            account,
+            INFISICAL_PATH,
+            env,
+            project,
+            env_name=token_name,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - the reason names the account and the refusal
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        fail(f"the {account} scoped token could not be resolved ({detail})")
     try:
         found = scoped_secrets.fetch_project(
             project, INFISICAL_PATH, env, token=token, names=(email_name, key_name)

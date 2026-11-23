@@ -348,13 +348,26 @@ def _own_token(client, folder, project):
     return token
 
 
-def _fleet_secret(name: str) -> str:
-    """One named read, retaining the member-only /zulip-to-root retry."""
+def _fleet_secret(name: str, *, required: bool = True) -> str:
+    """One named read, retaining the member-only /zulip-to-root retry.
+
+    Every folder in the retry gets its turn:  a refusal on one folder says that folder has no
+    grant on this host,  so the next folder still answers.  When no folder answers and the name
+    is required,  the refusal names every account the operator has to provision;  an optional
+    name is simply absent and the caller's documented default applies.
+    """
     folders = ("/zulip_operator",) if name.startswith("ZULIP_OPERATOR_") else ("/zulip", "/")
+    refusals = []
     for folder in folders:
-        value = _read_infisical_names((name,), folder).get(name, "").strip()
+        try:
+            value = _read_infisical_names((name,), folder).get(name, "").strip()
+        except BindingRefused as exc:
+            refusals.append(str(exc))
+            continue
         if value:
             return value
+    if refusals and required:
+        raise BindingRefused("; ".join(refusals))
     return ""
 
 
@@ -371,10 +384,9 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
 
 def _credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
     if admin:
-        email, key, site = (
-            _fleet_secret(f"ZULIP_OPERATOR_{'API_KEY' if part == 'KEY' else part}")
-            for part in ("EMAIL", "KEY", "SITE")
-        )
+        email = _fleet_secret("ZULIP_OPERATOR_EMAIL")
+        key = _fleet_secret("ZULIP_OPERATOR_API_KEY")
+        site = _fleet_secret("ZULIP_OPERATOR_SITE", required=False)
         if not (email and key):
             sys.exit(
                 "no ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY in Infisical Fleet-OPS "
@@ -389,9 +401,9 @@ def _credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, st
                 "no verified seat:  set AGENT_SEAT (or pass --rc / Zulip env) so this run uses its own credential"
             )
         bot = seat.upper().replace("-", "_")
-        email, key, site = (
-            _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
-        )
+        email = _fleet_secret(f"{bot}_ZULIP_EMAIL")
+        key = _fleet_secret(f"{bot}_ZULIP_KEY")
+        site = _fleet_secret(f"{bot}_ZULIP_SITE", required=False)
         if not (email and key):
             sys.exit(
                 f"no {bot}_ZULIP_EMAIL / {bot}_ZULIP_KEY in Infisical Fleet-OPS (and no --rc or env)"

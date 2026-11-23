@@ -328,6 +328,39 @@ class CredentialTests(unittest.TestCase):
                 all("secretPath=%2Fzulip&" in path for path in api.requests if "/raw/" in path)
             )
 
+    def test_an_optional_secret_keeps_its_default_when_the_retry_grant_is_absent(self):
+        """A retry folder with no grant on this host is not fatal:  the value is absent.
+
+        The member grant is provisioned and carries the seat's email and key,  and the
+        optional site secret is not in it.  The retry folder has no grant here,  so the
+        site falls back to the documented default instead of the run ending.
+        """
+        from fleet_knobs.tests._fake import ScopedReadAPI
+
+        values = {
+            "CODEX_ZULIP_EMAIL": "member@example.test",
+            "CODEX_ZULIP_KEY": "public fixture",
+        }
+        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip") as api:
+            with self.real_reader(api, {L.TOKEN_ACCOUNTS["/zulip"]: api.token}) as folders:
+                self.assertEqual(
+                    L.credentials(None),
+                    (values["CODEX_ZULIP_EMAIL"], values["CODEX_ZULIP_KEY"], L.REALM),
+                )
+            # The retry folder is refused at its own binding,  so it is never read.
+            self.assertEqual(folders, ["/zulip", "/zulip", "/zulip"])
+
+    def test_a_missing_member_grant_is_fatal_and_names_the_account(self):
+        """The first folder's grant is the one the consumer reads under:  it is required."""
+        from fleet_knobs.tests._fake import ScopedReadAPI
+
+        with ScopedReadAPI({}, project=str(uuid.uuid4()), path="/zulip") as api:
+            with self.real_reader(api, {}) as folders:
+                with self.assertRaises(SystemExit) as caught:
+                    L.credentials(None)
+                self.assertIn(L.TOKEN_ACCOUNTS["/zulip"], str(caught.exception))
+                self.assertNotIn("public fixture", str(caught.exception))
+
     def test_member_root_binding_retries_with_the_same_real_reader(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
 

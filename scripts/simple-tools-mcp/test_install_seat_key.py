@@ -28,6 +28,9 @@ class ScopedSeatKeyTests(unittest.TestCase):
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
                     "expiresAt": "2099-01-01T00:00:00Z",
+                    # The token's own name is this consumer's account,  and a bound
+                    # copy is used only when it proves that.
+                    "name": seat_key.TOKEN_ACCOUNTS["/zulip"],
                 }
             name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
             value = {"EMAIL": "seat@example.test", "KEY": "synthetic-zulip-key"}[name]
@@ -50,11 +53,13 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 seat_key.infisical_pair("EMAIL", "KEY"),
                 ("seat@example.test", "synthetic-zulip-key"),
             )
+        # The binding proves the grant,  and the read checks it again.
         self.assertEqual(calls[0][0], "/v2/service-token")
-        self.assertTrue(calls[1][0].startswith("/v3/secrets/raw/EMAIL?"))
-        self.assertTrue(calls[2][0].startswith("/v3/secrets/raw/KEY?"))
+        self.assertEqual(calls[1][0], "/v2/service-token")
+        self.assertTrue(calls[2][0].startswith("/v3/secrets/raw/EMAIL?"))
+        self.assertTrue(calls[3][0].startswith("/v3/secrets/raw/KEY?"))
         self.assertTrue(all(call[1] == token for call in calls))
-        self.assertEqual(calls[1][2][seat_key.scoped_secrets.ENV_READ_PATHS], "/zulip")
+        self.assertEqual(calls[2][2][seat_key.scoped_secrets.ENV_READ_PATHS], "/zulip")
 
     def test_wrong_metadata_stops_before_secret_read(self):
         calls = []

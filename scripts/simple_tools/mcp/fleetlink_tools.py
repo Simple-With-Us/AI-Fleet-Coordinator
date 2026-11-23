@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
@@ -70,6 +71,9 @@ INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (
 READER_ACCOUNT = "fleetlink-ro"
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
+# The reader's own resolved grant, held for the same lifetime as the token cache,  so one
+# credential resolution serves both the read and the environment check.
+_binding_cache: dict[tuple[str, str], tuple[float, str]] = {}
 FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
 KEY_ABSENT_EXIT = 3  # the shared reader's definite missing-key outcome
 TIMEOUT_S = 120.0
@@ -189,8 +193,6 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
 
     A clean miss is cached; a timeout or any other failure is not.  Caches are partitioned by project and
     bootstrap binding, so neither a credential rotation nor another consumer can reuse the held value."""
-    import time
-
     from .. import zulip as Z
 
     if not Z.infisical_enabled(env):
@@ -240,7 +242,15 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
     grant metadata proves it is this reader's narrow grant:  the workspace is the project,  the permissions are
     exactly read,  the granted folder is exactly this one,  and the token's own name is this account.  A general
     binding scoped to "/" or to several folders fails that check,  so it can no longer serve the reader.
+
+    The resolved grant is held for the token cache's own lifetime,  so a miss does not pay the
+    provider's metadata call twice:  the read and the environment check share one answer.
     """
+    key = (project, str(home))
+    now = time.monotonic()
+    held = _binding_cache.get(key)
+    if held is not None and now - held[0] < TOKEN_CACHE_TTL:
+        return held[1]
     try:
         token, _source = FI.consumer_binding(
             READER_ACCOUNT,
@@ -252,6 +262,8 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
         )
     except (FI.SecretsError, OSError):
         return None
+    if token:
+        _binding_cache[key] = (now, token)
     return token
 
 

@@ -361,28 +361,6 @@ def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
     return {key: value for key, value in got.items() if isinstance(value, str) and value}
 
 
-def fleet_ops_bound() -> bool:
-    """True when this reader's own scoped service token is in its own store.
-
-    The store is the authority for the token;  this says only that the consumer's own grant is in
-    place,  never what it holds and never its value.
-    """
-    source = {
-        key: value for key in FLEET_OPS_ENV_NAMES if (value := os.environ.get(key)) is not None
-    }
-    try:
-        import fleet_infisical as secrets
-    except ImportError:
-        return False
-    try:
-        token, _status = secrets.token_from_store(
-            FLEET_OPS_TOKEN_ACCOUNT, source, secrets.home_dir(source)
-        )
-    except Exception:  # noqa: BLE001 - a store that cannot answer is not a grant in place
-        return False
-    return bool(token)
-
-
 def fleet_ops_secret(name: str) -> str | None:
     """One optional value through the Fleet-OPS root reader, or None."""
     if not name:

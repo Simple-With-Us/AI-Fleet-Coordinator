@@ -418,9 +418,9 @@ def public_credentials() -> dict[str, str] | None:
 def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, str]:
     """Resolve the names in one batch; absent values remain empty for diagnostics.
 
-    The store is first:  the names come from Infisical through this reader's own scoped grant,  and
-    the environment is never a first source.  An environment value is a second source only when
-    that grant is in place,  so a hand-set copy never stands in for the reviewed grant.
+    Infisical is the only source:  the names come from this reader's own scoped grant,  and the
+    environment is never a source for a value,  so a hand-set copy cannot stand in for the
+    reviewed grant.  A name the grant does not hold stays empty and the caller says which one.
 
     The owner token is requested only by an OWNER mutation, never by an ordinary call.
     """
@@ -428,20 +428,12 @@ def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, st
     found = core.fleet_ops_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in keys])
     for key in keys:
         vals[key] = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
-    missing = [key for key in keys if not vals[key]]
-    if missing and core.fleet_ops_bound():
-        for key in missing:
-            vals[key] = (os.environ.get(key) or "").strip()
     return vals
 
 
 def _resolve_public_env_key(key: str) -> str:
-    """One name:  from Infisical through this reader's own scoped grant,  and from the environment
-    only when that grant is in place."""
-    value = (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
-    if not value and core.fleet_ops_bound():
-        value = (os.environ.get(key) or "").strip()
-    return value
+    """One name:  from Infisical through this reader's own scoped grant,  and from nowhere else."""
+    return (core.fleet_ops_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
 
 
 def _public_headers(

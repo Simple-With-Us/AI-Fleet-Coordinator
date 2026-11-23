@@ -729,13 +729,26 @@ class PublicMutationAuthTests(RecallBase):
             "CF_ACCESS_CLIENT_ID": "cf-id",
             "CF_ACCESS_CLIENT_SECRET": "cf-secret",
         }
+        # Infisical is the only source for a value:  the reader's own grant holds them.
+        values = {
+            public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_API_TOKEN"]: "shared",
+            public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_OWNER_TOKEN"]: "owner",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "cf-id",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]: "cf-secret",
+        }
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch.object(public_fallback.core, "http_json", http),
-            # The store is the authority:  an environment value is a second source only when
-            # this reader's own grant is in place.
-            mock.patch.object(public_fallback.core, "fleet_ops_many", return_value={}),
-            mock.patch.object(public_fallback.core, "fleet_ops_bound", return_value=True),
+            mock.patch.object(
+                public_fallback.core,
+                "fleet_ops_many",
+                side_effect=lambda names: {name: values.get(name, "") for name in names},
+            ),
+            mock.patch.object(
+                public_fallback.core,
+                "fleet_ops_secret",
+                side_effect=lambda name: values.get(name),
+            ),
         ):
             public_fallback.call_public("recall_retract", {
                 "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": "obsolete", "seat": "OWNER"})
@@ -745,7 +758,26 @@ class PublicMutationAuthTests(RecallBase):
 
     def test_owner_mutation_without_owner_bearer_fails_before_http(self):
         env = {"RECALL_API_TOKEN": "shared", "CF_ACCESS_CLIENT_ID": "cf-id", "CF_ACCESS_CLIENT_SECRET": "cf-secret"}
-        with mock.patch.dict(os.environ, env, clear=True):
+        # The reader's own grant holds no owner token,  so the mutation is refused before
+        # any request,  and the environment never supplies one.
+        values = {
+            public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_API_TOKEN"]: "shared",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "cf-id",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]: "cf-secret",
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(
+                public_fallback.core,
+                "fleet_ops_many",
+                side_effect=lambda names: {name: values.get(name, "") for name in names},
+            ),
+            mock.patch.object(
+                public_fallback.core,
+                "fleet_ops_secret",
+                side_effect=lambda name: values.get(name),
+            ),
+        ):
             with self.assertRaisesRegex(FleetRagError, "RECALL_OWNER_TOKEN"):
                 public_fallback.call_public("recall_correct", {
                     "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "text": GOOD,
