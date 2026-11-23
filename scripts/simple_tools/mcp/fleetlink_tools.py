@@ -261,7 +261,8 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
     # A long-lived process prunes what expired and caps what is left,  so a rotation
     # never grows the cache without bound.
     for stale in [k for k, (at, _token) in _binding_cache.items() if now - at >= TOKEN_CACHE_TTL]:
-        del _binding_cache[stale]
+        # A concurrent prune can take the same entry,  so nothing raises here.
+        _binding_cache.pop(stale, None)
     held = _binding_cache.get(key)
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
         return held[1]
@@ -278,8 +279,10 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
         return None
     if token:
         if key not in _binding_cache and len(_binding_cache) >= BINDING_CACHE_MAX:
-            oldest = min(_binding_cache.items(), key=lambda item: item[1][0])[0]
-            del _binding_cache[oldest]
+            if _binding_cache:
+                oldest = min(_binding_cache.items(), key=lambda item: item[1][0])[0]
+                # A concurrent prune can take the same entry,  so nothing raises here.
+                _binding_cache.pop(oldest, None)
         _binding_cache[key] = (now, token)
     return token
 
