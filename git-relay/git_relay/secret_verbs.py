@@ -165,7 +165,9 @@ def _make(scope, kind):
 
         environment = base(self, repo, args, wv.Refused)
         data = self._get(f"{path(self, repo, environment)}/public-key")
-        key_id, public = (data.get("key_id"), data.get("key")) if isinstance(data, dict) else (None, None)
+        key_id, public = (
+            (data.get("key_id"), data.get("key")) if isinstance(data, dict) else (None, None)
+        )
         if (
             not isinstance(key_id, str)
             or not _KEY_ID.fullmatch(key_id)
@@ -256,12 +258,23 @@ def _make(scope, kind):
         )
         return {"completed": True, "name": name, "count": len(ids)}
 
-    return {"list": lst, "key": key, "put": put, "delete": delete, "repos": repos, "repos_set": repos_set}[kind]
+    return {
+        "list": lst,
+        "key": key,
+        "put": put,
+        "delete": delete,
+        "repos": repos,
+        "repos_set": repos_set,
+    }[kind]
 
 
 def _org_variable_name(args, refused):
     name = args.get("name")
-    if not isinstance(name, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", name) or name.startswith("GITHUB_"):
+    if (
+        not isinstance(name, str)
+        or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", name)
+        or name.startswith("GITHUB_")
+    ):
         raise refused("invalid variable name")
     return name
 
@@ -278,10 +291,16 @@ class SecretVerbsMixin:
         org = repo.split("/")[0]
         data = self._get(f"/orgs/{org}/actions/variables?per_page={limit}&page={page}")
         rows = data.get("variables") if isinstance(data, dict) else None
-        if not isinstance(rows, list) or type(data.get("total_count")) is not int or len(rows) > limit:
+        if (
+            not isinstance(rows, list)
+            or type(data.get("total_count")) is not int
+            or len(rows) > limit
+        ):
             raise RelayGitHubError(502, "organization variables unverifiable")
         return {
-            "variables": [self._variable_receipt(r) | {"visibility": r.get("visibility")} for r in rows],
+            "variables": [
+                self._variable_receipt(r) | {"visibility": r.get("visibility")} for r in rows
+            ],
             "total_count": data["total_count"],
             "page": page,
         }
@@ -303,15 +322,22 @@ class SecretVerbsMixin:
         org = repo.split("/")[0]
         try:
             self.client._call(
-                "PATCH", f"/orgs/{org}/actions/variables/{name}", body, bearer=self.bearer,
+                "PATCH",
+                f"/orgs/{org}/actions/variables/{name}",
+                body,
+                bearer=self.bearer,
                 expected_status=204,
             )
         except RelayGitHubError as exc:
             if exc.status != 404:
                 raise
             self.client._call(
-                "POST", f"/orgs/{org}/actions/variables", {"name": name, **body},
-                bearer=self.bearer, expected_status=201, allow_empty_object=True,
+                "POST",
+                f"/orgs/{org}/actions/variables",
+                {"name": name, **body},
+                bearer=self.bearer,
+                expected_status=201,
+                allow_empty_object=True,
             )
         return {"completed": True, "name": name}
 
@@ -323,8 +349,11 @@ class SecretVerbsMixin:
         org = repo.split("/")[0]
         try:
             self.client._call(
-                "DELETE", f"/orgs/{org}/actions/variables/{name}", None,
-                bearer=self.bearer, expected_status=204,
+                "DELETE",
+                f"/orgs/{org}/actions/variables/{name}",
+                None,
+                bearer=self.bearer,
+                expected_status=204,
             )
         except RelayGitHubError as exc:
             if exc.status != 404:
@@ -341,12 +370,18 @@ class SecretVerbsMixin:
         limit = wv._page(args)
         page = wv._int(args, "page", 1, 1000) if "page" in args else 1
         org = repo.split("/")[0]
-        data = self._get(f"/orgs/{org}/actions/variables/{name}/repositories?per_page={limit}&page={page}")
+        data = self._get(
+            f"/orgs/{org}/actions/variables/{name}/repositories?per_page={limit}&page={page}"
+        )
         rows = data.get("repositories") if isinstance(data, dict) else None
         if not isinstance(rows, list) or type(data.get("total_count")) is not int:
             raise RelayGitHubError(502, "variable repositories unverifiable")
         return {
-            "repositories": [{"id": r["id"], "full_name": r.get("full_name")} for r in rows[:limit] if isinstance(r, dict) and type(r.get("id")) is int],
+            "repositories": [
+                {"id": r["id"], "full_name": r.get("full_name")}
+                for r in rows[:limit]
+                if isinstance(r, dict) and type(r.get("id")) is int
+            ],
             "total_count": data["total_count"],
             "page": page,
         }
@@ -359,8 +394,11 @@ class SecretVerbsMixin:
         ids = _ids(args, wv.Refused)
         org = repo.split("/")[0]
         self.client._call(
-            "PUT", f"/orgs/{org}/actions/variables/{name}/repositories",
-            {"selected_repository_ids": ids}, bearer=self.bearer, expected_status=204,
+            "PUT",
+            f"/orgs/{org}/actions/variables/{name}/repositories",
+            {"selected_repository_ids": ids},
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "name": name, "count": len(ids)}
 
