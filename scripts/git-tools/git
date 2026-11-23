@@ -1744,7 +1744,10 @@ def cmd_secret_put(tools: dict, a, bearer: str, seat: str, deadline: float) -> i
     if a.scope.startswith("org_"):
         args["visibility"] = a.visibility
         if a.visibility == "selected":
-            args["selected_repository_ids"] = [int(x) for x in a.repo_ids.split(",") if x]
+            try:
+                args["selected_repository_ids"] = [int(x) for x in a.repo_ids.split(",") if x]
+            except ValueError:
+                die("--repo-ids must be comma separated integers;  nothing was sent", EXIT_USAGE)
     result = _tool_call(tools, f"gr_wf_secret_put_{a.scope}", args, bearer, seat, deadline)
     print(json.dumps({"stored": a.name, "scope": a.scope, "result": result.get("structured")}))
     return 0

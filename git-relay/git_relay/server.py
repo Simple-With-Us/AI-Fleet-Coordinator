@@ -73,6 +73,11 @@ FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
 # envelope allowance stays narrow and the verb owns the exact text bound.
 MAX_LARGE_TEXT_REQUEST_BYTES = 6 * 1024 * 1024
 LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_create"})
+# Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
+MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
+SECRET_PUT_REQUEST_ACTIONS = frozenset(
+    a for a in SeatPolicy.WORKFLOW_ACTIONS if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+)
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -533,6 +538,8 @@ class Relay:
                     )
                 elif action in LARGE_TEXT_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
+                elif action in SECRET_PUT_REQUEST_ACTIONS:
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_SECRET_PUT_REQUEST_BYTES])
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
@@ -1490,6 +1497,8 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False, service_read_on
                 if action in FILE_REQUEST_ACTIONS
                 else MAX_LARGE_TEXT_REQUEST_BYTES
                 if action in LARGE_TEXT_REQUEST_ACTIONS
+                else MAX_SECRET_PUT_REQUEST_BYTES
+                if action in SECRET_PUT_REQUEST_ACTIONS
                 else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:

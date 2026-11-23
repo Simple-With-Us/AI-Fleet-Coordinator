@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { WF_V1_ACTIONS, WF_V1_READ_ACTIONS, validWfV1Args, validWfV1Response, workflowInputLimit } from "../src/gr-workflow-v1.js";
 
-const repo = "Simple-With-Us/AI-Fleet-Coordinator";
+const repo = "Fixture-Org/fixture-repo";
 test("secret verbs are registered, sealed-only and names-only", () => {
   for (const a of ["wf_secret_put_org_actions", "wf_secrets_repo_dependabot", "wf_org_variable_set", "wf_secret_repos_set_org_codespaces"]) assert.ok(WF_V1_ACTIONS.includes(a), a);
   assert.ok(WF_V1_READ_ACTIONS.includes("wf_secrets_org_actions"));

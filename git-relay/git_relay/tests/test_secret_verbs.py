@@ -9,6 +9,7 @@ from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
 
 from .test_workflow_verbs import REPO, Client, Policy
 
+ORG = REPO.split("/")[0]
 SEALED = base64.b64encode(os.urandom(80)).decode()
 
 
@@ -41,7 +42,7 @@ class SecretVerbs(unittest.TestCase):
                 "selected_repository_ids": [1, 2],
             },
         )
-        self.assertEqual(c.calls[0][0:2], ("PUT", "/orgs/Simple-With-Us/actions/secrets/UM_TOKEN"))
+        self.assertEqual(c.calls[0][0:2], ("PUT", f"/orgs/{ORG}/actions/secrets/UM_TOKEN"))
         self.assertEqual(
             c.calls[0][2],
             {
@@ -115,6 +116,6 @@ class SecretVerbs(unittest.TestCase):
     def test_org_variable_upsert(self):
         c, out = run("wf_org_variable_set", {"repo": REPO, "name": "UM_MODE", "value": "on"})
         self.assertEqual(
-            c.calls[0][0:2], ("PATCH", "/orgs/Simple-With-Us/actions/variables/UM_MODE")
+            c.calls[0][0:2], ("PATCH", f"/orgs/{ORG}/actions/variables/UM_MODE")
         )
         self.assertEqual(out["name"], "UM_MODE")

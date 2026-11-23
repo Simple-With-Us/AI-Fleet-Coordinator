@@ -376,12 +376,11 @@ class SecretVerbsMixin:
         rows = data.get("repositories") if isinstance(data, dict) else None
         if not isinstance(rows, list) or type(data.get("total_count")) is not int:
             raise RelayGitHubError(502, "variable repositories unverifiable")
+        shown = rows[:limit]
+        if any(not isinstance(r, dict) or type(r.get("id")) is not int for r in shown):
+            raise RelayGitHubError(502, "variable repositories unverifiable")
         return {
-            "repositories": [
-                {"id": r["id"], "full_name": r.get("full_name")}
-                for r in rows[:limit]
-                if isinstance(r, dict) and type(r.get("id")) is int
-            ],
+            "repositories": [{"id": r["id"], "full_name": r.get("full_name")} for r in shown],
             "total_count": data["total_count"],
             "page": page,
         }
