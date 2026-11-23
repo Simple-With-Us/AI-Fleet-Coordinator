@@ -99,9 +99,11 @@ export function adminApiRequestRefusal(request, issuer) {
 export async function adminBearerAction(request, deps) {
   const refusal = adminApiRequestRefusal(request, deps.issuer);
   if (refusal) return json(refusal === "method" ? 405 : 403, { ok: false, error: "request_refused", reason: refusal });
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
   let raw;
   try { raw = await request.text(); } catch { return json(400, { ok: false, error: "bad_body" }); }
-  if (raw.length > MAX_BODY) return json(400, { ok: false, error: "bad_body" });
+  if (raw.length > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
   let body;
   try { body = JSON.parse(raw); } catch { return json(400, { ok: false, error: "bad_body" }); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return json(400, { ok: false, error: "bad_body" });
@@ -114,7 +116,7 @@ export async function adminBearerAction(request, deps) {
   const now = deps.now ?? Date.now();
 
   if (action === "revoke") {
-    await gate.gbBearerRevoke({ by: deps.email });
+    try { await gate.gbBearerRevoke({ by: deps.email }); } catch { return json(503, { ok: false, error: "revoke_unavailable" }); }
     deps.evict(identity);
     return json(200, { ok: true, action, identity });
   }
@@ -151,6 +153,7 @@ export async function adminBearerAction(request, deps) {
     ({ token } = await deps.newSeatBearer(identity));
     kind = "seat";
   }
+  if (!Number.isFinite(deps.ttlMs) || deps.ttlMs <= 0) return json(503, { ok: false, error: "ttl_unavailable" });
   const expiresAt = now + deps.ttlMs;
   const minted = await gate.gbBearerMintChecked({ mintId, hash: await deps.sha256Hex(token), by: deps.email, expiresAt, mcpAccept });
   if (!minted.minted && minted.reason === "completed") return json(200, { ok: true, action, identity, completed: true, tokenShown: false, result: minted.result ?? null });
