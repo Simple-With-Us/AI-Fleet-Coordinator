@@ -335,6 +335,18 @@ class ListenTests(Harness):
         self.assertIn("other session here", result.out)
         self.assertIn("(sibling)", result.out)
 
+    def test_transient_receipt_timeout_retries_pending_event_without_polling_past_it(self) -> None:
+        from simple_tools.state import State
+        original_record = State.record_posted
+        original_guard = State.stream_post_guard
+        def delayed(state, message_id):
+            time.sleep(0.3)
+            original_record(state, message_id)
+        def short_guard(state, **kwargs):
+            return original_guard(state, timeout=0.02)
+        with mock.patch.object(State, "record_posted", delayed), mock.patch.object(State, "stream_post_guard", short_guard):
+            self.test_own_posts_are_not_echoed_but_siblings_are()
+
     def test_delayed_untagged_post_receipt_is_not_mistaken_for_a_sibling(self) -> None:
         from unittest import mock
         from simple_tools.state import State
