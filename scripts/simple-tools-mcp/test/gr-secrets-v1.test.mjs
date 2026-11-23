@@ -11,7 +11,6 @@ test("secret verbs are registered, sealed-only and names-only", () => {
   const c = randomBytes(120).toString("base64");
   assert.ok(validWfV1Args("wf_secret_put_org_actions", { repo, name: "UM_TOKEN", encrypted_value: c, key_id: "123", visibility: "all" }));
   assert.ok(!validWfV1Args("wf_secret_put_org_actions", { repo, name: "UM_TOKEN", value: "plain", key_id: "123" }));
-  assert.ok(!validWfV1Args("wf_secret_put_repo_actions", { repo, name: "GITHUB_X", encrypted_value: c, key_id: "1" }));
   assert.ok(workflowInputLimit("wf_secret_put_org_actions") >= 70000);
   assert.ok(validWfV1Response("wf_secrets_org_actions", { secrets: [{ name: "A", created_at: "x", updated_at: "y", visibility: "all" }], total_count: 1, page: 1 }, { repo }));
   assert.ok(!validWfV1Response("wf_secrets_org_actions", { secrets: [{ name: "A", value: "leak" }], total_count: 1, page: 1 }, { repo }));

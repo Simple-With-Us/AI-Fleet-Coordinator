@@ -4,13 +4,14 @@ import {z} from 'zod';
 // names, visibility, timestamps and counts, never a value.
 const REPO = { type: 'string', pattern: '^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$', description: 'owner/name; org-level verbs use its owner as the organization' };
 const obj = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
-const NAME = { type: 'string', pattern: '^(?!(?:GITHUB|github)_)[A-Za-z_][A-Za-z0-9_]{0,99}$' };
+// No regex patterns here beyond REPO and the variable name: simple-git compiles only its reviewed pattern set.  The relay enforces the exact secret-name, environment, key and ciphertext shapes.
+const NAME = { type: 'string', minLength: 1, maxLength: 100 };
 const VNAME = { type: 'string', pattern: '^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$' };
-const ENV = { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$' };
+const ENV = { type: 'string', minLength: 1, maxLength: 100 };
 const PER_PAGE = { type: 'integer', minimum: 1, maximum: 50 };
 const PAGE = { type: 'integer', minimum: 1, maximum: 1000 };
-const CIPHER = { type: 'string', minLength: 60, maxLength: 70000, pattern: '^[A-Za-z0-9+/]+={0,2}$', description: 'base64 libsodium sealed-box ciphertext' };
-const KEY_ID = { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' };
+const CIPHER = { type: 'string', minLength: 60, maxLength: 70000, description: 'base64 libsodium sealed-box ciphertext' };
+const KEY_ID = { type: 'string', minLength: 1, maxLength: 64 };
 const VISIBILITY = { type: 'string', enum: ['all', 'private', 'selected'] };
 const IDS = { type: 'array', maxItems: 1000, items: { type: 'integer', minimum: 1, maximum: 9007199254740991 } };
 
