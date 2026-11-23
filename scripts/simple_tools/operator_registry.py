@@ -2470,9 +2470,7 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(
-                candidates, reports, cutoff, now=moment
-            )
+            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
@@ -3091,9 +3089,11 @@ def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -
     reconciles by id against the sheet, so idempotency does not depend on these rows.  When the
     trim deleted anything the file is vacuumed in the same call, so the store does not keep the
     freed pages.  Returns the deleted counts."""
-    cutoff = (datetime.now(UTC) - timedelta(seconds=max(1, int(keep_seconds)))).isoformat(
-        timespec="milliseconds"
-    ).replace("+00:00", "Z")
+    cutoff = (
+        (datetime.now(UTC) - timedelta(seconds=max(1, int(keep_seconds))))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     conn = sqlite3.connect(str(db_path))
     try:
         with conn:
