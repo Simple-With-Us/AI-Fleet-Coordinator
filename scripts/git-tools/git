@@ -1677,6 +1677,79 @@ def _read_args_json(a) -> dict:
     return args
 
 
+_SECRET_SCOPES = (
+    "org_actions", "org_dependabot", "org_codespaces", "repo_actions", "repo_dependabot", "repo_codespaces", "env_actions",
+)
+
+
+def _load_sodium():
+    """libsodium through ctypes;  the value is sealed on this machine and never leaves it in the clear."""
+    import ctypes
+    import ctypes.util
+
+    names = [ctypes.util.find_library("sodium"), "/opt/homebrew/lib/libsodium.dylib", "/usr/local/lib/libsodium.dylib",
+             "libsodium.so.26", "libsodium.so.23", "libsodium.so"]
+    for name in names:
+        if not name:
+            continue
+        try:
+            lib = ctypes.CDLL(name)
+        except OSError:
+            continue
+        if lib.sodium_init() < 0:
+            continue
+        return lib
+    die("libsodium is not installed on this machine (macOS: brew install libsodium);  nothing was sent", EXIT_ERROR)
+
+
+def _seal(public_key_b64: str, value: bytes) -> str:
+    import base64
+    import ctypes
+
+    try:
+        pk = base64.b64decode(public_key_b64, validate=True)
+    except ValueError:
+        die("the server's public key is not valid base64;  nothing was sent", EXIT_ERROR)
+    if len(pk) != 32:
+        die("the server's public key is not 32 bytes;  nothing was sent", EXIT_ERROR)
+    lib = _load_sodium()
+    out = ctypes.create_string_buffer(len(value) + 48)
+    if lib.crypto_box_seal(out, value, ctypes.c_ulonglong(len(value)), pk) != 0:
+        die("sealing failed;  nothing was sent", EXIT_ERROR)
+    return base64.b64encode(out.raw).decode("ascii")
+
+
+def cmd_secret_put(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
+    """Seal a value locally and store it as a GitHub secret.  The value comes from a file or stdin only."""
+    if a.value_file == "-":
+        raw = sys.stdin.buffer.read()
+    else:
+        with open(a.value_file, "rb") as handle:
+            raw = handle.read()
+    if a.strip_newline and raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if not raw or len(raw) > 48 * 1024:
+        die("the value must be 1 byte to 48 KiB;  nothing was sent", EXIT_USAGE)
+    base = {"repo": a.repo}
+    if a.scope == "env_actions":
+        if not a.environment:
+            die("env_actions needs --environment", EXIT_USAGE)
+        base["environment"] = a.environment
+    key = _tool_call(tools, f"gr_wf_secret_key_{a.scope}", base, bearer, seat, deadline)
+    data = key.get("structured") or {}
+    if not isinstance(data, dict) or not data.get("key") or not data.get("key_id"):
+        die("the server did not return a public key;  nothing was sent", EXIT_ERROR)
+    args = {**base, "name": a.name, "encrypted_value": _seal(data["key"], raw), "key_id": data["key_id"]}
+    del raw
+    if a.scope.startswith("org_"):
+        args["visibility"] = a.visibility
+        if a.visibility == "selected":
+            args["selected_repository_ids"] = [int(x) for x in a.repo_ids.split(",") if x]
+    result = _tool_call(tools, f"gr_wf_secret_put_{a.scope}", args, bearer, seat, deadline)
+    print(json.dumps({"stored": a.name, "scope": a.scope, "result": result.get("structured")}))
+    return 0
+
+
 def cmd_call(
     tools: dict,
     a,
@@ -3630,6 +3703,19 @@ def build_parser() -> argparse.ArgumentParser:
     px.add_argument("-f", "--force", action="store_true", help=argparse.SUPPRESS)
     px.add_argument("--force-with-lease", nargs="?", const="", default=None, help=argparse.SUPPRESS)
     px.add_argument("--force-if-includes", action="store_true", help=argparse.SUPPRESS)
+    ps = sub.add_parser(
+        "secret-put",
+        help="seal a value on this machine and store it as a GitHub secret (org, repo, environment, Dependabot, Codespaces)",
+        allow_abbrev=False,
+    )
+    ps.add_argument("--scope", required=True, choices=_SECRET_SCOPES)
+    ps.add_argument("--repo", required=True, help="owner/name;  org scopes use its owner as the organization")
+    ps.add_argument("--name", required=True)
+    ps.add_argument("--value-file", required=True, metavar="FILE|-", help="the value comes from a file or stdin, never an argument")
+    ps.add_argument("--environment")
+    ps.add_argument("--visibility", default="private", choices=("all", "private", "selected"))
+    ps.add_argument("--repo-ids", default="", help="comma separated repository ids when visibility is selected")
+    ps.add_argument("--keep-newline", dest="strip_newline", action="store_false", help="keep one trailing newline")
     return p
 
 
@@ -3676,6 +3762,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "push":
         return cmd_push(tools, a, bearer, server_seat, overall_deadline)
+    if a.cmd == "secret-put":
+        return cmd_secret_put(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":
         return cmd_list(tools, a)
     if a.cmd == "show":

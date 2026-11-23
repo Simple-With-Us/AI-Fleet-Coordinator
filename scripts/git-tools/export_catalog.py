@@ -17,6 +17,25 @@ import sys
 # read tools.  Everything else the hosted server lists under gr_ is a write for transport purposes:  write
 # uncertainty wording, identity injection and no-retry are the conservative defaults.
 WF_V1_READ_ACTIONS = [
+    "wf_secrets_org_actions",
+    "wf_secret_key_org_actions",
+    "wf_secret_repos_org_actions",
+    "wf_secrets_org_dependabot",
+    "wf_secret_key_org_dependabot",
+    "wf_secret_repos_org_dependabot",
+    "wf_secrets_org_codespaces",
+    "wf_secret_key_org_codespaces",
+    "wf_secret_repos_org_codespaces",
+    "wf_secrets_repo_actions",
+    "wf_secret_key_repo_actions",
+    "wf_secrets_repo_dependabot",
+    "wf_secret_key_repo_dependabot",
+    "wf_secrets_repo_codespaces",
+    "wf_secret_key_repo_codespaces",
+    "wf_secrets_env_actions",
+    "wf_secret_key_env_actions",
+    "wf_org_variables",
+    "wf_org_variable_repos",
     "wf_installation_metadata",
     "wf_pr_commits_page",
     "wf_pr_review_get",
@@ -116,6 +135,13 @@ READ_TOOLS = frozenset(
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
 INPUT_LIMITS = {
+    "gr_wf_secret_put_org_actions": 98304,
+    "gr_wf_secret_put_org_dependabot": 98304,
+    "gr_wf_secret_put_org_codespaces": 98304,
+    "gr_wf_secret_put_repo_actions": 98304,
+    "gr_wf_secret_put_repo_dependabot": 98304,
+    "gr_wf_secret_put_repo_codespaces": 98304,
+    "gr_wf_secret_put_env_actions": 98304,
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
