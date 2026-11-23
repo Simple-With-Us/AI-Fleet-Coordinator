@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args,parseWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
-const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
+const sv=readFileSync(new URL('../../../git-relay/git_relay/secret_verbs.py',import.meta.url),'utf8');
+const scopes=[...sv.matchAll(/^    "((?:org|repo|env)_[a-z]+)": \(/gm)].map(m=>m[1]);
+const secretNames=scopes.flatMap(s=>['wf_secrets_','wf_secret_key_','wf_secret_put_','wf_secret_delete_',...(s.startsWith('org_')?['wf_secret_repos_','wf_secret_repos_set_']:[])].map(p=>p+s)).concat(['wf_org_variables','wf_org_variable_set','wf_org_variable_delete','wf_org_variable_repos','wf_org_variable_repos_set']);
+const secretOnly=action=>{
+  const env=action.endsWith('_env_actions')?['environment']:[], org=/_org_/.test(action);
+  const k=action.replace(/_(org|repo|env)_[a-z]+$/,'');
+  const table={wf_secrets:['repo',...env,'per_page','page'],wf_secret_key:['repo',...env],wf_secret_put:['repo',...env,'name','encrypted_value','key_id',...(org?['visibility','selected_repository_ids']:[])],wf_secret_delete:['repo',...env,'name'],wf_secret_repos:['repo','name','per_page','page'],wf_secret_repos_set:['repo','name','selected_repository_ids'],
+    wf_org_variables:['repo','per_page','page'],wf_org_variable_set:['repo','name','value','visibility','selected_repository_ids'],wf_org_variable_delete:['repo','name'],wf_org_variable_repos:['repo','name','per_page','page'],wf_org_variable_repos_set:['repo','name','selected_repository_ids']};
+  return (table[action]||table[k]||null)&&(table[action]||table[k]).slice().sort();
+};
+const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('from .secret_verbs')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]).concat(secretNames);
 const onlyOf=name=>{
   const body=py.split(/\n    def /).find(b=>b.startsWith(name+'('));
   const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
@@ -18,7 +28,7 @@ test('names equal the relay SPECS',()=>{
 test('argument sets equal the relay _only() sets',()=>{
   for(const t of WF_V1_TOOLS){
     const action=t.name.slice(3);
-    const want=['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)?['repo','run_id']:onlyOf(action);
+    const want=['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)?['repo','run_id']:(onlyOf(action)??secretOnly(action));
     assert.ok(want,action);
     assert.deepEqual(Object.keys(t.inputSchema.properties).sort(),want,action);
     assert.equal(t.inputSchema.additionalProperties,false);

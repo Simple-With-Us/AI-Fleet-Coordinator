@@ -1191,6 +1191,16 @@ class TestOutcomes(unittest.TestCase):
         m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
         self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
         worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        # The Worker spreads the generated secret reads (gr-secrets-v1.js SECRET_READ_ACTIONS) into the list.
+        worker |= {"wf_org_variables", "wf_org_variable_repos"}
+        for scope, org in (
+            ("org_actions", True), ("org_dependabot", True), ("org_codespaces", True),
+            ("repo_actions", False), ("repo_dependabot", False), ("repo_codespaces", False),
+            ("env_actions", False),
+        ):
+            worker |= {f"wf_secrets_{scope}", f"wf_secret_key_{scope}"}
+            if org:
+                worker.add(f"wf_secret_repos_{scope}")
         self.assertTrue(worker)
         self.assertEqual(
             set(git.WF_V1_READ_ACTIONS),
