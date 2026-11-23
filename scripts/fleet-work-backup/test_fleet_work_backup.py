@@ -3487,7 +3487,12 @@ class MiscCase(unittest.TestCase):
                 self.assertNotIn("B2_FLEET_WORK_BUCKET_NAME", calls[0])
                 self.assertEqual(len(calls), 1)
                 api.status = 503
-                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                # The provider is down,  so the binding cannot prove itself:  the refusal
+                # names the account the operator has to provision instead of the read
+                # answering nothing with no reason.
+                with self.assertRaises(fwb.BindingRefused) as caught:
+                    fwb.read_credentials(fwb.Config(home=Path("/")))
+                self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
                 with mock.patch.dict(os.environ, {n: "synced" for n in fwb.CRED_NAMES.values()}):
                     before = len(calls)
                     self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
@@ -3502,6 +3507,18 @@ class MiscCase(unittest.TestCase):
             fwb._own_token(client, fwb.CREDENTIAL_FOLDER, str(uuid.uuid4()))
         self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
         self.assertNotIn("synthetic", str(caught.exception))
+
+    def test_a_binding_refusal_reaches_the_caller_instead_of_an_empty_answer(self):
+        """The refusal names the account the operator has to provision,  so it is never swallowed."""
+        client = mock.Mock()
+        client.consumer_binding.side_effect = OSError("the store could not answer")
+        with mock.patch.object(fwb, "_infisical_reader", return_value=client):
+            with mock.patch.dict(
+                os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}
+            ):
+                with self.assertRaises(fwb.BindingRefused) as caught:
+                    fwb._read_infisical_names(("WANTED",), fwb.CREDENTIAL_FOLDER)
+        self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
 
     def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
         sys.path.insert(0, str(HERE.parent))
