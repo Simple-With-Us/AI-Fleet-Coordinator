@@ -98,6 +98,15 @@ final class AccessServiceTokenTests: XCTestCase {
         XCTAssertEqual(AccessServiceToken.decode(token!.encoded), token)
     }
 
+    func testIgnoresASymlinkAndHeaderSplittingValues() throws {
+        let real = try write(#"{"clientId":"a","clientSecret":"b"}"#, mode: 0o600)
+        let link = real + ".link"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+        XCTAssertNil(AccessServiceToken.load(path: link))
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a\r\nX: y","clientSecret":"b"}"#, mode: 0o600)))
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b c"}"#, mode: 0o600)))
+    }
+
     func testIgnoresALooseMissingOrIncompleteFile() throws {
         XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b"}"#, mode: 0o644)))
         XCTAssertNil(AccessServiceToken.load(path: NSTemporaryDirectory() + "no-such-file.json"))

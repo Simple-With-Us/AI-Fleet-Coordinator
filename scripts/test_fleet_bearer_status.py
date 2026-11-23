@@ -256,6 +256,16 @@ class ServiceTokenFileTests(unittest.TestCase):
             bad2 = self._write(d, 0o600, ["x"])
             self.assertIsNone(fbs.service_token(bad2))
 
+    def test_ignores_a_symlink_and_header_splitting_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = self._write(d, 0o600, {"clientId": "a", "clientSecret": "b"})
+            link = os.path.join(d, "link.json")
+            os.symlink(real, link)
+            self.assertIsNone(fbs.service_token(link))
+            for cid, sec in (("a\r\nX: y", "b"), ("a", "b\n"), ("a b", "c"), ("a", "b\x7f")):
+                bad = self._write(d, 0o600, {"clientId": cid, "clientSecret": sec})
+                self.assertIsNone(fbs.service_token(bad))
+
     def test_fetch_sends_service_headers_not_the_jwt_header(self):
         seen = {}
 

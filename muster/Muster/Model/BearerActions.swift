@@ -136,16 +136,26 @@ struct AccessServiceToken: Equatable {
     /// both values:  a loose file is ignored, never trusted.
     static func load(path: String? = nil) -> AccessServiceToken? {
         let file = path ?? defaultPath
-        let fm = FileManager.default
-        guard let attrs = try? fm.attributesOfItem(atPath: file),
-              (attrs[.type] as? FileAttributeType) == .typeRegular,
-              let mode = (attrs[.posixPermissions] as? NSNumber)?.intValue, mode & 0o077 == 0,
-              let owner = (attrs[.ownerAccountID] as? NSNumber)?.uint32Value, owner == getuid(),
-              let data = fm.contents(atPath: file),
+        // Open without following a symlink, then check the open descriptor, so the file that is validated
+        // is the file that is read.
+        let fd = open(file, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_mode & 0o077 == 0,
+              info.st_uid == getuid(),
+              let data = try? handle.readToEnd(),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let id = object["clientId"] as? String, !id.isEmpty,
-              let secret = object["clientSecret"] as? String, !secret.isEmpty else { return nil }
+              let id = object["clientId"] as? String, Self.headerSafe(id),
+              let secret = object["clientSecret"] as? String, Self.headerSafe(secret) else { return nil }
         return AccessServiceToken(clientId: id, clientSecret: secret)
+    }
+
+    /// Printable ASCII with no spaces, non-empty: a value from the file can never split or inject an HTTP header.
+    static func headerSafe(_ value: String) -> Bool {
+        !value.isEmpty && value.unicodeScalars.allSatisfy { $0.value >= 0x21 && $0.value <= 0x7E }
     }
 
     /// The transport carries credentials as one string:  "svc:<id>:<secret>" for this token, a JWT otherwise.

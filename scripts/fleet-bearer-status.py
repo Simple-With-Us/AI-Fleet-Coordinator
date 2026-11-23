@@ -43,6 +43,11 @@ CLOUDFLARED = ("/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared")
 SERVICE_FILE = os.path.expanduser("~/.config/fleet-tools/muster-admin-api.json")
 
 
+def _header_safe(value):
+    """A non-empty string of printable ASCII with no spaces, so it can never split or inject an HTTP header."""
+    return isinstance(value, str) and bool(value) and all(0x21 <= ord(c) <= 0x7E for c in value)
+
+
 def service_token(path=None):
     """(client id, client secret) of the Cloudflare Access service token "muster-admin-api", or None.
 
@@ -52,16 +57,19 @@ def service_token(path=None):
     anywhere else."""
     path = SERVICE_FILE if path is None else path
     try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-            return None
-        with open(path) as f:
+        # Open first (never through a symlink), then check the open descriptor, so the file that is
+        # validated is the file that is read.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+                return None
             doc = json.load(f)
     except (OSError, ValueError):
         return None
     cid = doc.get("clientId") if isinstance(doc, dict) else None
     sec = doc.get("clientSecret") if isinstance(doc, dict) else None
-    if isinstance(cid, str) and cid and isinstance(sec, str) and sec:
+    if _header_safe(cid) and _header_safe(sec):
         return (cid, sec)
     return None
 
