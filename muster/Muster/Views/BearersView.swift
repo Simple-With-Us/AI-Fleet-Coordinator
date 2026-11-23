@@ -170,7 +170,7 @@ struct BearersView: View {
             // A mint needs a value (the Worker refuses a seat mint without one);  a rotate passes the live
             // bearer's own value through, nil when it is not known, and the Worker keeps it.
             let request = BearerActionRequest.make(item.action, identity: item.row.identity,
-                                                   mcpAccept: item.action == .mint ? (item.row.mcpAccept ?? true) : item.row.mcpAccept)
+                                                   mcpAccept: BearerActionRequest.mcpAccept(for: item.action, live: item.row.mcpAccept))
             let outcome = await BearerActionRunner(transport: LiveBearerActionTransport()).run(request)
             resultLine = outcome.summary
             if case .minted(let identity, let bearer, let expiresAt) = outcome {

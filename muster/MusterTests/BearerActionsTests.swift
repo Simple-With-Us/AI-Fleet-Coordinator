@@ -35,6 +35,14 @@ final class BearerActionsTests: XCTestCase {
         XCTAssertEqual((object["mint_id"] as? String)?.count, 32)
     }
 
+    func test_mcp_accept_is_sent_only_where_the_contract_reads_it() {
+        XCTAssertEqual(BearerActionRequest.mcpAccept(for: .mint, live: nil), true)
+        XCTAssertEqual(BearerActionRequest.mcpAccept(for: .mint, live: false), false)
+        XCTAssertNil(BearerActionRequest.mcpAccept(for: .rotate, live: nil))
+        XCTAssertEqual(BearerActionRequest.mcpAccept(for: .rotate, live: false), false)
+        XCTAssertNil(BearerActionRequest.mcpAccept(for: .revoke, live: true))
+    }
+
     func test_a_mint_answer_yields_the_bearer_once() {
         let out = BearerActionOutcome.read(status: 200, data: json(#"{"ok":true,"action":"mint","identity":"WISE","kind":"seat","token":"gb_x","expiresAt":"2026-12-23T00:00:00.000Z","mcpAccept":true}"#), identity: "WISE")
         XCTAssertEqual(out, .minted(identity: "WISE", bearer: "gb_x", expiresAt: "2026-12-23T00:00:00.000Z"))

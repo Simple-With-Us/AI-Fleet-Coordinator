@@ -31,6 +31,16 @@ struct BearerActionRequest: Equatable {
                             mintId: action == .revoke ? nil : newMintId(now: now), mcpAccept: mcpAccept)
     }
 
+    /// A mint needs a value (the Worker refuses a seat mint without one);  a rotate passes the live bearer's own
+    /// value through (nil when unknown, which the Worker keeps);  a revoke sends none.
+    static func mcpAccept(for action: BearerAction, live: Bool?) -> Bool? {
+        switch action {
+        case .mint: return live ?? true
+        case .rotate: return live
+        case .revoke: return nil
+        }
+    }
+
     static func newMintId(now: Date = Date(), random: () -> UInt8 = { UInt8.random(in: 0...255) }) -> String {
         let millis = UInt64(max(0, now.timeIntervalSince1970 * 1000))
         let stamp = String(format: "%012llx", millis & 0xFFFF_FFFF_FFFF)
