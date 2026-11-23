@@ -17,6 +17,7 @@ test("bearerProblem names the first failure in a fixed order", () => {
   assert.equal(bearerProblem({ ...base, status: { ...good, mcp_accept: false } }, NOW), "mcp_not_accepted");
   assert.equal(bearerProblem({ ...base, status: { ...good, expires_at: "2026-11-30T00:00:00Z" } }, NOW), "expiring_soon");
   assert.equal(bearerProblem({ ...base, status: { ...good, expires_at: Date.parse("2026-11-30T00:00:00Z") } }, NOW), "expiring_soon");
+  assert.equal(bearerProblem({ ...base, status: { ...good, expired: false, active: true, expires_at: Date.parse("2026-10-01T00:00:00Z") } }, NOW), "bearer_expired");
   assert.equal(bearerProblem({ ...base, mismatches: { count: 2 } }, NOW), "wrong_secret_attempts");
   assert.equal(bearerProblem({ ...base, statusUnavailable: true }, NOW), "status_unavailable");
 });
