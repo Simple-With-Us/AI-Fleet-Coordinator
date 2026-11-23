@@ -51,6 +51,7 @@ MODULES = (
     "same_path_reuse",
     "seat_add_policy",
     "secret_scan",
+    "secret_verbs",
     "server",
     "service_read",
     "shared_bearer",
