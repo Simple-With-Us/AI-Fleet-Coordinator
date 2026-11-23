@@ -281,7 +281,7 @@ extension MusterDestination {
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
         case .bearers:
-            return "Each bearer as the Worker's status API reported it to the Mac's poll."
+            return "Each bearer as the Worker's status API reported it to the Mac.\(gap)Mint, rotate and revoke run its owner API."
         case .actionHistory:
             return "Actions started from the Mac, on the Mac or the server."
         }
