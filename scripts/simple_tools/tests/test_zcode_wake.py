@@ -9,6 +9,7 @@ by every test and every process, so one test's cleanup could fail another's asse
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -181,14 +182,51 @@ class Base(unittest.TestCase):
 
         return call
 
+    def _transcript_tables(self, *tables: str) -> None:
+        """The tables a resumed chat's prompt is written to, with zcode's own columns.  With no
+        names, both;  a test names one to show what a runtime without the other answers."""
+        con = sqlite3.connect(self.cli)
+        if not tables or "input_history" in tables:
+            con.execute(
+                "CREATE TABLE input_history (id INTEGER PRIMARY KEY, project_id TEXT,"
+                " session_id TEXT, text TEXT, kind TEXT, time_created INTEGER, attachments TEXT)"
+            )
+        if not tables or "message" in tables:
+            con.execute(
+                "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,"
+                " time_updated INTEGER, data TEXT, sequence INTEGER)"
+            )
+        con.commit()
+        con.close()
+
+    def _persist(self, session_id: str, wake_id: str = "w1-abcdef", table: str = "input_history"):
+        """The child has written one wake's prompt into a session's transcript."""
+        text = "[ZC wake] You were tagged in Zulip (wake id %s). Read the message." % wake_id
+        con = sqlite3.connect(self.cli)
+        if table == "input_history":
+            con.execute(
+                "INSERT INTO input_history (project_id, session_id, text, kind, time_created)"
+                " VALUES ('p', ?, ?, 'prompt', 1)",
+                (session_id, text),
+            )
+        else:
+            con.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data, sequence)"
+                " VALUES ('m1', ?, 1, 1, ?, 1)",
+                (session_id, '{"role":"user","text":%s}' % json.dumps(text)),
+            )
+        con.commit()
+        con.close()
+
     def _deliver_local(self, session_id=SID, wake=None, config=None, recheck=False,
-                       exit_code=0, registry_rows=None, output=b"", timeout=False, child=None):
+                       exit_code=0, registry_rows=None, output=b"", timeout=False, child=None,
+                       runner=None):
         holding = _holding_row(session_id)
         rows = registry_rows or [holding]
         target = zcode_wake.WR.Target(
             session_id=session_id, letter="BB", host="server", generation=3
         )
-        wake = zcode_wake.WR.Wake(
+        wake = wake or zcode_wake.WR.Wake(
             wake_id="w1-abcdef",
             seat="ZC",
             message_id=639428919,
@@ -216,7 +254,7 @@ class Base(unittest.TestCase):
                 wake,
                 target=target if recheck else None,
                 recheck_registry=recheck,
-                runner=self._runner(exit_code, output, timeout, child),
+                runner=runner if runner is not None else self._runner(exit_code, output, timeout, child),
             )
         return delivery
 
@@ -545,6 +583,112 @@ class DeliverLocalTests(Base):
         output = FAILED_TURN + b"x" * (zcode_wake.OUTPUT_SCAN_CAP * 2)
         delivery = self._deliver_local(exit_code=0, output=output)
         self.assertEqual(delivery.outcome, "sent")
+
+    def _runner_that(self, returncode: int, output: bytes, **persist):
+        """A child that writes the wake into the transcript (as `persist` says) and then ends
+        the way a resume ends:  with the exit code and output given."""
+
+        def runner(argv, **kwargs):
+            if persist:
+                self._persist(persist.pop("session_id", SID), **persist)
+            return FakeChild(argv, returncode, output, False)
+
+        return runner
+
+    def test_a_prompt_in_the_chat_transcript_is_a_hand_over_however_the_child_ended(self):
+        # A resume does not run the turn:  it writes the wake into the chat's own transcript and
+        # the open chat runs it from there.  The server's own receipts showed every such wake as
+        # `dead` with `resume-exit-1` while the chat took it, because the child exits 1 when its
+        # own headless turn cannot reach the model.
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(1, FAILED_TURN, session_id=SID)
+        )
+        self.assertEqual(delivery.outcome, "sent")
+        self.assertEqual(delivery.route, "resume")
+        self.assertEqual(delivery.ack, "unknown", "nothing proves the chat acted on it")
+        self.assertEqual(delivery.code, "")
+        self.assertEqual(
+            delivery.note, "zcode-prompt-persisted:model-auth-login-failed",
+            "the note keeps why the child did not end well",
+        )
+
+    def test_a_hand_over_is_sent_for_any_exit_code_once_the_prompt_is_in_the_transcript(self):
+        self._transcript_tables()
+        delivery = self._deliver_local(runner=self._runner_that(3, b"", session_id=SID))
+        self.assertEqual(delivery.outcome, "sent")
+        self.assertEqual(delivery.note, "zcode-prompt-persisted:resume-exit-3")
+
+    def test_a_signed_failure_at_exit_0_is_a_hand_over_when_the_prompt_is_in_the_transcript(self):
+        # Read alone, the signature said "nothing ran, repeat it".  With the prompt in the
+        # transcript a repeat would be a second turn in the chat, so it is a hand-over instead.
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(0, FAILED_TURN, session_id=SID)
+        )
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_a_prompt_in_the_messages_table_alone_is_a_hand_over(self):
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(1, b"", session_id=SID, table="message")
+        )
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_a_wake_that_never_reached_the_transcript_is_failed_and_may_be_repeated(self):
+        # The child ended without writing the prompt anywhere:  no turn started from it, so
+        # the router's bounded retry may run it again.  The server's receipts showed this case
+        # as a final `dead` with nothing recorded for the sender to see.
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(1, FAILED_TURN)
+        )
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "model-auth-login-failed")
+
+    def test_an_unsigned_exit_without_a_prompt_in_the_transcript_is_failed(self):
+        self._transcript_tables()
+        delivery = self._deliver_local(runner=self._runner_that(3, b""))
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "resume-exit-3")
+
+    def test_another_chat_transcript_does_not_count_for_this_one(self):
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(1, b"", session_id=SID_OTHER)
+        )
+        self.assertEqual(delivery.outcome, "failed", "the same wake id in another chat is not here")
+
+    def test_a_wake_id_is_matched_as_the_literal_string_it_is(self):
+        # `_` and `%` are wildcards to LIKE;  one wake must never answer for another.
+        self._transcript_tables()
+        wake = zcode_wake.WR.Wake(
+            wake_id="w1-ab_def", seat="ZC", message_id=1, channel="Work-In-Progress",
+            topic="OPS-1048", zulip_link="https://zulip.example.test/narrow/topic/1",
+            sender="Claude", dm=False, letter="", picked="", reason="", link_note="",
+        )
+
+        def runner(argv, **kwargs):
+            self._persist(SID, wake_id="w1-abXdef")  # matches the pattern only as a wildcard
+            return FakeChild(argv, 1, b"", False)
+
+        delivery = self._deliver_local(wake=wake, runner=runner)
+        self.assertEqual(delivery.outcome, "failed")
+
+    def test_a_runtime_with_only_one_transcript_table_still_answers(self):
+        self._transcript_tables("input_history")
+        delivery = self._deliver_local(
+            runner=self._runner_that(1, b"", session_id=SID)
+        )
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_a_runtime_with_only_one_transcript_table_cannot_say_the_prompt_is_absent(self):
+        # The other table may be where this runtime writes prompts, so its absence is no
+        # answer:  the exit code decides, as it did before the store was asked.
+        self._transcript_tables("input_history")
+        delivery = self._deliver_local(runner=self._runner_that(3, b""))
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "resume-exit-3")
 
     def test_the_lock_folder_and_every_level_of_it_are_private(self):
         self._deliver_local()
